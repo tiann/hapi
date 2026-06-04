@@ -66,6 +66,27 @@ export function shouldAutoClearPendingSchedule(pending: PendingSchedule | null):
 }
 
 /**
+ * True if the keystroke matches the scratchlist-mode toggle shortcut
+ * (Ctrl/Cmd + Shift + S, no Alt). Pure / exported for unit tests.
+ *
+ * Convention: matches the v1 always-visible panel's shortcut so muscle
+ * memory carries over. Sibling globals follow the same modifier shape
+ * (Ctrl/Cmd-m cycles agent model in HappyComposer).
+ */
+export function isScratchlistToggleHotkey(e: {
+    metaKey: boolean
+    ctrlKey: boolean
+    shiftKey: boolean
+    altKey: boolean
+    key: string
+}): boolean {
+    if (!(e.metaKey || e.ctrlKey)) return false
+    if (!e.shiftKey) return false
+    if (e.altKey) return false
+    return e.key === 'S' || e.key === 's'
+}
+
+/**
  * Decide whether a submit should be routed to the per-session scratchlist
  * or to the regular chat send. Scratchlist entries are pure text - they
  * don't carry attachments or schedules - so any submit that includes
@@ -234,6 +255,34 @@ export function SessionChat(props: {
     useEffect(() => { setScratchlistMode(false) }, [props.session.id])
     const handleScratchlistToggle = useCallback(() => {
         setScratchlistMode((m) => !m)
+    }, [])
+    /**
+     * Global keyboard shortcut: Ctrl/Cmd + Shift + S toggles scratchlist
+     * mode (open/close drawer + flip composer routing).
+     *
+     * Convention matches the v1 always-visible panel's shortcut so muscle
+     * memory carries over. Other composer-adjacent globals in the app use
+     * the same modifier shape: Ctrl/Cmd-m cycles agent model in
+     * HappyComposer. Ctrl/Cmd-Shift-S is unreserved by Chrome / Firefox /
+     * Safari at the app level (browser Save As is Ctrl-S / Cmd-S, no
+     * Shift), so requiring Shift keeps the user's save-page muscle memory
+     * working. Bound at SessionChat scope (not the drawer) because the
+     * drawer is unmounted while mode is off — a drawer-scoped listener
+     * couldn't reopen it.
+     *
+     * Fires regardless of where focus is (composer textarea, list, etc.).
+     * Modifier requirement (Ctrl/Cmd+Shift) means it can't collide with
+     * literal-character typing, so no input/textarea suppression is
+     * needed here.
+     */
+    useEffect(() => {
+        const onKeyDown = (e: globalThis.KeyboardEvent) => {
+            if (!isScratchlistToggleHotkey(e)) return
+            e.preventDefault()
+            setScratchlistMode((m) => !m)
+        }
+        window.addEventListener('keydown', onKeyDown)
+        return () => window.removeEventListener('keydown', onKeyDown)
     }, [])
     /**
      * onSend wrapper: when scratchlist mode is on AND the submission is

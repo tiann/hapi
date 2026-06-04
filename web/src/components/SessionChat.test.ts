@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
     buildGoalStateMessages,
+    isScratchlistToggleHotkey,
     shouldAutoClearPendingSchedule,
     shouldRouteToScratchlist,
 } from './SessionChat'
@@ -140,6 +141,46 @@ describe('shouldRouteToScratchlist', () => {
         expect(routed).toBe(true)
         const shouldClearAfterAccepted = !routed
         expect(shouldClearAfterAccepted).toBe(false)
+    })
+})
+
+describe('isScratchlistToggleHotkey', () => {
+    function k(over: Partial<{
+        metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean; key: string
+    }>): { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean; key: string } {
+        return { metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, key: '', ...over }
+    }
+
+    it('matches Ctrl+Shift+S (Linux/Windows)', () => {
+        expect(isScratchlistToggleHotkey(k({ ctrlKey: true, shiftKey: true, key: 'S' }))).toBe(true)
+        expect(isScratchlistToggleHotkey(k({ ctrlKey: true, shiftKey: true, key: 's' }))).toBe(true)
+    })
+
+    it('matches Cmd+Shift+S (macOS)', () => {
+        expect(isScratchlistToggleHotkey(k({ metaKey: true, shiftKey: true, key: 'S' }))).toBe(true)
+    })
+
+    it('rejects Cmd/Ctrl + S without shift (browser Save)', () => {
+        // Browsers reserve Ctrl-S / Cmd-S for "Save Page". The toggle MUST
+        // require shift so the user's save-page muscle memory keeps working.
+        expect(isScratchlistToggleHotkey(k({ ctrlKey: true, key: 's' }))).toBe(false)
+        expect(isScratchlistToggleHotkey(k({ metaKey: true, key: 's' }))).toBe(false)
+    })
+
+    it('rejects bare S / Shift+S (literal typing)', () => {
+        expect(isScratchlistToggleHotkey(k({ key: 's' }))).toBe(false)
+        expect(isScratchlistToggleHotkey(k({ shiftKey: true, key: 'S' }))).toBe(false)
+    })
+
+    it('rejects when Alt is also held (avoid clashes with OS shortcuts)', () => {
+        expect(isScratchlistToggleHotkey(k({
+            ctrlKey: true, shiftKey: true, altKey: true, key: 'S',
+        }))).toBe(false)
+    })
+
+    it('rejects unrelated keys', () => {
+        expect(isScratchlistToggleHotkey(k({ ctrlKey: true, shiftKey: true, key: 'A' }))).toBe(false)
+        expect(isScratchlistToggleHotkey(k({ ctrlKey: true, shiftKey: true, key: 'Tab' }))).toBe(false)
     })
 })
 
