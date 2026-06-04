@@ -327,7 +327,7 @@ function LoadingIcon() {
     )
 }
 
-function UnifiedButton(props: {
+export function UnifiedButton(props: {
     canSend: boolean
     voiceStatus: ConversationStatus
     voiceEnabled: boolean
@@ -340,11 +340,15 @@ function UnifiedButton(props: {
      * actual routing happens in SessionChat's wrapped onSend - the
      * button itself is content-agnostic.
      *
-     * The visible color swap is the only modal-state cue I'd accept;
-     * "next send goes elsewhere" without any change in the button is
-     * the failure mode that loses messages to the wrong channel.
+     * Caller MUST compute this from the actual routing decision (mode
+     * AND no-attachments AND no-pending-schedule), not the raw
+     * scratchlist toggle. If the toggle is on but the submission would
+     * fall back to chat (because the scratchlist can't represent the
+     * payload), the button must look like a normal chat send. Per
+     * upstream review on PR #798: [Major] "Send button advertises
+     * scratchlist routing even when the submit will go to chat".
      */
-    scratchlistMode?: boolean
+    routesToScratchlist?: boolean
 }) {
     const { t } = useTranslation()
 
@@ -352,14 +356,14 @@ function UnifiedButton(props: {
     const isConnected = props.voiceStatus === 'connected'
     const isVoiceActive = isConnecting || isConnected
     const hasText = props.canSend
-    const scratchlistMode = props.scratchlistMode ?? false
+    const routesToScratchlist = props.routesToScratchlist ?? false
 
     const handleClick = () => {
         if (isVoiceActive) {
             props.onVoiceToggle() // Stop voice
         } else if (hasText) {
             props.onSend() // Send message (or scratchlist add — wrapper decides)
-        } else if (props.voiceEnabled && !scratchlistMode) {
+        } else if (props.voiceEnabled && !routesToScratchlist) {
             props.onVoiceToggle() // Start voice (suppressed in scratchlist mode)
         }
     }
@@ -376,7 +380,7 @@ function UnifiedButton(props: {
         icon = <StopIcon />
         className = 'bg-black text-white'
         ariaLabel = t('composer.stop')
-    } else if (scratchlistMode) {
+    } else if (routesToScratchlist) {
         // Amber send button - matches the scratchlist drawer accent.
         // Single visual signal carries the "this goes to the scratchlist"
         // contract; without it, the modal state is invisible to the user.
@@ -397,11 +401,13 @@ function UnifiedButton(props: {
         ariaLabel = t('composer.send')
     }
 
-    // In scratchlist mode the send button is the only path that does anything
-    // useful, so it must be enabled whenever there is text - we deliberately
-    // do NOT fall back to voice-toggle-on-empty-text.
+    // When the submission routes to scratchlist the send button is the
+    // only path that does anything useful, so it must be enabled whenever
+    // there is text - we deliberately do NOT fall back to voice-toggle-on-
+    // empty-text. (When attachments / schedule force a chat fallback the
+    // normal chat-send disable rules apply.)
     const isDisabled = props.controlsDisabled || (
-        scratchlistMode
+        routesToScratchlist
             ? !hasText
             : !hasText && !props.voiceEnabled && !isVoiceActive
     )
@@ -613,7 +619,21 @@ export function ComposerButtons(props: {
                 controlsDisabled={props.controlsDisabled}
                 onSend={props.onSend}
                 onVoiceToggle={props.onVoiceToggle}
-                scratchlistMode={props.scratchlistMode}
+                /*
+                 * Derived, NOT raw scratchlistMode. Mirror SessionChat's
+                 * shouldRouteToScratchlist so the visible send-button state
+                 * matches the actual routing decision: amber + "Send to
+                 * scratchlist" only when mode is on AND the payload would
+                 * be a pure-text scratchlist add. Attachments or a pending
+                 * schedule force a chat fallback in onSendForComposer; the
+                 * button must reflect that, otherwise the UI lies about
+                 * where the user's content is going.
+                 */
+                routesToScratchlist={
+                    (props.scratchlistMode ?? false)
+                    && !hasAttachments
+                    && props.pendingSchedule == null
+                }
             />
         </div>
     )
