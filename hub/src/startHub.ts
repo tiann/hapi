@@ -323,6 +323,28 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
             } catch {
                 // QR code generation failure should not affect main flow
             }
+
+            // Companion app pairing QR (deeplink scheme; PWA users ignore, native app picks up).
+            const companionParams = new URLSearchParams({
+                hub: tunnelUrl,
+                code: config.cliApiToken
+            })
+            const companionDeeplink = `hapicompanion://bind?${companionParams.toString()}`
+            console.log('')
+            console.log('Or pair the HAPI companion app (Android phone / Wear OS):')
+            console.log(`  ${companionDeeplink}`)
+            try {
+                const companionQrString = await QRCode.toString(companionDeeplink, {
+                    type: 'terminal',
+                    small: true,
+                    margin: 1,
+                    errorCorrectionLevel: 'L'
+                })
+                console.log('')
+                console.log(companionQrString)
+            } catch {
+                // Non-fatal; deeplink text above is sufficient if QR rendering fails.
+            }
         }
 
         void announceTunnelAccess()
