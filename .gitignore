@@ -50,3 +50,6 @@ cli/npm/main/
 .cursor/*
 !.cursor/rules/
 !.cursor/rules/**
+
+# Compiled output of scripts/hapi-sessions-plot.c (operator tool; rebuild via build-hapi-sessions-plot.sh)
+scripts/hapi-sessions-plot
