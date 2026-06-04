@@ -32,6 +32,37 @@ describe('convertCodexEvent', () => {
         expect(result?.userMessage).toBe('hello user');
     });
 
+    it('converts response_item user messages', () => {
+        const result = convertCodexEvent({
+            type: 'response_item',
+            payload: {
+                type: 'message',
+                role: 'user',
+                content: [{ type: 'input_text', text: 'hello from response_item user' }]
+            }
+        });
+
+        expect(result).toEqual({
+            userMessage: 'hello from response_item user'
+        });
+    });
+
+    it('converts response_item assistant messages', () => {
+        const result = convertCodexEvent({
+            type: 'response_item',
+            payload: {
+                type: 'message',
+                role: 'assistant',
+                content: [{ type: 'output_text', text: 'hello from response_item assistant' }]
+            }
+        });
+
+        expect(result?.message).toMatchObject({
+            type: 'message',
+            message: 'hello from response_item assistant'
+        });
+    });
+
     it('converts reasoning events', () => {
         const result = convertCodexEvent({
             type: 'event_msg',

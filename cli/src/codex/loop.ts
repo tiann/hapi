@@ -33,6 +33,7 @@ interface LoopOptions {
     modelReasoningEffort?: ReasoningEffort;
     collaborationMode?: CodexCollaborationMode;
     resumeSessionId?: string;
+    replayTranscriptHistoryOnStart?: boolean;
     onSessionReady?: (session: CodexSession) => void;
 }
 
@@ -56,7 +57,8 @@ export async function loop(opts: LoopOptions): Promise<void> {
         permissionMode: opts.permissionMode ?? 'default',
         model: opts.model,
         modelReasoningEffort: opts.modelReasoningEffort,
-        collaborationMode: opts.collaborationMode ?? 'default'
+        collaborationMode: opts.collaborationMode ?? 'default',
+        replayTranscriptHistoryOnStart: opts.replayTranscriptHistoryOnStart ?? false
     });
 
     await runLocalRemoteSession({

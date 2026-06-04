@@ -7,6 +7,7 @@ interface CodexSessionScannerOptions {
     transcriptPath: string | null;
     onEvent: (event: CodexSessionEvent) => void;
     onSessionId?: (sessionId: string) => void;
+    replayExistingHistory?: boolean;
 }
 
 export interface CodexSessionScanner {
@@ -34,6 +35,7 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
     private readonly onSessionId?: (sessionId: string) => void;
     private readonly fileEpochByPath = new Map<string, number>();
     private readonly fileSizeByPath = new Map<string, number>();
+    private replayExistingHistoryOnNextAttach: boolean;
     private observedSessionId: string | null = null;
 
     constructor(opts: CodexSessionScannerOptions) {
@@ -41,6 +43,7 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
         this.transcriptPath = opts.transcriptPath;
         this.onEvent = opts.onEvent;
         this.onSessionId = opts.onSessionId;
+        this.replayExistingHistoryOnNextAttach = opts.replayExistingHistory ?? false;
     }
 
     async setTranscriptPath(transcriptPath: string): Promise<void> {
@@ -48,14 +51,14 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
             return;
         }
         this.transcriptPath = transcriptPath;
-        await this.primeTranscript(transcriptPath);
+        await this.prepareTranscript(transcriptPath);
         this.pruneWatchers(this.transcriptPath ? [this.transcriptPath] : []);
         this.invalidate();
     }
 
     protected async initialize(): Promise<void> {
         if (this.transcriptPath) {
-            await this.primeTranscript(this.transcriptPath);
+            await this.prepareTranscript(this.transcriptPath);
         }
     }
 
@@ -87,6 +90,17 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
             logger.debug(`[codex-session-scanner] ${stats.newCount} new events from ${stats.filePath}`);
         }
         this.pruneWatchers(this.transcriptPath ? [this.transcriptPath] : []);
+    }
+
+    private async prepareTranscript(filePath: string): Promise<void> {
+        if (this.replayExistingHistoryOnNextAttach) {
+            // 中文注释：导入既有 Codex thread 时，首次挂接 transcript 不能先 prime 到 EOF，
+            // 否则 Hapi 只会看到后续增量，客户端里已经存在的最新消息会被跳过。
+            this.replayExistingHistoryOnNextAttach = false;
+            return;
+        }
+
+        await this.primeTranscript(filePath);
     }
 
     private async primeTranscript(filePath: string): Promise<void> {

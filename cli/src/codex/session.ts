@@ -17,6 +17,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
     readonly codexCliOverrides?: CodexCliOverrides;
     readonly startedBy: 'runner' | 'terminal';
     readonly startingMode: 'local' | 'remote';
+    readonly replayTranscriptHistoryOnStart: boolean;
     localLaunchFailure: LocalLaunchFailure | null = null;
 
     private transcriptPathCallbacks: Array<(path: string) => void> = [];
@@ -38,6 +39,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         model?: SessionModel;
         modelReasoningEffort?: SessionModelReasoningEffort;
         collaborationMode?: EnhancedMode['collaborationMode'];
+        replayTranscriptHistoryOnStart?: boolean;
     }) {
         super({
             api: opts.api,
@@ -64,6 +66,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         this.codexCliOverrides = opts.codexCliOverrides;
         this.startedBy = opts.startedBy;
         this.startingMode = opts.startingMode;
+        this.replayTranscriptHistoryOnStart = opts.replayTranscriptHistoryOnStart ?? false;
         this.permissionMode = opts.permissionMode;
         this.model = opts.model;
         this.modelReasoningEffort = opts.modelReasoningEffort;

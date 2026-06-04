@@ -1,7 +1,12 @@
 import type {
     AttachmentMetadata,
     AuthResponse,
+    CodexLocalSessionsResponse,
+    CodexDuplicateSessionsResponse,
+    CodexMergeDuplicateSessionsResponse,
     CodexDesktopScriptResponse,
+    CodexDesktopSyncRequest,
+    CodexDesktopStatusResponse,
     CodexCollaborationMode,
     FileSearchResponse,
     MachinesResponse,
@@ -180,9 +185,35 @@ export class ApiClient {
         })
     }
 
-    async syncCodexSession(): Promise<CodexDesktopScriptResponse> {
+    async syncCodexSession(payload?: CodexDesktopSyncRequest): Promise<CodexDesktopScriptResponse> {
+        // 中文注释：当前按钮语义已改为“从 Codex 导入到 Hapi”；这里提交的是本地 transcript 对应的 Codex thread ID 列表。
         return await this.request<CodexDesktopScriptResponse>('/api/codex/sync-session', {
-            method: 'POST'
+            method: 'POST',
+            ...(payload ? { body: JSON.stringify(payload) } : {})
+        })
+    }
+
+    async getCodexSessions(): Promise<CodexLocalSessionsResponse> {
+        return await this.request<CodexLocalSessionsResponse>('/api/codex/sessions')
+    }
+
+    async getCodexDesktopStatus(): Promise<CodexDesktopStatusResponse> {
+        return await this.request<CodexDesktopStatusResponse>('/api/codex/status')
+    }
+
+    async getCodexDuplicateSessions(payload: CodexDesktopSyncRequest): Promise<CodexDuplicateSessionsResponse> {
+        // 中文注释：重复会话检测只传本次用户勾选导入的 codexSessionId，避免把未选中的历史会话也纳入提示。
+        return await this.request<CodexDuplicateSessionsResponse>('/api/codex/duplicate-sessions', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        })
+    }
+
+    async mergeCodexDuplicateSessions(payload: CodexDesktopSyncRequest): Promise<CodexMergeDuplicateSessionsResponse> {
+        // 中文注释：真正执行合并时沿用同一批选中 codexSessionId，保证检测范围与执行范围一致。
+        return await this.request<CodexMergeDuplicateSessionsResponse>('/api/codex/merge-duplicate-sessions', {
+            method: 'POST',
+            body: JSON.stringify(payload)
         })
     }
 

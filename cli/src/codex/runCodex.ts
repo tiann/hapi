@@ -73,6 +73,9 @@ export async function runCodex(opts: {
 
     const codexCliOverrides = parseCodexCliOverrides(opts.codexArgs);
     const sessionWrapperRef: { current: CodexSession | null } = { current: null };
+    // 中文注释：当用户直接把现成的 Codex thread 导入到一个全新的 Hapi 会话时，
+    // 需要在首次附着 transcript 时回放已有历史；恢复已有 Hapi 会话时则保持原来的增量模式，避免重复灌入旧消息。
+    const replayTranscriptHistoryOnStart = Boolean(opts.resumeSessionId && !opts.existingSessionId);
 
     let currentPermissionMode: PermissionMode = opts.permissionMode ?? 'default';
     let currentModel = opts.model;
@@ -353,6 +356,7 @@ export async function runCodex(opts: {
             modelReasoningEffort: currentModelReasoningEffort,
             collaborationMode: currentCollaborationMode,
             resumeSessionId: opts.resumeSessionId,
+            replayTranscriptHistoryOnStart,
             onModeChange: createModeChangeHandler(session),
             onSessionReady: (instance) => {
                 sessionWrapperRef.current = instance;

@@ -28,6 +28,11 @@ function toStoredMessage(row: DbMessageRow): StoredMessage {
     }
 }
 
+export type CopyStoredMessageInput = Pick<
+    StoredMessage,
+    'content' | 'createdAt' | 'localId' | 'invokedAt' | 'scheduledAt'
+>
+
 export function addMessage(
     db: Database,
     sessionId: string,
@@ -92,6 +97,56 @@ export function addMessage(
     return toStoredMessage(row)
 }
 
+export function copyMessageToSession(
+    db: Database,
+    sessionId: string,
+    message: CopyStoredMessageInput
+): StoredMessage {
+    const createdAt = Number.isFinite(message.createdAt) ? message.createdAt : Date.now()
+    const nextSeq = getMaxSeq(db, sessionId) + 1
+
+    let localId = message.localId
+    if (localId) {
+        const collision = db.prepare(
+            'SELECT 1 FROM messages WHERE session_id = ? AND local_id = ? LIMIT 1'
+        ).get(sessionId, localId) as { 1: number } | undefined
+        if (collision) {
+            // 中文注释：重复会话合并时如果 localId 撞车，给复制进目标会话的消息生成一个新 localId，避免误判成同一条已存在消息。
+            localId = `${localId}:merged:${randomUUID().slice(0, 8)}`
+        }
+    }
+
+    if (message.scheduledAt != null && !localId && message.invokedAt === null) {
+        // 中文注释：未来计划消息仍需要 ack 路径；异常情况下若源数据缺少 localId，这里补一个稳定可写的新值以保留调度语义。
+        localId = `merged-scheduled:${randomUUID()}`
+    }
+
+    const invokedAt = localId ? message.invokedAt : (message.invokedAt ?? createdAt)
+    const id = randomUUID()
+    db.prepare(`
+        INSERT INTO messages (
+            id, session_id, content, created_at, seq, local_id, invoked_at, scheduled_at
+        ) VALUES (
+            @id, @session_id, @content, @created_at, @seq, @local_id, @invoked_at, @scheduled_at
+        )
+    `).run({
+        id,
+        session_id: sessionId,
+        content: JSON.stringify(message.content),
+        created_at: createdAt,
+        seq: nextSeq,
+        local_id: localId ?? null,
+        invoked_at: invokedAt ?? null,
+        scheduled_at: message.scheduledAt ?? null
+    })
+
+    const row = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as DbMessageRow | undefined
+    if (!row) {
+        throw new Error('Failed to copy message into target session')
+    }
+    return toStoredMessage(row)
+}
+
 export function getMessages(
     db: Database,
     sessionId: string,
@@ -104,6 +159,17 @@ export function getMessages(
     ).all(sessionId, safeLimit) as DbMessageRow[]
 
     return rows.reverse().map(toStoredMessage)
+}
+
+export function getAllMessages(
+    db: Database,
+    sessionId: string
+): StoredMessage[] {
+    const rows = db.prepare(
+        'SELECT * FROM messages WHERE session_id = ? ORDER BY seq ASC'
+    ).all(sessionId) as DbMessageRow[]
+
+    return rows.map(toStoredMessage)
 }
 
 export function getFirstMessages(

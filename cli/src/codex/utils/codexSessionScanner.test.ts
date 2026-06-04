@@ -59,6 +59,27 @@ describe('codexSessionScanner', () => {
         expect(events[0]?.type).toBe('event_msg');
     });
 
+    it('can replay existing transcript history on first attach', async () => {
+        await writeFile(
+            transcriptPath,
+            [
+                JSON.stringify({ type: 'session_meta', payload: { id: 'session-replay' } }),
+                JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'old' } })
+            ].join('\n') + '\n'
+        );
+
+        scanner = await createCodexSessionScanner({
+            transcriptPath,
+            replayExistingHistory: true,
+            onEvent: (event) => events.push(event)
+        });
+
+        await wait(300);
+        expect(events).toHaveLength(2);
+        expect(events[0]?.type).toBe('session_meta');
+        expect(events[1]?.payload).toEqual({ type: 'agent_message', message: 'old' });
+    });
+
     it('reports session id from the transcript metadata', async () => {
         await writeFile(
             transcriptPath,
