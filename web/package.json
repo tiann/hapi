@@ -69,6 +69,6 @@
         "unified": "^11.0.5",
         "vite": "^7.3.0",
         "vitest": "^4.0.16",
-        "@playwright/test": "1.49.1"
+        "@playwright/test": "1.60.0"
     }
 }
