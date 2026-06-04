@@ -241,7 +241,7 @@ function hasAbortableAgentRun(blocks: readonly ChatBlock[]): boolean {
     return false
 }
 
-export function SessionChat(props: {
+type SessionChatProps = {
     api: ApiClient
     session: Session
     messages: DecryptedMessage[]
@@ -266,7 +266,29 @@ export function SessionChat(props: {
     onRetryMessage?: (localId: string) => void
     autocompleteSuggestions?: (query: string) => Promise<Suggestion[]>
     availableSlashCommands?: readonly SlashCommand[]
-}) {
+}
+
+/**
+ * Public entry point. Thin wrapper around `SessionChatInner` keyed by
+ * the session id so that ALL inner state - including the scratchlist
+ * (entries + mode) and the assistant-ui runtime - resets atomically
+ * when the operator navigates between sessions on the same route
+ * (e.g. /sessions/A -> /sessions/B).
+ *
+ * Without the key, React reuses the same component instance, and
+ * effects run AFTER the first paint of the new session. That window
+ * briefly renders the new session with the previous session's
+ * scratchlist entries / drawer-open state, which is the bot finding
+ * on PR #798 (PRRT_kwDOQuQOSc6HHOsa). The keyed wrapper is the
+ * canonical React pattern for "fully reset state on prop change"; it
+ * supersedes the effect-based mode-reset that previously lived in
+ * SessionChatInner.
+ */
+export function SessionChat(props: SessionChatProps) {
+    return <SessionChatInner key={props.session.id} {...props} />
+}
+
+function SessionChatInner(props: SessionChatProps) {
     const { haptic } = usePlatform()
     const { t } = useTranslation()
     const navigate = useNavigate()
@@ -282,10 +304,11 @@ export function SessionChat(props: {
     const lastSyncedCursorModelRef = useRef<string | null | undefined>(undefined)
     const scratchlist = useScratchlist(props.session.id)
     const [scratchlistMode, setScratchlistMode] = useState(false)
-    // Reset scratchlist mode when switching sessions - mode is per-session
-    // intent, not global. (Entries are already keyed by session inside the
-    // hook, so they reset on their own.)
-    useEffect(() => { setScratchlistMode(false) }, [props.session.id])
+    // Mode resets across sessions implicitly: SessionChat is keyed by
+    // session.id at the public-export boundary, so a session switch
+    // remounts SessionChatInner from scratch and `scratchlistMode`
+    // initializes to false again. (Previous effect-based reset was
+    // racy on first paint - see public-export comment for context.)
     const handleScratchlistToggle = useCallback(() => {
         setScratchlistMode((m) => !m)
     }, [])
