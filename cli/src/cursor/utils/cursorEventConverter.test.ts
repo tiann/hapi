@@ -284,6 +284,59 @@ describe('cursorEventConverter', () => {
             });
         });
 
+        // Regression test for the second Major finding from the HAPI bot on
+        // PR #801: a legitimate AskQuestion whose prompt text (carried in
+        // `function.arguments`) quotes the synthetic-skip marker - e.g. an
+        // agent debugging this exact bug - must NOT be rewritten when the
+        // user has actually answered. The marker check must look only at the
+        // extracted result, never the agent's input arguments.
+        it('does NOT rewrite an AskQuestion whose arguments quote the marker but whose result is a real answer', async () => {
+            const startedEvent = {
+                type: 'tool_call',
+                subtype: 'started',
+                call_id: 'meta1',
+                session_id: 's1',
+                tool_call: {
+                    function: {
+                        name: 'AskQuestion',
+                        arguments:
+                            '{"prompt":"Do you want to handle the case where cursor-agent returns: Questions skipped by the user, continue with the information you already have"}'
+                    }
+                }
+            } as CursorStreamEvent;
+            convertCursorEventToAgentMessage(startedEvent);
+
+            // Wait past the synthetic latency threshold so the timing
+            // heuristic does not apply - this is a real user answer, not a
+            // zero-latency fabrication.
+            await new Promise((resolve) => setTimeout(resolve, 550));
+
+            const completedEvent = {
+                type: 'tool_call',
+                subtype: 'completed',
+                call_id: 'meta1',
+                session_id: 's1',
+                tool_call: {
+                    function: {
+                        name: 'AskQuestion',
+                        arguments:
+                            '{"prompt":"Do you want to handle the case where cursor-agent returns: Questions skipped by the user, continue with the information you already have"}',
+                        result: 'yes, please add the intercept'
+                    }
+                }
+            } as CursorStreamEvent;
+            const msg = convertCursorEventToAgentMessage(completedEvent);
+            expect(msg).toMatchObject({
+                type: 'tool_result',
+                id: 'meta1',
+                status: 'completed'
+            });
+            expect((msg as { output: unknown }).output).toBe('yes, please add the intercept');
+            expect((msg as { output: unknown }).output).not.toMatchObject({
+                kind: 'no_input_surface'
+            });
+        });
+
         it('does NOT rewrite a non-AskQuestion function tool whose result happens to contain the marker text', () => {
             const completedEvent = {
                 type: 'tool_call',

@@ -84,6 +84,23 @@ function extractToolResult(toolCall: Record<string, unknown>): unknown {
         const w = toolCall.writeToolCall as Record<string, unknown>;
         return w.result ?? w;
     }
+    if (toolCall.function && typeof toolCall.function === 'object') {
+        const fn = toolCall.function as Record<string, unknown>;
+        // Cursor's stream-json function-shaped tool calls put the agent's
+        // input in `arguments` and the cursor-side response in other fields.
+        // Surface the response (preferring `result` when present, otherwise
+        // everything except `name` / `arguments`) so downstream callers don't
+        // lose the cursor-side payload to a `{}` fallback. Excluding
+        // `arguments` matters for the #784 intercept: the agent's own prompt
+        // text must not be searched for the synthetic-skip marker.
+        if (fn.result !== undefined) return fn.result;
+        const rest: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(fn)) {
+            if (k === 'name' || k === 'arguments') continue;
+            rest[k] = v;
+        }
+        return Object.keys(rest).length > 0 ? rest : {};
+    }
     return {};
 }
 
@@ -190,21 +207,25 @@ function isTrivialResult(result: unknown): boolean {
 }
 
 function shouldRewriteAsNoInputSurface(opts: {
-    toolCall: Record<string, unknown>;
     name: string;
     result: unknown;
     elapsedMs: number | null;
 }): boolean {
-    // Both strategies are gated on the tool name resolving to an
-    // AskQuestion-shaped call (or the converter's `unknown` fallback for
-    // function-shaped tools without a name). Gating prevents legitimate
-    // `read_file` / `write_file` results that contain the literal marker
-    // string (e.g. reading this repo's `docs/guide/cursor.md`, which documents
-    // the intercept) from being rewritten as `no_input_surface` failures.
+    // Gate on the tool name resolving to an AskQuestion-shaped call (or the
+    // converter's `unknown` fallback for function-shaped tools without a
+    // name). Prevents legitimate `read_file` / `write_file` results that
+    // contain the literal marker string (e.g. reading this repo's
+    // `docs/guide/cursor.md`, which documents the intercept) from being
+    // rewritten as `no_input_surface` failures.
     if (!ASK_QUESTION_TOOL_NAMES.has(opts.name)) {
         return false;
     }
-    if (containsSyntheticSkipMarker(opts.toolCall)) {
+    // Search only the extracted result, not the whole tool_call payload. The
+    // `arguments` field carries the agent's own prompt text, which can quote
+    // the marker without that being a fabricated skip; matching there would
+    // false-positive on legitimate AskQuestion calls that ask about this
+    // exact bug or paste the marker verbatim into their prompt.
+    if (containsSyntheticSkipMarker(opts.result)) {
         return true;
     }
     if (
@@ -251,7 +272,7 @@ export function convertCursorEventToAgentMessage(event: CursorStreamEvent): Agen
             }
             const result = extractToolResult(toolCall);
             const elapsedMs = takeToolCallElapsedMs(event.call_id);
-            if (shouldRewriteAsNoInputSurface({ toolCall, name, result, elapsedMs })) {
+            if (shouldRewriteAsNoInputSurface({ name, result, elapsedMs })) {
                 return {
                     type: 'tool_result',
                     id: event.call_id,
