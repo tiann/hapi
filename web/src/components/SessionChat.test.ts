@@ -116,6 +116,31 @@ describe('shouldRouteToScratchlist', () => {
     it('returns false when both attachments and scheduledAt are set', () => {
         expect(shouldRouteToScratchlist(true, [attachment()], Date.now() + 60_000)).toBe(false)
     })
+
+    /**
+     * Bot follow-up on PR #798: handleSend gates pendingSchedule cleanup on
+     * routedToScratchlist, not scratchlistMode. So a scheduled chat send made
+     * while the scratchlist toggle is on (which falls through to chat per
+     * the previous tests) MUST also trigger schedule clear + scroll bump.
+     * This test pins the decision matrix that handleSend depends on.
+     */
+    it('cleanup gate: scheduled chat send while scratchlist toggle is on still clears schedule', () => {
+        const scheduledAt = Date.now() + 60_000
+        // Scenario: mode on, no attachments, scheduled. shouldRouteToScratchlist
+        // must return false so handleSend's `if (!routedToScratchlist)` runs
+        // setPendingSchedule(null).
+        const routed = shouldRouteToScratchlist(true, undefined, scheduledAt)
+        expect(routed).toBe(false)
+        const shouldClearAfterAccepted = !routed
+        expect(shouldClearAfterAccepted).toBe(true)
+    })
+
+    it('cleanup gate: pure-text scratchlist add does NOT clear schedule', () => {
+        const routed = shouldRouteToScratchlist(true, undefined, null)
+        expect(routed).toBe(true)
+        const shouldClearAfterAccepted = !routed
+        expect(shouldClearAfterAccepted).toBe(false)
+    })
 })
 
 describe('buildGoalStateMessages', () => {

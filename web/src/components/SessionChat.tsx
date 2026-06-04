@@ -745,21 +745,27 @@ export function SessionChat(props: {
 
     const handleSend = useCallback(async (text: string, attachments?: AttachmentMetadata[], scheduledAt?: number | null) => {
         // Route through the scratchlist-aware wrapper. When scratchlistMode
-        // is on, this turns into addScratchlistEntry; otherwise it goes to
-        // props.onSend (the chat send path). The wrapper resolves true on
-        // success either way so the composer-clear / scroll dance below
-        // still applies (we want the composer cleared after a scratchlist
-        // add too - mode is sticky, not the input).
+        // is on AND the payload is pure text, this turns into
+        // addScratchlistEntry; otherwise it goes to props.onSend (the chat
+        // send path). The wrapper resolves true on success either way so
+        // the composer-clear is shared, but the schedule-clear / scroll
+        // dance below must gate on the actual route taken (not just
+        // scratchlistMode), or a scheduled chat send made while the
+        // scratchlist toggle is on will leave pendingSchedule sticky and
+        // the next normal send would reuse the same schedule. (Per
+        // upstream review on PR #798: [Major] "Clear accepted scheduled
+        // chat sends after scratchlist fallback".)
+        const routedToScratchlist = shouldRouteToScratchlist(scratchlistMode, attachments, scheduledAt)
         const accepted = await onSendForComposer(text, attachments, scheduledAt)
         if (!accepted) return
-        if (!scratchlistMode) {
-            // Clear pendingSchedule only after the mutation is actually accepted —
-            // covers both pre-mutation guards AND async inactive-session resume
-            // failure. SessionChat is the single owner of schedule clear (HappyComposer
-            // no longer clears on its own send path).
-            // Schedule clear / forced scroll only matter for chat sends.
-            // Scratchlist adds don't have a schedule and shouldn't move
-            // the chat viewport.
+        if (!routedToScratchlist) {
+            // Clear pendingSchedule only after the mutation is actually
+            // accepted - covers both pre-mutation guards AND async
+            // inactive-session resume failure. SessionChat is the single
+            // owner of schedule clear (HappyComposer no longer clears on
+            // its own send path). Schedule clear / forced scroll only
+            // matter for chat sends; scratchlist adds don't have a
+            // schedule and shouldn't move the chat viewport.
             setPendingSchedule(null)
             setForceScrollToken((token) => token + 1)
         }
