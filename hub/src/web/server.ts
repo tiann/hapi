@@ -6,6 +6,7 @@ import { existsSync } from 'node:fs'
 import { serveStatic } from 'hono/bun'
 import { getConfiguration } from '../configuration'
 import { PROTOCOL_VERSION } from '@hapi/protocol'
+import { buildGeminiLiveSetupMessage, buildQwenSessionUpdateMessage, isQwenSafeClientFrame, QWEN_REALTIME_MODEL } from '@hapi/protocol/voice'
 import type { SyncEngine } from '../sync/syncEngine'
 import { createAuthMiddleware, type WebAppEnv } from './middleware/auth'
 import { createAuthRoutes } from './routes/auth'
@@ -17,16 +18,220 @@ import { createPermissionsRoutes } from './routes/permissions'
 import { createMachinesRoutes } from './routes/machines'
 import { createGitRoutes } from './routes/git'
 import { createCliRoutes } from './routes/cli'
+import { createCodexDesktopRoutes } from './routes/codexDesktop'
 import { createPushRoutes } from './routes/push'
 import { createVoiceRoutes } from './routes/voice'
 import type { SSEManager } from '../sse/sseManager'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
-import type { Server as BunServer } from 'bun'
+import type { Server as BunServer, ServerWebSocket } from 'bun'
 import type { Server as SocketEngine } from '@socket.io/bun-engine'
+import { jwtVerify } from 'jose'
 import type { WebSocketData } from '@socket.io/bun-engine'
 import { loadEmbeddedAssetMap, type EmbeddedWebAsset } from './embeddedAssets'
 import { isBunCompiled } from '../utils/bunCompiled'
 import type { Store } from '../store'
+
+// Normalise upstream close codes before forwarding to the browser client.
+// Codes 1005/1006/1015 are reserved and cannot be sent in a close frame;
+// abnormal upstream drops commonly produce 1006, which would throw on clientWs.close().
+function toClientCloseCode(code: number): number {
+    return code >= 1000 && code <= 4999 && code !== 1005 && code !== 1006 && code !== 1015
+        ? code
+        : 1011
+}
+
+function decodeWsText(message: string | ArrayBuffer | Uint8Array): string {
+    if (typeof message === 'string') return message
+    const bytes = message instanceof Uint8Array ? message : new Uint8Array(message)
+    return new TextDecoder().decode(bytes)
+}
+
+function isGeminiSetupFrame(message: string | ArrayBuffer | Uint8Array): boolean {
+    try {
+        const parsed = JSON.parse(decodeWsText(message)) as unknown
+        return parsed !== null && typeof parsed === 'object' && 'setup' in (parsed as object)
+    } catch {
+        return false
+    }
+}
+
+function isGeminiSetupCompleteFrame(message: string | ArrayBuffer | Uint8Array): boolean {
+    try {
+        const parsed = JSON.parse(decodeWsText(message)) as unknown
+        return parsed !== null && typeof parsed === 'object' && 'setupComplete' in (parsed as object)
+    } catch {
+        return false
+    }
+}
+
+const MAX_GEMINI_PENDING_BYTES = 1024 * 1024 // 1 MiB — rejects setup-window floods
+function frameByteSize(msg: string | ArrayBuffer | Uint8Array): number {
+    return typeof msg === 'string' ? msg.length : (msg as ArrayBuffer | Uint8Array).byteLength
+}
+
+// Gemini Live WebSocket proxy — relays browser WS to Google, bypassing region restrictions
+function createGeminiProxyWebSocketHandler() {
+    const GEMINI_WS_BASE = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent'
+    const upstreamMap = new WeakMap<ServerWebSocket<unknown>, WebSocket>()
+    // pendingMap holds queued client frames until Google acknowledges setup via setupComplete.
+    // Flushed on setupComplete; until then message() queues rather than forwards.
+    const pendingMap = new WeakMap<ServerWebSocket<unknown>, Array<string | ArrayBuffer | Uint8Array>>()
+    const pendingBytesMap = new WeakMap<ServerWebSocket<unknown>, number>()
+
+    return {
+        open(clientWs: ServerWebSocket<unknown>) {
+            const data = clientWs.data as { _geminiProxy: boolean; apiKey: string; language?: string }
+            const upstreamUrl = `${process.env.GEMINI_LIVE_WS_URL || GEMINI_WS_BASE}?key=${encodeURIComponent(data.apiKey)}`
+            const pending: Array<string | ArrayBuffer | Uint8Array> = []
+            pendingMap.set(clientWs, pending)
+            pendingBytesMap.set(clientWs, 0)
+
+            const upstream = new WebSocket(upstreamUrl)
+            upstreamMap.set(clientWs, upstream)
+
+            upstream.onopen = () => {
+                // Hub-owned setup only — never forward client setup (prevents generic Gemini proxy abuse).
+                // Do NOT flush pending here: wait for Google's setupComplete before forwarding client frames.
+                upstream.send(JSON.stringify(buildGeminiLiveSetupMessage(data.language)))
+            }
+            upstream.onmessage = (event) => {
+                try {
+                    if (clientWs.readyState === 1) {
+                        clientWs.send(typeof event.data === 'string' ? event.data : new Uint8Array(event.data as ArrayBuffer))
+                    }
+                } catch { /* client gone */ }
+                // Flush queued client frames only after Google acknowledges setup.
+                const pending = pendingMap.get(clientWs)
+                if (pending && isGeminiSetupCompleteFrame(event.data as string | ArrayBuffer)) {
+                    pendingMap.delete(clientWs)
+                    pendingBytesMap.delete(clientWs)
+                    for (const queued of pending) {
+                        try { upstream.send(queued) } catch { /* upstream gone */ }
+                    }
+                }
+            }
+            upstream.onerror = () => {
+                pendingMap.delete(clientWs)
+                pendingBytesMap.delete(clientWs)
+                try { clientWs.close(1011, 'Upstream error') } catch { /* */ }
+            }
+            upstream.onclose = (event) => {
+                pendingMap.delete(clientWs)
+                pendingBytesMap.delete(clientWs)
+                try { clientWs.close(toClientCloseCode(event.code), event.reason || 'Upstream closed') } catch { /* client gone */ }
+                upstreamMap.delete(clientWs)
+            }
+        },
+        message(clientWs: ServerWebSocket<unknown>, message: string | ArrayBuffer | Uint8Array) {
+            if (isGeminiSetupFrame(message)) {
+                try { clientWs.close(1008, 'Client-provided Gemini setup is not allowed') } catch { /* */ }
+                return
+            }
+            const upstream = upstreamMap.get(clientWs)
+            const pending = pendingMap.get(clientWs)
+            if (pending) {
+                // Still awaiting setupComplete — queue, but cap to prevent setup-window floods.
+                const total = (pendingBytesMap.get(clientWs) ?? 0) + frameByteSize(message)
+                if (total > MAX_GEMINI_PENDING_BYTES) {
+                    try { clientWs.close(1009, 'Setup-window frame budget exceeded') } catch { /* */ }
+                    return
+                }
+                pendingBytesMap.set(clientWs, total)
+                pending.push(message)
+            } else if (upstream?.readyState === WebSocket.OPEN) {
+                upstream.send(message)
+            }
+        },
+        close(clientWs: ServerWebSocket<unknown>, code: number, reason: string) {
+            const upstream = upstreamMap.get(clientWs)
+            pendingMap.delete(clientWs)
+            pendingBytesMap.delete(clientWs)
+            if (upstream) {
+                try { upstream.close(toClientCloseCode(code), (reason || 'Client closed').slice(0, 123)) } catch { /* */ }
+                upstreamMap.delete(clientWs)
+            }
+        }
+    }
+}
+
+// Qwen Realtime WebSocket proxy — bridges browser (no custom headers) to DashScope (requires Authorization header)
+function createQwenProxyWebSocketHandler() {
+    const QWEN_WS_BASE = 'wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime'
+    const upstreamMap = new WeakMap<ServerWebSocket<unknown>, WebSocket>()
+    // Holds the hub-owned session.update payload until session.created arrives from DashScope.
+    // Sending session.update before session.created violates the Qwen Realtime protocol ordering.
+    const pendingSetupMap = new WeakMap<ServerWebSocket<unknown>, string>()
+
+    return {
+        open(clientWs: ServerWebSocket<unknown>) {
+            const data = clientWs.data as { apiKey: string; model: string; language?: string }
+            const upstreamUrl = `${process.env.QWEN_REALTIME_WS_URL || QWEN_WS_BASE}?model=${encodeURIComponent(data.model)}`
+
+            const upstream = new WebSocket(upstreamUrl, {
+                headers: { 'Authorization': `Bearer ${data.apiKey}` }
+            } as unknown as string[])
+
+            upstreamMap.set(clientWs, upstream)
+            pendingSetupMap.set(clientWs, JSON.stringify(buildQwenSessionUpdateMessage(data.language)))
+
+            upstream.onmessage = (event) => {
+                const raw = event.data
+                const text = typeof raw === 'string'
+                    ? raw
+                    : new TextDecoder().decode(raw instanceof Uint8Array ? raw : new Uint8Array(raw as ArrayBuffer))
+
+                // Respect Qwen protocol ordering: relay session.created first, then send hub-owned
+                // session.update. DashScope must receive session.update after session.created.
+                const pendingSetup = pendingSetupMap.get(clientWs)
+                if (pendingSetup) {
+                    try {
+                        const parsed = JSON.parse(text) as { type?: string }
+                        if (parsed.type === 'session.created') {
+                            pendingSetupMap.delete(clientWs)
+                            try { if (clientWs.readyState === 1) clientWs.send(text) } catch { /* client gone */ }
+                            upstream.send(pendingSetup)
+                            return
+                        }
+                    } catch { /* not JSON — relay as-is below */ }
+                }
+
+                try {
+                    if (clientWs.readyState === 1) {
+                        clientWs.send(typeof raw === 'string' ? raw : new Uint8Array(raw as ArrayBuffer))
+                    }
+                } catch { /* client gone */ }
+            }
+            upstream.onerror = () => {
+                pendingSetupMap.delete(clientWs)
+                upstreamMap.delete(clientWs)
+                try { clientWs.close(1011, 'Upstream error') } catch { /* */ }
+            }
+            upstream.onclose = (event) => {
+                pendingSetupMap.delete(clientWs)
+                try { clientWs.close(toClientCloseCode(event.code), event.reason || 'Upstream closed') } catch { /* client gone */ }
+                upstreamMap.delete(clientWs)
+            }
+        },
+        message(clientWs: ServerWebSocket<unknown>, message: string | ArrayBuffer | Uint8Array) {
+            if (!isQwenSafeClientFrame(message)) {
+                try { clientWs.close(1008, 'Client session.update may only modify instructions') } catch { /* */ }
+                return
+            }
+            const upstream = upstreamMap.get(clientWs)
+            if (upstream?.readyState === WebSocket.OPEN) {
+                upstream.send(message)
+            }
+        },
+        close(clientWs: ServerWebSocket<unknown>, code: number, reason: string) {
+            pendingSetupMap.delete(clientWs)
+            const upstream = upstreamMap.get(clientWs)
+            if (upstream) {
+                try { upstream.close(toClientCloseCode(code), (reason || 'Client closed').slice(0, 123)) } catch { /* */ }
+                upstreamMap.delete(clientWs)
+            }
+        }
+    }
+}
 
 function findWebappDistDir(): { distDir: string; indexHtmlPath: string } {
     const candidates = [
@@ -96,6 +301,11 @@ function createWebApp(options: {
     app.route('/api', createPermissionsRoutes(options.getSyncEngine))
     app.route('/api', createMachinesRoutes(options.getSyncEngine))
     app.route('/api', createGitRoutes(options.getSyncEngine))
+    // 中文注释：这里提供两类 Codex 辅助能力：扫描本地 transcript 以导入到 Hapi，以及按需重启 Codex Desktop 客户端。
+    app.route('/api', createCodexDesktopRoutes({
+        store: options.store,
+        getSyncEngine: options.getSyncEngine
+    }))
     app.route('/api', createPushRoutes(options.store, options.vapidPublicKey))
     app.route('/api', createVoiceRoutes())
 
@@ -232,17 +442,102 @@ export async function startWebServer(options: {
     const configuration = getConfiguration()
     const socketHandler = options.socketEngine.handler()
 
-    const server = Bun.serve({
+    // Wrap socket.io websocket handler to also support Gemini/Qwen proxy connections
+    const originalWsHandler = socketHandler.websocket
+    const geminiProxyHandler = createGeminiProxyWebSocketHandler()
+    const qwenProxyHandler = createQwenProxyWebSocketHandler()
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const server = (Bun.serve as any)({
         hostname: configuration.listenHost,
         port: configuration.listenPort,
         idleTimeout: Math.max(30, socketHandler.idleTimeout),
         maxRequestBodySize: Math.max(socketHandler.maxRequestBodySize, 68 * 1024 * 1024),
-        websocket: socketHandler.websocket,
-        fetch: (req, server) => {
+        websocket: {
+            ...originalWsHandler,
+            open(ws: unknown) {
+                const wsAny = ws as ServerWebSocket<{ _qwenProxy?: boolean; _geminiProxy?: boolean }>
+                if (wsAny.data?._geminiProxy) {
+                    geminiProxyHandler.open(wsAny)
+                } else if (wsAny.data?._qwenProxy) {
+                    qwenProxyHandler.open(wsAny)
+                } else {
+                    originalWsHandler.open?.(ws as never)
+                }
+            },
+            message(ws: unknown, message: unknown) {
+                const wsAny = ws as ServerWebSocket<{ _qwenProxy?: boolean; _geminiProxy?: boolean }>
+                if (wsAny.data?._geminiProxy) {
+                    geminiProxyHandler.message(wsAny, message as string)
+                } else if (wsAny.data?._qwenProxy) {
+                    qwenProxyHandler.message(wsAny, message as string)
+                } else {
+                    originalWsHandler.message?.(ws as never, message as never)
+                }
+            },
+            close(ws: unknown, code: number, reason: string) {
+                const wsAny = ws as ServerWebSocket<{ _qwenProxy?: boolean; _geminiProxy?: boolean }>
+                if (wsAny.data?._geminiProxy) {
+                    geminiProxyHandler.close(wsAny, code, reason)
+                } else if (wsAny.data?._qwenProxy) {
+                    qwenProxyHandler.close(wsAny, code, reason)
+                } else {
+                    originalWsHandler.close?.(ws as never, code as never, reason as never)
+                }
+            }
+        },
+        fetch: async (req: Request, server: { upgrade: (req: Request, opts?: unknown) => boolean }) => {
             const url = new URL(req.url)
             if (url.pathname.startsWith('/socket.io/')) {
-                return socketHandler.fetch(req, server)
+                return socketHandler.fetch(req, server as never)
             }
+
+            // Voice WebSocket proxies — require JWT auth via query param
+            // (browser WebSocket API cannot set custom headers)
+            if (url.pathname === '/api/voice/gemini-ws' || url.pathname === '/api/voice/qwen-ws') {
+                const token = url.searchParams.get('token')
+                if (!token) {
+                    return new Response('Missing authorization token', { status: 401 })
+                }
+                try {
+                    await jwtVerify(token, options.jwtSecret, { algorithms: ['HS256'] })
+                } catch {
+                    return new Response('Invalid token', { status: 401 })
+                }
+            }
+
+            // Gemini Live WebSocket proxy
+            if (url.pathname === '/api/voice/gemini-ws') {
+                const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY
+                if (!apiKey) {
+                    return new Response('Gemini API key not configured', { status: 400 })
+                }
+                const language = url.searchParams.get('language') ?? undefined
+                const upgraded = (server as unknown as { upgrade: (req: Request, opts: unknown) => boolean }).upgrade(req, {
+                    data: { _geminiProxy: true, apiKey, language }
+                })
+                if (!upgraded) {
+                    return new Response('WebSocket upgrade failed', { status: 500 })
+                }
+                return undefined as unknown as Response
+            }
+            // Qwen Realtime WebSocket proxy
+            if (url.pathname === '/api/voice/qwen-ws') {
+                const apiKey = process.env.DASHSCOPE_API_KEY || process.env.QWEN_API_KEY
+                const model = QWEN_REALTIME_MODEL
+                const language = url.searchParams.get('language') ?? undefined
+                if (!apiKey) {
+                    return new Response('DashScope API key not configured', { status: 400 })
+                }
+                const upgraded = (server as unknown as { upgrade: (req: Request, opts: unknown) => boolean }).upgrade(req, {
+                    data: { _qwenProxy: true, apiKey, model, language }
+                })
+                if (!upgraded) {
+                    return new Response('WebSocket upgrade failed', { status: 500 })
+                }
+                return undefined as unknown as Response
+            }
+
             return app.fetch(req)
         }
     })

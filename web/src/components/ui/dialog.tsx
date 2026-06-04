@@ -1,6 +1,8 @@
 import * as React from 'react'
 import * as DialogPrimitive from '@radix-ui/react-dialog'
 import { cn } from '@/lib/utils'
+import { CloseIcon } from '@/components/icons'
+import { useTranslation } from '@/lib/use-translation'
 
 export const Dialog = DialogPrimitive.Root
 export const DialogTrigger = DialogPrimitive.Trigger
@@ -8,23 +10,36 @@ export const DialogTrigger = DialogPrimitive.Trigger
 export const DialogContent = React.forwardRef<
     HTMLDivElement,
     React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
->(({ className, ...props }, ref) => (
-    <DialogPrimitive.Portal>
-        <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/50" />
-        <DialogPrimitive.Content
-            ref={ref}
-            className={cn(
-                'fixed left-1/2 top-1/2 z-50 w-[calc(100vw-24px)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl bg-[var(--app-dialog-bg)] p-4 shadow-2xl',
-                className
-            )}
-            {...props}
-        />
-    </DialogPrimitive.Portal>
-))
+>(({ className, children, ...props }, ref) => {
+    const { t } = useTranslation()
+    return (
+        <DialogPrimitive.Portal>
+            <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/50" />
+            <DialogPrimitive.Content
+                ref={ref}
+                className={cn(
+                    'fixed left-1/2 top-1/2 z-50 w-[calc(100vw-24px)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl bg-[var(--app-dialog-bg)] p-4 shadow-2xl',
+                    className
+                )}
+                {...props}
+            >
+                {children}
+                <DialogPrimitive.Close
+                    className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                    aria-label={t('button.close')}
+                >
+                    <CloseIcon className="h-4 w-4" />
+                </DialogPrimitive.Close>
+            </DialogPrimitive.Content>
+        </DialogPrimitive.Portal>
+    )
+})
 DialogContent.displayName = 'DialogContent'
 
 export const DialogHeader = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
-    <div className={cn('flex flex-col space-y-1.5 text-center sm:text-left', className)} {...props} />
+    // pr-12 reserves space for the absolutely-positioned close button (top-right)
+    // so long/breaking titles don't wrap underneath the tap target.
+    <div className={cn('flex flex-col space-y-1.5 pr-12 text-center sm:text-left', className)} {...props} />
 )
 
 export const DialogTitle = React.forwardRef<

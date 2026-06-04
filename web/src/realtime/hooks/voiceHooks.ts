@@ -151,7 +151,13 @@ export const voiceHooks = {
         reportSession(sessionId)
         const messages = messagesGetter?.(sessionId) ?? []
         const lastAssistantText = extractLastAssistantSpeakable(messages)
-        reportTextUpdate(formatReadyEvent(sessionId, lastAssistantText))
+        const update = formatReadyEvent(sessionId, lastAssistantText)
+        const proactive = localStorage.getItem('hapi-voice-proactive') === 'true'
+        if (proactive) {
+            reportTextUpdate(update)
+        } else {
+            reportContextualUpdate(update)
+        }
     },
 
     /**

@@ -142,6 +142,75 @@ export type PushVapidPublicKeyResponse = {
     publicKey: string
 }
 
+export type CodexDesktopScriptResponse = {
+    success: boolean
+    message?: string
+    pid?: number
+    command?: string
+    script?: string
+    cwd?: string
+    output?: string
+    error?: string
+    codexDesktopRunning?: boolean
+    codexClientAvailable?: boolean
+    // 中文注释：多选导入时返回实际处理完成的 Codex 会话数量，用于前端提示本次导入条数。
+    syncedCount?: number
+    // 中文注释：这里存放本次导入对应的 Codex thread ID 列表，方便日志和排查 direct import 结果。
+    sessionIds?: string[]
+}
+
+export type CodexLocalSessionSummary = {
+    id: string
+    title: string
+    lastUserMessage?: string | null
+    cwd?: string | null
+    file: string
+    modifiedAt: number
+    originator?: string | null
+    cliVersion?: string | null
+}
+
+export type CodexLocalSessionsResponse = {
+    success: true
+    sessions: CodexLocalSessionSummary[]
+}
+
+export type CodexDesktopSyncRequest = {
+    // 中文注释：前端弹窗直接提交 Codex thread ID，后端会按这些 transcript 直接导入到 Hapi。
+    sessionIds: string[]
+}
+
+export type CodexDesktopStatusResponse = {
+    success: true
+    codexDesktopRunning: boolean
+    codexClientAvailable: boolean
+}
+
+export type CodexDuplicateSessionGroup = {
+    codexSessionId: string
+    hapiSessionIds: string[]
+    canonicalSessionId?: string
+    removedSessionIds?: string[]
+}
+
+export type CodexDuplicateSessionsResponse = {
+    success: true
+    // 中文注释：这里只返回本次选中导入的 codexSessionId 中检测出来的重复会话，不包含未勾选的其它会话。
+    duplicates: CodexDuplicateSessionGroup[]
+} | {
+    success: false
+    error: string
+}
+
+export type CodexMergeDuplicateSessionsResponse = {
+    success: true
+    merged: CodexDuplicateSessionGroup[]
+    mergedCount: number
+} | {
+    success: false
+    error: string
+}
+
 export type VisibilityPayload = {
     subscriptionId: string
     visibility: 'visible' | 'hidden'

@@ -23,12 +23,15 @@
         "test:hub": "cd hub && bun run test",
         "test:web": "cd web && bun run test",
         "test:shared": "cd shared && bun run test",
+        "test:e2e": "playwright test",
+        "test:e2e:ui": "playwright test --ui",
         "clean-session": "bun run hub/scripts/cleanup-sessions.ts",
         "release-all": "cd cli && bun run release-all"
     },
     "devDependencies": {
+        "@playwright/test": "^1.60.0",
         "concurrently": "^9.2.1",
-        "playwright": "1.49.1",
+        "playwright": "1.60.0",
         "react-devtools-core": "^7.0.1",
         "vite-plugin-pwa": "^1.2.0"
     }

@@ -134,8 +134,21 @@ describe('runCodex', () => {
         }))
         expect(harness.loopArgs[0]).toEqual(expect.objectContaining({
             resumeSessionId: 'codex-thread-1',
-            collaborationMode: 'plan'
+            collaborationMode: 'plan',
+            replayTranscriptHistoryOnStart: false
         }))
         expect(mockCodexSession.setCollaborationMode).toHaveBeenLastCalledWith('plan')
+    })
+
+    it('replays transcript history when attaching a new Hapi session to an existing Codex thread', async () => {
+        await runCodexImpl({
+            workingDirectory: '/tmp/project',
+            resumeSessionId: 'codex-thread-2'
+        })
+
+        expect(harness.loopArgs[0]).toEqual(expect.objectContaining({
+            resumeSessionId: 'codex-thread-2',
+            replayTranscriptHistoryOnStart: true
+        }))
     })
 })

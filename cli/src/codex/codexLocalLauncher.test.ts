@@ -69,9 +69,11 @@ function createSessionStub(
     permissionMode: 'default' | 'read-only' | 'safe-yolo' | 'yolo',
     codexArgs?: string[],
     path = '/tmp/worktree',
-    initialTranscriptPath: string | null = null
+    initialTranscriptPath: string | null = null,
+    replayTranscriptHistoryOnStart = false
 ) {
     const sessionEvents: Array<{ type: string; message?: string }> = [];
+    const userMessages: string[] = [];
     const agentMessages: unknown[] = [];
     let localLaunchFailure: { message: string; exitReason: 'switch' | 'exit' } | null = null;
     let sessionId: string | null = null;
@@ -90,6 +92,7 @@ function createSessionStub(
             startedBy: 'terminal' as const,
             startingMode: 'local' as const,
             codexArgs,
+            replayTranscriptHistoryOnStart,
             client: {
                 rpcHandlerManager: {
                     registerHandler: () => {}
@@ -124,13 +127,16 @@ function createSessionStub(
             recordLocalLaunchFailure: (message: string, exitReason: 'switch' | 'exit') => {
                 localLaunchFailure = { message, exitReason };
             },
-            sendUserMessage: () => {},
+            sendUserMessage: (message: string) => {
+                userMessages.push(message);
+            },
             sendAgentMessage: (message: unknown) => {
                 agentMessages.push(message);
             },
             queue: createQueueStub()
         },
         sessionEvents,
+        userMessages,
         agentMessages,
         getLocalLaunchFailure: () => localLaunchFailure
     };
@@ -344,6 +350,94 @@ describe('codexLocalLauncher', () => {
         expect(agentMessages).toContainEqual({
             type: 'message',
             message: 'hello from transcript',
+            id: expect.any(String)
+        });
+    });
+
+    it('replays existing transcript messages when importing a Codex thread into a new Hapi session', async () => {
+        const transcriptPath = join(tempDir, 'codex-import-transcript.jsonl');
+        const { session, agentMessages } = createSessionStub('default', undefined, '/tmp/worktree', null, true);
+        let releaseRunBarrier: (() => void) | undefined;
+        harness.runBarrier = new Promise((resolve) => {
+            releaseRunBarrier = resolve;
+        });
+
+        await writeFile(
+            transcriptPath,
+            [
+                JSON.stringify({ type: 'session_meta', payload: { id: 'codex-thread-import' } }),
+                JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'old imported message' } })
+            ].join('\n') + '\n'
+        );
+
+        const launcherPromise = codexLocalLauncher(session as never);
+        await wait(50);
+
+        harness.sessionHookHandlers[0]?.('codex-thread-import', {
+            transcript_path: transcriptPath
+        });
+        await wait(300);
+
+        if (releaseRunBarrier) {
+            releaseRunBarrier();
+        }
+        await launcherPromise;
+
+        expect(agentMessages).toContainEqual({
+            type: 'message',
+            message: 'old imported message',
+            id: expect.any(String)
+        });
+    });
+
+    it('replays existing response_item chat messages when importing a Codex thread into a new Hapi session', async () => {
+        const transcriptPath = join(tempDir, 'codex-import-response-item-transcript.jsonl');
+        const { session, userMessages, agentMessages } = createSessionStub('default', undefined, '/tmp/worktree', null, true);
+        let releaseRunBarrier: (() => void) | undefined;
+        harness.runBarrier = new Promise((resolve) => {
+            releaseRunBarrier = resolve;
+        });
+
+        await writeFile(
+            transcriptPath,
+            [
+                JSON.stringify({ type: 'session_meta', payload: { id: 'codex-thread-import-response-item' } }),
+                JSON.stringify({
+                    type: 'response_item',
+                    payload: {
+                        type: 'message',
+                        role: 'user',
+                        content: [{ type: 'input_text', text: 'old response_item user message' }]
+                    }
+                }),
+                JSON.stringify({
+                    type: 'response_item',
+                    payload: {
+                        type: 'message',
+                        role: 'assistant',
+                        content: [{ type: 'output_text', text: 'old response_item assistant message' }]
+                    }
+                })
+            ].join('\n') + '\n'
+        );
+
+        const launcherPromise = codexLocalLauncher(session as never);
+        await wait(50);
+
+        harness.sessionHookHandlers[0]?.('codex-thread-import-response-item', {
+            transcript_path: transcriptPath
+        });
+        await wait(300);
+
+        if (releaseRunBarrier) {
+            releaseRunBarrier();
+        }
+        await launcherPromise;
+
+        expect(userMessages).toContain('old response_item user message');
+        expect(agentMessages).toContainEqual({
+            type: 'message',
+            message: 'old response_item assistant message',
             id: expect.any(String)
         });
     });

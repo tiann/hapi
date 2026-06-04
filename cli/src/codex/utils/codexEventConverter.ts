@@ -55,6 +55,30 @@ function asString(value: unknown): string | null {
     return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
+function extractCodexText(value: unknown): string {
+    if (typeof value === 'string') {
+        return value.trim();
+    }
+    if (Array.isArray(value)) {
+        return value
+            .map((item) => {
+                const record = asRecord(item);
+                if (record?.type === 'input_text' && typeof record.text === 'string') return record.text;
+                if (record?.type === 'output_text' && typeof record.text === 'string') return record.text;
+                if (record?.type === 'text' && typeof record.text === 'string') return record.text;
+                return null;
+            })
+            .filter((part): part is string => Boolean(part))
+            .join(' ')
+            .trim();
+    }
+    const record = asRecord(value);
+    if (record?.type === 'input_text' && typeof record.text === 'string') return record.text.trim();
+    if (record?.type === 'output_text' && typeof record.text === 'string') return record.text.trim();
+    if (record?.type === 'text' && typeof record.text === 'string') return record.text.trim();
+    return '';
+}
+
 function parseArguments(value: unknown): unknown {
     if (typeof value !== 'string') {
         return value;
@@ -191,6 +215,27 @@ export function convertCodexEvent(rawEvent: unknown): CodexConversionResult | nu
     if (type === 'response_item') {
         const itemType = asString(payloadRecord.type);
         if (!itemType) {
+            return null;
+        }
+
+        if (itemType === 'message') {
+            const role = asString(payloadRecord.role);
+            const text = extractCodexText(payloadRecord.content);
+            if (!text) {
+                return null;
+            }
+            if (role === 'user') {
+                return { userMessage: text };
+            }
+            if (role === 'assistant') {
+                return {
+                    message: {
+                        type: 'message',
+                        message: text,
+                        id: randomUUID()
+                    }
+                };
+            }
             return null;
         }
 

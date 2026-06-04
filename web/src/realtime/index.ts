@@ -15,8 +15,9 @@ export {
 // Client tools
 export { realtimeClientTools, registerSessionStore } from './realtimeClientTools'
 
-// Voice session component
+// Voice session components
 export { RealtimeVoiceSession, type RealtimeVoiceSessionProps } from './RealtimeVoiceSession'
+export { VoiceBackendSession, type VoiceBackendSessionProps } from './VoiceBackendSession'
 
 // Voice hooks
 export { voiceHooks, registerVoiceHooksStore } from './hooks/voiceHooks'

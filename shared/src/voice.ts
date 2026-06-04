@@ -8,9 +8,15 @@
 export const ELEVENLABS_API_BASE = 'https://api.elevenlabs.io/v1'
 export const VOICE_AGENT_NAME = 'Hapi Voice Assistant'
 
-export const VOICE_SYSTEM_PROMPT = `# Identity
+export const VOICE_SYSTEM_PROMPT = `# CRITICAL RULE - Tool Usage
+
+You MUST call the messageCodingAgent tool for ANY request related to coding, files, development, debugging, or tasks for the agent. Do NOT respond verbally to these requests — call the tool FIRST, then briefly confirm. This is your most important behavior.
+
+# Identity
 
 You are Hapi Voice Assistant. You bridge voice communication between users and their AI coding agents in the Hapi ecosystem.
+
+IMPORTANT: Never refer to yourself as Gemini, Google, or any underlying model or provider name. You are HAPI — always.
 
 You are friendly, proactive, and highly intelligent with a world-class engineering background. Your approach is warm, witty, and relaxed, balancing professionalism with an approachable vibe.
 
@@ -136,9 +142,96 @@ For builds, tests, or large file operations:
 - Treat garbled input as phonetic hints and ask for clarification
 - Correct yourself immediately if you realize you made an error
 - Keep conversations forward-moving with fresh insights
-- Assume a technical software developer audience`
+- Assume a technical software developer audience
 
-export const VOICE_FIRST_MESSAGE = "Hey! Hapi here."
+# First Interaction
+
+When the user speaks to you for the first time, begin your response with a brief greeting before addressing their request. If their first message is a coding request, greet briefly AND call the tool — do both.`
+
+/**
+ * Language blocks appended to VOICE_SYSTEM_PROMPT for Gemini/Qwen backends
+ * (ElevenLabs has its own language field).
+ *
+ * Always append one of these — silence causes models to drift to their training
+ * language (Chinese for Qwen, mixed for Gemini).
+ */
+export const VOICE_CHINESE_LANGUAGE_BLOCK = `
+
+# Language
+
+IMPORTANT: Always respond in Chinese (Mandarin). Use natural spoken Chinese.
+- Greet users in Chinese
+- Summarize technical content in Chinese
+- Use English only for proper nouns, tool names, and code identifiers
+- Keep the same warm, concise conversational style in Chinese`
+
+/** When no language is selected: mirror the user's detected speech language. */
+const VOICE_LANGUAGE_BLOCK_AUTO = `
+
+# Language
+
+Detect the language the user is speaking and respond in that same language.
+Maintain it consistently throughout the session — do not drift between turns.
+If the language cannot be determined, default to English.`
+
+/** BCP-47 code → spoken language name (for explicit-language block). */
+const LANGUAGE_NAMES: Record<string, string> = {
+    en: 'English',
+    es: 'Spanish',
+    fr: 'French',
+    de: 'German',
+    ja: 'Japanese',
+    ko: 'Korean',
+    pt: 'Portuguese',
+    'pt-br': 'Brazilian Portuguese',
+    it: 'Italian',
+    ar: 'Arabic',
+    ru: 'Russian',
+    hi: 'Hindi',
+    th: 'Thai',
+    vi: 'Vietnamese',
+    id: 'Indonesian',
+    nl: 'Dutch',
+    sv: 'Swedish',
+    no: 'Norwegian',
+    da: 'Danish',
+    fi: 'Finnish',
+    pl: 'Polish',
+    tr: 'Turkish',
+    bg: 'Bulgarian',
+    ro: 'Romanian',
+    cs: 'Czech',
+    el: 'Greek',
+    ms: 'Malay',
+    tl: 'Filipino',
+    uk: 'Ukrainian',
+    hu: 'Hungarian',
+    hr: 'Croatian',
+    sk: 'Slovak',
+}
+
+/**
+ * Returns the language instruction block to append to VOICE_SYSTEM_PROMPT.
+ * - Explicit 'zh' → Chinese block
+ * - Other explicit code → "Always respond in [Language]"
+ * - undefined/auto → "detect from user speech and maintain it"
+ */
+export function buildVoiceLanguageBlock(language?: string): string {
+    if (!language) return VOICE_LANGUAGE_BLOCK_AUTO
+    if (language === 'zh' || language.startsWith('zh-')) return VOICE_CHINESE_LANGUAGE_BLOCK
+    const name = LANGUAGE_NAMES[language] ?? language
+    return `
+
+# Language
+
+IMPORTANT: Always respond in ${name}. Maintain ${name} consistently throughout
+the session — do not drift to a different language between turns.
+Use English only for proper nouns, code identifiers, and technical terms with
+no ${name} equivalent.`
+}
+
+/** ElevenLabs first message — language controlled by ElevenLabs language field */
+export const VOICE_FIRST_MESSAGE = "Hey! Hapi here — what can I help you with?"
 
 export const VOICE_TOOLS = [
     {
@@ -258,6 +351,165 @@ export function buildVoiceAgentConfig(): VoiceAgentConfig {
                     }
                 }
             }
+        }
+    }
+}
+
+export type VoiceBackendType = 'elevenlabs' | 'gemini-live' | 'qwen-realtime'
+
+export const QWEN_REALTIME_MODEL = 'qwen3.5-omni-flash-realtime'
+export const QWEN_REALTIME_VOICE = 'Tina'
+
+export const DEFAULT_VOICE_BACKEND: VoiceBackendType = 'elevenlabs'
+
+export const GEMINI_LIVE_MODEL = 'gemini-2.5-flash-native-audio-latest'
+export const GEMINI_LIVE_VOICE = 'Aoede'
+
+export interface VoiceToolDefinition {
+    name: string
+    description: string
+    parameters: {
+        type: 'object'
+        required: string[]
+        properties: Record<string, {
+            type: string
+            description: string
+        }>
+    }
+}
+
+type VoiceToolSource = Pick<(typeof VOICE_TOOLS)[number], 'name' | 'description' | 'parameters'>
+
+function cloneVoiceToolDefinition(tool: VoiceToolSource): VoiceToolDefinition {
+    const properties: VoiceToolDefinition['parameters']['properties'] = {}
+
+    for (const [key, value] of Object.entries(tool.parameters.properties)) {
+        properties[key] = {
+            type: value.type,
+            description: value.description
+        }
+    }
+
+    return {
+        name: tool.name,
+        description: tool.description,
+        parameters: {
+            type: 'object',
+            required: [...tool.parameters.required],
+            properties
+        }
+    }
+}
+
+export const VOICE_TOOL_DEFINITIONS: VoiceToolDefinition[] = VOICE_TOOLS.map(cloneVoiceToolDefinition)
+
+export type GeminiLiveFunctionDeclaration = VoiceToolDefinition
+
+export interface GeminiLiveConfig {
+    model: string
+    systemInstruction: string
+    tools: Array<{
+        functionDeclarations: GeminiLiveFunctionDeclaration[]
+    }>
+    responseModalities: ['AUDIO']
+}
+
+export function buildGeminiLiveFunctionDeclarations(): GeminiLiveFunctionDeclaration[] {
+    return VOICE_TOOLS.map(cloneVoiceToolDefinition)
+}
+
+export function buildGeminiLiveConfig(language?: string): GeminiLiveConfig {
+    const systemInstruction = `${VOICE_SYSTEM_PROMPT}${buildVoiceLanguageBlock(language)}`
+    return {
+        model: GEMINI_LIVE_MODEL,
+        systemInstruction,
+        tools: [
+            {
+                functionDeclarations: buildGeminiLiveFunctionDeclarations()
+            }
+        ],
+        responseModalities: ['AUDIO']
+    }
+}
+
+/** Hub-owned initial session.update for Qwen Realtime (hub proxy). */
+export function buildQwenSessionUpdateMessage(language?: string): Record<string, unknown> {
+    const instructions = `${VOICE_SYSTEM_PROMPT}${buildVoiceLanguageBlock(language)}`
+    // Qwen Realtime uses the flat Realtime shape, not the chat-completions nested {function:{...}} shape.
+    const tools = VOICE_TOOL_DEFINITIONS.map((td) => ({
+        type: 'function' as const,
+        name: td.name,
+        description: td.description,
+        parameters: td.parameters
+    }))
+    return {
+        type: 'session.update',
+        session: {
+            modalities: ['text', 'audio'],
+            voice: QWEN_REALTIME_VOICE,
+            input_audio_format: 'pcm',
+            output_audio_format: 'pcm',
+            instructions,
+            temperature: 0.7,
+            turn_detection: {
+                type: 'server_vad',
+                threshold: 0.5,
+                silence_duration_ms: 800,
+                prefix_padding_ms: 300
+            },
+            tools,
+            tool_choice: 'auto'
+        }
+    }
+}
+
+/**
+ * Returns true if a client WebSocket frame is safe to forward to DashScope.
+ * Blocks session.update frames that touch config fields (tools, voice, etc.);
+ * allows instruction-only updates and all runtime event types.
+ */
+export function isQwenSafeClientFrame(message: string | ArrayBuffer | Uint8Array): boolean {
+    try {
+        const text = typeof message === 'string'
+            ? message
+            : new TextDecoder().decode(message instanceof ArrayBuffer ? new Uint8Array(message) : message)
+        const parsed = JSON.parse(text) as unknown
+        if (!parsed || typeof parsed !== 'object') return true
+        const p = parsed as Record<string, unknown>
+        if (p.type !== 'session.update') return true
+        const session = p.session as Record<string, unknown> | undefined
+        if (!session) return false
+        const keys = Object.keys(session)
+        return keys.length === 1 && keys[0] === 'instructions'
+    } catch {
+        return true
+    }
+}
+
+/** Wire-format setup frame for Gemini Live BidiGenerateContent (hub proxy + web client). */
+export function buildGeminiLiveSetupMessage(language?: string): { setup: Record<string, unknown> } {
+    const liveConfig = buildGeminiLiveConfig(language)
+    return {
+        setup: {
+            model: `models/${liveConfig.model}`,
+            generationConfig: {
+                responseModalities: ['AUDIO'],
+                speechConfig: {
+                    voiceConfig: {
+                        prebuiltVoiceConfig: { voiceName: GEMINI_LIVE_VOICE }
+                    }
+                }
+            },
+            systemInstruction: {
+                parts: [{ text: liveConfig.systemInstruction }]
+            },
+            tools: liveConfig.tools.map((t) => ({
+                functionDeclarations: t.functionDeclarations.map((fd) => ({
+                    name: fd.name,
+                    description: fd.description,
+                    parameters: fd.parameters
+                }))
+            }))
         }
     }
 }

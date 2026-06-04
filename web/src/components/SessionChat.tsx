@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { AssistantRuntimeProvider } from '@assistant-ui/react'
+import { AssistantRuntimeProvider, useAssistantApi } from '@assistant-ui/react'
 import type { ApiClient } from '@/api/client'
 import type {
     AttachmentMetadata,
@@ -24,6 +24,7 @@ import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePic
 import { resolvePendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
 import { QueuedMessagesBar } from '@/components/AssistantChat/QueuedMessagesBar'
+import { ScratchlistPanel } from '@/components/AssistantChat/ScratchlistPanel'
 import { useHappyRuntime } from '@/lib/assistant-runtime'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
 import { useTranslation } from '@/lib/use-translation'
@@ -35,7 +36,7 @@ import { useCodexModels } from '@/hooks/queries/useCodexModels'
 import { useCursorModels } from '@/hooks/queries/useCursorModels'
 import { useOpencodeModels } from '@/hooks/queries/useOpencodeModels'
 import { useVoiceOptional } from '@/lib/voice-context'
-import { RealtimeVoiceSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
+import { VoiceBackendSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
 import { isRemoteTerminalSupported } from '@/utils/terminalSupport'
 
 /**
@@ -53,6 +54,35 @@ export function shouldAutoClearPendingSchedule(pending: PendingSchedule | null):
 
 function isUninvokedScheduledMessage(message: DecryptedMessage): boolean {
     return message.invokedAt == null && message.scheduledAt != null
+}
+
+/**
+ * Mounts the per-session scratchlist (issue #11) inside the AssistantUI
+ * runtime so promote-to-composer can call `composer().setText(...)`.
+ * Promote-to-queue routes to the same `onSend` path as a normal composer
+ * send, so a promoted entry shows up immediately in `QueuedMessagesBar`.
+ */
+function ScratchlistHost({
+    sessionId,
+    onSend,
+}: {
+    sessionId: string
+    onSend: (text: string, attachments?: AttachmentMetadata[], scheduledAt?: number | null) => Promise<boolean>
+}) {
+    const assistantApi = useAssistantApi()
+    const handlePromoteToComposer = useCallback((text: string) => {
+        assistantApi.composer().setText(text)
+    }, [assistantApi])
+    const handlePromoteToQueue = useCallback(async (text: string) => {
+        return await onSend(text)
+    }, [onSend])
+    return (
+        <ScratchlistPanel
+            sessionId={sessionId}
+            onPromoteToComposer={handlePromoteToComposer}
+            onPromoteToQueue={handlePromoteToQueue}
+        />
+    )
 }
 
 export function buildGoalStateMessages(
@@ -207,6 +237,7 @@ export function SessionChat(props: {
 
     // Voice assistant integration
     const voice = useVoiceOptional()
+    const [voiceBackendReady, setVoiceBackendReady] = useState(false)
 
     // Register session store for voice client tools
     useEffect(() => {
@@ -606,6 +637,24 @@ export function SessionChat(props: {
                     ) : null}
 
                     <div className="px-3">
+                        {/*
+                         * Key by session id so React unmounts/remounts when
+                         * the operator switches sessions without remounting
+                         * SessionChat (e.g. same-route navigation A -> B).
+                         * Without this, ScratchlistPanel's useState
+                         * initializer reads sessionId once at mount; the
+                         * useEffect rehydrate then races against the persist
+                         * effect, briefly rendering A's entries under B and
+                         * writing them into B's localStorage before
+                         * correcting. Keying makes the first render for B
+                         * read B's storage directly. Cleaner than chasing
+                         * the race inside the panel.
+                         */}
+                        <ScratchlistHost
+                            key={props.session.id}
+                            sessionId={props.session.id}
+                            onSend={props.onSend}
+                        />
                         <QueuedMessagesBar
                             sessionId={props.session.id}
                             api={props.api}
@@ -673,18 +722,19 @@ export function SessionChat(props: {
                         autocompleteSuggestions={props.autocompleteSuggestions}
                         voiceStatus={voice?.status}
                         voiceMicMuted={voice?.micMuted}
-                        onVoiceToggle={voice ? handleVoiceToggle : undefined}
-                        onVoiceMicToggle={voice ? handleVoiceMicToggle : undefined}
+                        onVoiceToggle={voice && voiceBackendReady ? handleVoiceToggle : undefined}
+                        onVoiceMicToggle={voice && voiceBackendReady ? handleVoiceMicToggle : undefined}
                     />
                 </div>
             </AssistantRuntimeProvider>
 
-            {/* Voice session component - renders nothing but initializes ElevenLabs */}
+            {/* Voice session component - renders nothing but initializes voice backend */}
             {voice && (
-                <RealtimeVoiceSession
+                <VoiceBackendSession
                     api={props.api}
                     micMuted={voice.micMuted}
                     onStatusChange={voice.setStatus}
+                    onReadyChange={setVoiceBackendReady}
                 />
             )}
         </div>

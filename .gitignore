@@ -60,3 +60,8 @@ cli/npm/main/
 .cursor/*
 !.cursor/rules/
 !.cursor/rules/**
+
+# Playwright e2e artifacts
+test-results/
+playwright-report/
+e2e-output/

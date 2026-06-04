@@ -51,6 +51,11 @@ See `src/router.tsx` for route definitions.
 - Model selection (default/sonnet/sonnet[1m]/opus/opus[1m]).
 - Session abort and mode switch controls.
 - Context size display.
+- Per-session scratchlist (`src/components/AssistantChat/ScratchlistPanel.tsx`)
+  - Workbench panel for held notes/drafts; **distinct from the queue**.
+  - Add/delete/reorder entries; promote to composer (copy) or queue (send).
+  - Persists across reloads via `localStorage` keyed per session.
+  - Keyboard shortcut: Ctrl/Cmd+Shift+S to focus the add-input.
 
 ### File browser (`src/routes/sessions/files.tsx`)
 
@@ -134,6 +139,27 @@ If testing in Telegram, set:
 
 - `HAPI_PUBLIC_URL` to the public HTTPS URL of the dev server.
 - `CORS_ORIGINS` to include the dev server origin.
+
+## Tests
+
+Unit tests run under vitest + jsdom:
+
+```bash
+bun run test:web
+```
+
+End-to-end browser tests for the scratchlist component (real Chromium, real
+`inert` focus blocking, real localStorage round-trips) live at the repo root
+under `e2e/`:
+
+```bash
+bun run test:e2e          # headless
+bun run test:e2e:ui       # Playwright UI mode (debug)
+```
+
+The spec drives a Vite-served fixture page (`web/e2e-fixtures/scratchlist-fixture.html`)
+that mounts the production `ScratchlistPanel` in isolation, so no hub /
+auth / socket setup is required.
 
 ## Build
 
