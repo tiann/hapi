@@ -419,6 +419,8 @@ export default {
   'scratchlist.action.moveDown': '下移',
   'scratchlist.action.promoteToComposer': '复制到输入框',
   'scratchlist.action.promoteToQueue': '加入发送队列',
+  'scratchlist.action.copy': '复制到剪贴板',
+  'scratchlist.action.copied': '已复制！',
   'scratchlist.action.delete': '删除条目',
   'fue.newFeatureDot': '新功能可用',
   'fue.gotIt': '知道了',

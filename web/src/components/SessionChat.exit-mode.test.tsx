@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { I18nProvider } from '@/lib/i18n-context'
 import type { ScratchlistEntry } from '@/lib/scratchlist'
 
@@ -100,5 +100,47 @@ describe('ScratchlistDrawerHost.onPromoteToComposer', () => {
         expect(onSend).toHaveBeenCalledWith('send-to-queue text')
         expect(onExitScratchlistMode).not.toHaveBeenCalled()
         expect(setText).not.toHaveBeenCalled()
+    })
+})
+
+describe('ScratchlistDrawer copy-to-clipboard action', () => {
+    it('writes the entry text to the clipboard and flips the button label to "Copied!" briefly', async () => {
+        // Mock navigator.clipboard so safeCopyToClipboard's primary path
+        // resolves successfully (it tries this before the execCommand fallback).
+        const writeText = vi.fn().mockResolvedValue(undefined)
+        Object.defineProperty(navigator, 'clipboard', {
+            value: { writeText },
+            configurable: true,
+        })
+
+        const onExitScratchlistMode = vi.fn()
+        const onSend = vi.fn(async () => true)
+        const onMove = vi.fn()
+        const onDelete = vi.fn()
+
+        render(
+            <I18nProvider>
+                <ScratchlistDrawerHost
+                    entries={[makeEntry({ id: 'e1', text: 'copy this' })]}
+                    onMove={onMove}
+                    onDelete={onDelete}
+                    onSend={onSend}
+                    onExitScratchlistMode={onExitScratchlistMode}
+                />
+            </I18nProvider>,
+        )
+
+        fireEvent.click(screen.getByRole('button', { name: 'Copy to clipboard' }))
+
+        await waitFor(() => expect(writeText).toHaveBeenCalledWith('copy this'))
+        await waitFor(() =>
+            expect(screen.getByRole('button', { name: 'Copied!' })).toBeTruthy(),
+        )
+
+        // Copy must NOT mutate the list — entry stays, no other handlers fire.
+        expect(onDelete).not.toHaveBeenCalled()
+        expect(onSend).not.toHaveBeenCalled()
+        expect(setText).not.toHaveBeenCalled()
+        expect(onExitScratchlistMode).not.toHaveBeenCalled()
     })
 })

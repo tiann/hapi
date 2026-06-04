@@ -208,6 +208,63 @@ describe('ScratchlistPanel', () => {
         expect(readScratchlist(SID).map((e) => e.id)).toEqual(['a'])
     })
 
+    it('copy button writes the entry text to clipboard and shows briefly the "Copied" tooltip', async () => {
+        // Clipboard API isn't implemented in jsdom; install a mock that
+        // captures the writeText call. (web/src/lib/clipboard.ts already
+        // tries navigator.clipboard first, then falls back to execCommand.)
+        const writeText = vi.fn().mockResolvedValue(undefined)
+        Object.defineProperty(navigator, 'clipboard', {
+            value: { writeText },
+            configurable: true,
+        })
+
+        persistScratchlist(SID, [makeEntry({ id: 'a', text: 'copy me' })])
+        renderPanel()
+        expandPanel()
+
+        const copyBtn = screen.getByRole('button', { name: 'Copy to clipboard' })
+        fireEvent.click(copyBtn)
+
+        await waitFor(() => expect(writeText).toHaveBeenCalledWith('copy me'))
+
+        // After the async copy resolves, the same button (it stays in the
+        // DOM, only its label/icon flip) should advertise the success.
+        await waitFor(() =>
+            expect(screen.getByRole('button', { name: 'Copied!' })).toBeTruthy(),
+        )
+        // Entry is preserved — copy is non-destructive.
+        expect(readScratchlist(SID).map((e) => e.id)).toEqual(['a'])
+    })
+
+    it('clipboard write failure leaves the icon in the default state (no false success)', async () => {
+        // Force navigator.clipboard.writeText to reject AND make the
+        // execCommand fallback fail too, so safeCopyToClipboard throws.
+        const writeText = vi.fn().mockRejectedValue(new Error('denied'))
+        Object.defineProperty(navigator, 'clipboard', {
+            value: { writeText },
+            configurable: true,
+        })
+        // jsdom doesn't implement document.execCommand. Define a stub
+        // that returns false so safeCopyToClipboard's fallback path
+        // also fails (covering the "everything failed" branch).
+        Object.defineProperty(document, 'execCommand', {
+            value: () => false,
+            configurable: true,
+            writable: true,
+        })
+
+        persistScratchlist(SID, [makeEntry({ id: 'a', text: 'try copy' })])
+        renderPanel()
+        expandPanel()
+
+        fireEvent.click(screen.getByRole('button', { name: 'Copy to clipboard' }))
+
+        await waitFor(() => expect(writeText).toHaveBeenCalled())
+        // Should NOT flip to "Copied!" because the copy failed.
+        expect(screen.queryByRole('button', { name: 'Copied!' })).toBeNull()
+        expect(screen.getByRole('button', { name: 'Copy to clipboard' })).toBeTruthy()
+    })
+
     it('persists collapse state across mounts for the same session', () => {
         const { unmount } = renderPanel()
         expandPanel()

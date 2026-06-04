@@ -417,6 +417,8 @@ export default {
   'scratchlist.action.moveDown': 'Move entry down',
   'scratchlist.action.promoteToComposer': 'Copy into composer',
   'scratchlist.action.promoteToQueue': 'Send to queue',
+  'scratchlist.action.copy': 'Copy to clipboard',
+  'scratchlist.action.copied': 'Copied!',
   'scratchlist.action.delete': 'Delete entry',
   'fue.newFeatureDot': 'New feature available',
   'fue.gotIt': 'Got it',

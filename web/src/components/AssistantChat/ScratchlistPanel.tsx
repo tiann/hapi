@@ -18,6 +18,7 @@ import {
     shouldConfirmDelete,
     type ScratchlistEntry,
 } from '@/lib/scratchlist'
+import { safeCopyToClipboard } from '@/lib/clipboard'
 import { useTranslation } from '@/lib/use-translation'
 
 const STORAGE_KEY_PREFIX = 'hapi.scratchlist-collapsed.v1.'
@@ -134,6 +135,57 @@ function TrashIcon() {
     )
 }
 
+function CopyIcon() {
+    return (
+        <svg viewBox="0 0 16 16" fill="none" className="h-3.5 w-3.5" aria-hidden="true">
+            <rect
+                x="5" y="2" width="9" height="11" rx="1.5"
+                stroke="currentColor" strokeWidth="1.4"
+            />
+            <rect
+                x="2" y="5" width="9" height="11" rx="1.5"
+                stroke="currentColor" strokeWidth="1.4"
+            />
+        </svg>
+    )
+}
+
+function ClipboardCheckIcon() {
+    return (
+        <svg viewBox="0 0 16 16" fill="none" className="h-3.5 w-3.5" aria-hidden="true">
+            <path
+                d="M3 8.5l3 3 7-7"
+                stroke="currentColor"
+                strokeWidth="1.7"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+            />
+        </svg>
+    )
+}
+
+/**
+ * Tracks which entry was most-recently copied to the clipboard so the UI
+ * can briefly swap the copy icon to a check + the tooltip to "Copied".
+ * Auto-clears after `clearAfterMs` (default 1500ms). Pure state machine -
+ * the caller wires `safeCopyToClipboard` separately so the hook stays
+ * easy to test and free of jsdom clipboard quirks.
+ */
+const COPIED_FEEDBACK_MS = 1500
+function useCopiedFeedback(clearAfterMs: number = COPIED_FEEDBACK_MS) {
+    const [copiedEntryId, setCopiedEntryId] = useState<string | null>(null)
+    const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+    const signalCopied = useCallback((entryId: string) => {
+        setCopiedEntryId(entryId)
+        if (timerRef.current) clearTimeout(timerRef.current)
+        timerRef.current = setTimeout(() => setCopiedEntryId(null), clearAfterMs)
+    }, [clearAfterMs])
+    useEffect(() => () => {
+        if (timerRef.current) clearTimeout(timerRef.current)
+    }, [])
+    return { copiedEntryId, signalCopied }
+}
+
 /**
  * Inventory list with per-entry action buttons. Pure presentational - takes
  * entries + callbacks. Used by both the always-visible ScratchlistPanel
@@ -155,6 +207,17 @@ function ScratchlistInventory({
     onMove: (entry: ScratchlistEntry, direction: 'up' | 'down') => void
 }) {
     const { t } = useTranslation()
+    const { copiedEntryId, signalCopied } = useCopiedFeedback()
+    const handleCopy = useCallback(async (entry: ScratchlistEntry) => {
+        try {
+            await safeCopyToClipboard(entry.text)
+            signalCopied(entry.id)
+        } catch {
+            // safeCopyToClipboard exhausted both the navigator.clipboard
+            // path and the execCommand fallback; nothing useful left to do.
+            // Silently no-op rather than throw at the click handler.
+        }
+    }, [signalCopied])
     if (entries.length === 0) {
         return (
             <p className="mt-2 text-[11px] text-[var(--app-hint)]">
@@ -220,6 +283,25 @@ function ScratchlistInventory({
                                 className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-30"
                             >
                                 <SendIcon />
+                            </button>
+                            <button
+                                type="button"
+                                aria-label={
+                                    copiedEntryId === entry.id
+                                        ? t('scratchlist.action.copied')
+                                        : t('scratchlist.action.copy')
+                                }
+                                title={
+                                    copiedEntryId === entry.id
+                                        ? t('scratchlist.action.copied')
+                                        : t('scratchlist.action.copy')
+                                }
+                                onClick={() => { void handleCopy(entry) }}
+                                disabled={isBusy}
+                                data-copied={copiedEntryId === entry.id ? '' : undefined}
+                                className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-30 data-[copied]:text-[var(--app-badge-warning-text)]"
+                            >
+                                {copiedEntryId === entry.id ? <ClipboardCheckIcon /> : <CopyIcon />}
                             </button>
                             <button
                                 type="button"
@@ -375,6 +457,15 @@ export function ScratchlistPanel({
     const [draft, setDraft] = useState<string>('')
     const [busyEntryId, setBusyEntryId] = useState<string | null>(null)
     const inputRef = useRef<HTMLTextAreaElement | null>(null)
+    const { copiedEntryId, signalCopied } = useCopiedFeedback()
+    const handleCopy = useCallback(async (entry: ScratchlistEntry) => {
+        try {
+            await safeCopyToClipboard(entry.text)
+            signalCopied(entry.id)
+        } catch {
+            // see ScratchlistInventory.handleCopy for rationale
+        }
+    }, [signalCopied])
 
     // Re-hydrate when the session id changes (route navigation between sessions).
     useEffect(() => {
@@ -610,6 +701,25 @@ export function ScratchlistPanel({
                                                         className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-30"
                                                     >
                                                         <SendIcon />
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        aria-label={
+                                                            copiedEntryId === entry.id
+                                                                ? t('scratchlist.action.copied')
+                                                                : t('scratchlist.action.copy')
+                                                        }
+                                                        title={
+                                                            copiedEntryId === entry.id
+                                                                ? t('scratchlist.action.copied')
+                                                                : t('scratchlist.action.copy')
+                                                        }
+                                                        onClick={() => { void handleCopy(entry) }}
+                                                        disabled={isBusy}
+                                                        data-copied={copiedEntryId === entry.id ? '' : undefined}
+                                                        className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-30 data-[copied]:text-[var(--app-badge-warning-text)]"
+                                                    >
+                                                        {copiedEntryId === entry.id ? <ClipboardCheckIcon /> : <CopyIcon />}
                                                     </button>
                                                     <button
                                                         type="button"
