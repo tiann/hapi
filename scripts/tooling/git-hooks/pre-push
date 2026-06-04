@@ -16,8 +16,20 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   [[ -z "${local_ref:-}" || "$local_ref" == *'{'* ]] && continue
 
   if [[ "$remote_sha" =~ ^0+$ ]]; then
-    range="$local_sha"
-    files="$(git rev-list --objects "$local_sha" 2>/dev/null | git diff-tree --no-commit-id --name-only -r "$local_sha" 2>/dev/null || git ls-tree -r --name-only "$local_sha")"
+    # New branch on remote: diff against the closest known public base
+    # (origin/main or upstream/main) so we only scan NEW commits, not the
+    # entire tree (the old fallback to `git ls-tree -r` flagged files that
+    # were already on the public remote).
+    base="$(git merge-base "$local_sha" origin/main 2>/dev/null \
+            || git merge-base "$local_sha" upstream/main 2>/dev/null \
+            || true)"
+    if [[ -n "$base" ]]; then
+      range="${base}..${local_sha}"
+      files="$(git diff --name-only "$base" "$local_sha" 2>/dev/null || true)"
+    else
+      range="$local_sha"
+      files="$(git ls-tree -r --name-only "$local_sha")"
+    fi
   else
     range="${remote_sha}..${local_sha}"
     files="$(git diff --name-only "$remote_sha" "$local_sha" 2>/dev/null || true)"

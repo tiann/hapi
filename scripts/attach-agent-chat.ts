@@ -192,10 +192,10 @@ function stripTranscriptMarkup(text: string): string {
         .trim()
 }
 
-function inferSessionName(_projectPath: string, agent: AgentFlavor, chatId: string, override?: string): string {
+function inferSessionName(projectPath: string, agent: AgentFlavor, chatId: string, override?: string): string {
     if (override?.trim()) return override.trim().slice(0, 255)
 
-    const transcriptPath = resolveTranscriptPath(agent, chatId)
+    const transcriptPath = resolveTranscriptPath(agent, chatId, projectPath)
     if (!transcriptPath) return 'Legacy chat'
 
     const raw = readFileSync(transcriptPath, 'utf8')
@@ -291,7 +291,7 @@ async function main(): Promise<void> {
             ? expandHome(indexHit.project)
             : homedir()
 
-    if (!resolveTranscriptPath(agent, chatId) && !backfillOnly) {
+    if (!resolveTranscriptPath(agent, chatId, projectPath) && !backfillOnly) {
         console.warn(`warn: no transcript file found for ${agent} ${chatId} (attach may still work)`)
     }
 
@@ -315,6 +315,7 @@ async function main(): Promise<void> {
             sessionId: forceSession,
             agent,
             chatId,
+            projectHint: projectPath,
             dryRun,
             force: hasFlag('--force')
         })
@@ -385,6 +386,7 @@ async function main(): Promise<void> {
                     sessionId: sessionForBackfill,
                     agent,
                     chatId,
+                    projectHint: projectPath,
                     dryRun,
                     force: row.c > 0
                 })

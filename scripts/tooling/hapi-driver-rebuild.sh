@@ -163,12 +163,61 @@ done
 echo "Driver HEAD: $(git -C "$DRIVER" log -1 --oneline)"
 
 if [[ "$BUILD_WEB" -eq 1 ]] || [[ ! -f "$DRIVER/web/dist/index.html" ]]; then
-    echo "Building web..."
+    echo "Building web (atomic swap)..."
     if [[ ! -d "$DRIVER/node_modules" ]]; then
         echo "Installing dependencies (first driver build)..."
         (cd "$DRIVER" && "$BUN" install)
     fi
-    (cd "$DRIVER/web" && "$BUN" run build)
+
+    # Atomic web bundle swap.
+    #
+    # Naive `bun run build` overwrites web/dist in place. Vite emptyOutDir
+    # wipes the directory before writing — there is a multi-second window
+    # during which dist/index.html does not exist. The hub serves web assets
+    # from disk on :3006 (live SSE + WS), so any browser that reloads during
+    # that window gets a 404 / blank shell, and the operator's 14 live agent
+    # sessions are forced to refresh out-of-band.
+    #
+    # Instead: build into a sibling directory, sanity-check the output,
+    # then double-rename. The window where web/dist is absent shrinks from
+    # seconds to the gap between two rename(2) calls (microseconds — well
+    # below TCP retry granularity). The previous bundle is preserved as
+    # web/dist.prev for cheap rollback via hapi-driver-rollback-web.
+    #
+    # Rationale: hub asset serving is the only thing in the loop that
+    # touches web/dist while sessions are live; everything else (manifest
+    # merges, bun install) is internal to the driver tree. Making this
+    # specific call agent-safe by default lets an operator (or peer agent)
+    # ship a web-only fix to :3006 without coordinating a hub restart.
+    web="$DRIVER/web"
+    dist="$web/dist"
+    next="$web/dist.next"
+    prev="$web/dist.prev"
+
+    rm -rf "$next"
+    if ! (cd "$web" && "$BUN" x vite build --outDir dist.next); then
+        echo "ERROR: vite build failed; live $dist untouched" >&2
+        rm -rf "$next"
+        exit 1
+    fi
+    if [[ ! -f "$next/index.html" ]]; then
+        echo "ERROR: build produced no $next/index.html; live $dist untouched" >&2
+        rm -rf "$next"
+        exit 1
+    fi
+    cp "$next/index.html" "$next/404.html"
+
+    rm -rf "$prev"
+    if [[ -d "$dist" ]] && [[ ! -L "$dist" ]]; then
+        mv "$dist" "$prev"
+    elif [[ -L "$dist" ]]; then
+        # Legacy/manual symlink layout — drop it before placing a real dir.
+        rm -f "$dist"
+    fi
+    mv "$next" "$dist"
+
+    echo "Web bundle swapped atomically: $dist"
+    echo "Previous bundle: $prev (use hapi-driver-rollback-web to restore)"
 fi
 
 if [[ "$VERIFY" -eq 1 ]]; then

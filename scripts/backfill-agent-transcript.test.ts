@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it } from 'bun:test'
 import { Database } from 'bun:sqlite'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-import { backfillSessionMessages, transcriptLinesToHapiMessages } from './backfill-agent-transcript'
+import { backfillSessionMessages, resolveTranscriptPath, transcriptLinesToHapiMessages } from './backfill-agent-transcript'
 import { Store } from '../hub/src/store'
 
 describe('transcriptLinesToHapiMessages', () => {
@@ -78,5 +78,52 @@ describe('backfillSessionMessages', () => {
         })
         expect(second.skipped).toBe(1)
         expect(second.inserted).toBe(0)
+    })
+})
+
+describe('resolveTranscriptPath: duplicate UUID across Cursor projects', () => {
+    it('prefers projectHint slug; falls back to larger file', () => {
+        const fakeRoot = mkdtempSync(join(tmpdir(), 'hapi-resolve-root-'))
+        try {
+            const uuid = '720a4be5-a991-4123-a36d-b6e908ea671c'
+            // Stub (wrong slug, tiny)
+            const wrongSlug = 'home-heavygee'
+            const wrongDir = join(fakeRoot, wrongSlug, 'agent-transcripts', uuid)
+            mkdirSync(wrongDir, { recursive: true })
+            writeFileSync(join(wrongDir, `${uuid}.jsonl`), 'x')
+
+            // Real chat (project slug, big)
+            const projectSlug = 'home-heavygee-coding-openab'
+            const realDir = join(fakeRoot, projectSlug, 'agent-transcripts', uuid)
+            mkdirSync(realDir, { recursive: true })
+            writeFileSync(join(realDir, `${uuid}.jsonl`), 'x'.repeat(10_000))
+
+            // No hint -> larger file wins
+            const noHint = resolveTranscriptPath('cursor', uuid, undefined, fakeRoot)
+            expect(noHint).toBe(join(realDir, `${uuid}.jsonl`))
+
+            // Matching hint -> slug-match wins (still the project slug here)
+            const hinted = resolveTranscriptPath('cursor', uuid, '/home/heavygee/coding/openab', fakeRoot)
+            expect(hinted).toBe(join(realDir, `${uuid}.jsonl`))
+
+            // Unrelated hint -> falls back to larger file
+            const wrongHint = resolveTranscriptPath('cursor', uuid, '/home/heavygee/coding/nonexistent', fakeRoot)
+            expect(wrongHint).toBe(join(realDir, `${uuid}.jsonl`))
+
+            // Hint matching the SMALLER, wrong slug -> hint wins even though file is smaller
+            const stubHint = resolveTranscriptPath('cursor', uuid, '/home/heavygee', fakeRoot)
+            expect(stubHint).toBe(join(wrongDir, `${uuid}.jsonl`))
+        } finally {
+            rmSync(fakeRoot, { recursive: true, force: true })
+        }
+    })
+
+    it('returns null when no candidates exist', () => {
+        const fakeRoot = mkdtempSync(join(tmpdir(), 'hapi-resolve-empty-'))
+        try {
+            expect(resolveTranscriptPath('cursor', 'missing-uuid', undefined, fakeRoot)).toBeNull()
+        } finally {
+            rmSync(fakeRoot, { recursive: true, force: true })
+        }
     })
 })
