@@ -6,12 +6,12 @@ import { SettingsPageContent, SettingsRow, SettingsSection } from '@/components/
 
 export default function SettingsAboutPage() {
     const { t } = useTranslation()
-    const { baseUrl, token } = useAppContext()
+    const { baseUrl } = useAppContext()
     return (
         <SettingsPageContent title={t('settings.about.title')} description={t('settings.about.description')}>
             <SettingsSection title={t('settings.companion.title')}>
                 <div className="px-3 py-3">
-                    <CompanionPairing baseUrl={baseUrl} accessToken={token} />
+                    <CompanionPairing baseUrl={baseUrl} />
                 </div>
             </SettingsSection>
             <SettingsSection>
