@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
     buildGoalStateMessages,
+    isScratchlistHotkeyBlockedTarget,
     isScratchlistToggleHotkey,
     shouldAutoClearPendingSchedule,
     shouldRouteToScratchlist,
@@ -181,6 +182,60 @@ describe('isScratchlistToggleHotkey', () => {
     it('rejects unrelated keys', () => {
         expect(isScratchlistToggleHotkey(k({ ctrlKey: true, shiftKey: true, key: 'A' }))).toBe(false)
         expect(isScratchlistToggleHotkey(k({ ctrlKey: true, shiftKey: true, key: 'Tab' }))).toBe(false)
+    })
+})
+
+describe('isScratchlistHotkeyBlockedTarget', () => {
+    // Note: tests run under jsdom, so HTMLElement / HTMLInputElement etc.
+    // are real constructors that we can construct via document.createElement.
+
+    it('blocks hotkey when focus is in a single-line input', () => {
+        const input = document.createElement('input')
+        expect(isScratchlistHotkeyBlockedTarget(input)).toBe(true)
+    })
+
+    it('blocks hotkey when focus is in a select element', () => {
+        const select = document.createElement('select')
+        expect(isScratchlistHotkeyBlockedTarget(select)).toBe(true)
+    })
+
+    it('blocks hotkey when focus is on a contentEditable host', () => {
+        const div = document.createElement('div')
+        div.setAttribute('contenteditable', 'true')
+        expect(isScratchlistHotkeyBlockedTarget(div)).toBe(true)
+    })
+
+    it('blocks hotkey when focus is anywhere inside a [role=dialog]', () => {
+        const dialog = document.createElement('div')
+        dialog.setAttribute('role', 'dialog')
+        const inner = document.createElement('button')
+        dialog.appendChild(inner)
+        document.body.appendChild(dialog)
+        expect(isScratchlistHotkeyBlockedTarget(inner)).toBe(true)
+        document.body.removeChild(dialog)
+    })
+
+    it('does NOT block hotkey when focus is on the composer textarea', () => {
+        // The composer textarea is the EXPECTED focus target when the
+        // operator presses the shortcut. Blocking it would defeat the
+        // shortcut entirely.
+        const textarea = document.createElement('textarea')
+        expect(isScratchlistHotkeyBlockedTarget(textarea)).toBe(false)
+    })
+
+    it('does NOT block hotkey when focus is on a regular button', () => {
+        const button = document.createElement('button')
+        expect(isScratchlistHotkeyBlockedTarget(button)).toBe(false)
+    })
+
+    it('does NOT block hotkey when target is null (unfocused)', () => {
+        expect(isScratchlistHotkeyBlockedTarget(null)).toBe(false)
+    })
+
+    it('does NOT block hotkey when target is non-Element (e.g. window)', () => {
+        // Some keyboard events come with a non-Element target (e.g. window
+        // before focus settles). Should fall through.
+        expect(isScratchlistHotkeyBlockedTarget(window as unknown as EventTarget)).toBe(false)
     })
 })
 

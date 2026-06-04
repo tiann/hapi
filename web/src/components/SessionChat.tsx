@@ -87,6 +87,39 @@ export function isScratchlistToggleHotkey(e: {
 }
 
 /**
+ * True when the global scratchlist hotkey should be SKIPPED for the
+ * given event target. Window-level shortcuts that fire regardless of
+ * focus can quietly toggle modes "behind" modal dialogs (rename,
+ * schedule picker, FUE callout) and that's the kind of UX bug the bot
+ * caught on PR #798.
+ *
+ * Block targets:
+ *   - any descendant of an open dialog (Radix UI's DialogContent renders
+ *     role="dialog", as do FueCallout / ScheduleTimePicker / ImagePreview)
+ *   - HTMLInputElement (single-line inputs)
+ *   - HTMLSelectElement
+ *   - any contentEditable host
+ *
+ * NOT blocked:
+ *   - HTMLTextAreaElement (the composer textarea is the normal focus
+ *     target when the operator presses the hotkey - blocking it would
+ *     defeat the shortcut)
+ *   - the document body / unfocused targets
+ *
+ * Pure / exported for unit tests.
+ */
+export function isScratchlistHotkeyBlockedTarget(target: EventTarget | null): boolean {
+    if (!(target instanceof HTMLElement)) return false
+    if (target.closest('[role="dialog"]') !== null) return true
+    if (target instanceof HTMLInputElement) return true
+    if (target instanceof HTMLSelectElement) return true
+    // isContentEditable is the authoritative check in real browsers but
+    // jsdom doesn't implement it; the attribute fallback covers both.
+    if (target.isContentEditable === true) return true
+    return target.getAttribute('contenteditable') === 'true'
+}
+
+/**
  * Decide whether a submit should be routed to the per-session scratchlist
  * or to the regular chat send. Scratchlist entries are pure text - they
  * don't carry attachments or schedules - so any submit that includes
@@ -270,14 +303,18 @@ export function SessionChat(props: {
      * drawer is unmounted while mode is off — a drawer-scoped listener
      * couldn't reopen it.
      *
-     * Fires regardless of where focus is (composer textarea, list, etc.).
-     * Modifier requirement (Ctrl/Cmd+Shift) means it can't collide with
-     * literal-character typing, so no input/textarea suppression is
-     * needed here.
+     * Skipped when focus is inside an open dialog or single-line input
+     * (see isScratchlistHotkeyBlockedTarget). Otherwise fires for any
+     * focus target - composer textarea is the expected case so it's
+     * deliberately allowed. Window-level shortcut without target
+     * filtering would silently toggle mode "behind" modal dialogs
+     * (rename, schedule picker, FUE callout); the bot caught this on
+     * PR #798.
      */
     useEffect(() => {
         const onKeyDown = (e: globalThis.KeyboardEvent) => {
             if (!isScratchlistToggleHotkey(e)) return
+            if (isScratchlistHotkeyBlockedTarget(e.target)) return
             e.preventDefault()
             setScratchlistMode((m) => !m)
         }
