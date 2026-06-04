@@ -106,17 +106,33 @@ function isUninvokedScheduledMessage(message: DecryptedMessage): boolean {
  * Entries state is owned by SessionChat's useScratchlist() so the
  * composer-toolbar counter and the drawer share one source of truth.
  */
-function ScratchlistDrawerHost(props: {
+export function ScratchlistDrawerHost(props: {
     entries: ReturnType<typeof useScratchlist>['entries']
     onMove: ReturnType<typeof useScratchlist>['move']
     onDelete: ReturnType<typeof useScratchlist>['remove']
     onSend: (text: string, attachments?: AttachmentMetadata[], scheduledAt?: number | null) => Promise<boolean>
+    /**
+     * Called when the operator promotes an entry to the composer.
+     *
+     * Promoting means "I want to send this for real now" - so the host
+     * MUST exit scratchlist mode, otherwise the next composer submit
+     * routes back to scratchlist (per the v1.1 modal-mode contract) and
+     * the user re-adds the same text instead of sending it to chat.
+     * Per upstream review on PR #798 (HAPI Bot, v6 follow-up).
+     */
+    onExitScratchlistMode: () => void
 }) {
     const assistantApi = useAssistantApi()
     const handlePromoteToComposer = useCallback((text: string) => {
         assistantApi.composer().setText(text)
-    }, [assistantApi])
+        props.onExitScratchlistMode()
+    }, [assistantApi, props.onExitScratchlistMode])
     const handlePromoteToQueue = useCallback(async (text: string) => {
+        // Promote-to-queue bypasses the scratchlist-mode wrapper by
+        // calling props.onSend directly (the chat send), so the queue
+        // entry lands in the conversation regardless of scratchlist
+        // mode. Mode itself stays on - the operator may still be
+        // capturing related notes.
         return await props.onSend(text)
     }, [props.onSend])
     return (
@@ -865,6 +881,7 @@ export function SessionChat(props: {
                                 onMove={scratchlist.move}
                                 onDelete={scratchlist.remove}
                                 onSend={props.onSend}
+                                onExitScratchlistMode={() => setScratchlistMode(false)}
                             />
                         ) : null}
                         <QueuedMessagesBar
