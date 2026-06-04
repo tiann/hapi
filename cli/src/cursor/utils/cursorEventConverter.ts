@@ -151,12 +151,33 @@ function takeToolCallElapsedMs(callId: string, now: number = Date.now()): number
     return now - started;
 }
 
-function containsSyntheticSkipMarker(toolCall: Record<string, unknown>): boolean {
-    try {
-        return JSON.stringify(toolCall).includes(SYNTHETIC_SKIP_MARKER);
-    } catch {
-        return false;
+/**
+ * Recursively checks every string-typed value reachable from `value` for the
+ * synthetic-skip marker. Used instead of `JSON.stringify(...).includes(...)` so
+ * the intercept does not false-positive on legitimate tool results that happen
+ * to quote the marker text (notably a `read_file` of `docs/guide/cursor.md`,
+ * which documents this exact intercept).
+ *
+ * Guards against cycles via a visited-set; the cycle case in practice is
+ * vanishingly rare on stream-json payloads (parsed from JSON.parse) but the
+ * guard is cheap and removes any tail risk if a future caller hands us a
+ * non-tree object graph.
+ */
+function containsSyntheticSkipMarker(value: unknown, seen: WeakSet<object> = new WeakSet()): boolean {
+    if (typeof value === 'string') {
+        return value.includes(SYNTHETIC_SKIP_MARKER);
     }
+    if (value && typeof value === 'object') {
+        if (seen.has(value as object)) return false;
+        seen.add(value as object);
+        if (Array.isArray(value)) {
+            return value.some((entry) => containsSyntheticSkipMarker(entry, seen));
+        }
+        return Object.values(value as Record<string, unknown>).some((entry) =>
+            containsSyntheticSkipMarker(entry, seen)
+        );
+    }
+    return false;
 }
 
 function isTrivialResult(result: unknown): boolean {
@@ -174,13 +195,21 @@ function shouldRewriteAsNoInputSurface(opts: {
     result: unknown;
     elapsedMs: number | null;
 }): boolean {
+    // Both strategies are gated on the tool name resolving to an
+    // AskQuestion-shaped call (or the converter's `unknown` fallback for
+    // function-shaped tools without a name). Gating prevents legitimate
+    // `read_file` / `write_file` results that contain the literal marker
+    // string (e.g. reading this repo's `docs/guide/cursor.md`, which documents
+    // the intercept) from being rewritten as `no_input_surface` failures.
+    if (!ASK_QUESTION_TOOL_NAMES.has(opts.name)) {
+        return false;
+    }
     if (containsSyntheticSkipMarker(opts.toolCall)) {
         return true;
     }
     if (
         opts.elapsedMs !== null &&
         opts.elapsedMs < SYNTHETIC_LATENCY_THRESHOLD_MS &&
-        ASK_QUESTION_TOOL_NAMES.has(opts.name) &&
         isTrivialResult(opts.result)
     ) {
         return true;

@@ -224,6 +224,89 @@ describe('cursorEventConverter', () => {
             expect(msg).toMatchObject({ type: 'tool_result', id: 'rw1', status: 'completed' });
         });
 
+        // Regression test for the false positive flagged on PR #801 by the
+        // HAPI auto-review bot: this PR adds the literal synthetic-skip
+        // marker to docs/guide/cursor.md, so a Cursor read_file of that
+        // file would surface the marker inside readToolCall.result.content.
+        // The intercept must NOT rewrite that as a no_input_surface failure.
+        it('does NOT rewrite a read_file result whose content contains the synthetic marker', () => {
+            const completedEvent = {
+                type: 'tool_call',
+                subtype: 'completed',
+                call_id: 'doc1',
+                session_id: 's1',
+                tool_call: {
+                    readToolCall: {
+                        args: { path: 'docs/guide/cursor.md' },
+                        result: {
+                            content:
+                                'Lorem ipsum ... Questions skipped by the user, continue with the information you already have ... etc.'
+                        }
+                    }
+                }
+            } as CursorStreamEvent;
+            const msg = convertCursorEventToAgentMessage(completedEvent);
+            expect(msg).toMatchObject({
+                type: 'tool_result',
+                id: 'doc1',
+                status: 'completed'
+            });
+            expect((msg as { output: unknown }).output).not.toMatchObject({
+                kind: 'no_input_surface'
+            });
+        });
+
+        it('does NOT rewrite a write_file result whose payload contains the synthetic marker', () => {
+            const completedEvent = {
+                type: 'tool_call',
+                subtype: 'completed',
+                call_id: 'doc2',
+                session_id: 's1',
+                tool_call: {
+                    writeToolCall: {
+                        args: {
+                            path: 'docs/guide/cursor.md',
+                            content:
+                                'Documenting: "Questions skipped by the user, continue with the information you already have"'
+                        },
+                        result: { bytesWritten: 256 }
+                    }
+                }
+            } as CursorStreamEvent;
+            const msg = convertCursorEventToAgentMessage(completedEvent);
+            expect(msg).toMatchObject({
+                type: 'tool_result',
+                id: 'doc2',
+                status: 'completed'
+            });
+            expect((msg as { output: unknown }).output).not.toMatchObject({
+                kind: 'no_input_surface'
+            });
+        });
+
+        it('does NOT rewrite a non-AskQuestion function tool whose result happens to contain the marker text', () => {
+            const completedEvent = {
+                type: 'tool_call',
+                subtype: 'completed',
+                call_id: 'fn1',
+                session_id: 's1',
+                tool_call: {
+                    function: {
+                        name: 'MyCustomTool',
+                        arguments: '{}',
+                        result: {
+                            note: 'Quoting: Questions skipped by the user, continue with the information you already have - end quote.'
+                        }
+                    }
+                }
+            } as CursorStreamEvent;
+            const msg = convertCursorEventToAgentMessage(completedEvent);
+            expect(msg).toMatchObject({ type: 'tool_result', id: 'fn1', status: 'completed' });
+            expect((msg as { output: unknown }).output).not.toMatchObject({
+                kind: 'no_input_surface'
+            });
+        });
+
         it('does NOT rewrite an AskQuestion completion that took longer than the synthetic threshold', async () => {
             const startedEvent = {
                 type: 'tool_call',
