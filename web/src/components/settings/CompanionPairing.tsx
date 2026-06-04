@@ -4,20 +4,31 @@ import { Button } from '@/components/ui/button'
 
 type CompanionPairingProps = {
     baseUrl: string
-    accessToken: string
 }
 
 const COMPANION_DEEPLINK_SCHEME = 'hapicompanion://bind'
+const ACCESS_TOKEN_PREFIX = 'hapi_access_token::'
+
+function readAccessToken(baseUrl: string): string {
+    if (typeof window === 'undefined') return ''
+    try {
+        return window.localStorage.getItem(`${ACCESS_TOKEN_PREFIX}${baseUrl}`) ?? ''
+    } catch {
+        return ''
+    }
+}
 
 function buildDeeplink(hub: string, code: string): string {
     const params = new URLSearchParams({ hub, code })
     return `${COMPANION_DEEPLINK_SCHEME}?${params.toString()}`
 }
 
-export function CompanionPairing({ baseUrl, accessToken }: CompanionPairingProps) {
+export function CompanionPairing({ baseUrl }: CompanionPairingProps) {
     const [revealed, setRevealed] = useState(false)
     const [copied, setCopied] = useState(false)
     const canvasRef = useRef<HTMLCanvasElement | null>(null)
+
+    const accessToken = useMemo(() => readAccessToken(baseUrl), [baseUrl])
 
     const deeplink = useMemo(() => {
         const hub = (baseUrl || '').trim()
@@ -60,7 +71,9 @@ export function CompanionPairing({ baseUrl, accessToken }: CompanionPairingProps
     if (!deeplink) {
         return (
             <p className="text-sm text-[var(--app-hint)]">
-                Pairing requires an active session. Sign in first, then return here.
+                Pairing requires the original access token (CLI_API_TOKEN). It looks like
+                you signed in via Telegram or another flow that did not store one - paste
+                the token manually in the companion app instead.
             </p>
         )
     }

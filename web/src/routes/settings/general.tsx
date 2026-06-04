@@ -10,7 +10,7 @@ const locales: ReadonlyArray<{ value: Locale; label: string }> = [
 
 export default function SettingsGeneralPage() {
     const { t, locale, setLocale } = useTranslation()
-    const { baseUrl, token } = useAppContext()
+    const { baseUrl } = useAppContext()
     return (
         <SettingsPageContent description={t('settings.general.description')}>
             <SettingsSection title={t('settings.language.label')}>
@@ -18,7 +18,7 @@ export default function SettingsGeneralPage() {
             </SettingsSection>
             <SettingsSection title={t('settings.companion.title')}>
                 <div className="px-3 py-3">
-                    <CompanionPairing baseUrl={baseUrl} accessToken={token} />
+                    <CompanionPairing baseUrl={baseUrl} />
                 </div>
             </SettingsSection>
         </SettingsPageContent>
