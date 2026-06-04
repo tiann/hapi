@@ -119,6 +119,7 @@
         "react": "^19.2.3",
         "react-dom": "^19.2.3",
         "rehype-katex": "^7.0.1",
+        "remark-breaks": "^4.0.0",
         "remark-gfm": "^4.0.1",
         "remark-math": "^6.0.0",
         "shiki": "^3.20.0",
