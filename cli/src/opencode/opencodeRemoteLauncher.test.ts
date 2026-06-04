@@ -101,6 +101,13 @@ function createModeWithEffort(model: string | undefined, modelReasoningEffort: s
     };
 }
 
+function createResetMode(): OpencodeMode {
+    return {
+        permissionMode: 'default' as PermissionMode,
+        model: null
+    };
+}
+
 function createSessionStub(items: Array<{ message: string; mode: OpencodeMode }>) {
     const queue = new MessageQueue2<OpencodeMode>((mode) => JSON.stringify(mode));
     items.forEach(({ message, mode }, index) => {
@@ -249,6 +256,37 @@ describe('opencodeRemoteLauncher inline model switch', () => {
     });
 
 
+
+    it('resets to the backend launch-time default model when the queued mode.model is null', async () => {
+        // Seed the backend with a launch-time default model so the launcher
+        // captures it as `defaultBackendModel`. Without that, `/model default`
+        // resolves to null and the launcher has nothing to switch back to.
+        const opencodeBackendModule = await import('./utils/opencodeBackend');
+        const factory = (opencodeBackendModule as unknown as { createOpencodeBackend: ReturnType<typeof vi.fn> }).createOpencodeBackend;
+        const originalImpl = factory.getMockImplementation();
+        factory.mockImplementationOnce(() => {
+            const backend = (originalImpl as () => Record<string, unknown>)();
+            backend.getSessionModelsMetadata = vi.fn(() => ({
+                currentModelId: 'ollama/launch-default',
+                availableModels: []
+            }));
+            return backend;
+        });
+
+        const { session } = createSessionStub([
+            { message: 'first', mode: createMode('ollama/custom') },
+            { message: 'second', mode: createResetMode() }
+        ]);
+
+        await opencodeRemoteLauncher(session as never);
+
+        // Switch to custom on turn 1, then back to the launch-time default on turn 2.
+        expect(harness.setModelArgs).toEqual([
+            { sessionId: 'acp-session-1', modelId: 'ollama/custom', flavor: 'opencode' },
+            { sessionId: 'acp-session-1', modelId: 'ollama/launch-default', flavor: 'opencode' }
+        ]);
+        expect(harness.promptCount).toBe(2);
+    });
 
     it('calls setConfigOption for OpenCode reasoning effort changes', async () => {
         harness.thoughtLevelOption = {

@@ -367,6 +367,28 @@ describe('MessageQueue2', () => {
         expect(batch1?.mode.type).toBe('A');
     });
 
+    it('should preserve pending messages when pushIsolated is used', async () => {
+        const queue = new MessageQueue2<{ type: string }>((mode) => mode.type);
+
+        queue.push('message1', { type: 'A' });
+        queue.push('message2', { type: 'A' });
+
+        queue.pushIsolated('isolated', { type: 'A' });
+
+        queue.push('message3', { type: 'A' });
+
+        const batch1 = await queue.waitForMessagesAndGetAsString();
+        expect(batch1?.message).toBe('message1\nmessage2');
+        expect(batch1?.isolate).toBe(false);
+
+        const batch2 = await queue.waitForMessagesAndGetAsString();
+        expect(batch2?.message).toBe('isolated');
+        expect(batch2?.isolate).toBe(true);
+
+        const batch3 = await queue.waitForMessagesAndGetAsString();
+        expect(batch3?.message).toBe('message3');
+    });
+
     it('should isolate messages pushed with pushIsolateAndClear', async () => {
         const queue = new MessageQueue2<{ type: string }>((mode) => mode.type);
         

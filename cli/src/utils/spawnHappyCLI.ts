@@ -116,6 +116,16 @@ export function getHappyCliCommand(args: string[]): HappyCliCommand {
     };
   }
 
+  // When vitest runs under Node.js, HAPI_BUN_EXEC can point to the bun binary so that
+  // spawned CLI child processes still run under bun (which is required for TypeScript entrypoints).
+  const bunExecOverride = process.env['HAPI_BUN_EXEC']?.trim();
+  if (bunExecOverride && isCrossPlatformAbsolutePath(bunExecOverride) && existsSync(bunExecOverride)) {
+    return {
+      command: bunExecOverride,
+      args: ['--cwd', projectRoot, entrypoint, ...args]
+    };
+  }
+
   // Node.js fallback: preserve execArgv (for compatibility)
   return {
     command: process.execPath,

@@ -28,6 +28,39 @@ function withCurrentModelOption(options: ModelOption[], currentModel?: string | 
     return nextOptions
 }
 
+function getClaudeModelOptions(currentModel?: string | null, customOptions?: ModelOption[]): ModelOption[] {
+    if (!customOptions || customOptions.length === 0) {
+        return getClaudeComposerModelOptions(currentModel)
+    }
+
+    const options = getClaudeComposerModelOptions(currentModel)
+    const nextOptions = [...options]
+    let insertIndex = Math.max(1, nextOptions.findIndex((option) => option.value !== null))
+
+    for (const option of customOptions) {
+        const normalizedValue = normalizeCurrentModel(option.value)
+        if (!normalizedValue) {
+            continue
+        }
+
+        const existingIndex = nextOptions.findIndex((nextOption) => nextOption.value === normalizedValue)
+        if (existingIndex >= 0) {
+            if (nextOptions[existingIndex]?.label === normalizedValue) {
+                nextOptions[existingIndex] = option
+            }
+            continue
+        }
+
+        nextOptions.splice(insertIndex, 0, {
+            value: normalizedValue,
+            label: option.label
+        })
+        insertIndex += 1
+    }
+
+    return nextOptions
+}
+
 function getGeminiModelOptions(currentModel?: string | null): ModelOption[] {
     const options = MODEL_OPTIONS.gemini.map((m) => ({
         value: m.value === 'auto' ? null : m.value,
@@ -50,6 +83,9 @@ export function getModelOptionsForFlavor(
     currentModel?: string | null,
     customOptions?: ModelOption[]
 ): ModelOption[] {
+    if (flavor === 'claude') {
+        return getClaudeModelOptions(currentModel, customOptions)
+    }
     if (customOptions && customOptions.length > 0) {
         return withCurrentModelOption(customOptions, currentModel)
     }
@@ -69,7 +105,7 @@ export function getModelOptionsForFlavor(
     if (flavor === 'kimi') {
         return withCurrentModelOption([{ value: null, label: 'Default' }], currentModel)
     }
-    return getClaudeComposerModelOptions(currentModel)
+    return getClaudeModelOptions(currentModel)
 }
 
 export function getNextModelForFlavor(
@@ -77,6 +113,14 @@ export function getNextModelForFlavor(
     currentModel?: string | null,
     customOptions?: ModelOption[]
 ): string | null {
+    if (flavor === 'claude') {
+        const options = getClaudeModelOptions(currentModel, customOptions)
+        const currentIndex = options.findIndex((option) => option.value === (normalizeCurrentModel(currentModel) ?? null))
+        if (currentIndex === -1) {
+            return options[0]?.value ?? null
+        }
+        return options[(currentIndex + 1) % options.length]?.value ?? null
+    }
     if (customOptions && customOptions.length > 0) {
         const options = getModelOptionsForFlavor(flavor, currentModel, customOptions)
         const currentIndex = options.findIndex((option) => option.value === (normalizeCurrentModel(currentModel) ?? null))

@@ -9,6 +9,7 @@ import { getFontScaleOptions, useFontScale, type FontScale } from '@/hooks/useFo
 import { getTerminalFontSizeOptions, useTerminalFontSize, type TerminalFontSize } from '@/hooks/useTerminalFontSize'
 import { getComposerEnterBehaviorOptions, useComposerEnterBehavior, type ComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
 import { getTerminalToolDisplayModeOptions, useTerminalToolDisplayMode, type TerminalToolDisplayMode } from '@/hooks/useTerminalToolDisplayMode'
+import { getSessionListStatusModeOptions, useSessionListStatusMode, type SessionListStatusMode } from '@/hooks/useSessionListStatusMode'
 import {
     MAX_SESSION_PREVIEW_LIMIT,
     MIN_SESSION_PREVIEW_LIMIT,
@@ -307,6 +308,7 @@ export default function SettingsPage() {
     const [isTerminalFontOpen, setIsTerminalFontOpen] = useState(false)
     const [isChatOpen, setIsChatOpen] = useState(false)
     const [isTerminalToolDisplayOpen, setIsTerminalToolDisplayOpen] = useState(false)
+    const [isSessionListStatusOpen, setIsSessionListStatusOpen] = useState(false)
     const [isVoiceOpen, setIsVoiceOpen] = useState(false)
     const [isVoicePickerOpen, setIsVoicePickerOpen] = useState(false)
     const containerRef = useRef<HTMLDivElement>(null)
@@ -315,6 +317,7 @@ export default function SettingsPage() {
     const terminalFontContainerRef = useRef<HTMLDivElement>(null)
     const chatContainerRef = useRef<HTMLDivElement>(null)
     const terminalToolDisplayContainerRef = useRef<HTMLDivElement>(null)
+    const sessionListStatusContainerRef = useRef<HTMLDivElement>(null)
     const voiceContainerRef = useRef<HTMLDivElement>(null)
     const voicePickerContainerRef = useRef<HTMLDivElement>(null)
     const { fontScale, setFontScale } = useFontScale()
@@ -322,6 +325,7 @@ export default function SettingsPage() {
     const { sessionPreviewLimit, setSessionPreviewLimit } = useSessionPreviewLimit()
     const { composerEnterBehavior, setComposerEnterBehavior } = useComposerEnterBehavior()
     const { terminalToolDisplayMode, setTerminalToolDisplayMode } = useTerminalToolDisplayMode()
+    const { sessionListStatusMode, setSessionListStatusMode } = useSessionListStatusMode()
     const {
         toolGroupBackground,
         userMessageBackground,
@@ -349,6 +353,7 @@ export default function SettingsPage() {
     const terminalFontSizeOptions = getTerminalFontSizeOptions()
     const composerEnterBehaviorOptions = getComposerEnterBehaviorOptions()
     const terminalToolDisplayModeOptions = getTerminalToolDisplayModeOptions()
+    const sessionListStatusModeOptions = getSessionListStatusModeOptions()
     const appearanceOptions = getAppearanceOptions()
     const currentLocale = locales.find((loc) => loc.value === locale)
     const currentAppearanceLabel = appearanceOptions.find((opt) => opt.value === appearance)?.labelKey ?? 'settings.display.appearance.system'
@@ -356,6 +361,7 @@ export default function SettingsPage() {
     const currentTerminalFontSizeLabel = terminalFontSizeOptions.find((opt) => opt.value === terminalFontSize)?.label ?? '13px'
     const currentComposerEnterBehaviorLabel = composerEnterBehaviorOptions.find((opt) => opt.value === composerEnterBehavior)?.labelKey ?? 'settings.chat.enterBehavior.send'
     const currentTerminalToolDisplayModeLabel = terminalToolDisplayModeOptions.find((opt) => opt.value === terminalToolDisplayMode)?.labelKey ?? 'settings.chat.terminalToolDisplay.compact'
+    const currentSessionListStatusModeLabel = sessionListStatusModeOptions.find((opt) => opt.value === sessionListStatusMode)?.labelKey ?? 'settings.display.sessionListStatus.standard'
     const currentVoiceLanguage = voiceLanguages.find((lang) => lang.code === voiceLanguage)
 
     // Voice list: dynamic (from ElevenLabs API, includes clones) or static fallback
@@ -396,6 +402,11 @@ export default function SettingsPage() {
     const handleTerminalToolDisplayModeChange = (newMode: TerminalToolDisplayMode) => {
         setTerminalToolDisplayMode(newMode)
         setIsTerminalToolDisplayOpen(false)
+    }
+
+    const handleSessionListStatusModeChange = (newMode: SessionListStatusMode) => {
+        setSessionListStatusMode(newMode)
+        setIsSessionListStatusOpen(false)
     }
 
     const handleVoiceLanguageChange = (language: Language) => {
@@ -457,7 +468,7 @@ export default function SettingsPage() {
 
     // Close dropdown when clicking outside
     useEffect(() => {
-        if (!isOpen && !isAppearanceOpen && !isFontOpen && !isTerminalFontOpen && !isChatOpen && !isTerminalToolDisplayOpen && !isVoiceOpen && !isVoicePickerOpen) return
+        if (!isOpen && !isAppearanceOpen && !isFontOpen && !isTerminalFontOpen && !isChatOpen && !isTerminalToolDisplayOpen && !isSessionListStatusOpen && !isVoiceOpen && !isVoicePickerOpen) return
 
         const handleClickOutside = (event: MouseEvent) => {
             if (isOpen && containerRef.current && !containerRef.current.contains(event.target as Node)) {
@@ -478,6 +489,9 @@ export default function SettingsPage() {
             if (isTerminalToolDisplayOpen && terminalToolDisplayContainerRef.current && !terminalToolDisplayContainerRef.current.contains(event.target as Node)) {
                 setIsTerminalToolDisplayOpen(false)
             }
+            if (isSessionListStatusOpen && sessionListStatusContainerRef.current && !sessionListStatusContainerRef.current.contains(event.target as Node)) {
+                setIsSessionListStatusOpen(false)
+            }
             if (isVoiceOpen && voiceContainerRef.current && !voiceContainerRef.current.contains(event.target as Node)) {
                 setIsVoiceOpen(false)
             }
@@ -488,11 +502,11 @@ export default function SettingsPage() {
 
         document.addEventListener('mousedown', handleClickOutside)
         return () => document.removeEventListener('mousedown', handleClickOutside)
-    }, [isOpen, isAppearanceOpen, isFontOpen, isTerminalFontOpen, isChatOpen, isTerminalToolDisplayOpen, isVoiceOpen, isVoicePickerOpen])
+    }, [isOpen, isAppearanceOpen, isFontOpen, isTerminalFontOpen, isChatOpen, isTerminalToolDisplayOpen, isSessionListStatusOpen, isVoiceOpen, isVoicePickerOpen])
 
     // Close on escape key
     useEffect(() => {
-        if (!isOpen && !isAppearanceOpen && !isFontOpen && !isTerminalFontOpen && !isChatOpen && !isTerminalToolDisplayOpen && !isVoiceOpen && !isVoicePickerOpen) return
+        if (!isOpen && !isAppearanceOpen && !isFontOpen && !isTerminalFontOpen && !isChatOpen && !isTerminalToolDisplayOpen && !isSessionListStatusOpen && !isVoiceOpen && !isVoicePickerOpen) return
 
         const handleEscape = (event: KeyboardEvent) => {
             if (event.key === 'Escape') {
@@ -502,6 +516,7 @@ export default function SettingsPage() {
                 setIsTerminalFontOpen(false)
                 setIsChatOpen(false)
                 setIsTerminalToolDisplayOpen(false)
+                setIsSessionListStatusOpen(false)
                 setIsVoiceOpen(false)
                 setIsVoicePickerOpen(false)
             }
@@ -509,7 +524,7 @@ export default function SettingsPage() {
 
         document.addEventListener('keydown', handleEscape)
         return () => document.removeEventListener('keydown', handleEscape)
-    }, [isOpen, isAppearanceOpen, isFontOpen, isTerminalFontOpen, isChatOpen, isTerminalToolDisplayOpen, isVoiceOpen, isVoicePickerOpen])
+    }, [isOpen, isAppearanceOpen, isFontOpen, isTerminalFontOpen, isChatOpen, isTerminalToolDisplayOpen, isSessionListStatusOpen, isVoiceOpen, isVoicePickerOpen])
 
     return (
         <div className="flex h-full min-h-0 flex-col">
@@ -739,6 +754,59 @@ export default function SettingsPage() {
                             decreaseLabel={t('settings.display.sessionPreviewLimit.decrease')}
                             increaseLabel={t('settings.display.sessionPreviewLimit.increase')}
                         />
+                        <div ref={sessionListStatusContainerRef} className="relative">
+                            <button
+                                type="button"
+                                onClick={() => setIsSessionListStatusOpen(!isSessionListStatusOpen)}
+                                className="flex w-full items-center justify-between px-3 py-3 text-left transition-colors hover:bg-[var(--app-subtle-bg)]"
+                                aria-expanded={isSessionListStatusOpen}
+                                aria-haspopup="listbox"
+                            >
+                                <span className="text-[var(--app-fg)]">{t('settings.display.sessionListStatus')}</span>
+                                <span className="flex items-center gap-1 text-[var(--app-hint)]">
+                                    <span>{t(currentSessionListStatusModeLabel)}</span>
+                                    <ChevronDownIcon className={`transition-transform ${isSessionListStatusOpen ? 'rotate-180' : ''}`} />
+                                </span>
+                            </button>
+
+                            {isSessionListStatusOpen && (
+                                <div
+                                    className="absolute right-3 top-full mt-1 min-w-[220px] rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] shadow-lg overflow-hidden z-50"
+                                    role="listbox"
+                                    aria-label={t('settings.display.sessionListStatus')}
+                                >
+                                    {sessionListStatusModeOptions.map((opt) => {
+                                        const isSelected = sessionListStatusMode === opt.value
+                                        return (
+                                            <button
+                                                key={opt.value}
+                                                type="button"
+                                                role="option"
+                                                aria-selected={isSelected}
+                                                onClick={() => handleSessionListStatusModeChange(opt.value)}
+                                                className={`flex items-center justify-between w-full px-3 py-2 text-base text-left transition-colors ${
+                                                    isSelected
+                                                        ? 'text-[var(--app-link)] bg-[var(--app-subtle-bg)]'
+                                                        : 'text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)]'
+                                                }`}
+                                            >
+                                                <span>{t(opt.labelKey)}</span>
+                                                {isSelected && (
+                                                    <span className="ml-2 text-[var(--app-link)]">
+                                                        <CheckIcon />
+                                                    </span>
+                                                )}
+                                            </button>
+                                        )
+                                    })}
+                                </div>
+                            )}
+                        </div>
+                        {sessionListStatusMode === 'detailed' ? (
+                            <div className="px-3 pb-3 text-xs text-[var(--app-hint)]">
+                                {t('settings.display.sessionListStatus.detailedDescription')}
+                            </div>
+                        ) : null}
                     </div>
 
                     {/* Chat section */}

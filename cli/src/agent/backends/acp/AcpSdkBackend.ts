@@ -66,6 +66,25 @@ export class AcpSdkBackend implements AgentBackend {
     private static readonly UPDATE_DRAIN_TIMEOUT_MS = 2000;
     private static readonly PRE_PROMPT_UPDATE_QUIET_PERIOD_MS = 200;
     private static readonly PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS = 1200;
+    // After the initial post-prompt drain, slow-tailing models (DeepSeek,
+    // GPT-5.5, etc.) can keep sending agentMessageChunk notifications. We poll
+    // drainBuffers() on a short interval so the UI keeps streaming smoothly,
+    // and block prompt() from resolving until the model is truly quiet — that
+    // way turn_complete and the launcher's ready signal only fire after every
+    // straggler has been emitted to the current turn's onUpdate. Bounded by
+    // LATE_FLUSH_WINDOW_MS so a stuck stream never wedges the session.
+    //
+    // 6000ms covers tails up to ~5s observed against GPT-5.5 / DeepSeek V4 Pro
+    // with 1s headroom. 250ms quiet is anchored to drainLateBuffers entry
+    // time, so every turn pays at least one quiet period before resolving —
+    // that minimum is what catches stragglers arriving just after
+    // session/prompt resolves when the model paused mid-turn. 50ms polling
+    // keeps the UI responsive without measurable CPU cost (drainBuffers is a
+    // no-op on empty buffers). All three can be tightened once we have
+    // telemetry on real-world tail distributions.
+    private static readonly LATE_FLUSH_INTERVAL_MS = 50;
+    private static readonly LATE_FLUSH_QUIET_PERIOD_MS = 250;
+    private static readonly LATE_FLUSH_WINDOW_MS = 6000;
 
     constructor(private readonly options: { command: string; args?: string[]; env?: Record<string, string> }) {}
 
@@ -252,16 +271,17 @@ export class AcpSdkBackend implements AgentBackend {
         }
 
         this.activeSessionId = sessionId;
+        // Single-phase handler swap: drain any chunks still buffered in the
+        // previous turn's handler so they emit via that turn's onUpdate, then
+        // immediately install the new handler. The post-prompt drainLateBuffers
+        // means by this point the previous turn should already be quiet; this
+        // wait is a cheap safety net for the rare case where a chunk arrived
+        // between prompt() resolving and the next turn starting.
         await this.waitForSessionUpdateQuiet(
             AcpSdkBackend.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS,
             AcpSdkBackend.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS
         );
         this.messageHandler?.drainBuffers();
-        this.messageHandler = null;
-        await this.waitForSessionUpdateQuiet(
-            AcpSdkBackend.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS,
-            AcpSdkBackend.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS
-        );
         this.messageHandler = new AcpMessageHandler(onUpdate);
         this.isProcessingMessage = true;
         this.lastSessionUpdateAt = Date.now();
@@ -285,6 +305,11 @@ export class AcpSdkBackend implements AgentBackend {
                 AcpSdkBackend.UPDATE_DRAIN_TIMEOUT_MS
             );
             this.messageHandler?.drainBuffers();
+            // Block here until the model truly stops streaming straggler
+            // chunks (or LATE_FLUSH_WINDOW_MS elapses), so turn_complete and
+            // the launcher's ready signal only fire once every chunk has been
+            // emitted to this turn's onUpdate.
+            await this.drainLateBuffers();
             try {
                 const latestUsageUpdate = this.readLatestUsageUpdate();
                 if (promptUsage) {
@@ -297,6 +322,21 @@ export class AcpSdkBackend implements AgentBackend {
                         cacheReadTokens: promptUsage.cacheReadTokens,
                         contextTokens: latestUsageUpdate ? latestUsageUpdate.contextTokens : undefined,
                         contextWindow: latestUsageUpdate ? latestUsageUpdate.contextWindow : undefined
+                    });
+                } else if (
+                    latestUsageUpdate
+                    && (latestUsageUpdate.contextTokens !== undefined || latestUsageUpdate.contextWindow !== undefined)
+                ) {
+                    // Agent did not return prompt usage (slash-handled turns,
+                    // errored turns), but we did see ACP usage updates during
+                    // the turn. Emit a context-only usage so the status bar
+                    // reflects the current context size.
+                    onUpdate({
+                        type: 'usage',
+                        inputTokens: 0,
+                        outputTokens: 0,
+                        contextTokens: latestUsageUpdate.contextTokens,
+                        contextWindow: latestUsageUpdate.contextWindow
                     });
                 }
                 if (stopReason) {
@@ -416,6 +456,35 @@ export class AcpSdkBackend implements AgentBackend {
 
     private readLatestUsageUpdate(): AcpUsageUpdate | null {
         return this.latestUsageUpdate;
+    }
+
+    /**
+     * Poll drainBuffers() on a short interval until the model has been quiet
+     * for LATE_FLUSH_QUIET_PERIOD_MS or LATE_FLUSH_WINDOW_MS elapses. Polling
+     * keeps the UI streaming smoothly while we wait; the quiet-window check
+     * lets fast models exit almost immediately (Claude tail typically < 100ms)
+     * while still bounding slow-tailing models (GPT-5.5, DeepSeek V4 Pro).
+     *
+     * The quiet measurement is anchored to entry time, not just
+     * lastSessionUpdateAt: if session/prompt paused mid-turn (chunks → pause
+     * → stopReason), lastSessionUpdateAt is already stale on entry and we
+     * would otherwise exit immediately, missing any straggler that arrives
+     * just after session/prompt resolves.
+     */
+    private async drainLateBuffers(): Promise<void> {
+        const quietBaseline = Date.now();
+        const deadline = quietBaseline + AcpSdkBackend.LATE_FLUSH_WINDOW_MS;
+        while (Date.now() < deadline) {
+            const latestActivityAt = Math.max(this.lastSessionUpdateAt, quietBaseline);
+            const elapsedSinceUpdate = Date.now() - latestActivityAt;
+            if (elapsedSinceUpdate >= AcpSdkBackend.LATE_FLUSH_QUIET_PERIOD_MS) {
+                return;
+            }
+            const remainingBudget = deadline - Date.now();
+            const waitMs = Math.max(1, Math.min(AcpSdkBackend.LATE_FLUSH_INTERVAL_MS, remainingBudget));
+            await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
+            this.messageHandler?.drainBuffers();
+        }
     }
 
     private async waitForSessionUpdateQuiet(quietMs: number, timeoutMs: number): Promise<void> {

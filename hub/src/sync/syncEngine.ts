@@ -176,6 +176,10 @@ export class SyncEngine {
         return this.sessionCache.getSessionsByNamespace(namespace)
     }
 
+    getFutureScheduledMessageCounts(sessionIds: string[], now: number = Date.now()): Map<string, number> {
+        return this.store.messages.countFutureScheduledBySessionIds(sessionIds, now)
+    }
+
     getSession(sessionId: string): Session | undefined {
         return this.sessionCache.getSession(sessionId) ?? this.sessionCache.refreshSession(sessionId) ?? undefined
     }
@@ -285,6 +289,10 @@ export class SyncEngine {
     }): void {
         this.sessionCache.handleSessionAlive(payload)
         this.triggerDedupIfNeeded(payload.sid)
+    }
+
+    clearQueuedThinkingGrace(sessionId: string): void {
+        this.sessionCache.clearQueuedThinkingGrace(sessionId)
     }
 
     handleSessionEnd(payload: { sid: string; time: number; reason?: 'completed' | 'terminated' | 'error' }): void {
@@ -536,7 +544,11 @@ export class SyncEngine {
 
         const agentSessionId = this.resolveAgentResumeId(session, namespace)
         if (!agentSessionId) {
-            return { type: 'error', message: 'Resume session ID unavailable', code: 'resume_unavailable' }
+            return {
+                type: 'error',
+                message: 'Resume session ID unavailable. Start a new session in this directory, or retry after the agent has initialized.',
+                code: 'resume_unavailable'
+            }
         }
 
         return {
@@ -605,6 +617,18 @@ export class SyncEngine {
         return undefined
     }
 
+    /** Inactive session with directory path but no agent thread and no prior user turn. */
+    private canFreshSpawnNeverStartedSession(session: Session, sessionId: string, namespace: string): boolean {
+        const metadata = session.metadata
+        if (!metadata || typeof metadata.path !== 'string' || metadata.path.length === 0) {
+            return false
+        }
+        if (this.resolveAgentResumeId(session, namespace)) {
+            return false
+        }
+        return this.store.messages.getFirstMessages(sessionId, 1).length === 0
+    }
+
     async resumeSession(sessionId: string, namespace: string, opts?: { permissionMode?: PermissionMode }): Promise<ResumeSessionResult> {
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
@@ -621,14 +645,27 @@ export class SyncEngine {
         }
 
         const targetResult = this.resolveLocalResumeTarget(access.sessionId, namespace)
-        if (targetResult.type === 'error') {
+        let flavor: AgentFlavor
+        let resumeToken: string | undefined
+        let directory: string
+
+        if (targetResult.type === 'success') {
+            flavor = targetResult.target.flavor
+            resumeToken = targetResult.target.agentSessionId
+            directory = targetResult.target.directory
+        } else if (
+            targetResult.code === 'resume_unavailable'
+            && this.canFreshSpawnNeverStartedSession(session, access.sessionId, namespace)
+        ) {
+            const metadata = session.metadata!
+            flavor = this.resolveFlavor(session)
+            resumeToken = undefined
+            directory = metadata.path
+        } else {
             return targetResult
         }
 
-        const target = targetResult.target
         const metadata = session.metadata!
-        const flavor = target.flavor
-        const resumeToken = target.agentSessionId
 
         const onlineMachines = this.machineCache.getOnlineMachinesByNamespace(namespace)
         if (onlineMachines.length === 0) {
@@ -656,7 +693,7 @@ export class SyncEngine {
             ?? session.metadata?.preferredPermissionMode
         const spawnResult = await this.rpcGateway.spawnSession(
             targetMachine.id,
-            target.directory,
+            directory,
             flavor,
             session.model ?? undefined,
             session.modelReasoningEffort ?? undefined,
@@ -677,14 +714,8 @@ export class SyncEngine {
             return { type: 'error', message: 'Session failed to become active', code: 'resume_failed' }
         }
 
-        if (preferredPermissionMode !== undefined) {
-            try {
-                await this.applySessionConfig(spawnResult.sessionId, { permissionMode: preferredPermissionMode })
-            } catch (error) {
-                const message = error instanceof Error ? error.message : 'Failed to restore permission mode'
-                return { type: 'error', message, code: 'resume_failed' }
-            }
-        }
+        // permissionMode is passed to spawnSession above; do not call set-session-config here.
+        // session-alive can arrive before the CLI registers that RPC handler, which caused resume_failed.
 
         if (spawnResult.sessionId !== access.sessionId) {
             // The old session may have already been merged by the automatic dedup path

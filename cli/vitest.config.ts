@@ -1,17 +1,13 @@
 import { defineConfig } from 'vitest/config'
 import { resolve } from 'node:path'
 
-import dotenv from 'dotenv'
-
-const testEnv = dotenv.config({
-    path: '.env.integration-test'
-}).parsed
-
 export default defineConfig({
     test: {
         globals: false,
         environment: 'node',
         include: ['src/**/*.test.ts'],
+        globalSetup: './src/test/globalSetup.ts',
+        setupFiles: './src/test/setup.ts',
         coverage: {
             provider: 'v8',
             reporter: ['text', 'json', 'html'],
@@ -23,10 +19,6 @@ export default defineConfig({
                 '**/mockData/**',
             ],
         },
-        env: {
-            ...process.env,
-            ...testEnv,
-        }
     },
     resolve: {
         alias: {

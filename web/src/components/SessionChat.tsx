@@ -18,6 +18,7 @@ import { reconcileChatBlocks } from '@/chat/reconcile'
 import { buildConversationOutline } from '@/chat/outline'
 import { buildVisibleChatBlocks, isToolGroupBlock, type ToolGroupBlock } from '@/chat/toolGroups'
 import { isQueuedForInvocation, mergeMessages } from '@/lib/messages'
+import { inactiveSessionCanResume } from '@/lib/sessionResume'
 import { HappyComposer } from '@/components/AssistantChat/HappyComposer'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { resolvePendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
@@ -125,6 +126,7 @@ export function SessionChat(props: {
     const { t } = useTranslation()
     const navigate = useNavigate()
     const sessionInactive = !props.session.active
+    const inactiveCanResume = inactiveSessionCanResume(props.session, props.messages.length)
     const terminalSupported = isRemoteTerminalSupported(props.session.metadata)
     const normalizedCacheRef = useRef<Map<string, { source: DecryptedMessage; normalized: NormalizedMessage | null }>>(new Map())
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
@@ -560,7 +562,9 @@ export function SessionChat(props: {
             {sessionInactive ? (
                 <div className="px-3 pt-3">
                     <div className="mx-auto w-full max-w-content rounded-md bg-[var(--app-subtle-bg)] p-3 text-sm text-[var(--app-hint)]">
-                        Session is inactive. Sending will resume it automatically.
+                        {inactiveCanResume
+                            ? t('session.inactive.autoResume')
+                            : t('session.inactive.cannotResume')}
                     </div>
                 </div>
             ) : null}

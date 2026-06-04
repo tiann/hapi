@@ -61,7 +61,8 @@ async function runCursorModelProbe(): Promise<ListCursorModelsResponse> {
         const child = spawn('agent', ['--list-models'], {
             env: process.env,
             stdio: ['ignore', 'pipe', 'pipe'],
-            shell: process.platform === 'win32'
+            shell: process.platform === 'win32',
+            windowsHide: process.platform === 'win32'
         });
         let stdout = '';
         let stderr = '';

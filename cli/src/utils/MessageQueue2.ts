@@ -108,6 +108,43 @@ export class MessageQueue2<T> {
     }
 
     /**
+     * Push a message that must be processed in isolation, preserving any
+     * messages already queued ahead of it. The new message is never batched
+     * with siblings (neither the ones before it, nor any that arrive after).
+     * Use this when a slash command must run alone but earlier prompts must
+     * still be delivered in order.
+     */
+    pushIsolated(message: string, mode: T, localId?: string): void {
+        if (this.closed) {
+            throw new Error('Cannot push to closed queue');
+        }
+
+        const modeHash = this.modeHasher(mode);
+        logger.debug(`[MessageQueue2] pushIsolated() called with mode hash: ${modeHash} - preserving ${this.queue.length} pending messages`);
+
+        this.queue.push({
+            message,
+            mode,
+            modeHash,
+            localId,
+            isolate: true
+        });
+
+        if (this.onMessageHandler) {
+            this.onMessageHandler(message, mode);
+        }
+
+        if (this.waiter) {
+            logger.debug(`[MessageQueue2] Notifying waiter for isolated message`);
+            const waiter = this.waiter;
+            this.waiter = null;
+            waiter(true);
+        }
+
+        logger.debug(`[MessageQueue2] pushIsolated() completed. Queue size: ${this.queue.length}`);
+    }
+
+    /**
      * Push a message that must be processed in complete isolation.
      * Clears any pending messages and ensures this message is never batched with others.
      * Used for special commands that require dedicated processing.

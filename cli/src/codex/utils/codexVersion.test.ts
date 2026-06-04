@@ -1,7 +1,13 @@
+import { win32 } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { spawnSyncMock } = vi.hoisted(() => ({
+const { resolveCodexCommandMock, spawnSyncMock } = vi.hoisted(() => ({
+    resolveCodexCommandMock: vi.fn(() => ({ command: 'codex', args: [] as string[] })),
     spawnSyncMock: vi.fn()
+}))
+
+vi.mock('./codexExecutable', () => ({
+    resolveCodexCommand: resolveCodexCommandMock
 }))
 
 vi.mock('cross-spawn', () => ({
@@ -17,8 +23,12 @@ import {
     parseCodexVersion
 } from './codexVersion'
 
+const codexScriptPath = win32.join('toolchains', 'nodejs', 'node_modules', '@openai', 'codex', 'bin', 'codex.js')
+
 describe('codexVersion', () => {
     beforeEach(() => {
+        resolveCodexCommandMock.mockReset()
+        resolveCodexCommandMock.mockReturnValue({ command: 'codex', args: [] as string[] })
         spawnSyncMock.mockReset()
     })
 
@@ -48,6 +58,27 @@ describe('codexVersion', () => {
     })
 
     describe('assertCodexLocalSupported', () => {
+        it('checks the resolved Codex command', () => {
+            resolveCodexCommandMock.mockReturnValue({
+                command: 'node',
+                args: [codexScriptPath]
+            })
+            spawnSyncMock.mockReturnValueOnce({
+                status: 0,
+                stdout: 'codex-cli 0.124.0\n',
+                stderr: ''
+            })
+
+            expect(() => assertCodexLocalSupported()).not.toThrow()
+            expect(spawnSyncMock).toHaveBeenCalledWith(
+                'node',
+                [codexScriptPath, '--version'],
+                expect.objectContaining({
+                    encoding: 'utf8'
+                })
+            )
+        })
+
         it('passes when codex is new enough', () => {
             spawnSyncMock.mockReturnValueOnce({
                 status: 0,
@@ -56,9 +87,6 @@ describe('codexVersion', () => {
             })
 
             expect(() => assertCodexLocalSupported()).not.toThrow()
-            expect(spawnSyncMock).toHaveBeenCalledWith('codex', ['--version'], expect.objectContaining({
-                encoding: 'utf8'
-            }))
         })
 
         it('fails when codex is too old', () => {

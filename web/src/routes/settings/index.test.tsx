@@ -51,6 +51,14 @@ vi.mock('@/hooks/useTerminalToolDisplayMode', () => ({
     ],
 }))
 
+vi.mock('@/hooks/useSessionListStatusMode', () => ({
+    useSessionListStatusMode: () => ({ sessionListStatusMode: 'standard', setSessionListStatusMode: vi.fn() }),
+    getSessionListStatusModeOptions: () => [
+        { value: 'standard', labelKey: 'settings.display.sessionListStatus.standard' },
+        { value: 'detailed', labelKey: 'settings.display.sessionListStatus.detailed' },
+    ],
+}))
+
 vi.mock('@/hooks/useSessionPreviewLimit', () => ({
     MIN_SESSION_PREVIEW_LIMIT: 1,
     MAX_SESSION_PREVIEW_LIMIT: 99,
@@ -216,6 +224,8 @@ describe('SettingsPage', () => {
         expect(calledKeys).toContain('settings.display.sessionPreviewLimit')
         expect(calledKeys).toContain('settings.display.sessionPreviewLimit.decrease')
         expect(calledKeys).toContain('settings.display.sessionPreviewLimit.increase')
+        expect(calledKeys).toContain('settings.display.sessionListStatus')
+        expect(calledKeys).toContain('settings.display.sessionListStatus.standard')
     })
 
     it('renders the Terminal Font Size setting', () => {
@@ -230,6 +240,12 @@ describe('SettingsPage', () => {
         expect(screen.getByLabelText('Sessions Before Folding')).toHaveValue(8)
         expect(screen.getAllByLabelText('Show fewer sessions before folding').length).toBeGreaterThanOrEqual(1)
         expect(screen.getAllByLabelText('Show more sessions before folding').length).toBeGreaterThanOrEqual(1)
+    })
+
+    it('renders the Session list status setting', () => {
+        renderWithProviders(<SettingsPage />)
+        expect(screen.getAllByText('Session list status').length).toBeGreaterThanOrEqual(1)
+        expect(screen.getAllByText('Standard').length).toBeGreaterThanOrEqual(1)
     })
 
     it('renders the Enter Key setting', () => {

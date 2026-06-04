@@ -13,6 +13,7 @@ import {
 import type { CursorSession } from './session';
 import type { CursorStreamEvent } from './utils/cursorEventConverter';
 import { parseCursorEvent, convertCursorEventToAgentMessage } from './utils/cursorEventConverter';
+import { parseCursorSpecialCommand } from './cursorSpecialCommands';
 
 function buildAgentArgs(opts: {
     message: string;
@@ -82,6 +83,9 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         };
 
         let cursorSessionId: string | null = session.sessionId;
+        if (cursorSessionId) {
+            session.onSessionFound(cursorSessionId);
+        }
 
         while (!this.shouldExit) {
             const waitSignal = this.abortController.signal;
@@ -94,9 +98,28 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             }
 
             const { message, mode } = batch;
+            const specialCommand = parseCursorSpecialCommand(message);
+
+            if (specialCommand.type === 'invalid') {
+                session.sendSessionEvent({ type: 'message', message: specialCommand.message });
+                messageBuffer.addMessage(specialCommand.message, 'status');
+                if (session.queue.size() === 0 && !this.shouldExit) {
+                    sendReady();
+                }
+                continue;
+            }
+
             const { mode: agentMode, yolo } = permissionModeToAgentArgs(mode.permissionMode as string);
             this.applyDisplayMode(mode.permissionMode as string);
             messageBuffer.addMessage(message, 'user');
+
+            if (specialCommand.type === 'summarize') {
+                logger.debug('[cursor-remote] /summarize — pass-through to agent -p');
+                messageBuffer.addMessage('Context summarization requested', 'status');
+            } else if (specialCommand.type === 'clear') {
+                logger.debug('[cursor-remote] /clear — pass-through to agent -p');
+                messageBuffer.addMessage('Context clear requested', 'status');
+            }
 
             const args = buildAgentArgs({
                 message,
@@ -174,7 +197,8 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                 cwd,
                 env: process.env,
                 stdio: ['ignore', 'pipe', 'pipe'],
-                shell: process.platform === 'win32'
+                shell: process.platform === 'win32',
+                windowsHide: process.platform === 'win32'
             });
 
             const abortHandler = () => {

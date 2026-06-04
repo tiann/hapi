@@ -78,7 +78,10 @@ export function CodeBlock(props: {
                 {showCopyButton ? (
                     <button
                         type="button"
-                        onClick={() => copy(props.code)}
+                        onClick={(event) => {
+                            event.stopPropagation()
+                            copy(props.code)
+                        }}
                         className="shrink-0 rounded-md p-1 text-[var(--app-code-header-fg)] transition-colors hover:bg-[var(--app-code-copy-hover-bg)] hover:text-[var(--app-fg)]"
                         title={t('code.copy')}
                     >

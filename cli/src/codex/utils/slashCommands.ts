@@ -150,11 +150,12 @@ export function resolveCodexSlashCommand(
         return {
             kind: 'handled',
             message: [
-                `Codex status`,
-                `permission: ${state.permissionMode}`,
-                `collaboration: ${state.collaborationMode}`,
-                `model: ${state.model ?? 'auto'}`,
-                `reasoning: ${state.modelReasoningEffort ?? 'default'}`
+                '**Codex status**',
+                '',
+                `- permission: \`${state.permissionMode}\``,
+                `- collaboration: \`${state.collaborationMode}\``,
+                `- model: \`${state.model ?? 'auto'}\``,
+                `- reasoning: \`${state.modelReasoningEffort ?? 'default'}\``
             ].join('\n')
         };
     }
@@ -216,18 +217,20 @@ export function resolveCodexSlashCommand(
         return {
             kind: 'handled',
             message: [
-                'Supported Codex slash commands:',
-                '/plan [prompt] — enable plan mode, optionally send prompt',
-                '/plan off — return to default mode',
-                '/goal [objective] — set or view the persistent goal',
-                '/goal pause|resume|clear — update the current goal',
-                '/clear — reset current Codex thread context',
-                '/compact — compact current Codex thread context',
-                '/status — show current Codex session config',
-                '/model [name|auto] — show or set model',
-                '/reasoning [low|medium|high|xhigh|default] — show or set reasoning effort',
-                '/permissions [default|read-only|safe-yolo|yolo] — show or set permission mode',
-                'Custom /commands from .codex/prompts are expanded before sending.'
+                '**Supported Codex slash commands**',
+                '',
+                '- `/plan [prompt]` — enable plan mode, optionally send prompt',
+                '- `/plan off` — return to default mode',
+                '- `/goal [objective]` — set or view the persistent goal',
+                '- `/goal pause|resume|clear` — update the current goal',
+                '- `/clear` — reset current Codex thread context',
+                '- `/compact` — compact current Codex thread context',
+                '- `/status` — show current Codex session config',
+                '- `/model [name|auto]` — show or set model',
+                '- `/reasoning [low|medium|high|xhigh|default]` — show or set reasoning effort',
+                '- `/permissions [default|read-only|safe-yolo|yolo]` — show or set permission mode',
+                '',
+                'Custom `/commands` from `.codex/prompts` are expanded before sending.'
             ].join('\n')
         };
     }

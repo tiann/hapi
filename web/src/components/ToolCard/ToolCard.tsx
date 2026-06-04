@@ -1,7 +1,7 @@
 import type { ToolCallBlock } from '@/chat/types'
 import type { ApiClient } from '@/api/client'
 import type { SessionMetadataSummary } from '@/types/api'
-import { memo, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { memo, useEffect, useMemo, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import { isObject, safeStringify } from '@hapi/protocol'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { CodeBlock } from '@/components/CodeBlock'
@@ -187,6 +187,16 @@ function DetailsIcon() {
     )
 }
 
+const INLINE_PREVIEW_INTERACTIVE_SELECTOR = 'a, button, input, textarea, select, summary, [role="button"], [contenteditable="true"]'
+
+function isNestedInteractiveElement(event: MouseEvent<HTMLElement> | KeyboardEvent<HTMLElement>): boolean {
+    if (event.target === event.currentTarget) return false
+    if (!(event.target instanceof Element)) return false
+
+    const interactive = event.target.closest(INLINE_PREVIEW_INTERACTIVE_SELECTOR)
+    return interactive !== null && interactive !== event.currentTarget
+}
+
 type ToolCardProps = {
     api: ApiClient
     sessionId: string
@@ -238,6 +248,7 @@ export function ToolDetailDialogContent(props: {
 
 function ToolCardInner(props: ToolCardProps) {
     const { t } = useTranslation()
+    const [detailsOpen, setDetailsOpen] = useState(false)
     const presentation = useMemo(() => getToolPresentation({
         toolName: props.block.tool.name,
         input: props.block.tool.input,
@@ -276,6 +287,18 @@ function ToolCardInner(props: ToolCardProps) {
     const hasBody = showInline || taskSummary !== null || showsPermissionFooter
     const stateColor = toolStatusColorClass(props.block.tool.state)
     const { suppressFocusRing, onTriggerPointerDown, onTriggerKeyDown, onTriggerBlur } = usePointerFocusRing()
+    const openDetails = () => setDetailsOpen(true)
+    const openDetailsFromInlinePreview = (event: MouseEvent<HTMLElement>) => {
+        if (isNestedInteractiveElement(event)) return
+        openDetails()
+    }
+    const openDetailsFromInlinePreviewKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+        if (isNestedInteractiveElement(event)) return
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            openDetails()
+        }
+    }
 
     const header = (
         <div className="flex items-center justify-between gap-3">
@@ -320,7 +343,7 @@ function ToolCardInner(props: ToolCardProps) {
     return (
         <Card className="overflow-hidden rounded-[20px] bg-[var(--app-tool-card-bg)] shadow-none">
             <CardHeader className={cn('space-y-0 p-3', subtitle ? 'pb-2' : null)}>
-                <Dialog>
+                <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
                     <DialogTrigger asChild>
                         <button
                             type="button"
@@ -354,16 +377,34 @@ function ToolCardInner(props: ToolCardProps) {
 
                     {showInline ? (
                         CompactToolView ? (
-                            <div className="mt-3">
+                            <div
+                                className="mt-3 cursor-pointer rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                                role="button"
+                                tabIndex={0}
+                                onClick={openDetailsFromInlinePreview}
+                                onKeyDown={openDetailsFromInlinePreviewKeyDown}
+                            >
                                 <CompactToolView block={props.block} metadata={props.metadata} surface="inline" />
                             </div>
                         ) : (
                             <div className="mt-3 flex flex-col gap-3">
-                                <div>
+                                <div
+                                    className="cursor-pointer rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                                    role="button"
+                                    tabIndex={0}
+                                    onClick={openDetailsFromInlinePreview}
+                                    onKeyDown={openDetailsFromInlinePreviewKeyDown}
+                                >
                                     <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">{t('tool.input')}</div>
                                     {renderToolInput(props.block, 'inline')}
                                 </div>
-                                <div>
+                                <div
+                                    className="cursor-pointer rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                                    role="button"
+                                    tabIndex={0}
+                                    onClick={openDetailsFromInlinePreview}
+                                    onKeyDown={openDetailsFromInlinePreviewKeyDown}
+                                >
                                     <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">{t('tool.result')}</div>
                                     <ResultToolView block={props.block} metadata={props.metadata} surface="inline" />
                                 </div>
