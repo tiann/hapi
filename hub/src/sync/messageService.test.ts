@@ -146,6 +146,32 @@ describe('MessageService goal status filtering', () => {
         expect(result.payload.messages.some((message) => message.id === hiddenSystem.id)).toBe(false)
     })
 
+    it('orders invoked scheduled messages by display time, not insertion seq', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'session-export-scheduled-order')
+
+        const scheduled = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'Scheduled' } },
+            'local-scheduled',
+            Date.now() + 60_000
+        )
+        const normal = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'Normal' } },
+            'local-normal'
+        )
+        store.messages.markMessagesInvoked(session.id, ['local-normal'], 2_000)
+        store.messages.markMessagesInvoked(session.id, ['local-scheduled'], 3_000)
+
+        const service = new MessageService(store, makeIo(() => {}), makePublisher() as any)
+        const result = service.getSessionExport(session.id, toProtocolSession(session))
+
+        expect(result.type).toBe('success')
+        if (result.type !== 'success') throw new Error('Expected success export')
+        expect(result.payload.messages.map((message) => message.id)).toEqual([normal.id, scheduled.id])
+    })
+
     it('returns too-large instead of truncating an export over the cap', () => {
         const store = makeStore()
         const session = makeSession(store, 'session-export-cap')

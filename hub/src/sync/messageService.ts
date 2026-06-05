@@ -98,6 +98,11 @@ export class MessageService {
     ): HapiSessionExportResult {
         const messages = this.store.messages.getAllMessages(sessionId)
             .filter(isExportVisibleStoredMessage)
+            .sort((a, b) => {
+                const aAt = a.invokedAt ?? a.createdAt
+                const bAt = b.invokedAt ?? b.createdAt
+                return aAt !== bAt ? aAt - bAt : a.seq - b.seq
+            })
             .map(toDecryptedMessage)
 
         if (messages.length > limit) {
