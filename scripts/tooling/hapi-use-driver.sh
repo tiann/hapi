@@ -5,5 +5,5 @@
 
 set -euo pipefail
 
-DRIVER="${HAPI_DRIVER:-$HOME/coding/hapi-driver}"
+DRIVER="${HAPI_DRIVER:-$HOME/coding/hapi/driver}"
 exec hapi-use-worktree "$DRIVER"

@@ -16,7 +16,7 @@ Feature agents should **read the relevant doc below at session start**; meta bot
 | **Adjacent HAPI repos** | e.g. `hapi-garden`, `hapi-session-attention`, any `~/coding/hapi-*` worktree with an open branch | Same rules; confirm which tree is active before debugging "prod" |
 | **Machine helpers** | `~/.local/bin/hapi-use-worktree`, `hapi-use-main`, `gh` wrapper, `pr-post-push-check*`, `~/.local/bin/hapi-sessions-health.sh` → `server-setup/scripts/hapi/` | Installed, executable, match docs |
 | **Agent hooks** | `~/.claude/settings.json`, `~/.cursor/hooks.json`, `~/coding/AGENTS.local.md` | Policy text matches docs; note IDE vs CLI hook parity gaps |
-| **Upstream boundary** | `tiann/hapi` PRs | No operator-local files, no AI attribution (see repo `AGENTS.local.md`) |
+| **Upstream boundary** | `tiann/hapi` PRs | No operator-local files; **disclose AI model** in PR body per upstream `CONTRIBUTING.md` (post-#727); see repo `AGENTS.local.md` for the `## Disclosure` template |
 
 **Not in scope for meta bot by default:** unrelated repos with no HAPI session unless the operator assigns them.
 

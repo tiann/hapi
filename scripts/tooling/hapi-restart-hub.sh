@@ -49,7 +49,7 @@ source "$SCRIPT_DIR/lib/driver-status.sh"
 if [[ "${HAPI_SKIP_DRIVER_LOCK:-}" != "1" ]]; then
     driver_status_init
     driver_status_acquire switch
-    ACTIVE_NOW="$(readlink -f "$HOME/coding/hapi-active" 2>/dev/null || echo unknown)"
+    ACTIVE_NOW="$(readlink -f "$HOME/coding/hapi/active" 2>/dev/null || echo unknown)"
     driver_status_begin switch "$ACTIVE_NOW"
     driver_status_set switch "from=$ACTIVE_NOW" "to=$ACTIVE_NOW"
     trap 'driver_status_end switch "$?"' EXIT
@@ -87,7 +87,7 @@ if [[ "$IMPATIENT" -eq 1 ]]; then
 else
     echo "  HUB RESTART — patient drain, then restart"
 fi
-echo "  Stack:    $(readlink -f "$HOME/coding/hapi-active" 2>/dev/null || echo unknown)"
+echo "  Stack:    $(readlink -f "$HOME/coding/hapi/active" 2>/dev/null || echo unknown)"
 echo "  Services: hapi-hub.service$([[ "$RUNNER" -eq 1 ]] && echo ' + hapi-runner.service')"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 

@@ -15,7 +15,7 @@
 #   hapi-driver-rollback-web --keep-broken # rename current dist to dist.broken-<ts> instead of deleting
 set -euo pipefail
 
-DRIVER="${HAPI_DRIVER:-$HOME/coding/hapi-driver}"
+DRIVER="${HAPI_DRIVER:-$HOME/coding/hapi/driver}"
 WEB="$DRIVER/web"
 DIST="$WEB/dist"
 PREV="$WEB/dist.prev"

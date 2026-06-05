@@ -3,7 +3,7 @@
 set -euo pipefail
 
 BUN="${BUN:-$HOME/.bun/bin/bun}"
-ACTIVE_LINK="${HAPI_ACTIVE_LINK:-$HOME/coding/hapi-active}"
+ACTIVE_LINK="${HAPI_ACTIVE_LINK:-$HOME/coding/hapi/active}"
 ACTIVE="$(readlink -f "$ACTIVE_LINK")"
 CLI_DIR="$ACTIVE/cli"
 CODING_ROOT="${HAPI_CODING_ROOT:-$HOME/coding}"

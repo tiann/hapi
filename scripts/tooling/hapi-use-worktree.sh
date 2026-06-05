@@ -31,10 +31,10 @@ done
 [[ "${HAPI_IMPATIENT:-}" == "1" ]] && IMPATIENT=1
 
 WORKTREE="$(realpath "$WORKTREE")"
-ACTIVE_LINK="${HAPI_ACTIVE_LINK:-$HOME/coding/hapi-active}"
+ACTIVE_LINK="${HAPI_ACTIVE_LINK:-$HOME/coding/hapi/active}"
 HUB_ENV="${HAPI_HUB_ENV:-$HOME/.hapi/hub.env}"
 BUN="${BUN:-$HOME/.bun/bin/bun}"
-DRIVER="${HAPI_DRIVER:-$HOME/coding/hapi-driver}"
+DRIVER="${HAPI_DRIVER:-$HOME/coding/hapi/driver}"
 PATIENT_TIMEOUT="${HAPI_PATIENT_TIMEOUT:-600}"
 PATIENT_INTERVAL="${HAPI_PATIENT_INTERVAL:-30}"
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
