@@ -9,6 +9,7 @@ import {
     getMessageWindowState,
     ingestIncomingMessages,
     markMessagesConsumed,
+    reconcileQueuedAgainstLatest,
     removeOptimisticMessage,
     setAtBottom,
     VISIBLE_WINDOW_SIZE,
@@ -559,5 +560,74 @@ describe('message-window-store visible trimming', () => {
         })
         expect(state.messages.some((message) => message.id === 'main-user-before-agent-flood')).toBe(true)
         expect(state.messages.filter((message) => message.id.startsWith('agent-run-latest-'))).toHaveLength(50)
+    })
+
+    it('drops a stale queued ghost on at-bottom refresh when the server no longer reports it as queued', async () => {
+        const baseTime = 1_700_000_200_000
+        // A queued row persisted from a prior session: server-echoed (id != localId),
+        // immediate (no scheduledAt), still invokedAt === null locally. The CLI
+        // consumed it while the client was offline, so messages-consumed was missed.
+        const ghost: DecryptedMessage = {
+            id: 'ghost-server-id',
+            seq: 1,
+            localId: 'ghost-local-id',
+            content: { role: 'user', content: { type: 'text', text: 'Ingest 范围' } },
+            createdAt: baseTime,
+            invokedAt: null,
+            status: undefined,
+        } as DecryptedMessage
+        ingestIncomingMessages(SESSION_ID, [ghost])
+        // sanity: the ghost is present and queued before the refresh
+        expect(getMessageWindowState(SESSION_ID).messages.some((m) => m.id === 'ghost-server-id')).toBe(true)
+
+        const api = {
+            getMessages: async (_sessionId: string, options: { limit?: number } = {}) => ({
+                // Latest window does NOT include the ghost (it was invoked long ago,
+                // out of the newest window). Only a fresh agent message comes back.
+                messages: [makeAgentMessage({ id: 'fresh-agent', seq: 99, createdAt: baseTime + 100_000 })],
+                page: { limit: options.limit ?? 50, nextBeforeSeq: null, nextBeforeAt: null, hasMore: false },
+            }),
+        } as Pick<ApiClient, 'getMessages'>
+
+        await fetchLatestMessages(api as ApiClient, SESSION_ID)
+
+        const state = getMessageWindowState(SESSION_ID)
+        expect(state.messages.some((m) => m.id === 'ghost-server-id')).toBe(false)
+        expect(state.pending.some((m) => m.id === 'ghost-server-id')).toBe(false)
+    })
+
+    it('reconcileQueuedAgainstLatest keeps genuine queued, optimistic, and scheduled rows', () => {
+        const base = 1_700_000_200_000
+        const queuedInWindow: DecryptedMessage = {
+            id: 'queued-server-id', seq: 5, localId: 'queued-local',
+            content: { role: 'user', content: { type: 'text', text: 'still queued' } },
+            createdAt: base, invokedAt: null, status: undefined,
+        } as DecryptedMessage
+        const optimistic: DecryptedMessage = {
+            id: 'opt-local', seq: null, localId: 'opt-local',
+            content: { role: 'user', content: { type: 'text', text: 'echo in flight' } },
+            createdAt: base, invokedAt: null, status: 'queued',
+        } as DecryptedMessage
+        const scheduled: DecryptedMessage = {
+            id: 'sched-server-id', seq: 6, localId: 'sched-local',
+            content: { role: 'user', content: { type: 'text', text: 'future' } },
+            createdAt: base, invokedAt: null, scheduledAt: base + 3_600_000, status: undefined,
+        } as DecryptedMessage
+        const ghost: DecryptedMessage = {
+            id: 'ghost-server-id', seq: 1, localId: 'ghost-local',
+            content: { role: 'user', content: { type: 'text', text: 'ghost' } },
+            createdAt: base, invokedAt: null, status: undefined,
+        } as DecryptedMessage
+
+        // Server's latest window only confirms the genuinely-queued row.
+        const reconciled = reconcileQueuedAgainstLatest(
+            [queuedInWindow, optimistic, scheduled, ghost],
+            [queuedInWindow]
+        )
+        const ids = reconciled.map((m) => m.id)
+        expect(ids).toContain('queued-server-id') // confirmed by server -> kept
+        expect(ids).toContain('opt-local')        // optimistic -> kept (echo may be in flight)
+        expect(ids).toContain('sched-server-id')  // scheduled -> kept (hub omits future rows)
+        expect(ids).not.toContain('ghost-server-id') // echoed+immediate+absent -> dropped
     })
 })

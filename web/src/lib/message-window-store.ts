@@ -669,6 +669,47 @@ function isOptimisticMessage(message: DecryptedMessage): boolean {
     return Boolean(message.localId && message.id === message.localId)
 }
 
+/**
+ * Drops phantom queued messages during an at-bottom full refresh.
+ *
+ * A queued message (invokedAt === null) is normally cleared by the live
+ * `messages-consumed` SSE (markMessagesConsumed flips invokedAt). That event is
+ * one-shot: if the client was offline/closed when the CLI consumed the message,
+ * the signal is lost forever. On reload the row is restored from sessionStorage
+ * still carrying invokedAt: null, but the server's invoked copy is too old to
+ * appear in the latest window, so mergeMessages never corrects it and
+ * trimPreservingQueued pins it — a ghost card above the composer that never
+ * clears.
+ *
+ * The latest at-bottom page is authoritative for the newest slice of history: a
+ * genuinely-still-queued immediate message sorts by createdAt to the very top
+ * and is therefore always present in the fetched window. So an immediate,
+ * server-echoed, locally-queued message whose id is absent from the server
+ * response is a ghost and is dropped.
+ *
+ * Guards against false positives (these are kept even when absent from the
+ * response):
+ *  - optimistic rows (id === localId): the server echo may still be in flight;
+ *    mergeMessages owns their reconciliation.
+ *  - scheduled rows (scheduledAt != null): the hub omits not-yet-mature
+ *    scheduled messages from getMessages, so absence is expected; they have
+ *    their own maturation/release path.
+ *
+ * @internal Exported for unit testing.
+ */
+export function reconcileQueuedAgainstLatest(
+    merged: DecryptedMessage[],
+    serverMessages: DecryptedMessage[]
+): DecryptedMessage[] {
+    const serverIds = new Set(serverMessages.map((m) => m.id))
+    return merged.filter((msg) => {
+        if (!isQueuedForInvocation(msg)) return true
+        if (msg.scheduledAt != null) return true
+        if (isOptimisticMessage(msg)) return true
+        return serverIds.has(msg.id)
+    })
+}
+
 function mergeIntoPending(
     prev: InternalState,
     incoming: DecryptedMessage[]
@@ -781,7 +822,12 @@ export async function fetchLatestMessages(api: ApiClient, sessionId: string): Pr
         updateStateForGeneration(sessionId, 'latest', generation, (prev) => {
             if (prev.atBottom) {
                 const merged = mergeMessages(prev.messages, [...prev.pending, ...response.messages])
-                const trimmed = trimVisible(merged, 'append')
+                // Reconcile against the authoritative latest page before trimming:
+                // trimVisible preserves every queued row, so a ghost (queued locally
+                // but already invoked server-side, missed messages-consumed while
+                // offline) would otherwise be pinned forever.
+                const reconciled = reconcileQueuedAgainstLatest(merged, response.messages)
+                const trimmed = trimVisible(reconciled, 'append')
                 return buildState(prev, {
                     messages: trimmed,
                     pending: [],
