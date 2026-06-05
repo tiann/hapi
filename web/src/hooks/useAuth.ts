@@ -37,6 +37,16 @@ function isNotBoundError(error: unknown): boolean {
     return error instanceof ApiError && error.status === 401 && error.code === 'not_bound'
 }
 
+const ACCESS_TOKEN_PREFIX = 'hapi_access_token::'
+
+function rememberAccessToken(baseUrl: string, accessToken: string): void {
+    try {
+        localStorage.setItem(`${ACCESS_TOKEN_PREFIX}${baseUrl}`, accessToken)
+    } catch {
+        // Ignore storage errors (private mode, full quota, etc.)
+    }
+}
+
 export function useAuth(authSource: AuthSource | null, baseUrl: string): {
     token: string | null
     user: AuthResponse['user'] | null
@@ -149,6 +159,10 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
             setToken(auth.token)
             setUser(auth.user)
             setNeedsBinding(false)
+            // Persist the CLI access token so Settings → Companion pairing QR
+            // can encode the same long-lived token in the deeplink. The PWA
+            // already does this for browser/CLI logins via useAuthSource.
+            rememberAccessToken(baseUrl, accessToken)
         } catch (error) {
             setError(error instanceof Error ? error.message : 'Binding failed')
             throw error
