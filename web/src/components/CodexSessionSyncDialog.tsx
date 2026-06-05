@@ -124,8 +124,7 @@ export function CodexSessionSyncDialog(props: {
     }
 
     const selectAll = () => {
-        const visibleIds = filteredSessions.map((session) => session.id)
-        setSelectedSessionIds((current) => Array.from(new Set([...current, ...visibleIds])))
+        setSelectedSessionIds(filteredSessions.map((session) => session.id))
     }
 
     const clearAll = () => {
