@@ -7,7 +7,7 @@ import { z } from 'zod'
  */
 export const AGENT_MESSAGE_PAYLOAD_TYPE = 'codex' as const
 
-export const AGENT_FLAVORS = ['claude', 'codex', 'cursor', 'gemini', 'kimi', 'opencode'] as const
+export const AGENT_FLAVORS = ['claude', 'codex', 'cursor', 'gemini', 'kimi', 'opencode', 'pi'] as const
 export type AgentFlavor = typeof AGENT_FLAVORS[number]
 export const AgentFlavorSchema = z.enum(AGENT_FLAVORS)
 
@@ -28,6 +28,9 @@ export type KimiPermissionMode = typeof KIMI_PERMISSION_MODES[number]
 
 export const OPENCODE_PERMISSION_MODES = ['default', 'plan', 'yolo'] as const
 export type OpencodePermissionMode = typeof OPENCODE_PERMISSION_MODES[number]
+
+export const PI_PERMISSION_MODES = ['default', 'yolo'] as const
+export type PiPermissionMode = typeof PI_PERMISSION_MODES[number]
 
 export const CURSOR_PERMISSION_MODES = ['default', 'plan', 'ask', 'yolo'] as const
 export type CursorPermissionMode = typeof CURSOR_PERMISSION_MODES[number]
@@ -112,6 +115,9 @@ export function getPermissionModesForFlavor(flavor?: string | null): readonly Pe
     }
     if (flavor === 'cursor') {
         return CURSOR_PERMISSION_MODES
+    }
+    if (flavor === 'pi') {
+        return PI_PERMISSION_MODES
     }
     return CLAUDE_PERMISSION_MODES
 }

@@ -16,6 +16,7 @@ const FLAVOR_CAPS: Record<AgentFlavor, ReadonlySet<Capability>> = {
     codex: new Set([Capabilities.ModelChange]),
     cursor: new Set([Capabilities.ModelChange]),
     opencode: new Set([Capabilities.ModelChange]),
+    pi: new Set([Capabilities.ModelChange]),
 }
 
 // --- Flavor display names ---
@@ -26,6 +27,7 @@ const FLAVOR_LABELS: Record<AgentFlavor, string> = {
     codex: 'Codex',
     cursor: 'Cursor',
     opencode: 'OpenCode',
+    pi: 'Pi',
 }
 
 // --- Query functions ---
