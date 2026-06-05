@@ -1,6 +1,7 @@
 # Native companion API contract (phone + Wear)
 
-**Audience:** Implementers of native companion apps (Android phone + Wear OS, iOS, etc.) that pair with a hapi hub via FCM.  
+**Audience:** Implementers of native companion apps (Android phone + Wear OS, iOS, etc.) that pair with a hapi hub via FCM.
+
 **Auth:** Same JWT as the web client (`POST /api/bind` → `Authorization: Bearer`).
 
 ## Scope
