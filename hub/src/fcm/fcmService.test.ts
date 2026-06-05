@@ -199,3 +199,102 @@ describe('FcmService.sendToNamespace', () => {
         expect(globalThis.fetch).not.toHaveBeenCalled()
     })
 })
+
+describe('FcmService.isHealthy (rolling outcome window)', () => {
+    let originalFetch: typeof globalThis.fetch
+    beforeEach(() => {
+        originalFetch = globalThis.fetch
+    })
+    afterEach(() => {
+        globalThis.fetch = originalFetch
+    })
+
+    it('starts healthy with an empty outcome buffer (innocent until proven guilty)', () => {
+        const store = makeStore([])
+        const svc = new FcmService('proj-id', { client_email: 'x', private_key: 'y' }, store as never)
+        expect(svc.isHealthy()).toBe(true)
+    })
+
+    it('flips to unhealthy after 5 consecutive transient failures', async () => {
+        const store = makeStore([
+            { namespace: 'default', token: 't1', platform: 'phone', deviceId: 'p1' }
+        ])
+        globalThis.fetch = mock(async () =>
+            new Response('Service Unavailable', { status: 503 })
+        ) as unknown as typeof fetch
+
+        const svc = new FcmService('proj-id', { client_email: 'x', private_key: 'y' }, store as never)
+
+        // 4 failures: still healthy (threshold is 5)
+        for (let i = 0; i < 4; i += 1) {
+            await svc.sendToNamespace('default', makePayload())
+        }
+        expect(svc.isHealthy()).toBe(true)
+
+        // 5th failure crosses the threshold
+        await svc.sendToNamespace('default', makePayload())
+        expect(svc.isHealthy()).toBe(false)
+    })
+
+    it('recovers to healthy as recent successes age out the failure tail', async () => {
+        const store = makeStore([
+            { namespace: 'default', token: 't1', platform: 'phone', deviceId: 'p1' }
+        ])
+        let callCount = 0
+        globalThis.fetch = mock(async () => {
+            callCount += 1
+            // First 5 calls fail (503), rest succeed
+            if (callCount <= 5) {
+                return new Response('Service Unavailable', { status: 503 })
+            }
+            return new Response('{"name":"ok"}', { status: 200 })
+        }) as unknown as typeof fetch
+
+        const svc = new FcmService('proj-id', { client_email: 'x', private_key: 'y' }, store as never)
+
+        for (let i = 0; i < 5; i += 1) {
+            await svc.sendToNamespace('default', makePayload())
+        }
+        expect(svc.isHealthy()).toBe(false)
+
+        // 4 successes after 5 failures: window is [F,F,F,F,F,S,S,S,S] -> trim
+        // to last 8: [F,F,F,F,S,S,S,S] -> 4 failures, threshold 5 -> healthy.
+        for (let i = 0; i < 4; i += 1) {
+            await svc.sendToNamespace('default', makePayload())
+        }
+        expect(svc.isHealthy()).toBe(true)
+    })
+
+    it('does NOT count invalid-token responses against health (per-device fact, not pipeline failure)', async () => {
+        const store = makeStore([
+            { namespace: 'default', token: 'rotated', platform: 'phone', deviceId: 'p1' }
+        ])
+        globalThis.fetch = mock(async () =>
+            new Response('{"error":{"status":"UNREGISTERED"}}', { status: 404 })
+        ) as unknown as typeof fetch
+
+        const svc = new FcmService('proj-id', { client_email: 'x', private_key: 'y' }, store as never)
+
+        // 10 invalid-token responses - the pipeline is fine, just the
+        // device is dead. Health must not flip.
+        for (let i = 0; i < 10; i += 1) {
+            await svc.sendToNamespace('default', makePayload())
+        }
+        expect(svc.isHealthy()).toBe(true)
+    })
+
+    it('counts fetch-throw (network error) as a health failure', async () => {
+        const store = makeStore([
+            { namespace: 'default', token: 't1', platform: 'phone', deviceId: 'p1' }
+        ])
+        globalThis.fetch = mock(async () => {
+            throw new Error('ECONNREFUSED')
+        }) as unknown as typeof fetch
+
+        const svc = new FcmService('proj-id', { client_email: 'x', private_key: 'y' }, store as never)
+        for (let i = 0; i < 5; i += 1) {
+            await svc.sendToNamespace('default', makePayload())
+        }
+        expect(svc.isHealthy()).toBe(false)
+    })
+})

@@ -202,13 +202,28 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
 
     const fcmConfig = resolveFcmConfig()
 
+    // Build the optional FCM service early so the native-fallback probe
+    // can consult its health gate. When FCM is configured, `fcmService` is
+    // shared between the FcmNotificationChannel and the probe so a broken
+    // pipeline (expired credentials, sustained 5xx) lets web-push run as
+    // a last-resort surface for the namespace instead of silently muting
+    // both channels.
+    const fcmService = fcmConfig
+        ? new FcmService(fcmConfig.projectId, fcmConfig.serviceAccount, store)
+        : null
+
     // Only suppress web-push when a native FCM channel is actually live
-    // AND a device is registered for the namespace. The fcmConfig gate is
-    // critical: without it, stale device rows from a prior FCM-enabled
-    // boot would silently drop web-push on a hub started without the
-    // service-account env var (notifications would vanish entirely).
-    // See `buildNativeFallbackProbe` for the contract.
-    const nativeFallbackProbe = buildNativeFallbackProbe(store, fcmConfig)
+    // AND a device is registered for the namespace AND the FCM pipeline is
+    // currently healthy. The fcmConfig gate is critical: without it, stale
+    // device rows from a prior FCM-enabled boot would silently drop
+    // web-push on a hub started without the service-account env var
+    // (notifications would vanish entirely). See `buildNativeFallbackProbe`
+    // for the full contract.
+    const nativeFallbackProbe = buildNativeFallbackProbe(
+        store,
+        fcmConfig,
+        fcmService ?? undefined
+    )
 
     const notificationChannels: NotificationChannel[] = [
         new PushNotificationChannel(
@@ -220,8 +235,7 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
         )
     ]
 
-    if (fcmConfig) {
-        const fcmService = new FcmService(fcmConfig.projectId, fcmConfig.serviceAccount, store)
+    if (fcmConfig && fcmService) {
         notificationChannels.push(new FcmNotificationChannel(fcmService, sseManager, visibilityTracker, store))
         console.log('[Fcm] Native companion push enabled (project:', fcmConfig.projectId + ')')
     }

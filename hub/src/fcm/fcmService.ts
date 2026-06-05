@@ -55,11 +55,45 @@ type FcmSendResult = {
 type FcmTokenSendResult = 'sent' | 'invalid' | 'failed'
 
 export class FcmService {
+    /**
+     * Rolling window of the last N send outcomes. Drives `isHealthy()`,
+     * which the native-fallback probe consults to decide whether suppressing
+     * web-push for this namespace is still safe. We deliberately do NOT
+     * count `invalid` here - an invalid token is a per-device fact, not an
+     * FCM-pipeline-broken signal (FCM was reachable, it just rejected one
+     * stale token). Only `sent` and `failed` populate the buffer.
+     */
+    private recentOutcomes: Array<'sent' | 'failed'> = []
+    private static readonly HEALTH_WINDOW = 8
+    private static readonly HEALTH_FAILURE_THRESHOLD = 5
+
     constructor(
         private readonly projectId: string,
         private readonly serviceAccount: ServiceAccount,
         private readonly store: Store
     ) {}
+
+    /**
+     * Health gate for the native-fallback probe. Returns false when the
+     * recent-outcome window is dominated by failures (broken Firebase
+     * credentials, sustained 5xx, network blackhole). When unhealthy, the
+     * probe lets web-push fire as a last-resort surface for this namespace.
+     *
+     * Empty buffer is treated as healthy (innocent until proven guilty) so
+     * a freshly-started hub does not silently double-fire on event #1.
+     */
+    isHealthy(): boolean {
+        if (this.recentOutcomes.length === 0) return true
+        const failures = this.recentOutcomes.filter((o) => o === 'failed').length
+        return failures < FcmService.HEALTH_FAILURE_THRESHOLD
+    }
+
+    private recordOutcome(outcome: 'sent' | 'failed'): void {
+        this.recentOutcomes.push(outcome)
+        if (this.recentOutcomes.length > FcmService.HEALTH_WINDOW) {
+            this.recentOutcomes.shift()
+        }
+    }
 
     async sendToNamespace(namespace: string, payload: FcmSendPayload): Promise<FcmSendResult> {
         const devices = this.store.fcm.getDevicesByNamespace(namespace)
@@ -67,13 +101,31 @@ export class FcmService {
             return { sent: 0, failed: 0, invalidTokens: [] }
         }
 
-        const accessToken = await getFcmAccessToken(this.serviceAccount)
+        let accessToken: string
+        try {
+            accessToken = await getFcmAccessToken(this.serviceAccount)
+        } catch (e) {
+            // Token-fetch failure (expired service account key, OAuth
+            // outage, network) - count one health-failure (not one per
+            // device, that would over-weight the buffer) and return.
+            console.error('[FcmService] Token fetch failed:', e instanceof Error ? e.message : e)
+            this.recordOutcome('failed')
+            return { sent: 0, failed: devices.length, invalidTokens: [] }
+        }
+
         const invalidTokens: string[] = []
         let sent = 0
         let failed = 0
 
         await Promise.all(devices.map(async (device) => {
             const result = await this.sendToToken(accessToken, device.token, payload, device.platform)
+            // `invalid` is a per-device fact, not a pipeline signal -
+            // exclude it from the health buffer (see field doc above).
+            if (result === 'sent') {
+                this.recordOutcome('sent')
+            } else if (result === 'failed') {
+                this.recordOutcome('failed')
+            }
             if (result === 'sent') {
                 sent += 1
                 return
