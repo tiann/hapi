@@ -43,13 +43,19 @@ Upsert on `(namespace, deviceId, platform)` - same device re-registering replace
 
 ## Outbound push (hub → device)
 
-Hub sends FCM HTTP v1 when Web Push would fire, if FCM is configured and client not visible via SSE (same rule as `PushNotificationChannel`).
+Hub sends FCM HTTP v1 whenever a notification event is emitted for a
+namespace with registered native devices and FCM is configured. The native
+companion is treated as the canonical wrist-first surface, so FCM fires
+**unconditionally** (independent of whether a PWA tab happens to be
+foreground / visible via SSE) - that's deliberate, see
+`FcmNotificationChannel.deliver()`. Web Push is suppressed for the same
+namespace to avoid duplicate OS notifications.
 
 ### Data payload (all platforms)
 
 | Key | Example | Purpose |
 |-----|---------|---------|
-| `type` | `ready` | `ready`, `permission-request`, `task-notification`, `session-completed` |
+| `type` | `ready` | `ready`, `permission-request`, `task-notification` |
 | `sessionId` | uuid | Target session |
 | `sessionName` | string | Display name (`agent - project`) |
 | `url` | `/sessions/{id}` | Deep link path |
