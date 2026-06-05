@@ -14,6 +14,7 @@ import { PushNotificationChannel } from './push/pushNotificationChannel'
 import { FcmService } from './fcm/fcmService'
 import { FcmNotificationChannel } from './fcm/fcmNotificationChannel'
 import { resolveFcmConfig } from './fcm/fcmConfig'
+import { buildNativeFallbackProbe } from './fcm/nativeFallbackProbe'
 import { VisibilityTracker } from './visibility/visibilityTracker'
 import { TunnelManager } from './tunnel'
 import { waitForTunnelTlsReady } from './tunnel/tlsGate'
@@ -199,13 +200,15 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
 
     syncEngine = new SyncEngine(store, socketServer.io, socketServer.rpcRegistry, sseManager)
 
-    // When a native companion (Android FCM) device is registered for a
-    // namespace, the web-push fallback is suppressed - otherwise the
-    // operator gets duplicate notifications: one in the native app, one
-    // from the PWA service worker. The probe is namespace-scoped so a user
-    // who has only registered the PWA still gets web-push as today.
-    const nativeFallbackProbe = (namespace: string): boolean =>
-        store.fcm.getDevicesByNamespace(namespace).length > 0
+    const fcmConfig = resolveFcmConfig()
+
+    // Only suppress web-push when a native FCM channel is actually live
+    // AND a device is registered for the namespace. The fcmConfig gate is
+    // critical: without it, stale device rows from a prior FCM-enabled
+    // boot would silently drop web-push on a hub started without the
+    // service-account env var (notifications would vanish entirely).
+    // See `buildNativeFallbackProbe` for the contract.
+    const nativeFallbackProbe = buildNativeFallbackProbe(store, fcmConfig)
 
     const notificationChannels: NotificationChannel[] = [
         new PushNotificationChannel(
@@ -217,7 +220,6 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
         )
     ]
 
-    const fcmConfig = resolveFcmConfig()
     if (fcmConfig) {
         const fcmService = new FcmService(fcmConfig.projectId, fcmConfig.serviceAccount, store)
         notificationChannels.push(new FcmNotificationChannel(fcmService, sseManager, visibilityTracker, store))
