@@ -55,4 +55,36 @@ describe('buildNativeFallbackProbe', () => {
         expect(probe('empty')).toBe(false)
         expect(probe('untouched')).toBe(false)
     })
+
+    it('returns false when fcmService reports unhealthy, even with registered devices', () => {
+        const store = makeStore({ default: 3 })
+        const fcmConfig = { projectId: 'p', serviceAccount: { client_email: 'x', private_key: 'y' } }
+        const fcmService = { isHealthy: mock(() => false) }
+        const probe = buildNativeFallbackProbe(store as unknown as Store, fcmConfig, fcmService)
+
+        expect(probe('default')).toBe(false)
+        expect(fcmService.isHealthy).toHaveBeenCalled()
+        // We short-circuit before hitting the device store - the namespace
+        // has registered devices but a broken FCM pipeline means web-push
+        // is the only surface still able to reach the operator.
+        expect(store.fcm.getDevicesByNamespace).not.toHaveBeenCalled()
+    })
+
+    it('returns true when fcmService reports healthy and devices exist', () => {
+        const store = makeStore({ default: 1 })
+        const fcmConfig = { projectId: 'p', serviceAccount: { client_email: 'x', private_key: 'y' } }
+        const fcmService = { isHealthy: mock(() => true) }
+        const probe = buildNativeFallbackProbe(store as unknown as Store, fcmConfig, fcmService)
+
+        expect(probe('default')).toBe(true)
+        expect(fcmService.isHealthy).toHaveBeenCalled()
+    })
+
+    it('treats absent fcmService as healthy (back-compat with single-arg call site)', () => {
+        const store = makeStore({ default: 2 })
+        const fcmConfig = { projectId: 'p', serviceAccount: { client_email: 'x', private_key: 'y' } }
+        const probe = buildNativeFallbackProbe(store as unknown as Store, fcmConfig)
+
+        expect(probe('default')).toBe(true)
+    })
 })
