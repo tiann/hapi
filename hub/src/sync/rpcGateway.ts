@@ -21,7 +21,7 @@ import type { Server } from 'socket.io'
 import type { RpcRegistry } from '../socket/rpcRegistry'
 
 const DEFAULT_RPC_TIMEOUT_MS = 30_000
-const MODEL_LIST_RPC_TIMEOUT_MS = 120_000
+const MODEL_LIST_RPC_TIMEOUT_MS = 15_000
 
 export type RpcCommandResponse = CommandResponse
 export type RpcReadFileResponse = FileReadResponse
