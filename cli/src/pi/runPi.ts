@@ -2,12 +2,13 @@ import { logger } from '@/ui/logger';
 import { bootstrapSession } from '@/agent/sessionFactory';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
 import { registerLocalHandoffHandler } from '@/agent/localHandoff';
-import { createModeChangeHandler, createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle';
+import { createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle';
 import { registerSessionConfigRpc } from '@/agent/sessionConfigRpc';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import { PiTransport } from './PiTransport';
 import { convertPiEvent } from './PiEventConverter';
+import type { PiResponseEvent } from './types';
 import type { PiPermissionMode } from '@hapi/protocol/modes';
 
 export async function runPi(opts: {
@@ -38,12 +39,12 @@ export async function runPi(opts: {
     let currentModel: string | null = opts.model ?? null;
     let currentPermissionMode: PiPermissionMode = opts.permissionMode ?? 'default';
 
-    const transport = new PiTransport('pi', ['--mode', 'rpc'], workingDirectory);
+    const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: workingDirectory });
 
     const lifecycle = createRunnerLifecycle({
         session,
         logTag: 'pi',
-        stopKeepAlive: () => { /* Pi manages its own keep-alive via HAPI session */ },
+        stopKeepAlive: () => { /* Pi keep-alive handled by HAPI session */ },
         onAfterClose: () => {
             transport.kill();
         }
@@ -53,6 +54,14 @@ export async function runPi(opts: {
     registerKillSessionHandler(session.rpcHandlerManager, lifecycle.cleanupAndExit);
     registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);
 
+    // Cleanup guard — prevents double-cleanup from error/close/finally racing
+    let cleanupInitiated = false;
+    const safeCleanup = async () => {
+        if (cleanupInitiated) return;
+        cleanupInitiated = true;
+        await lifecycle.cleanupAndExit();
+    };
+
     // --- Transport event handlers ---
 
     transport.onError((error) => {
@@ -61,7 +70,7 @@ export async function runPi(opts: {
         lifecycle.setExitCode(1);
         lifecycle.setArchiveReason(error.message.slice(0, 200));
         lifecycle.setSessionEndReason('error');
-        void lifecycle.cleanupAndExit();
+        void safeCleanup();
     });
 
     transport.onClose((code, signal) => {
@@ -73,39 +82,28 @@ export async function runPi(opts: {
         lifecycle.setExitCode(1);
         lifecycle.setArchiveReason(reason.slice(0, 200));
         lifecycle.setSessionEndReason('error');
-        void lifecycle.cleanupAndExit();
+        void safeCleanup();
     });
 
     transport.onEvent((event) => {
-        const type = event.type as string;
-
-        // Response events — runner handles directly
-        if (type === 'response') {
-            handleResponse(event as Record<string, unknown>);
+        if (event.type === 'response') {
+            handleResponse(event as unknown as PiResponseEvent);
             return;
         }
 
-        // All other events — convert to AgentMessage and emit to session
         const messages = convertPiEvent(event);
         for (const msg of messages) {
-            session.sendSessionEvent({
-                type: 'message',
-                message: msg
-            });
+            session.sendAgentMessage(msg);
         }
     });
 
-    function handleResponse(response: Record<string, unknown>): void {
-        const command = response.command as string;
-        const success = response.success as boolean;
+    function handleResponse(response: PiResponseEvent): void {
+        const { command, success } = response;
 
         if (!success) {
-            const error = response.error as string ?? 'Unknown Pi error';
+            const error = response.error ?? 'Unknown Pi error';
             logger.debug(`[pi] RPC error for ${command}: ${error}`);
-            session.sendSessionEvent({
-                type: 'message',
-                message: { type: 'error', message: error }
-            });
+            session.sendSessionEvent({ type: 'message', message: error });
             return;
         }
 
@@ -159,7 +157,7 @@ export async function runPi(opts: {
             if (currentModel) {
                 transport.send({ type: 'set_model', provider: '', modelId: currentModel });
             }
-            session.pushKeepAlive();
+            session.keepAlive(false, startingMode);
         }
     });
 
@@ -177,32 +175,25 @@ export async function runPi(opts: {
         return { success: true };
     });
 
-    let crashed = false;
-
     try {
-        // Start transport and initialize Pi session
         transport.start();
 
         transport.send({ type: 'new_session' });
         transport.send({ type: 'get_state' });
 
-        // Keep process alive until transport closes
+        // Block until cleanup is triggered by error/close handler
         await new Promise<void>((resolve) => {
             const origCleanup = lifecycle.cleanupAndExit.bind(lifecycle);
-            // Override cleanupAndExit to also resolve our promise
             lifecycle.cleanupAndExit = async (codeOverride?: number) => {
                 resolve();
                 await origCleanup(codeOverride);
             };
         });
     } catch (error) {
-        crashed = true;
         lifecycle.markCrash(error);
+        lifecycle.setSessionEndReason('error');
         logger.debug('[pi] Loop error:', error);
     } finally {
-        if (!crashed) {
-            lifecycle.setSessionEndReason('completed');
-        }
-        await lifecycle.cleanupAndExit();
+        await safeCleanup();
     }
 }

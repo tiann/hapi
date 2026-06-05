@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { logger } from '@/ui/logger';
+import type { PiAgentEvent, PiRpcCommand } from './types';
 
 export interface PiTransportOptions {
     command: string;
@@ -9,19 +10,28 @@ export interface PiTransportOptions {
 
 export class PiTransport {
     private process: ChildProcessWithoutNullStreams | null = null;
-    private eventHandler: ((event: Record<string, unknown>) => void) | null = null;
+    private eventHandler: ((event: PiAgentEvent) => void) | null = null;
     private closeHandler: ((code: number | null, signal: string | null) => void) | null = null;
     private errorHandler: ((error: Error) => void) | null = null;
     private killed = false;
+    private started = false;
     private exited = false;
     private buffer = '';
     private readonly options: PiTransportOptions;
 
-    constructor(command: string, args: string[], cwd: string) {
-        this.options = { command, args, cwd };
+    constructor(options: PiTransportOptions) {
+        this.options = options;
     }
 
     start(): void {
+        if (this.started) {
+            logger.warn('[pi] PiTransport.start() called twice — ignoring');
+            return;
+        }
+        this.started = true;
+
+        logger.debug(`[pi] Starting Pi process: ${this.options.command} ${this.options.args.join(' ')}`);
+
         this.process = spawn(this.options.command, this.options.args, {
             cwd: this.options.cwd,
             stdio: ['pipe', 'pipe', 'pipe']
@@ -55,8 +65,11 @@ export class PiTransport {
         });
     }
 
-    send(message: Record<string, unknown>): void {
-        if (!this.process || this.killed) return;
+    send(message: PiRpcCommand): void {
+        if (!this.process || this.killed) {
+            logger.debug('[pi] Dropping message: transport not running');
+            return;
+        }
         try {
             this.process.stdin.write(JSON.stringify(message) + '\n');
         } catch (err) {
@@ -69,7 +82,7 @@ export class PiTransport {
         }
     }
 
-    onEvent(handler: (event: Record<string, unknown>) => void): void {
+    onEvent(handler: (event: PiAgentEvent) => void): void {
         this.eventHandler = handler;
     }
 
@@ -111,7 +124,7 @@ export class PiTransport {
         try {
             const parsed = JSON.parse(line);
             if (typeof parsed === 'object' && parsed !== null) {
-                this.eventHandler?.(parsed as Record<string, unknown>);
+                this.eventHandler?.(parsed as PiAgentEvent);
             }
         } catch {
             logger.debug(`[pi] Skipping malformed JSON: ${line.slice(0, 100)}`);

@@ -29,12 +29,12 @@ function createMockProcess(): ChildProcessWithoutNullStreams & EventEmitter {
     emitter.stdout = stdout;
     emitter.stderr = stderr;
     emitter.kill = vi.fn().mockReturnValue(true);
-    emitter.pid = 12345;
+    // pid is read-only in ChildProcess, use type assertion for mock
+    (emitter as any).pid = 12345;
 
     return emitter;
 }
 
-// Import after mock setup
 const { PiTransport } = await import('./PiTransport');
 
 describe('PiTransport', () => {
@@ -48,7 +48,7 @@ describe('PiTransport', () => {
 
     describe('start()', () => {
         it('should spawn pi with correct args', () => {
-            const transport = new PiTransport('pi', ['--mode', 'rpc'], '/work');
+            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
             transport.start();
 
             expect(mockSpawn).toHaveBeenCalledWith('pi', ['--mode', 'rpc'], expect.objectContaining({
@@ -58,7 +58,7 @@ describe('PiTransport', () => {
         });
 
         it('should emit error event on ENOENT', () => {
-            const transport = new PiTransport('pi', ['--mode', 'rpc'], '/work');
+            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
             transport.start();
 
             const errorSpy = vi.fn();
@@ -71,11 +71,20 @@ describe('PiTransport', () => {
             expect(errorSpy).toHaveBeenCalledWith(expect.any(Error));
             expect(errorSpy.mock.calls[0][0].message).toContain('not found');
         });
+
+        it('should ignore double-start call', () => {
+            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
+            transport.start();
+            expect(mockSpawn).toHaveBeenCalledTimes(1);
+
+            transport.start();
+            expect(mockSpawn).toHaveBeenCalledTimes(1);
+        });
     });
 
     describe('send()', () => {
         it('should write JSON to stdin', () => {
-            const transport = new PiTransport('pi', ['--mode', 'rpc'], '/work');
+            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
             transport.start();
 
             transport.send({ type: 'prompt', message: 'hello' });
@@ -85,7 +94,7 @@ describe('PiTransport', () => {
         });
 
         it('should handle EPIPE gracefully without throwing', () => {
-            const transport = new PiTransport('pi', ['--mode', 'rpc'], '/work');
+            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
             transport.start();
 
             mockProcess.stdin.write = vi.fn().mockImplementation(() => {
@@ -100,7 +109,7 @@ describe('PiTransport', () => {
 
     describe('onEvent()', () => {
         it('should parse valid JSONL from stdout and call handler', () => {
-            const transport = new PiTransport('pi', ['--mode', 'rpc'], '/work');
+            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
             transport.start();
 
             const handler = vi.fn();
@@ -113,7 +122,7 @@ describe('PiTransport', () => {
         });
 
         it('should skip malformed JSON and not crash', () => {
-            const transport = new PiTransport('pi', ['--mode', 'rpc'], '/work');
+            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
             transport.start();
 
             const handler = vi.fn();
@@ -124,7 +133,7 @@ describe('PiTransport', () => {
         });
 
         it('should handle multiple JSONL lines in one chunk', () => {
-            const transport = new PiTransport('pi', ['--mode', 'rpc'], '/work');
+            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
             transport.start();
 
             const handler = vi.fn();
@@ -142,7 +151,7 @@ describe('PiTransport', () => {
 
     describe('kill()', () => {
         it('should send SIGTERM to the process', () => {
-            const transport = new PiTransport('pi', ['--mode', 'rpc'], '/work');
+            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
             transport.start();
 
             transport.kill();
@@ -150,14 +159,14 @@ describe('PiTransport', () => {
         });
 
         it('should be a no-op when process is not running', () => {
-            const transport = new PiTransport('pi', ['--mode', 'rpc'], '/work');
+            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
             expect(() => transport.kill()).not.toThrow();
         });
     });
 
     describe('onClose()', () => {
         it('should call handler when subprocess exits', () => {
-            const transport = new PiTransport('pi', ['--mode', 'rpc'], '/work');
+            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
             transport.start();
 
             const closeHandler = vi.fn();
@@ -168,7 +177,7 @@ describe('PiTransport', () => {
         });
 
         it('should call handler with signal when killed by signal', () => {
-            const transport = new PiTransport('pi', ['--mode', 'rpc'], '/work');
+            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
             transport.start();
 
             const closeHandler = vi.fn();
@@ -181,18 +190,18 @@ describe('PiTransport', () => {
 
     describe('isRunning()', () => {
         it('should return false before start', () => {
-            const transport = new PiTransport('pi', ['--mode', 'rpc'], '/work');
+            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
             expect(transport.isRunning()).toBe(false);
         });
 
         it('should return true after start', () => {
-            const transport = new PiTransport('pi', ['--mode', 'rpc'], '/work');
+            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
             transport.start();
             expect(transport.isRunning()).toBe(true);
         });
 
         it('should return false after process exits', () => {
-            const transport = new PiTransport('pi', ['--mode', 'rpc'], '/work');
+            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
             transport.start();
 
             mockProcess.emit('close', 0, null);
@@ -200,7 +209,7 @@ describe('PiTransport', () => {
         });
 
         it('should return false after kill', () => {
-            const transport = new PiTransport('pi', ['--mode', 'rpc'], '/work');
+            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
             transport.start();
 
             transport.kill();

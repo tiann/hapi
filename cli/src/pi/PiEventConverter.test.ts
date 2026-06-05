@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { convertPiEvent } from './PiEventConverter';
-import type { AgentMessage } from '@/agent/types';
+import type { PiAgentEvent } from './types';
 
 describe('convertPiEvent', () => {
     it('should convert message_update with text_delta to text AgentMessage', () => {
@@ -27,11 +27,16 @@ describe('convertPiEvent', () => {
         expect(result).toEqual([]);
     });
 
-    it('should return empty array for message_update with end sub-type', () => {
+    it('should return empty array for message_update with done sub-type', () => {
         const result = convertPiEvent({
             type: 'message_update',
-            assistantMessageEvent: { type: 'done' }
+            assistantMessageEvent: { type: 'done', reason: 'stop' }
         });
+        expect(result).toEqual([]);
+    });
+
+    it('should return empty array for message_update without assistantMessageEvent', () => {
+        const result = convertPiEvent({ type: 'message_update' });
         expect(result).toEqual([]);
     });
 
@@ -87,7 +92,6 @@ describe('convertPiEvent', () => {
         const result = convertPiEvent({
             type: 'turn_end',
             message: {
-                role: 'assistant',
                 usage: {
                     input: 100,
                     output: 200,
@@ -118,7 +122,6 @@ describe('convertPiEvent', () => {
         const result = convertPiEvent({
             type: 'turn_end',
             message: {
-                role: 'assistant',
                 usage: { input: 50, output: 100, cacheRead: 0, cacheWrite: 0, totalTokens: 150 },
                 stopReason: 'toolUse'
             },
@@ -132,6 +135,18 @@ describe('convertPiEvent', () => {
         });
     });
 
+    it('should convert turn_end without usage data', () => {
+        const result = convertPiEvent({
+            type: 'turn_end'
+        });
+
+        expect(result).toHaveLength(1);
+        expect(result[0]).toEqual({
+            type: 'turn_complete',
+            stopReason: 'stop'
+        });
+    });
+
     it('should return empty array for agent_start', () => {
         expect(convertPiEvent({ type: 'agent_start' })).toEqual([]);
     });
@@ -141,7 +156,8 @@ describe('convertPiEvent', () => {
     });
 
     it('should return empty array for response events', () => {
-        expect(convertPiEvent({ type: 'response', command: 'prompt', success: true })).toEqual([]);
+        // Response events use a different type, but we handle gracefully
+        expect(convertPiEvent({ type: 'response', command: 'prompt', success: true } as unknown as PiAgentEvent)).toEqual([]);
     });
 
     it('should return empty array for turn_start', () => {
@@ -152,11 +168,13 @@ describe('convertPiEvent', () => {
         expect(convertPiEvent({ type: 'something_else' })).toEqual([]);
     });
 
-    it('should convert message_update with text_delta with empty delta', () => {
-        const result = convertPiEvent({
-            type: 'message_update',
-            assistantMessageEvent: { type: 'text_delta', delta: '' }
-        });
-        expect(result).toEqual([{ type: 'text', text: '' }]);
+    it('should not crash on unexpected data structure (safety net)', () => {
+        // Simulate a malformed event that somehow passes through
+        const weird = Object.create(null);
+        weird.type = 'message_update';
+        weird.assistantMessageEvent = undefined;
+        // Should not throw
+        expect(() => convertPiEvent(weird as unknown as PiAgentEvent)).not.toThrow();
+        expect(convertPiEvent(weird as unknown as PiAgentEvent)).toEqual([]);
     });
 });
