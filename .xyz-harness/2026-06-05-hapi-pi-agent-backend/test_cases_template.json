@@ -1,0 +1,144 @@
+{
+  "test_cases": [
+    {
+      "id": "TC-1-01",
+      "type": "integration",
+      "title": "PiTransport.start() spawns pi --mode rpc process",
+      "description": "Verify PiTransport spawns pi with correct args and establishes JSONL communication",
+      "steps": ["mock child_process.spawn", "call transport.start()", "verify spawn called with ['--mode', 'rpc']", "verify stdin/stdout pipes configured"]
+    },
+    {
+      "id": "TC-1-02",
+      "type": "integration",
+      "title": "PiTransport.start() throws on ENOENT",
+      "description": "When pi is not in PATH, start() throws descriptive error (AC-5)",
+      "steps": ["mock spawn to throw ENOENT", "call transport.start()", "verify error message mentions 'not found' or 'not installed'"]
+    },
+    {
+      "id": "TC-1-03",
+      "type": "integration",
+      "title": "PiTransport.send() writes JSON to stdin",
+      "description": "Verify RPC commands are serialized as JSONL to Pi stdin",
+      "steps": ["start transport with mock process", "call send({ type: 'prompt', message: 'hello' })", "verify stdin.write called with valid JSON + newline"]
+    },
+    {
+      "id": "TC-1-04",
+      "type": "integration",
+      "title": "PiTransport parses valid JSONL from stdout",
+      "description": "Verify stdout lines are parsed and emitted as events",
+      "steps": ["start transport", "simulate stdout line: '{\"type\":\"message_update\"}'", "verify onEvent handler receives parsed object"]
+    },
+    {
+      "id": "TC-1-05",
+      "type": "integration",
+      "title": "PiTransport skips malformed JSONL (AC-8)",
+      "description": "Malformed JSON lines are logged as warning and skipped without crashing",
+      "steps": ["start transport", "simulate stdout line: 'not-json'", "verify no crash, warning logged, session continues"]
+    },
+    {
+      "id": "TC-1-06",
+      "type": "integration",
+      "title": "PiTransport.kill() terminates subprocess (AC-6)",
+      "description": "kill() sends SIGTERM to the child process",
+      "steps": ["start transport", "call kill()", "verify process.kill called with SIGTERM"]
+    },
+    {
+      "id": "TC-1-07",
+      "type": "integration",
+      "title": "PiTransport.onClose fires on subprocess exit (AC-7)",
+      "description": "When Pi process exits, onClose handler is called with exit code",
+      "steps": ["start transport", "simulate process 'close' event with code=1", "verify onClose handler called"]
+    },
+    {
+      "id": "TC-2-01",
+      "type": "unit",
+      "title": "PiEventConverter converts text_delta to text AgentMessage",
+      "description": "message_update with assistantMessageEvent.type='text_delta' produces text AgentMessage",
+      "steps": ["call convert with text_delta event", "verify result is [{ type: 'text', text: deltaValue }]"]
+    },
+    {
+      "id": "TC-2-02",
+      "type": "unit",
+      "title": "PiEventConverter converts thinking_delta to reasoning AgentMessage",
+      "description": "message_update with assistantMessageEvent.type='thinking_delta' produces reasoning AgentMessage with live:true",
+      "steps": ["call convert with thinking_delta event", "verify result is [{ type: 'reasoning', text: deltaValue, live: true }]"]
+    },
+    {
+      "id": "TC-2-03",
+      "type": "unit",
+      "title": "PiEventConverter converts tool_execution_start to tool_call",
+      "description": "tool_execution_start produces tool_call AgentMessage with in_progress status",
+      "steps": ["call convert with tool_execution_start event", "verify result has tool_call with correct id, name, input, status='in_progress'"]
+    },
+    {
+      "id": "TC-2-04",
+      "type": "unit",
+      "title": "PiEventConverter converts tool_execution_end to tool_result",
+      "description": "tool_execution_end produces tool_result AgentMessage with completed/failed status based on is_error",
+      "steps": ["call convert with tool_execution_end (is_error=false)", "verify status='completed'", "call convert with is_error=true", "verify status='failed'"]
+    },
+    {
+      "id": "TC-2-05",
+      "type": "unit",
+      "title": "PiEventConverter converts turn_end to usage + turn_complete (2 messages)",
+      "description": "turn_end produces two AgentMessages: usage then turn_complete",
+      "steps": ["call convert with turn_end event containing usage data", "verify result has 2 messages", "first is usage, second is turn_complete"]
+    },
+    {
+      "id": "TC-2-06",
+      "type": "unit",
+      "title": "PiEventConverter returns empty array for unknown events",
+      "description": "agent_end, response, turn_start, and unknown types return []",
+      "steps": ["call convert with agent_end", "verify []", "call convert with response", "verify []", "call convert with unknown type", "verify []"]
+    },
+    {
+      "id": "TC-3-01",
+      "type": "integration",
+      "title": "hapi pi command exits with error when pi not in PATH (AC-5)",
+      "description": "Running 'hapi pi' without pi installed shows error and exits non-zero",
+      "steps": ["set PATH to exclude pi", "run hapi pi command", "verify stderr contains error message", "verify exit code != 0"]
+    },
+    {
+      "id": "TC-3-02",
+      "type": "integration",
+      "title": "hapi pi registers 'pi' in AGENT_FLAVORS",
+      "description": "Verify shared/src/modes.ts includes 'pi' in AGENT_FLAVORS and PI_PERMISSION_MODES",
+      "steps": ["import AGENT_FLAVORS from shared", "verify 'pi' is in array", "verify PI_PERMISSION_MODES = ['default', 'yolo']"]
+    },
+    {
+      "id": "TC-3-03",
+      "type": "integration",
+      "title": "runPi creates session and routes messages (AC-1, AC-2)",
+      "description": "runPi bootstraps session, starts transport, routes user messages to Pi",
+      "steps": ["mock PiTransport", "call runPi()", "verify bootstrapSession called with flavor='pi'", "verify transport.send called with prompt on user message"]
+    },
+    {
+      "id": "TC-3-04",
+      "type": "integration",
+      "title": "runPi handles abort request (AC-3)",
+      "description": "Abort RPC triggers transport.send with abort command",
+      "steps": ["mock PiTransport", "start runPi", "trigger abort RPC", "verify transport.send({ type: 'abort' }) called"]
+    },
+    {
+      "id": "TC-3-05",
+      "type": "integration",
+      "title": "runPi handles model switch (AC-4)",
+      "description": "Session config RPC triggers transport.send with set_model command",
+      "steps": ["mock PiTransport", "start runPi", "trigger set-session-config RPC with model", "verify transport.send({ type: 'set_model', ... }) called"]
+    },
+    {
+      "id": "TC-3-06",
+      "type": "integration",
+      "title": "runPi cleans up on Pi crash (AC-7)",
+      "description": "When transport emits close with error, runPi shows error and ends session",
+      "steps": ["mock PiTransport", "start runPi", "emit close event with code=1", "verify session.sendSessionDeath called", "verify error message shown"]
+    },
+    {
+      "id": "TC-3-07",
+      "type": "integration",
+      "title": "runPi cleans up on HAPI exit (AC-6)",
+      "description": "SIGTERM to HAPI triggers transport.kill()",
+      "steps": ["mock PiTransport", "start runPi", "simulate SIGTERM", "verify transport.kill() called"]
+    }
+  ]
+}
