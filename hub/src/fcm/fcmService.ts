@@ -44,6 +44,16 @@ type FcmSendResult = {
     invalidTokens: string[]
 }
 
+/**
+ * Outcome of a single FCM send. We split `failed` into:
+ *   - `invalid`: token is dead and will never succeed (uninstall, rotation,
+ *     malformed). Safe to remove from the device registry.
+ *   - `failed`:  transient or out-of-band error (rate limit, 5xx, auth
+ *     glitch). MUST NOT be treated as token death - we'd silently
+ *     unregister live devices on every Google blip.
+ */
+type FcmTokenSendResult = 'sent' | 'invalid' | 'failed'
+
 export class FcmService {
     constructor(
         private readonly projectId: string,
@@ -63,14 +73,16 @@ export class FcmService {
         let failed = 0
 
         await Promise.all(devices.map(async (device) => {
-            const ok = await this.sendToToken(accessToken, device.token, payload, device.platform)
-            if (ok) {
+            const result = await this.sendToToken(accessToken, device.token, payload, device.platform)
+            if (result === 'sent') {
                 sent += 1
                 return
             }
             failed += 1
-            invalidTokens.push(device.token)
-            this.store.fcm.removeDeviceByToken(namespace, device.token)
+            if (result === 'invalid') {
+                invalidTokens.push(device.token)
+                this.store.fcm.removeDeviceByToken(namespace, device.token)
+            }
         }))
 
         return { sent, failed, invalidTokens }
@@ -81,7 +93,7 @@ export class FcmService {
         token: string,
         payload: FcmSendPayload,
         platform: 'phone' | 'wear'
-    ): Promise<boolean> {
+    ): Promise<FcmTokenSendResult> {
         const url = `https://fcm.googleapis.com/v1/projects/${this.projectId}/messages:send`
         const dataRecord: Record<string, string> = {
             type: payload.data.type,
@@ -119,26 +131,45 @@ export class FcmService {
             }
         }
 
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-                authorization: `Bearer ${accessToken}`,
-                'content-type': 'application/json'
-            },
-            body: JSON.stringify({ message })
-        })
+        let response: Response
+        try {
+            response = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    authorization: `Bearer ${accessToken}`,
+                    'content-type': 'application/json'
+                },
+                body: JSON.stringify({ message })
+            })
+        } catch (e) {
+            // Network error (DNS, TCP, TLS) - transient, never a token-death signal.
+            console.error('[FcmService] Send threw:', e instanceof Error ? e.message : e)
+            return 'failed'
+        }
 
         if (response.ok) {
-            return true
+            return 'sent'
         }
 
         const body = await response.text().catch(() => '')
-        const invalid = response.status === 404
-            || body.includes('UNREGISTERED')
-            || body.includes('NOT_FOUND')
+        // Per FCM v1 docs, only these signal a permanently-dead token:
+        //   - HTTP 404 with UNREGISTERED      (app uninstalled / token rotated)
+        //   - HTTP 404 with NOT_FOUND         (legacy alias)
+        //   - HTTP 400 with INVALID_ARGUMENT against the `token` field
+        //     (malformed; we conservatively only treat this as invalid when the
+        //      body explicitly references the token field, otherwise we may be
+        //      sending a malformed payload and would mis-blame the device).
+        // Everything else - 401 auth, 403 permission, 429 quota, 5xx server -
+        // is transient and devices stay registered.
+        const isUnregistered = response.status === 404
+            && (body.includes('UNREGISTERED') || body.includes('NOT_FOUND'))
+        const isMalformedToken = response.status === 400
+            && body.includes('INVALID_ARGUMENT')
+            && /token/i.test(body)
+        const invalid = isUnregistered || isMalformedToken
         if (!invalid) {
-            console.error('[FcmService] Send failed:', response.status, body.slice(0, 200))
+            console.error('[FcmService] Send failed (transient):', response.status, body.slice(0, 200))
         }
-        return false
+        return invalid ? 'invalid' : 'failed'
     }
 }
