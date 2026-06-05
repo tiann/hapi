@@ -1,6 +1,6 @@
 # `~/coding/hapi*` reorganization plan
 
-Status: **Phase 1 (Option B) DONE 2026-06-01.** Phase 2 (drain) in progress, Phase 3 (Option C) pending low-agent-count maintenance window.
+Status: **All phases DONE 2026-06-05.** Phase 1 (Option B) 2026-06-01; Phase 2 (drain) executed opportunistically 2026-06-04 through 2026-06-05 across two cleanup passes (android-agent triage + operator cleanup session); Phase 3 (Option C) executed 2026-06-05 in an impatient hub-down window (~1 min downtime, single active session 24f3ec91 was cut). All worktrees now live under canonical `~/coding/hapi/{driver,upstream,active,worktrees/*}`. `hapi-main` symlink removed (hard-cut). Only legitimate independents remain at top-level: `hapi-companion` (separate Android product repo), `hapi-monitor` (npm-installed tool), plus the residual nested-weird worktree `hapi-worktrees/voice-selection-all-backends-worktrees/0531-4033` flagged for operator triage.
 
 Author note: this is a multi-agent repo. ~31 active agents have CWDs that may be inside dirs this plan moves. Coordination is the dominant cost, not the file moves.
 
