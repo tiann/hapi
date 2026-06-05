@@ -619,15 +619,65 @@ describe('message-window-store visible trimming', () => {
             createdAt: base, invokedAt: null, status: undefined,
         } as DecryptedMessage
 
+        // A queued row that appeared after the fetch was issued (not in eligibleIds):
+        // must survive even though the older server snapshot can't include it.
+        const freshArrival: DecryptedMessage = {
+            id: 'fresh-server-id', seq: 7, localId: 'fresh-local',
+            content: { role: 'user', content: { type: 'text', text: 'arrived mid-fetch' } },
+            createdAt: base, invokedAt: null, status: undefined,
+        } as DecryptedMessage
+
+        // eligibleIds = the immediate queued rows present when the fetch started.
         // Server's latest window only confirms the genuinely-queued row.
         const reconciled = reconcileQueuedAgainstLatest(
-            [queuedInWindow, optimistic, scheduled, ghost],
-            [queuedInWindow]
+            [queuedInWindow, optimistic, scheduled, ghost, freshArrival],
+            [queuedInWindow],
+            new Set(['queued-server-id', 'ghost-server-id'])
         )
         const ids = reconciled.map((m) => m.id)
         expect(ids).toContain('queued-server-id') // confirmed by server -> kept
         expect(ids).toContain('opt-local')        // optimistic -> kept (echo may be in flight)
         expect(ids).toContain('sched-server-id')  // scheduled -> kept (hub omits future rows)
-        expect(ids).not.toContain('ghost-server-id') // echoed+immediate+absent -> dropped
+        expect(ids).toContain('fresh-server-id')  // arrived after fetch start -> kept
+        expect(ids).not.toContain('ghost-server-id') // echoed+immediate+eligible+absent -> dropped
+    })
+
+    it('keeps a queued row that arrives via SSE while the latest fetch is in flight', async () => {
+        const base = 1_700_000_200_000
+        // A pre-existing ghost in the hydrated window (queued when the fetch starts,
+        // server no longer reports it as queued).
+        const ghost: DecryptedMessage = {
+            id: 'ghost-server-id', seq: 1, localId: 'ghost-local',
+            content: { role: 'user', content: { type: 'text', text: 'ghost' } },
+            createdAt: base, invokedAt: null, status: undefined,
+        } as DecryptedMessage
+        ingestIncomingMessages(SESSION_ID, [ghost])
+
+        const httpRequest = deferred<Awaited<ReturnType<ApiClient['getMessages']>>>()
+        const api = { getMessages: vi.fn(async () => httpRequest.promise) } as Pick<ApiClient, 'getMessages'> & {
+            getMessages: ReturnType<typeof vi.fn>
+        }
+
+        const load = fetchLatestMessages(api as unknown as ApiClient, SESSION_ID)
+
+        // While the HTTP request is in flight, a fresh server-echoed queued row lands
+        // via SSE. It is absent from the (older) response snapshot below.
+        const fresh: DecryptedMessage = {
+            id: 'fresh-server-id', seq: 2, localId: 'fresh-local',
+            content: { role: 'user', content: { type: 'text', text: 'fresh queued' } },
+            createdAt: base + 50_000, invokedAt: null, status: undefined,
+        } as DecryptedMessage
+        ingestIncomingMessages(SESSION_ID, [fresh])
+
+        httpRequest.resolve({
+            messages: [makeAgentMessage({ id: 'fresh-agent', seq: 3, createdAt: base + 100_000 })],
+            page: { limit: 50, nextBeforeSeq: null, nextBeforeAt: null, hasMore: false },
+        })
+        await load
+
+        const state = getMessageWindowState(SESSION_ID)
+        const ids = [...state.messages, ...state.pending].map((m) => m.id)
+        expect(ids).not.toContain('ghost-server-id') // queued at fetch start + absent -> dropped
+        expect(ids).toContain('fresh-server-id')      // arrived mid-fetch -> kept
     })
 })

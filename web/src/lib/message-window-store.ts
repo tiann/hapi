@@ -694,20 +694,41 @@ function isOptimisticMessage(message: DecryptedMessage): boolean {
  *  - scheduled rows (scheduledAt != null): the hub omits not-yet-mature
  *    scheduled messages from getMessages, so absence is expected; they have
  *    their own maturation/release path.
+ *  - rows absent from `eligibleIds`: only messages already queued when the
+ *    fetch was issued are candidates. `serverMessages` is the HTTP snapshot
+ *    taken at the request's start; a `message-received` SSE that lands while
+ *    the fetch is in flight can add a real server-echoed queued row the
+ *    snapshot never saw. Without this gate that fresh row would be filtered as
+ *    a ghost and the queued bar would lose genuine work.
  *
  * @internal Exported for unit testing.
  */
 export function reconcileQueuedAgainstLatest(
     merged: DecryptedMessage[],
-    serverMessages: DecryptedMessage[]
+    serverMessages: DecryptedMessage[],
+    eligibleIds: Set<string>
 ): DecryptedMessage[] {
     const serverIds = new Set(serverMessages.map((m) => m.id))
     return merged.filter((msg) => {
         if (!isQueuedForInvocation(msg)) return true
         if (msg.scheduledAt != null) return true
         if (isOptimisticMessage(msg)) return true
+        if (!eligibleIds.has(msg.id)) return true
         return serverIds.has(msg.id)
     })
+}
+
+/** Ids of immediate, server-echoed queued rows in a snapshot — the only rows
+ *  eligible for ghost reconciliation. Captured at fetch-request start so rows
+ *  added by a concurrent SSE are exempt. See reconcileQueuedAgainstLatest. */
+function queuedReconcileCandidateIds(messages: DecryptedMessage[], pending: DecryptedMessage[]): Set<string> {
+    const ids = new Set<string>()
+    for (const msg of [...messages, ...pending]) {
+        if (isQueuedForInvocation(msg) && msg.scheduledAt == null && !isOptimisticMessage(msg)) {
+            ids.add(msg.id)
+        }
+    }
+    return ids
 }
 
 function mergeIntoPending(
@@ -803,6 +824,11 @@ export async function fetchLatestMessages(api: ApiClient, sessionId: string): Pr
     if (initial.isLoading) {
         return
     }
+    // Snapshot the queued rows that exist now, before awaiting the HTTP fetch.
+    // Only these are eligible for ghost reconciliation — a queued row inserted by
+    // a concurrent message-received SSE must not be filtered against the older
+    // response snapshot that predates it.
+    const reconcileCandidateIds = queuedReconcileCandidateIds(initial.messages, initial.pending)
     const generation = beginAsyncGeneration(sessionId, 'latest', { isLoading: true, warning: null })
 
     try {
@@ -826,7 +852,7 @@ export async function fetchLatestMessages(api: ApiClient, sessionId: string): Pr
                 // trimVisible preserves every queued row, so a ghost (queued locally
                 // but already invoked server-side, missed messages-consumed while
                 // offline) would otherwise be pinned forever.
-                const reconciled = reconcileQueuedAgainstLatest(merged, response.messages)
+                const reconciled = reconcileQueuedAgainstLatest(merged, response.messages, reconcileCandidateIds)
                 const trimmed = trimVisible(reconciled, 'append')
                 return buildState(prev, {
                     messages: trimmed,
