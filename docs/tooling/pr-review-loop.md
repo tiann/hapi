@@ -232,37 +232,65 @@ Bypass env-var names are deliberately ugly so they don't become muscle memory. P
 
 ## What `cold-review-clean` means (and what it doesn't)
 
-The `cold-review-clean` label on a fork PR is the operator's explicit signal that the **fork-side Codex pass is satisfactory** - either Codex found nothing actionable in a single pass, or the operator explicitly accepts/defers what it did find. `hapi-pr-create` requires this signal (or `--skip-fork-stage`) before opening the upstream PR.
+The `cold-review-clean` label on a fork PR is the operator's explicit signal that the **fork-side bot pass is satisfactory** - either the bot found nothing actionable, or the operator explicitly accepts/defers what it did find. `hapi-pr-create` requires this signal (or `--skip-fork-stage`) before opening the upstream PR.
 
-**It is a polishing room, not a merge-ready certifier.** Empirically (data from 2026-06-06 batch of fix/cursor-wrapper-requeue, feat/hub-session-reopen, fix/preserve-cursor-session-id): the fork-stage gate caught 8 findings across 3 PRs (1 P1 + 7 P2) that would otherwise have hit upstream. Every one of those PRs still drew 1-3 NEW findings from the upstream bot after promotion.
+### Important: fork bot and upstream bot are TWO DIFFERENT PRODUCTS
 
-**Why the fork bot and the upstream bot find different things** even though both are ChatGPT Codex Connector reviewing the same code:
+This was misdocumented as "same vendor, different stochastic samples" until 2026-06-06. Corrected reality:
 
-| Cause | Fixable? | Status / Cost |
+| | Fork (`heavygee/hapi`) | Upstream (`tiann/hapi`) |
 |---|---|---|
-| **Stochastic LLM sampling** - same model + same prompt + two runs surface different finding subsets | No, fundamentally | Mitigation: optional N=2 fork passes (re-trigger Codex Cloud after a trivial whitespace push) - ~2x credits, modest extra coverage |
-| **Different RAG repo-context** - each repo's review pulls open issues, README, AGENTS.md, recent PRs into the prompt; if those differ between fork and upstream, the bot's "what does this codebase care about" framing differs | Partially - root `AGENTS.md` (the biggest single piece) **is now byte-identical to upstream as of 2026-06-06** (see commit 978bb7f1). The rest (open issues, recent PRs) is intrinsic to having a separate fork and not worth mirroring | One-time setup done for AGENTS.md; ongoing drift on open-issues/PRs is accepted |
-| **Codex Cloud config drift** - workflow + prompt files at `.github/workflows/codex-*.yml` and `.github/prompts/codex-*.md` | Yes - clone upstream's files | **Already aligned**: all four blobs have identical SHAs between fork and upstream (verified 2026-06-06). Re-verify if upstream changes those files |
-| **Diff scope rendering** - bot reviews the PR diff plus a small context window of impacted callers; collision-relevant code outside the changed-file set requires the bot to reach for it (non-deterministic) | **No** - Codex Cloud does not expose an expanded-context-window knob to repo admins. This is purely the bot's internal context-allocation policy | Not a lever we have. Manifests as upstream-only findings on integration-collision bugs that touch files outside the PR diff |
+| Bot login | `chatgpt-codex-connector[bot]` | `github-actions[bot]` |
+| Product | **ChatGPT Codex Cloud Connector** (SaaS, configured at chatgpt.com/codex) | **`openai/codex-action@v1`** (GitHub Action) |
+| Runs on | OpenAI's infrastructure, triggered by chatgpt.com integration | GitHub Actions runner using THIS repo's `OPENAI_API_KEY` secret |
+| Config | Whatever the operator's ChatGPT Codex Cloud account sets (black-box from repo's POV) | `.github/workflows/codex-pr-review.yml` + `.github/prompts/codex-pr-review.md` (in-repo, version-controlled) |
+| Model | Set in chatgpt.com (unknown to repo) | `gpt-5.5` via `vars.OPENAI_MODEL` (upstream config) |
+| Repo access | Restricted SaaS view (line-range diff focus) | Full repo checkout (`fetch-depth: 0` of `refs/pull/N/merge`) |
+| Output format | `### 💡 Codex Review` markdown | `**Findings** - [Severity] Title` per the in-repo prompt |
+| Quota | Operator's ChatGPT Plus subscription | Repo's OpenAI API billing |
 
-**So a cold-review-clean fork PR DOES mean:**
+**Why this matters:** the workflow + prompt + AGENTS.md alignment work done on 2026-06-06 (commits `978bb7f1`, `92ade7ad`) was based on the wrong mental model. Those files are **only consumed by the upstream bot**. The fork bot uses chatgpt.com's settings and ignores those repo files entirely. The alignment work still helps - when our PRs reach upstream, upstream's bot will see the same AGENTS.md context as before - but it has near-zero effect on the fork bot.
 
-- One Codex pass found nothing actionable on this code in isolation against `heavygee/hapi:main`
-- CI (`test`, etc.) is green on the fork
+### Why we don't have parity (and why it's accepted)
+
+True parity would require running `openai/codex-action@v1` on `heavygee/hapi` too, which requires:
+
+1. `OPENAI_API_KEY` secret (separate billing from ChatGPT Plus)
+2. `OPENAI_BASE_URL` secret  
+3. `OPENAI_MODEL = gpt-5.5` repo variable
+4. Disabling the chatgpt-codex-connector for the fork (or running both)
+
+Operator declined the OpenAI API spend (ChatGPT Plus subscription only). So **we accept "best effort with the SaaS connector locally"** as the fork-stage gate. The `Codex PR Review` and `Codex Mention Response` workflows are **disabled** on heavygee/hapi (via `gh workflow disable`) so they stop marking every fork PR as `UNSTABLE` with `ENOENT /home/runner/.codex/<id>.json` infra errors.
+
+### What `cold-review-clean` actually means now
+
+**A cold-review-clean fork PR DOES mean:**
+
+- The ChatGPT Codex Cloud Connector found nothing actionable on this code (or operator accepts/defers what it did find)
+- `test` CI checks pass on the fork
 - Zero unresolved review threads on the fork PR
 - The operator has explicitly signed off (label is operator-applied, not bot-auto-applied)
 
 **It DOES NOT mean:**
 
-- The upstream bot will say nothing on promotion - expect 1-3 new findings per PR, fix them via `hapi-pr-reply` and push
-- Integration collisions with files outside the diff have been caught - the upstream bot is more likely to see those because its RAG sees the full `tiann/hapi` repo context
-- The PR is merge-ready without further iteration
+- The upstream bot will say nothing on promotion. The upstream bot is a **completely different product** (`openai/codex-action@v1` with `gpt-5.5` + full repo checkout). Empirically (2026-06-06 batch of fork PRs #31 #32 #33 -> upstream #823 #825 #826): the fork-stage SaaS bot caught 8 findings (1 P1 + 7 P2). The upstream action-based bot then caught 1-3 NEW findings per PR after promotion.
+- Integration collisions in files outside the diff are caught - the upstream bot has full repo checkout and may reach for impacted-but-undiffed code; the SaaS bot does not.
+- The PR is merge-ready without further iteration.
 
-**Operational implication:** budget for 1-3 upstream-bot rounds on every promoted PR. The fork gate compresses what would be 3-5 upstream rounds down to 1-3 - that is the value, not zero upstream rounds.
+**Operational implication:** budget for 1-3 upstream-bot rounds on every promoted PR. The fork-stage SaaS gate compresses what would be 3-5 upstream rounds down to 1-3 — that is the value, not zero upstream rounds. It is a **second cold read by a different reviewer**, not a parity check.
 
-**Levers we've used:** the `.github/workflows/codex-*.yml` + `.github/prompts/codex-*.md` files are kept in SHA-parity with upstream, and as of 2026-06-06 root `AGENTS.md` is byte-identical to upstream too (commit 978bb7f1). That closes the cheap structural drift. The expensive structural drift (stochastic sampling, diff-scope rendering) is intrinsic to the model and the Codex Cloud product - no operator lever exists.
+### Levers we have / don't have
 
-If you want fewer upstream surprises beyond what these alignments give you, the cheapest remaining lever is N=2 fork passes (manually re-trigger Codex Cloud on the fork PR after a trivial whitespace push, and treat the union of both passes as the bar). That ~2x credit cost catches more stochastic findings without changing the structural model. There is no lever for the diff-scope-rendering cause - those findings will continue to surface only on the upstream pass.
+| Lever | Status |
+|---|---|
+| Same workflow files | Aligned (SHA-identical fork ↔ upstream) - useful only if/when fork action is enabled |
+| Same prompt files | Aligned (SHA-identical) - same caveat |
+| Same `AGENTS.md` | Aligned (commit `978bb7f1`) - helps upstream bot when our PRs reach it; near-zero effect on fork SaaS bot |
+| Same model | **NOT aligned** - upstream uses `gpt-5.5`; fork SaaS bot uses whatever ChatGPT Codex Cloud sets (likely `gpt-5.5-codex` per its UI default; possibly different) |
+| Same API credentials | **NOT aligned and won't be** - operator declined OpenAI API spend |
+| Same bot product | **Different products entirely** - this is the structural constraint |
+
+If the operator ever moves to an OpenAI API plan, re-enabling `Codex PR Review` workflow on heavygee/hapi (`gh workflow enable "Codex PR Review" --repo heavygee/hapi`) plus setting `OPENAI_API_KEY`/`OPENAI_BASE_URL` secrets + `OPENAI_MODEL=gpt-5.5` variable would close the gap to true parity. Until then, the fork-stage gate is a useful but architecturally distinct second cold read.
 
 ---
 
