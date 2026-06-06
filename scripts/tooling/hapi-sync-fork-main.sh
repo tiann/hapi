@@ -78,3 +78,11 @@ echo ""
 echo "Synced: $(git -C "$PRIMARY" log -1 --oneline)"
 echo "Next: review ~/.config/hapi/driver-manifest.yaml — drop layers now on upstream/main"
 echo "      hapi-driver-rebuild --build-web --verify  (if soup layers changed)"
+
+# Post-sync branch hygiene check: just-merged upstream may have absorbed some of
+# our PRs. Show any branches whose PRs are now merged, are bitrotting, or never had tracking.
+if command -v hapi-branch-audit >/dev/null 2>&1; then
+    echo ""
+    echo "Branch hygiene (post-sync):"
+    hapi-branch-audit --on-merge --skip-fetch || true
+fi

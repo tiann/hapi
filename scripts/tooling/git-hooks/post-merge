@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Post-merge hook.
+#
+# After a merge into main (typically `hapi-sync-fork-main` pulling upstream/main),
+# run the branch audit so any branches whose PRs just landed upstream get flagged
+# for cleanup. Fast: ~5s; only emits output if branches need attention.
+#
+# Silent on non-main merges (PR rebases, feature-branch merges happen in
+# worktrees, no reason to surface main-level branch hygiene there).
+#
+# Bypass: HAPI_SKIP_POST_MERGE_AUDIT=1
+set -euo pipefail
+
+if [[ "${HAPI_SKIP_POST_MERGE_AUDIT:-0}" == "1" ]]; then
+    exit 0
+fi
+
+current_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo)"
+if [[ "$current_branch" != "main" ]]; then
+    exit 0
+fi
+
+if ! command -v hapi-branch-audit >/dev/null 2>&1; then
+    exit 0
+fi
+
+hapi-branch-audit --on-merge --skip-fetch || true
+exit 0

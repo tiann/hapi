@@ -145,12 +145,15 @@ Committing fork metadata on fork `main` is **fine**. It only leaks into an upstr
 
 ```bash
 git fetch upstream
-git checkout -b fix/voice-ready-inline-summary upstream/main   # NOT fork main
+hapi-worktree-create voice-ready --branch fix/voice-ready-inline-summary
+cd ~/coding/hapi/worktrees/voice-ready
 # ... edits in cli/hub/web/shared only ...
 git diff --name-only upstream/main...HEAD   # must not list AGENTS.md, docs/operator/, docs/plans/
 git push -u origin fix/voice-ready-inline-summary
-gh pr create --repo tiann/hapi --head heavygee:fix/voice-ready-inline-summary
+hapi-pr-create --title "fix(voice): inline ready summary" --body-file body.md
 ```
+
+The wrapper enforces base = `upstream/main`, runs `check-operator-leaks.sh` on the diff and body, and requires a `Closes #N` keyword in the body (bypass with `--no-closes-required` for spike PRs or discussion-only links).
 
 **Unsafe (will PR the deletion + operator docs):**
 
@@ -176,9 +179,23 @@ git fetch upstream && git checkout main && git merge upstream/main   # AGENTS.md
 git rm -f AGENTS.md 2>/dev/null; true
 ```
 
+Or use the wrapper: `hapi-sync-fork-main` (handles fork-only commits, runs `hapi-branch-audit --on-merge` at the end so any branches whose PRs just landed upstream get flagged for cleanup).
+
 One-time per clone: `git config merge.ours.driver true`
 
 Before `git add` on **PR branches**: no `localdocs/`, secrets, `docs/operator/`, `docs/plans/`.
+
+### One branch per tracked item (enforced via audit)
+
+Every long-lived local branch must map to exactly one tracked item: an open upstream PR, an upstream issue, an upstream discussion, or a fork-only PR for staging. Branches without that mapping rot — silently bitrotting, silently re-doing work that already merged, silently piling up.
+
+Three rules:
+
+1. **Before opening a PR**, the linked tracker (issue / discussion / fork issue) must exist. File it first if needed. Use `gh-public-body-check.sh` on the issue body before `gh issue create`.
+2. **Open upstream PRs via `hapi-pr-create`** (wrapper around `gh pr create`). It refuses PRs from `main`/`driver/integration`/infra branches, runs `check-operator-leaks.sh` on the diff + body, and rejects bodies that lack a `Closes #N` / `Fixes #N` / `Resolves #N` keyword. Bypass with `--no-closes-required` only for spike PRs or discussion-only links.
+3. **`hapi-branch-audit`** runs read-only over every local branch and classifies each as `OK`, `OK-LINKED` (body has `#N` ref like a discussion, no auto-close), `NO-LINKS`, `MERGED` (delete candidate), `NO-TRACKING`, `STALE-BEHIND` (>30 commits behind upstream/main), `DETACHED-WT`. Run `hapi-branch-audit` to see the full table; `--quiet` shows only branches needing action and exits non-zero. Runs automatically after `hapi-sync-fork-main` and via the `post-merge` git hook on `main`.
+
+Infra branches exempted from audit: `main`, `driver/integration`, `upstream-main-test`, `garden/r3f-poc`.
 
 ---
 
@@ -308,7 +325,7 @@ When the operator asks for **new product behavior**, follow [`docs/tooling/new-f
 
 **Orchestrator** completes steps 1-3 (and usually 4-5), then spawns a **feature peer** with the mandatory handoff block in that doc (completed steps vs peer-owned steps).
 
-**Feature peer** implements in **`~/coding/hapi/worktrees/<name>`** (created via `hapi-worktree-create <name> --branch <branch>`) — not in `~/coding/hapi/driver` by hand. Pass §6 (tests, cold review, Playwright) **before** asking the operator to browser-test. Upstream PR only after operator dogfood approval (§8).
+**Feature peer** implements in **`~/coding/hapi/worktrees/<name>`** (created via `hapi-worktree-create <name> --branch <branch>`) — not in `~/coding/hapi/driver` by hand. Pass §6 (tests, cold review, Playwright) **before** asking the operator to browser-test. Upstream PR only after operator dogfood approval (§8). Use **`hapi-pr-create`** to open the PR — it enforces the closes-keyword + leak scan.
 
 **Instruction roots:** agents read **this file** and tooling docs from the **`~/coding/hapi` workspace**, plus `~/coding/AGENTS.local.md`. The **daily driver** (`~/coding/hapi/driver`) is what **`hapi-active` runs** — not where IDE rules come from unless that tree is the opened workspace.
 
