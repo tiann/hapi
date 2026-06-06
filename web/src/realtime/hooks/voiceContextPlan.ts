@@ -66,10 +66,14 @@ function chunkTextByBytes(parts: string[], maxBytes: number): string[] {
 
 /**
  * Small handshake context for startSession; remainder is streamed after connect.
+ *
+ * `agentLabel` is the display label for the session's agent flavor
+ * (e.g. "Claude", "Cursor", "Codex"); voiceHooks computes it once per call.
  */
 export function buildSessionVoiceContextPlan(
     session: Session | null,
-    messages: DecryptedMessage[]
+    messages: DecryptedMessage[],
+    agentLabel: string
 ): SessionVoiceContextPlan {
     if (!session) {
         return {
@@ -89,7 +93,7 @@ export function buildSessionVoiceContextPlan(
         : all
 
     const formatted = capped
-        .map((m) => formatMessage(m))
+        .map((m) => formatMessage(m, agentLabel))
         .filter((line): line is string => Boolean(line))
 
     const recentCount = Math.min(BOOTSTRAP_RECENT_MESSAGES, formatted.length)
