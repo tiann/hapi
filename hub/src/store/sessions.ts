@@ -40,6 +40,15 @@ import { updateVersionedField } from './versionedUpdates'
 // tied to a specific chat id, so a write that explicitly sets a new
 // `cursorSessionId` must drop a stale prior protocol. Handled in
 // preserveCursorProtocolPair below.
+//
+// Explicit-clear sentinel: when `next` sets a carry-forward field to
+// `null`, the merge drops the key entirely from the output (the
+// resulting blob has neither the prior value nor `null`). This lets
+// callers intentionally remove a preserved field — e.g.
+// `cli/src/codex/session.ts` `resetCodexThread()` clears the codex
+// thread id with `codexSessionId: null` so a `/clear` command actually
+// drops the persisted thread. `undefined` (key missing from `next`)
+// continues to mean "carry forward".
 const PARSE_IDENTITY_FIELDS = ['path', 'host'] as const
 
 const ROUTING_FIELDS = ['flavor', 'machineId'] as const
@@ -65,6 +74,17 @@ function carryForwardIfMissing(
 ): Record<string, unknown> | null {
     let result = merged
     for (const field of fields) {
+        // Explicit-clear sentinel: `null` in next means "drop this field".
+        // Strip it from the merged output so the persisted blob stays
+        // schema-clean (MetadataSchema fields are `string().optional()`
+        // — string|undefined, not nullable).
+        if (next[field] === null) {
+            if (result === null) {
+                result = { ...next }
+            }
+            delete result[field]
+            continue
+        }
         if (next[field] === undefined && prior[field] !== undefined) {
             if (result === null) {
                 result = { ...next }

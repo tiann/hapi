@@ -628,4 +628,132 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
             expect(value?.lifecycleState).toBe('archived')
         }
     })
+
+    // Upstream cold-review (Major): preserve-on-omit must not block
+    // intentional clears. `cli/src/codex/session.ts resetCodexThread()`
+    // is the existing site that needs to drop `codexSessionId` (called
+    // from /clear in codexRemoteLauncher.ts). The explicit-clear
+    // sentinel: `null` in `next` means "drop this field entirely from
+    // the merged blob" (key removed, not stored as null) — distinct
+    // from omitted (`undefined`) which carries forward.
+    it('drops a carry-forward field when next sets it to null (explicit clear)', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'codex-explicit-clear',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'codex',
+                codexSessionId: 'old-thread'
+            },
+            null,
+            'default'
+        )
+
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'codex',
+                codexSessionId: null
+            },
+            session.metadataVersion,
+            'default'
+        )
+
+        expect(result.result).toBe('success')
+        const metadata = getMetadata(store, session.id) as Record<string, unknown> | null
+        expect(metadata).not.toBeNull()
+        expect('codexSessionId' in (metadata ?? {})).toBe(false)
+        expect(metadata?.flavor).toBe('codex')
+    })
+
+    it('treats null as clear for any carry-forward field, independently of others', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'multi-token-explicit-clear',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                cursorSessionId: 'cursor-keep',
+                codexSessionId: 'codex-clear-me'
+            },
+            null,
+            'default'
+        )
+
+        store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'example',
+                codexSessionId: null
+            },
+            session.metadataVersion,
+            'default'
+        )
+
+        const metadata = getMetadata(store, session.id) as Record<string, unknown> | null
+        expect('codexSessionId' in (metadata ?? {})).toBe(false)
+        expect(metadata?.cursorSessionId).toBe('cursor-keep')
+        expect(metadata?.flavor).toBe('cursor')
+    })
+
+    it('null on a never-set field is a no-op (does not introduce the key)', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'null-on-absent',
+            { path: '/tmp/project', host: 'example' },
+            null,
+            'default'
+        )
+
+        store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'example',
+                codexSessionId: null
+            },
+            session.metadataVersion,
+            'default'
+        )
+
+        const metadata = getMetadata(store, session.id) as Record<string, unknown> | null
+        expect('codexSessionId' in (metadata ?? {})).toBe(false)
+    })
+
+    it('explicit clear leaves the merged value in the success ack', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'explicit-clear-ack',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                codexSessionId: 'thread-x'
+            },
+            null,
+            'default'
+        )
+
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'example',
+                codexSessionId: null
+            },
+            session.metadataVersion,
+            'default'
+        )
+
+        expect(result.result).toBe('success')
+        if (result.result === 'success') {
+            const value = result.value as Record<string, unknown> | null
+            expect('codexSessionId' in (value ?? {})).toBe(false)
+            expect(value?.path).toBe('/tmp/project')
+        }
+    })
 })
