@@ -1,5 +1,4 @@
 import packageJson from '../../package.json'
-import { ensureRuntimeAssets } from '@/runtime/assets'
 import { isBunCompiled } from '@/projectPath'
 import { logger } from '@/ui/logger'
 import { getCliArgs } from '@/utils/cliArgs'
@@ -20,6 +19,7 @@ export async function runCli(): Promise<void> {
     const { command, context } = resolveCommand(args)
 
     if (command.requiresRuntimeAssets) {
+        const { ensureRuntimeAssets } = await import('@/runtime/assets')
         await ensureRuntimeAssets()
         logger.debug('Starting hapi CLI with args: ', process.argv)
     }
