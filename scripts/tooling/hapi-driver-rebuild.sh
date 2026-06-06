@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# Rebuild ~/coding/hapi-driver from ~/.config/hapi/driver-manifest.yaml
+# Rebuild ~/coding/hapi/driver from ~/.config/hapi/driver-manifest.yaml
 #
-# ~/coding/hapi-driver is READ-ONLY between rebuilds — this script is the only
+# ~/coding/hapi/driver is READ-ONLY between rebuilds — this script is the only
 # supported way to change it. Hand-edits and cp-from-other-worktrees are forbidden.
+#
+# Post-2026-06-01 folder reorg: driver lives at ~/coding/hapi/driver (worktree
+# under the canonical hapi/worktrees area), not ~/coding/hapi-driver. Override
+# with HAPI_DRIVER env if needed.
 #
 # Usage:
 #   hapi-driver-rebuild              # rebuild only (no hub restart)
@@ -13,7 +17,7 @@
 set -euo pipefail
 
 PRIMARY="${HAPI_PRIMARY:-$HOME/coding/hapi}"
-DRIVER="${HAPI_DRIVER:-$HOME/coding/hapi-driver}"
+DRIVER="${HAPI_DRIVER:-$HOME/coding/hapi/driver}"
 MANIFEST="${HAPI_DRIVER_MANIFEST:-$HOME/.config/hapi/driver-manifest.yaml}"
 PARSE="$PRIMARY/scripts/tooling/parse-driver-manifest.mjs"
 DRIVER_BRANCH="${HAPI_DRIVER_BRANCH:-driver/integration}"
@@ -230,7 +234,7 @@ fi
 echo ""
 echo "Driver rebuild complete: $DRIVER @ $(git -C "$DRIVER" rev-parse --short HEAD)"
 echo "Manifest: $MANIFEST"
-echo "Active hub: $(readlink -f "$HOME/coding/hapi-active" 2>/dev/null || echo '(no symlink)')"
+echo "Active hub: $(readlink -f "$HOME/coding/hapi/active" 2>/dev/null || echo '(no symlink)')"
 
 if [[ "$ACTIVATE" -eq 1 ]]; then
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
