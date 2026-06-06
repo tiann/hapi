@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# hapi-restart-hub [--impatient] [--no-runner]
+# hapi-restart-hub [--impatient] [--no-runner] [--patient-include-self]
 #
 # Patient restart of hapi-hub.service (and hapi-runner.service unless
 # --no-runner). Does NOT change hapi-active, does NOT touch the DB, does
@@ -12,6 +12,13 @@
 #   regardless of who's mid-turn. That has been the dominant interruption
 #   pattern. This wrapper polls WORKING sessions, waits up to
 #   HAPI_PATIENT_TIMEOUT seconds (default 600s = 10 min), then restarts.
+#
+# Self-exempt (auto)
+#   When invoked from inside a Cursor agent session (CURSOR_AGENT=1), the
+#   caller is itself a WORKING session and patient-mode would deadlock
+#   forever waiting on its own tool call. We subtract 1 from the WORKING
+#   count to account for the caller. If WORKING==1, skip drain entirely.
+#   Disable: --patient-include-self  /  HAPI_RESTART_INCLUDE_SELF=1
 #
 # Bypass
 #   --impatient            restart immediately, kill live sessions
@@ -26,16 +33,27 @@ set -euo pipefail
 
 IMPATIENT=0
 RUNNER=1
+INCLUDE_SELF=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --impatient) IMPATIENT=1; shift ;;
         --no-runner) RUNNER=0; shift ;;
-        -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+        --patient-include-self) INCLUDE_SELF=1; shift ;;
+        -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
         *) echo "Unknown flag: $1" >&2; exit 2 ;;
     esac
 done
 [[ "${HAPI_IMPATIENT:-}" == "1" ]] && IMPATIENT=1
+[[ "${HAPI_RESTART_INCLUDE_SELF:-}" == "1" ]] && INCLUDE_SELF=1
+
+# Auto-detect: are we being called from inside a Cursor agent session?
+# If so, the caller is one of the WORKING sessions and patient-mode would
+# wait forever on itself unless we exempt it from the count.
+SELF_EXEMPT=0
+if [[ "$INCLUDE_SELF" -ne 1 ]] && [[ "${CURSOR_AGENT:-}" == "1" || "${CURSOR_INVOKED_AS:-}" == "agent" ]]; then
+    SELF_EXEMPT=1
+fi
 
 PRIMARY="${HAPI_PRIMARY:-$HOME/coding/hapi}"
 PATIENT_TIMEOUT="${HAPI_PATIENT_TIMEOUT:-600}"
@@ -55,16 +73,31 @@ if [[ "${HAPI_SKIP_DRIVER_LOCK:-}" != "1" ]]; then
     trap 'driver_status_end switch "$?"' EXIT
 fi
 
+# Subtract 1 from $1 when SELF_EXEMPT is set, but never go below 0.
+adjust_for_self() {
+    local raw="$1"
+    if [[ "$SELF_EXEMPT" -eq 1 && "$raw" -gt 0 ]]; then
+        echo $((raw - 1))
+    else
+        echo "$raw"
+    fi
+}
+
 patient_drain() {
     [[ "$IMPATIENT" -eq 1 ]] && { echo "patient: skipped (--impatient)"; return 0; }
     if [[ ! -x "$HEALTH_SCRIPT" ]]; then
         echo "patient: WARN $HEALTH_SCRIPT not executable -- skipping drain" >&2
         return 0
     fi
-    local working start elapsed
-    working="$("$HEALTH_SCRIPT" --json 2>/dev/null | jq -r '[.sessions[]? | select(.status == "WORKING")] | length' 2>/dev/null || echo 0)"
-    [[ "$working" -eq 0 ]] && { echo "patient: WORKING=0, no drain needed"; return 0; }
-    echo "patient: WORKING=$working sessions in flight; waiting up to ${PATIENT_TIMEOUT}s (poll ${PATIENT_INTERVAL}s)"
+    local raw working start elapsed
+    raw="$("$HEALTH_SCRIPT" --json 2>/dev/null | jq -r '[.sessions[]? | select(.status == "WORKING")] | length' 2>/dev/null || echo 0)"
+    working="$(adjust_for_self "$raw")"
+    if [[ "$SELF_EXEMPT" -eq 1 ]]; then
+        echo "patient: caller appears to be a Cursor agent (CURSOR_AGENT=$CURSOR_AGENT); subtracting 1 from WORKING count to avoid self-deadlock. Override: --patient-include-self / HAPI_RESTART_INCLUDE_SELF=1"
+        echo "patient: WORKING raw=$raw effective=$working"
+    fi
+    [[ "$working" -eq 0 ]] && { echo "patient: effective WORKING=0, no drain needed"; return 0; }
+    echo "patient: WORKING=$working other session(s) in flight; waiting up to ${PATIENT_TIMEOUT}s (poll ${PATIENT_INTERVAL}s)"
     echo "patient: bypass with --impatient or HAPI_IMPATIENT=1"
     start=$SECONDS
     while [[ "$working" -gt 0 ]]; do
@@ -76,9 +109,10 @@ patient_drain() {
         fi
         echo "  $(date '+%H:%M:%S')  WORKING=$working  elapsed=${elapsed}s  budget=${PATIENT_TIMEOUT}s"
         sleep "$PATIENT_INTERVAL"
-        working="$("$HEALTH_SCRIPT" --json 2>/dev/null | jq -r '[.sessions[]? | select(.status == "WORKING")] | length' 2>/dev/null || echo 0)"
+        raw="$("$HEALTH_SCRIPT" --json 2>/dev/null | jq -r '[.sessions[]? | select(.status == "WORKING")] | length' 2>/dev/null || echo 0)"
+        working="$(adjust_for_self "$raw")"
     done
-    echo "patient: WORKING=0 after $((SECONDS - start))s -- proceeding"
+    echo "patient: effective WORKING=0 after $((SECONDS - start))s -- proceeding"
 }
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
