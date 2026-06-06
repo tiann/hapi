@@ -189,8 +189,17 @@ export async function isRunnerRunningCurrentlyInstalledHappyVersion(): Promise<b
     // owns supervision via systemd/tmux/custom rebuild pipelines), a fresh CLI invocation must NOT
     // treat the running runner as stale just because source mtimes shifted.
     // Otherwise `hapi runner start` would kill the live runner mid-rebuild.
-    if (process.env.HAPI_DISABLE_VERSION_HANDOFF === '1') {
-      logger.debug('[RUNNER CONTROL] HAPI_DISABLE_VERSION_HANDOFF=1 set, skipping mtime/version drift check');
+    //
+    // Per Codex review #814 [Major]: the env var is commonly only set on the
+    // supervising service (systemd unit file), NOT on the operator's
+    // interactive shell. To honour the running runner's opt-out from any
+    // caller, OR the live env-var check with the persisted-at-start snapshot
+    // in state.startedWithVersionHandoffDisabled.
+    if (
+      process.env.HAPI_DISABLE_VERSION_HANDOFF === '1'
+      || state.startedWithVersionHandoffDisabled === true
+    ) {
+      logger.debug('[RUNNER CONTROL] Version handoff disabled (env or persisted state), skipping mtime/version drift check');
     } else {
       const currentCliMtimeMs = getInstalledCliMtimeMs();
       if (typeof currentCliMtimeMs === 'number' && typeof state.startedWithCliMtimeMs === 'number') {

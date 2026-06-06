@@ -47,6 +47,18 @@ export interface RunnerLocallyPersistedState {
   startedWithArgv?: string[];
   lastHeartbeat?: string;
   runnerLogPath?: string;
+  /**
+   * Snapshot of HAPI_DISABLE_VERSION_HANDOFF=1 at the time this runner
+   * started. Lets a later `hapi runner start` invocation (from a shell where
+   * the env var is NOT set, e.g. operator's interactive terminal vs a
+   * systemd service that owns supervision) honour the running runner's
+   * opt-out instead of treating mtime drift as a reason to kill it.
+   *
+   * Codex review #814 [Major]: env-only check in controlClient meant the
+   * supervised use case (env set on service only) would still trigger a
+   * mid-rebuild stop. Persisting this fixes that.
+   */
+  startedWithVersionHandoffDisabled?: boolean;
 }
 
 export async function readSettings(): Promise<Settings> {

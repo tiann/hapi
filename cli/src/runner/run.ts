@@ -657,16 +657,24 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       onHappySessionWebhook
     });
 
-    // Mutable: the heartbeat refreshes this baseline after a *failed* handoff
-    // so we do not respawn-loop on the same mtime drift every 60s. A successful
-    // handoff exits the process before the next tick, so the mutation is moot
-    // in the happy path.
-    let startedWithCliMtimeMs = getInstalledCliMtimeMs();
+    // Baseline mtime at runner-process start. Immutable: per Codex review #814
+    // [Major], we must NOT refresh this on a failed handoff because the
+    // heartbeat writes it into runner.state.json, and downstream
+    // isRunnerRunningCurrentlyInstalledHappyVersion() compares the stored
+    // value against the live installed mtime - if they match, the live
+    // (still-stale) runner is reported as current. Throttle handoff attempts
+    // via nextHandoffAttemptAt below instead of mutating this baseline.
+    const startedWithCliMtimeMs = getInstalledCliMtimeMs();
     // Snapshot original argv (excluding node/bun + entrypoint) so the heartbeat's
     // self-restart handoff can rebuild the same `runner start-sync --workspace-root ...`
     // invocation instead of losing flags. process.argv[0] is the runtime, [1] is the
     // script; everything after is operator-supplied.
     const startedWithArgv = process.argv.slice(2);
+    // Snapshot at start: did this runner opt out of version handoff via env?
+    // Persisted to runner.state.json so a later `hapi runner start` from a
+    // shell where the env var is NOT set can still honour the opt-out
+    // (Codex review #814 [Major] - controlClient.ts:192 fix).
+    const startedWithVersionHandoffDisabled = process.env.HAPI_DISABLE_VERSION_HANDOFF === '1';
 
     // Write initial runner state (no lock needed for state file)
     const fileState: RunnerLocallyPersistedState = {
@@ -679,6 +687,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       startedWithMachineId: machineId,
       startedWithCliApiTokenHash: hashRunnerCliApiToken(configuration.cliApiToken),
       startedWithArgv,
+      startedWithVersionHandoffDisabled,
       runnerLogPath: logger.logFilePath
     };
     writeRunnerState(fileState);
@@ -787,6 +796,16 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     // 4. Write heartbeat
     const heartbeatIntervalMs = parseInt(process.env.HAPI_RUNNER_HEARTBEAT_INTERVAL || '60000');
     let heartbeatRunning = false
+    // Timestamp (ms) gate for handoff retries after a failed spawn or timed-out
+    // handoff. Per Codex review #814 [Major], we previously mutated
+    // startedWithCliMtimeMs to throttle re-attempts, but that polluted
+    // runner.state.json (the heartbeat persists this value) and caused
+    // isRunnerRunningCurrentlyInstalledHappyVersion() to lie about the live
+    // runner being current. The honest fix: leave startedWithCliMtimeMs
+    // immutable, gate handoff entry on this timestamp, and refresh it from
+    // the failure path with a backoff window.
+    let nextHandoffAttemptAt = 0;
+    const HANDOFF_RETRY_BACKOFF_MS = 5 * 60_000;
     const restartOnStaleVersionAndHeartbeat = setInterval(async () => {
       if (heartbeatRunning) {
         return;
@@ -819,7 +838,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         const installedCliMtimeMs = getInstalledCliMtimeMs();
         if (typeof installedCliMtimeMs === 'number' &&
             typeof startedWithCliMtimeMs === 'number' &&
-            installedCliMtimeMs !== startedWithCliMtimeMs) {
+            installedCliMtimeMs !== startedWithCliMtimeMs &&
+            Date.now() >= nextHandoffAttemptAt) {
           logger.debug('[RUNNER RUN] Runner is outdated, triggering self-restart with latest version');
 
           // Hand off to a fresh runner that inherits our original argv (workspace
@@ -844,15 +864,26 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             ? startedWithArgv
             : ['runner', 'start-sync'];
 
+          // On any failure path: reschedule the next handoff attempt for
+          // HANDOFF_RETRY_BACKOFF_MS into the future. We deliberately do NOT
+          // touch startedWithCliMtimeMs - the heartbeat must continue to
+          // persist the honest "still on the old code" value into
+          // runner.state.json so external tooling (and the controlClient
+          // mtime check) can see the runner is stale. Codex review #814
+          // [Major].
+          const deferHandoffRetry = () => {
+            nextHandoffAttemptAt = Date.now() + HANDOFF_RETRY_BACKOFF_MS;
+            heartbeatRunning = false;
+          };
+
           try {
             spawnHappyCLI(handoffArgv, {
               detached: true,
               stdio: 'ignore'
             });
           } catch (error) {
-            logger.debug('[RUNNER RUN] Failed to spawn replacement runner; staying alive to avoid an offline machine', error);
-            startedWithCliMtimeMs = installedCliMtimeMs;
-            heartbeatRunning = false;
+            logger.debug(`[RUNNER RUN] Failed to spawn replacement runner; staying alive to avoid an offline machine. Next handoff attempt in ${Math.round(HANDOFF_RETRY_BACKOFF_MS / 1000)}s.`, error);
+            deferHandoffRetry();
             return;
           }
 
@@ -860,12 +891,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
           const handoffOk = await waitForRunnerHandoff(process.pid, { timeoutMs: 30_000 });
           if (!handoffOk) {
-            logger.debug('[RUNNER RUN] Replacement runner did not register within 30s; staying alive to avoid leaving the machine offline');
-            // Refresh baseline so we do not loop on the same mtime every tick. The
-            // next genuine mtime change (e.g. a later rebuild step) will retrigger
-            // a handoff attempt.
-            startedWithCliMtimeMs = installedCliMtimeMs;
-            heartbeatRunning = false;
+            logger.debug(`[RUNNER RUN] Replacement runner did not register within 30s; staying alive to avoid leaving the machine offline. Next handoff attempt in ${Math.round(HANDOFF_RETRY_BACKOFF_MS / 1000)}s.`);
+            deferHandoffRetry();
             return;
           }
 
@@ -895,6 +922,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           startedWithMachineId: fileState.startedWithMachineId,
           startedWithCliApiTokenHash: fileState.startedWithCliApiTokenHash,
           startedWithArgv,
+          startedWithVersionHandoffDisabled,
           lastHeartbeat: new Date().toLocaleString(),
           runnerLogPath: fileState.runnerLogPath
         };
