@@ -139,6 +139,239 @@
       "title": "runPi cleans up on HAPI exit (AC-6)",
       "description": "SIGTERM to HAPI triggers transport.kill()",
       "steps": ["mock PiTransport", "start runPi", "simulate SIGTERM", "verify transport.kill() called"]
+    },
+
+    {
+      "id": "TC-4-01",
+      "type": "manual",
+      "title": "Basic text conversation via hapi pi",
+      "description": "Verify full event sequence for a simple prompt: response→agent_start→turn_start→message_update(text_delta)→turn_end→agent_end (AC-1, AC-2)",
+      "steps": [
+        "start hub: $HAPI_BIN server",
+        "start pi: CLI_API_TOKEN=$TOKEN $HAPI_BIN pi",
+        "type: Say \"hello world\" and nothing else",
+        "verify text response appears in terminal",
+        "verify hub logs show POST /cli/sessions 200"
+      ],
+      "verification_method": "manual",
+      "ac_ref": ["AC-1", "AC-2"],
+      "planTaskId": "Task 1"
+    },
+    {
+      "id": "TC-4-02",
+      "type": "manual",
+      "title": "Tool execution — file read triggers tool_execution_start/end",
+      "description": "Verify tool_execution_start{toolCallId, toolName, args} and tool_execution_end{toolCallId, result, isError} event fields match types.ts definitions",
+      "steps": [
+        "echo 'test content' > /tmp/hapi-pi-test.txt",
+        "start hapi pi",
+        "type: Read the contents of /tmp/hapi-pi-test.txt",
+        "verify tool call appears (tool_execution_start with toolName, args)",
+        "verify tool result appears (tool_execution_end with result)",
+        "verify Pi summarizes file content"
+      ],
+      "verification_method": "manual",
+      "ac_ref": ["AC-2"],
+      "planTaskId": "Task 2"
+    },
+    {
+      "id": "TC-4-03",
+      "type": "manual",
+      "title": "Tool execution — file write",
+      "description": "Verify another tool type (write_file or Bash) triggers tool_execution_start/end correctly",
+      "steps": [
+        "start hapi pi",
+        "type: Create a file /tmp/hapi-pi-write-test.txt with content 'hello from pi'",
+        "verify tool_execution_start/end events fire",
+        "verify /tmp/hapi-pi-write-test.txt exists with correct content"
+      ],
+      "verification_method": "manual",
+      "ac_ref": ["AC-2"],
+      "planTaskId": "Task 2"
+    },
+    {
+      "id": "TC-4-04",
+      "type": "manual",
+      "title": "Tool execution failure — file not found",
+      "description": "Verify tool_execution_end with isError=true produces status='failed' in HAPI (AC-2, AC-8)",
+      "steps": [
+        "start hapi pi",
+        "type: Read the file /tmp/this-file-does-not-exist-xyz.txt",
+        "verify tool_execution_end fires with isError=true",
+        "verify Pi reports the error (not crash)"
+      ],
+      "verification_method": "manual",
+      "ac_ref": ["AC-2", "AC-8"],
+      "planTaskId": "Task 2"
+    },
+    {
+      "id": "TC-4-05",
+      "type": "manual",
+      "title": "Thinking/reasoning lifecycle",
+      "description": "Verify thinking_start→thinking_delta*→thinking_end→text_start→text_delta*→text_end full lifecycle and usage data in turn_end",
+      "steps": [
+        "start hapi pi",
+        "type: What is 17^13? Show your reasoning step by step.",
+        "verify thinking output appears (reasoning AgentMessage)",
+        "verify text output follows",
+        "verify turn_end contains usage data with non-zero token counts"
+      ],
+      "verification_method": "manual",
+      "ac_ref": ["AC-2"],
+      "planTaskId": "Task 2"
+    },
+    {
+      "id": "TC-4-06",
+      "type": "manual",
+      "title": "Multi-turn conversation with context retention",
+      "description": "Verify turn_end→turn_start cycle works for multiple rounds and context is preserved",
+      "steps": [
+        "start hapi pi",
+        "round 1: type 'My favorite color is blue. Remember this.'",
+        "wait for turn_end",
+        "round 2: type 'What is my favorite color?'",
+        "verify response contains 'blue'"
+      ],
+      "verification_method": "manual",
+      "ac_ref": ["AC-1", "AC-2"],
+      "planTaskId": "Task 1"
+    },
+    {
+      "id": "TC-4-07",
+      "type": "manual",
+      "title": "Abort long-running generation (AC-3)",
+      "description": "Send abort while Pi is generating, verify graceful stop",
+      "steps": [
+        "start hapi pi",
+        "type: Write a 1000-word essay about the history of computing",
+        "wait 2 seconds for generation to start",
+        "send Ctrl+C or abort RPC",
+        "verify generation stops",
+        "verify session returns to ready state (not crashed)"
+      ],
+      "verification_method": "manual",
+      "ac_ref": ["AC-3"],
+      "planTaskId": "Task 3"
+    },
+    {
+      "id": "TC-4-08",
+      "type": "manual",
+      "title": "Pi not in PATH — ENOENT error (AC-5)",
+      "description": "Running hapi pi without pi installed shows descriptive error",
+      "steps": [
+        "PATH=/tmp CLI_API_TOKEN=$TOKEN $HAPI_BIN pi",
+        "verify stderr contains 'Pi was not found on PATH'",
+        "verify exit code != 0"
+      ],
+      "verification_method": "manual",
+      "ac_ref": ["AC-5"],
+      "planTaskId": "Task 1"
+    },
+    {
+      "id": "TC-4-09",
+      "type": "manual",
+      "title": "Hub not running — connection error",
+      "description": "hapi pi fails gracefully when hub is unreachable",
+      "steps": [
+        "stop hub process",
+        "CLI_API_TOKEN=$TOKEN $HAPI_BIN pi",
+        "verify error message about connection failure",
+        "verify exit code != 0"
+      ],
+      "verification_method": "manual",
+      "ac_ref": ["AC-5"],
+      "planTaskId": "Task 3"
+    },
+    {
+      "id": "TC-4-10",
+      "type": "manual",
+      "title": "Invalid CLI_API_TOKEN — 401 error",
+      "description": "hapi pi reports auth failure with wrong token",
+      "steps": [
+        "start hub",
+        "CLI_API_TOKEN=invalid-token $HAPI_BIN pi",
+        "verify error contains 401 or 'Invalid token'",
+        "verify exit code != 0"
+      ],
+      "verification_method": "manual",
+      "ac_ref": ["AC-5"],
+      "planTaskId": "Task 3"
+    },
+    {
+      "id": "TC-4-11",
+      "type": "manual",
+      "title": "Model switch via session config RPC (AC-4)",
+      "description": "Switch model during active session, verify set_model RPC sent to Pi",
+      "steps": [
+        "start hub + hapi pi",
+        "via web UI or RPC, request model change to another model",
+        "verify transport.send({ type: 'set_model', modelId: ... }) fires",
+        "verify response{command:'set_model', success:true} received",
+        "verify subsequent messages use new model"
+      ],
+      "verification_method": "manual",
+      "ac_ref": ["AC-4"],
+      "planTaskId": "Task 3"
+    },
+    {
+      "id": "TC-4-12",
+      "type": "manual",
+      "title": "Normal exit via Ctrl+C — cleanup (AC-6)",
+      "description": "Ctrl+C terminates Pi subprocess and cleans up session",
+      "steps": [
+        "start hub + hapi pi",
+        "send Ctrl+C",
+        "verify no orphan pi process (ps aux | grep 'pi --mode rpc')",
+        "verify hub session marked as ended"
+      ],
+      "verification_method": "manual",
+      "ac_ref": ["AC-6"],
+      "planTaskId": "Task 3"
+    },
+    {
+      "id": "TC-4-13",
+      "type": "manual",
+      "title": "Pi process crash — error handling (AC-7)",
+      "description": "Killing Pi subprocess triggers error display and session cleanup",
+      "steps": [
+        "start hub + hapi pi in terminal A",
+        "in terminal B: pkill -f 'pi --mode rpc'",
+        "verify terminal A shows error about Pi process exit",
+        "verify hub session marked as error/ended"
+      ],
+      "verification_method": "manual",
+      "ac_ref": ["AC-7"],
+      "planTaskId": "Task 3"
+    },
+    {
+      "id": "TC-4-14",
+      "type": "manual",
+      "title": "Usage/token count in turn_end",
+      "description": "Verify turn_end.message.usage contains realistic token counts (input>0, output>0, totalTokens>0)",
+      "steps": [
+        "start hub + hapi pi",
+        "type: Hello",
+        "check hub logs or debug output for usage event",
+        "verify inputTokens > 0, outputTokens > 0, totalTokens > 0"
+      ],
+      "verification_method": "manual",
+      "ac_ref": ["AC-2"],
+      "planTaskId": "Task 2"
+    },
+    {
+      "id": "TC-4-15",
+      "type": "manual",
+      "title": "Extension UI request events ignored gracefully",
+      "description": "Pi sends many extension_ui_request events at startup; verify they are silently ignored and don't affect conversation",
+      "steps": [
+        "start hub + hapi pi",
+        "wait for Pi startup (extension_ui_request events fire on stdout)",
+        "verify no errors or warnings from these events",
+        "type a message and verify normal response"
+      ],
+      "verification_method": "manual",
+      "ac_ref": ["AC-8"],
+      "planTaskId": "Task 2"
     }
   ]
 }
