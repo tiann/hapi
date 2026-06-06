@@ -5,6 +5,46 @@ import type { StoredSession, VersionedUpdateResult } from './types'
 import { safeJsonParse } from './json'
 import { updateVersionedField } from './versionedUpdates'
 
+// Flavor-specific resume tokens that the hub must preserve across any
+// metadata replacement. The CLI's archive transition (cli/src/agent/
+// runnerLifecycle.ts archiveAndClose) spreads `currentMetadata` from the
+// session client's local cache; if that cache is `null` (e.g. the row's
+// metadata failed Zod parse at bootstrap and got nulled out in
+// cli/src/api/api.ts) or stale, the resulting payload omits these fields
+// and the unconditional REPLACE in updateSessionMetadata wipes them from
+// the row. That breaks resume even though the on-disk chat data still
+// exists. Mirror of pickExistingSessionMetadata in cli/src/agent/
+// sessionFactory.ts which preserves the same set on bootstrap.
+const PROTOCOL_RESUME_FIELDS = [
+    'claudeSessionId',
+    'codexSessionId',
+    'geminiSessionId',
+    'opencodeSessionId',
+    'cursorSessionId',
+    'cursorSessionProtocol',
+    'kimiSessionId'
+] as const
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function preserveProtocolResumeFields(prior: unknown, next: unknown): unknown {
+    if (!isPlainObject(prior) || !isPlainObject(next)) {
+        return next
+    }
+    let merged: Record<string, unknown> | null = null
+    for (const field of PROTOCOL_RESUME_FIELDS) {
+        if (next[field] === undefined && prior[field] !== undefined) {
+            if (merged === null) {
+                merged = { ...next }
+            }
+            merged[field] = prior[field]
+        }
+    }
+    return merged ?? next
+}
+
 type DbSessionRow = {
     id: string
     tag: string | null
@@ -128,29 +168,42 @@ export function updateSessionMetadata(
     const now = Date.now()
     const touchUpdatedAt = options?.touchUpdatedAt !== false
 
-    return updateVersionedField({
-        db,
-        table: 'sessions',
-        id,
-        namespace,
-        field: 'metadata',
-        versionField: 'metadata_version',
-        expectedVersion,
-        value: metadata,
-        encode: (value) => {
-            const json = JSON.stringify(value)
-            return json === undefined ? null : json
-        },
-        decode: safeJsonParse,
-        setClauses: [
-            'updated_at = CASE WHEN @touch_updated_at = 1 THEN @updated_at ELSE updated_at END',
-            'seq = seq + 1'
-        ],
-        params: {
-            updated_at: now,
-            touch_updated_at: touchUpdatedAt ? 1 : 0
-        }
-    })
+    try {
+        return db.transaction((): VersionedUpdateResult<unknown | null> => {
+            const priorRow = db.prepare(
+                'SELECT metadata FROM sessions WHERE id = ? AND namespace = ?'
+            ).get(id, namespace) as { metadata: string | null } | undefined
+
+            const prior = priorRow ? safeJsonParse(priorRow.metadata) : null
+            const merged = preserveProtocolResumeFields(prior, metadata)
+
+            return updateVersionedField({
+                db,
+                table: 'sessions',
+                id,
+                namespace,
+                field: 'metadata',
+                versionField: 'metadata_version',
+                expectedVersion,
+                value: merged,
+                encode: (value) => {
+                    const json = JSON.stringify(value)
+                    return json === undefined ? null : json
+                },
+                decode: safeJsonParse,
+                setClauses: [
+                    'updated_at = CASE WHEN @touch_updated_at = 1 THEN @updated_at ELSE updated_at END',
+                    'seq = seq + 1'
+                ],
+                params: {
+                    updated_at: now,
+                    touch_updated_at: touchUpdatedAt ? 1 : 0
+                }
+            })
+        })()
+    } catch {
+        return { result: 'error' }
+    }
 }
 
 export function updateSessionAgentState(
