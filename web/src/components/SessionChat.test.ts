@@ -87,10 +87,11 @@ describe('shouldRouteToScratchlist', () => {
     function attachment(): AttachmentMetadata {
         return {
             id: 'attach-1',
-            kind: 'image',
+            filename: 'attach-1.png',
             mimeType: 'image/png',
-            sizeBytes: 1024,
-        } as AttachmentMetadata
+            size: 1024,
+            path: '/tmp/attach-1.png',
+        }
     }
 
     it('returns false when scratchlist mode is off, regardless of payload', () => {

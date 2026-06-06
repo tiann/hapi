@@ -1,9 +1,10 @@
+import type { ReactElement } from 'react'
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { I18nProvider } from '@/lib/i18n-context'
 import { UnifiedButton } from './ComposerButtons'
 
-function renderInProviders(ui: JSX.Element) {
+function renderInProviders(ui: ReactElement) {
     return render(<I18nProvider>{ui}</I18nProvider>)
 }
 
