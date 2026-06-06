@@ -230,6 +230,40 @@ Bypass env-var names are deliberately ugly so they don't become muscle memory. P
 
 ---
 
+## What `cold-review-clean` means (and what it doesn't)
+
+The `cold-review-clean` label on a fork PR is the operator's explicit signal that the **fork-side Codex pass is satisfactory** - either Codex found nothing actionable in a single pass, or the operator explicitly accepts/defers what it did find. `hapi-pr-create` requires this signal (or `--skip-fork-stage`) before opening the upstream PR.
+
+**It is a polishing room, not a merge-ready certifier.** Empirically (data from 2026-06-06 batch of fix/cursor-wrapper-requeue, feat/hub-session-reopen, fix/preserve-cursor-session-id): the fork-stage gate caught 8 findings across 3 PRs (1 P1 + 7 P2) that would otherwise have hit upstream. Every one of those PRs still drew 1-3 NEW findings from the upstream bot after promotion.
+
+**Why the fork bot and the upstream bot find different things** even though both are ChatGPT Codex Connector reviewing the same code:
+
+| Cause | Fixable? | Cost |
+|---|---|---|
+| **Stochastic LLM sampling** - same model + same prompt + two runs surface different finding subsets | No, fundamentally | ~2x credits to run N=2 passes and merge |
+| **Different RAG repo-context** - each repo's review pulls open issues, README, AGENTS.md, recent PRs into the prompt; `heavygee/hapi` and `tiann/hapi` have different summaries so the bot's "what does this codebase care about" framing differs | Partially - mirror repo metadata across fork and upstream | Ongoing maintenance |
+| **Codex Cloud config drift** - each repo has its own `.codex/` settings and review-prompt template; `tiann/hapi`'s template may emphasize "check for collision with intentional-clear paths" more than the fork's | Yes - clone upstream's config | One-time setup |
+| **Diff scope rendering** - bot reviews the PR diff plus a small context window of impacted callers; the collision-relevant code may be outside the changed-file set and require the bot to reach for it (which is non-deterministic) | Partially - enable expanded-context-window if Codex Cloud exposes the knob | Per-PR cost |
+
+**So a cold-review-clean fork PR DOES mean:**
+
+- One Codex pass found nothing actionable on this code in isolation against `heavygee/hapi:main`
+- CI (`test`, etc.) is green on the fork
+- Zero unresolved review threads on the fork PR
+- The operator has explicitly signed off (label is operator-applied, not bot-auto-applied)
+
+**It DOES NOT mean:**
+
+- The upstream bot will say nothing on promotion - expect 1-3 new findings per PR, fix them via `hapi-pr-reply` and push
+- Integration collisions with files outside the diff have been caught - the upstream bot is more likely to see those because its RAG sees the full `tiann/hapi` repo context
+- The PR is merge-ready without further iteration
+
+**Operational implication:** budget for 1-3 upstream-bot rounds on every promoted PR. The fork gate compresses what would be 3-5 upstream rounds down to 1-3 - that is the value, not zero upstream rounds.
+
+If you want fewer upstream surprises, the cheapest lever is to run N=2 fork passes (manually re-trigger Codex Cloud on the fork PR after a fresh push, even a trivial whitespace one, and treat the union of both passes as the bar). That ~2x credit cost catches more stochastic findings without changing the structural model.
+
+---
+
 ## Finding thread / comment IDs
 
 `hapi-pr-reply` looks up the GraphQL thread id from the REST comment id internally. To list candidate review-comment ids for a PR:

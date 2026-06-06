@@ -181,7 +181,12 @@ sequenceDiagram
 
     PEER->>US: hapi-pr-create<br/>--title T --body-file body.md
     Note right of PEER: wrapper enforces base upstream/main,<br/>leak scan, Closes #N keyword,<br/>AND a closed cold-review-clean fork PR exists
-    US-->>US: upstream bot re-reviews<br/>(should find nothing new)
+    US-->>US: upstream bot re-reviews<br/>(expect 1-3 NEW findings - same vendor,<br/>different stochastic pass, different RAG,<br/>integration collisions only visible upstream)
+    loop iterate on upstream bot findings
+        PEER->>WT: address upstream bot finding
+        PEER->>US: git push (hapi-pr-reply on each thread)
+        US-->>US: bot re-review
+    end
     US->>US: maintainer merges PR
     OP->>FORK: hapi-sync-fork-main
     FORK->>FORK: post-merge hook runs<br/>hapi-branch-audit --on-merge
