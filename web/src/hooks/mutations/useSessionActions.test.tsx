@@ -27,10 +27,10 @@ afterEach(() => {
 })
 
 describe('useSessionActions - reopenSession', () => {
-    it('invokes api.reopenSession with the session id', async () => {
-        const reopen = vi.fn(async (sessionId: string) => ({
+    it('invokes api.reopenSession with the session id and forwards the response', async () => {
+        const reopen = vi.fn(async (_sessionId: string) => ({
             ok: true as const,
-            sessionId,
+            sessionId: 'session-A-spawned',
             resumed: true
         }))
         const api = createMockApi(reopen)
@@ -40,11 +40,15 @@ describe('useSessionActions - reopenSession', () => {
             { wrapper: createWrapper() },
         )
 
+        let response: { ok: true; sessionId: string; resumed: boolean } | undefined
         await act(async () => {
-            await result.current.reopenSession()
+            response = await result.current.reopenSession()
         })
 
         expect(reopen).toHaveBeenCalledWith('session-A')
+        // The mutation must propagate the response so the UI can navigate to the
+        // possibly-new spawn id when resumeSession merges the row.
+        expect(response).toEqual({ ok: true, sessionId: 'session-A-spawned', resumed: true })
     })
 
     it('throws when api or sessionId is missing', async () => {

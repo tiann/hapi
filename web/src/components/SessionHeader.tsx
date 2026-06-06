@@ -7,6 +7,7 @@ import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { SessionExportDialog } from '@/components/SessionExportDialog'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import { formatReopenError } from '@/lib/reopenError'
 import { getSessionModelLabel } from '@/lib/sessionModelLabel'
 import { useTranslation } from '@/lib/use-translation'
 import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
@@ -93,9 +94,10 @@ export function SessionHeader(props: {
     onOpenOutline?: () => void
     api: ApiClient | null
     onSessionDeleted?: () => void
+    onSessionReopened?: (newSessionId: string) => void
 }) {
     const { t } = useTranslation()
-    const { session, api, onSessionDeleted } = props
+    const { session, api, onSessionDeleted, onSessionReopened } = props
     const title = useMemo(() => getSessionTitle(session), [session])
     const worktreeBranch = session.metadata?.worktree?.branch
     const modelLabel = getSessionModelLabel(session)
@@ -124,26 +126,12 @@ export function SessionHeader(props: {
     const handleReopen = async () => {
         setReopenError(null)
         try {
-            await reopenSession()
-        } catch (error) {
-            const message = error instanceof Error ? error.message : 'Failed to reopen session'
-            const jsonStart = message.indexOf('{')
-            if (jsonStart !== -1) {
-                try {
-                    const parsed = JSON.parse(message.slice(jsonStart)) as { error?: string; missing?: string[] }
-                    if (parsed.error && parsed.missing?.length) {
-                        setReopenError(`${parsed.error} (missing: ${parsed.missing.join(', ')})`)
-                        return
-                    }
-                    if (parsed.error) {
-                        setReopenError(parsed.error)
-                        return
-                    }
-                } catch {
-                    // fall through
-                }
+            const result = await reopenSession()
+            if (result.sessionId && result.sessionId !== session.id) {
+                onSessionReopened?.(result.sessionId)
             }
-            setReopenError(message)
+        } catch (error) {
+            setReopenError(formatReopenError(error))
         }
     }
 

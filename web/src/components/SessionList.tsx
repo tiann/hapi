@@ -17,6 +17,7 @@ import { classifySessionAttention } from '@/lib/sessionAttention'
 import { getSessionLastSeenAt } from '@/lib/sessionLastSeen'
 import { getAttentionLabel, SessionAttentionIndicator } from '@/components/SessionAttentionIndicator'
 import { getCodexImportedAt, subscribeCodexImportedSessions } from '@/lib/codexImportedSessions'
+import { formatReopenError } from '@/lib/reopenError'
 
 type SessionGroup = {
     key: string
@@ -577,28 +578,14 @@ function SessionItem(props: {
     const handleReopen = async () => {
         setReopenError(null)
         try {
-            await reopenSession()
-        } catch (error) {
-            const message = error instanceof Error ? error.message : 'Failed to reopen session'
-            // Strip the HTTP prefix so the operator sees a clean message.
-            // Format from ApiError: 'HTTP 422 ...: {"error":"...","missing":[...]}'
-            const jsonStart = message.indexOf('{')
-            if (jsonStart !== -1) {
-                try {
-                    const parsed = JSON.parse(message.slice(jsonStart)) as { error?: string; missing?: string[] }
-                    if (parsed.error && parsed.missing?.length) {
-                        setReopenError(`${parsed.error} (missing: ${parsed.missing.join(', ')})`)
-                        return
-                    }
-                    if (parsed.error) {
-                        setReopenError(parsed.error)
-                        return
-                    }
-                } catch {
-                    // fall through to raw message
-                }
+            const result = await reopenSession()
+            // resumeSession may merge the row into a freshly-spawned sessionId.
+            // Follow it so the operator lands on the live session.
+            if (result.sessionId && result.sessionId !== s.id) {
+                onSelect(result.sessionId)
             }
-            setReopenError(message)
+        } catch (error) {
+            setReopenError(formatReopenError(error))
         }
     }
 

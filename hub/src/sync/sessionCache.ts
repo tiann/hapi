@@ -573,6 +573,63 @@ export class SessionCache {
         return cursorSessionProtocol ? { cursorSessionProtocol } : {}
     }
 
+    /**
+     * Restore archive-related metadata fields that were captured before a reopen attempt.
+     * Used when `resumeSession` fails after `clearSessionArchiveMetadata` already ran so the
+     * session does not drift into a "not archived, not active" zombie state.
+     *
+     * Only the four archive fields are restored - any concurrent edits to unrelated fields
+     * (e.g. a rename that happened while resume was in flight) are preserved. Returns
+     * silently if the session is gone or its metadata is unset; throws on version mismatch
+     * so the caller can decide whether to retry.
+     */
+    async restoreSessionArchiveMetadata(
+        sessionId: string,
+        snapshot: {
+            lifecycleState?: string
+            archivedBy?: string
+            archiveReason?: string
+            lifecycleStateSince?: number
+        }
+    ): Promise<void> {
+        const session = this.sessions.get(sessionId)
+        if (!session) return
+        const current = session.metadata
+        if (!current) return
+
+        const next: Record<string, unknown> = { ...current }
+        if (snapshot.lifecycleState !== undefined) {
+            next.lifecycleState = snapshot.lifecycleState
+        }
+        if (snapshot.archivedBy !== undefined) {
+            next.archivedBy = snapshot.archivedBy
+        }
+        if (snapshot.archiveReason !== undefined) {
+            next.archiveReason = snapshot.archiveReason
+        }
+        if (snapshot.lifecycleStateSince !== undefined) {
+            next.lifecycleStateSince = snapshot.lifecycleStateSince
+        }
+
+        const result = this.store.sessions.updateSessionMetadata(
+            sessionId,
+            next,
+            session.metadataVersion,
+            session.namespace,
+            { touchUpdatedAt: false }
+        )
+
+        if (result.result === 'error') {
+            throw new Error('Failed to restore archive metadata')
+        }
+
+        if (result.result === 'version-mismatch') {
+            throw new Error('Session was modified concurrently during reopen rollback')
+        }
+
+        this.refreshSession(sessionId)
+    }
+
     async deleteSession(sessionId: string): Promise<void> {
         const session = this.sessions.get(sessionId)
         if (!session) {

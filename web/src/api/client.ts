@@ -132,7 +132,13 @@ export class ApiClient {
 
         if (!res.ok) {
             const body = await res.text().catch(() => '')
-            throw new Error(`HTTP ${res.status} ${res.statusText}: ${body}`)
+            const code = parseErrorCode(body)
+            throw new ApiError(
+                `HTTP ${res.status} ${res.statusText}: ${body}`,
+                res.status,
+                code,
+                body || undefined
+            )
         }
 
         return await res.json() as T
@@ -410,29 +416,10 @@ export class ApiClient {
     }
 
     async reopenSession(sessionId: string): Promise<ReopenSessionResponse> {
-        const path = `/api/sessions/${encodeURIComponent(sessionId)}/reopen`
-        const headers = new Headers({ 'content-type': 'application/json' })
-        const liveToken = this.getToken ? this.getToken() : null
-        const authToken = liveToken ?? this.token
-        if (authToken) {
-            headers.set('authorization', `Bearer ${authToken}`)
-        }
-        const res = await fetch(this.buildUrl(path), {
-            method: 'POST',
-            body: JSON.stringify({}),
-            headers
-        })
-        if (!res.ok) {
-            const body = await res.text().catch(() => '')
-            const code = parseErrorCode(body)
-            throw new ApiError(
-                `HTTP ${res.status} ${res.statusText}: ${body}`,
-                res.status,
-                code,
-                body || undefined
-            )
-        }
-        return await res.json() as ReopenSessionResponse
+        return await this.request<ReopenSessionResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/reopen`,
+            { method: 'POST', body: JSON.stringify({}) }
+        )
     }
 
     async switchSession(sessionId: string): Promise<void> {

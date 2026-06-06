@@ -762,6 +762,11 @@ export class SyncEngine {
      *   `resumeSession`. The CLI's `sessionFactory` will re-stamp `lifecycleState='running'`
      *   when it boots, so we do not pre-write that here.
      *
+     * Failure rollback: if `resumeSession` fails (no machine online, spawn timeout, etc.)
+     * the archive snapshot is restored so the operator can retry without losing
+     * `archiveReason`/`archivedBy`/`lifecycleState` and the UI still shows the row as
+     * archived rather than a dangling inactive non-archived ghost.
+     *
      * Returns `incomplete` (HTTP 422 from the route layer) when the agent metadata
      * needed to resume is missing.
      */
@@ -796,6 +801,13 @@ export class SyncEngine {
                 }
             }
 
+            const archiveSnapshot = {
+                lifecycleState: metadata.lifecycleState,
+                archivedBy: metadata.archivedBy,
+                archiveReason: metadata.archiveReason,
+                lifecycleStateSince: metadata.lifecycleStateSince
+            }
+
             let applied: { cursorSessionProtocol?: 'acp' | 'stream-json' }
             try {
                 applied = await this.sessionCache.clearSessionArchiveMetadata(access.sessionId)
@@ -806,6 +818,15 @@ export class SyncEngine {
 
             const resumeResult = await this.resumeSession(access.sessionId, namespace)
             if (resumeResult.type === 'error') {
+                // Resume failed - put the archive flags back so the row stays archived in the UI
+                // and the operator can retry. Best-effort: a concurrent metadata write that
+                // succeeded between clear and restore (e.g. an unrelated rename) wins, in
+                // which case we surface the original resume error rather than masking it.
+                try {
+                    await this.sessionCache.restoreSessionArchiveMetadata(access.sessionId, archiveSnapshot)
+                } catch {
+                    // Swallow restore failures - the resume error is the more important signal.
+                }
                 return resumeResult
             }
 

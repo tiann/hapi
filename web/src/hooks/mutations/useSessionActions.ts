@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
 import type { CodexCollaborationMode, PermissionMode } from '@/types/api'
+import type { ReopenSessionResponse } from '@hapi/protocol/apiTypes'
 import { queryKeys } from '@/lib/query-keys'
 import { clearMessageWindow } from '@/lib/message-window-store'
 import { isKnownFlavor } from '@hapi/protocol'
@@ -14,7 +15,7 @@ export function useSessionActions(
 ): {
     abortSession: () => Promise<void>
     archiveSession: () => Promise<void>
-    reopenSession: () => Promise<void>
+    reopenSession: () => Promise<ReopenSessionResponse>
     switchSession: () => Promise<void>
     setPermissionMode: (mode: PermissionMode) => Promise<void>
     setCollaborationMode: (mode: CodexCollaborationMode) => Promise<void>
@@ -59,12 +60,12 @@ export function useSessionActions(
         onSuccess: () => void invalidateSession(),
     })
 
-    const reopenMutation = useMutation({
+    const reopenMutation = useMutation<ReopenSessionResponse, Error, void>({
         mutationFn: async () => {
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')
             }
-            await api.reopenSession(sessionId)
+            return await api.reopenSession(sessionId)
         },
         onSuccess: () => void invalidateSession(),
     })

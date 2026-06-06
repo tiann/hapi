@@ -1923,4 +1923,184 @@ describe('session model', () => {
             await expect(cache.clearSessionArchiveMetadata('missing-session')).rejects.toThrow('Session not found')
         })
     })
+
+    describe('reopenSession rollback', () => {
+        it('restores archive metadata when resumeSession fails after the clear', async () => {
+            const store = new Store(':memory:')
+            const engine = new SyncEngine(
+                store,
+                {} as never,
+                new RpcRegistry(),
+                { broadcast() {} } as never
+            )
+
+            try {
+                const session = engine.getOrCreateSession(
+                    'session-reopen-rollback',
+                    {
+                        path: '/tmp/project',
+                        host: 'localhost',
+                        machineId: 'machine-1',
+                        flavor: 'codex',
+                        codexSessionId: 'codex-thread-1',
+                        lifecycleState: 'archived',
+                        archivedBy: 'cli',
+                        archiveReason: 'Session crashed',
+                        lifecycleStateSince: 1000
+                    },
+                    null,
+                    'default'
+                )
+                // No machine registered -> resumeSession returns no_machine_online.
+
+                const result = await engine.reopenSession(session.id, 'default')
+
+                expect(result.type).toBe('error')
+                if (result.type === 'error') {
+                    expect(result.code).toBe('no_machine_online')
+                }
+
+                const restored = engine.getSessionByNamespace(session.id, 'default')?.metadata as Record<string, unknown> | null | undefined
+                expect(restored?.lifecycleState).toBe('archived')
+                expect(restored?.archivedBy).toBe('cli')
+                expect(restored?.archiveReason).toBe('Session crashed')
+            } finally {
+                engine.stop()
+            }
+        })
+
+        it('does not roll back when resumeSession succeeds', async () => {
+            const store = new Store(':memory:')
+            const engine = new SyncEngine(
+                store,
+                {} as never,
+                new RpcRegistry(),
+                { broadcast() {} } as never
+            )
+
+            try {
+                const session = engine.getOrCreateSession(
+                    'session-reopen-success',
+                    {
+                        path: '/tmp/project',
+                        host: 'localhost',
+                        machineId: 'machine-1',
+                        flavor: 'codex',
+                        codexSessionId: 'codex-thread-2',
+                        lifecycleState: 'archived',
+                        archivedBy: 'cli',
+                        archiveReason: 'User terminated'
+                    },
+                    null,
+                    'default'
+                )
+                engine.getOrCreateMachine(
+                    'machine-1',
+                    { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                    null,
+                    'default'
+                )
+                engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+
+                ;(engine as any).rpcGateway.spawnSession = async () => ({ type: 'success', sessionId: session.id })
+                ;(engine as any).waitForSessionActive = async () => true
+
+                const result = await engine.reopenSession(session.id, 'default')
+
+                expect(result.type).toBe('success')
+                if (result.type === 'success') {
+                    expect(result.resumed).toBe(true)
+                }
+
+                const after = engine.getSessionByNamespace(session.id, 'default')?.metadata as Record<string, unknown> | null | undefined
+                expect(after?.lifecycleState).toBeUndefined()
+                expect(after?.archivedBy).toBeUndefined()
+                expect(after?.archiveReason).toBeUndefined()
+            } finally {
+                engine.stop()
+            }
+        })
+    })
+
+    describe('restoreSessionArchiveMetadata', () => {
+        it('puts back lifecycleState/archivedBy/archiveReason from a snapshot', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+
+            const session = cache.getOrCreateSession(
+                'session-restore',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    flavor: 'codex',
+                    codexSessionId: 'thread-Y',
+                    lifecycleState: 'archived',
+                    archivedBy: 'cli',
+                    archiveReason: 'User terminated',
+                    lifecycleStateSince: 1234567890
+                },
+                null,
+                'default'
+            )
+
+            await cache.clearSessionArchiveMetadata(session.id)
+            const cleared = cache.getSession(session.id)?.metadata as Record<string, unknown> | null | undefined
+            expect(cleared?.lifecycleState).toBeUndefined()
+
+            await cache.restoreSessionArchiveMetadata(session.id, {
+                lifecycleState: 'archived',
+                archivedBy: 'cli',
+                archiveReason: 'User terminated',
+                lifecycleStateSince: 1234567890
+            })
+
+            const restored = cache.getSession(session.id)?.metadata as Record<string, unknown> | null | undefined
+            expect(restored?.lifecycleState).toBe('archived')
+            expect(restored?.archivedBy).toBe('cli')
+            expect(restored?.archiveReason).toBe('User terminated')
+            expect(restored?.lifecycleStateSince).toBe(1234567890)
+        })
+
+        it('skips undefined snapshot fields without touching them', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+
+            const session = cache.getOrCreateSession(
+                'session-restore-partial',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    flavor: 'codex',
+                    codexSessionId: 'thread-Z',
+                    lifecycleState: 'archived',
+                    archiveReason: 'Session crashed'
+                },
+                null,
+                'default'
+            )
+
+            await cache.clearSessionArchiveMetadata(session.id)
+            await cache.restoreSessionArchiveMetadata(session.id, {
+                lifecycleState: 'archived',
+                archiveReason: 'Session crashed'
+            })
+
+            const meta = cache.getSession(session.id)?.metadata as Record<string, unknown> | null | undefined
+            expect(meta?.lifecycleState).toBe('archived')
+            expect(meta?.archiveReason).toBe('Session crashed')
+            expect(meta?.archivedBy).toBeUndefined()
+        })
+
+        it('is a no-op when the session is gone', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+
+            await expect(cache.restoreSessionArchiveMetadata('missing', {
+                lifecycleState: 'archived'
+            })).resolves.toBeUndefined()
+        })
+    })
 })
