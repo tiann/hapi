@@ -341,4 +341,201 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
         expect(metadata?.cursorSessionId).toBe('legacy-uuid')
         expect(metadata?.flavor).toBe('cursor')
     })
+
+    // P1 from cold review: a sparse archive payload must result in a
+    // metadata blob that still parses against MetadataSchema (path/host
+    // are required). Without these, downstream consumers null-out the
+    // metadata and resume cannot find the session even though the
+    // resume token survived in the DB.
+    it('preserves required path and host when archive payload is sparse (sparse-cache failure mode)', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'cursor-sparse-archive',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                cursorSessionId: 'parse-required'
+            },
+            null,
+            'default'
+        )
+
+        store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                lifecycleState: 'archived',
+                archivedBy: 'cli',
+                archiveReason: 'Session crashed'
+            },
+            session.metadataVersion,
+            'default'
+        )
+
+        const metadata = getMetadata(store, session.id) as Record<string, unknown> | null
+        expect(metadata?.path).toBe('/tmp/project')
+        expect(metadata?.host).toBe('example')
+        expect(metadata?.cursorSessionId).toBe('parse-required')
+        expect(metadata?.lifecycleState).toBe('archived')
+    })
+
+    it('does not invent path or host when prior had none', () => {
+        const store = makeStore()
+        // create with minimal raw metadata (path is technically required by
+        // the schema, but the store accepts any JSON; this exercises the
+        // edge case where prior is missing identity fields)
+        const session = store.sessions.getOrCreateSession(
+            'no-prior-identity',
+            { flavor: 'cursor' },
+            null,
+            'default'
+        )
+
+        store.sessions.updateSessionMetadata(
+            session.id,
+            { lifecycleState: 'archived' },
+            session.metadataVersion,
+            'default'
+        )
+
+        const metadata = getMetadata(store, session.id) as Record<string, unknown> | null
+        expect(metadata?.lifecycleState).toBe('archived')
+        expect('path' in (metadata ?? {})).toBe(false)
+        expect('host' in (metadata ?? {})).toBe(false)
+    })
+
+    // P2 from cold review: cursorSessionProtocol must NOT carry over
+    // when the next write explicitly sets a different cursorSessionId.
+    // The protocol is tied to the id, and a different id may use a
+    // different protocol (e.g. legacy stream-json id under an old
+    // ACP marker would be misrouted).
+    it('drops cursorSessionProtocol when a new cursorSessionId is written', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'cursor-protocol-pair-drop',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                cursorSessionId: 'old-id',
+                cursorSessionProtocol: 'acp'
+            },
+            null,
+            'default'
+        )
+
+        store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'example',
+                cursorSessionId: 'new-id'
+            },
+            session.metadataVersion,
+            'default'
+        )
+
+        const metadata = getMetadata(store, session.id) as Record<string, unknown> | null
+        expect(metadata?.cursorSessionId).toBe('new-id')
+        expect(metadata?.cursorSessionProtocol).toBeUndefined()
+    })
+
+    it('preserves cursorSessionProtocol when neither id nor protocol is in the next write', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'cursor-protocol-pair-preserve',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                cursorSessionId: 'stable-id',
+                cursorSessionProtocol: 'acp'
+            },
+            null,
+            'default'
+        )
+
+        store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'example',
+                lifecycleState: 'archived',
+                archiveReason: 'Session crashed'
+            },
+            session.metadataVersion,
+            'default'
+        )
+
+        const metadata = getMetadata(store, session.id) as Record<string, unknown> | null
+        expect(metadata?.cursorSessionId).toBe('stable-id')
+        expect(metadata?.cursorSessionProtocol).toBe('acp')
+    })
+
+    it('respects an explicit cursorSessionProtocol on the next write even when the id is unchanged', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'cursor-protocol-pair-explicit',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                cursorSessionId: 'stable-id'
+            },
+            null,
+            'default'
+        )
+
+        store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'example',
+                cursorSessionProtocol: 'stream-json'
+            },
+            session.metadataVersion,
+            'default'
+        )
+
+        const metadata = getMetadata(store, session.id) as Record<string, unknown> | null
+        expect(metadata?.cursorSessionId).toBe('stable-id')
+        expect(metadata?.cursorSessionProtocol).toBe('stream-json')
+    })
+
+    // P2 from cold review: the broadcast on a successful update must
+    // ship the merged value so other CLIs in the session room update
+    // their local cache to the persisted state. This is enforced in the
+    // socket handler (see hub/src/socket/handlers/cli/sessionHandlers.ts);
+    // the store-level guarantee here is that result.value reflects the
+    // merged state and not the pre-merge input.
+    it('returns the merged value in the success ack, not the pre-merge input', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'cursor-ack-merged',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                cursorSessionId: 'should-survive-ack'
+            },
+            null,
+            'default'
+        )
+
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                lifecycleState: 'archived',
+                archivedBy: 'cli',
+                archiveReason: 'Session crashed'
+            },
+            session.metadataVersion,
+            'default'
+        )
+
+        expect(result.result).toBe('success')
+        if (result.result === 'success') {
+            const value = result.value as Record<string, unknown> | null
+            expect(value?.path).toBe('/tmp/project')
+            expect(value?.host).toBe('example')
+            expect(value?.cursorSessionId).toBe('should-survive-ack')
+            expect(value?.lifecycleState).toBe('archived')
+        }
+    })
 })

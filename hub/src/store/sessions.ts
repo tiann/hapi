@@ -5,23 +5,41 @@ import type { StoredSession, VersionedUpdateResult } from './types'
 import { safeJsonParse } from './json'
 import { updateVersionedField } from './versionedUpdates'
 
-// Flavor-specific resume tokens that the hub must preserve across any
-// metadata replacement. The CLI's archive transition (cli/src/agent/
-// runnerLifecycle.ts archiveAndClose) spreads `currentMetadata` from the
-// session client's local cache; if that cache is `null` (e.g. the row's
-// metadata failed Zod parse at bootstrap and got nulled out in
-// cli/src/api/api.ts) or stale, the resulting payload omits these fields
-// and the unconditional REPLACE in updateSessionMetadata wipes them from
-// the row. That breaks resume even though the on-disk chat data still
-// exists. Mirror of pickExistingSessionMetadata in cli/src/agent/
-// sessionFactory.ts which preserves the same set on bootstrap.
-const PROTOCOL_RESUME_FIELDS = [
+// Carry-forward fields that the hub preserves across any metadata
+// replacement when the incoming write omits them.
+//
+// The CLI's archive transition (cli/src/agent/runnerLifecycle.ts
+// archiveAndClose) spreads `currentMetadata` from the session client's
+// local cache; if that cache is `null` (e.g. the row's metadata failed
+// Zod parse at bootstrap and got nulled out in cli/src/api/api.ts) or
+// stale, the resulting payload is sparse and the unconditional REPLACE
+// in updateSessionMetadata wipes whatever it omits. That breaks resume
+// even though the on-disk chat data still exists.
+//
+// Two preservation tiers cover the failure modes:
+//
+//   - PARSE_IDENTITY_FIELDS: required by MetadataSchema in
+//     shared/src/schemas.ts. Without these, hub session cache and CLI
+//     getSession reject the row with safeParse → metadata becomes null
+//     downstream and resume cannot find a path even when the resume
+//     token survived.
+//
+//   - SIMPLE_RESUME_TOKENS: flavor-specific resume identifiers that are
+//     write-once-keep semantics. Mirror of pickExistingSessionMetadata
+//     in cli/src/agent/sessionFactory.ts.
+//
+// `cursorSessionProtocol` is paired with `cursorSessionId`: protocol is
+// tied to a specific chat id, so a write that explicitly sets a new
+// `cursorSessionId` must drop a stale prior protocol. Handled in
+// preserveCursorProtocolPair below.
+const PARSE_IDENTITY_FIELDS = ['path', 'host'] as const
+
+const SIMPLE_RESUME_TOKENS = [
     'claudeSessionId',
     'codexSessionId',
     'geminiSessionId',
     'opencodeSessionId',
     'cursorSessionId',
-    'cursorSessionProtocol',
     'kimiSessionId'
 ] as const
 
@@ -29,19 +47,54 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function preserveProtocolResumeFields(prior: unknown, next: unknown): unknown {
+function carryForwardIfMissing(
+    prior: Record<string, unknown>,
+    next: Record<string, unknown>,
+    merged: Record<string, unknown> | null,
+    fields: ReadonlyArray<string>
+): Record<string, unknown> | null {
+    let result = merged
+    for (const field of fields) {
+        if (next[field] === undefined && prior[field] !== undefined) {
+            if (result === null) {
+                result = { ...next }
+            }
+            result[field] = prior[field]
+        }
+    }
+    return result
+}
+
+function preserveCursorProtocolPair(
+    prior: Record<string, unknown>,
+    next: Record<string, unknown>,
+    merged: Record<string, unknown> | null
+): Record<string, unknown> | null {
+    // If next explicitly sets cursorSessionId, the protocol is tied to
+    // the new id — never carry over the prior protocol. The next write
+    // can include its own cursorSessionProtocol if it knows the protocol.
+    if (next.cursorSessionId !== undefined) {
+        return merged
+    }
+    // Otherwise next is silent on the id (and possibly the protocol);
+    // carry over the prior protocol so it stays paired with the prior id
+    // (which is preserved via SIMPLE_RESUME_TOKENS above).
+    if (next.cursorSessionProtocol === undefined && prior.cursorSessionProtocol !== undefined) {
+        const result = merged ?? { ...next }
+        result.cursorSessionProtocol = prior.cursorSessionProtocol
+        return result
+    }
+    return merged
+}
+
+export function mergeSessionMetadata(prior: unknown, next: unknown): unknown {
     if (!isPlainObject(prior) || !isPlainObject(next)) {
         return next
     }
     let merged: Record<string, unknown> | null = null
-    for (const field of PROTOCOL_RESUME_FIELDS) {
-        if (next[field] === undefined && prior[field] !== undefined) {
-            if (merged === null) {
-                merged = { ...next }
-            }
-            merged[field] = prior[field]
-        }
-    }
+    merged = carryForwardIfMissing(prior, next, merged, PARSE_IDENTITY_FIELDS)
+    merged = carryForwardIfMissing(prior, next, merged, SIMPLE_RESUME_TOKENS)
+    merged = preserveCursorProtocolPair(prior, next, merged)
     return merged ?? next
 }
 
@@ -175,7 +228,7 @@ export function updateSessionMetadata(
             ).get(id, namespace) as { metadata: string | null } | undefined
 
             const prior = priorRow ? safeJsonParse(priorRow.metadata) : null
-            const merged = preserveProtocolResumeFields(prior, metadata)
+            const merged = mergeSessionMetadata(prior, metadata)
 
             return updateVersionedField({
                 db,
