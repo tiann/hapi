@@ -61,6 +61,13 @@ describe('ScratchlistPanel', () => {
         expect(toggle.textContent).toContain('held')
     })
 
+    it('uses the chat user surface instead of warning colors so the panel is subtle', () => {
+        renderPanel()
+        const panel = screen.getByTestId('scratchlist-panel')
+        expect(panel.className).toContain('bg-[var(--app-chat-user-surface-bg)]')
+        expect(panel.className).not.toContain('app-badge-warning')
+    })
+
     it('starts collapsed by default; clicking the header expands it', () => {
         renderPanel()
         const toggle = screen.getByRole('button', { name: /Scratchlist/ })

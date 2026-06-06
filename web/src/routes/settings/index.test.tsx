@@ -270,6 +270,8 @@ describe('SettingsPage', () => {
         renderWithProviders(<SettingsPage />)
         expect(screen.getAllByText('Grouped Tool Use Background').length).toBeGreaterThanOrEqual(1)
         expect(screen.getAllByText('User Message Background').length).toBeGreaterThanOrEqual(1)
+        expect(screen.getAllByText('Scratchlist').length).toBeGreaterThanOrEqual(1)
+        expect(screen.getAllByText('Hide scratchlist by default').length).toBeGreaterThanOrEqual(1)
         expect(screen.getAllByText('Default color').length).toBeGreaterThanOrEqual(1)
         expect(screen.getAllByText('Soft blue').length).toBeGreaterThanOrEqual(1)
         expect(screen.getAllByText('Soft green').length).toBeGreaterThanOrEqual(1)
@@ -287,6 +289,8 @@ describe('SettingsPage', () => {
         expect(calledKeys).toContain('settings.chat.terminalToolDisplay.compact')
         expect(calledKeys).toContain('settings.chat.groupedToolBackground')
         expect(calledKeys).toContain('settings.chat.userMessageBackground')
+        expect(calledKeys).toContain('settings.chat.scratchlist')
+        expect(calledKeys).toContain('settings.chat.scratchlist.description')
         expect(calledKeys).toContain('settings.chat.surfaceColor.default')
     })
 
