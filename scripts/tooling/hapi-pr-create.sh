@@ -8,6 +8,10 @@
 #   4. Body has a closes-keyword (Closes/Fixes/Resolves #N or OWNER/REPO#N)
 #      OR --no-closes-required is set explicitly (e.g. spike PRs, discussion-only links)
 #   5. Body itself is leak-clean
+#   6. Fork-stage cold-review gate: a fork PR for this branch must exist and pass
+#      hapi-pr-status (Codex review clean OR cold-review-clean label applied).
+#      Bypass with --skip-fork-stage (use for trivial typo/doc-only PRs where bot
+#      review adds nothing). See docs/operator/repo-layout-and-dev-flow.md §3.
 #
 # Defaults injected when not provided:
 #   --repo tiann/hapi
@@ -20,10 +24,12 @@
 #   hapi-pr-create --title "fix(x): y" --body-file body.md
 #   hapi-pr-create --title "feat(x): y" --body-file body.md --draft
 #   hapi-pr-create --title "spike: x" --body-file body.md --no-closes-required
+#   hapi-pr-create --title "fix: typo" --body-file body.md --skip-fork-stage
 #
 # Env overrides (use sparingly, log a reason):
-#   HAPI_PR_CREATE_NO_CLOSES=1   bypass closes-keyword check
-#   HAPI_PR_CREATE_NO_LEAK_SCAN=1   bypass leak scan (also sets HAPI_ALLOW_OPERATOR_LEAK)
+#   HAPI_PR_CREATE_NO_CLOSES=1     bypass closes-keyword check
+#   HAPI_PR_CREATE_NO_LEAK_SCAN=1  bypass leak scan (also sets HAPI_ALLOW_OPERATOR_LEAK)
+#   HAPI_PR_CREATE_NO_FORK_STAGE=1 bypass fork-stage cold-review gate
 
 set -euo pipefail
 
@@ -57,6 +63,7 @@ REPO=""
 BASE=""
 HEAD=""
 NO_CLOSES=${HAPI_PR_CREATE_NO_CLOSES:-0}
+NO_FORK_STAGE=${HAPI_PR_CREATE_NO_FORK_STAGE:-0}
 
 i=0
 while [[ $i -lt ${#ARGS[@]} ]]; do
@@ -69,7 +76,10 @@ while [[ $i -lt ${#ARGS[@]} ]]; do
     --head)       HEAD="${ARGS[$((i+1))]}"; i=$((i+2));;
     --no-closes-required)
                   NO_CLOSES=1
-                  # strip this flag so it doesn't reach gh
+                  ARGS=("${ARGS[@]:0:$i}" "${ARGS[@]:$((i+1))}")
+                  ;;
+    --skip-fork-stage)
+                  NO_FORK_STAGE=1
                   ARGS=("${ARGS[@]:0:$i}" "${ARGS[@]:$((i+1))}")
                   ;;
     *) i=$((i+1));;
@@ -149,6 +159,55 @@ if [[ "$NO_CLOSES" != "1" ]]; then
     echo "  if this PR genuinely links a discussion or has no issue, pass --no-closes-required" >&2
     exit 2
   fi
+fi
+
+# ----- check 6: fork-stage cold-review gate -----
+# A fork PR for this branch must exist and be clean (Codex review found nothing,
+# OR operator applied cold-review-clean label). See docs/operator/repo-layout-and-dev-flow.md §3.
+if [[ "$NO_FORK_STAGE" != "1" ]]; then
+  STATUS_SCRIPT="$WRAPPER_DIR/hapi-pr-status.sh"
+  if [[ ! -x "$STATUS_SCRIPT" ]]; then
+    echo "hapi-pr-create: missing $STATUS_SCRIPT (cannot enforce fork-stage gate)" >&2
+    echo "  pass --skip-fork-stage to bypass, or install the status script" >&2
+    exit 2
+  fi
+
+  # Find the corresponding fork PR by head branch
+  FORK_PR=$(gh pr list --repo heavygee/hapi --head "$BRANCH" --state all \
+              --json number,state,createdAt \
+              --jq 'sort_by(.createdAt) | reverse | .[0]' 2>/dev/null || echo "null")
+
+  if [[ "$FORK_PR" == "null" || -z "$FORK_PR" ]]; then
+    echo "hapi-pr-create: no fork PR found for branch '$BRANCH' on heavygee/hapi" >&2
+    echo "" >&2
+    echo "  Open a fork-stage PR first so the fork-side review bot can weigh in:" >&2
+    echo "    gh pr create --repo heavygee/hapi --base main --head $BRANCH --draft \\" >&2
+    echo "      --title '[cold-review] <upstream title>' \\" >&2
+    echo "      --body 'Fork-side cold-review stage PR. Not for merge.'" >&2
+    echo "" >&2
+    echo "  Then wait for Codex review (visible at https://github.com/heavygee/hapi/pull/<N>)," >&2
+    echo "  address any findings, and rerun hapi-pr-create." >&2
+    echo "" >&2
+    echo "  For trivial PRs where bot review adds no value (typo fixes, debug-log removal," >&2
+    echo "  etc.), pass --skip-fork-stage to bypass." >&2
+    exit 2
+  fi
+
+  FORK_PR_NUM=$(echo "$FORK_PR" | jq -r '.number')
+  echo "hapi-pr-create: fork-stage gate -- checking heavygee/hapi PR #${FORK_PR_NUM}" >&2
+
+  if ! "$STATUS_SCRIPT" "$FORK_PR_NUM" --repo heavygee/hapi >&2; then
+    echo "" >&2
+    echo "hapi-pr-create: fork PR #${FORK_PR_NUM} is not clean (see status above)" >&2
+    echo "  address the findings on the fork PR, OR apply the 'cold-review-clean' label" >&2
+    echo "  (operator override for 'I've addressed or accepted the findings')," >&2
+    echo "  then rerun hapi-pr-create. Bypass with --skip-fork-stage for trivial changes." >&2
+    exit 2
+  fi
+
+  echo "hapi-pr-create: fork-stage gate PASSED (fork PR #${FORK_PR_NUM} is clean)" >&2
+else
+  echo "hapi-pr-create: WARN fork-stage gate bypassed (--skip-fork-stage)" >&2
 fi
 
 # ----- inject defaults -----

@@ -195,7 +195,20 @@ Key invariants of this flow:
 - **Branched from `upstream/main`, never from `main`** — otherwise the PR diff includes fork-only commits.
 - **One PR = one branch = one tracker** — every branch maps to one upstream issue/PR/discussion; audit flags violations.
 - **Fork-side cold-review stage is non-optional** for non-trivial changes. The fork PR is opened against fork `main` as base (or `--draft`) purely to engage the review bot. The branch never gets merged into fork `main` — the fork PR is closed once the operator labels it `cold-review-clean`. Then the upstream PR is opened from the same branch.
-- **`hapi-pr-create` is the upstream gate** — runs leak scan, requires `Closes #N`, AND (planned) refuses to open the upstream PR unless a corresponding fork PR with `cold-review-clean` label exists. Bypass with `--skip-fork-stage` for trivial changes (typo fixes, doc-only, comment tweaks) where bot review adds nothing.
+- **`hapi-pr-create` is the upstream gate** — runs leak scan, requires `Closes #N`, AND refuses to open the upstream PR unless `hapi-pr-status` PASSes for the corresponding fork PR (i.e. either Codex commented clean OR the `cold-review-clean` label is applied). Bypass with `--skip-fork-stage` for trivial changes (typo fixes, doc-only, comment tweaks) where bot review adds nothing.
+
+### 3.1.5 Two clean-signals (auto-detected and operator override)
+
+`hapi-pr-status` recognises two signals on a fork PR, either of which counts as "clean":
+
+| Signal | Source | When it fires |
+|--------|--------|---------------|
+| Codex comment regex | `chatgpt-codex-connector[bot]` issue-comment matching `/Codex Review:.*Didn.t find any/` | Cloud auto-review found nothing actionable |
+| `cold-review-clean` label | Operator-applied label on the PR | Operator override after addressing or accepting Codex findings (e.g. Codex flagged a P1 the operator decided to defer to a follow-up issue) |
+
+The label always wins — useful when Codex flags something you've already addressed in a separate commit and don't want to wait for re-review.
+
+Upstream `tiann/hapi` uses a different Codex surface (the openai/codex-action GHA workflow at `.github/workflows/codex-pr-review.yml`), which posts as formal `github-actions[bot]` reviews with a different clean regex. `hapi-pr-status` auto-detects which surface to check based on the repo owner — no flag needed.
 
 ### 3.1 Why the fork stage comes first
 
