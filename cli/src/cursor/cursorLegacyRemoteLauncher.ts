@@ -29,6 +29,9 @@ const RATE_LIMIT_STDERR_PATTERN = /rate limit/i;
 const DEFAULT_TRANSIENT_BACKOFF_MS = 2_000;
 const MAX_CONSECUTIVE_TRANSIENT_FAILURES = 5;
 const STDERR_DISPLAY_LIMIT = 400;
+// In-memory stderr cap. Display only uses STDERR_DISPLAY_LIMIT chars; this is a
+// safety bound so a chatty `agent` failure cannot balloon CLI process memory.
+const STDERR_CAPTURE_LIMIT = 8_192;
 
 function getTransientBackoffMs(): number {
     const raw = process.env.CURSOR_LEGACY_TRANSIENT_BACKOFF_MS;
@@ -286,7 +289,9 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
 
             child.stderr?.on('data', (chunk) => {
                 const text = chunk.toString();
-                stderrCapture += text;
+                if (stderrCapture.length < STDERR_CAPTURE_LIMIT) {
+                    stderrCapture += text.slice(0, STDERR_CAPTURE_LIMIT - stderrCapture.length);
+                }
                 if (text.trim()) {
                     logger.debug('[cursor-remote] agent stderr:', text.trim());
                 }
