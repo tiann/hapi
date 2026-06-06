@@ -196,6 +196,7 @@ Key invariants of this flow:
 - **One PR = one branch = one tracker** — every branch maps to one upstream issue/PR/discussion; audit flags violations.
 - **Fork-side cold-review stage is non-optional** for non-trivial changes. The fork PR is opened against fork `main` as base (or `--draft`) purely to engage the review bot. The branch never gets merged into fork `main` — the fork PR is closed once the operator labels it `cold-review-clean`. Then the upstream PR is opened from the same branch.
 - **`hapi-pr-create` is the upstream gate** — runs leak scan, requires `Closes #N`, AND refuses to open the upstream PR unless `hapi-pr-status` PASSes for the corresponding fork PR (i.e. either Codex commented clean OR the `cold-review-clean` label is applied). Bypass with `--skip-fork-stage` for trivial changes (typo fixes, doc-only, comment tweaks) where bot review adds nothing.
+- **Bot/reviewer thread responses go via `hapi-pr-reply`, never `gh pr comment`** — on both fork and upstream PRs. The helper posts the reply AND calls `resolveReviewThread` atomically; `gh pr comment` on a PR with unresolved threads is hook-blocked (`permission: "deny"`). Same for `git push origin` when threads are unresolved. Full protocol: [`pr-review-loop.md`](../tooling/pr-review-loop.md) §"What to do with findings" and [`pr-reply.md`](../tooling/pr-reply.md).
 
 ### 3.1.5 Two clean-signals (auto-detected and operator override)
 
@@ -386,6 +387,9 @@ We contribute back to git-only upstream. Layering `jj`/Sapling on top adds compl
 | `hapi-worktree-create` | The carrot: creates a worktree at the canonical path; no manual `git worktree add` needed | n/a |
 | `hapi-pr-create` | Refuses PRs from infra branches; refuses ancestry through `driver/integration`; runs leak scan; requires `Closes #N`; (planned) requires a closed `cold-review-clean`-labeled fork PR exists for the same branch | `--no-closes-required`, `--skip-fork-stage`, `HAPI_PR_CREATE_NO_LEAK_SCAN=1`, `HAPI_PR_CREATE_NO_FORK_STAGE=1` |
 | `cold-review-clean` label on fork PRs | Operator's explicit "fork-side bot review is satisfactory" signal; checked by `hapi-pr-create` before allowing upstream PR open | not bypassable except via `--skip-fork-stage` |
+| `hapi-pr-reply` | Canonical reply-to-review-thread helper: POSTs reply + calls `resolveReviewThread` atomically. See [`pr-reply.md`](../tooling/pr-reply.md) | `--skip-sha` for discussion replies that don't reference a fix commit |
+| `pr-before-shell-gates.sh` `gh pr comment` guard | `permission: "deny"` on `gh pr comment <pr>` / `gh issue comment <pr>` when the target PR has any unresolved review threads (top-level comments silently bypass the bot's review loop) | `HAPI_ALLOW_TOPLEVEL_COMMENT=1` (ugly on purpose) |
+| `pr-before-shell-gates.sh` `git push` guard | `permission: "deny"` on `git push origin <branch>` when the branch's open PR has any unresolved review threads (forces reply+resolve before iterating) | `HAPI_ALLOW_PUSH_WITH_UNRESOLVED=1` (ugly on purpose) |
 | `hapi-branch-audit` | Read-only classification of every local branch; auto-runs after sync and post-merge | n/a (read-only) |
 | `hapi-sync-fork-main` | Wraps upstream sync; runs audit at end | `--check-only` |
 | `hapi-restart-hub` | Patient drain by default (10 min WORKING wait) before stopping services | `--impatient` |
@@ -411,6 +415,8 @@ We contribute back to git-only upstream. Layering `jj`/Sapling on top adds compl
 - [`docs/tooling/git-stash-policy.md`](../tooling/git-stash-policy.md) — long-form stash discipline + incident log
 - [`docs/tooling/worktree-testing.md`](../tooling/worktree-testing.md) — testing across worktrees
 - [`docs/tooling/cold-pr-review-rubric.md`](../tooling/cold-pr-review-rubric.md) — pre-PR self-review checklist
+- [`docs/tooling/pr-review-loop.md`](../tooling/pr-review-loop.md) — pre-PR gate, pre-push cold review, post-push monitor + thread-response protocol
+- [`docs/tooling/pr-reply.md`](../tooling/pr-reply.md) — `hapi-pr-reply` helper for atomic reply-and-resolve on review threads
 - [`docs/tooling/commit-hooks.md`](../tooling/commit-hooks.md) — installed hooks reference
 - [`docs/plans/2026-06-01-hapi-folders-reorganization.md`](../plans/2026-06-01-hapi-folders-reorganization.md) — why the layout looks like this (Phase 1-3 history)
 - [`.cursor/rules/worktree-layout.mdc`](../../.cursor/rules/worktree-layout.mdc) — canonical-paths rule for new worktrees

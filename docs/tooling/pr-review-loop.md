@@ -208,29 +208,38 @@ If hooks are disabled, run the shared poll directly:
 
 When the hook reports unresolved threads:
 
-1. Read each finding carefully
-2. Make the code fix (new commit)
-3. Reply to the specific GitHub thread:
+1. Read each finding carefully.
+2. Make the code fix (new commit) -- or, if pushing back, prepare a one-line technical reason.
+3. **Reply AND resolve in one step via the helper** (see [pr-reply.md](./pr-reply.md)):
    ```bash
-   gh api repos/tiann/hapi/pulls/692/comments/<comment_id>/replies \
-     -f body="Fixed in <sha>: <one sentence what changed>"
+   hapi-pr-reply [-R owner/repo] <pr_number> <comment_id> <fix_sha> "<one-line>"
+   # discussion / disagreement instead of a fix:
+   hapi-pr-reply <pr_number> <comment_id> --skip-sha "<technical reason>"
    ```
-4. Resolve the thread:
-   ```bash
-   gh api graphql -f query='mutation {
-     resolveReviewThread(input: {threadId: "PRRT_..."}) {
-       thread { id isResolved }
-     }
-   }'
-   ```
-5. Push again (which will trigger a new 5-minute wait)
+   `hapi-pr-reply` posts the REST reply and immediately calls `resolveReviewThread`. On any failure it aborts before resolving so you never leave drift.
+4. Push again (which will trigger a new 5-minute wait).
 
-**Rule:** A finding is not done until it is replied to AND resolved. Unresolved threads
-signal to maintainers that the issue is still open.
+**Rule:** A finding is not done until it is replied to AND resolved. Unresolved threads signal to maintainers that the issue is still open.
+
+**NEVER respond via `gh pr comment` (top-level PR comments).** Top-level comments silently bypass the bot's review loop, do not mark threads as addressed, and obscure the conversation surface for the next reviewer. This is enforced by `~/.cursor/hooks/pr-before-shell-gates.sh`:
+
+- `gh pr comment <pr>` / `gh issue comment <pr>` against a PR with any unresolved review threads -> `permission: "deny"`. Bypass for genuine standalone comments (release notes, scope-change summary, NOT review responses): `HAPI_ALLOW_TOPLEVEL_COMMENT=1`.
+- `git push origin <branch>` when the branch's open PR has any unresolved threads -> `permission: "deny"`. Bypass for explicit mid-iteration WIP pushes: `HAPI_ALLOW_PUSH_WITH_UNRESOLVED=1`. Reply first with a "WIP: will address in next push" note (via `hapi-pr-reply --skip-sha`) before reaching for the bypass.
+
+Bypass env-var names are deliberately ugly so they don't become muscle memory. Postmortem: `tiann/hapi#814` `#issuecomment-4639449666` (2026-06-06) - the orchestrator created a top-level comment instead of replying to the bot's review threads, hence these guards.
 
 ---
 
-## Finding thread IDs
+## Finding thread / comment IDs
+
+`hapi-pr-reply` looks up the GraphQL thread id from the REST comment id internally. To list candidate review-comment ids for a PR:
+
+```bash
+gh api repos/<owner>/<repo>/pulls/<pr>/comments \
+  --jq '.[] | "\(.id) \(.path):\(.line) \(.user.login) \(.body[:80])"'
+```
+
+Lower-level GraphQL (only needed if the helper is unavailable):
 
 ```bash
 gh api graphql -f query='{
