@@ -12,6 +12,7 @@ import packageJson from '../../package.json';
 import { getEnvironmentInfo } from '@/ui/doctor';
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
 import { writeRunnerState, RunnerLocallyPersistedState, readRunnerState, acquireRunnerLock, releaseRunnerLock } from '@/persistence';
+import { getCliArgs } from '@/utils/cliArgs';
 import { isProcessAlive, isWindows, killProcess, killProcessByChildProcess } from '@/utils/process';
 import { PERMISSION_MODES } from '@hapi/protocol/modes';
 import { withRetry } from '@/utils/time';
@@ -98,24 +99,73 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
   logger.debug('[RUNNER RUN] Starting runner process...');
   logger.debugLargeJson('[RUNNER RUN] Environment', getEnvironmentInfo());
 
-  // Check if already running
-  // Check if running runner version matches current CLI version
-  const runningRunnerVersionMatches = await isRunnerRunningCurrentlyInstalledHappyVersion();
-  if (!runningRunnerVersionMatches) {
-    logger.debug('[RUNNER RUN] Runner version mismatch detected, restarting runner with current CLI version');
-    await stopRunner();
-  } else {
-    logger.debug('[RUNNER RUN] Runner version matches, keeping existing runner');
-    console.log('Runner already running with matching version');
-    process.exit(0);
+  // Detect authorized handoff from a parent runner doing the
+  // mtime-drift self-restart (see heartbeat block below). The parent sets
+  // HAPI_RUNNER_HANDOFF_FROM_PID=<parent_pid> on the spawned child's env;
+  // if it matches the live state pid, we are the explicit replacement and
+  // must NOT trigger `stopRunner()` (parent will voluntarily release the
+  // lock and exit once it sees our pid in state).
+  //
+  // Codex review #814 [Major] on run.ts:892 -- previously the child
+  // unconditionally called `stopRunner()` before acquiring the lock or
+  // writing its own state. `/stop` resolved the parent's shutdown,
+  // deleted runner.state.json, and released the lock BEFORE the child
+  // had committed itself; if the child then failed (lock contention,
+  // auth error, anything between stopRunner and writeRunnerState), the
+  // machine went offline with no runner at all.
+  //
+  // New protocol:
+  //   - Parent: spawn child with HAPI_RUNNER_HANDOFF_FROM_PID env, then
+  //     release lock, then wait for state.pid to change to a different
+  //     live pid. On wait-timeout the parent re-acquires the lock and
+  //     defers retry; on wait-success the parent clearInterval + exit.
+  //   - Child: detect env, skip stopRunner(), skip the version-match
+  //     early-exit, acquire the lock with a longer retry window (parent
+  //     releases asynchronously, so we may need to wait).
+  const handoffFromPidRaw = process.env.HAPI_RUNNER_HANDOFF_FROM_PID;
+  const handoffFromPid = handoffFromPidRaw ? Number(handoffFromPidRaw) : NaN;
+  let isAuthorizedHandoff = false;
+  if (Number.isFinite(handoffFromPid) && handoffFromPid > 0) {
+    const existingState = await readRunnerState();
+    if (existingState?.pid === handoffFromPid && isProcessAlive(handoffFromPid)) {
+      isAuthorizedHandoff = true;
+      logger.debug(`[RUNNER RUN] Authorized handoff from parent runner PID ${handoffFromPid}; skipping stopRunner() and version-match short-circuit`);
+    } else {
+      logger.debug(`[RUNNER RUN] HAPI_RUNNER_HANDOFF_FROM_PID=${handoffFromPidRaw} set but no matching live parent in state (state.pid=${existingState?.pid ?? 'none'}); ignoring handoff signal`);
+    }
   }
 
-  // Acquire exclusive lock (proves runner is running)
-  const runnerLockHandle = await acquireRunnerLock(5, 200);
-  if (!runnerLockHandle) {
+  if (!isAuthorizedHandoff) {
+    // Check if already running
+    // Check if running runner version matches current CLI version
+    const runningRunnerVersionMatches = await isRunnerRunningCurrentlyInstalledHappyVersion();
+    if (!runningRunnerVersionMatches) {
+      logger.debug('[RUNNER RUN] Runner version mismatch detected, restarting runner with current CLI version');
+      await stopRunner();
+    } else {
+      logger.debug('[RUNNER RUN] Runner version matches, keeping existing runner');
+      console.log('Runner already running with matching version');
+      process.exit(0);
+    }
+  }
+
+  // Acquire exclusive lock (proves runner is running).
+  // In authorized-handoff mode the parent is still alive holding the lock
+  // and will release it asynchronously once we are spawned, so wait longer
+  // (30s) instead of giving up after the standard 1s. Outside handoff,
+  // preserve the original 5x200ms = 1s "already running" semantics.
+  const lockMaxAttempts = isAuthorizedHandoff ? 60 : 5;
+  const lockDelayIncrementMs = isAuthorizedHandoff ? 500 : 200;
+  const initialLockHandle = await acquireRunnerLock(lockMaxAttempts, lockDelayIncrementMs);
+  if (!initialLockHandle) {
     logger.debug('[RUNNER RUN] Runner lock file already held, another runner is running');
     process.exit(0);
   }
+  // `let` because the heartbeat-restart handoff path below may release and
+  // re-acquire it. After the null guard above, the initial handle is
+  // non-null; the heartbeat path's failure branches either reassign to a
+  // re-acquired handle or process.exit() before any subsequent release.
+  let runnerLockHandle = initialLockHandle;
 
   // At this point we should be safe to startup the runner:
   // 1. Not have a stale runner state
@@ -665,11 +715,26 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     // (still-stale) runner is reported as current. Throttle handoff attempts
     // via nextHandoffAttemptAt below instead of mutating this baseline.
     const startedWithCliMtimeMs = getInstalledCliMtimeMs();
-    // Snapshot original argv (excluding node/bun + entrypoint) so the heartbeat's
-    // self-restart handoff can rebuild the same `runner start-sync --workspace-root ...`
-    // invocation instead of losing flags. process.argv[0] is the runtime, [1] is the
-    // script; everything after is operator-supplied.
-    const startedWithArgv = process.argv.slice(2);
+    // Snapshot original CLI argv via the project's canonical normalizer so the
+    // heartbeat's self-restart handoff can rebuild the same `runner start-sync
+    // --workspace-root ...` invocation instead of losing flags.
+    //
+    // Codex review #814 [Major]: previously `process.argv.slice(2)` was used,
+    // but in compiled binary mode (`bun build --compile`) the raw argv shape is
+    // `[hapi, runner, start-sync, ...]` so slice(2) produced `['start-sync', ...]`.
+    // The replacement then spawned `hapi start-sync ...`, which `resolveCommand`
+    // treats as an unknown top-level command - falling back to Claude instead
+    // of starting the runner. `getCliArgs()` strips runtime + entrypoint
+    // correctly in all execution modes.
+    //
+    // Defensive guard: only replay the captured argv when it actually starts
+    // with `runner`. If the normalizer ever returns something else (unexpected
+    // shape, future refactor), fall back to the safe default so the handoff
+    // can never resolve to a non-runner command.
+    const rawStartedWithArgv = getCliArgs();
+    const startedWithArgv = rawStartedWithArgv[0] === 'runner'
+      ? rawStartedWithArgv
+      : ['runner', 'start-sync'];
     // Snapshot at start: did this runner opt out of version handoff via env?
     // Persisted to runner.state.json so a later `hapi runner start` from a
     // shell where the env var is NOT set can still honour the opt-out
@@ -860,9 +925,10 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           //    fails, stay alive so the machine stays online. heartbeatRunning
           //    re-entry guard prevents this block from running concurrently if
           //    the next heartbeat fires while we are still waiting.
-          const handoffArgv = startedWithArgv.length > 0
-            ? startedWithArgv
-            : ['runner', 'start-sync'];
+          //
+          // startedWithArgv is guaranteed by the normalizer + defensive guard
+          // above to start with `runner`, so we replay it directly.
+          const handoffArgv = startedWithArgv;
 
           // On any failure path: reschedule the next handoff attempt for
           // HANDOFF_RETRY_BACKOFF_MS into the future. We deliberately do NOT
@@ -876,10 +942,18 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             heartbeatRunning = false;
           };
 
+          // Spawn the replacement with HAPI_RUNNER_HANDOFF_FROM_PID set so
+          // the child knows it is an authorized handoff and must NOT call
+          // stopRunner() against us before writing its own state.
+          // Codex review #814 [Major] on run.ts:892.
           try {
             spawnHappyCLI(handoffArgv, {
               detached: true,
-              stdio: 'ignore'
+              stdio: 'ignore',
+              env: {
+                ...process.env,
+                HAPI_RUNNER_HANDOFF_FROM_PID: String(process.pid)
+              }
             });
           } catch (error) {
             logger.debug(`[RUNNER RUN] Failed to spawn replacement runner; staying alive to avoid an offline machine. Next handoff attempt in ${Math.round(HANDOFF_RETRY_BACKOFF_MS / 1000)}s.`, error);
@@ -887,11 +961,43 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             return;
           }
 
-          logger.debug(`[RUNNER RUN] Spawned replacement runner with argv: ${JSON.stringify(handoffArgv)}; waiting for handoff`);
+          // Release the lock so the child can acquire it. The child is
+          // configured (above, in its startRunner() entry) with a longer
+          // lock-retry window when HAPI_RUNNER_HANDOFF_FROM_PID is set, so
+          // it will wait through this release. We deliberately release
+          // BEFORE waitForRunnerHandoff to break the original deadlock:
+          // child cannot write state (and thus cannot signal handoff
+          // success) until it holds the lock, and the lock is ours until
+          // we release.
+          try {
+            await releaseRunnerLock(runnerLockHandle);
+          } catch (error) {
+            logger.debug('[RUNNER RUN] Failed to release lock for child handoff; continuing wait anyway', error);
+          }
+
+          logger.debug(`[RUNNER RUN] Spawned replacement runner with argv: ${JSON.stringify(handoffArgv)}; released lock; waiting for handoff`);
 
           const handoffOk = await waitForRunnerHandoff(process.pid, { timeoutMs: 30_000 });
           if (!handoffOk) {
-            logger.debug(`[RUNNER RUN] Replacement runner did not register within 30s; staying alive to avoid leaving the machine offline. Next handoff attempt in ${Math.round(HANDOFF_RETRY_BACKOFF_MS / 1000)}s.`);
+            logger.debug(`[RUNNER RUN] Replacement runner did not register within 30s; attempting to re-acquire lock and stay alive to avoid leaving the machine offline.`);
+            // Re-acquire the lock with a long window (the child has likely
+            // either succeeded and we're seeing a stale state, or it gave
+            // up - in either case the lock should be available shortly).
+            const reacquired = await acquireRunnerLock(60, 500);
+            if (!reacquired) {
+              // Lock is held by someone else (third-party runner, or a
+              // child that succeeded but state file hasn't reflected the
+              // new pid yet). Cleanest action: exit, log clearly. The
+              // operator will see an offline machine if the holder also
+              // dies, but staying alive without the lock invariant is
+              // worse - it lets a parallel runner register against the
+              // same machine id.
+              logger.debug('[RUNNER RUN] Could not re-acquire runner lock after failed handoff; another process holds it. Exiting cleanly.');
+              clearInterval(restartOnStaleVersionAndHeartbeat);
+              process.exit(0);
+              return;
+            }
+            runnerLockHandle = reacquired;
             deferHandoffRetry();
             return;
           }
