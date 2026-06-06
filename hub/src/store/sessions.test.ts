@@ -404,6 +404,96 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
         expect('host' in (metadata ?? {})).toBe(false)
     })
 
+    // P2 from cold review: flavor + machineId are routing fields. Without
+    // flavor, hub/src/web/routes/sessions.ts and syncEngine fall through
+    // to the `?? 'claude'` default and ignore the preserved Cursor/Codex
+    // token. Without machineId, the CLI's resumable listing filters the
+    // row out of the resume picker. Both must survive sparse archive.
+    it('preserves flavor and machineId across sparse archive (resume routing)', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'cursor-routing-survives',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                machineId: 'mach-xyz',
+                cursorSessionId: 'cursor-thread-routed'
+            },
+            null,
+            'default'
+        )
+
+        store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                lifecycleState: 'archived',
+                archivedBy: 'cli',
+                archiveReason: 'Session crashed'
+            },
+            session.metadataVersion,
+            'default'
+        )
+
+        const metadata = getMetadata(store, session.id) as Record<string, unknown> | null
+        expect(metadata?.flavor).toBe('cursor')
+        expect(metadata?.machineId).toBe('mach-xyz')
+        expect(metadata?.cursorSessionId).toBe('cursor-thread-routed')
+    })
+
+    it('does not invent flavor or machineId when prior had none', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'no-prior-routing',
+            { path: '/tmp/project', host: 'example' },
+            null,
+            'default'
+        )
+
+        store.sessions.updateSessionMetadata(
+            session.id,
+            { lifecycleState: 'archived' },
+            session.metadataVersion,
+            'default'
+        )
+
+        const metadata = getMetadata(store, session.id) as Record<string, unknown> | null
+        expect(metadata?.lifecycleState).toBe('archived')
+        expect('flavor' in (metadata ?? {})).toBe(false)
+        expect('machineId' in (metadata ?? {})).toBe(false)
+    })
+
+    it('lets the next write override flavor and machineId when explicitly set', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'override-routing',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                machineId: 'mach-old'
+            },
+            null,
+            'default'
+        )
+
+        store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'codex',
+                machineId: 'mach-new'
+            },
+            session.metadataVersion,
+            'default'
+        )
+
+        const metadata = getMetadata(store, session.id) as Record<string, unknown> | null
+        expect(metadata?.flavor).toBe('codex')
+        expect(metadata?.machineId).toBe('mach-new')
+    })
+
     // P2 from cold review: cursorSessionProtocol must NOT carry over
     // when the next write explicitly sets a different cursorSessionId.
     // The protocol is tied to the id, and a different id may use a

@@ -16,13 +16,21 @@ import { updateVersionedField } from './versionedUpdates'
 // in updateSessionMetadata wipes whatever it omits. That breaks resume
 // even though the on-disk chat data still exists.
 //
-// Two preservation tiers cover the failure modes:
+// Three preservation tiers cover the failure modes:
 //
 //   - PARSE_IDENTITY_FIELDS: required by MetadataSchema in
 //     shared/src/schemas.ts. Without these, hub session cache and CLI
 //     getSession reject the row with safeParse → metadata becomes null
 //     downstream and resume cannot find a path even when the resume
 //     token survived.
+//
+//   - ROUTING_FIELDS: flavor + machineId. `flavor` is what
+//     hub/src/web/routes/sessions.ts and hub/src/sync/syncEngine.ts use
+//     to pick which session id field to read; if it's dropped, the
+//     `?? 'claude'` fallback misroutes a Cursor/Codex/Gemini session as
+//     Claude and the preserved token is ignored. `machineId` is the
+//     filter the CLI's resumable listing uses to scope rows to the
+//     current host; without it the row drops out of the resume picker.
 //
 //   - SIMPLE_RESUME_TOKENS: flavor-specific resume identifiers that are
 //     write-once-keep semantics. Mirror of pickExistingSessionMetadata
@@ -33,6 +41,8 @@ import { updateVersionedField } from './versionedUpdates'
 // `cursorSessionId` must drop a stale prior protocol. Handled in
 // preserveCursorProtocolPair below.
 const PARSE_IDENTITY_FIELDS = ['path', 'host'] as const
+
+const ROUTING_FIELDS = ['flavor', 'machineId'] as const
 
 const SIMPLE_RESUME_TOKENS = [
     'claudeSessionId',
@@ -93,6 +103,7 @@ export function mergeSessionMetadata(prior: unknown, next: unknown): unknown {
     }
     let merged: Record<string, unknown> | null = null
     merged = carryForwardIfMissing(prior, next, merged, PARSE_IDENTITY_FIELDS)
+    merged = carryForwardIfMissing(prior, next, merged, ROUTING_FIELDS)
     merged = carryForwardIfMissing(prior, next, merged, SIMPLE_RESUME_TOKENS)
     merged = preserveCursorProtocolPair(prior, next, merged)
     return merged ?? next
