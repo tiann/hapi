@@ -136,6 +136,8 @@ graph TD
 
 ## 3. Flow: new feature → upstream merge
 
+The upstream PR is the **last** step, not the first. Every PR passes through a fork-side cold-review stage where the fork's own review bot critiques the diff. The operator iterates until the bot has no remaining findings, then promotes to upstream. The goal: **every upstream push is green on first review** — no public bot-feedback-then-fix cycle.
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -144,6 +146,7 @@ sequenceDiagram
     participant PEER as Feature peer agent
     participant WT as Worktree<br/>(~/coding/hapi/worktrees/X/)
     participant FORK as origin (fork)
+    participant BOT as Fork-side review bot
     participant US as upstream (tiann/hapi)
 
     OP->>ORCH: "I want feature X"
@@ -155,16 +158,31 @@ sequenceDiagram
     loop iterate
         PEER->>WT: edits, tests, commits<br/>(no stashes - WIP commit if interrupted)
     end
-    PEER->>PEER: cold review + Playwright<br/>(per cold-pr-review-rubric.md)
+    PEER->>PEER: cold self-review + Playwright<br/>(per cold-pr-review-rubric.md)
     PEER->>OP: "ready for dogfood"
     OP->>WT: operator browser-tests in worktree<br/>(or via driver soup)
-    OP->>PEER: approved
+    OP->>PEER: dogfood approved
+
+    rect rgb(255, 245, 220)
+    Note right of PEER: FORK-SIDE COLD-REVIEW GATE<br/>(below this point happens on heavygee/hapi)
     PEER->>FORK: git push -u origin fix/X
+    PEER->>FORK: open fork PR<br/>(base=main, draft, head=fix/X)
+    FORK->>BOT: PR open event
+    BOT-->>FORK: review comments + findings
+    loop until clean
+        PEER->>WT: address bot findings
+        PEER->>FORK: git push (same branch)
+        FORK->>BOT: push event
+        BOT-->>FORK: re-review
+    end
+    OP->>FORK: apply 'cold-review-clean' label<br/>(operator says "I'm satisfied")
+    PEER->>FORK: close fork PR<br/>(branch stays; PR was staging-only)
+    end
+
     PEER->>US: hapi-pr-create<br/>--title T --body-file body.md
-    Note right of PEER: wrapper enforces base upstream/main,<br/>leak scan, and Closes #N keyword
-    US-->>FORK: review, request changes
-    PEER->>WT: address review<br/>push updates
-    US->>US: merge PR
+    Note right of PEER: wrapper enforces base upstream/main,<br/>leak scan, Closes #N keyword,<br/>AND a closed cold-review-clean fork PR exists
+    US-->>US: upstream bot re-reviews<br/>(should find nothing new)
+    US->>US: maintainer merges PR
     OP->>FORK: hapi-sync-fork-main
     FORK->>FORK: post-merge hook runs<br/>hapi-branch-audit --on-merge
     FORK-->>OP: "fix/X is MERGED (delete candidate)"
@@ -176,7 +194,32 @@ Key invariants of this flow:
 - **The peer never works in `~/coding/hapi/driver/`** — that's the daily-driver tree. Each peer gets its own worktree under `worktrees/`.
 - **Branched from `upstream/main`, never from `main`** — otherwise the PR diff includes fork-only commits.
 - **One PR = one branch = one tracker** — every branch maps to one upstream issue/PR/discussion; audit flags violations.
-- **`hapi-pr-create` is the gate** — not bare `gh pr create`. The wrapper runs leak scans and requires a closes-keyword.
+- **Fork-side cold-review stage is non-optional** for non-trivial changes. The fork PR is opened against fork `main` as base (or `--draft`) purely to engage the review bot. The branch never gets merged into fork `main` — the fork PR is closed once the operator labels it `cold-review-clean`. Then the upstream PR is opened from the same branch.
+- **`hapi-pr-create` is the upstream gate** — runs leak scan, requires `Closes #N`, AND (planned) refuses to open the upstream PR unless a corresponding fork PR with `cold-review-clean` label exists. Bypass with `--skip-fork-stage` for trivial changes (typo fixes, doc-only, comment tweaks) where bot review adds nothing.
+
+### 3.1 Why the fork stage comes first
+
+Two reasons:
+
+1. **Public-facing PRs are reputational.** Bot feedback on an upstream PR is visible to the maintainer and anyone watching the repo. A "merge this in your sleep" PR followed by a flurry of bot-suggested commits looks like the author didn't self-review. The fork stage absorbs that round so the upstream PR looks first-try-clean.
+2. **Bot reviewers are cheap; maintainer attention is not.** The fork bot finds the things a human reviewer would otherwise have to flag. Spending bot rounds on the fork preserves maintainer attention for the things only a human can judge (API design, breaking-change risk, idiomatic fit).
+
+The fork PR is **staging infrastructure**, not a real merge candidate. It's opened with base = fork `main` because GitHub requires a base; the branch is never actually merged there. Operator-applied label = explicit "the bot has weighed in and I've addressed or accepted its findings" signal.
+
+### 3.2 What counts as "non-trivial" (when to use --skip-fork-stage)
+
+Skip the fork stage for:
+- Single-line typo / wording fixes in docs or comments
+- Removing a debug `console.log` / `println!`
+- Trivial dependency version bumps where the changelog is clean
+
+Keep the fork stage for:
+- Anything touching `cli/`, `hub/`, `web/`, `shared/` runtime code
+- Anything that changes a public API
+- Anything that adds a new test
+- Anything where the bot might find a subtle issue (security, perf, type narrowing, error paths)
+
+When in doubt, keep the fork stage. The cost is one extra `gh pr create` + a few minutes of bot-wait. The cost of skipping when you shouldn't have is public embarrassment.
 
 ---
 
@@ -328,7 +371,8 @@ We contribute back to git-only upstream. Layering `jj`/Sapling on top adds compl
 | `post-merge` hook | Runs `hapi-branch-audit --on-merge` after merges into `main` | `HAPI_SKIP_POST_MERGE_AUDIT=1` |
 | `~/.local/bin/git` shim | Refuses `git worktree add` at non-canonical paths inside the hapi clone | `HAPI_SKIP_WORKTREE_GUARD=1` |
 | `hapi-worktree-create` | The carrot: creates a worktree at the canonical path; no manual `git worktree add` needed | n/a |
-| `hapi-pr-create` | Refuses PRs from infra branches; refuses ancestry through `driver/integration`; runs leak scan; requires `Closes #N` | `--no-closes-required`, `HAPI_PR_CREATE_NO_LEAK_SCAN=1` |
+| `hapi-pr-create` | Refuses PRs from infra branches; refuses ancestry through `driver/integration`; runs leak scan; requires `Closes #N`; (planned) requires a closed `cold-review-clean`-labeled fork PR exists for the same branch | `--no-closes-required`, `--skip-fork-stage`, `HAPI_PR_CREATE_NO_LEAK_SCAN=1`, `HAPI_PR_CREATE_NO_FORK_STAGE=1` |
+| `cold-review-clean` label on fork PRs | Operator's explicit "fork-side bot review is satisfactory" signal; checked by `hapi-pr-create` before allowing upstream PR open | not bypassable except via `--skip-fork-stage` |
 | `hapi-branch-audit` | Read-only classification of every local branch; auto-runs after sync and post-merge | n/a (read-only) |
 | `hapi-sync-fork-main` | Wraps upstream sync; runs audit at end | `--check-only` |
 | `hapi-restart-hub` | Patient drain by default (10 min WORKING wait) before stopping services | `--impatient` |
