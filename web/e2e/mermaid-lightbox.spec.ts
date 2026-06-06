@@ -107,7 +107,7 @@ const MIN_EXPAND_AREA_RATIO = Number(process.env.MERMAID_E2E_MIN_EXPAND_RATIO ??
 
 for (const caseId of MERMAID_LIGHTBOX_CASE_IDS) {
     test(`mermaid lightbox: ${caseId}`, async ({ page }) => {
-        await page.goto(`/mermaid-lightbox-e2e.html?case=${encodeURIComponent(caseId)}`)
+        await page.goto(`/e2e-fixtures/mermaid-lightbox-e2e.html?case=${encodeURIComponent(caseId)}`)
         await page.waitForSelector('[data-mermaid-diagram][data-rendered="true"]', { timeout: 20_000 })
 
         const beforeExpand = await readExpandMetrics(page)
