@@ -11,6 +11,7 @@ import {
     type RemoteLauncherExitReason
 } from '@/modules/common/remote/RemoteLauncherBase';
 import type { CursorSession } from './session';
+import type { EnhancedMode } from './loop';
 // TODO(cursor-acp): remove legacy stream-json resume path after migration window.
 // New Cursor sessions use ACP only. This path exists because pre-ACP Cursor
 // session_id values are not loadable via ACP session/load.
@@ -18,6 +19,47 @@ import type { CursorSession } from './session';
 import type { CursorStreamEvent } from './utils/cursorLegacyEventConverter';
 import { parseCursorEvent, convertCursorEventToAgentMessage } from './utils/cursorLegacyEventConverter';
 import { cursorPassThroughStatusMessage, parseCursorSpecialCommand } from './cursorSpecialCommands';
+
+// Transient `agent` failures (auth expiry, rate limits, transient network) come back
+// as exit code 1 with a recognisable stderr signature. We requeue and retry instead
+// of silently swallowing the user message.
+const TRANSIENT_STDERR_PATTERN = /authentication required|please run ['"]?agent login['"]?|rate limit|ETIMEDOUT|ECONNRESET|EAI_AGAIN/i;
+const AUTH_STDERR_PATTERN = /authentication required|please run ['"]?agent login['"]?/i;
+const RATE_LIMIT_STDERR_PATTERN = /rate limit/i;
+const DEFAULT_TRANSIENT_BACKOFF_MS = 2_000;
+const MAX_CONSECUTIVE_TRANSIENT_FAILURES = 5;
+const STDERR_DISPLAY_LIMIT = 400;
+
+function getTransientBackoffMs(): number {
+    const raw = process.env.CURSOR_LEGACY_TRANSIENT_BACKOFF_MS;
+    if (raw === undefined) return DEFAULT_TRANSIENT_BACKOFF_MS;
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isNaN(parsed) || parsed < 0) return DEFAULT_TRANSIENT_BACKOFF_MS;
+    return parsed;
+}
+
+function isTransientAgentError(exitCode: number, stderr: string): boolean {
+    if (exitCode === 0) return false;
+    return TRANSIENT_STDERR_PATTERN.test(stderr);
+}
+
+function truncateStderrForDisplay(stderr: string): string {
+    const trimmed = stderr.trim();
+    if (!trimmed) return '(no stderr)';
+    return trimmed.length > STDERR_DISPLAY_LIMIT
+        ? `${trimmed.slice(0, STDERR_DISPLAY_LIMIT)}...`
+        : trimmed;
+}
+
+function friendlyTransientMessage(exitCode: number, stderr: string): string {
+    if (AUTH_STDERR_PATTERN.test(stderr)) {
+        return "Cursor authentication expired. Re-run 'agent login' or set CURSOR_API_KEY. Your message is queued and will retry automatically.";
+    }
+    if (RATE_LIMIT_STDERR_PATTERN.test(stderr)) {
+        return 'Cursor rate limit hit. Your message is queued and will retry automatically.';
+    }
+    return `Cursor agent failed transiently (exit ${exitCode}). Your message is queued and will retry automatically.`;
+}
 
 function buildAgentArgs(opts: {
     message: string;
@@ -57,6 +99,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CursorSession;
     private abortController = new AbortController();
     private displayPermissionMode: string | null = null;
+    private consecutiveTransientFailures = 0;
 
     constructor(session: CursorSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
@@ -128,7 +171,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             session.onThinkingChange(true);
 
             try {
-                const exitCode = await this.runAgentProcess(args, session.path, (event) => {
+                const { exitCode, stderr } = await this.runAgentProcess(args, session.path, (event) => {
                     if (event.type === 'system' && event.subtype === 'init' && event.session_id) {
                         cursorSessionId = event.session_id;
                         session.onSessionFoundWithProtocol(event.session_id, 'stream-json');
@@ -162,11 +205,19 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                     }
                 });
 
-                if (exitCode !== 0 && exitCode !== null) {
-                    logger.debug(`[cursor-remote] Agent exited with code ${exitCode}`);
-                    messageBuffer.addMessage(`Agent exited with code ${exitCode}`, 'status');
+                if (exitCode === 0 || exitCode === null) {
+                    this.consecutiveTransientFailures = 0;
+                } else if (isTransientAgentError(exitCode, stderr)) {
+                    await this.handleTransientAgentFailure(exitCode, stderr, message, mode);
+                } else {
+                    this.consecutiveTransientFailures = 0;
+                    const errMsg = `Agent exited (${exitCode}): ${truncateStderrForDisplay(stderr)}`;
+                    logger.warn(`[cursor-remote] ${errMsg}`);
+                    session.sendSessionEvent({ type: 'message', message: errMsg });
+                    messageBuffer.addMessage(errMsg, 'status');
                 }
             } catch (error) {
+                this.consecutiveTransientFailures = 0;
                 logger.warn('[cursor-remote] Agent run failed', error);
                 const errMsg = error instanceof Error ? error.message : String(error);
                 session.sendSessionEvent({ type: 'message', message: `Cursor Agent failed: ${errMsg}` });
@@ -184,7 +235,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         args: string[],
         cwd: string,
         onEvent: (event: ReturnType<typeof parseCursorEvent> & object) => void
-    ): Promise<number | null> {
+    ): Promise<{ exitCode: number | null; stderr: string }> {
         return new Promise((resolve, reject) => {
             const child = spawn('agent', args, {
                 cwd,
@@ -194,9 +245,11 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                 windowsHide: process.platform === 'win32'
             });
 
+            let stderrCapture = '';
+
             const abortHandler = () => {
                 killProcessByChildProcess(child, false).catch(() => {});
-                resolve(null);
+                resolve({ exitCode: null, stderr: stderrCapture });
             };
             this.abortController.signal.addEventListener('abort', abortHandler);
 
@@ -211,7 +264,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
 
             child.on('exit', (code, signal) => {
                 cleanup();
-                resolve(code);
+                resolve({ exitCode: code, stderr: stderrCapture });
             });
 
             const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
@@ -224,10 +277,63 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
 
             child.stderr?.on('data', (chunk) => {
                 const text = chunk.toString();
+                stderrCapture += text;
                 if (text.trim()) {
                     logger.debug('[cursor-remote] agent stderr:', text.trim());
                 }
             });
+        });
+    }
+
+    private async handleTransientAgentFailure(
+        exitCode: number,
+        stderr: string,
+        message: string,
+        mode: EnhancedMode
+    ): Promise<void> {
+        const session = this.session;
+        const messageBuffer = this.messageBuffer;
+        this.consecutiveTransientFailures += 1;
+
+        if (this.consecutiveTransientFailures >= MAX_CONSECUTIVE_TRANSIENT_FAILURES) {
+            const summary = truncateStderrForDisplay(stderr);
+            const dropMsg = `Cursor agent failed ${MAX_CONSECUTIVE_TRANSIENT_FAILURES} times in a row (${summary}). Dropping the queued message; resolve the issue ('agent login', wait out rate limit, etc.) and resend.`;
+            logger.warn(
+                `[cursor-remote] transient agent failures hit cap (${MAX_CONSECUTIVE_TRANSIENT_FAILURES}); dropping message`,
+                { exitCode, stderr: stderr.slice(0, STDERR_DISPLAY_LIMIT) }
+            );
+            session.sendSessionEvent({ type: 'message', message: dropMsg });
+            messageBuffer.addMessage(dropMsg, 'status');
+            this.consecutiveTransientFailures = 0;
+            return;
+        }
+
+        logger.warn(
+            '[cursor-remote] transient agent failure, requeueing user message',
+            {
+                exitCode,
+                attempt: this.consecutiveTransientFailures,
+                stderr: stderr.slice(0, STDERR_DISPLAY_LIMIT)
+            }
+        );
+        session.queue.unshift(message, mode);
+        const friendly = friendlyTransientMessage(exitCode, stderr);
+        session.sendSessionEvent({ type: 'message', message: friendly });
+        messageBuffer.addMessage(friendly, 'status');
+        await this.transientBackoff(getTransientBackoffMs());
+    }
+
+    private async transientBackoff(ms: number): Promise<void> {
+        if (ms <= 0) return;
+        const signal = this.abortController.signal;
+        if (signal.aborted) return;
+        await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, ms);
+            const onAbort = () => {
+                clearTimeout(timer);
+                resolve();
+            };
+            signal.addEventListener('abort', onAbort, { once: true });
         });
     }
 
