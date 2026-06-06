@@ -47,12 +47,15 @@ type ApiClientOptions = {
 
 type ErrorPayload = {
     error?: unknown
+    code?: unknown
 }
 
 function parseErrorCode(bodyText: string): string | undefined {
     try {
         const parsed = JSON.parse(bodyText) as ErrorPayload
-        return typeof parsed.error === 'string' ? parsed.error : undefined
+        if (typeof parsed.code === 'string') return parsed.code
+        if (typeof parsed.error === 'string') return parsed.error
+        return undefined
     } catch {
         return undefined
     }
