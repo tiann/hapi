@@ -5,7 +5,7 @@ alwaysApply: true
 
 # heavygee/hapi operator fork
 
-This repo is a **fork** of `tiann/hapi`. Root **`AGENTS.md` is intentionally absent** - upstream's copy is not used here.
+This repo is a **fork** of `tiann/hapi`. Root **`AGENTS.md` is byte-identical to upstream** (intentionally - it's the Codex Cloud RAG-parity surface, see `docs/tooling/pr-review-loop.md` "What `cold-review-clean` means"). Fork-specific guidance lives in `docs/operator/AGENTS.md`, this rule, and the repo-root `CLAUDE.md`.
 
 **Read `docs/operator/AGENTS.md`** - single canonical guide (HAPI baseline + fork intent + upstream PR discipline).
 
@@ -13,5 +13,5 @@ This repo is a **fork** of `tiann/hapi`. Root **`AGENTS.md` is intentionally abs
 - **Workspace** = `~/coding/hapi` (mirror). **`hapi-driver`** = runtime on `:3006` via `hapi-active` — not the default instruction root.
 - **Before any `hapi-driver-rebuild` or `hapi-use-worktree`:** run `hapi-driver-status --quiet` (exit 0 idle, 75 busy, 2 stale). The scripts auto-flock, but the precheck avoids 30-agent collisions on the stack. See `docs/tooling/driver-soup.md#coordination-avoid-stack-switch-contention`.
 - **NEVER `sudo systemctl restart hapi-hub.service`** (or `... hapi-hub.service hapi-runner.service`). It yanks WORKING agents mid-turn. Use **`hapi-restart-hub`** (patient drain, 10min timeout, `--impatient` for hung-hub emergencies). For stack switches use `hapi-use-worktree` (same patient default). See `docs/tooling/driver-soup.md#patient-restarts-dont-yank-live-agents`.
-- Upstream PR branches: from `upstream/main` only; never include `docs/operator/`, `docs/plans/`, or root `AGENTS.md` body in the PR diff.
+- Upstream PR branches: from `upstream/main` only; never include `docs/operator/`, `docs/plans/`, or `CLAUDE.md` in the PR diff (root `AGENTS.md` IS upstream-compatible and may appear in diffs only if a branch updates project-overview content with upstream's blessing).
 - Plans: `docs/plans/`.

@@ -132,6 +132,24 @@ if [[ "${HAPI_PR_CREATE_NO_LEAK_SCAN:-0}" != "1" ]]; then
   fi
 fi
 
+# ----- check 3b: fork-only path scan -----
+# Files that live on heavygee/hapi:main but must never appear in upstream PR diffs.
+# Unlike docs/operator/ and docs/plans/ (which are blocked at push time by the
+# pre-push hook so they can't reach origin at all), these files DO live on
+# origin/main (e.g. CLAUDE.md is the Claude Code fork guide pushed to fork main
+# so fresh clones see it). They just must not ride along to upstream PRs.
+FORK_ONLY_PR_PATHS_RE='^(CLAUDE\.md|\.claude/settings\.local\.json)$'
+if [[ "${HAPI_PR_CREATE_NO_FORK_PATH_SCAN:-0}" != "1" ]]; then
+  bad_fork_paths="$(git diff --name-only upstream/main HEAD 2>/dev/null | grep -E "$FORK_ONLY_PR_PATHS_RE" || true)"
+  if [[ -n "$bad_fork_paths" ]]; then
+    echo "hapi-pr-create: outgoing diff includes fork-only paths that must not reach upstream:" >&2
+    printf '%s\n' "$bad_fork_paths" | sed 's/^/    /' >&2
+    echo "  rebase the branch onto upstream/main to drop these files," >&2
+    echo "  or HAPI_PR_CREATE_NO_FORK_PATH_SCAN=1 if you are absolutely sure" >&2
+    exit 2
+  fi
+fi
+
 # ----- check 4 + 5: body content -----
 if [[ -n "$BODY_FILE" ]]; then
   if [[ ! -f "$BODY_FILE" ]]; then
