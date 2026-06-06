@@ -145,7 +145,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                 break;
             }
 
-            const { message, mode } = batch;
+            const { message, mode, isolate: batchIsolated } = batch;
             const specialCommand = parseCursorSpecialCommand(message);
 
             const { mode: agentMode, yolo } = permissionModeToAgentArgs(mode.permissionMode as string);
@@ -208,7 +208,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                 if (exitCode === 0 || exitCode === null) {
                     this.consecutiveTransientFailures = 0;
                 } else if (isTransientAgentError(exitCode, stderr)) {
-                    await this.handleTransientAgentFailure(exitCode, stderr, message, mode);
+                    await this.handleTransientAgentFailure(exitCode, stderr, message, mode, batchIsolated);
                 } else {
                     this.consecutiveTransientFailures = 0;
                     const errMsg = `Agent exited (${exitCode}): ${truncateStderrForDisplay(stderr)}`;
@@ -262,7 +262,12 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                 reject(err);
             });
 
-            child.on('exit', (code, signal) => {
+            // `close` (not `exit`) waits for the stdio streams to flush before
+            // firing. Otherwise stderr from an agent that prints + exits quickly
+            // (e.g. "Authentication required" → exit 1) can arrive after we
+            // already classified the failure, turning a transient error into a
+            // dropped message.
+            child.on('close', (code, signal) => {
                 cleanup();
                 resolve({ exitCode: code, stderr: stderrCapture });
             });
@@ -289,7 +294,8 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         exitCode: number,
         stderr: string,
         message: string,
-        mode: EnhancedMode
+        mode: EnhancedMode,
+        batchIsolated: boolean
     ): Promise<void> {
         const session = this.session;
         const messageBuffer = this.messageBuffer;
@@ -316,7 +322,17 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                 stderr: stderr.slice(0, STDERR_DISPLAY_LIMIT)
             }
         );
-        session.queue.unshift(message, mode);
+        // Preserve isolation when the original batch was isolated (e.g. a
+        // pass-through slash command queued via pushIsolated). Without this the
+        // requeued command could be batched with a sibling prompt on retry and
+        // change semantics. parseCursorSpecialCommand is the same gate
+        // enqueueCursorUserMessage uses to decide isolation in the first place.
+        const requeueIsolated = batchIsolated || parseCursorSpecialCommand(message).type !== null;
+        if (requeueIsolated) {
+            session.queue.unshiftIsolated(message, mode);
+        } else {
+            session.queue.unshift(message, mode);
+        }
         const friendly = friendlyTransientMessage(exitCode, stderr);
         session.sendSessionEvent({ type: 'message', message: friendly });
         messageBuffer.addMessage(friendly, 'status');

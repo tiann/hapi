@@ -39,11 +39,11 @@ function makeChild(opts: ChildOptions = {}) {
         stdout,
         stderr,
         on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
-            if (event === 'exit') {
+            if (event === 'close') {
                 setImmediate(() => {
                     if (opts.stderr) {
                         // emit synchronously so runAgentProcess captures it before
-                        // the exit handler resolves.
+                        // the close handler resolves.
                         stderr.emit('data', Buffer.from(opts.stderr));
                     }
                     handler(opts.exitCode ?? 0, null);
@@ -221,6 +221,39 @@ describe('cursorLegacyRemoteLauncher', () => {
             .map((c) => c[0])
             .filter((e: any) => e.type === 'ready');
         expect(readyEvents).toHaveLength(1);
+    });
+
+    it('preserves isolation when requeueing a slash command after a transient failure', async () => {
+        const queue = new MessageQueue2<EnhancedMode>(() => 'm');
+        // /compress is a pass-through slash command; enqueueCursorUserMessage uses
+        // pushIsolated for these so they never batch with sibling prompts.
+        queue.pushIsolated('/compress', { permissionMode: 'default' });
+
+        let call = 0;
+        spawnMock.mockImplementation(() => {
+            call += 1;
+            if (call === 1) {
+                return makeChild({
+                    exitCode: 1,
+                    stderr: "Error: Authentication required. Please run 'agent login' first\n"
+                });
+            }
+            queue.close();
+            return makeChild({ exitCode: 0 });
+        });
+
+        const client = makeClient();
+        const session = makeSession(queue, client);
+
+        const { cursorLegacyRemoteLauncher } = await import('./cursorLegacyRemoteLauncher');
+        await cursorLegacyRemoteLauncher(session);
+
+        expect(spawnMock).toHaveBeenCalledTimes(2);
+        // Confirm the queue still flagged the requeued item as isolated
+        // (the second collectBatch saw it alone with isolate=true).
+        const secondPrompt = spawnMock.mock.calls[1]?.[1] as string[];
+        const pIdx = secondPrompt.indexOf('-p');
+        expect(secondPrompt[pIdx + 1]).toBe('/compress');
     });
 
     it('drops the message after MAX_CONSECUTIVE_TRANSIENT_FAILURES consecutive transient failures', async () => {
