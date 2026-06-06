@@ -63,6 +63,11 @@ function extractToolName(toolCall: Record<string, unknown>): string {
         const fn = toolCall.function as Record<string, unknown>;
         return typeof fn.name === 'string' ? fn.name : 'unknown';
     }
+    // Anthropic tool_use shape (Vertex Claude routes through cursor-agent
+    // in legacy stream-json mode): {id, name, input, ...}. Surface the
+    // top-level name so the #784 intercept's gate can distinguish a real
+    // TodoWrite/Bash/etc. from a truly opaque shape.
+    if (typeof toolCall.name === 'string') return toolCall.name;
     return 'unknown';
 }
 
@@ -184,12 +189,23 @@ function containsSyntheticSkipMarker(value: unknown, seen: WeakSet<object> = new
 }
 
 /**
+ * Field names that carry agent-controlled tool input across the shapes
+ * the legacy converter encounters. These must never be marker-scanned -
+ * the agent's own prompt / TodoWrite payload / etc. can legitimately
+ * quote the synthetic-skip marker (notably when an agent is debugging
+ * or documenting this very bug). The marker is a fabrication signal
+ * only when it appears in the *response* portion of a tool_call.
+ */
+const AGENT_INPUT_KEYS = new Set(['input', 'args', 'arguments']);
+
+/**
  * Scans the raw `tool_call` payload for the synthetic-skip marker in
- * the response portion only. Function-shaped tools have an agent-
- * controlled `arguments` field that must be excluded (the agent's own
- * prompt text can legitimately quote the marker). Other shapes have
- * no agent-input field at the top level, so the entire payload is
- * scanned.
+ * the response portion only. Agent-controlled input fields are excluded
+ * for every shape:
+ *   - function-shaped: skip `function.arguments`
+ *   - everything else (including Anthropic tool_use `{id, name, input, ...}`
+ *     and legacy read/write shapes that still carry `args`): skip
+ *     `input` / `args` / `arguments` at the top level.
  *
  * Operates on the raw `tool_call` rather than `extractToolResult`'s
  * output because the latter returns `{}` for tool shapes the converter
@@ -210,7 +226,11 @@ function findMarkerInToolCallResponse(toolCall: Record<string, unknown>): boolea
         }
         return false;
     }
-    return containsSyntheticSkipMarker(toolCall);
+    for (const [k, v] of Object.entries(toolCall)) {
+        if (AGENT_INPUT_KEYS.has(k)) continue;
+        if (containsSyntheticSkipMarker(v)) return true;
+    }
+    return false;
 }
 
 function shouldRewriteAsNoInputSurface(name: string, toolCall: Record<string, unknown>): boolean {

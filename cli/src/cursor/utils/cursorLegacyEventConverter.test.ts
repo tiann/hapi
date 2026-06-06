@@ -325,6 +325,72 @@ describe('cursorLegacyEventConverter', () => {
             });
         });
 
+        // Regression for the Codex P2 finding on the fork-stage review
+        // of this PR (heavygee/hapi#35): an Anthropic tool_use shape
+        // `{id, name, input, ...}` with a recognizable top-level `name`
+        // must be gate-rejected by the AskQuestion-name set, AND its
+        // agent-controlled `input` field must be excluded from the
+        // marker scan even if the gate were to pass. Concrete case:
+        // an agent debugging or documenting this very bug whose
+        // TodoWrite payload quotes the synthetic-skip marker verbatim.
+        it('does NOT rewrite an Anthropic tool_use shape whose input quotes the marker (Codex P2 regression)', () => {
+            const completedEvent = {
+                type: 'tool_call',
+                subtype: 'completed',
+                call_id: 'toolu_vrtx_meta',
+                session_id: 's1',
+                tool_call: {
+                    id: 'toolu_vrtx_meta',
+                    name: 'TodoWrite',
+                    input: {
+                        todos: [
+                            {
+                                content:
+                                    'Document Questions skipped by the user, continue with the information you already have'
+                            }
+                        ]
+                    }
+                }
+            } as CursorStreamEvent;
+            const msg = convertCursorEventToAgentMessage(completedEvent);
+            expect(msg).toMatchObject({
+                type: 'tool_result',
+                id: 'toolu_vrtx_meta',
+                status: 'completed'
+            });
+            expect((msg as { output: unknown }).output).not.toMatchObject({
+                kind: 'no_input_surface'
+            });
+        });
+
+        // Defense-in-depth companion to the above: even if a tool shape
+        // somehow reached this code path with `name=unknown` (no top-
+        // level name field) and the marker buried inside its `input`,
+        // the AGENT_INPUT_KEYS exclusion must still suppress the
+        // rewrite - the marker only counts as fabricated when it lives
+        // outside agent-controlled input fields.
+        it('does NOT rewrite a name=unknown shape whose marker lives only inside agent input', () => {
+            const completedEvent = {
+                type: 'tool_call',
+                subtype: 'completed',
+                call_id: 'input1',
+                session_id: 's1',
+                tool_call: {
+                    id: 'toolu_vrtx_input',
+                    input: {
+                        prompt:
+                            'Quoting bug: Questions skipped by the user, continue with the information you already have'
+                    }
+                }
+            } as CursorStreamEvent;
+            const msg = convertCursorEventToAgentMessage(completedEvent);
+            expect(msg).toMatchObject({
+                type: 'tool_result',
+                id: 'input1',
+                status: 'completed'
+            });
+        });
+
         it('does NOT rewrite an empty function-shaped AskQuestion that lacks the marker', () => {
             const completedEvent = {
                 type: 'tool_call',
