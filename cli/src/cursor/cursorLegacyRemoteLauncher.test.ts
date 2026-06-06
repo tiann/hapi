@@ -223,6 +223,33 @@ describe('cursorLegacyRemoteLauncher', () => {
         expect(readyEvents).toHaveLength(1);
     });
 
+    it('does not retry signal-killed processes even if stderr contains a transient keyword', async () => {
+        // SIGTERM → exit 143; stderr happens to mention rate limit. Should NOT be
+        // classified transient because the documented contract is exit-1-only.
+        const queue = new MessageQueue2<EnhancedMode>(() => 'm');
+        queue.push('do thing', { permissionMode: 'default' });
+        queue.close();
+
+        spawnMock.mockReturnValue(makeChild({
+            exitCode: 143,
+            stderr: 'rate limit hit; aborting due to SIGTERM\n'
+        }));
+
+        const client = makeClient();
+        const session = makeSession(queue, client);
+
+        const { cursorLegacyRemoteLauncher } = await import('./cursorLegacyRemoteLauncher');
+        await cursorLegacyRemoteLauncher(session);
+
+        expect(spawnMock).toHaveBeenCalledTimes(1);
+        const messageEvents = client.sendSessionEvent.mock.calls
+            .map((c) => c[0])
+            .filter((e: any) => e.type === 'message');
+        expect(messageEvents).toHaveLength(1);
+        expect(messageEvents[0].message).toContain('Agent exited (143)');
+        expect(messageEvents[0].message).not.toContain('queued and will retry');
+    });
+
     it('preserves isolation when requeueing a slash command after a transient failure', async () => {
         const queue = new MessageQueue2<EnhancedMode>(() => 'm');
         // /compress is a pass-through slash command; enqueueCursorUserMessage uses

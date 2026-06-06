@@ -39,8 +39,12 @@ function getTransientBackoffMs(): number {
 }
 
 function isTransientAgentError(exitCode: number, stderr: string): boolean {
-    if (exitCode === 0) return false;
-    return TRANSIENT_STDERR_PATTERN.test(stderr);
+    // Known transient failures (auth expiry, rate limit, transient network)
+    // all come back as exit code 1. Keep the retry path narrow to that contract;
+    // signal-kills (137 SIGKILL, 143 SIGTERM) and crashes (134 SIGABRT, etc.)
+    // should never auto-retry even if their stderr happens to contain a matching
+    // keyword.
+    return exitCode === 1 && TRANSIENT_STDERR_PATTERN.test(stderr);
 }
 
 function truncateStderrForDisplay(stderr: string): string {
