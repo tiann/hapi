@@ -61,6 +61,21 @@ describe('ScratchlistPanel', () => {
         expect(toggle.textContent).toContain('held')
     })
 
+    it('uses the chat user surface for the panel background and keeps a subtle amber border (regression guard for #812)', () => {
+        // The amber chrome was too loud as an always-visible scroll element
+        // (#812). The fix swaps the warning *fill* for the chat-user-surface
+        // tone but keeps the warning *border* as a soft accent so the panel
+        // still reads as a different destination from a normal user message.
+        // The strong amber destination signal lives on the composer Send
+        // button, not here. See PR 827 (swear01) for the styling note this
+        // test guards.
+        renderPanel()
+        const panel = screen.getByTestId('scratchlist-panel')
+        expect(panel.className).toContain('bg-[var(--app-chat-user-surface-bg)]')
+        expect(panel.className).not.toContain('bg-[var(--app-badge-warning-bg)]')
+        expect(panel.className).toContain('border-[var(--app-badge-warning-border)]')
+    })
+
     it('starts collapsed by default; clicking the header expands it', () => {
         renderPanel()
         const toggle = screen.getByRole('button', { name: /Scratchlist/ })

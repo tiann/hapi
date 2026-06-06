@@ -382,16 +382,16 @@ export function ScratchlistDrawer({
     return (
         <div className="mx-auto w-full max-w-content mb-1">
             <div
-                className="rounded-lg border border-[var(--app-badge-warning-border)] bg-[var(--app-badge-warning-bg)]"
+                className="rounded-lg border border-[var(--app-badge-warning-border)] bg-[var(--app-chat-user-surface-bg)]"
                 data-testid="scratchlist-drawer"
             >
-                <div className="flex items-center gap-2 px-3 py-2 text-xs font-medium text-[var(--app-badge-warning-text)]">
+                <div className="flex items-center gap-2 px-3 py-2 text-xs font-medium text-[var(--app-fg)]">
                     <NoteIcon />
                     <span className="flex-1 truncate">
                         {t('scratchlist.title')}
                     </span>
                     <span
-                        className="rounded-full border border-[var(--app-badge-warning-border)] px-1.5 py-0.5 text-[10px] uppercase tracking-wide"
+                        className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg)]/60 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-[var(--app-hint)]"
                         aria-hidden="true"
                     >
                         {t('scratchlist.heldLabel')}
@@ -427,8 +427,11 @@ export function ScratchlistDrawer({
  * - Scratchlist = workbench: notes / drafts / parking-lot ideas held until the
  *   operator explicitly promotes them (to the composer or into the queue).
  *
- * The "held -- not sent" pill plus the amber accent is the visual signal
- * that nothing here is being sent without an explicit action.
+ * The "held -- not sent" pill plus a subtle amber border is the visual
+ * signal that nothing here is being sent without an explicit action. The
+ * panel surface mirrors the user-message chat surface so it stays calm in
+ * the scroll; the strong amber destination signal lives on the composer
+ * Send button (which only goes amber while scratchlist mode is routing).
  */
 export function ScratchlistPanel({
     sessionId,
@@ -572,7 +575,7 @@ export function ScratchlistPanel({
     return (
         <div className="mx-auto w-full max-w-content mb-1">
             <div
-                className="rounded-lg border border-[var(--app-badge-warning-border)] bg-[var(--app-badge-warning-bg)]"
+                className="rounded-lg border border-[var(--app-badge-warning-border)] bg-[var(--app-chat-user-surface-bg)]"
                 data-testid="scratchlist-panel"
             >
                 <button
@@ -580,7 +583,7 @@ export function ScratchlistPanel({
                     onClick={toggleCollapsed}
                     aria-expanded={!collapsed}
                     aria-controls={`scratchlist-body-${sessionId}`}
-                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-[var(--app-badge-warning-text)] hover:opacity-90"
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-[var(--app-fg)] hover:opacity-90"
                 >
                     <ChevronIcon open={!collapsed} />
                     <NoteIcon />
@@ -588,7 +591,7 @@ export function ScratchlistPanel({
                         {t('scratchlist.title')}
                     </span>
                     <span
-                        className="rounded-full border border-[var(--app-badge-warning-border)] px-1.5 py-0.5 text-[10px] uppercase tracking-wide"
+                        className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg)]/60 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-[var(--app-hint)]"
                         aria-hidden="true"
                     >
                         {t('scratchlist.heldLabel')}
@@ -627,12 +630,12 @@ export function ScratchlistPanel({
                                     placeholder={t('scratchlist.addPlaceholder')}
                                     aria-label={t('scratchlist.addAriaLabel')}
                                     disabled={hasReachedCap}
-                                    className="flex-1 min-w-0 resize-none rounded-md bg-[var(--app-bg)] px-2 py-1.5 text-sm text-[var(--app-fg)] placeholder-[var(--app-hint)] focus:outline-none focus:ring-1 focus:ring-[var(--app-badge-warning-text)] disabled:cursor-not-allowed disabled:opacity-50"
+                                    className="flex-1 min-w-0 resize-none rounded-md bg-[var(--app-bg)] px-2 py-1.5 text-sm text-[var(--app-fg)] placeholder-[var(--app-hint)] focus:outline-none focus:ring-1 focus:ring-[var(--app-link)] disabled:cursor-not-allowed disabled:opacity-50"
                                 />
                                 <button
                                     type="submit"
                                     disabled={hasReachedCap || draft.trim().length === 0}
-                                    className="shrink-0 rounded-md border border-[var(--app-badge-warning-border)] bg-[var(--app-bg)] px-3 py-1.5 text-xs font-medium text-[var(--app-badge-warning-text)] hover:bg-[var(--app-subtle-bg)] disabled:cursor-not-allowed disabled:opacity-40"
+                                    className="shrink-0 rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-1.5 text-xs font-medium text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)] disabled:cursor-not-allowed disabled:opacity-40"
                                 >
                                     {t('scratchlist.add')}
                                 </button>
