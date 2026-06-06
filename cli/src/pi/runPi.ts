@@ -41,11 +41,17 @@ export async function runPi(opts: {
 
     const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: workingDirectory });
 
+    // Keep-alive: send session-alive every 2s so hub doesn't expire the session (30s timeout)
+    const keepAliveInterval = setInterval(() => {
+        session.keepAlive(false, startingMode);
+    }, 2000);
+
     const lifecycle = createRunnerLifecycle({
         session,
         logTag: 'pi',
-        stopKeepAlive: () => { /* Pi keep-alive handled by HAPI session */ },
+        stopKeepAlive: () => { clearInterval(keepAliveInterval); },
         onAfterClose: () => {
+            clearInterval(keepAliveInterval);
             transport.kill();
         }
     });
@@ -97,6 +103,13 @@ export async function runPi(opts: {
         const messages = convertPiEvent(event);
         for (const msg of messages) {
             session.sendAgentMessage(msg);
+        }
+
+        // Update keep-alive with thinking state for agent_start/turn_start/turn_end
+        if (event.type === 'agent_start' || event.type === 'turn_start') {
+            session.keepAlive(true, startingMode);
+        } else if (event.type === 'turn_end') {
+            session.keepAlive(false, startingMode);
         }
     });
 

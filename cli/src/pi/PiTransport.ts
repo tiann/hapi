@@ -39,6 +39,13 @@ export class PiTransport {
 
         this.process.stdout.setEncoding('utf8');
         this.process.stdout.on('data', (chunk: string) => this.handleStdout(chunk));
+        this.process.stdout.on('end', () => {
+            if (!this.exited && !this.killed) {
+                logger.debug('[pi] stdout ended before process close — treating as exit');
+                this.exited = true;
+                this.closeHandler?.(null, null);
+            }
+        });
 
         this.process.stderr.setEncoding('utf8');
         this.process.stderr.on('data', (chunk: string) => {

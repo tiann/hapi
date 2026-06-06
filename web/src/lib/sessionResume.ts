@@ -17,6 +17,7 @@ export function resolveAgentSessionIdFromMetadata(
         case 'opencode': return metadata.opencodeSessionId ?? undefined
         case 'cursor': return metadata.cursorSessionId ?? undefined
         case 'kimi': return metadata.kimiSessionId ?? undefined
+        case 'pi': return metadata.piSessionId ?? undefined
         default: return metadata.claudeSessionId ?? undefined
     }
 }
@@ -42,7 +43,7 @@ export function inactiveSessionCanResume(
         return true
     }
     const flavor = isKnownFlavor(session.metadata.flavor) ? session.metadata.flavor : 'claude'
-    if (flavor === 'claude' && userMessageCount > 0) {
+    if ((flavor === 'claude' || flavor === 'pi') && userMessageCount > 0) {
         return true
     }
     return userMessageCount === 0

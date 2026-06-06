@@ -22,11 +22,20 @@ export function convertPiEvent(event: PiAgentEvent): AgentMessage[] {
                 const e = event as PiMessageUpdateEvent;
                 const ame = e.assistantMessageEvent;
                 if (!ame) return [];
+                // Web expects { type: 'message', message: '...' } for text and { type: 'reasoning', message: '...' } for thinking.
+                // ID is required for streaming/dedup in the web UI.
+                const streamId = (ame as { contentIndex?: number }).contentIndex?.toString() ?? 'pi-stream';
+                // Only send deltas to avoid duplicate text. text_start/thinking_start/text_end/thinking_end
+                // carry the full partial state and would cause the web UI to render the same text multiple times.
                 if (ame.type === 'text_delta') {
-                    return [{ type: 'text', text: (ame as { delta: string }).delta ?? '' }];
+                    const delta = (ame as { delta?: string }).delta;
+                    if (!delta) return [];
+                    return [{ type: 'message', message: delta, id: streamId }];
                 }
                 if (ame.type === 'thinking_delta') {
-                    return [{ type: 'reasoning', text: (ame as { delta: string }).delta ?? '', live: true }];
+                    const delta = (ame as { delta?: string }).delta;
+                    if (!delta) return [];
+                    return [{ type: 'reasoning', message: delta, id: streamId }];
                 }
                 return [];
             }
