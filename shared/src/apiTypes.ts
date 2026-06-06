@@ -296,6 +296,8 @@ export type OpencodeModelSummary = {
 export type OpencodeModelsResponse = {
     success: boolean
     availableModels?: OpencodeModelSummary[]
+    /** CLI `agent --list-models` skus grouped under ACP wire bases for variant pickers. */
+    cliModelSkus?: OpencodeModelSummary[]
     currentModelId?: string | null
     error?: string
 }

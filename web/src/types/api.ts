@@ -57,6 +57,8 @@ export type {
     WorktreeMetadata
 } from '@hapi/protocol/types'
 
+export type { HapiSessionExport } from '@hapi/protocol/sessionExport'
+
 export type SessionMetadataSummary = {
     path: string
     host: string

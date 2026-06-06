@@ -5,6 +5,7 @@ import { useTranslation } from '@/lib/use-translation'
 export function ModelSelector(props: {
     agent: AgentType
     model: string
+    label?: string
     options?: Array<{ value: string; label: string }>
     isDisabled: boolean
     isLoading?: boolean
@@ -20,8 +21,10 @@ export function ModelSelector(props: {
     return (
         <div className="flex flex-col gap-1.5 px-3 py-3">
             <label className="text-xs font-medium text-[var(--app-hint)]">
-                {t('newSession.model')}{' '}
-                <span className="font-normal">({t('newSession.model.optional')})</span>
+                {props.label ?? t('newSession.model')}{' '}
+                {!props.label ? (
+                    <span className="font-normal">({t('newSession.model.optional')})</span>
+                ) : null}
             </label>
             <select
                 value={props.model}

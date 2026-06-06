@@ -68,7 +68,7 @@ export function UserBubbleContent(props: { text: string }) {
             <div className="happy-chat-text min-w-0">
                 <div className="inline-flex min-w-0 flex-wrap items-center gap-x-1 gap-y-1.5 align-top">
                     {directives.map((directive) => <DirectiveChip key={directive} value={directive} />)}
-                    <LazyRainbowText text={body} inline />
+                    <LazyRainbowText text={body} inline preserveSingleLineBreaks />
                 </div>
             </div>
         )
@@ -81,7 +81,7 @@ export function UserBubbleContent(props: { text: string }) {
                     {directives.map((directive) => <DirectiveChip key={directive} value={directive} />)}
                 </div>
             ) : null}
-            {hasBody ? <LazyRainbowText text={body} /> : null}
+            {hasBody ? <LazyRainbowText text={body} preserveSingleLineBreaks /> : null}
         </div>
     )
 }

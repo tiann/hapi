@@ -9,6 +9,7 @@ import {
     type CodeHeaderProps,
 } from '@assistant-ui/react-markdown'
 import remarkGfm from 'remark-gfm'
+import remarkBreaks from 'remark-breaks'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import remarkDisableIndentedCode from '@/lib/remark-disable-indented-code'
@@ -33,13 +34,25 @@ import type { MarkdownTextPrimitiveProps } from '@assistant-ui/react-markdown'
 // from them. Both must come before remarkMath (to avoid treating TeX as URI).
 // remarkFilePathLinks runs last to convert file paths → links after all other
 // transforms have settled.
-export const MARKDOWN_PLUGINS = [
-    remarkGfm,
+const MARKDOWN_PLUGIN_TAIL = [
     remarkNonHttpsAutolink,
     remarkStripCjkAutolink,
     remarkMath,
     remarkDisableIndentedCode,
     remarkFilePathLinks,        // upstream — file path → link conversion, runs last
+] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>
+
+export const MARKDOWN_PLUGINS = [
+    remarkGfm,
+    ...MARKDOWN_PLUGIN_TAIL,
+] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>
+
+// User-authored prompts should preserve Shift+Enter/newline intent without
+// changing assistant/tool markdown behavior globally.
+export const MARKDOWN_PLUGINS_WITH_BREAKS = [
+    remarkGfm,
+    remarkBreaks,
+    ...MARKDOWN_PLUGIN_TAIL,
 ] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>
 
 export const MARKDOWN_REHYPE_PLUGINS = [rehypeKatex] satisfies NonNullable<MarkdownTextPrimitiveProps['rehypePlugins']>

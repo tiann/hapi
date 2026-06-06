@@ -3,6 +3,9 @@ import { useConversation } from '@elevenlabs/react'
 import { registerVoiceSession, resetRealtimeSessionState } from './RealtimeSession'
 import { realtimeClientTools, registerSessionStore } from './realtimeClientTools'
 import { fetchVoiceToken } from '@/api/voice'
+import { buildElevenLabsSessionOverrides, capElevenLabsInitialContext } from '@/lib/voicePersonalitySession'
+import { isVoiceProactiveSummaryEnabled, streamDeferredVoiceContext } from '@/lib/voiceContextStream'
+import { readStoredVoiceSelection } from '@/lib/voicePickerPreferences'
 import type { VoiceSession, VoiceSessionConfig, ConversationStatus, StatusCallback } from './types'
 import type { ApiClient } from '@/api/client'
 import type { Session } from '@/types/api'
@@ -50,7 +53,7 @@ class RealtimeVoiceSessionImpl implements VoiceSession {
         let tokenResponse: Awaited<ReturnType<typeof fetchVoiceToken>>
         try {
             tokenResponse = await fetchVoiceToken(this.api, {
-                voiceId: config.voiceId
+                voiceId: config.voiceId ?? readStoredVoiceSelection('elevenlabs') ?? undefined
             })
         } catch (error) {
             console.error('[Voice] Failed to fetch voice token:', error)
@@ -64,20 +67,30 @@ class RealtimeVoiceSessionImpl implements VoiceSession {
             throw error
         }
 
+        const initialConversationContext = capElevenLabsInitialContext(config.initialContext)
+        if (
+            import.meta.env.DEV
+            && config.initialContext
+            && initialConversationContext.length < config.initialContext.length
+        ) {
+            console.warn(
+                '[Voice] Session context truncated for ElevenLabs WebRTC limit (65KB/message)'
+            )
+        }
+
+        const personalityOverrides = buildElevenLabsSessionOverrides({
+            language: config.language,
+            voiceId: config.voiceId ?? readStoredVoiceSelection('elevenlabs') ?? undefined
+        })
+
         const baseSessionConfig = {
             conversationToken: tokenResponse.token,
             connectionType: 'webrtc' as const,
             dynamicVariables: {
                 sessionId: config.sessionId,
-                initialConversationContext: config.initialContext || ''
+                initialConversationContext
             },
-            // Language override — requires override permissions enabled on the agent
-            // See: https://elevenlabs.io/docs/agents-platform/customization/personalization/overrides
-            overrides: {
-                agent: {
-                    language: config.language
-                }
-            }
+            overrides: personalityOverrides
         }
 
         // Use conversation token from server (private agent flow)
@@ -86,6 +99,19 @@ class RealtimeVoiceSessionImpl implements VoiceSession {
 
             if (DEBUG) {
                 console.log('[Voice] Started conversation with ID:', conversationId)
+            }
+
+            if (config.streamContextChunks?.length) {
+                await streamDeferredVoiceContext(
+                    (chunk) => conversationInstance?.sendContextualUpdate(chunk),
+                    config.streamContextChunks
+                )
+            }
+
+            if (isVoiceProactiveSummaryEnabled()) {
+                this.sendTextMessage(
+                    'Based on the session context you received, give me a brief spoken summary, then wait for my next request.'
+                )
             }
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error)

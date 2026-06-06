@@ -3,6 +3,7 @@ import { MarkdownTextPrimitive } from '@assistant-ui/react-markdown'
 import { TextMessagePartProvider } from '@assistant-ui/react'
 import {
     MARKDOWN_PLUGINS,
+    MARKDOWN_PLUGINS_WITH_BREAKS,
     MARKDOWN_REHYPE_PLUGINS,
     MARKDOWN_COMPONENTS_BY_LANGUAGE,
     MARKDOWN_CLASSNAME,
@@ -16,6 +17,7 @@ interface MarkdownRendererProps {
     content: string
     components?: MarkdownTextPrimitiveProps['components']
     className?: string
+    preserveSingleLineBreaks?: boolean
 }
 
 function MarkdownContent(props: MarkdownRendererProps) {
@@ -27,7 +29,7 @@ function MarkdownContent(props: MarkdownRendererProps) {
         <UriConfirmProvider>
             <TextMessagePartProvider text={props.content}>
                 <MarkdownTextPrimitive
-                    remarkPlugins={MARKDOWN_PLUGINS}
+                    remarkPlugins={props.preserveSingleLineBreaks ? MARKDOWN_PLUGINS_WITH_BREAKS : MARKDOWN_PLUGINS}
                     rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
                     components={mergedComponents}
                     componentsByLanguage={MARKDOWN_COMPONENTS_BY_LANGUAGE}

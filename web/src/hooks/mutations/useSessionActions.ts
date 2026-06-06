@@ -32,6 +32,12 @@ export function useSessionActions(
         await queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
     }
 
+    const invalidateCursorModels = async () => {
+        if (!sessionId || agentFlavor !== 'cursor') return
+        await queryClient.invalidateQueries({ queryKey: queryKeys.sessionCursorModels(sessionId) })
+        await queryClient.invalidateQueries({ queryKey: ['machine-cursor-models'] })
+    }
+
     const abortMutation = useMutation({
         mutationFn: async () => {
             if (!api || !sessionId) {
@@ -98,7 +104,12 @@ export function useSessionActions(
             }
             await api.setModel(sessionId, model)
         },
-        onSuccess: () => void invalidateSession(),
+        onSuccess: () => {
+            void (async () => {
+                await invalidateSession()
+                await invalidateCursorModels()
+            })()
+        },
     })
 
     const modelReasoningEffortMutation = useMutation({

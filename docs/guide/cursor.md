@@ -41,12 +41,22 @@ Set mode via `--mode` flag or change from the web UI during a session.
 ## Modes
 
 - **Local mode** - Run `hapi cursor` from terminal. Full interactive experience.
-- **Remote mode** - Spawn from web/phone when no terminal. Uses `agent -p` with `--output-format stream-json` and `--trust`. Each user message spawns one agent process; session continues via `--resume`.
+- **Remote mode** - Spawn from web/phone when no terminal. New Cursor sessions use `agent acp` with HAPI permission approval, plan/question UI, and richer tool updates. Legacy sessions created before the ACP migration may still resume via the old `agent -p` stream-json path temporarily.
 
 ## Limitations
 
-- **Tool approval** - In remote mode, `--trust` is used; tools run without per-request approval. Use `--yolo` for full bypass.
-- **Session resume** - Pass `--resume <chatId>` or `--continue` to resume. Use `agent ls` to list previous chats and get chat IDs.
+- **Legacy sessions** - Cursor sessions created before the ACP migration can still resume temporarily via stream-json. Start a new Cursor session to get ACP permissions, plans, todos, and question support.
+- **Session resume** - ACP sessions resume through `session/load`. Old stream-json `session_id` values are not loadable via ACP; those sessions keep using the legacy path until you start fresh.
+
+### Headless safety: AskQuestion behavior
+
+When running cursor-agent under `--print --output-format stream-json` (HAPI's current remote mode), the cursor-agent CLI returns a synthetic `Questions skipped by the user, continue with the information you already have` response for the `AskQuestion` tool because there is no IDE surface to render the question. The agent's underlying model can interpret this as legitimate user consent and act on it.
+
+HAPI intercepts this synthetic response in the stream-json event converter and rewrites it to an explicit `no_input_surface` error (`is_error: true`), so agents do not act on fabricated user consent. Defense-in-depth: any `AskQuestion` (or `name=unknown`) tool completion that arrives within ~500 ms of its start event with a trivial payload is treated the same way, in case cursor-agent changes the synthetic-string text in a future release.
+
+Agents running under HAPI's Cursor remote mode should fall back to plain-text prompting (markdown options + waiting for a regular user message) until the [ACP migration (tiann/hapi#781)](https://github.com/tiann/hapi/issues/781) lands and `cursor/ask_question` becomes available as a proper bidirectional ACP method. At that point this intercept becomes unnecessary and is removed.
+
+Tracking issue: [tiann/hapi#784](https://github.com/tiann/hapi/issues/784).
 
 ## Integration
 

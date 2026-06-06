@@ -53,6 +53,7 @@ function createSession(overrides?: Partial<Session>): Session {
 function createApp(session: Session, opts?: {
     resumeSession?: (sessionId: string, namespace: string, resumeOpts?: { permissionMode?: string }) => Promise<{ type: string; sessionId?: string; message?: string; code?: string }>
     listSlashCommands?: SyncEngine['listSlashCommands']
+    getSessionExport?: (sessionId: string, session: Session) => unknown
 }) {
     const applySessionConfigCalls: Array<[string, Record<string, unknown>]> = []
     const applySessionConfig = async (sessionId: string, config: Record<string, unknown>) => {
@@ -88,6 +89,15 @@ function createApp(session: Session, opts?: {
         listCursorModelsForSession,
         listOpencodeModelsForSession,
         resumeSession,
+        getSessionExport: opts?.getSessionExport ?? (() => ({
+            type: 'success',
+            payload: {
+                schemaVersion: 1,
+                exportedAt: 1_762_000_000_000,
+                session,
+                messages: []
+            }
+        })),
         listSlashCommands: opts?.listSlashCommands ?? (async () => ({
             success: true,
             commands: []
@@ -105,6 +115,82 @@ function createApp(session: Session, opts?: {
 }
 
 describe('sessions routes', () => {
+    it('exports an empty session conversation payload', async () => {
+        const session = createSession()
+        const { app } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/export')
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            schemaVersion: 1,
+            exportedAt: 1_762_000_000_000,
+            session,
+            messages: []
+        })
+    })
+
+    it('exports visible messages in chronological order', async () => {
+        const session = createSession()
+        const messages = [
+            {
+                id: 'msg-1',
+                seq: 1,
+                localId: null,
+                content: { role: 'user', content: 'Hello' },
+                createdAt: 1000,
+                invokedAt: 1001,
+                scheduledAt: null
+            },
+            {
+                id: 'msg-2',
+                seq: 2,
+                localId: null,
+                content: { role: 'agent', content: 'Hi there' },
+                createdAt: 1002,
+                invokedAt: 1002,
+                scheduledAt: null
+            }
+        ]
+        const { app } = createApp(session, {
+            getSessionExport: () => ({
+                type: 'success',
+                payload: {
+                    schemaVersion: 1,
+                    exportedAt: 1_762_000_000_000,
+                    session,
+                    messages
+                }
+            })
+        })
+
+        const response = await app.request('/api/sessions/session-1/export')
+
+        expect(response.status).toBe(200)
+        const body = await response.json() as { messages: Array<{ id: string }> }
+        expect(body.messages.map((message) => message.id)).toEqual(['msg-1', 'msg-2'])
+    })
+
+    it('returns 413 when the export exceeds the hard message cap', async () => {
+        const session = createSession()
+        const { app } = createApp(session, {
+            getSessionExport: () => ({
+                type: 'too-large',
+                count: 20_001,
+                limit: 20_000
+            })
+        })
+
+        const response = await app.request('/api/sessions/session-1/export')
+
+        expect(response.status).toBe(413)
+        expect(await response.json()).toEqual({
+            error: 'Session export too large',
+            count: 20_001,
+            limit: 20_000
+        })
+    })
+
     it('rejects collaboration mode changes for local Codex sessions', async () => {
         const session = createSession({
             agentState: {
@@ -358,6 +444,34 @@ describe('sessions routes', () => {
         expect(applySessionConfigCalls).toEqual([
             ['session-1', { model: 'sonnet' }]
         ])
+    })
+
+    it('rejects model changes for local Cursor sessions', async () => {
+        const session = createSession({
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'cursor'
+            },
+            agentState: {
+                controlledByUser: true,
+                requests: {},
+                completedRequests: {}
+            }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'composer-2.5[fast=true]' })
+        })
+
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({
+            error: 'Model selection can only be changed for remote Cursor sessions'
+        })
+        expect(applySessionConfigCalls).toEqual([])
     })
 
     it('rejects effort changes for non-Claude sessions', async () => {

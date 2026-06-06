@@ -1,5 +1,15 @@
-import type { AttachmentMetadata, DecryptedMessage } from '@hapi/protocol/types'
-import { isRedundantGoalStatusEventContent } from '@hapi/protocol/messages'
+import {
+    HAPI_SESSION_EXPORT_SCHEMA_VERSION,
+    SESSION_EXPORT_MESSAGE_LIMIT,
+    type HapiSessionExportResult
+} from '@hapi/protocol/sessionExport'
+import type { AttachmentMetadata, DecryptedMessage, Session } from '@hapi/protocol/types'
+import {
+    isClaudeChatVisibleMessage,
+    isRedundantGoalStatusEventContent,
+    unwrapRoleWrappedRecordEnvelope
+} from '@hapi/protocol/messages'
+import { isObject } from '@hapi/protocol'
 import type { Server } from 'socket.io'
 import { randomUUID } from 'node:crypto'
 import type { Store, CancelQueuedMessageResult } from '../store'
@@ -27,6 +37,37 @@ function toVisibleDecryptedMessages(messages: StoredMessageForDelivery[]): Decry
     return messages.filter(isWebVisibleStoredMessage).map(toDecryptedMessage)
 }
 
+function isQueuedUserMessage(message: StoredMessageForDelivery): boolean {
+    const record = unwrapRoleWrappedRecordEnvelope(message.content)
+    return record?.role === 'user' && message.invokedAt === null
+}
+
+function isExportVisibleStoredMessage(message: StoredMessageForDelivery): boolean {
+    if (!isWebVisibleStoredMessage(message) || isQueuedUserMessage(message)) {
+        return false
+    }
+
+    const record = unwrapRoleWrappedRecordEnvelope(message.content)
+    if (record?.role !== 'agent') {
+        return true
+    }
+
+    if (!isObject(record.content) || record.content.type !== 'output') {
+        return true
+    }
+
+    const data = isObject(record.content.data) ? record.content.data : null
+    if (!data) {
+        return true
+    }
+
+    if (Boolean(data.isMeta) || Boolean(data.isCompactSummary)) {
+        return false
+    }
+
+    return isClaudeChatVisibleMessage({ type: data.type, subtype: data.subtype })
+}
+
 export class MessageService {
     /** One scheduled-matured SSE per localId per hub process (cleared on cancel/consume paths here). */
     private readonly scheduledMatureNotifiedLocalIds = new Set<string>()
@@ -48,6 +89,39 @@ export class MessageService {
     getMessages(sessionId: string, limit: number = 200): DecryptedMessage[] {
         const stored = this.store.messages.getMessages(sessionId, limit)
         return toVisibleDecryptedMessages(stored)
+    }
+
+    getSessionExport(
+        sessionId: string,
+        session: Session,
+        limit: number = SESSION_EXPORT_MESSAGE_LIMIT
+    ): HapiSessionExportResult {
+        const messages = this.store.messages.getAllMessages(sessionId)
+            .filter(isExportVisibleStoredMessage)
+            .sort((a, b) => {
+                const aAt = a.invokedAt ?? a.createdAt
+                const bAt = b.invokedAt ?? b.createdAt
+                return aAt !== bAt ? aAt - bAt : a.seq - b.seq
+            })
+            .map(toDecryptedMessage)
+
+        if (messages.length > limit) {
+            return {
+                type: 'too-large',
+                count: messages.length,
+                limit
+            }
+        }
+
+        return {
+            type: 'success',
+            payload: {
+                schemaVersion: HAPI_SESSION_EXPORT_SCHEMA_VERSION,
+                exportedAt: Date.now(),
+                session,
+                messages
+            }
+        }
     }
 
     getMessagesPage(

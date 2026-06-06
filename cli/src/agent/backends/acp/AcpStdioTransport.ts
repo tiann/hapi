@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptions } from 'n
 import { logger } from '@/ui/logger';
 import { killProcessByChildProcess } from '@/utils/process';
 import { GEMINI_MODEL_PRESETS } from '@hapi/protocol';
+import { registerActiveAcpTransport, unregisterActiveAcpTransport } from './agentCliGuard';
 
 interface JsonRpcRequest {
     jsonrpc: '2.0';
@@ -48,6 +49,8 @@ export function buildAcpStdioSpawnOptions(env?: Record<string, string>): SpawnOp
 }
 
 export class AcpStdioTransport {
+    /** Only Cursor's `agent` CLI is single-process; other ACP backends must not block model probes. */
+    private readonly shouldGuardAgentCli: boolean;
     private readonly process: ChildProcessWithoutNullStreams;
     private readonly pending = new Map<string | number, {
         resolve: (value: unknown) => void;
@@ -59,17 +62,23 @@ export class AcpStdioTransport {
     private buffer = '';
     private nextId = 1;
     private protocolError: Error | null = null;
+    private guardReleased = false;
 
     constructor(options: {
         command: string;
         args?: string[];
         env?: Record<string, string>;
     }) {
+        this.shouldGuardAgentCli = options.command === 'agent';
         this.process = spawn(
             options.command,
             options.args ?? [],
             buildAcpStdioSpawnOptions(options.env)
         ) as ChildProcessWithoutNullStreams;
+
+        if (this.shouldGuardAgentCli) {
+            registerActiveAcpTransport();
+        }
 
         this.process.stdout.setEncoding('utf8');
         this.process.stdout.on('data', (chunk) => this.handleStdout(chunk));
@@ -82,12 +91,14 @@ export class AcpStdioTransport {
         });
 
         this.process.on('exit', (code, signal) => {
+            this.releaseAgentCliGuard();
             const message = `ACP process exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`;
             logger.debug(message);
             this.rejectAllPending(new Error(message));
         });
 
         this.process.on('error', (error) => {
+            this.releaseAgentCliGuard();
             logger.debug('[ACP] Process error', error);
             const message = error instanceof Error ? error.message : String(error);
             this.rejectAllPending(new Error(
@@ -167,7 +178,16 @@ export class AcpStdioTransport {
     async close(): Promise<void> {
         this.process.stdin.end();
         await killProcessByChildProcess(this.process);
+        this.releaseAgentCliGuard();
         this.rejectAllPending(new Error('ACP transport closed'));
+    }
+
+    private releaseAgentCliGuard(): void {
+        if (!this.shouldGuardAgentCli || this.guardReleased) {
+            return;
+        }
+        this.guardReleased = true;
+        unregisterActiveAcpTransport();
     }
 
     private handleStdout(chunk: string): void {

@@ -5,165 +5,27 @@
  * ensuring consistency between server-side auto-creation and client-side usage.
  */
 
+import { resolveGeminiLiveVoice, resolveQwenRealtimeVoice } from './voicePickerCatalog'
+import {
+    VOICE_CHINESE_LANGUAGE_BLOCK,
+    composeVoiceAgentPrompt,
+    type VoicePromptLayerInput
+} from './voicePromptLayers'
+
+export { VOICE_CHINESE_LANGUAGE_BLOCK } from './voicePromptLayers'
+
 export const ELEVENLABS_API_BASE = 'https://api.elevenlabs.io/v1'
 export const VOICE_AGENT_NAME = 'Hapi Voice Assistant'
 
-export const VOICE_SYSTEM_PROMPT = `# CRITICAL RULE - Tool Usage
+const DEFAULT_COMPOSED_LAYERS: VoicePromptLayerInput = {
+    identity: '',
+    character: '',
+    legacySystemPrompt: '',
+    presetDeliverySnippet: ''
+}
 
-You MUST call the messageCodingAgent tool for ANY request related to coding, files, development, debugging, or tasks for the agent. Do NOT respond verbally to these requests — call the tool FIRST, then briefly confirm. This is your most important behavior.
-
-# Identity
-
-You are Hapi Voice Assistant. You bridge voice communication between users and their AI coding agents in the Hapi ecosystem.
-
-IMPORTANT: Never refer to yourself as Gemini, Google, or any underlying model or provider name. You are HAPI — always.
-
-You are friendly, proactive, and highly intelligent with a world-class engineering background. Your approach is warm, witty, and relaxed, balancing professionalism with an approachable vibe.
-
-# Environment Overview
-
-Hapi is a multi-agent development platform supporting:
-- **Claude Code** - Anthropic's coding assistant (primary)
-- **Codex** - OpenAI's coding agent
-- **Gemini** - Google's coding agent
-
-Users control these agents through the Hapi web interface or Telegram Mini App. You serve as the voice interface to whichever agent is currently active.
-
-# How Context Updates Work
-
-You receive automatic context updates when:
-- A session becomes focused (you see the full session history)
-- The agent sends messages or uses tools
-- Permission requests arrive
-- The agent finishes working (ready event)
-
-These updates appear as system messages. You do NOT need to poll or ask for updates. Simply wait for them and summarize when relevant.
-
-# Tools
-
-## messageCodingAgent
-Send user requests to the active coding agent.
-
-When to use:
-- User says "ask Claude to..." or "have it..."
-- Any coding, file, or development request
-- User wants to continue a task
-
-Example: User says "refactor the auth module" -> call messageCodingAgent with the full request.
-
-## processPermissionRequest
-Approve or deny pending permission requests.
-
-When to use:
-- User says "yes", "allow", "go ahead", "approve"
-- User says "no", "deny", "cancel", "stop"
-
-The decision parameter must be exactly "allow" or "deny".
-
-# Voice Output Guidelines
-
-## Summarization (Critical)
-- NEVER read hashes, IDs, or paths character-by-character
-- Say "session ending in ZAJ" not "c-m-i-a-b-c-1-2-3..."
-- Say "file in the src folder" not the full path
-- Summarize code changes at a high level
-- Skip tool arguments unless specifically asked
-
-## TTS Formatting
-- Use ellipses "..." for pauses
-- Say "dot" for periods in URLs/paths
-- Spell out acronyms: "API" becomes "A P I"
-- Use normalized spoken language
-
-## Conversation Style
-- Keep responses to 1-3 sentences typically
-- Use brief affirmations: "got it", "sure thing"
-- Occasional natural fillers: "so", "actually"
-- Mirror user energy: terse replies for terse questions
-- Lead with empathy for frustrated users
-
-# Behavioral Guidelines
-
-## Patience
-After sending a message to the agent, WAIT SILENTLY. The agent may take 30+ seconds for complex tasks. Do NOT:
-- Ask "are you still there?"
-- Repeat the request
-- Fill silence with chatter
-
-You will receive a context update when the agent responds or finishes.
-
-## Request Routing
-- Direct address ("Assistant, explain...") -> Answer yourself
-- Explicit delegation ("Have Claude...") -> Use messageCodingAgent
-- Coding/file tasks -> Use messageCodingAgent
-- General questions you can answer -> Answer yourself
-
-Do NOT second-guess what the agent can do. If in doubt, pass it through.
-
-## Proactive Updates
-Speak proactively when:
-- Permission is requested (inform user and ask for decision)
-- Agent finishes a task (summarize results)
-- Error occurs (explain clearly)
-- Session status changes significantly
-
-Stay silent when:
-- Agent is actively working
-- No meaningful update to share
-
-# Common Scenarios
-
-## Permission Requests
-When you see a permission request, immediately inform the user:
-"Claude wants to run a bash command. Should I allow it?"
-Then wait for their response and use processPermissionRequest.
-
-## Errors
-If the agent reports an error:
-- Summarize the error type
-- Suggest what the user might do
-- Do NOT read stack traces verbatim
-
-## Session Issues
-If there is no active session:
-- Tell the user to select or start a session in the app
-- You cannot start sessions yourself
-
-## Long Operations
-For builds, tests, or large file operations:
-- Acknowledge the task was sent
-- Wait silently for completion
-- Summarize results when ready
-
-# Guardrails
-
-- Never read code line-by-line or provide inline code samples
-- Never repeat the same information multiple ways in one response
-- Treat garbled input as phonetic hints and ask for clarification
-- Correct yourself immediately if you realize you made an error
-- Keep conversations forward-moving with fresh insights
-- Assume a technical software developer audience
-
-# First Interaction
-
-When the user speaks to you for the first time, begin your response with a brief greeting before addressing their request. If their first message is a coding request, greet briefly AND call the tool — do both.`
-
-/**
- * Language blocks appended to VOICE_SYSTEM_PROMPT for Gemini/Qwen backends
- * (ElevenLabs has its own language field).
- *
- * Always append one of these — silence causes models to drift to their training
- * language (Chinese for Qwen, mixed for Gemini).
- */
-export const VOICE_CHINESE_LANGUAGE_BLOCK = `
-
-# Language
-
-IMPORTANT: Always respond in Chinese (Mandarin). Use natural spoken Chinese.
-- Greet users in Chinese
-- Summarize technical content in Chinese
-- Use English only for proper nouns, tool names, and code identifiers
-- Keep the same warm, concise conversational style in Chinese`
+/** Bundled default composed prompt (fixtures + default identity/character). */
+export const VOICE_SYSTEM_PROMPT = composeVoiceAgentPrompt(DEFAULT_COMPOSED_LAYERS)
 
 /** When no language is selected: mirror the user's detected speech language. */
 const VOICE_LANGUAGE_BLOCK_AUTO = `
@@ -300,9 +162,17 @@ export interface VoiceAgentConfig {
                 agent?: {
                     language?: boolean
                     first_message?: boolean
+                    prompt?: {
+                        prompt?: boolean
+                    }
                 }
                 tts?: {
                     voice_id?: boolean
+                    stability?: boolean
+                    similarity_boost?: boolean
+                    style?: boolean
+                    speed?: boolean
+                    use_speaker_boost?: boolean
                 }
             }
         }
@@ -344,10 +214,18 @@ export function buildVoiceAgentConfig(): VoiceAgentConfig {
             overrides: {
                 conversation_config_override: {
                     agent: {
-                        language: true
+                        language: true,
+                        prompt: {
+                            prompt: true
+                        }
                     },
                     tts: {
-                        voice_id: true
+                        voice_id: true,
+                        stability: true,
+                        similarity_boost: true,
+                        style: true,
+                        speed: true,
+                        use_speaker_boost: true
                     }
                 }
             }
@@ -361,6 +239,58 @@ export const QWEN_REALTIME_MODEL = 'qwen3.5-omni-flash-realtime'
 export const QWEN_REALTIME_VOICE = 'Tina'
 
 export const DEFAULT_VOICE_BACKEND: VoiceBackendType = 'elevenlabs'
+
+const VOICE_BACKEND_VALUES: readonly VoiceBackendType[] = [
+    'elevenlabs',
+    'gemini-live',
+    'qwen-realtime'
+] as const
+
+export type VoiceBackendEnv = Record<string, string | undefined>
+
+/** Backends whose API keys are present on the hub. */
+export function listConfiguredVoiceBackends(env: VoiceBackendEnv): VoiceBackendType[] {
+    const backends: VoiceBackendType[] = []
+    if (env.ELEVENLABS_API_KEY?.trim()) {
+        backends.push('elevenlabs')
+    }
+    if (env.GEMINI_API_KEY?.trim() || env.GOOGLE_API_KEY?.trim()) {
+        backends.push('gemini-live')
+    }
+    if (env.DASHSCOPE_API_KEY?.trim() || env.QWEN_API_KEY?.trim()) {
+        backends.push('qwen-realtime')
+    }
+    return backends.length > 0 ? backends : [DEFAULT_VOICE_BACKEND]
+}
+
+/** Hub default from VOICE_BACKEND when configured, else first available backend. */
+export function resolveHubVoiceBackend(env: VoiceBackendEnv): VoiceBackendType {
+    const configured = listConfiguredVoiceBackends(env)
+    const raw = env.VOICE_BACKEND
+    const fromEnv = VOICE_BACKEND_VALUES.includes(raw as VoiceBackendType)
+        ? (raw as VoiceBackendType)
+        : DEFAULT_VOICE_BACKEND
+    return configured.includes(fromEnv) ? fromEnv : (configured[0] ?? DEFAULT_VOICE_BACKEND)
+}
+
+/** User preference wins when valid; otherwise hub default. */
+export function resolveEffectiveVoiceBackend(
+    configured: readonly VoiceBackendType[],
+    hubDefault: VoiceBackendType,
+    storedPreference: string | null | undefined
+): VoiceBackendType {
+    if (
+        storedPreference
+        && VOICE_BACKEND_VALUES.includes(storedPreference as VoiceBackendType)
+        && configured.includes(storedPreference as VoiceBackendType)
+    ) {
+        return storedPreference as VoiceBackendType
+    }
+    if (configured.includes(hubDefault)) {
+        return hubDefault
+    }
+    return configured[0] ?? hubDefault
+}
 
 export const GEMINI_LIVE_MODEL = 'gemini-2.5-flash-native-audio-latest'
 export const GEMINI_LIVE_VOICE = 'Aoede'
@@ -418,11 +348,17 @@ export function buildGeminiLiveFunctionDeclarations(): GeminiLiveFunctionDeclara
     return VOICE_TOOLS.map(cloneVoiceToolDefinition)
 }
 
-export function buildGeminiLiveConfig(language?: string): GeminiLiveConfig {
-    const systemInstruction = `${VOICE_SYSTEM_PROMPT}${buildVoiceLanguageBlock(language)}`
+export function buildGeminiLiveConfig(
+    language?: string,
+    voiceName?: string,
+    systemInstruction?: string
+): GeminiLiveConfig {
+    const systemInstructionText = systemInstruction?.trim()
+        ? systemInstruction
+        : `${VOICE_SYSTEM_PROMPT}${buildVoiceLanguageBlock(language)}`
     return {
         model: GEMINI_LIVE_MODEL,
-        systemInstruction,
+        systemInstruction: systemInstructionText,
         tools: [
             {
                 functionDeclarations: buildGeminiLiveFunctionDeclarations()
@@ -433,8 +369,14 @@ export function buildGeminiLiveConfig(language?: string): GeminiLiveConfig {
 }
 
 /** Hub-owned initial session.update for Qwen Realtime (hub proxy). */
-export function buildQwenSessionUpdateMessage(language?: string): Record<string, unknown> {
-    const instructions = `${VOICE_SYSTEM_PROMPT}${buildVoiceLanguageBlock(language)}`
+export function buildQwenSessionUpdateMessage(
+    language?: string,
+    voiceName?: string,
+    systemInstruction?: string
+): Record<string, unknown> {
+    const instructions = systemInstruction?.trim()
+        ? systemInstruction
+        : `${VOICE_SYSTEM_PROMPT}${buildVoiceLanguageBlock(language)}`
     // Qwen Realtime uses the flat Realtime shape, not the chat-completions nested {function:{...}} shape.
     const tools = VOICE_TOOL_DEFINITIONS.map((td) => ({
         type: 'function' as const,
@@ -446,7 +388,7 @@ export function buildQwenSessionUpdateMessage(language?: string): Record<string,
         type: 'session.update',
         session: {
             modalities: ['text', 'audio'],
-            voice: QWEN_REALTIME_VOICE,
+            voice: resolveQwenRealtimeVoice(voiceName),
             input_audio_format: 'pcm',
             output_audio_format: 'pcm',
             instructions,
@@ -487,16 +429,23 @@ export function isQwenSafeClientFrame(message: string | ArrayBuffer | Uint8Array
 }
 
 /** Wire-format setup frame for Gemini Live BidiGenerateContent (hub proxy + web client). */
-export function buildGeminiLiveSetupMessage(language?: string): { setup: Record<string, unknown> } {
-    const liveConfig = buildGeminiLiveConfig(language)
+export function buildGeminiLiveSetupMessage(
+    language?: string,
+    voiceName?: string,
+    systemInstruction?: string,
+    options?: { affectiveDialog?: boolean }
+): { setup: Record<string, unknown> } {
+    const liveConfig = buildGeminiLiveConfig(language, voiceName, systemInstruction)
+    const resolvedVoice = resolveGeminiLiveVoice(voiceName)
     return {
         setup: {
             model: `models/${liveConfig.model}`,
             generationConfig: {
                 responseModalities: ['AUDIO'],
+                ...(options?.affectiveDialog ? { enableAffectiveDialog: true } : {}),
                 speechConfig: {
                     voiceConfig: {
-                        prebuiltVoiceConfig: { voiceName: GEMINI_LIVE_VOICE }
+                        prebuiltVoiceConfig: { voiceName: resolvedVoice }
                     }
                 }
             },

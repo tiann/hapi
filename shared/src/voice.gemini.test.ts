@@ -1,5 +1,13 @@
 import { describe, expect, test } from 'bun:test'
-import { buildGeminiLiveSetupMessage, buildQwenSessionUpdateMessage, isQwenSafeClientFrame, GEMINI_LIVE_MODEL, GEMINI_LIVE_VOICE, QWEN_REALTIME_VOICE } from './voice'
+import {
+    buildGeminiLiveSetupMessage,
+    buildQwenSessionUpdateMessage,
+    isQwenSafeClientFrame,
+    GEMINI_LIVE_MODEL,
+    GEMINI_LIVE_VOICE,
+    QWEN_REALTIME_VOICE
+} from './voice'
+import { resolveGeminiLiveVoice, resolveQwenRealtimeVoice } from './voicePickerCatalog'
 
 describe('buildGeminiLiveSetupMessage', () => {
     test('locks model and voice to HAPI defaults', () => {
@@ -18,13 +26,48 @@ describe('buildGeminiLiveSetupMessage', () => {
         const zhText = (zh.setup.systemInstruction as { parts: Array<{ text: string }> }).parts[0].text
         expect(zhText.length).toBeGreaterThan(enText.length)
     })
+
+    test('uses selected prebuilt voice when valid', () => {
+        const msg = buildGeminiLiveSetupMessage(undefined, 'Puck')
+        const speech = msg.setup.generationConfig as {
+            speechConfig?: { voiceConfig?: { prebuiltVoiceConfig?: { voiceName?: string } } }
+        }
+        expect(speech.speechConfig?.voiceConfig?.prebuiltVoiceConfig?.voiceName).toBe('Puck')
+    })
+
+    test('honors custom system instruction override', () => {
+        const custom = 'Speak only in haiku.'
+        const msg = buildGeminiLiveSetupMessage(undefined, undefined, custom)
+        const text = (msg.setup.systemInstruction as { parts: Array<{ text: string }> }).parts[0].text
+        expect(text).toBe(custom)
+    })
+
+    test('falls back to default for unknown voice names', () => {
+        const msg = buildGeminiLiveSetupMessage(undefined, 'NotARealVoice')
+        const speech = msg.setup.generationConfig as {
+            speechConfig?: { voiceConfig?: { prebuiltVoiceConfig?: { voiceName?: string } } }
+        }
+        expect(speech.speechConfig?.voiceConfig?.prebuiltVoiceConfig?.voiceName).toBe(resolveGeminiLiveVoice())
+    })
 })
 
 describe('buildQwenSessionUpdateMessage', () => {
-    test('locks voice to HAPI default', () => {
+    test('locks voice to HAPI default when no voice name supplied', () => {
         const msg = buildQwenSessionUpdateMessage()
         const session = msg.session as { voice: string }
         expect(session.voice).toBe(QWEN_REALTIME_VOICE)
+    })
+
+    test('uses selected prebuilt voice when valid', () => {
+        const msg = buildQwenSessionUpdateMessage(undefined, 'Ethan')
+        const session = msg.session as { voice: string }
+        expect(session.voice).toBe('Ethan')
+    })
+
+    test('falls back to catalog default for unknown voice names', () => {
+        const msg = buildQwenSessionUpdateMessage(undefined, 'NotARealVoice')
+        const session = msg.session as { voice: string }
+        expect(session.voice).toBe(resolveQwenRealtimeVoice())
     })
 
     test('includes both tools', () => {

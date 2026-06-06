@@ -9,6 +9,7 @@ export function useCursorModelsForMachine(args: {
     enabled?: boolean
 }): {
     availableModels: CursorModelSummary[]
+    cliModelSkus: CursorModelSummary[]
     currentModelId: string | null
     isLoading: boolean
     error: string | null
@@ -37,6 +38,7 @@ export function useCursorModelsForMachine(args: {
 
     return {
         availableModels: query.data?.availableModels ?? [],
+        cliModelSkus: query.data?.cliModelSkus ?? [],
         currentModelId: query.data?.currentModelId ?? null,
         isLoading: query.isLoading,
         error: query.data?.success === false

@@ -19,6 +19,7 @@ import type {
     SkillsResponse,
     SpawnResponse,
     VisibilityPayload,
+    HapiSessionExport,
     SessionResponse,
     SessionsResponse
 } from '@/types/api'
@@ -239,6 +240,13 @@ export class ApiClient {
 
     async getSession(sessionId: string): Promise<SessionResponse> {
         return await this.request<SessionResponse>(`/api/sessions/${encodeURIComponent(sessionId)}`)
+    }
+
+    async getSessionExport(sessionId: string, options?: { signal?: AbortSignal }): Promise<HapiSessionExport> {
+        return await this.request<HapiSessionExport>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/export`,
+            { signal: options?.signal }
+        )
     }
 
     async getMessages(
@@ -617,7 +625,7 @@ export class ApiClient {
         return this.getToken ? this.getToken() : this.token
     }
 
-    async fetchVoiceBackend(): Promise<{ backend: string }> {
+    async fetchVoiceBackend(): Promise<{ backend: string; backends: string[] }> {
         return await this.request('/api/voice/backend')
     }
 

@@ -104,12 +104,16 @@ vi.mock('@/lib/languages', () => ({
 }))
 
 // Use vi.hoisted so these mocks are available when vi.mock factories run
-const { mockFetchVoices, mockApi } = vi.hoisted(() => {
+const { mockFetchVoices, mockFetchVoiceBackend, mockApi } = vi.hoisted(() => {
     const mockFetchVoices = vi.fn(() => Promise.resolve<unknown[]>([]))
+    const mockFetchVoiceBackend = vi.fn(() => Promise.resolve({
+        backend: 'elevenlabs' as 'elevenlabs' | 'gemini-live' | 'qwen-realtime',
+        backends: ['elevenlabs'] as Array<'elevenlabs' | 'gemini-live' | 'qwen-realtime'>
+    }))
     const mockApi = {
         fetchVoices: vi.fn(() => Promise.resolve({ voices: [] })),
     }
-    return { mockFetchVoices, mockApi }
+    return { mockFetchVoices, mockFetchVoiceBackend, mockApi }
 })
 
 // Mock static voices list
@@ -124,6 +128,7 @@ vi.mock('@/lib/voices', () => ({
 // Mock fetchVoices to return a resolved list by default
 vi.mock('@/api/voice', () => ({
     fetchVoices: mockFetchVoices,
+    fetchVoiceBackend: mockFetchVoiceBackend,
     fetchVoiceToken: vi.fn(() => Promise.resolve({ allowed: true, token: 'tok' })),
 }))
 
@@ -159,6 +164,7 @@ function renderWithSpyT(ui: React.ReactElement) {
 describe('SettingsPage', () => {
     beforeEach(() => {
         vi.clearAllMocks()
+        mockFetchVoiceBackend.mockResolvedValue({ backend: 'elevenlabs', backends: ['elevenlabs'] })
         // Reset fetchVoices mock to return empty list by default
         mockFetchVoices.mockResolvedValue([])
         // Mock localStorage
@@ -416,6 +422,94 @@ describe('SettingsPage', () => {
 
         const alice = await screen.findByText('Alice')
         fireEvent.click(alice)
-        expect(window.localStorage.setItem).toHaveBeenCalledWith('hapi-voice-id', 'dyn1')
+        expect(window.localStorage.setItem).toHaveBeenCalledWith('hapi-voice-elevenlabs', 'dyn1')
+    })
+
+    it('shows Gemini static voices when hub backend is gemini-live', async () => {
+        mockFetchVoiceBackend.mockResolvedValue({ backend: 'gemini-live', backends: ['gemini-live'] })
+
+        renderWithProviders(<SettingsPage />)
+
+        const pickerButton = await screen.findByRole('button', { name: /Voice\s*Default/i })
+        fireEvent.click(pickerButton)
+
+        await waitFor(() => {
+            expect(screen.getByText('Puck')).toBeInTheDocument()
+            expect(screen.getByText('Aoede')).toBeInTheDocument()
+            expect(screen.getByText('Conversational, friendly')).toBeInTheDocument()
+        })
+        expect(mockFetchVoices).not.toHaveBeenCalled()
+    })
+
+    it('shows static catalog hint when Gemini backend is selected', async () => {
+        mockFetchVoiceBackend.mockResolvedValue({ backend: 'gemini-live', backends: ['gemini-live'] })
+
+        renderWithProviders(<SettingsPage />)
+
+        await waitFor(() => {
+            expect(screen.getByText('Open the list to see voice character notes. Audio preview is ElevenLabs only.')).toBeInTheDocument()
+        })
+    })
+
+    it('persists Gemini voice selection under gemini storage key', async () => {
+        mockFetchVoiceBackend.mockResolvedValue({ backend: 'gemini-live', backends: ['gemini-live'] })
+
+        renderWithProviders(<SettingsPage />)
+
+        const pickerButton = await screen.findByRole('button', { name: /Voice\s*Default/i })
+        fireEvent.click(pickerButton)
+
+        const puck = await screen.findByText('Puck')
+        fireEvent.click(puck)
+        expect(window.localStorage.setItem).toHaveBeenCalledWith('hapi-voice-gemini', 'Puck')
+    })
+
+    it('shows backend chooser when hub has multiple configured backends', async () => {
+        mockFetchVoiceBackend.mockResolvedValue({
+            backend: 'gemini-live',
+            backends: ['elevenlabs', 'gemini-live']
+        })
+        ;(window.localStorage.getItem as ReturnType<typeof vi.fn>).mockImplementation((key: string) => {
+            if (key === 'hapi-voice-backend') return 'elevenlabs'
+            return null
+        })
+
+        renderWithProviders(<SettingsPage />)
+
+        await waitFor(() => {
+            expect(screen.getByText('Voice backend')).toBeInTheDocument()
+            expect(screen.getByText('Voice Assistant')).toBeInTheDocument()
+            expect(screen.getByText('Connection & provider')).toBeInTheDocument()
+        })
+
+        const backendButton = screen.getByRole('button', { name: /Voice backend\s*ElevenLabs/i })
+        fireEvent.click(backendButton)
+
+        const listbox = screen.getByRole('listbox', { name: 'Voice backend' })
+        expect(listbox.textContent).toContain('Gemini Live')
+    })
+
+    it('switches to ElevenLabs voices when backend chooser selects elevenlabs', async () => {
+        mockFetchVoiceBackend.mockResolvedValue({
+            backend: 'gemini-live',
+            backends: ['elevenlabs', 'gemini-live']
+        })
+        mockFetchVoices.mockResolvedValue([
+            { id: 'dyn1', name: 'Alice', previewUrl: '', category: 'premade' },
+        ])
+
+        renderWithProviders(<SettingsPage />)
+
+        const backendButton = await screen.findByRole('button', { name: /Voice backend/i })
+        fireEvent.click(backendButton)
+        fireEvent.click(screen.getByRole('option', { name: /ElevenLabs/i }))
+
+        const voicePickerButton = await screen.findByRole('button', { name: /Voice\s*Default/i })
+        fireEvent.click(voicePickerButton)
+
+        await waitFor(() => {
+            expect(screen.getByText('Alice')).toBeInTheDocument()
+        })
+        expect(window.localStorage.setItem).toHaveBeenCalledWith('hapi-voice-backend', 'elevenlabs')
     })
 })

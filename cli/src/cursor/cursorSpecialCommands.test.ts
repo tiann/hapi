@@ -1,33 +1,33 @@
 import { describe, expect, it } from 'vitest';
-import { parseCursorSpecialCommand } from './cursorSpecialCommands';
+import { cursorPassThroughStatusMessage, parseCursorSpecialCommand } from './cursorSpecialCommands';
 
 describe('parseCursorSpecialCommand', () => {
-    it('accepts /summarize with optional instructions', () => {
-        expect(parseCursorSpecialCommand('/summarize')).toEqual({
-            type: 'summarize',
-            message: '/summarize'
+    it('accepts /compress with optional instructions', () => {
+        expect(parseCursorSpecialCommand('/compress')).toEqual({
+            type: 'pass-through',
+            command: 'compress',
+            message: '/compress'
         });
-        expect(parseCursorSpecialCommand('  /summarize keep peer relocate recap  ')).toEqual({
-            type: 'summarize',
-            message: '/summarize keep peer relocate recap'
-        });
-    });
-
-    it('accepts exact /clear', () => {
-        expect(parseCursorSpecialCommand('  /clear  ')).toEqual({ type: 'clear' });
-    });
-
-    it('rejects /clear with arguments', () => {
-        expect(parseCursorSpecialCommand('/clear now')).toEqual({
-            type: 'invalid',
-            command: 'clear',
-            message: '/clear does not accept arguments'
+        expect(parseCursorSpecialCommand('  /compress keep recap  ')).toEqual({
+            type: 'pass-through',
+            command: 'compress',
+            message: '/compress keep recap'
         });
     });
 
-    it('ignores regular slash-like messages', () => {
-        expect(parseCursorSpecialCommand('/summarizer')).toEqual({ type: null });
-        expect(parseCursorSpecialCommand('please /summarize')).toEqual({ type: null });
-        expect(parseCursorSpecialCommand('/clearing')).toEqual({ type: null });
+    it('ignores removed or unknown slash commands', () => {
+        expect(parseCursorSpecialCommand('/context')).toEqual({ type: null });
+        expect(parseCursorSpecialCommand('/context now')).toEqual({ type: null });
+        expect(parseCursorSpecialCommand('/summarize')).toEqual({ type: null });
+        expect(parseCursorSpecialCommand('/clear')).toEqual({ type: null });
+        expect(parseCursorSpecialCommand('/debug')).toEqual({ type: null });
+        expect(parseCursorSpecialCommand('/compressor')).toEqual({ type: null });
+        expect(parseCursorSpecialCommand('/contextual')).toEqual({ type: null });
+    });
+});
+
+describe('cursorPassThroughStatusMessage', () => {
+    it('returns a status line for compress', () => {
+        expect(cursorPassThroughStatusMessage('compress')).toContain('compression');
     });
 });

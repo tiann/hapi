@@ -14,7 +14,7 @@ import { join } from 'node:path'
 import { MessageService } from './messageService'
 import { Store } from '../store'
 import type { Server } from 'socket.io'
-import type { SyncEvent } from '@hapi/protocol/types'
+import type { Session, SyncEvent } from '@hapi/protocol/types'
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -26,6 +26,32 @@ function makeStore(): Store {
 
 function makeSession(store: Store, tag: string) {
     return store.sessions.getOrCreateSession(tag, { path: `/tmp/${tag}` }, null, 'default')
+}
+
+function toProtocolSession(session: ReturnType<typeof makeSession>): Session {
+    return {
+        id: session.id,
+        namespace: session.namespace,
+        seq: session.seq,
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt,
+        active: session.active,
+        activeAt: session.activeAt ?? session.updatedAt,
+        metadata: {
+            path: `/tmp/${session.tag ?? session.id}`,
+            host: 'localhost'
+        },
+        metadataVersion: session.metadataVersion,
+        agentState: null,
+        agentStateVersion: session.agentStateVersion,
+        thinking: false,
+        thinkingAt: session.updatedAt,
+        model: session.model,
+        modelReasoningEffort: session.modelReasoningEffort,
+        effort: session.effort,
+        permissionMode: 'default',
+        collaborationMode: 'default'
+    }
 }
 
 type AckCallback = (err: Error | null, responses: Array<{ removed: boolean }>) => void
@@ -92,6 +118,75 @@ describe('MessageService goal status filtering', () => {
             { role: 'user', content: { type: 'text', text: '/goal ship it' } },
             redundantGoalStatusContent('No goal to clear')
         ])
+    })
+
+    it('exports chronological visible messages and omits queued user rows', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'session-export-visible')
+
+        const first = store.messages.addMessage(session.id, { role: 'user', content: 'Hello' })
+        const queued = store.messages.addMessage(session.id, { role: 'user', content: 'Queued' }, 'local-queued')
+        store.messages.addMessage(session.id, redundantGoalStatusContent('Goal active'))
+        const hiddenSystem = store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'system', subtype: 'init', uuid: 'sys-init' }
+            }
+        })
+        const second = store.messages.addMessage(session.id, { role: 'agent', content: 'Hi' })
+
+        const service = new MessageService(store, makeIo(() => {}), makePublisher() as any)
+        const result = service.getSessionExport(session.id, toProtocolSession(session))
+
+        expect(result.type).toBe('success')
+        if (result.type !== 'success') throw new Error('Expected success export')
+        expect(result.payload.messages.map((message) => message.id)).toEqual([first.id, second.id])
+        expect(result.payload.messages.some((message) => message.id === queued.id)).toBe(false)
+        expect(result.payload.messages.some((message) => message.id === hiddenSystem.id)).toBe(false)
+    })
+
+    it('orders invoked scheduled messages by display time, not insertion seq', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'session-export-scheduled-order')
+
+        const scheduled = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'Scheduled' } },
+            'local-scheduled',
+            Date.now() + 60_000
+        )
+        const normal = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'Normal' } },
+            'local-normal'
+        )
+        store.messages.markMessagesInvoked(session.id, ['local-normal'], 2_000)
+        store.messages.markMessagesInvoked(session.id, ['local-scheduled'], 3_000)
+
+        const service = new MessageService(store, makeIo(() => {}), makePublisher() as any)
+        const result = service.getSessionExport(session.id, toProtocolSession(session))
+
+        expect(result.type).toBe('success')
+        if (result.type !== 'success') throw new Error('Expected success export')
+        expect(result.payload.messages.map((message) => message.id)).toEqual([normal.id, scheduled.id])
+    })
+
+    it('returns too-large instead of truncating an export over the cap', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'session-export-cap')
+
+        store.messages.addMessage(session.id, { role: 'user', content: 'One' })
+        store.messages.addMessage(session.id, { role: 'agent', content: 'Two' })
+
+        const service = new MessageService(store, makeIo(() => {}), makePublisher() as any)
+        const result = service.getSessionExport(session.id, toProtocolSession(session), 1)
+
+        expect(result).toEqual({
+            type: 'too-large',
+            count: 2,
+            limit: 1
+        })
     })
 
     it('pages past hidden-only goal status rows', () => {

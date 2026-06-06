@@ -26,7 +26,7 @@ import { useComposerDraft } from '@/hooks/useComposerDraft'
 import { useComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { Autocomplete } from '@/components/ChatInput/Autocomplete'
-import { StatusBar } from '@/components/AssistantChat/StatusBar'
+import { shouldShowComposerStatusBar, StatusBar } from '@/components/AssistantChat/StatusBar'
 import { ComposerButtons } from '@/components/AssistantChat/ComposerButtons'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { AttachmentItem } from '@/components/AssistantChat/AttachmentItem'
@@ -62,9 +62,17 @@ export function HappyComposer(props: {
     controlledByUser?: boolean
     agentFlavor?: string | null
     availableModelOptions?: Array<{ value: string | null; label: string }>
+    /** Cursor: selected base model key (not wire id). */
+    selectedModelBase?: string | null
+    /** Cursor: selected variant sku/wire for highlight when session stores an ACP wire id. */
+    selectedModelVariant?: string | null
+    /** Cursor: effort/variant wire ids for the selected base model. */
+    modelEffortOptions?: Array<{ value: string; label: string }>
     onCollaborationModeChange?: (mode: CodexCollaborationMode) => void
     onPermissionModeChange?: (mode: PermissionMode) => void
     onModelChange?: (model: string | null) => void
+    /** Cursor: effort/variant wire id (separate from base model change). */
+    onModelEffortChange?: (wireId: string | null) => void
     onModelReasoningEffortChange?: (modelReasoningEffort: string | null) => void
     onEffortChange?: (effort: string | null) => void
     onSwitchToRemote?: () => void
@@ -103,9 +111,13 @@ export function HappyComposer(props: {
         controlledByUser = false,
         agentFlavor,
         availableModelOptions,
+        selectedModelBase,
+        selectedModelVariant,
+        modelEffortOptions,
         onCollaborationModeChange,
         onPermissionModeChange,
         onModelChange,
+        onModelEffortChange,
         onModelReasoningEffortChange,
         onEffortChange,
         onSwitchToRemote,
@@ -497,6 +509,14 @@ export function HappyComposer(props: {
         haptic('light')
     }, [onModelChange, controlsDisabled, haptic])
 
+    const handleModelEffortChange = useCallback((nextWireId: string | null) => {
+        const handler = onModelEffortChange ?? onModelChange
+        if (!handler || controlsDisabled) return
+        handler(nextWireId)
+        setShowSettings(false)
+        haptic('light')
+    }, [onModelEffortChange, onModelChange, controlsDisabled, haptic])
+
     const handleModelReasoningEffortChange = useCallback((nextModelReasoningEffort: string | null) => {
         if (!onModelReasoningEffortChange || controlsDisabled) return
         onModelReasoningEffortChange(nextModelReasoningEffort)
@@ -514,12 +534,18 @@ export function HappyComposer(props: {
     const showCollaborationSettings = Boolean(onCollaborationModeChange && collaborationModeOptions.length > 0)
     const showPermissionSettings = Boolean(onPermissionModeChange && permissionModeOptions.length > 0)
     const showModelSettings = Boolean(onModelChange && supportsModelChange(agentFlavor) && modelOptions.length > 0)
+    const showModelEffortSettings = Boolean(
+        (onModelEffortChange ?? onModelChange)
+        && modelEffortOptions
+        && modelEffortOptions.length > 0
+    )
     const showModelReasoningEffortSettings = Boolean(onModelReasoningEffortChange && codexReasoningEffortOptions.length > 0)
     const showEffortSettings = Boolean(onEffortChange && supportsEffort(agentFlavor))
     const showSettingsButton = Boolean(
         showCollaborationSettings
         || showPermissionSettings
         || showModelSettings
+        || showModelEffortSettings
         || showModelReasoningEffortSettings
         || showEffortSettings
     )
@@ -536,7 +562,7 @@ export function HappyComposer(props: {
     }, [api])
 
     const overlays = useMemo(() => {
-        if (showSettings && (showCollaborationSettings || showPermissionSettings || showModelSettings || showModelReasoningEffortSettings || showEffortSettings)) {
+        if (showSettings && (showCollaborationSettings || showPermissionSettings || showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings || showEffortSettings)) {
             return (
                 <div className="absolute bottom-[100%] mb-2 w-full">
                     <FloatingOverlay maxHeight={320}>
@@ -618,7 +644,7 @@ export function HappyComposer(props: {
                             </div>
                         ) : null}
 
-                        {(showCollaborationSettings || showPermissionSettings) && (showModelSettings || showModelReasoningEffortSettings || showEffortSettings) ? (
+                        {(showCollaborationSettings || showPermissionSettings) && (showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings || showEffortSettings) ? (
                             <div className="mx-3 h-px bg-[var(--app-divider)]" />
                         ) : null}
 
@@ -627,7 +653,11 @@ export function HappyComposer(props: {
                                 <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
                                     {t('misc.model')}
                                 </div>
-                                {modelOptions.map((option) => (
+                                {modelOptions.map((option) => {
+                                    const isSelected = selectedModelBase !== undefined
+                                        ? selectedModelBase === option.value
+                                        : model === option.value
+                                    return (
                                     <button
                                         key={option.value ?? 'auto'}
                                         type="button"
@@ -642,16 +672,58 @@ export function HappyComposer(props: {
                                     >
                                         <div
                                             className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
-                                                model === option.value
+                                                isSelected
                                                     ? 'border-[var(--app-link)]'
                                                     : 'border-[var(--app-hint)]'
                                             }`}
                                         >
-                                            {model === option.value && (
+                                            {isSelected && (
                                                 <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
                                             )}
                                         </div>
-                                        <span className={model === option.value ? 'text-[var(--app-link)]' : ''}>
+                                        <span className={isSelected ? 'text-[var(--app-link)]' : ''}>
+                                            {option.label}
+                                        </span>
+                                    </button>
+                                    )
+                                })}
+                            </div>
+                        ) : null}
+
+                        {showModelSettings && showModelEffortSettings ? (
+                            <div className="mx-3 h-px bg-[var(--app-divider)]" />
+                        ) : null}
+
+                        {showModelEffortSettings ? (
+                            <div className="py-2">
+                                <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
+                                    {agentFlavor === 'cursor' ? t('misc.variant') : t('misc.effort')}
+                                </div>
+                                {modelEffortOptions!.map((option) => (
+                                    <button
+                                        key={option.value}
+                                        type="button"
+                                        disabled={controlsDisabled}
+                                        className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                                            controlsDisabled
+                                                ? 'cursor-not-allowed opacity-50'
+                                                : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
+                                        }`}
+                                        onClick={() => handleModelEffortChange(option.value)}
+                                        onMouseDown={(e) => e.preventDefault()}
+                                    >
+                                        <div
+                                            className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
+                                                (selectedModelVariant ?? model) === option.value
+                                                    ? 'border-[var(--app-link)]'
+                                                    : 'border-[var(--app-hint)]'
+                                            }`}
+                                        >
+                                            {(selectedModelVariant ?? model) === option.value && (
+                                                <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
+                                            )}
+                                        </div>
+                                        <span className={(selectedModelVariant ?? model) === option.value ? 'text-[var(--app-link)]' : ''}>
                                             {option.label}
                                         </span>
                                     </button>
@@ -659,7 +731,7 @@ export function HappyComposer(props: {
                             </div>
                         ) : null}
 
-                        {(showModelSettings || showModelReasoningEffortSettings) && showEffortSettings ? (
+                        {(showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings) && showEffortSettings ? (
                             <div className="mx-3 h-px bg-[var(--app-divider)]" />
                         ) : null}
 
@@ -765,6 +837,10 @@ export function HappyComposer(props: {
         showCollaborationSettings,
         showPermissionSettings,
         showModelSettings,
+        showModelEffortSettings,
+        modelEffortOptions,
+        selectedModelBase,
+        selectedModelVariant,
         showModelReasoningEffortSettings,
         showEffortSettings,
         modelOptions,
@@ -795,22 +871,24 @@ export function HappyComposer(props: {
                 <ComposerPrimitive.Root className="relative" onSubmit={handleSubmit}>
                     {overlays}
 
-                    <StatusBar
-                        active={active}
-                        thinking={thinking}
-                        agentState={agentState}
-                        backgroundTaskCount={backgroundTaskCount}
-                        contextSize={contextSize}
-                        contextCacheRead={contextCacheRead}
-                        contextWindow={contextWindow}
-                        model={model}
-                        modelReasoningEffort={modelReasoningEffort}
-                        permissionMode={permissionMode}
-                        collaborationMode={collaborationMode}
-                        threadGoal={threadGoal}
-                        agentFlavor={agentFlavor}
-                        voiceStatus={voiceStatus}
-                    />
+                    {shouldShowComposerStatusBar(agentFlavor) ? (
+                        <StatusBar
+                            active={active}
+                            thinking={thinking}
+                            agentState={agentState}
+                            backgroundTaskCount={backgroundTaskCount}
+                            contextSize={contextSize}
+                            contextCacheRead={contextCacheRead}
+                            contextWindow={contextWindow}
+                            model={model}
+                            modelReasoningEffort={modelReasoningEffort}
+                            permissionMode={permissionMode}
+                            collaborationMode={collaborationMode}
+                            threadGoal={threadGoal}
+                            agentFlavor={agentFlavor}
+                            voiceStatus={voiceStatus}
+                        />
+                    ) : null}
 
                     <div className="overflow-hidden rounded-[20px] bg-[var(--app-secondary-bg)]">
                         {attachments.length > 0 ? (

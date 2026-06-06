@@ -121,6 +121,49 @@ describe('machines routes', () => {
         })
     })
 
+    it('returns 503 when cursor-models is requested without a sync engine', async () => {
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createMachinesRoutes(() => null))
+
+        const response = await app.request('/api/machines/machine-1/cursor-models')
+
+        expect(response.status).toBe(503)
+        expect(await response.json()).toEqual({
+            success: false,
+            error: 'Not connected'
+        })
+    })
+
+    it('returns 500 when listing Cursor models fails', async () => {
+        const machine = createMachine()
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            listCursorModelsForMachine: async () => {
+                throw new Error('rpc offline')
+            }
+        } as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/machines/machine-1/cursor-models')
+
+        expect(response.status).toBe(500)
+        expect(await response.json()).toEqual({
+            success: false,
+            error: 'rpc offline'
+        })
+    })
+
     it('returns Cursor models for an online machine', async () => {
         const machine = createMachine()
         const engine = {
@@ -153,6 +196,41 @@ describe('machines routes', () => {
                 { modelId: 'gpt-5.5-high-fast', name: 'GPT-5.5 High Fast' }
             ],
             currentModelId: 'composer-2.5'
+        })
+    })
+
+    it('returns ACP wire ids from the machine RPC for New Session model pickers', async () => {
+        const machine = createMachine()
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            listCursorModelsForMachine: async () => ({
+                success: true,
+                availableModels: [
+                    { modelId: 'composer-2.5[fast=true]', name: 'composer-2.5' },
+                    { modelId: 'composer-2.5[fast=false]', name: 'composer-2.5' }
+                ],
+                currentModelId: 'composer-2.5[fast=true]'
+            })
+        } as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/machines/machine-1/cursor-models')
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            success: true,
+            availableModels: [
+                { modelId: 'composer-2.5[fast=true]', name: 'composer-2.5' },
+                { modelId: 'composer-2.5[fast=false]', name: 'composer-2.5' }
+            ],
+            currentModelId: 'composer-2.5[fast=true]'
         })
     })
 })

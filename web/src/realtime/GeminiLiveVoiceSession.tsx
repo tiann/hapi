@@ -6,6 +6,15 @@ import { GeminiAudioRecorder } from './gemini/audioRecorder'
 import { GeminiAudioPlayer } from './gemini/audioPlayer'
 import { handleGeminiFunctionCalls } from './gemini/toolAdapter'
 import { buildGeminiLiveSetupMessage } from '@hapi/protocol/voice'
+import { resolveGeminiLiveVoice } from '@hapi/protocol/voicePickerCatalog'
+import {
+    buildResolvedVoiceSystemPrompt,
+    encodeVoiceSystemPromptForProxy,
+    truncatePromptForProxy
+} from '@/lib/voicePersonalitySession'
+import { loadVoicePersonalityFromStorage } from '@/hooks/useVoicePersonality'
+import { isVoiceProactiveSummaryEnabled, streamDeferredVoiceContext } from '@/lib/voiceContextStream'
+import { readStoredVoiceSelection } from '@/lib/voicePickerPreferences'
 import type { VoiceSession, VoiceSessionConfig, StatusCallback } from './types'
 import type { ApiClient } from '@/api/client'
 import type { Session } from '@/types/api'
@@ -120,8 +129,18 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
         const isProxy = !!state.wsBaseUrl
         const authToken = this.api.getAuthToken() || ''
         const languageParam = config.language ? `&language=${encodeURIComponent(config.language)}` : ''
+        const resolvedVoice = resolveGeminiLiveVoice(config.voiceName ?? readStoredVoiceSelection('gemini-live'))
+        const voiceParam = `&voice=${encodeURIComponent(resolvedVoice)}`
+        const systemInstruction = buildResolvedVoiceSystemPrompt({
+            language: config.language,
+            backend: 'gemini-live'
+        })
+        const encodedPrompt = encodeVoiceSystemPromptForProxy(truncatePromptForProxy(systemInstruction))
+        const promptParam = `&systemPrompt=${encodeURIComponent(encodedPrompt)}`
+        const prefs = loadVoicePersonalityFromStorage()
+        const affectiveParam = prefs.gemini?.affective_dialog ? '&affectiveDialog=1' : ''
         const wsUrl = isProxy
-            ? `${wsBase}${wsBase.includes('?') ? '&' : '?'}token=${encodeURIComponent(authToken)}${languageParam}`
+            ? `${wsBase}${wsBase.includes('?') ? '&' : '?'}token=${encodeURIComponent(authToken)}${languageParam}${voiceParam}${promptParam}${affectiveParam}`
             : `${wsBase}?key=${encodeURIComponent(state.apiKey)}`
         console.log('[GeminiLive] Connecting WebSocket to:', wsBase, isProxy ? '(proxied)' : '(direct)')
         const ws = new WebSocket(wsUrl)
@@ -135,7 +154,11 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
 
                 // Proxied sessions: hub sends HAPI-owned setup server-side (see gemini-ws proxy).
                 if (!isProxy) {
-                    ws.send(JSON.stringify(buildGeminiLiveSetupMessage(config.language)))
+                    ws.send(JSON.stringify(buildGeminiLiveSetupMessage(
+                        config.language,
+                        resolvedVoice,
+                        systemInstruction
+                    )))
                 }
             }
 
@@ -177,18 +200,28 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
                     }
                     state.statusCallback?.('connected')
 
-                    const proactive = localStorage.getItem('hapi-voice-proactive') === 'true'
+                    await streamDeferredVoiceContext(
+                        (chunk) => sendClientContent(`[Context] ${chunk}`, false),
+                        config.streamContextChunks ?? []
+                    )
 
-                    if (proactive && config.initialContext) {
-                        // Proactive with context: speak the summary immediately.
-                        sendClientContent(`[Context] ${config.initialContext}`, true)
-                    } else {
-                        // Reactive, or proactive with no context: feed context silently if
-                        // available, then trigger a greeting so Gemini doesn't sit silent.
-                        if (config.initialContext) {
+                    const proactive = isVoiceProactiveSummaryEnabled()
+                    if (proactive) {
+                        if (config.initialContext?.trim()) {
                             sendClientContent(`[Context] ${config.initialContext}`, false)
                         }
-                        sendClientContent('[Greet the user as HAPI. Say a brief hello and invite them to speak. Do not mention Gemini or any model name. Do not reference any context or recent activity.]', true)
+                        sendClientContent(
+                            '[Summarize] Based on all session context above, give the user a brief spoken summary of what the coding agent has been doing, then wait.',
+                            true
+                        )
+                    } else {
+                        if (config.initialContext?.trim()) {
+                            sendClientContent(`[Context] ${config.initialContext}`, false)
+                        }
+                        sendClientContent(
+                            '[Greet the user. Say a brief hello and invite them to speak. Do not mention Gemini or any model name.]',
+                            true
+                        )
                     }
 
                     resolve()

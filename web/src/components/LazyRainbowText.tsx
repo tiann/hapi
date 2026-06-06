@@ -102,7 +102,7 @@ function processChildrenForRainbow(children: React.ReactNode): React.ReactNode {
     })
 }
 
-export function LazyRainbowText(props: { text: string; inline?: boolean }) {
+export function LazyRainbowText(props: { text: string; inline?: boolean; preserveSingleLineBreaks?: boolean }) {
     const text = props.text
     const ref = useRef<HTMLElement>(null)
     const [hasBeenVisible, setHasBeenVisible] = useState(false)
@@ -148,6 +148,7 @@ export function LazyRainbowText(props: { text: string; inline?: boolean }) {
         <MarkdownRenderer
             content={text}
             className={props.inline ? 'inline' : undefined}
+            preserveSingleLineBreaks={props.preserveSingleLineBreaks}
             components={
                 hasSpecialWord && hasBeenVisible
                     ? rainbowComponents

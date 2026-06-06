@@ -24,7 +24,7 @@ export async function cursorLocal(opts: {
     chatId: string | null;
     path: string;
     model?: string;
-    mode?: 'plan' | 'ask';
+    mode?: 'plan' | 'ask' | 'debug';
     yolo?: boolean;
     onChatFound?: (chatId: string) => void;
     cursorArgs?: string[];

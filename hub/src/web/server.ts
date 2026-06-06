@@ -6,7 +6,9 @@ import { existsSync } from 'node:fs'
 import { serveStatic } from 'hono/bun'
 import { getConfiguration } from '../configuration'
 import { PROTOCOL_VERSION } from '@hapi/protocol'
-import { buildGeminiLiveSetupMessage, buildQwenSessionUpdateMessage, isQwenSafeClientFrame, QWEN_REALTIME_MODEL } from '@hapi/protocol/voice'
+import { buildGeminiLiveSetupMessage, QWEN_REALTIME_MODEL } from '@hapi/protocol/voice'
+import { createQwenProxyWebSocketHandler } from './qwenProxyHandler'
+import { decodeVoiceSystemPromptParam } from '../voiceSystemPromptParam'
 import type { SyncEngine } from '../sync/syncEngine'
 import { createAuthMiddleware, type WebAppEnv } from './middleware/auth'
 import { createAuthRoutes } from './routes/auth'
@@ -80,7 +82,14 @@ function createGeminiProxyWebSocketHandler() {
 
     return {
         open(clientWs: ServerWebSocket<unknown>) {
-            const data = clientWs.data as { _geminiProxy: boolean; apiKey: string; language?: string }
+            const data = clientWs.data as {
+                _geminiProxy: boolean
+                apiKey: string
+                language?: string
+                voiceName?: string
+                systemInstruction?: string
+                affectiveDialog?: boolean
+            }
             const upstreamUrl = `${process.env.GEMINI_LIVE_WS_URL || GEMINI_WS_BASE}?key=${encodeURIComponent(data.apiKey)}`
             const pending: Array<string | ArrayBuffer | Uint8Array> = []
             pendingMap.set(clientWs, pending)
@@ -92,7 +101,12 @@ function createGeminiProxyWebSocketHandler() {
             upstream.onopen = () => {
                 // Hub-owned setup only — never forward client setup (prevents generic Gemini proxy abuse).
                 // Do NOT flush pending here: wait for Google's setupComplete before forwarding client frames.
-                upstream.send(JSON.stringify(buildGeminiLiveSetupMessage(data.language)))
+                upstream.send(JSON.stringify(buildGeminiLiveSetupMessage(
+                    data.language,
+                    data.voiceName,
+                    data.systemInstruction,
+                    { affectiveDialog: data.affectiveDialog }
+                )))
             }
             upstream.onmessage = (event) => {
                 try {
@@ -154,84 +168,9 @@ function createGeminiProxyWebSocketHandler() {
     }
 }
 
-// Qwen Realtime WebSocket proxy — bridges browser (no custom headers) to DashScope (requires Authorization header)
-function createQwenProxyWebSocketHandler() {
-    const QWEN_WS_BASE = 'wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime'
-    const upstreamMap = new WeakMap<ServerWebSocket<unknown>, WebSocket>()
-    // Holds the hub-owned session.update payload until session.created arrives from DashScope.
-    // Sending session.update before session.created violates the Qwen Realtime protocol ordering.
-    const pendingSetupMap = new WeakMap<ServerWebSocket<unknown>, string>()
-
-    return {
-        open(clientWs: ServerWebSocket<unknown>) {
-            const data = clientWs.data as { apiKey: string; model: string; language?: string }
-            const upstreamUrl = `${process.env.QWEN_REALTIME_WS_URL || QWEN_WS_BASE}?model=${encodeURIComponent(data.model)}`
-
-            const upstream = new WebSocket(upstreamUrl, {
-                headers: { 'Authorization': `Bearer ${data.apiKey}` }
-            } as unknown as string[])
-
-            upstreamMap.set(clientWs, upstream)
-            pendingSetupMap.set(clientWs, JSON.stringify(buildQwenSessionUpdateMessage(data.language)))
-
-            upstream.onmessage = (event) => {
-                const raw = event.data
-                const text = typeof raw === 'string'
-                    ? raw
-                    : new TextDecoder().decode(raw instanceof Uint8Array ? raw : new Uint8Array(raw as ArrayBuffer))
-
-                // Respect Qwen protocol ordering: relay session.created first, then send hub-owned
-                // session.update. DashScope must receive session.update after session.created.
-                const pendingSetup = pendingSetupMap.get(clientWs)
-                if (pendingSetup) {
-                    try {
-                        const parsed = JSON.parse(text) as { type?: string }
-                        if (parsed.type === 'session.created') {
-                            pendingSetupMap.delete(clientWs)
-                            try { if (clientWs.readyState === 1) clientWs.send(text) } catch { /* client gone */ }
-                            upstream.send(pendingSetup)
-                            return
-                        }
-                    } catch { /* not JSON — relay as-is below */ }
-                }
-
-                try {
-                    if (clientWs.readyState === 1) {
-                        clientWs.send(typeof raw === 'string' ? raw : new Uint8Array(raw as ArrayBuffer))
-                    }
-                } catch { /* client gone */ }
-            }
-            upstream.onerror = () => {
-                pendingSetupMap.delete(clientWs)
-                upstreamMap.delete(clientWs)
-                try { clientWs.close(1011, 'Upstream error') } catch { /* */ }
-            }
-            upstream.onclose = (event) => {
-                pendingSetupMap.delete(clientWs)
-                try { clientWs.close(toClientCloseCode(event.code), event.reason || 'Upstream closed') } catch { /* client gone */ }
-                upstreamMap.delete(clientWs)
-            }
-        },
-        message(clientWs: ServerWebSocket<unknown>, message: string | ArrayBuffer | Uint8Array) {
-            if (!isQwenSafeClientFrame(message)) {
-                try { clientWs.close(1008, 'Client session.update may only modify instructions') } catch { /* */ }
-                return
-            }
-            const upstream = upstreamMap.get(clientWs)
-            if (upstream?.readyState === WebSocket.OPEN) {
-                upstream.send(message)
-            }
-        },
-        close(clientWs: ServerWebSocket<unknown>, code: number, reason: string) {
-            pendingSetupMap.delete(clientWs)
-            const upstream = upstreamMap.get(clientWs)
-            if (upstream) {
-                try { upstream.close(toClientCloseCode(code), (reason || 'Client closed').slice(0, 123)) } catch { /* */ }
-                upstreamMap.delete(clientWs)
-            }
-        }
-    }
-}
+// Qwen Realtime WebSocket proxy — bridges browser (no custom headers) to DashScope
+// (requires Authorization header). Implementation extracted to `./qwenProxyHandler` so
+// the ack-gating behaviour is unit-testable; `createQwenProxyWebSocketHandler` is imported above.
 
 function findWebappDistDir(): { distDir: string; indexHtmlPath: string } {
     const candidates = [
@@ -513,8 +452,11 @@ export async function startWebServer(options: {
                     return new Response('Gemini API key not configured', { status: 400 })
                 }
                 const language = url.searchParams.get('language') ?? undefined
+                const voiceParam = url.searchParams.get('voice')?.trim() || undefined
+                const systemInstruction = decodeVoiceSystemPromptParam(url.searchParams.get('systemPrompt'))
+                const affectiveDialog = url.searchParams.get('affectiveDialog') === '1'
                 const upgraded = (server as unknown as { upgrade: (req: Request, opts: unknown) => boolean }).upgrade(req, {
-                    data: { _geminiProxy: true, apiKey, language }
+                    data: { _geminiProxy: true, apiKey, language, voiceName: voiceParam, systemInstruction, affectiveDialog }
                 })
                 if (!upgraded) {
                     return new Response('WebSocket upgrade failed', { status: 500 })
@@ -526,11 +468,13 @@ export async function startWebServer(options: {
                 const apiKey = process.env.DASHSCOPE_API_KEY || process.env.QWEN_API_KEY
                 const model = QWEN_REALTIME_MODEL
                 const language = url.searchParams.get('language') ?? undefined
+                const voiceParam = url.searchParams.get('voice')?.trim() || undefined
+                const systemInstruction = decodeVoiceSystemPromptParam(url.searchParams.get('systemPrompt'))
                 if (!apiKey) {
                     return new Response('DashScope API key not configured', { status: 400 })
                 }
                 const upgraded = (server as unknown as { upgrade: (req: Request, opts: unknown) => boolean }).upgrade(req, {
-                    data: { _qwenProxy: true, apiKey, model, language }
+                    data: { _qwenProxy: true, apiKey, model, language, voiceName: voiceParam, systemInstruction }
                 })
                 if (!upgraded) {
                     return new Response('WebSocket upgrade failed', { status: 500 })

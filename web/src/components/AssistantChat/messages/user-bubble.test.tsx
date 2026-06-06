@@ -2,8 +2,14 @@ import { describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 
 vi.mock('@/components/LazyRainbowText', () => ({
-    LazyRainbowText: ({ text, inline }: { text: string; inline?: boolean }) => (
-        <span data-testid="lazy-rainbow-text" data-inline={inline ? 'true' : 'false'}>{text}</span>
+    LazyRainbowText: ({ text, inline, preserveSingleLineBreaks }: { text: string; inline?: boolean; preserveSingleLineBreaks?: boolean }) => (
+        <span
+            data-testid="lazy-rainbow-text"
+            data-inline={inline ? 'true' : 'false'}
+            data-preserve-single-line-breaks={preserveSingleLineBreaks ? 'true' : 'false'}
+        >
+            {text}
+        </span>
     )
 }))
 
@@ -40,6 +46,13 @@ describe('UserBubbleContent', () => {
         expect(screen.getByText('polish the user bubble')).toBeInTheDocument()
         expect(screen.getByTitle('$ralplan')).toBeInTheDocument()
         expect(screen.getByTestId('lazy-rainbow-text')).toHaveAttribute('data-inline', 'true')
+    })
+
+    it('asks LazyRainbowText to preserve single newlines in sent prompt bodies', () => {
+        const { container } = render(<UserBubbleContent text={'Line one\nLine two\nLine three'} />)
+        const lazyText = container.querySelector('[data-testid="lazy-rainbow-text"]')
+
+        expect(lazyText).toHaveAttribute('data-preserve-single-line-breaks', 'true')
     })
 
     it('preserves original directive casing in chip labels', () => {

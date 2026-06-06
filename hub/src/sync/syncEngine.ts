@@ -13,6 +13,7 @@ import type { AgentFlavor, CodexCollaborationMode, DecryptedMessage, PermissionM
 import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { Server } from 'socket.io'
 import type { Store, CancelQueuedMessageResult } from '../store'
+import type { HapiSessionExportResult } from '@hapi/protocol/sessionExport'
 import type { RpcRegistry } from '../socket/rpcRegistry'
 import type { SSEManager } from '../sse/sseManager'
 import { EventPublisher, type SyncEventListener } from './eventPublisher'
@@ -243,6 +244,10 @@ export class SyncEngine {
         return this.messageService.getMessagesPage(sessionId, options)
     }
 
+    getSessionExport(sessionId: string, session: Session): HapiSessionExportResult {
+        return this.messageService.getSessionExport(sessionId, session)
+    }
+
     getDeliverableMessagesAfter(sessionId: string, options: { afterSeq: number; limit: number; now: number }): DecryptedMessage[] {
         return this.messageService.getDeliverableMessagesAfter(sessionId, options)
     }
@@ -454,6 +459,7 @@ export class SyncEngine {
             throw new Error('Invalid response from session config RPC')
         }
         const obj = result as {
+            error?: string
             applied?: {
                 permissionMode?: Session['permissionMode']
                 model?: Session['model']
@@ -461,6 +467,9 @@ export class SyncEngine {
                 effort?: Session['effort']
                 collaborationMode?: Session['collaborationMode']
             }
+        }
+        if (typeof obj.error === 'string' && obj.error.trim().length > 0) {
+            throw new Error(obj.error)
         }
         const applied = obj.applied
         if (!applied || typeof applied !== 'object') {

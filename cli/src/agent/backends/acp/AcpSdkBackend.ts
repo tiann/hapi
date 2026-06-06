@@ -42,6 +42,16 @@ export type AcpConfigOptionDescriptor = {
     options: Array<{ value: string; name?: string }>;
 };
 
+type AcpInitializeResult = {
+    protocolVersion: number;
+    authMethods?: Array<{ id: string; name?: string }>;
+    agentCapabilities?: {
+        loadSession?: boolean;
+        promptCapabilities?: unknown;
+        sessionCapabilities?: unknown;
+    };
+};
+
 export class AcpSdkBackend implements AgentBackend {
     private transport: AcpStdioTransport | null = null;
     private permissionHandler: ((request: PermissionRequest) => void) | null = null;
@@ -51,10 +61,15 @@ export class AcpSdkBackend implements AgentBackend {
     private readonly sessionConfigOptions = new Map<string, AcpConfigOptionDescriptor[]>();
     private messageHandler: AcpMessageHandler | null = null;
     private activeSessionId: string | null = null;
+    private initializeResult: AcpInitializeResult | null = null;
+    private setModeSupported: boolean | undefined = undefined;
     private isProcessingMessage = false;
     private responseCompleteResolvers: Array<() => void> = [];
     private lastSessionUpdateAt = 0;
     private latestUsageUpdate: AcpUsageUpdate | null = null;
+    private promptUsageCallback: ((msg: AgentMessage) => void) | null = null;
+    private usageUpdateListener: ((msg: AgentMessage) => void) | null = null;
+    private lastForwardedUsageUpdate: AcpUsageUpdate | null = null;
 
     /** Retry configuration for ACP initialization */
     private static readonly INIT_RETRY_OPTIONS = {
@@ -135,7 +150,100 @@ export class AcpSdkBackend implements AgentBackend {
             throw new Error('Invalid initialize response from ACP agent');
         }
 
+        this.initializeResult = {
+            protocolVersion: response.protocolVersion,
+            authMethods: Array.isArray(response.authMethods)
+                ? response.authMethods
+                    .filter((entry): entry is Record<string, unknown> => isObject(entry))
+                    .map((entry) => ({
+                        id: asString(entry.id) ?? '',
+                        name: asString(entry.name) ?? undefined
+                    }))
+                    .filter((entry) => entry.id.length > 0)
+                : undefined,
+            agentCapabilities: isObject(response.agentCapabilities)
+                ? {
+                    loadSession: response.agentCapabilities.loadSession === true,
+                    promptCapabilities: response.agentCapabilities.promptCapabilities,
+                    sessionCapabilities: response.agentCapabilities.sessionCapabilities
+                }
+                : undefined
+        };
+
         logger.debug(`[ACP] Initialized with protocol version ${response.protocolVersion}`);
+    }
+
+    async authenticate(methodId: string): Promise<void> {
+        if (!this.transport) {
+            throw new Error('ACP transport not initialized');
+        }
+        await this.transport.sendRequest('_client/authenticate', { methodId });
+    }
+
+    async authenticateIfAvailable(methodId: string): Promise<void> {
+        const methods = this.initializeResult?.authMethods ?? [];
+        if (!methods.some((method) => method.id === methodId)) {
+            logger.debug(`[ACP] Auth method not advertised: ${methodId}`);
+            return;
+        }
+        try {
+            await this.authenticate(methodId);
+        } catch (error) {
+            // Cursor advertises cursor_login but may not implement _client/authenticate yet.
+            logger.debug(`[ACP] authenticate skipped (${methodId})`, error);
+        }
+    }
+
+    supportsLoadSession(): boolean {
+        return this.initializeResult?.agentCapabilities?.loadSession === true;
+    }
+
+    getSessionConfigOptions(sessionId: string): AcpConfigOptionDescriptor[] | undefined {
+        return this.sessionConfigOptions.get(sessionId);
+    }
+
+    getConfigOptionByCategory(sessionId: string, category: string): AcpConfigOptionDescriptor | undefined {
+        return this.sessionConfigOptions.get(sessionId)?.find((option) => option.category === category);
+    }
+
+    registerExtensionRequestHandler(
+        method: string,
+        handler: (params: unknown, requestId: string | number | null) => Promise<unknown>
+    ): void {
+        if (!this.transport) {
+            throw new Error('ACP transport not initialized');
+        }
+        this.transport.registerRequestHandler(method, handler);
+    }
+
+    async setMode(sessionId: string, modeId: string): Promise<void> {
+        if (!this.transport) {
+            throw new Error('ACP transport not initialized');
+        }
+
+        await this.waitForResponseComplete();
+
+        if (this.setModeSupported !== false) {
+            try {
+                await this.transport.sendRequest('session/set_mode', { sessionId, modeId });
+                this.setModeSupported = true;
+                return;
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                if (/method not found/i.test(message)) {
+                    this.setModeSupported = false;
+                } else {
+                    throw error;
+                }
+            }
+        }
+
+        const modeOption = this.getConfigOptionByCategory(sessionId, 'mode');
+        if (!modeOption) {
+            throw new Error('ACP agent does not support session/set_mode and no mode config option is available');
+        }
+
+        await this.setConfigOption(sessionId, modeOption.id, modeId);
     }
 
     async newSession(config: AgentSessionConfig): Promise<string> {
@@ -261,6 +369,11 @@ export class AcpSdkBackend implements AgentBackend {
         return this.sessionConfigOptions.get(sessionId)?.find((option) => option.category === 'thought_level');
     }
 
+    /** Forwards ACP `usage_update` to the web status bar when no prompt is active (e.g. session resume). */
+    setUsageUpdateListener(listener: ((msg: AgentMessage) => void) | null): void {
+        this.usageUpdateListener = listener;
+    }
+
     async prompt(
         sessionId: string,
         content: PromptContent[],
@@ -286,6 +399,8 @@ export class AcpSdkBackend implements AgentBackend {
         this.isProcessingMessage = true;
         this.lastSessionUpdateAt = Date.now();
         this.latestUsageUpdate = null;
+        this.lastForwardedUsageUpdate = null;
+        this.promptUsageCallback = onUpdate;
         let stopReason: string | null = null;
         let promptUsage: AcpPromptUsage | null = null;
 
@@ -326,6 +441,7 @@ export class AcpSdkBackend implements AgentBackend {
                 } else if (
                     latestUsageUpdate
                     && (latestUsageUpdate.contextTokens !== undefined || latestUsageUpdate.contextWindow !== undefined)
+                    && !this.hasForwardedUsage(latestUsageUpdate)
                 ) {
                     // Agent did not return prompt usage (slash-handled turns,
                     // errored turns), but we did see ACP usage updates during
@@ -343,6 +459,7 @@ export class AcpSdkBackend implements AgentBackend {
                     onUpdate({ type: 'turn_complete', stopReason });
                 }
             } finally {
+                this.promptUsageCallback = null;
                 this.isProcessingMessage = false;
                 this.notifyResponseComplete();
             }
@@ -444,14 +561,75 @@ export class AcpSdkBackend implements AgentBackend {
 
     private captureUsageUpdate(update: unknown): void {
         if (!isObject(update)) return;
-        if (asString(update.sessionUpdate) !== ACP_SESSION_UPDATE_TYPES.usageUpdate) return;
 
-        const contextTokens = this.asFiniteNumber(update.used);
-        const contextWindow = this.asFiniteNumber(update.size);
+        const sessionUpdate = asString(update.sessionUpdate);
+        let contextTokens: number | null = null;
+        let contextWindow: number | null = null;
+
+        if (sessionUpdate === ACP_SESSION_UPDATE_TYPES.usageUpdate) {
+            contextTokens = this.asFiniteNumber(update.used);
+            contextWindow = this.asFiniteNumber(update.size);
+        } else if (sessionUpdate === ACP_SESSION_UPDATE_TYPES.sessionInfoUpdate) {
+            contextTokens = this.asFiniteNumber(
+                update.used
+                ?? update.contextTokens
+                ?? update.context_tokens
+                ?? update.contextUsed
+            );
+            contextWindow = this.asFiniteNumber(
+                update.size
+                ?? update.contextWindow
+                ?? update.context_window
+                ?? update.contextLimit
+            );
+        } else {
+            return;
+        }
+
         this.latestUsageUpdate = {
             contextTokens: contextTokens ?? undefined,
             contextWindow: contextWindow ?? undefined
         };
+        this.forwardUsageUpdate();
+    }
+
+    private hasForwardedUsage(update: AcpUsageUpdate): boolean {
+        return this.lastForwardedUsageUpdate !== null
+            && this.lastForwardedUsageUpdate.contextTokens === update.contextTokens
+            && this.lastForwardedUsageUpdate.contextWindow === update.contextWindow;
+    }
+
+    private forwardUsageUpdate(): void {
+        const update = this.latestUsageUpdate;
+        if (
+            !update
+            || (update.contextTokens === undefined && update.contextWindow === undefined)
+        ) {
+            return;
+        }
+
+        if (
+            this.lastForwardedUsageUpdate
+            && this.lastForwardedUsageUpdate.contextTokens === update.contextTokens
+            && this.lastForwardedUsageUpdate.contextWindow === update.contextWindow
+        ) {
+            return;
+        }
+
+        this.lastForwardedUsageUpdate = update;
+        const message: AgentMessage = {
+            type: 'usage',
+            inputTokens: 0,
+            outputTokens: 0,
+            contextTokens: update.contextTokens,
+            contextWindow: update.contextWindow
+        };
+
+        if (this.promptUsageCallback) {
+            this.promptUsageCallback(message);
+        } else if (this.usageUpdateListener) {
+            this.usageUpdateListener(message);
+        }
     }
 
     private readLatestUsageUpdate(): AcpUsageUpdate | null {
@@ -582,6 +760,11 @@ export class AcpSdkBackend implements AgentBackend {
         });
     }
 
+    /** After a successful model config apply, avoid stale base-only ACP currentValue overwriting cache. */
+    pinSessionModelWireId(sessionId: string, modelId: string): void {
+        this.updateCurrentModelOptimistic(sessionId, modelId);
+    }
+
     private extractPromptUsage(response: unknown): AcpPromptUsage | null {
         if (!isObject(response) || !isObject(response.usage)) return null;
         const usage = response.usage;
@@ -691,27 +874,88 @@ export class AcpSdkBackend implements AgentBackend {
             return;
         }
 
-        const availableModels: AcpModelDescriptor[] = [];
+        const byModelId = new Map<string, AcpModelDescriptor>();
+        const addModel = (modelId: string, name?: string) => {
+            const trimmedId = modelId.trim();
+            if (!trimmedId) return;
+            const trimmedName = name?.trim();
+            const existing = byModelId.get(trimmedId);
+            if (!existing) {
+                byModelId.set(
+                    trimmedId,
+                    trimmedName && trimmedName !== trimmedId
+                        ? { modelId: trimmedId, name: trimmedName }
+                        : { modelId: trimmedId }
+                );
+                return;
+            }
+            if (!existing.name && trimmedName && trimmedName !== trimmedId) {
+                byModelId.set(trimmedId, { modelId: trimmedId, name: trimmedName });
+            }
+        };
+
         if (Array.isArray(rawModels)) {
             for (const entry of rawModels) {
                 if (!isObject(entry)) continue;
                 const modelId = asString(entry.modelId) ?? asString(entry.value);
                 if (!modelId) continue;
-                const name = asString(entry.name) ?? undefined;
-                availableModels.push(name ? { modelId, name } : { modelId });
+                addModel(modelId, asString(entry.name) ?? undefined);
             }
         } else {
             // Preserve previously-captured availableModels when the response only
             // updates currentModelId (e.g. a setModel response from some agents).
             const existing = this.sessionModelsMetadata.get(sessionId);
-            if (existing) {
-                availableModels.push(...existing.availableModels);
+            for (const entry of existing?.availableModels ?? []) {
+                addModel(entry.modelId, entry.name);
             }
         }
 
+        // Cursor often lists one wire id per family in `models` but every variant in
+        // `configOptions` category=model — merge so metadata matches Zed-style pickers.
+        if (configModelOption) {
+            for (const entry of configModelOption.options) {
+                if (!isObject(entry)) continue;
+                const modelId = asString(entry.value) ?? asString(entry.modelId);
+                if (!modelId) continue;
+                addModel(modelId, asString(entry.name) ?? undefined);
+            }
+        }
+
+        const existing = this.sessionModelsMetadata.get(sessionId);
+        const currentModelId = this.preferSpecificCursorWireId(
+            rawCurrent,
+            existing?.currentModelId ?? null
+        );
+
         this.sessionModelsMetadata.set(sessionId, {
-            availableModels,
-            currentModelId: rawCurrent
+            availableModels: [...byModelId.values()],
+            currentModelId
         });
+    }
+
+    private preferSpecificCursorWireId(
+        incoming: string | null,
+        existing: string | null
+    ): string | null {
+        if (!incoming) {
+            return existing;
+        }
+        if (!existing) {
+            return incoming;
+        }
+
+        const incomingBase = incoming.split('[')[0];
+        const existingBase = existing.split('[')[0];
+        if (incomingBase !== existingBase) {
+            return incoming;
+        }
+
+        const incomingHasVariant = incoming.includes('[');
+        const existingHasVariant = existing.includes('[');
+        if (!incomingHasVariant && existingHasVariant) {
+            return existing;
+        }
+
+        return incoming;
     }
 }
