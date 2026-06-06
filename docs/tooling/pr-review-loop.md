@@ -238,12 +238,12 @@ The `cold-review-clean` label on a fork PR is the operator's explicit signal tha
 
 **Why the fork bot and the upstream bot find different things** even though both are ChatGPT Codex Connector reviewing the same code:
 
-| Cause | Fixable? | Cost |
+| Cause | Fixable? | Status / Cost |
 |---|---|---|
-| **Stochastic LLM sampling** - same model + same prompt + two runs surface different finding subsets | No, fundamentally | ~2x credits to run N=2 passes and merge |
-| **Different RAG repo-context** - each repo's review pulls open issues, README, AGENTS.md, recent PRs into the prompt; `heavygee/hapi` and `tiann/hapi` have different summaries so the bot's "what does this codebase care about" framing differs | Partially - mirror repo metadata across fork and upstream | Ongoing maintenance |
-| **Codex Cloud config drift** - each repo has its own `.codex/` settings and review-prompt template; `tiann/hapi`'s template may emphasize "check for collision with intentional-clear paths" more than the fork's | Yes - clone upstream's config | One-time setup |
-| **Diff scope rendering** - bot reviews the PR diff plus a small context window of impacted callers; the collision-relevant code may be outside the changed-file set and require the bot to reach for it (which is non-deterministic) | Partially - enable expanded-context-window if Codex Cloud exposes the knob | Per-PR cost |
+| **Stochastic LLM sampling** - same model + same prompt + two runs surface different finding subsets | No, fundamentally | Mitigation: optional N=2 fork passes (re-trigger Codex Cloud after a trivial whitespace push) - ~2x credits, modest extra coverage |
+| **Different RAG repo-context** - each repo's review pulls open issues, README, AGENTS.md, recent PRs into the prompt; if those differ between fork and upstream, the bot's "what does this codebase care about" framing differs | Partially - root `AGENTS.md` (the biggest single piece) **is now byte-identical to upstream as of 2026-06-06** (see commit 978bb7f1). The rest (open issues, recent PRs) is intrinsic to having a separate fork and not worth mirroring | One-time setup done for AGENTS.md; ongoing drift on open-issues/PRs is accepted |
+| **Codex Cloud config drift** - workflow + prompt files at `.github/workflows/codex-*.yml` and `.github/prompts/codex-*.md` | Yes - clone upstream's files | **Already aligned**: all four blobs have identical SHAs between fork and upstream (verified 2026-06-06). Re-verify if upstream changes those files |
+| **Diff scope rendering** - bot reviews the PR diff plus a small context window of impacted callers; collision-relevant code outside the changed-file set requires the bot to reach for it (non-deterministic) | **No** - Codex Cloud does not expose an expanded-context-window knob to repo admins. This is purely the bot's internal context-allocation policy | Not a lever we have. Manifests as upstream-only findings on integration-collision bugs that touch files outside the PR diff |
 
 **So a cold-review-clean fork PR DOES mean:**
 
@@ -260,7 +260,9 @@ The `cold-review-clean` label on a fork PR is the operator's explicit signal tha
 
 **Operational implication:** budget for 1-3 upstream-bot rounds on every promoted PR. The fork gate compresses what would be 3-5 upstream rounds down to 1-3 - that is the value, not zero upstream rounds.
 
-If you want fewer upstream surprises, the cheapest lever is to run N=2 fork passes (manually re-trigger Codex Cloud on the fork PR after a fresh push, even a trivial whitespace one, and treat the union of both passes as the bar). That ~2x credit cost catches more stochastic findings without changing the structural model.
+**Levers we've used:** the `.github/workflows/codex-*.yml` + `.github/prompts/codex-*.md` files are kept in SHA-parity with upstream, and as of 2026-06-06 root `AGENTS.md` is byte-identical to upstream too (commit 978bb7f1). That closes the cheap structural drift. The expensive structural drift (stochastic sampling, diff-scope rendering) is intrinsic to the model and the Codex Cloud product - no operator lever exists.
+
+If you want fewer upstream surprises beyond what these alignments give you, the cheapest remaining lever is N=2 fork passes (manually re-trigger Codex Cloud on the fork PR after a trivial whitespace push, and treat the union of both passes as the bar). That ~2x credit cost catches more stochastic findings without changing the structural model. There is no lever for the diff-scope-rendering cause - those findings will continue to surface only on the upstream pass.
 
 ---
 
