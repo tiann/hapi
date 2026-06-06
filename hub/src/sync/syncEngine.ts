@@ -60,6 +60,11 @@ export type ResumeSessionResult =
     | { type: 'success'; sessionId: string }
     | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'resume_unavailable' | 'resume_failed' }
 
+export type ReopenSessionResult =
+    | { type: 'success'; sessionId: string; resumed: boolean; cursorSessionProtocol?: 'acp' | 'stream-json' }
+    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'resume_unavailable' | 'resume_failed' | 'metadata_conflict' }
+    | { type: 'incomplete'; message: string; missing: [string, ...string[]] }
+
 export type LocalResumeTargetResult =
     | { type: 'success'; target: LocalResumeTarget }
     | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'resume_unavailable' }
@@ -742,6 +747,85 @@ export class SyncEngine {
         }
 
         return { type: 'success', sessionId: spawnResult.sessionId }
+    }
+
+    /**
+     * Revive an archived session so the web UI can reach it again.
+     *
+     * Behaviour:
+     * - Active session: idempotent no-op (`resumed: false`).
+     * - Non-archived inactive session: forwards to `resumeSession` without touching metadata.
+     * - Archived session: validates that the agent has enough metadata to resume (Cursor
+     *   sessions require a `cursorSessionId` once they have any messages), clears the
+     *   archive metadata (`lifecycleState`, `archivedBy`, `archiveReason`), defaults the
+     *   Cursor protocol to `stream-json` for pre-#799 sessions, then forwards to
+     *   `resumeSession`. The CLI's `sessionFactory` will re-stamp `lifecycleState='running'`
+     *   when it boots, so we do not pre-write that here.
+     *
+     * Returns `incomplete` (HTTP 422 from the route layer) when the agent metadata
+     * needed to resume is missing.
+     */
+    async reopenSession(sessionId: string, namespace: string): Promise<ReopenSessionResult> {
+        const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
+        if (!access.ok) {
+            return {
+                type: 'error',
+                message: access.reason === 'access-denied' ? 'Session access denied' : 'Session not found',
+                code: access.reason === 'access-denied' ? 'access_denied' : 'session_not_found'
+            }
+        }
+
+        const session = access.session
+        const metadata = session.metadata
+
+        if (session.active) {
+            return { type: 'success', sessionId: access.sessionId, resumed: false }
+        }
+
+        const isArchived = metadata?.lifecycleState === 'archived'
+
+        if (isArchived && metadata) {
+            if (metadata.flavor === 'cursor' && !metadata.cursorSessionId) {
+                const hasMessages = this.store.messages.getFirstMessages(access.sessionId, 1).length > 0
+                if (hasMessages) {
+                    return {
+                        type: 'incomplete',
+                        message: 'Cursor session id is missing from metadata; reopen requires the original cursor chat id',
+                        missing: ['cursorSessionId']
+                    }
+                }
+            }
+
+            let applied: { cursorSessionProtocol?: 'acp' | 'stream-json' }
+            try {
+                applied = await this.sessionCache.clearSessionArchiveMetadata(access.sessionId)
+            } catch (error) {
+                const message = error instanceof Error ? error.message : 'Failed to clear archive metadata'
+                return { type: 'error', message, code: 'metadata_conflict' }
+            }
+
+            const resumeResult = await this.resumeSession(access.sessionId, namespace)
+            if (resumeResult.type === 'error') {
+                return resumeResult
+            }
+
+            return {
+                type: 'success',
+                sessionId: resumeResult.sessionId,
+                resumed: true,
+                ...(applied.cursorSessionProtocol ? { cursorSessionProtocol: applied.cursorSessionProtocol } : {})
+            }
+        }
+
+        // Not active and not archived (e.g. brand-new session that has not yet connected,
+        // or one that ended without writing archive metadata). Forward to resume so the
+        // operator still gets one-click revival.
+        const resumeResult = await this.resumeSession(access.sessionId, namespace)
+        if (resumeResult.type === 'error') {
+            return resumeResult
+        }
+
+        return { type: 'success', sessionId: resumeResult.sessionId, resumed: true }
     }
 
     async handoffSessionToLocal(sessionId: string, namespace: string): Promise<LocalHandoffResult> {

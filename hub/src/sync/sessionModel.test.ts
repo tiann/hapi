@@ -1806,4 +1806,121 @@ describe('session model', () => {
             expect(state.completedRequests?.['req-1']).toBeDefined()
         })
     })
+
+    describe('clearSessionArchiveMetadata', () => {
+        it('clears lifecycleState/archivedBy/archiveReason from an archived session', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+
+            const session = cache.getOrCreateSession(
+                'session-archived',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    flavor: 'codex',
+                    codexSessionId: 'thread-X',
+                    lifecycleState: 'archived',
+                    archivedBy: 'cli',
+                    archiveReason: 'User terminated'
+                },
+                null,
+                'default'
+            )
+
+            const result = await cache.clearSessionArchiveMetadata(session.id)
+
+            expect(result.cursorSessionProtocol).toBeUndefined()
+            const updated = cache.getSession(session.id)
+            const meta = updated?.metadata as Record<string, unknown> | null | undefined
+            expect(meta?.lifecycleState).toBeUndefined()
+            expect(meta?.archivedBy).toBeUndefined()
+            expect(meta?.archiveReason).toBeUndefined()
+            expect(typeof meta?.lifecycleStateSince).toBe('number')
+        })
+
+        it('defaults cursorSessionProtocol to stream-json for pre-#799 cursor sessions', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+
+            const session = cache.getOrCreateSession(
+                'session-cursor-legacy',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    flavor: 'cursor',
+                    cursorSessionId: 'legacy-cursor-id',
+                    lifecycleState: 'archived'
+                },
+                null,
+                'default'
+            )
+
+            const result = await cache.clearSessionArchiveMetadata(session.id)
+
+            expect(result.cursorSessionProtocol).toBe('stream-json')
+            const meta = cache.getSession(session.id)?.metadata as Record<string, unknown> | null | undefined
+            expect(meta?.cursorSessionProtocol).toBe('stream-json')
+        })
+
+        it('keeps an existing acp protocol intact when clearing archive metadata', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+
+            const session = cache.getOrCreateSession(
+                'session-cursor-acp',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    flavor: 'cursor',
+                    cursorSessionId: 'acp-cursor-id',
+                    cursorSessionProtocol: 'acp',
+                    lifecycleState: 'archived'
+                },
+                null,
+                'default'
+            )
+
+            const result = await cache.clearSessionArchiveMetadata(session.id)
+
+            expect(result.cursorSessionProtocol).toBe('acp')
+            const meta = cache.getSession(session.id)?.metadata as Record<string, unknown> | null | undefined
+            expect(meta?.cursorSessionProtocol).toBe('acp')
+            expect(meta?.lifecycleState).toBeUndefined()
+        })
+
+        it('does not stamp cursorSessionProtocol when no cursorSessionId is present', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+
+            const session = cache.getOrCreateSession(
+                'session-cursor-fresh',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    flavor: 'cursor',
+                    lifecycleState: 'archived'
+                },
+                null,
+                'default'
+            )
+
+            const result = await cache.clearSessionArchiveMetadata(session.id)
+
+            expect(result.cursorSessionProtocol).toBeUndefined()
+            const meta = cache.getSession(session.id)?.metadata as Record<string, unknown> | null | undefined
+            expect(meta?.cursorSessionProtocol).toBeUndefined()
+        })
+
+        it('throws when the session id is unknown', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+
+            await expect(cache.clearSessionArchiveMetadata('missing-session')).rejects.toThrow('Session not found')
+        })
+    })
 })

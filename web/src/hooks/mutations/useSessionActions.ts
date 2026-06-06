@@ -14,6 +14,7 @@ export function useSessionActions(
 ): {
     abortSession: () => Promise<void>
     archiveSession: () => Promise<void>
+    reopenSession: () => Promise<void>
     switchSession: () => Promise<void>
     setPermissionMode: (mode: PermissionMode) => Promise<void>
     setCollaborationMode: (mode: CodexCollaborationMode) => Promise<void>
@@ -54,6 +55,16 @@ export function useSessionActions(
                 throw new Error('Session unavailable')
             }
             await api.archiveSession(sessionId)
+        },
+        onSuccess: () => void invalidateSession(),
+    })
+
+    const reopenMutation = useMutation({
+        mutationFn: async () => {
+            if (!api || !sessionId) {
+                throw new Error('Session unavailable')
+            }
+            await api.reopenSession(sessionId)
         },
         onSuccess: () => void invalidateSession(),
     })
@@ -166,6 +177,7 @@ export function useSessionActions(
     return {
         abortSession: abortMutation.mutateAsync,
         archiveSession: archiveMutation.mutateAsync,
+        reopenSession: reopenMutation.mutateAsync,
         switchSession: switchMutation.mutateAsync,
         setPermissionMode: permissionMutation.mutateAsync,
         setCollaborationMode: collaborationMutation.mutateAsync,
@@ -176,6 +188,7 @@ export function useSessionActions(
         deleteSession: deleteMutation.mutateAsync,
         isPending: abortMutation.isPending
             || archiveMutation.isPending
+            || reopenMutation.isPending
             || switchMutation.isPending
             || permissionMutation.isPending
             || collaborationMutation.isPending

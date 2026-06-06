@@ -512,6 +512,67 @@ export class SessionCache {
         this.refreshSession(sessionId)
     }
 
+    /**
+     * Clear archive-related metadata on an archived session so it can be resumed.
+     * - Removes `lifecycleState`, `archivedBy`, `archiveReason`, and stamps
+     *   `lifecycleStateSince` so subsequent CLI lifecycle writes still win on time.
+     * - For Cursor sessions that pre-date #799 (no `cursorSessionProtocol` set, but a
+     *   `cursorSessionId` exists) defaults the protocol to `stream-json` so routing
+     *   reaches the legacy launcher instead of the new ACP path.
+     *
+     * Returns the protocol that was applied (or already present) for cursor sessions,
+     * or `undefined` for other flavors. Throws on version mismatch / store error.
+     * No-op when metadata is null (callers should pre-check).
+     */
+    async clearSessionArchiveMetadata(sessionId: string): Promise<{ cursorSessionProtocol?: 'acp' | 'stream-json' }> {
+        const session = this.sessions.get(sessionId)
+        if (!session) {
+            throw new Error('Session not found')
+        }
+
+        const currentMetadata = session.metadata
+        if (!currentMetadata) {
+            throw new Error('Session metadata missing')
+        }
+
+        const next: Record<string, unknown> = { ...currentMetadata }
+        delete next.lifecycleState
+        delete next.archivedBy
+        delete next.archiveReason
+        next.lifecycleStateSince = Date.now()
+
+        let cursorSessionProtocol: 'acp' | 'stream-json' | undefined
+        if (currentMetadata.flavor === 'cursor') {
+            const existing = currentMetadata.cursorSessionProtocol
+            if (existing === 'acp' || existing === 'stream-json') {
+                cursorSessionProtocol = existing
+            } else if (currentMetadata.cursorSessionId) {
+                // Pre-#799 default: presence of cursorSessionId without protocol means stream-json.
+                cursorSessionProtocol = 'stream-json'
+                next.cursorSessionProtocol = 'stream-json'
+            }
+        }
+
+        const result = this.store.sessions.updateSessionMetadata(
+            sessionId,
+            next,
+            session.metadataVersion,
+            session.namespace,
+            { touchUpdatedAt: false }
+        )
+
+        if (result.result === 'error') {
+            throw new Error('Failed to update session metadata')
+        }
+
+        if (result.result === 'version-mismatch') {
+            throw new Error('Session was modified concurrently. Please try again.')
+        }
+
+        this.refreshSession(sessionId)
+        return cursorSessionProtocol ? { cursorSessionProtocol } : {}
+    }
+
     async deleteSession(sessionId: string): Promise<void> {
         const session = this.sessions.get(sessionId)
         if (!session) {

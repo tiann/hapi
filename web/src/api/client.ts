@@ -33,6 +33,7 @@ import type {
     MachineListDirectoryResponse,
     MachinePathsExistsResponse,
     OpencodeModelsResponse,
+    ReopenSessionResponse,
     UploadFileResponse
 } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor } from '@hapi/protocol'
@@ -406,6 +407,32 @@ export class ApiClient {
             method: 'POST',
             body: JSON.stringify({})
         })
+    }
+
+    async reopenSession(sessionId: string): Promise<ReopenSessionResponse> {
+        const path = `/api/sessions/${encodeURIComponent(sessionId)}/reopen`
+        const headers = new Headers({ 'content-type': 'application/json' })
+        const liveToken = this.getToken ? this.getToken() : null
+        const authToken = liveToken ?? this.token
+        if (authToken) {
+            headers.set('authorization', `Bearer ${authToken}`)
+        }
+        const res = await fetch(this.buildUrl(path), {
+            method: 'POST',
+            body: JSON.stringify({}),
+            headers
+        })
+        if (!res.ok) {
+            const body = await res.text().catch(() => '')
+            const code = parseErrorCode(body)
+            throw new ApiError(
+                `HTTP ${res.status} ${res.statusText}: ${body}`,
+                res.status,
+                code,
+                body || undefined
+            )
+        }
+        return await res.json() as ReopenSessionResponse
     }
 
     async switchSession(sessionId: string): Promise<void> {

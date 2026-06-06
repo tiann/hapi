@@ -567,11 +567,40 @@ function SessionItem(props: {
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
 
-    const { archiveSession, renameSession, deleteSession, isPending } = useSessionActions(
+    const { archiveSession, reopenSession, renameSession, deleteSession, isPending } = useSessionActions(
         api,
         s.id,
         s.metadata?.flavor ?? null
     )
+    const [reopenError, setReopenError] = useState<string | null>(null)
+
+    const handleReopen = async () => {
+        setReopenError(null)
+        try {
+            await reopenSession()
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to reopen session'
+            // Strip the HTTP prefix so the operator sees a clean message.
+            // Format from ApiError: 'HTTP 422 ...: {"error":"...","missing":[...]}'
+            const jsonStart = message.indexOf('{')
+            if (jsonStart !== -1) {
+                try {
+                    const parsed = JSON.parse(message.slice(jsonStart)) as { error?: string; missing?: string[] }
+                    if (parsed.error && parsed.missing?.length) {
+                        setReopenError(`${parsed.error} (missing: ${parsed.missing.join(', ')})`)
+                        return
+                    }
+                    if (parsed.error) {
+                        setReopenError(parsed.error)
+                        return
+                    }
+                } catch {
+                    // fall through to raw message
+                }
+            }
+            setReopenError(message)
+        }
+    }
 
     const longPressHandlers = useLongPress({
         onLongPress: (point) => {
@@ -661,9 +690,23 @@ function SessionItem(props: {
                 sessionActive={s.active}
                 onRename={() => setRenameOpen(true)}
                 onArchive={() => setArchiveOpen(true)}
+                onReopen={handleReopen}
                 onDelete={() => setDeleteOpen(true)}
                 anchorPoint={menuAnchorPoint}
             />
+
+            {reopenError ? (
+                <ConfirmDialog
+                    isOpen={true}
+                    onClose={() => setReopenError(null)}
+                    title={t('dialog.reopen.errorTitle')}
+                    description={reopenError}
+                    confirmLabel={t('dialog.reopen.dismiss')}
+                    confirmingLabel={t('dialog.reopen.dismiss')}
+                    onConfirm={async () => setReopenError(null)}
+                    isPending={false}
+                />
+            ) : null}
 
             <RenameSessionDialog
                 isOpen={renameOpen}
