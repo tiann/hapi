@@ -110,13 +110,16 @@
     },
     {
       "caseId": "TC-4-11",
-      "round": 1,
-      "passed": false,
+      "round": 2,
+      "passed": true,
       "execute_steps": [
-        "Start pi --mode rpc, send set_model command with modelId='deepseek-chat'",
-        "Verify response{command:'set_model', success:true}"
+        "Start pi --mode rpc, get_state (initial model: glm-5.1)",
+        "get_available_models → 25 models found",
+        "set_model{provider:'deepseek', modelId:'deepseek-v4-flash'}",
+        "get_state → model changed to deepseek-v4-flash",
+        "prompt 'Say model switch works' → text='model switch works'"
       ],
-      "evidence": "success=false — Pi does not support set_model RPC command (returns success=false)"
+      "evidence": "set_model success=true, model switched glm-5.1→deepseek-v4-flash, prompt confirmed working"
     },
     {
       "caseId": "TC-4-12",
