@@ -153,7 +153,7 @@ sequenceDiagram
     ORCH->>PEER: spawn with intake §0 handoff<br/>(parent session, DONE vs OWNED)
     PEER->>WT: hapi-worktree-create X --branch fix/X<br/>(off upstream/main)
     loop iterate
-        PEER->>WT: edits, tests, commits<br/>(no stashes; WIP commits if interrupted)
+        PEER->>WT: edits, tests, commits<br/>(no stashes - WIP commit if interrupted)
     end
     PEER->>PEER: cold review + Playwright<br/>(per cold-pr-review-rubric.md)
     PEER->>OP: "ready for dogfood"
@@ -161,7 +161,7 @@ sequenceDiagram
     OP->>PEER: approved
     PEER->>FORK: git push -u origin fix/X
     PEER->>US: hapi-pr-create<br/>--title T --body-file body.md
-    Note right of PEER: wrapper enforces:<br/>base=upstream/main, leak scan,<br/>Closes #N keyword
+    Note right of PEER: wrapper enforces base upstream/main,<br/>leak scan, and Closes #N keyword
     US-->>FORK: review, request changes
     PEER->>WT: address review<br/>push updates
     US->>US: merge PR
@@ -196,7 +196,7 @@ sequenceDiagram
     FORK->>FORK: git checkout main<br/>git merge upstream/main<br/>(.gitattributes keeps AGENTS.md deleted)
     FORK-->>FORK: post-merge hook fires
     FORK->>AUDIT: hapi-branch-audit --on-merge --skip-fetch
-    AUDIT->>LOCAL: for each local branch:<br/>match against open + merged PRs
+    AUDIT->>LOCAL: for each local branch -<br/>match against open + merged PRs
     LOCAL-->>AUDIT: PR state + closing issues
     AUDIT-->>OP: "feat/X is now MERGED (delete candidate)"<br/>"fix/Y is 31 commits behind (STALE-BEHIND)"
     OP->>LOCAL: git worktree remove + git branch -d<br/>OR rebase on upstream/main
@@ -223,20 +223,20 @@ sequenceDiagram
     participant DRV as ~/coding/hapi/driver/
     participant DB as ~/.hapi/hapi.db
     participant SD as systemd<br/>(hapi-hub, hapi-runner)
-    participant HUB as Live hub on :3006
+    participant HUB as Live hub port 3006
 
     OP->>HUB: hapi-driver-status<br/>(check no agents mid-turn)
     HUB-->>OP: exit 0 (idle)
     OP->>OP: hapi-restart-hub --patient<br/>(drain WORKING agents, max 10 min)
     OP->>SD: stop hapi-hub, hapi-runner
-    OP->>DB: backup hapi.db<br/>(jiu-jitsu: schema version &mdash; upgrade or roll back)
+    OP->>DB: backup hapi.db<br/>(jiu-jitsu schema check - upgrade or rollback)
     OP->>DRV: git fetch upstream<br/>git checkout driver/integration<br/>git reset --hard upstream/main
     loop for each layer in manifest
-        DRV->>DRV: git merge fix/X<br/>(if conflict: abort + ping peer)
+        DRV->>DRV: git merge fix/X<br/>(if conflict - abort + ping peer)
     end
     DRV->>DRV: bun install + bun run build
     OP->>SD: start hapi-hub, hapi-runner
-    SD->>HUB: hub listens on :3006
+    SD->>HUB: hub listens on port 3006
     HUB-->>OP: /health green
 ```
 
