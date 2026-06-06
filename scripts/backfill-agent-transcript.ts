@@ -386,6 +386,8 @@ export function backfillSessionMessages(opts: {
         return { inserted: 0, skipped: 0, transcriptPath, total: 0 }
     }
 
+    const prevAllowNewer = process.env.HAPI_STORE_ALLOW_NEWER_SCHEMA
+    process.env.HAPI_STORE_ALLOW_NEWER_SCHEMA = '1'
     const store = new Store(opts.dbPath)
     try {
         const session = store.sessions.getSession(opts.sessionId)
@@ -415,6 +417,11 @@ export function backfillSessionMessages(opts: {
         return { inserted, skipped, transcriptPath, total: messages.length }
     } finally {
         store.close()
+        if (prevAllowNewer === undefined) {
+            delete process.env.HAPI_STORE_ALLOW_NEWER_SCHEMA
+        } else {
+            process.env.HAPI_STORE_ALLOW_NEWER_SCHEMA = prevAllowNewer
+        }
     }
 }
 

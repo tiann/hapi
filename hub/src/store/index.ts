@@ -153,7 +153,17 @@ export class Store {
         }
 
         if (currentVersion !== SCHEMA_VERSION) {
-            throw this.buildSchemaMismatchError(currentVersion)
+            if (
+                currentVersion > SCHEMA_VERSION &&
+                process.env.HAPI_STORE_ALLOW_NEWER_SCHEMA === '1'
+            ) {
+                console.warn(
+                    `[store] tolerating DB schema ahead of source (db=${currentVersion} > source=${SCHEMA_VERSION}); ` +
+                        `proceeding because HAPI_STORE_ALLOW_NEWER_SCHEMA=1. Newer columns/tables are invisible to this build.`
+                )
+            } else {
+                throw this.buildSchemaMismatchError(currentVersion)
+            }
         }
 
         this.assertRequiredTablesPresent()
