@@ -62,7 +62,7 @@ export async function runPi(opts: {
         await lifecycle.cleanupAndExit();
     };
 
-    // --- Transport event handlers ---
+// --- Transport event handlers ---
 
     transport.onError((error) => {
         logger.debug(`[pi] Transport error: ${error.message}`);
@@ -87,7 +87,10 @@ export async function runPi(opts: {
 
     transport.onEvent((event) => {
         if (event.type === 'response') {
-            handleResponse(event as unknown as PiResponseEvent);
+            handleResponse(event as unknown as PiResponseEvent, currentModel, (update) => {
+                currentModel = update.model ?? currentModel;
+                currentPermissionMode = update.permissionMode ?? currentPermissionMode;
+            });
             return;
         }
 
@@ -97,7 +100,11 @@ export async function runPi(opts: {
         }
     });
 
-    function handleResponse(response: PiResponseEvent): void {
+    function handleResponse(
+        response: PiResponseEvent,
+        model: string | null,
+        onUpdate: (update: { model?: string | null; permissionMode?: PiPermissionMode }) => void
+    ): void {
         const { command, success } = response;
 
         if (!success) {
@@ -111,18 +118,19 @@ export async function runPi(opts: {
             case 'get_state': {
                 const data = response.data as Record<string, unknown> | undefined;
                 if (data?.model) {
-                    const model = data.model as Record<string, unknown>;
-                    currentModel = (model.modelId as string) ?? currentModel;
-                    logger.debug(`[pi] Initial model: ${currentModel}`);
+                    const modelObj = data.model as Record<string, unknown>;
+                    const newModel = (modelObj.modelId as string) ?? model;
+                    onUpdate({ model: newModel });
+                    logger.debug(`[pi] Initial model: ${newModel}`);
                 }
                 break;
             }
             case 'set_model': {
                 const data = response.data as Record<string, unknown> | undefined;
                 if (data?.modelId) {
-                    currentModel = data.modelId as string;
+                    onUpdate({ model: data.modelId as string });
                 }
-                logger.debug(`[pi] Model changed to: ${currentModel}`);
+                logger.debug(`[pi] Model changed to: ${(data?.modelId as string) ?? model}`);
                 break;
             }
             case 'new_session':

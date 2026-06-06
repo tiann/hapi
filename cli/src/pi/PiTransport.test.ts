@@ -147,6 +147,26 @@ describe('PiTransport', () => {
             expect(handler).toHaveBeenCalledWith(event1);
             expect(handler).toHaveBeenCalledWith(event2);
         });
+
+        it('should buffer and reassemble split JSONL across chunks', () => {
+            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
+            transport.start();
+
+            const handler = vi.fn();
+            transport.onEvent(handler);
+
+            const event = { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'hello' } };
+            const fullLine = JSON.stringify(event) + '\n';
+
+            // Split the line into two chunks — no newline in first chunk
+            mockProcess.stdout.emit('data', fullLine.slice(0, 20));
+            expect(handler).not.toHaveBeenCalled();
+
+            // Send the rest with newline
+            mockProcess.stdout.emit('data', fullLine.slice(20));
+            expect(handler).toHaveBeenCalledTimes(1);
+            expect(handler).toHaveBeenCalledWith(event);
+        });
     });
 
     describe('kill()', () => {
