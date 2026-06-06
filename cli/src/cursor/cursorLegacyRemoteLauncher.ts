@@ -348,12 +348,21 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         const signal = this.abortController.signal;
         if (signal.aborted) return;
         await new Promise<void>((resolve) => {
-            const timer = setTimeout(resolve, ms);
-            const onAbort = () => {
-                clearTimeout(timer);
+            let timer: ReturnType<typeof setTimeout> | null = null;
+            // Single completion path so the abort listener is always removed,
+            // whether the timer or the abort wins. Without this, repeated
+            // transient retries on the same AbortController accumulate stale
+            // listeners until the next abort fires them in bulk.
+            const finish = () => {
+                if (timer !== null) {
+                    clearTimeout(timer);
+                    timer = null;
+                }
+                signal.removeEventListener('abort', finish);
                 resolve();
             };
-            signal.addEventListener('abort', onAbort, { once: true });
+            timer = setTimeout(finish, ms);
+            signal.addEventListener('abort', finish, { once: true });
         });
     }
 
