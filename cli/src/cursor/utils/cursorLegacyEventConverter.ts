@@ -1,6 +1,13 @@
 /**
  * Converts Cursor Agent stream-json events to HAPI AgentMessage format.
  * Cursor emits NDJSON: system/init, thinking, assistant, tool_call, result.
+ *
+ * This legacy converter only runs for cursor sessions created before the
+ * ACP migration (#799). New cursor remote sessions go through
+ * cursorAcpBackend, which handles AskQuestion via the bidirectional
+ * `cursor/ask_question` ACP extension method and is immune to the #784
+ * fabrication. The intercept below exists for legacy resumed sessions
+ * only and removes itself when those sessions drain.
  */
 
 import type { AgentMessage } from '@/agent/types';
@@ -86,13 +93,11 @@ function extractToolResult(toolCall: Record<string, unknown>): unknown {
     }
     if (toolCall.function && typeof toolCall.function === 'object') {
         const fn = toolCall.function as Record<string, unknown>;
-        // Cursor's stream-json function-shaped tool calls put the agent's
-        // input in `arguments` and the cursor-side response in other fields.
-        // Surface the response (preferring `result` when present, otherwise
-        // everything except `name` / `arguments`) so downstream callers don't
-        // lose the cursor-side payload to a `{}` fallback. Excluding
-        // `arguments` matters for the #784 intercept: the agent's own prompt
-        // text must not be searched for the synthetic-skip marker.
+        // Function-shaped tool calls put the agent's input in `arguments`
+        // and the cursor-side response in other fields. Surface the
+        // response (preferring `result` when present, otherwise everything
+        // except `name` / `arguments`) so downstream callers see the
+        // cursor-side payload instead of an opaque `{}` placeholder.
         if (fn.result !== undefined) return fn.result;
         const rest: Record<string, unknown> = {};
         for (const [k, v] of Object.entries(fn)) {
@@ -105,20 +110,41 @@ function extractToolResult(toolCall: Record<string, unknown>): unknown {
 }
 
 /**
- * Transitional safety patch for tiann/hapi#784.
+ * Transitional safety intercept for tiann/hapi#784.
  *
- * cursor-agent in headless `--print --output-format stream-json` mode fabricates
- * the following literal string as the AskQuestion tool result, with no error
- * flag and in ~zero seconds, because there is no IDE surface to render the
- * question. The agent's model then treats this as legitimate user consent.
+ * cursor-agent in headless `--print --output-format stream-json` mode
+ * fabricates the literal SYNTHETIC_SKIP_MARKER string below as the
+ * AskQuestion tool result, with no error flag and in ~zero seconds,
+ * because there is no IDE surface to render the question. The agent's
+ * model then treats this as legitimate user consent and acts on it.
  *
- * HAPI intercepts the synthetic string at the converter layer and rewrites the
- * tool result to a structured `no_input_surface` failure, so downstream agents
- * see an explicit error instead of fabricated consent.
+ * HAPI's legacy converter (this file) rewrites the result to a
+ * structured `no_input_surface` failure so downstream consumers (web
+ * UI, Telegram, log readers) surface the fabrication as an error
+ * instead of silently passing through fabricated consent.
  *
- * This patch is intentionally scoped to the stream-json launcher and
- * auto-deletes when tiann/hapi#781 (ACP migration) replaces stream-json with
- * the proper bidirectional `cursor/ask_question` ACP method.
+ * Scope: legacy stream-json sessions only. New cursor remote sessions
+ * go through cursorAcpBackend with the proper `cursor/ask_question`
+ * ACP method and never hit this code. The intercept drains with the
+ * legacy session population.
+ *
+ * Detection rules:
+ *   1. Tool name resolves to an AskQuestion-shaped call (explicit
+ *      `AskQuestion` / `ask_question` / `askQuestion`) or the
+ *      converter's `unknown` fallback (cursor's stream-json drops the
+ *      AskQuestion name in some configurations - see #784 issue body).
+ *   2. The literal SYNTHETIC_SKIP_MARKER appears in the *response*
+ *      portion of the raw tool_call payload. For function-shaped
+ *      tools, the response excludes `function.arguments` (agent
+ *      input), so a legitimate AskQuestion whose prompt quotes the
+ *      marker (e.g. debugging this exact bug) is not rewritten.
+ *
+ * The earlier timing-signature defense-in-depth (rewrite any sub-500ms
+ * AskQuestion-shaped completion with a trivial result) was removed in
+ * a follow-up: in real legacy traffic it fires on Anthropic Vertex
+ * Claude tool calls (whose `toolu_vrtx_*` shape the converter labels
+ * `name=unknown` and whose extracted result is the `{}` fallback) and
+ * caught no actual fabrications. The marker-only path is sufficient.
  */
 const SYNTHETIC_SKIP_MARKER =
     'Questions skipped by the user, continue with the information you already have';
@@ -129,56 +155,16 @@ const NO_INPUT_SURFACE_OUTPUT = {
         'cursor-agent fabricated a skip response in headless mode. The operator did not respond. Re-prompt in plain text and wait for a real user message before proceeding.'
 } as const;
 
-/**
- * Names cursor-agent has been observed to use (or fall back to) for the
- * AskQuestion tool when its result reaches the stream-json converter.
- */
-const ASK_QUESTION_TOOL_NAMES = new Set(['AskQuestion', 'askQuestion', 'ask_question', 'unknown']);
+const ASK_QUESTION_TOOL_NAMES = new Set([
+    'AskQuestion',
+    'askQuestion',
+    'ask_question',
+    'unknown'
+]);
 
 /**
- * Defense-in-depth latency threshold. A real interactive answer cannot arrive
- * faster than this; cursor-agent's fabricated skip arrives in ~0 ms.
- */
-const SYNTHETIC_LATENCY_THRESHOLD_MS = 500;
-
-/**
- * Tracks when each tool_call 'started' event arrived, keyed by call_id.
- * Used to detect zero-latency fabricated AskQuestion completions even if the
- * synthetic-string text changes in a future cursor-agent release.
- *
- * Bounded to prevent unbounded growth if 'completed' events are ever missed.
- */
-const TOOL_CALL_STARTED_MAX = 1024;
-const toolCallStartedAt = new Map<string, number>();
-
-function rememberToolCallStart(callId: string, now: number = Date.now()): void {
-    if (toolCallStartedAt.size >= TOOL_CALL_STARTED_MAX) {
-        const oldest = toolCallStartedAt.keys().next().value;
-        if (typeof oldest === 'string') {
-            toolCallStartedAt.delete(oldest);
-        }
-    }
-    toolCallStartedAt.set(callId, now);
-}
-
-function takeToolCallElapsedMs(callId: string, now: number = Date.now()): number | null {
-    const started = toolCallStartedAt.get(callId);
-    if (started === undefined) return null;
-    toolCallStartedAt.delete(callId);
-    return now - started;
-}
-
-/**
- * Recursively checks every string-typed value reachable from `value` for the
- * synthetic-skip marker. Used instead of `JSON.stringify(...).includes(...)` so
- * the intercept does not false-positive on legitimate tool results that happen
- * to quote the marker text (notably a `read_file` of `docs/guide/cursor.md`,
- * which documents this exact intercept).
- *
- * Guards against cycles via a visited-set; the cycle case in practice is
- * vanishingly rare on stream-json payloads (parsed from JSON.parse) but the
- * guard is cheap and removes any tail risk if a future caller hands us a
- * non-tree object graph.
+ * Recursively checks every string reachable from `value` for the
+ * synthetic-skip marker. Guards against cycles via a visited-set.
  */
 function containsSyntheticSkipMarker(value: unknown, seen: WeakSet<object> = new WeakSet()): boolean {
     if (typeof value === 'string') {
@@ -197,53 +183,41 @@ function containsSyntheticSkipMarker(value: unknown, seen: WeakSet<object> = new
     return false;
 }
 
-function isTrivialResult(result: unknown): boolean {
-    if (result === null || result === undefined) return true;
-    if (typeof result === 'string') return result.trim().length === 0;
-    if (typeof result === 'object') {
-        return Object.keys(result as Record<string, unknown>).length === 0;
-    }
-    return false;
-}
-
-function shouldRewriteAsNoInputSurface(opts: {
-    name: string;
-    result: unknown;
-    elapsedMs: number | null;
-}): boolean {
-    // Gate on the tool name resolving to an AskQuestion-shaped call (or the
-    // converter's `unknown` fallback for function-shaped tools without a
-    // name). Prevents legitimate `read_file` / `write_file` results that
-    // contain the literal marker string (e.g. reading this repo's
-    // `docs/guide/cursor.md`, which documents the intercept) from being
-    // rewritten as `no_input_surface` failures.
-    if (!ASK_QUESTION_TOOL_NAMES.has(opts.name)) {
+/**
+ * Scans the raw `tool_call` payload for the synthetic-skip marker in
+ * the response portion only. Function-shaped tools have an agent-
+ * controlled `arguments` field that must be excluded (the agent's own
+ * prompt text can legitimately quote the marker). Other shapes have
+ * no agent-input field at the top level, so the entire payload is
+ * scanned.
+ *
+ * Operates on the raw `tool_call` rather than `extractToolResult`'s
+ * output because the latter returns `{}` for tool shapes the converter
+ * does not recognize (notably the `toolu_vrtx_*` Anthropic Vertex tool
+ * calls cursor-agent surfaces in legacy stream-json mode), discarding
+ * the marker before it can be checked.
+ */
+function findMarkerInToolCallResponse(toolCall: Record<string, unknown>): boolean {
+    if (toolCall.function && typeof toolCall.function === 'object') {
+        const fn = toolCall.function as Record<string, unknown>;
+        for (const [k, v] of Object.entries(fn)) {
+            if (k === 'arguments') continue;
+            if (containsSyntheticSkipMarker(v)) return true;
+        }
+        for (const [k, v] of Object.entries(toolCall)) {
+            if (k === 'function') continue;
+            if (containsSyntheticSkipMarker(v)) return true;
+        }
         return false;
     }
-    // Search only the extracted result, not the whole tool_call payload. The
-    // `arguments` field carries the agent's own prompt text, which can quote
-    // the marker without that being a fabricated skip; matching there would
-    // false-positive on legitimate AskQuestion calls that ask about this
-    // exact bug or paste the marker verbatim into their prompt.
-    if (containsSyntheticSkipMarker(opts.result)) {
-        return true;
-    }
-    if (
-        opts.elapsedMs !== null &&
-        opts.elapsedMs < SYNTHETIC_LATENCY_THRESHOLD_MS &&
-        isTrivialResult(opts.result)
-    ) {
-        return true;
-    }
-    return false;
+    return containsSyntheticSkipMarker(toolCall);
 }
 
-/**
- * Test-only hook to reset the timing tracker between test cases. Not exported
- * from the package surface; consumed by the colocated test file.
- */
-export function __resetCursorEventConverterStateForTests(): void {
-    toolCallStartedAt.clear();
+function shouldRewriteAsNoInputSurface(name: string, toolCall: Record<string, unknown>): boolean {
+    if (!ASK_QUESTION_TOOL_NAMES.has(name)) {
+        return false;
+    }
+    return findMarkerInToolCallResponse(toolCall);
 }
 
 export function convertCursorEventToAgentMessage(event: CursorStreamEvent): AgentMessage | null {
@@ -261,7 +235,6 @@ export function convertCursorEventToAgentMessage(event: CursorStreamEvent): Agen
             const name = extractToolName(toolCall);
             const input = extractToolInput(toolCall);
             if (event.subtype === 'started') {
-                rememberToolCallStart(event.call_id);
                 return {
                     type: 'tool_call',
                     id: event.call_id,
@@ -270,9 +243,7 @@ export function convertCursorEventToAgentMessage(event: CursorStreamEvent): Agen
                     status: 'in_progress'
                 };
             }
-            const result = extractToolResult(toolCall);
-            const elapsedMs = takeToolCallElapsedMs(event.call_id);
-            if (shouldRewriteAsNoInputSurface({ name, result, elapsedMs })) {
+            if (shouldRewriteAsNoInputSurface(name, toolCall)) {
                 return {
                     type: 'tool_result',
                     id: event.call_id,
@@ -280,6 +251,7 @@ export function convertCursorEventToAgentMessage(event: CursorStreamEvent): Agen
                     status: 'failed'
                 };
             }
+            const result = extractToolResult(toolCall);
             return {
                 type: 'tool_result',
                 id: event.call_id,
