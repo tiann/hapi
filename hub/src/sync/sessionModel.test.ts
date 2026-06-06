@@ -2062,7 +2062,11 @@ describe('session model', () => {
             expect(restored?.lifecycleStateSince).toBe(1234567890)
         })
 
-        it('skips undefined snapshot fields without touching them', async () => {
+        it('deletes archive fields that were absent in the snapshot for an exact restore', async () => {
+            // Covers the legacy case: an archived session that predates `lifecycleStateSince`.
+            // `clearSessionArchiveMetadata` stamps a fresh `lifecycleStateSince`; if reopen
+            // then fails, the restore must drop that stamp so the row's lifecycle age does
+            // not appear to be "just now" to UI / import code.
             const store = new Store(':memory:')
             const events: SyncEvent[] = []
             const cache = new SessionCache(store, createPublisher(events))
@@ -2076,21 +2080,29 @@ describe('session model', () => {
                     codexSessionId: 'thread-Z',
                     lifecycleState: 'archived',
                     archiveReason: 'Session crashed'
+                    // no archivedBy, no lifecycleStateSince
                 },
                 null,
                 'default'
             )
 
             await cache.clearSessionArchiveMetadata(session.id)
+            // lifecycleStateSince was just stamped fresh by the clear; verify it's set so
+            // the next assertion proves the restore actively deleted it.
+            const cleared = cache.getSession(session.id)?.metadata as Record<string, unknown> | null | undefined
+            expect(typeof cleared?.lifecycleStateSince).toBe('number')
+
             await cache.restoreSessionArchiveMetadata(session.id, {
                 lifecycleState: 'archived',
                 archiveReason: 'Session crashed'
+                // archivedBy + lifecycleStateSince intentionally absent from snapshot
             })
 
             const meta = cache.getSession(session.id)?.metadata as Record<string, unknown> | null | undefined
             expect(meta?.lifecycleState).toBe('archived')
             expect(meta?.archiveReason).toBe('Session crashed')
             expect(meta?.archivedBy).toBeUndefined()
+            expect(meta?.lifecycleStateSince).toBeUndefined()
         })
 
         it('is a no-op when the session is gone', async () => {

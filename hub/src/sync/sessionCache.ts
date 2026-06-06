@@ -578,10 +578,12 @@ export class SessionCache {
      * Used when `resumeSession` fails after `clearSessionArchiveMetadata` already ran so the
      * session does not drift into a "not archived, not active" zombie state.
      *
-     * Only the four archive fields are restored - any concurrent edits to unrelated fields
-     * (e.g. a rename that happened while resume was in flight) are preserved. Returns
-     * silently if the session is gone or its metadata is unset; throws on version mismatch
-     * so the caller can decide whether to retry.
+     * Restores the four archive fields **exactly**: if a field was present in the snapshot
+     * it is written, if it was absent it is deleted (covering the case where
+     * `clearSessionArchiveMetadata` stamped a fresh `lifecycleStateSince` on a row that did
+     * not have one originally). Other concurrent edits (e.g. a rename in flight) are
+     * preserved. Returns silently if the session is gone or its metadata is unset; throws
+     * on version mismatch so the caller can decide whether to retry.
      */
     async restoreSessionArchiveMetadata(
         sessionId: string,
@@ -600,15 +602,23 @@ export class SessionCache {
         const next: Record<string, unknown> = { ...current }
         if (snapshot.lifecycleState !== undefined) {
             next.lifecycleState = snapshot.lifecycleState
+        } else {
+            delete next.lifecycleState
         }
         if (snapshot.archivedBy !== undefined) {
             next.archivedBy = snapshot.archivedBy
+        } else {
+            delete next.archivedBy
         }
         if (snapshot.archiveReason !== undefined) {
             next.archiveReason = snapshot.archiveReason
+        } else {
+            delete next.archiveReason
         }
         if (snapshot.lifecycleStateSince !== undefined) {
             next.lifecycleStateSince = snapshot.lifecycleStateSince
+        } else {
+            delete next.lifecycleStateSince
         }
 
         const result = this.store.sessions.updateSessionMetadata(
