@@ -260,7 +260,7 @@ True parity would require running `openai/codex-action@v1` on `heavygee/hapi` to
 3. `OPENAI_MODEL = gpt-5.5` repo variable
 4. Disabling the chatgpt-codex-connector for the fork (or running both)
 
-Operator declined the OpenAI API spend (ChatGPT Plus subscription only). So **we accept "best effort with the SaaS connector locally"** as the fork-stage gate. The `Codex PR Review` and `Codex Mention Response` workflows are **disabled** on heavygee/hapi (via `gh workflow disable`) so they stop marking every fork PR as `UNSTABLE` with `ENOENT /home/runner/.codex/<id>.json` infra errors.
+Operator declined the OpenAI API spend (ChatGPT Plus subscription only). So **we accept "best effort with the SaaS connector locally"** as the fork-stage gate. The `Codex PR Review` and `Codex Mention Response` GitHub Actions workflows remain **enabled** on heavygee/hapi per operator preference, even though they will fail on every fork PR with `ENOENT /home/runner/.codex/<id>.json` due to the missing `OPENAI_API_KEY` secret. Side effect: fork PRs show `mergeStateStatus=UNSTABLE` even when the SaaS bot review is clean. Treat the `pr-review` check FAILURE as expected infra noise; the actual review signal is `chatgpt-codex-connector[bot]`'s review comments.
 
 ### What `cold-review-clean` actually means now
 
