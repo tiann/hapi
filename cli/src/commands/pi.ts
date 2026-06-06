@@ -8,7 +8,7 @@ import { parseRemoteAgentCommandOptions } from './agentCommandOptions'
 
 export const piCommand: CommandDefinition = {
     name: 'pi',
-    requiresRuntimeAssets: true,
+    requiresRuntimeAssets: false,
     run: async ({ commandArgs }) => {
         try {
             const options = parseRemoteAgentCommandOptions(commandArgs, PI_PERMISSION_MODES)

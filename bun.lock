@@ -14,7 +14,7 @@
     },
     "cli": {
       "name": "@twsxtd/hapi",
-      "version": "0.0.0-integration-test-should-be-auto-cleaned-up-05587",
+      "version": "0.0.0-integration-test-should-be-auto-cleaned-up-51369",
       "bin": {
         "hapi": "bin/hapi.cjs",
       },
