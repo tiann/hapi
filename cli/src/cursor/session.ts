@@ -3,11 +3,14 @@ import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { AgentSessionBase } from '@/agent/sessionBase';
 import type { EnhancedMode, PermissionMode } from './loop';
 import type { LocalLaunchExitReason } from '@/agent/localLaunchPolicy';
+import type { CursorSessionProtocol } from './utils/cursorProtocol';
 
 type LocalLaunchFailure = {
     message: string;
     exitReason: LocalLaunchExitReason;
 };
+
+type CursorModelApplyHandler = (model: string | null | undefined) => Promise<string | null>;
 
 export class CursorSession extends AgentSessionBase<EnhancedMode> {
     readonly cursorArgs?: string[];
@@ -15,6 +18,7 @@ export class CursorSession extends AgentSessionBase<EnhancedMode> {
     readonly startedBy: 'runner' | 'terminal';
     readonly startingMode: 'local' | 'remote';
     localLaunchFailure: LocalLaunchFailure | null = null;
+    private modelApplyHandler: CursorModelApplyHandler | null = null;
 
     constructor(opts: {
         api: ApiClient;
@@ -42,9 +46,10 @@ export class CursorSession extends AgentSessionBase<EnhancedMode> {
             mode: opts.mode,
             sessionLabel: 'CursorSession',
             sessionIdLabel: 'Cursor',
-            applySessionIdToMetadata: (metadata, sessionId) => ({
+            applySessionIdToMetadata: (metadata, sessionId, extras) => ({
                 ...metadata,
-                cursorSessionId: sessionId
+                cursorSessionId: sessionId,
+                ...extras
             }),
             permissionMode: opts.permissionMode
         });
@@ -64,6 +69,24 @@ export class CursorSession extends AgentSessionBase<EnhancedMode> {
         this.model = model ?? undefined;
     };
 
+    registerModelApplyHandler = (handler: CursorModelApplyHandler): (() => void) => {
+        this.modelApplyHandler = handler;
+        return () => {
+            if (this.modelApplyHandler === handler) {
+                this.modelApplyHandler = null;
+            }
+        };
+    };
+
+    canApplyModelConfig = (): boolean => this.modelApplyHandler !== null;
+
+    applyModelConfig = async (model: string | null | undefined): Promise<string | null> => {
+        if (!this.modelApplyHandler) {
+            throw new Error('Cursor ACP session is not ready to apply model changes');
+        }
+        return await this.modelApplyHandler(model);
+    };
+
     recordLocalLaunchFailure = (message: string, exitReason: LocalLaunchExitReason): void => {
         this.localLaunchFailure = { message, exitReason };
     };
@@ -78,5 +101,9 @@ export class CursorSession extends AgentSessionBase<EnhancedMode> {
 
     sendSessionEvent = (event: Parameters<ApiSessionClient['sendSessionEvent']>[0]): void => {
         this.client.sendSessionEvent(event);
+    };
+
+    onSessionFoundWithProtocol = (sessionId: string, protocol: CursorSessionProtocol): void => {
+        this.onSessionFound(sessionId, { cursorSessionProtocol: protocol });
     };
 }

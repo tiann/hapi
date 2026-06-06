@@ -3,12 +3,15 @@ import { cursorLocal } from './cursorLocal';
 import { CursorSession } from './session';
 import { BaseLocalLauncher } from '@/modules/common/launcher/BaseLocalLauncher';
 
-function permissionModeToCursorArgs(mode?: string): { mode?: 'plan' | 'ask'; yolo?: boolean } {
+function permissionModeToCursorArgs(mode?: string): { mode?: 'plan' | 'ask' | 'debug'; yolo?: boolean } {
     if (mode === 'plan') {
         return { mode: 'plan' };
     }
     if (mode === 'ask') {
         return { mode: 'ask' };
+    }
+    if (mode === 'debug') {
+        return { mode: 'debug' };
     }
     if (mode === 'yolo') {
         return { yolo: true };

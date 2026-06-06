@@ -4,9 +4,9 @@ import {
     convertCursorEventToAgentMessage,
     __resetCursorEventConverterStateForTests,
     type CursorStreamEvent
-} from './cursorEventConverter';
+} from './cursorLegacyEventConverter';
 
-describe('cursorEventConverter', () => {
+describe('cursorLegacyEventConverter', () => {
     beforeEach(() => {
         __resetCursorEventConverterStateForTests();
     });

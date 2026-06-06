@@ -722,6 +722,45 @@ export function normalizeAgentRecord(
             }
         }
 
+        if (data.type === 'plan') {
+            const plan = normalizePlanEntries(data.entries ?? data.items ?? data)
+            if (plan.length === 0) return null
+            const uuid = asString(data.id) ?? messageId
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'agent',
+                isSidechain: false,
+                content: [
+                    {
+                        type: 'tool-call',
+                        id: 'cursor-plan-state',
+                        name: 'update_plan',
+                        input: {
+                            plan,
+                            source: 'cursor'
+                        },
+                        description: null,
+                        uuid,
+                        parentUUID: null
+                    },
+                    {
+                        type: 'tool-result',
+                        tool_use_id: 'cursor-plan-state',
+                        content: {
+                            plan,
+                            source: 'cursor'
+                        },
+                        is_error: false,
+                        uuid,
+                        parentUUID: null
+                    }
+                ],
+                meta
+            }
+        }
+
         if (data.type === 'plan_update') {
             const plan = normalizePlanEntries(data.plan ?? data.update ?? data.items ?? data.steps ?? data)
             if (plan.length === 0) return null

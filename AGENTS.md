@@ -109,6 +109,14 @@ bun run build:single-exe # All-in-one binary
 - `messages.ts` - Message parsing utilities
 - `modes.ts` - Permission/model mode definitions
 
+## Pre-push self-review (agents)
+
+Before commit/push/PR: use the **`pre-push-review`** skill (`~/.cursor/skills/pre-push-review/`).
+
+1. **Mechanical:** `bun typecheck && bun run test` (matches `.github/workflows/test.yml`)
+2. **Logic:** skim `git diff origin/main...HEAD`; apply `.github/prompts/codex-pr-review.md` as a local Major checklist (no Codex required)
+3. **Style:** optional
+
 ## Testing
 
 - Test framework: Vitest (via `bun run test`)

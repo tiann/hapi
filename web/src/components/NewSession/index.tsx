@@ -12,6 +12,23 @@ import { useActiveSuggestions, type Suggestion } from '@/hooks/useActiveSuggesti
 import { useDirectorySuggestions } from '@/hooks/useDirectorySuggestions'
 import { useRecentPaths } from '@/hooks/useRecentPaths'
 import { useTranslation } from '@/lib/use-translation'
+import {
+    buildNewSessionCursorPickerState,
+    isCursorEffortWireAllowed,
+    resolveCursorBaseFromWire,
+    resolveNewSessionCursorBaseSelectValue,
+    resolveNewSessionCursorEffortSelectValue,
+    resolveWireIdForBaseChange,
+    shouldShowCursorModelsUnavailable
+} from './newSessionCursorModels'
+import { buildCursorEffortPickerOptions, resolveCursorVariantOptions } from '@/lib/cursorModelOptions'
+import {
+    clearNewSessionFormDraft,
+    loadNewSessionFormDraft,
+    newSessionDraftMatchesMachine,
+    saveNewSessionFormDraft,
+    shouldRestoreNewSessionFormDraft
+} from './newSessionFormDraft'
 import type { AgentType, ClaudeEffort, CodexReasoningEffort, SessionType } from './types'
 import { ActionButtons } from './ActionButtons'
 import { AgentSelector } from './AgentSelector'
@@ -55,6 +72,8 @@ export function NewSession(props: {
     const [isDirectoryFocused, setIsDirectoryFocused] = useState(false)
     const [agent, setAgent] = useState<AgentType>(loadPreferredAgent)
     const [model, setModel] = useState('auto')
+    const [cursorSelectedBase, setCursorSelectedBase] = useState('auto')
+    const pendingCursorBaseRef = useRef<string | null>(null)
     const [effort, setEffort] = useState<ClaudeEffort>('auto')
     const [modelReasoningEffort, setModelReasoningEffort] = useState<CodexReasoningEffort>('default')
     const [yoloMode, setYoloMode] = useState(loadPreferredYoloMode)
@@ -71,9 +90,12 @@ export function NewSession(props: {
     }, [sessionType])
 
     useEffect(() => {
-        setModel('auto')
         setEffort('auto')
         setModelReasoningEffort('default')
+        if (agent !== 'cursor') {
+            setModel('auto')
+            setCursorSelectedBase('auto')
+        }
     }, [agent])
 
     useEffect(() => {
@@ -83,6 +105,54 @@ export function NewSession(props: {
     useEffect(() => {
         savePreferredYoloMode(yoloMode)
     }, [yoloMode])
+
+    useEffect(() => {
+        if (props.initialDirectory !== undefined) {
+            setDirectory(props.initialDirectory)
+        }
+    }, [props.initialDirectory])
+
+    useEffect(() => {
+        if (props.initialMachineId !== undefined) {
+            setMachineId(props.initialMachineId)
+        }
+    }, [props.initialMachineId])
+
+    const restoredFromBrowseRef = useRef(false)
+    useEffect(() => {
+        if (restoredFromBrowseRef.current) {
+            return
+        }
+        if (!shouldRestoreNewSessionFormDraft({
+            initialDirectory: props.initialDirectory,
+            initialMachineId: props.initialMachineId
+        })) {
+            return
+        }
+        const draft = loadNewSessionFormDraft()
+        if (!draft) {
+            return
+        }
+        const targetMachineId = props.initialMachineId ?? machineId
+        if (!newSessionDraftMatchesMachine(draft, targetMachineId)) {
+            clearNewSessionFormDraft()
+            return
+        }
+        restoredFromBrowseRef.current = true
+        setAgent(draft.agent)
+        setModel(draft.model)
+        setCursorSelectedBase(draft.cursorSelectedBase)
+        setEffort(draft.effort)
+        setModelReasoningEffort(draft.modelReasoningEffort)
+        setYoloMode(draft.yoloMode)
+        setSessionType(draft.sessionType)
+        setWorktreeName(draft.worktreeName)
+        clearNewSessionFormDraft()
+    }, [
+        props.initialDirectory,
+        props.initialMachineId,
+        machineId
+    ])
 
     useEffect(() => {
         if (props.machines.length === 0) return
@@ -134,22 +204,103 @@ export function NewSession(props: {
         machineId,
         enabled: agent === 'cursor' && Boolean(machineId)
     })
-    const cursorModelOptions = useMemo(() => {
-        const options = [{ value: 'auto', label: 'Default' }]
-        for (const cursorModel of cursorModelsState.availableModels) {
-            if (cursorModel.modelId === 'auto') {
-                continue
-            }
-            options.push({
-                value: cursorModel.modelId,
-                label: cursorModel.name ?? cursorModel.modelId
-            })
+    const cursorPicker = useMemo(
+        () => buildNewSessionCursorPickerState(
+            cursorModelsState.availableModels,
+            model,
+            cursorModelsState.cliModelSkus
+        ),
+        [cursorModelsState.availableModels, cursorModelsState.cliModelSkus, model]
+    )
+
+    const cursorBaseSelectValue = useMemo(
+        () => resolveNewSessionCursorBaseSelectValue(cursorPicker, cursorSelectedBase),
+        [cursorPicker, cursorSelectedBase]
+    )
+
+    const cursorVariantOptions = useMemo(() => {
+        if (cursorPicker.mode !== 'dual') {
+            return cursorPicker.effortOptions
         }
-        if (model !== 'auto' && !options.some((option) => option.value === model)) {
-            options.splice(1, 0, { value: model, label: model })
+        const baseKey = cursorBaseSelectValue !== 'auto'
+            ? cursorBaseSelectValue
+            : cursorPicker.baseKey
+        return buildCursorEffortPickerOptions(resolveCursorVariantOptions(baseKey ?? null, cursorPicker.catalog))
+    }, [cursorPicker, cursorBaseSelectValue])
+
+    const cursorVariantSelectOptions = useMemo(() => {
+        if (cursorVariantOptions.length === 0) {
+            return []
         }
-        return options
-    }, [cursorModelsState.availableModels, model])
+        return [
+            { value: 'auto', label: t('newSession.model.selectVariant') },
+            ...cursorVariantOptions
+        ]
+    }, [cursorVariantOptions, t])
+
+    const cursorEffortSelectValue = useMemo(
+        () => resolveNewSessionCursorEffortSelectValue(model, cursorVariantOptions),
+        [model, cursorVariantOptions]
+    )
+
+    useEffect(() => {
+        if (agent !== 'cursor' || cursorModelsState.isLoading) {
+            return
+        }
+        if (model === 'auto' && cursorSelectedBase !== 'auto') {
+            return
+        }
+        if (model === 'auto') {
+            return
+        }
+        const base = resolveCursorBaseFromWire(model, cursorPicker.catalog)
+        if (cursorSelectedBase === base) {
+            return
+        }
+        setCursorSelectedBase(base)
+    }, [
+        agent,
+        model,
+        cursorModelsState.isLoading,
+        cursorPicker.catalog,
+        cursorSelectedBase
+    ])
+
+    const showCursorVariantPicker = cursorPicker.mode === 'dual' && cursorVariantOptions.length > 1
+
+    useEffect(() => {
+        if (agent !== 'cursor' || cursorModelsState.isLoading) {
+            return
+        }
+        const pendingBase = pendingCursorBaseRef.current
+        if (!pendingBase) {
+            return
+        }
+        if (cursorPicker.catalog.variantsByBase.size === 0) {
+            return
+        }
+        pendingCursorBaseRef.current = null
+        if (pendingBase === 'auto') {
+            setModel('auto')
+            return
+        }
+        setModel(resolveWireIdForBaseChange(pendingBase, cursorPicker.catalog, model) ?? 'auto')
+    }, [
+        agent,
+        cursorModelsState.isLoading,
+        cursorPicker.catalog,
+        model
+    ])
+    const cursorModelPickersDisabled = isFormDisabled
+        || Boolean(cursorModelsState.error)
+        || cursorModelsState.isLoading
+        || !machineId
+    const cursorModelsUnavailable = shouldShowCursorModelsUnavailable({
+        agent,
+        isLoading: cursorModelsState.isLoading,
+        error: cursorModelsState.error,
+        availableModels: cursorModelsState.availableModels
+    })
 
     const recentPaths = useMemo(
         () => getRecentPaths(machineId),
@@ -252,6 +403,8 @@ export function NewSession(props: {
 
     const handleMachineChange = useCallback((newMachineId: string) => {
         setMachineId(newMachineId)
+        setModel('auto')
+        setCursorSelectedBase('auto')
         const paths = getRecentPaths(newMachineId)
         if (paths[0]) {
             setDirectory(paths[0])
@@ -259,6 +412,66 @@ export function NewSession(props: {
             setDirectory('')
         }
     }, [getRecentPaths])
+
+    const handleCursorBaseChange = useCallback((baseKey: string) => {
+        if (baseKey === 'auto') {
+            pendingCursorBaseRef.current = null
+            setCursorSelectedBase('auto')
+            setModel('auto')
+            return
+        }
+        setCursorSelectedBase(baseKey)
+        if (cursorModelsState.isLoading || cursorPicker.catalog.variantsByBase.size === 0) {
+            pendingCursorBaseRef.current = baseKey
+            return
+        }
+        pendingCursorBaseRef.current = null
+        setModel(resolveWireIdForBaseChange(baseKey, cursorPicker.catalog, model) ?? 'auto')
+    }, [cursorModelsState.isLoading, cursorPicker.catalog, model])
+
+    const handleCursorEffortChange = useCallback((wireId: string) => {
+        if (wireId === 'auto') {
+            setModel('auto')
+            return
+        }
+        const baseKey = cursorSelectedBase !== 'auto'
+            ? cursorSelectedBase
+            : cursorPicker.baseKey
+        if (baseKey && !isCursorEffortWireAllowed(wireId, cursorPicker.catalog, baseKey)) {
+            return
+        }
+        setModel(wireId)
+    }, [cursorPicker.catalog, cursorPicker.baseKey, cursorSelectedBase])
+
+    const handleChooseFolderClick = useCallback(() => {
+        if (!props.onChooseFolder) {
+            return
+        }
+        saveNewSessionFormDraft({
+            agent,
+            model,
+            cursorSelectedBase,
+            machineId,
+            effort,
+            modelReasoningEffort,
+            yoloMode,
+            sessionType,
+            worktreeName
+        })
+        props.onChooseFolder({ machineId, directory: trimmedDirectory })
+    }, [
+        props.onChooseFolder,
+        agent,
+        model,
+        cursorSelectedBase,
+        machineId,
+        effort,
+        modelReasoningEffort,
+        yoloMode,
+        sessionType,
+        worktreeName,
+        trimmedDirectory
+    ])
 
     const handlePathClick = useCallback((path: string) => {
         setDirectory(path)
@@ -312,13 +525,6 @@ export function NewSession(props: {
         }
     }, [suggestions, selectedIndex, moveUp, moveDown, clearSuggestions, handleSuggestionSelect])
 
-    const chooseFolderCallback = props.onChooseFolder
-    const workspaceRootsAvailable = Boolean(selectedMachine?.metadata?.workspaceRoots?.length)
-    const handleChooseFolder = useMemo(() => {
-        if (!chooseFolderCallback || !workspaceRootsAvailable) return undefined
-        return () => chooseFolderCallback({ machineId, directory: trimmedDirectory })
-    }, [chooseFolderCallback, workspaceRootsAvailable, machineId, trimmedDirectory])
-
     async function handleCreate() {
         if (!machineId || !trimmedDirectory) return
 
@@ -335,6 +541,18 @@ export function NewSession(props: {
 
             if (sessionType === 'simple' && directoryExists === false && !directoryCreationConfirmed) {
                 setDirectoryCreationConfirmed(true)
+                return
+            }
+
+            if (
+                agent === 'cursor'
+                && cursorPicker.mode === 'dual'
+                && cursorBaseSelectValue !== 'auto'
+                && cursorVariantOptions.length > 1
+                && !cursorVariantOptions.some((option) => option.value === model)
+            ) {
+                haptic.notification('error')
+                setError(t('newSession.model.selectVariant'))
                 return
             }
 
@@ -359,6 +577,7 @@ export function NewSession(props: {
 
             if (result.type === 'success') {
                 haptic.notification('success')
+                clearNewSessionFormDraft()
                 setLastUsedMachineId(machineId)
                 addRecentPath(machineId, trimmedDirectory)
                 props.onSuccess(result.sessionId)
@@ -403,7 +622,7 @@ export function NewSession(props: {
                 onDirectoryKeyDown={handleDirectoryKeyDown}
                 onSuggestionSelect={handleSuggestionSelect}
                 onPathClick={handlePathClick}
-                onChooseFolder={handleChooseFolder}
+                onChooseFolder={props.onChooseFolder ? handleChooseFolderClick : undefined}
             />
             <SessionTypeSelector
                 sessionType={sessionType}
@@ -431,32 +650,65 @@ export function NewSession(props: {
                     onRetry={opencodeModelsState.refetch}
                 />
             ) : (
-                <ModelSelector
-                    agent={agent}
-                    model={model}
-                    options={
-                        agent === 'codex'
-                            ? codexModelOptions
-                            : agent === 'cursor'
-                                ? cursorModelOptions
+                agent === 'cursor' ? (
+                    <>
+                        <ModelSelector
+                            agent={agent}
+                            model={cursorPicker.mode === 'dual' ? cursorBaseSelectValue : model}
+                            options={cursorPicker.modelOptions}
+                            isDisabled={cursorModelPickersDisabled}
+                            isLoading={cursorModelsState.isLoading}
+                            error={cursorModelsState.error
+                                ? `${t('newSession.model.loadFailed')}: ${cursorModelsState.error}`
+                                : null}
+                            onModelChange={(value) => {
+                                if (cursorPicker.mode === 'dual') {
+                                    handleCursorBaseChange(value)
+                                    return
+                                }
+                                setModel(value)
+                                setCursorSelectedBase(
+                                    value === 'auto' ? 'auto' : resolveCursorBaseFromWire(value, cursorPicker.catalog)
+                                )
+                            }}
+                        />
+                        {showCursorVariantPicker ? (
+                            <ModelSelector
+                                agent={agent}
+                                model={cursorEffortSelectValue}
+                                label={t('misc.variant')}
+                                options={cursorVariantSelectOptions}
+                                isDisabled={cursorModelPickersDisabled}
+                                isLoading={cursorModelsState.isLoading}
+                                onModelChange={handleCursorEffortChange}
+                            />
+                        ) : null}
+                        {cursorModelsUnavailable ? (
+                            <div className="px-3 pb-3 text-xs text-[var(--app-hint)]">
+                                {t('newSession.model.cursorUnavailable')}
+                            </div>
+                        ) : null}
+                    </>
+                ) : (
+                    <ModelSelector
+                        agent={agent}
+                        model={model}
+                        options={
+                            agent === 'codex'
+                                ? codexModelOptions
                                 : undefined
-                    }
-                    isDisabled={
-                        isFormDisabled
-                        || (agent === 'codex' && Boolean(codexModelsState.error))
-                        || (agent === 'cursor' && Boolean(cursorModelsState.error))
-                    }
-                    isLoading={
-                        (agent === 'codex' && codexModelsState.isLoading)
-                        || (agent === 'cursor' && cursorModelsState.isLoading)
-                    }
-                    error={agent === 'codex' && codexModelsState.error
-                        ? `${t('newSession.model.loadFailed')}: ${codexModelsState.error}`
-                        : agent === 'cursor' && cursorModelsState.error
-                            ? `${t('newSession.model.loadFailed')}: ${cursorModelsState.error}`
-                        : null}
-                    onModelChange={setModel}
-                />
+                        }
+                        isDisabled={
+                            isFormDisabled
+                            || (agent === 'codex' && Boolean(codexModelsState.error))
+                        }
+                        isLoading={agent === 'codex' && codexModelsState.isLoading}
+                        error={agent === 'codex' && codexModelsState.error
+                            ? `${t('newSession.model.loadFailed')}: ${codexModelsState.error}`
+                            : null}
+                        onModelChange={setModel}
+                    />
+                )
             )}
             <ClaudeEffortSelector
                 agent={agent}

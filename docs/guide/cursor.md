@@ -41,12 +41,12 @@ Set mode via `--mode` flag or change from the web UI during a session.
 ## Modes
 
 - **Local mode** - Run `hapi cursor` from terminal. Full interactive experience.
-- **Remote mode** - Spawn from web/phone when no terminal. Uses `agent -p` with `--output-format stream-json` and `--trust`. Each user message spawns one agent process; session continues via `--resume`.
+- **Remote mode** - Spawn from web/phone when no terminal. New Cursor sessions use `agent acp` with HAPI permission approval, plan/question UI, and richer tool updates. Legacy sessions created before the ACP migration may still resume via the old `agent -p` stream-json path temporarily.
 
 ## Limitations
 
-- **Tool approval** - In remote mode, `--trust` is used; tools run without per-request approval. Use `--yolo` for full bypass.
-- **Session resume** - Pass `--resume <chatId>` or `--continue` to resume. Use `agent ls` to list previous chats and get chat IDs.
+- **Legacy sessions** - Cursor sessions created before the ACP migration can still resume temporarily via stream-json. Start a new Cursor session to get ACP permissions, plans, todos, and question support.
+- **Session resume** - ACP sessions resume through `session/load`. Old stream-json `session_id` values are not loadable via ACP; those sessions keep using the legacy path until you start fresh.
 
 ### Headless safety: AskQuestion behavior
 

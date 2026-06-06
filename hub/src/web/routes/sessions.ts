@@ -378,8 +378,13 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (!supportsModelChange(flavor)) {
             return c.json({ error: 'Model selection is not supported for this session' }, 400)
         }
-        if (flavor === 'codex' && sessionResult.session.agentState?.controlledByUser === true) {
-            return c.json({ error: 'Model selection can only be changed for remote Codex sessions' }, 409)
+        if (sessionResult.session.agentState?.controlledByUser === true) {
+            if (flavor === 'codex') {
+                return c.json({ error: 'Model selection can only be changed for remote Codex sessions' }, 409)
+            }
+            if (flavor === 'cursor') {
+                return c.json({ error: 'Model selection can only be changed for remote Cursor sessions' }, 409)
+            }
         }
 
         try {

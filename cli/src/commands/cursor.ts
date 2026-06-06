@@ -50,7 +50,7 @@ export const cursorCommand: CommandDefinition = {
                     if (!mode) {
                         throw new Error('Missing --mode value')
                     }
-                    if (mode === 'plan' || mode === 'ask') {
+                    if (mode === 'plan' || mode === 'ask' || mode === 'debug') {
                         options.permissionMode = mode
                     }
                 } else if (arg === '--plan') {
