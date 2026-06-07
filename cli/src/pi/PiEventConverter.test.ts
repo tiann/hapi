@@ -3,20 +3,37 @@ import { convertPiEvent } from './PiEventConverter';
 import type { PiAgentEvent } from './types';
 
 describe('convertPiEvent', () => {
-    it('should convert message_update with text_delta to text AgentMessage', () => {
+    it('should return empty for message_update with text_delta (accumulated in runPi)', () => {
+        // The converter intentionally emits nothing for message_update
+        // — runPi accumulates text/thinking deltas and flushes a single
+        // snapshot on `message_end`. This avoids the web UI rendering
+        // every delta as a separate block (character-by-character column)
+        // and the reducer's per-content streamId dedup showing only the
+        // last delta as the whole reasoning.
         const result = convertPiEvent({
             type: 'message_update',
             assistantMessageEvent: { type: 'text_delta', delta: 'hello world' }
         });
-        expect(result).toEqual([{ type: 'text', text: 'hello world' }]);
+        expect(result).toEqual([]);
     });
 
-    it('should convert message_update with thinking_delta to reasoning AgentMessage', () => {
+    it('should return empty for message_update with thinking_delta (accumulated in runPi)', () => {
         const result = convertPiEvent({
             type: 'message_update',
             assistantMessageEvent: { type: 'thinking_delta', delta: 'let me think...' }
         });
-        expect(result).toEqual([{ type: 'reasoning', text: 'let me think...', live: true }]);
+        expect(result).toEqual([]);
+    });
+
+    it('should return empty for message_update with start sub-type', () => {
+        // text_start/thinking_start carry the full partial state and
+        // would cause the web UI to render the same text multiple
+        // times. The accumulator only listens to deltas.
+        const result = convertPiEvent({
+            type: 'message_update',
+            assistantMessageEvent: { type: 'start' }
+        });
+        expect(result).toEqual([]);
     });
 
     it('should return empty array for message_update with start sub-type', () => {

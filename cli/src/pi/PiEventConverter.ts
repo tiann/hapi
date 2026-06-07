@@ -2,7 +2,6 @@ import { logger } from '@/ui/logger';
 import type { AgentMessage } from '@/agent/types';
 import type {
     PiAgentEvent,
-    PiMessageUpdateEvent,
     PiToolExecutionStartEvent,
     PiToolExecutionEndEvent,
     PiTurnEndEvent
@@ -19,24 +18,12 @@ export function convertPiEvent(event: PiAgentEvent): AgentMessage[] {
     try {
         switch (event.type) {
             case 'message_update': {
-                const e = event as PiMessageUpdateEvent;
-                const ame = e.assistantMessageEvent;
-                if (!ame) return [];
-                // Web expects { type: 'message', message: '...' } for text and { type: 'reasoning', message: '...' } for thinking.
-                // ID is required for streaming/dedup in the web UI.
-                const streamId = (ame as { contentIndex?: number }).contentIndex?.toString() ?? 'pi-stream';
-                // Only send deltas to avoid duplicate text. text_start/thinking_start/text_end/thinking_end
-                // carry the full partial state and would cause the web UI to render the same text multiple times.
-                if (ame.type === 'text_delta') {
-                    const delta = (ame as { delta?: string }).delta;
-                    if (!delta) return [];
-                    return [{ type: 'message', message: delta, id: streamId }];
-                }
-                if (ame.type === 'thinking_delta') {
-                    const delta = (ame as { delta?: string }).delta;
-                    if (!delta) return [];
-                    return [{ type: 'reasoning', message: delta, id: streamId }];
-                }
+                // Text and thinking deltas are accumulated in runPi and
+                // flushed as a single snapshot on `message_end` (matching
+                // codex's ReasoningProcessor pattern). The converter
+                // intentionally emits nothing here — other assistant
+                // message events (text_start/thinking_start/etc.) are
+                // also swallowed to avoid duplicate full-snapshot text.
                 return [];
             }
 

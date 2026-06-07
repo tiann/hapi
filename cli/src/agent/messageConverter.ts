@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { AgentMessage, PlanItem } from './types';
 
 export type CodexMessage =
-    | { type: 'message'; message: string }
+    | { type: 'message'; message: string; id?: string }
     | { type: 'reasoning'; message: string; id: string }
     | {
         type: 'token_count';
@@ -37,7 +37,10 @@ export type CodexMessage =
 export function convertAgentMessage(message: AgentMessage): CodexMessage | null {
     switch (message.type) {
         case 'text':
-            return { type: 'message', message: message.text };
+            // Preserve a caller-provided id when present (Pi uses it as a
+            // streamId for web-side dedup) so the wire format can dedup
+            // delta bursts.
+            return { type: 'message', message: message.text, ...(message.id !== undefined ? { id: message.id } : {}) };
         case 'reasoning':
             // AgentMessage uses `text` (consistent with the `text` variant);
             // the wire-level CodexMessage uses `message` to match the

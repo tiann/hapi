@@ -6,8 +6,10 @@ import { createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecy
 import { registerSessionConfigRpc } from '@/agent/sessionConfigRpc';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
+import { convertAgentMessage } from '@/agent/messageConverter';
 import { PiTransport } from './PiTransport';
 import { convertPiEvent } from './PiEventConverter';
+import { PiMessageAccumulator } from './PiMessageAccumulator';
 import type { PiResponseEvent } from './types';
 import type { PiPermissionMode } from '@hapi/protocol/modes';
 
@@ -68,6 +70,16 @@ export async function runPi(opts: {
         await lifecycle.cleanupAndExit();
     };
 
+    // Pending user-message localIds in FIFO order. Pi's RPC protocol does not
+    // echo the localId back on agent_start, so we rely on Pi processing
+    // prompts in submission order. Each agent_start pops the oldest entry
+    // and emits `messages-consumed` so the web UI transitions the user's
+    // bubble from "queued" to "sent" — see Pi's protocol reference in
+    // .xyz-harness/2026-06-05-hapi-pi-agent-backend/e2e-test-plan.md.
+    const pendingLocalIds: string[] = [];
+
+    const assistantMessageAccumulator = new PiMessageAccumulator();
+
 // --- Transport event handlers ---
 
     transport.onError((error) => {
@@ -100,14 +112,52 @@ export async function runPi(opts: {
             return;
         }
 
-        const messages = convertPiEvent(event);
-        for (const msg of messages) {
-            session.sendAgentMessage(msg);
+        // Accumulate Pi text/thinking deltas into a single snapshot per
+        // assistant message and flush on `message_end`. Without this,
+        // each delta becomes a separate hub message → the web's reducer
+        // (which dedupes reasoning by streamId but only WITHIN one
+        // message's content array) would render the last delta as
+        // the whole reasoning ("...") and stack every text delta as a
+        // new agent-text block, producing a character-by-character
+        // column. Matches codex's `ReasoningProcessor` pattern.
+        const accumulated = assistantMessageAccumulator.handleEvent(event);
+        if (accumulated.length > 0) {
+            for (const msg of accumulated) {
+                const converted = convertAgentMessage(msg);
+                if (converted) session.sendAgentMessage(converted);
+            }
+        }
+
+        // message_start/message_update/message_end are fully handled by
+        // the accumulator. Skip the converter for them to avoid
+        // duplicate emission.
+        if (event.type === 'message_start' || event.type === 'message_update' || event.type === 'message_end') {
+            // fall through to keep-alive handling below
+        } else {
+            const messages = convertPiEvent(event);
+            for (const msg of messages) {
+                // Route through the shared CLI → hub wire-format converter so
+                // the rest of the system (hub / web) sees a codex-shaped
+                // message rather than an internal `AgentMessage` shape.
+                const converted = convertAgentMessage(msg);
+                if (converted) {
+                    session.sendAgentMessage(converted);
+                }
+            }
         }
 
         // Update keep-alive with thinking state for agent_start/turn_start/turn_end
         if (event.type === 'agent_start' || event.type === 'turn_start') {
             session.keepAlive(true, startingMode);
+            // agent_start fires once per accepted prompt. Consume the
+            // oldest pending localId so the user's bubble transitions
+            // out of the floating queued bar. turn_start is intentionally
+            // skipped — it can fire multiple times per agent run (e.g.
+            // after tool calls) and does not correspond to a new prompt.
+            if (event.type === 'agent_start' && pendingLocalIds.length > 0) {
+                const oldestLocalId = pendingLocalIds.shift()!;
+                session.emitMessagesConsumed([oldestLocalId]);
+            }
         } else if (event.type === 'turn_end') {
             session.keepAlive(false, startingMode);
         }
@@ -124,6 +174,16 @@ export async function runPi(opts: {
             const error = response.error ?? 'Unknown Pi error';
             logger.debug(`[pi] RPC error for ${command}: ${error}`);
             session.sendSessionEvent({ type: 'message', message: error });
+            // If Pi rejected a prompt, Pi will not emit agent_start, so the
+            // matching localId would be stuck in the FIFO and poison the next
+            // legitimate prompt. Consume it here so the user sees their
+            // message transition out of the queued bar (the error is shown
+            // as a session event above).  Only `prompt` carries a localId;
+            // other commands are not user messages.
+            if (command === 'prompt' && pendingLocalIds.length > 0) {
+                const oldestLocalId = pendingLocalIds.shift()!;
+                session.emitMessagesConsumed([oldestLocalId], { clearQueuedThinkingGrace: true });
+            }
             return;
         }
 
@@ -184,8 +244,9 @@ export async function runPi(opts: {
 
     // --- User message handler ---
 
-    session.onUserMessage((message) => {
+    session.onUserMessage((message, localId) => {
         const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
+        if (localId) pendingLocalIds.push(localId);
         transport.send({ type: 'prompt', message: formattedText });
     });
 
