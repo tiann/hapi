@@ -1,5 +1,41 @@
 # Stash triage — 2026-05-31
 
+> **2026-06-07 status: EXECUTED.** Orchestrator (24f3ec91, resurrected from
+> 89e3b242) actioned this triage. **15 stashes -> 1 remaining.** All 15
+> original stashes preserved as `refs/tags/stash-backup/2026-06-07-stash-*`
+> tags (recoverable indefinitely via tag, not just the 30/90-day `git gc`
+> window for unreachable objects). Recipe lives in
+> `docs/tooling/git-stash-policy.md` §"When you do need to drop stashes".
+>
+> Outcome:
+> * **6 dropped** (confirmed-safe per original triage): @{1} voice-picker
+>   (MERGED upstream as #742/#743), @{4} android watch (fcmService.ts
+>   byte-identical to 1352b2c), @{7} bun.lock win32 bump, @{8} Mermaid
+>   lightbox (shipped as `a74e018..4584dfe` on #741, caveat files verified
+>   committed pre-stash on proper branches), @{5} wip-unrelated (46-file
+>   pre-rebuild snapshot, all content evolved/moved/superseded), @{15} fork
+>   WIP elevenlabs (bun.lock landed, voice work evolved past).
+> * **2 dropped** (orchestrator-mine, no longer remembered or needed): @{11}
+>   agent-wip 7-file pre-driver-rebuild, @{14} 706/707 manifest pre-rebuild.
+> * **3 dropped** (bun.lock noise / one-line LANDED): @{10} hapi-issue-resume,
+>   @{12} fsla pre-upstream, @{13} fpvb primary cleanup.
+> * **1 dropped after recovery**: @{1 RECOVERED was wip-plans} - the
+>   substantive 646-line `docs/plans/2026-05-30-peer-agent-offering.md`
+>   peer-agent product design + 3 historical handoff docs were committed
+>   to local fork main as `ff6ea276 docs(plans): recover 4 plan files
+>   from orphan stash backup` before drop.
+> * **1 remaining** (preserved deliberately): @{0} wip-fcm-enrich-... -
+>   primary worktree currently dirty on the same files (push/fcm/telegram
+>   channel enrichment), indicating in-flight work by someone (possibly
+>   inactive Android-companion peer ffff088f). Stash content is a Jun 2
+>   checkpoint of work that's been further-developed in the working tree
+>   since. Don't disturb until owner returns or operator decides drop.
+>
+> Original 2026-05-31 triage (read-only, non-destructive) preserved below
+> for historical context.
+
+---
+
 > Read-only / non-destructive triage of the 16 lingering stashes in `~/coding/hapi`. **No `git stash drop`/`pop`/`apply`/`clear` was run. No commits, branch changes, or doc edits to the just-landed policy.** Operator decides disposition.
 >
 > Triage peer dispatched by orchestrator session `89e3b242` (`agentSessionId=6904d349-f576-489f-bcd7-972f37f3942a`), which was intentionally not messaged.
