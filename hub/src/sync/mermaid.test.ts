@@ -45,6 +45,11 @@ describe('extractFailingMermaidBlocks', () => {
         expect(extractFailingMermaidBlocks(msg)).toEqual([])
     })
 
+    it('skips %%{init} config directives when determining diagram type', () => {
+        const text = '```mermaid\n%%{init: {"theme": "base"}}%%\ngraph TD\n  A --> B\n```'
+        expect(extractFailingMermaidBlocks(assistantMessage(text))).toEqual([])
+    })
+
     it('detects an empty block as invalid', () => {
         const msg = assistantMessage('```mermaid\n\n```')
         const issues = extractFailingMermaidBlocks(msg)

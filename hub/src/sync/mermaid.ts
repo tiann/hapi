@@ -49,6 +49,15 @@ function extractTextFromContent(content: unknown): string | null {
     return parts.length > 0 ? parts.join('\n') : null
 }
 
+function getDiagramType(code: string): string {
+    for (const line of code.split('\n')) {
+        const trimmed = line.trim()
+        if (!trimmed || trimmed.startsWith('%%')) continue
+        return trimmed.split(/\s/)[0].toLowerCase()
+    }
+    return ''
+}
+
 function findInvalidMermaidBlocks(markdown: string): MermaidIssue[] {
     const issues: MermaidIssue[] = []
     // Match ```mermaid fences; multiline, anchored to line start
@@ -56,8 +65,8 @@ function findInvalidMermaidBlocks(markdown: string): MermaidIssue[] {
     let match: RegExpExecArray | null
     while ((match = fenceRegex.exec(markdown)) !== null) {
         const code = match[1]
-        const firstWord = code.trim().split(/[\s\n\r]/)[0]?.toLowerCase() ?? ''
-        if (!firstWord || !KNOWN_DIAGRAM_TYPES.has(firstWord)) {
+        const diagramType = getDiagramType(code)
+        if (!diagramType || !KNOWN_DIAGRAM_TYPES.has(diagramType)) {
             issues.push({ snippet: code.slice(0, 500) })
         }
     }
