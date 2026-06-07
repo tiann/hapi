@@ -12,6 +12,7 @@ import { convertPiEvent } from './PiEventConverter';
 import { PiMessageAccumulator } from './PiMessageAccumulator';
 import type { PiResponseEvent } from './types';
 import type { PiPermissionMode } from '@hapi/protocol/modes';
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 
 export async function runPi(opts: {
     startedBy?: 'runner' | 'terminal';
@@ -306,9 +307,22 @@ export async function runPi(opts: {
 
     // --- Cancel handler ---
 
-    session.rpcHandlerManager.registerHandler('cancel-prompt', async () => {
+    // Abort: hub routes RPC_METHODS.Abort from Telegram bot / web UI.
+    // Terminates the current Pi turn and begins lifecycle cleanup.
+    session.rpcHandlerManager.registerHandler(RPC_METHODS.Abort, async () => {
         transport.send({ type: 'abort' });
+        void lifecycle.cleanupAndExit();
         return { success: true };
+    });
+
+    // Switch: hub routes RPC_METHODS.Switch for local/remote mode toggle.
+    // Pi doesn't have an interactive terminal to hand off to, so treat
+    // switch-to-local as a graceful termination (same pattern as
+    // RemoteLauncherBase's no-op handler).
+    session.rpcHandlerManager.registerHandler(RPC_METHODS.Switch, async () => {
+        lifecycle.setArchiveReason('Session switched');
+        lifecycle.setSessionEndReason('terminated');
+        void lifecycle.cleanupAndExit();
     });
 
     try {
