@@ -1,0 +1,35 @@
+---
+description: Hard guard on direct edits to HAPI product code outside ~/coding/hapi/worktrees/<name>
+alwaysApply: true
+---
+
+# HAPI product-code edit guard (operator-local)
+
+**Direct edits to HAPI product code (`cli/`, `hub/`, `web/`, `shared/` - in the workspace mirror AND in `driver/`) MUST happen inside a worktree at `~/coding/hapi/worktrees/<name>/...`.**
+
+A `preToolUse` hook (`scripts/tooling/hapi-product-code-guard.sh`) blocks `Write` / `Edit` / `StrReplace` / `MultiEdit` / `EditNotebook` calls to these paths when they are not under a worktree. This rule exists so the agent expects the block instead of being surprised by it.
+
+**Per-machine installation:** `.cursor/hooks.json` is gitignored (per-user state). On a fresh clone run `scripts/tooling/hapi-install-cursor-hooks.sh` to install it.
+
+## Workflow when the operator asks for a code change
+
+1. **Read the brief.** Confirm whether this is a fix, feature, or local tooling.
+2. **For HAPI product code edits:**
+   - Confirm a tracking issue exists (`gh issue list -R heavygee/hapi` or `tiann/hapi`). If not, file one first.
+   - Create the worktree: `hapi-worktree-create <name> --branch <fix|feat>/<slug>` (off `upstream/main` for upstream PR work, off `main` for operator-fork-only work).
+   - Then edit inside `~/coding/hapi/worktrees/<name>/...`.
+3. **For operator-local-only files** (`docs/operator/`, `docs/plans/`, `.cursor/`, `AGENTS.local.md`, scripts in `scripts/tooling/`): edits in workspace `main` are fine. The hook ignores these.
+
+## Bypass (deliberate, ugly env var)
+
+If a true emergency requires touching product code outside a worktree, set:
+
+```bash
+HAPI_OPERATOR_PRODUCT_EDIT_OVERRIDE=1
+```
+
+Use sparingly. Each invocation should be operator-approved.
+
+## Why
+
+This is **operator-local tooling**, not an upstream mandate. Other contributors clone `tiann/hapi` and edit `cli/` freely. Our fork has the worktree-per-ticket discipline so ancestry stays clean for upstream PRs - the hook + rule make that discipline mechanical instead of relying on agent self-control under time pressure.
