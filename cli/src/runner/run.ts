@@ -920,11 +920,18 @@ export function buildCliArgs(
               : 'claude';
   const args = [agentCommand];
   if (options.resumeSessionId) {
+    // Pi session resume is currently out of scope (see
+    // web/src/lib/sessionResume.ts). Forwarding --resume to the pi binary
+    // would silently create an orphan session that HAPI cannot track
+    // (no piSessionId path on Metadata), so skip it explicitly here
+    // and let the new-session path take over. The hub's
+    // resolveAgentResumeId already returns null for flavor='pi', so
+    // resume requests fall through to fresh spawn — no behavior change
+    // visible at the hub boundary.
     if (agent === 'codex') {
       args.push('resume', options.resumeSessionId);
-    } else if (agent === 'cursor') {
-      args.push('--resume', options.resumeSessionId);
-    } else {
+    } else if (agent !== 'pi') {
+      // claude, cursor, gemini, kimi, opencode all use --resume <id>
       args.push('--resume', options.resumeSessionId);
     }
   }

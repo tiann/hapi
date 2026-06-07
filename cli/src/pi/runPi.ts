@@ -39,6 +39,14 @@ export async function runPi(opts: {
     setControlledByUser(session, startingMode);
 
     let currentModel: string | null = opts.model ?? null;
+    // Pi's `set_model` RPC requires both provider and modelId. The provider
+    // is not user-selectable in HAPI's model UI (the dropdown only carries
+    // modelId), so we learn it from `get_state` after spawn and reuse it
+    // for every subsequent set_model. Until we know the provider, sending
+    // `set_model` is suppressed — the bootstrap-time model was already
+    // honored by Pi at startup, so suppressing here only means
+    // "same-model set_session_config" is a no-op, not a wrong-model emit.
+    let currentProvider: string | null = null;
     let currentPermissionMode: PiPermissionMode = opts.permissionMode ?? 'default';
 
     const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: workingDirectory });
@@ -190,11 +198,18 @@ export async function runPi(opts: {
         switch (command) {
             case 'get_state': {
                 const data = response.data as Record<string, unknown> | undefined;
-                if (data?.model) {
+                if (data?.model && typeof data.model === 'object') {
                     const modelObj = data.model as Record<string, unknown>;
                     const newModel = (modelObj.modelId as string) ?? model;
+                    // Cache the provider so subsequent set_model calls can
+                    // satisfy Pi's two-arg requirement. Without this we
+                    // would emit `provider: ''` which Pi rejects.
+                    const provider = modelObj.provider;
+                    if (typeof provider === 'string' && provider.length > 0) {
+                        currentProvider = provider;
+                    }
                     onUpdate({ model: newModel });
-                    logger.debug(`[pi] Initial model: ${newModel}`);
+                    logger.debug(`[pi] Initial model: ${newModel} (provider=${currentProvider ?? 'unknown'})`);
                 }
                 break;
             }
@@ -202,6 +217,9 @@ export async function runPi(opts: {
                 const data = response.data as Record<string, unknown> | undefined;
                 if (data?.modelId) {
                     onUpdate({ model: data.modelId as string });
+                }
+                if (data && typeof data.provider === 'string' && data.provider.length > 0) {
+                    currentProvider = data.provider;
                 }
                 logger.debug(`[pi] Model changed to: ${(data?.modelId as string) ?? model}`);
                 break;
@@ -235,8 +253,14 @@ export async function runPi(opts: {
             }
         },
         onAfterApply: () => {
-            if (currentModel) {
-                transport.send({ type: 'set_model', provider: '', modelId: currentModel });
+            // Only forward set_model once we know the provider from
+            // get_state. Until then, the bootstrap-time model already
+            // applied, so suppressing here is a no-op for "same model
+            // config" rather than a wrong-model emit.
+            if (currentModel && currentProvider) {
+                transport.send({ type: 'set_model', provider: currentProvider, modelId: currentModel });
+            } else if (currentModel && !currentProvider) {
+                logger.debug('[pi] set_model suppressed: provider unknown until get_state');
             }
             session.keepAlive(false, startingMode);
         }

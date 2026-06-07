@@ -26,7 +26,8 @@ function handleResponse(
     response: PiResponseEvent,
     model: string | null,
     onUpdate: OnUpdate,
-    session: ReturnType<typeof createMockSession>
+    session: ReturnType<typeof createMockSession>,
+    state: { currentProvider: string | null }
 ): void {
     const { command, success } = response;
 
@@ -39,9 +40,13 @@ function handleResponse(
     switch (command) {
         case 'get_state': {
             const data = response.data as Record<string, unknown> | undefined;
-            if (data?.model) {
+            if (data?.model && typeof data.model === 'object') {
                 const modelObj = data.model as Record<string, unknown>;
                 const newModel = (modelObj.modelId as string) ?? model;
+                const provider = modelObj.provider;
+                if (typeof provider === 'string' && provider.length > 0) {
+                    state.currentProvider = provider;
+                }
                 onUpdate({ model: newModel });
             }
             break;
@@ -50,6 +55,9 @@ function handleResponse(
             const data = response.data as Record<string, unknown> | undefined;
             if (data?.modelId) {
                 onUpdate({ model: data.modelId as string });
+            }
+            if (data && typeof data.provider === 'string' && data.provider.length > 0) {
+                state.currentProvider = data.provider;
             }
             break;
         }
@@ -67,11 +75,13 @@ function handleResponse(
 describe('handleResponse', () => {
     let session: ReturnType<typeof createMockSession>;
     let onUpdate: OnUpdate;
+    let state: { currentProvider: string | null };
 
     beforeEach(() => {
         vi.clearAllMocks();
         session = createMockSession();
         onUpdate = vi.fn();
+        state = { currentProvider: null };
     });
 
     it('should send error message on !success', () => {
@@ -79,7 +89,8 @@ describe('handleResponse', () => {
             { type: 'response', command: 'prompt', success: false, error: 'Pi crashed' },
             null,
             onUpdate,
-            session
+            session,
+            state
         );
         expect(session.sendSessionEvent).toHaveBeenCalledWith({
             type: 'message',
@@ -93,7 +104,8 @@ describe('handleResponse', () => {
             { type: 'response', command: 'prompt', success: false } as PiResponseEvent,
             null,
             onUpdate,
-            session
+            session,
+            state
         );
         expect(session.sendSessionEvent).toHaveBeenCalledWith({
             type: 'message',
@@ -106,9 +118,32 @@ describe('handleResponse', () => {
             { type: 'response', command: 'get_state', success: true, data: { model: { modelId: 'gpt-4o' } } },
             null,
             onUpdate,
-            session
+            session,
+            state
         );
         expect(onUpdate).toHaveBeenCalledWith({ model: 'gpt-4o' });
+    });
+
+    it('should cache provider from get_state response so subsequent set_model can satisfy Pi two-arg requirement', () => {
+        handleResponse(
+            { type: 'response', command: 'get_state', success: true, data: { model: { modelId: 'gpt-4o', provider: 'openai' } } },
+            null,
+            onUpdate,
+            session,
+            state
+        );
+        expect(state.currentProvider).toBe('openai');
+    });
+
+    it('should not cache empty provider from get_state', () => {
+        handleResponse(
+            { type: 'response', command: 'get_state', success: true, data: { model: { modelId: 'gpt-4o', provider: '' } } },
+            null,
+            onUpdate,
+            session,
+            state
+        );
+        expect(state.currentProvider).toBeNull();
     });
 
     it('should keep current model when get_state has no model data', () => {
@@ -116,7 +151,8 @@ describe('handleResponse', () => {
             { type: 'response', command: 'get_state', success: true, data: {} },
             'claude-3',
             onUpdate,
-            session
+            session,
+            state
         );
         expect(onUpdate).not.toHaveBeenCalled();
     });
@@ -126,9 +162,21 @@ describe('handleResponse', () => {
             { type: 'response', command: 'set_model', success: true, data: { modelId: 'gpt-4o' } },
             'claude-3',
             onUpdate,
-            session
+            session,
+            state
         );
         expect(onUpdate).toHaveBeenCalledWith({ model: 'gpt-4o' });
+    });
+
+    it('should refresh provider from set_model response when present', () => {
+        handleResponse(
+            { type: 'response', command: 'set_model', success: true, data: { modelId: 'gpt-4o', provider: 'openai' } },
+            'claude-3',
+            onUpdate,
+            session,
+            state
+        );
+        expect(state.currentProvider).toBe('openai');
     });
 
     it('should not update model when set_model data has no modelId', () => {
@@ -136,7 +184,8 @@ describe('handleResponse', () => {
             { type: 'response', command: 'set_model', success: true, data: {} },
             'claude-3',
             onUpdate,
-            session
+            session,
+            state
         );
         expect(onUpdate).not.toHaveBeenCalled();
     });
@@ -147,7 +196,8 @@ describe('handleResponse', () => {
                 { type: 'response', command: 'new_session', success: true },
                 null,
                 onUpdate,
-                session
+                session,
+                state
             )
         ).not.toThrow();
         expect(onUpdate).not.toHaveBeenCalled();
@@ -159,7 +209,8 @@ describe('handleResponse', () => {
                 { type: 'response', command: 'abort', success: true },
                 null,
                 onUpdate,
-                session
+                session,
+                state
             )
         ).not.toThrow();
     });
@@ -170,7 +221,8 @@ describe('handleResponse', () => {
                 { type: 'response', command: 'prompt', success: true },
                 null,
                 onUpdate,
-                session
+                session,
+                state
             )
         ).not.toThrow();
     });
@@ -181,7 +233,8 @@ describe('handleResponse', () => {
                 { type: 'response', command: 'unknown_cmd', success: true },
                 null,
                 onUpdate,
-                session
+                session,
+                state
             )
         ).not.toThrow();
     });

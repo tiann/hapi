@@ -110,6 +110,19 @@ describe('getModelOptionsForFlavor', () => {
             { value: 'ollama/exaone:4.5-33b-q8', label: 'Ollama EXAONE' }
         ])
     })
+
+    it('returns just the auto/default option for pi flavor (no Claude fallback)', () => {
+        const options = getModelOptionsForFlavor('pi')
+        expect(options).toEqual([{ value: null, label: 'Default' }])
+    })
+
+    it('keeps the current pi model in the options list when it is not auto', () => {
+        const options = getModelOptionsForFlavor('pi', 'claude-sonnet-4-5')
+        expect(options).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'claude-sonnet-4-5', label: 'claude-sonnet-4-5' }
+        ])
+    })
 })
 
 describe('getNextModelForFlavor', () => {
@@ -165,5 +178,18 @@ describe('getNextModelForFlavor', () => {
     it('keeps the current cursor model when the dynamic list has not loaded', () => {
         const next = getNextModelForFlavor('cursor', 'composer-2.5')
         expect(next).toBe('composer-2.5')
+    })
+
+    it('keeps the current pi model on cycle (no Claude fallback)', () => {
+        // Pi has no predefined model list — Ctrl/Cmd+M must not cycle
+        // through Claude presets, which would push sonnet/opus ids into
+        // a Pi session via set-session-config.
+        const next = getNextModelForFlavor('pi', 'claude-sonnet-4-5')
+        expect(next).toBe('claude-sonnet-4-5')
+    })
+
+    it('returns null for pi without a current model (no Claude fallback)', () => {
+        const next = getNextModelForFlavor('pi', null)
+        expect(next).toBeNull()
     })
 })
