@@ -49,12 +49,21 @@ export async function runPi(opts: {
     let currentProvider: string | null = null;
     let currentPermissionMode: PiPermissionMode = opts.permissionMode ?? 'default';
 
-    const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: workingDirectory });
+    const transportArgs = ['--mode', 'rpc'];
+    if (opts.resumeSessionId) {
+        transportArgs.push('--session-id', opts.resumeSessionId);
+    }
+    const transport = new PiTransport({ command: 'pi', args: transportArgs, cwd: workingDirectory });
 
     // Keep-alive: send session-alive every 2s so hub doesn't expire the session (30s timeout)
     const keepAliveInterval = setInterval(() => {
         session.keepAlive(false, startingMode);
     }, 2000);
+
+    // Flag: set when transport.kill() is called during normal lifecycle cleanup,
+    // so transport.onClose can skip crash-marking (which would override the
+    // lifecycle's exitCode/sessionEndReason with 'error' on every close).
+    let killedByCleanup = false;
 
     const lifecycle = createRunnerLifecycle({
         session,
@@ -62,6 +71,7 @@ export async function runPi(opts: {
         stopKeepAlive: () => { clearInterval(keepAliveInterval); },
         onAfterClose: () => {
             clearInterval(keepAliveInterval);
+            killedByCleanup = true;
             transport.kill();
         }
     });
@@ -100,6 +110,14 @@ export async function runPi(opts: {
     });
 
     transport.onClose((code, signal) => {
+        // When lifecycle cleanup kills the transport, skip crash-marking to
+        // preserve the correct exitCode/sessionEndReason (e.g. 'terminated'
+        // instead of 'error'). Only mark as crash when Pi exits on its own.
+        if (killedByCleanup) {
+            logger.debug(`[pi] Pi process closed during lifecycle cleanup (code=${code}, signal=${signal})`);
+            void safeCleanup();
+            return;
+        }
         const reason = signal
             ? `Pi process killed by signal ${signal}`
             : `Pi process exited with code ${code ?? 'null'}`;
@@ -201,15 +219,19 @@ export async function runPi(opts: {
                 if (data?.model && typeof data.model === 'object') {
                     const modelObj = data.model as Record<string, unknown>;
                     const newModel = (modelObj.modelId as string) ?? model;
-                    // Cache the provider so subsequent set_model calls can
-                    // satisfy Pi's two-arg requirement. Without this we
-                    // would emit `provider: ''` which Pi rejects.
                     const provider = modelObj.provider;
                     if (typeof provider === 'string' && provider.length > 0) {
                         currentProvider = provider;
                     }
                     onUpdate({ model: newModel });
                     logger.debug(`[pi] Initial model: ${newModel} (provider=${currentProvider ?? 'unknown'})`);
+                }
+                // Persist piSessionId to metadata for session resume support.
+                // Pi's get_state returns { sessionId: "<uuid>", sessionFile: "..." }.
+                const piSessionId = typeof data?.sessionId === 'string' ? data.sessionId as string : undefined;
+                if (piSessionId) {
+                    session.updateMetadata((meta) => ({ ...meta, piSessionId }));
+                    logger.debug(`[pi] Session ID persisted to metadata: ${piSessionId}`);
                 }
                 break;
             }
