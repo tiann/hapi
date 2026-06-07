@@ -1,5 +1,5 @@
 import { logger } from '@/ui/logger';
-import { bootstrapSession } from '@/agent/sessionFactory';
+import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
 import { registerLocalHandoffHandler } from '@/agent/localHandoff';
 import { createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle';
@@ -19,6 +19,7 @@ export async function runPi(opts: {
     permissionMode?: PiPermissionMode;
     model?: string;
     resumeSessionId?: string;
+    existingSessionId?: string;
     workingDirectory?: string;
 } = {}): Promise<void> {
     const workingDirectory = opts.workingDirectory ?? getInvokedCwd();
@@ -28,12 +29,19 @@ export async function runPi(opts: {
 
     logger.debug(`[pi] Starting with options: startedBy=${startedBy}, startingMode=${startingMode}`);
 
-    const bootstrap = await bootstrapSession({
-        flavor: 'pi',
-        startedBy,
-        workingDirectory,
-        model: opts.model
-    });
+    const bootstrap = opts.existingSessionId
+        ? await bootstrapExistingSession({
+            sessionId: opts.existingSessionId,
+            flavor: 'pi',
+            startedBy,
+            workingDirectory,
+        })
+        : await bootstrapSession({
+            flavor: 'pi',
+            startedBy,
+            workingDirectory,
+            model: opts.model
+        });
     const { session } = bootstrap;
 
     setControlledByUser(session, startingMode);
