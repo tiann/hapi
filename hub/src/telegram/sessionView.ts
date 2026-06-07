@@ -8,10 +8,9 @@
 import { InlineKeyboard } from 'grammy'
 import type { Machine, Session } from '../sync/syncEngine'
 import { ACTIONS } from './callbacks'
-import { createCallbackData, truncate, getSessionName } from './renderer'
+import { createCallbackData, getSessionName } from './renderer'
 import { getAgentName } from '../notifications/sessionInfo'
-
-const MAX_TOOL_ARGS_LENGTH = 150
+import { formatToolArgumentsDetailed } from '../notifications/toolArgs'
 
 type NotificationContext = {
     hasContext: boolean
@@ -155,79 +154,6 @@ export function createNotificationKeyboard(session: Session, publicUrl: string):
         buildMiniAppDeepLink(publicUrl, `session_${session.id}`)
     )
     return keyboard
-}
-
-/**
- * Format detailed tool arguments for notification display
- */
-function formatToolArgumentsDetailed(tool: string, args: any): string {
-    if (!args) return ''
-
-    try {
-        switch (tool) {
-            case 'Edit': {
-                const file = args.file_path || args.path || 'unknown'
-                const oldStr = args.old_string ? truncate(args.old_string, 50) : ''
-                const newStr = args.new_string ? truncate(args.new_string, 50) : ''
-                let result = `File: ${truncate(file, MAX_TOOL_ARGS_LENGTH)}`
-                if (oldStr) result += `\nOld: "${oldStr}"`
-                if (newStr) result += `\nNew: "${newStr}"`
-                return result
-            }
-
-            case 'Write': {
-                const file = args.file_path || args.path || 'unknown'
-                const content = args.content ? `${args.content.length} chars` : ''
-                return `File: ${truncate(file, MAX_TOOL_ARGS_LENGTH)}${content ? ` (${content})` : ''}`
-            }
-
-            case 'Read': {
-                const file = args.file_path || args.path || 'unknown'
-                return `File: ${truncate(file, MAX_TOOL_ARGS_LENGTH)}`
-            }
-
-            case 'Bash': {
-                const cmd = args.command || ''
-                return `Command: ${truncate(cmd, MAX_TOOL_ARGS_LENGTH)}`
-            }
-
-            case 'Agent':
-            case 'Task': {
-                const desc = args.description || args.prompt || ''
-                return `Task: ${truncate(desc, MAX_TOOL_ARGS_LENGTH)}`
-            }
-
-            case 'Grep':
-            case 'Glob': {
-                const pattern = args.pattern || ''
-                const path = args.path || ''
-                let result = `Pattern: ${pattern}`
-                if (path) result += `\nPath: ${truncate(path, 80)}`
-                return result
-            }
-
-            case 'WebFetch': {
-                const url = args.url || ''
-                return `URL: ${truncate(url, MAX_TOOL_ARGS_LENGTH)}`
-            }
-
-            case 'TodoWrite': {
-                const count = args.todos?.length || 0
-                return `Updating ${count} todo items`
-            }
-
-            default: {
-                // Generic args display for unknown tools
-                const argStr = JSON.stringify(args)
-                if (argStr.length > 10) {
-                    return `Args: ${truncate(argStr, MAX_TOOL_ARGS_LENGTH)}`
-                }
-                return ''
-            }
-        }
-    } catch {
-        return ''
-    }
 }
 
 function buildMiniAppDeepLink(baseUrl: string, startParam: string): string {
