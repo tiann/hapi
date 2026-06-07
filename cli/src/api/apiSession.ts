@@ -46,6 +46,7 @@ const SYSTEM_INJECTION_PREFIXES = [
     '<command-name>',
     '<local-command-caveat>',
     '<system-reminder>',
+    '<render-issue>',
 ]
 
 function extractRawUserTextContent(content: unknown): string | null {

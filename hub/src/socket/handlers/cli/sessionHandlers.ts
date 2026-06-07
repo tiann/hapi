@@ -9,6 +9,7 @@ import { extractTodoWriteTodosFromMessageContent } from '../../../sync/todos'
 import { extractTeamStateFromMessageContent, applyTeamStateDelta } from '../../../sync/teams'
 import { extractBackgroundTaskDelta } from '../../../sync/backgroundTasks'
 import { shouldRecordSessionActivity } from '../../../sync/sessionActivity'
+import { extractFailingMermaidBlocks, buildMermaidRenderIssueHint } from '../../../sync/mermaid'
 import type { CliSocketWithData } from '../../socketTypes'
 import type { SessionEndReason } from '@hapi/protocol'
 import type { AccessErrorReason, AccessResult } from './types'
@@ -132,6 +133,30 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         const bgDelta = extractBackgroundTaskDelta(content)
         if (bgDelta) {
             onBackgroundTaskDelta?.(sid, bgDelta)
+        }
+
+        const mermaidIssues = extractFailingMermaidBlocks(content)
+        if (mermaidIssues.length > 0) {
+            const hintText = buildMermaidRenderIssueHint(mermaidIssues)
+            socket.emit('update', {
+                id: randomUUID(),
+                seq: msg.seq,
+                createdAt: Date.now(),
+                body: {
+                    t: 'new-message' as const,
+                    sid,
+                    message: {
+                        id: randomUUID(),
+                        seq: msg.seq,
+                        createdAt: Date.now(),
+                        localId: null,
+                        content: {
+                            role: 'user',
+                            content: { type: 'text', text: hintText }
+                        }
+                    }
+                }
+            })
         }
 
         const update = {
