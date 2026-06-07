@@ -3,7 +3,13 @@ import type { Session } from '@/types/api'
 
 /** Agent thread id used by hub `resolveAgentResumeId`, flavor-specific.
  *  Mirrors hub: cross-flavor ids are ignored to avoid the web layer claiming a
- *  session is resumable when the hub will only honor the current flavor's id. */
+ *  session is resumable when the hub will only honor the current flavor's id.
+ *  Note: pi is intentionally absent — Pi session resume is currently out of
+ *  scope (see spec.md "Out of Scope"). The hub has no `piSessionId` path and
+ *  the runner never persists one, so claiming the web can resume would
+ *  produce a runtime "resume_unavailable" from the hub. Re-add `case 'pi'`
+ *  (and a `piSessionId` field on MetadataSchema) when back-end resume ships.
+ */
 export function resolveAgentSessionIdFromMetadata(
     metadata: Session['metadata'] | null | undefined,
 ): string | undefined {
@@ -17,7 +23,6 @@ export function resolveAgentSessionIdFromMetadata(
         case 'opencode': return metadata.opencodeSessionId ?? undefined
         case 'cursor': return metadata.cursorSessionId ?? undefined
         case 'kimi': return metadata.kimiSessionId ?? undefined
-        case 'pi': return metadata.piSessionId ?? undefined
         default: return metadata.claudeSessionId ?? undefined
     }
 }
@@ -28,6 +33,10 @@ export function resolveAgentSessionIdFromMetadata(
  * Claude with messages but no `claudeSessionId` is allowed because hub
  * `recoverClaudeSessionIdFromMessages` reconstructs the resume id from the
  * stored message log (only the claude path has this recovery fallback).
+ * Note: pi is intentionally excluded — Pi session resume is currently out of
+ * scope (see spec.md "Out of Scope"). A Pi session with messages but no
+ * stored agent id cannot be resumed because the hub has no recovery path
+ * for Pi. Re-add the `flavor === 'pi'` branch when back-end resume ships.
  */
 export function inactiveSessionCanResume(
     session: Session,
@@ -43,7 +52,7 @@ export function inactiveSessionCanResume(
         return true
     }
     const flavor = isKnownFlavor(session.metadata.flavor) ? session.metadata.flavor : 'claude'
-    if ((flavor === 'claude' || flavor === 'pi') && userMessageCount > 0) {
+    if (flavor === 'claude' && userMessageCount > 0) {
         return true
     }
     return userMessageCount === 0
