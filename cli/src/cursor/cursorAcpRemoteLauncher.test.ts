@@ -12,7 +12,9 @@ const harness = vi.hoisted(() => ({
     backendArgs: null as { command: string; args?: string[] } | null,
     setConfigOptionCalls: [] as Array<{ sessionId: string; configId: string; value: string }>,
     deferSetConfigOption: null as Promise<void> | null,
-    releaseSetConfigOption: null as (() => void) | null
+    releaseSetConfigOption: null as (() => void) | null,
+    deferLoadSession: null as Promise<void> | null,
+    releaseLoadSession: null as (() => void) | null
 }));
 
 const legacyLauncher = vi.hoisted(() => vi.fn());
@@ -38,6 +40,9 @@ vi.mock('./utils/cursorAcpBackend', () => ({
             supportsLoadSession: vi.fn(() => harness.supportsLoadSession),
             loadSession: vi.fn(async () => {
                 harness.loadSessionCalled = true;
+                if (harness.deferLoadSession) {
+                    await harness.deferLoadSession;
+                }
                 if (harness.loadSessionError) throw harness.loadSessionError;
                 return 'loaded-acp-session';
             }),
@@ -174,6 +179,8 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.setConfigOptionCalls = [];
         harness.deferSetConfigOption = null;
         harness.releaseSetConfigOption = null;
+        harness.deferLoadSession = null;
+        harness.releaseLoadSession = null;
         legacyLauncher.mockClear();
         process.stdin.isTTY = false;
         process.stdout.isTTY = false;
@@ -202,6 +209,27 @@ describe('cursorAcpRemoteLauncher', () => {
 
         expect(legacyLauncher).not.toHaveBeenCalled();
         expect(harness.newSessionCalled).toBe(false);
+    });
+
+    it('registers cursorSessionId before session/load completes', async () => {
+        let releaseLoadSession!: () => void;
+        harness.deferLoadSession = new Promise<void>((resolve) => {
+            harness.releaseLoadSession = resolve;
+            releaseLoadSession = resolve;
+        });
+
+        const session = makeSession('resume-thread-1');
+        const launchPromise = cursorAcpRemoteLauncher(session);
+
+        await vi.waitFor(() => {
+            expect(session.onSessionFoundWithProtocol).toHaveBeenCalledWith('resume-thread-1', 'acp');
+        });
+        expect(harness.loadSessionCalled).toBe(true);
+
+        releaseLoadSession();
+        await launchPromise;
+
+        expect(session.onSessionFoundWithProtocol).toHaveBeenCalledWith('loaded-acp-session', 'acp');
     });
 
     it('throws when session/load fails instead of falling back to stream-json', async () => {

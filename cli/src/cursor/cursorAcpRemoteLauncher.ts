@@ -96,6 +96,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         let acpSessionId: string;
 
         if (resumeSessionId && backend.supportsLoadSession()) {
+            // Register pending cursorSessionId before awaiting session/load (Zed PR #54431).
+            session.onSessionFoundWithProtocol(resumeSessionId, 'acp');
             try {
                 acpSessionId = await backend.loadSession({
                     sessionId: resumeSessionId,
@@ -119,7 +121,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             });
         }
 
-        session.onSessionFoundWithProtocol(acpSessionId, 'acp');
+        if (acpSessionId !== resumeSessionId) {
+            session.onSessionFoundWithProtocol(acpSessionId, 'acp');
+        }
 
         syncCursorModelsFromAcp(backend, acpSessionId);
 
