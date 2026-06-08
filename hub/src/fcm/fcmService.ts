@@ -74,16 +74,27 @@ export class FcmService {
     ) {}
 
     /**
-     * Health gate for the native-fallback probe. Returns false when the
-     * recent-outcome window is dominated by failures (broken Firebase
-     * credentials, sustained 5xx, network blackhole). When unhealthy, the
+     * Health gate for the native-fallback probe. Returns true only when the
+     * recent-outcome window contains at least one positive datapoint AND
+     * failures have not stacked past the threshold. When unhealthy, the
      * probe lets web-push fire as a last-resort surface for this namespace.
      *
-     * Empty buffer is treated as healthy (innocent until proven guilty) so
-     * a freshly-started hub does not silently double-fire on event #1.
+     * "Needs positive evidence" semantics intentionally: an empty buffer
+     * (cold-start) and a buffer dominated by failures-only both render
+     * unhealthy. This closes the silent-blackhole window where a hub with
+     * broken Firebase credentials would suppress web-push for the first N
+     * events while waiting for failures to accumulate past the threshold.
+     *
+     * Trade-off: one duplicated notification per hub restart per namespace
+     * (web-push + FCM both fire on event #1; FCM success records `sent` and
+     * the gate engages from event #2 onward). Worth it for guaranteed
+     * delivery on cold start.
+     *
+     * Addresses HAPI Bot Major review on PR #803.
      */
     isHealthy(): boolean {
-        if (this.recentOutcomes.length === 0) return true
+        const successes = this.recentOutcomes.filter((o) => o === 'sent').length
+        if (successes === 0) return false
         const failures = this.recentOutcomes.filter((o) => o === 'failed').length
         return failures < FcmService.HEALTH_FAILURE_THRESHOLD
     }
