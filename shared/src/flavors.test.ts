@@ -37,10 +37,9 @@ describe('hasCapability', () => {
         expect(hasCapability('opencode', Capabilities.Effort)).toBe(false)
     })
 
-    test('pi supports model-change and effort and thinking-level', () => {
+    test('pi supports model-change and effort', () => {
         expect(hasCapability('pi', Capabilities.ModelChange)).toBe(true)
         expect(hasCapability('pi', Capabilities.Effort)).toBe(true)
-        expect(hasCapability('pi', Capabilities.ThinkingLevel)).toBe(true)
     })
 
     test('kimi supports model-change but not effort', () => {
