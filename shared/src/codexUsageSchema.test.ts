@@ -40,4 +40,32 @@ describe('MetadataSchema codexUsage', () => {
             }
         })
     })
+
+    it('accepts premium-credits Codex metadata (credits + reached-type + plan fields)', () => {
+        const parsed = MetadataSchema.safeParse({
+            path: '/repo',
+            host: 'machine',
+            flavor: 'codex',
+            codexUsage: {
+                contextWindow: {
+                    usedTokens: 206_000,
+                    limitTokens: 258_400,
+                    percent: 80,
+                    updatedAt: 1
+                },
+                rateLimits: {},
+                credits: { hasCredits: false, unlimited: false, balance: '0' },
+                rateLimitReachedType: 'weekly',
+                planType: 'pro',
+                limitId: 'premium'
+            }
+        })
+
+        expect(parsed.success).toBe(true)
+        const codexUsage = parsed.success ? parsed.data.codexUsage : undefined
+        expect(codexUsage?.credits).toEqual({ hasCredits: false, unlimited: false, balance: '0' })
+        expect(codexUsage?.rateLimitReachedType).toBe('weekly')
+        expect(codexUsage?.planType).toBe('pro')
+        expect(codexUsage?.limitId).toBe('premium')
+    })
 })
