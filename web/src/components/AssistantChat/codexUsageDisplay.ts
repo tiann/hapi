@@ -1,10 +1,21 @@
 import type { CodexTokenUsage, CodexUsage, CodexUsageRateLimit } from '@hapi/protocol/types'
 
+export type CodexUsageRingAxis = 'blocked' | 'context' | 'fiveHour' | 'weekly'
+
+export type CodexUsageRing = {
+    percent: number
+    axis: CodexUsageRingAxis
+}
+
 export type CodexUsageRow = {
     label: string
     value: string
     detail?: string
     severity?: 'critical' | 'warn'
+    // True when this row corresponds to the dominant axis driving the
+    // ring percent. Lets the popover visually link the ring meaning to
+    // the row that produced it (e.g. 'weekly 100%' bolded when ring=100).
+    dominant?: boolean
 }
 
 // Codex sends balance as a precision-preserving string ('250.0000000000',
@@ -107,31 +118,77 @@ function formatTokenBreakdown(usage: CodexTokenUsage): string {
     ].join(' · ')
 }
 
-export function getCodexUsageRingPercent(usage: CodexUsage | null | undefined): number | null {
-    if (!usage) {
-        return null
-    }
-    // Blocked accounts (subscription window AND credits both exhausted, or
-    // explicit rate_limit_reached_type) must read 100% so the ring stops
-    // misrepresenting the state as 'context window 80%, plenty of room'.
+// The ring shows the most-pressing constraint across every axis the user
+// can plausibly run out of in the near term (context window, 5h rolling
+// subscription window, weekly rolling subscription window, or full block).
+// Original PR #537 preferred contextWindow over rate limits which produced
+// the confusing state where weekly=100% but the ring showed context=80%,
+// silently hiding a hard cap behind a softer one. Credits are intentionally
+// NOT folded into the percent because codex's protocol doesn't expose a
+// 'capacity' to convert balance -> percent against; instead the blocked
+// state subsumes the 'credits=0 AND windows exhausted' case at 100%.
+export function getCodexUsageRing(usage: CodexUsage | null | undefined): CodexUsageRing | null {
+    if (!usage) return null
     if (isCodexUsageBlocked(usage)) {
-        return 100
+        return { percent: 100, axis: 'blocked' }
     }
-    if (usage.contextWindow) {
-        return clampPercent(usage.contextWindow.percent)
+    const candidates: Array<{ percent: number; axis: CodexUsageRingAxis }> = []
+    if (usage.contextWindow && Number.isFinite(usage.contextWindow.percent)) {
+        candidates.push({ percent: clampPercent(usage.contextWindow.percent), axis: 'context' })
     }
-    const candidates = [
-        usage.rateLimits?.fiveHour?.usedPercent,
-        usage.rateLimits?.weekly?.usedPercent
-    ].filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
-    if (candidates.length === 0) {
-        return null
+    const fiveHour = usage.rateLimits?.fiveHour?.usedPercent
+    if (typeof fiveHour === 'number' && Number.isFinite(fiveHour)) {
+        candidates.push({ percent: clampPercent(fiveHour), axis: 'fiveHour' })
     }
-    return clampPercent(Math.max(...candidates))
+    const weekly = usage.rateLimits?.weekly?.usedPercent
+    if (typeof weekly === 'number' && Number.isFinite(weekly)) {
+        candidates.push({ percent: clampPercent(weekly), axis: 'weekly' })
+    }
+    if (candidates.length === 0) return null
+    // Ties broken by insertion order (context < fiveHour < weekly) - if
+    // weekly and context both read 80, the more-painful-to-hit weekly
+    // gets surfaced. reduce instead of sort to avoid an allocation on
+    // every metadata patch.
+    return candidates.reduce((best, candidate) =>
+        candidate.percent > best.percent ? candidate : best,
+    candidates[0])
+}
+
+// Kept for any future callers - returns just the percent without the
+// dominant-axis context. ComposerButtons uses getCodexUsageRing directly.
+export function getCodexUsageRingPercent(usage: CodexUsage | null | undefined): number | null {
+    return getCodexUsageRing(usage)?.percent ?? null
+}
+
+const AXIS_TO_ROW_LABEL: Record<CodexUsageRingAxis, string | null> = {
+    blocked: null,
+    context: 'Context Window',
+    fiveHour: '5h Usage',
+    weekly: '1 Week Usage'
+}
+
+export function getCodexUsageRingTitle(ring: CodexUsageRing, usage: CodexUsage): string {
+    const pct = `${Math.round(ring.percent)}%`
+    switch (ring.axis) {
+        case 'blocked':
+            return usage.rateLimitReachedType
+                ? `Blocked: ${formatRateLimitReachedType(usage.rateLimitReachedType)} limit reached`
+                : 'Blocked: subscription window and credits both exhausted'
+        case 'context':
+            return `Context window ${pct} full`
+        case 'fiveHour':
+            return `5h subscription window ${pct} used`
+        case 'weekly':
+            return `Weekly subscription window ${pct} used`
+    }
 }
 
 export function getCodexUsageRows(usage: CodexUsage, locale?: string): CodexUsageRow[] {
     const rows: CodexUsageRow[] = []
+    const ring = getCodexUsageRing(usage)
+    const dominantLabel = ring ? AXIS_TO_ROW_LABEL[ring.axis] : null
+    const markDominant = (row: CodexUsageRow): CodexUsageRow =>
+        row.label === dominantLabel ? { ...row, dominant: true } : row
     if (usage.rateLimitReachedType) {
         rows.push({
             label: 'Limit Reached',
@@ -140,27 +197,27 @@ export function getCodexUsageRows(usage: CodexUsage, locale?: string): CodexUsag
         })
     }
     if (usage.contextWindow) {
-        rows.push({
+        rows.push(markDominant({
             label: 'Context Window',
             value: formatPercent(usage.contextWindow.percent),
             detail: `${formatTokens(usage.contextWindow.usedTokens)} / ${formatTokens(usage.contextWindow.limitTokens)} tokens`
-        })
+        }))
     }
     if (usage.rateLimits?.fiveHour) {
         const reset = formatCodexUsageReset(usage.rateLimits.fiveHour.resetAt, locale)
-        rows.push({
+        rows.push(markDominant({
             label: '5h Usage',
             value: formatRateLimit(usage.rateLimits.fiveHour),
             detail: reset ? `resets ${reset}` : undefined
-        })
+        }))
     }
     if (usage.rateLimits?.weekly) {
         const reset = formatCodexUsageReset(usage.rateLimits.weekly.resetAt, locale)
-        rows.push({
+        rows.push(markDominant({
             label: '1 Week Usage',
             value: formatRateLimit(usage.rateLimits.weekly),
             detail: reset ? `resets ${reset}` : undefined
-        })
+        }))
     }
     // Surface credit-billing state when codex reports it - either an
     // unlimited flag, a hard balance, or an explicit has_credits=false.
