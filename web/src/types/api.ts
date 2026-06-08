@@ -11,6 +11,7 @@ import type {
 export type {
     CodexModelsResponse,
     CodexModelSummary,
+    CodexServiceTierSummary,
     CommandResponse,
     CursorModelsResponse,
     CursorModelSummary,

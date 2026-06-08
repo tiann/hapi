@@ -8,7 +8,9 @@ import type {
     DecryptedMessage,
     PermissionMode,
     Session,
-    SlashCommand
+    SlashCommand,
+    CodexModelSummary,
+    CodexServiceTierSummary
 } from '@/types/api'
 import type { ChatBlock, NormalizedMessage } from '@/chat/types'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
@@ -121,6 +123,32 @@ function getOutlineTitle(session: Session): string {
     return session.id.slice(0, 8)
 }
 
+function getCodexFastServiceTier(
+    models: readonly CodexModelSummary[],
+    modelId: string | null
+): CodexServiceTierSummary | null {
+    const selectedModel = modelId ?? models.find((model) => model.isDefault)?.id ?? null
+    const modelSummary = models.find((codexModel) => codexModel.id === selectedModel)
+    const tiers = modelSummary?.serviceTiers ?? []
+    return tiers.find((tier) => tier.name.toLowerCase() === 'fast') ?? null
+}
+
+function isCodexServiceTierSupported(
+    models: readonly CodexModelSummary[],
+    modelId: string | null,
+    serviceTier: string | null | undefined
+): boolean {
+    if (!serviceTier) {
+        return true
+    }
+    const selectedModel = modelId ?? models.find((model) => model.isDefault)?.id ?? null
+    const modelSummary = models.find((codexModel) => codexModel.id === selectedModel)
+    if (!modelSummary) {
+        return true
+    }
+    return (modelSummary.serviceTiers ?? []).some((tier) => tier.id === serviceTier)
+}
+
 function hasAbortableAgentRun(blocks: readonly ChatBlock[]): boolean {
     for (const block of blocks) {
         if (block.kind === 'tool-call') {
@@ -203,10 +231,7 @@ export function SessionChat(props: {
         if (agentFlavor !== 'codex') {
             return null
         }
-        const selectedModel = props.session.model ?? codexModelsState.models.find((model) => model.isDefault)?.id ?? null
-        const modelSummary = codexModelsState.models.find((codexModel) => codexModel.id === selectedModel)
-        const tiers = modelSummary?.serviceTiers ?? []
-        return tiers.find((tier) => tier.name.toLowerCase() === 'fast') ?? null
+        return getCodexFastServiceTier(codexModelsState.models, props.session.model)
     }, [agentFlavor, props.session.model, codexModelsState.models])
     const opencodeModelsState = useOpencodeModels({
         api: props.api,
@@ -555,13 +580,26 @@ export function SessionChat(props: {
     const handleModelChange = useCallback(async (model: string | null) => {
         try {
             await setModel(model)
+            if (agentFlavor === 'codex'
+                && !isCodexServiceTierSupported(codexModelsState.models, model, props.session.serviceTier)
+            ) {
+                await setServiceTier(null)
+            }
             haptic.notification('success')
             props.onRefresh()
         } catch (e) {
             haptic.notification('error')
             console.error('Failed to set model:', e)
         }
-    }, [setModel, props.onRefresh, haptic])
+    }, [
+        agentFlavor,
+        codexModelsState.models,
+        props.session.serviceTier,
+        setModel,
+        setServiceTier,
+        props.onRefresh,
+        haptic
+    ])
 
     const handleCursorBaseModelChange = useCallback(async (baseKey: string | null) => {
         if (!cursorPicker) {
