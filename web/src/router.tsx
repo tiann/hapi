@@ -370,9 +370,7 @@ function SessionPage() {
             const response = await api.searchSessionFiles(sessionId, search, 50)
             if (!response.success || !response.files) return []
             return response.files.map((file) => {
-                const mentionText = /\s/.test(file.fullPath)
-                    ? `@"${file.fullPath.replace(/(["\\])/g, '\\$1')}"`
-                    : `@${file.fullPath}`
+                const mentionText = `@"${file.fullPath.replace(/(["\\])/g, '\\$1')}"`
                 return {
                     key: mentionText,
                     text: mentionText,

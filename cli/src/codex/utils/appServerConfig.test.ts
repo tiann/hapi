@@ -365,8 +365,8 @@ describe('appServerConfig', () => {
         expect(params.model).toBe('o3');
     });
 
-    it('builds mention inputs from @file tokens', () => {
-        expect(buildUserInputFromMessage('please inspect @src/index.ts now')).toEqual([
+    it('builds mention inputs from quoted @file tokens', () => {
+        expect(buildUserInputFromMessage('please inspect @"src/index.ts" now')).toEqual([
             { type: 'text', text: 'please inspect ' },
             { type: 'mention', name: 'index.ts', path: 'src/index.ts' },
             { type: 'text', text: ' now' }
@@ -381,11 +381,17 @@ describe('appServerConfig', () => {
         ]);
     });
 
-    it('keeps trailing sentence punctuation outside unquoted @file tokens', () => {
-        expect(buildUserInputFromMessage('please inspect @src/index.ts.')).toEqual([
+    it('builds mention inputs from quoted root-level @file tokens', () => {
+        expect(buildUserInputFromMessage('please inspect @"package.json" now')).toEqual([
             { type: 'text', text: 'please inspect ' },
-            { type: 'mention', name: 'index.ts', path: 'src/index.ts' },
-            { type: 'text', text: '.' }
+            { type: 'mention', name: 'package.json', path: 'package.json' },
+            { type: 'text', text: ' now' }
+        ]);
+    });
+
+    it('keeps literal at-mentions as text', () => {
+        expect(buildUserInputFromMessage('please ask @alice to upgrade @types/node.')).toEqual([
+            { type: 'text', text: 'please ask @alice to upgrade @types/node.' }
         ]);
     });
 });

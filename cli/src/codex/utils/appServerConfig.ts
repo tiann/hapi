@@ -94,18 +94,14 @@ function mentionNameFromPath(path: string): string {
 
 export function buildUserInputFromMessage(message: string): UserInput[] {
     const inputs: UserInput[] = [];
-    const mentionPattern = /(^|\s)@(?:"((?:\\.|[^"\\])*)"|([^\s]+))/g;
+    const mentionPattern = /(^|\s)@"((?:\\.|[^"\\])*)"/g;
     let lastIndex = 0;
     let match: RegExpExecArray | null;
 
     while ((match = mentionPattern.exec(message)) !== null) {
         const prefix = match[1] ?? '';
-        const quotedPath = match[2];
-        const unquotedPath = match[3];
-        const rawPath = quotedPath ?? unquotedPath ?? '';
-        const pathText = quotedPath === undefined
-            ? rawPath.replace(/[),.;!?]+$/, '')
-            : rawPath;
+        const rawPath = match[2] ?? '';
+        const pathText = rawPath;
         const path = pathText.replace(/\\(["\\])/g, '$1');
         if (!path) continue;
 
