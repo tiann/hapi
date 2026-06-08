@@ -9,7 +9,7 @@ import type { PendingSchedule } from './ScheduleTimePicker'
 import { useFue } from '@/lib/use-fue'
 import { FueCallout, FueDot } from '@/components/Fue'
 import { useComposerToolbarLayout, type ComposerToolbarItemId, type ComposerToolbarLayout } from '@/hooks/useComposerToolbarLayout'
-import { getCodexUsageRingPercent, getCodexUsageRows } from './codexUsageDisplay'
+import { getCodexUsageRingPercent, getCodexUsageRows, isCodexUsageBlocked } from './codexUsageDisplay'
 
 function ToolbarItemSlot(props: { item: ComposerToolbarItemId; children: ReactNode }) {
     return <>{props.children}</>
@@ -517,7 +517,13 @@ function CodexUsageIndicator(props: { usage?: CodexUsage | null }) {
 
     const rows = getCodexUsageRows(props.usage)
     const roundedPercent = Math.round(percent)
-    const isHighUsage = percent > 85
+    const blocked = isCodexUsageBlocked(props.usage)
+    // Blocked beats high-usage threshold: a Pro account with primary=null,
+    // secondary=null AND credits.balance="0" should read full red even
+    // though percent (forced to 100 upstream) would already trip the >85
+    // threshold; this avoids a future change to that threshold accidentally
+    // demoting the blocked state.
+    const isHighUsage = blocked || percent > 85
     const usageColor = isHighUsage ? '#991b1b' : 'var(--app-link)'
     const textColor = isHighUsage ? '#991b1b' : 'var(--app-hint)'
     const background = `conic-gradient(${usageColor} ${percent * 3.6}deg, var(--app-divider) 0deg)`
@@ -554,17 +560,22 @@ function CodexUsageIndicator(props: { usage?: CodexUsage | null }) {
                         Codex Usage
                     </div>
                     <div className="space-y-2">
-                        {rows.map((row) => (
-                            <div key={row.label} className="flex items-start justify-between gap-3">
-                                <div className="min-w-0">
-                                    <div className="text-[var(--app-fg)]">{row.label}</div>
-                                    {row.detail ? (
-                                        <div className="mt-0.5 break-words text-xs text-[var(--app-hint)]">{row.detail}</div>
-                                    ) : null}
+                        {rows.map((row) => {
+                            const critical = row.severity === 'critical'
+                            const labelColor = critical ? '#991b1b' : 'var(--app-fg)'
+                            const valueColor = critical ? '#991b1b' : 'var(--app-fg)'
+                            return (
+                                <div key={row.label} className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                        <div style={{ color: labelColor }} className={critical ? 'font-semibold' : undefined}>{row.label}</div>
+                                        {row.detail ? (
+                                            <div className="mt-0.5 break-words text-xs text-[var(--app-hint)]">{row.detail}</div>
+                                        ) : null}
+                                    </div>
+                                    <div className="shrink-0 font-medium" style={{ color: valueColor }}>{row.value}</div>
                                 </div>
-                                <div className="shrink-0 font-medium text-[var(--app-fg)]">{row.value}</div>
-                            </div>
-                        ))}
+                            )
+                        })}
                     </div>
                 </div>
             ) : null}

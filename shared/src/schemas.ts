@@ -43,6 +43,19 @@ export const CodexUsageRateLimitSchema = z.object({
 
 export type CodexUsageRateLimit = z.infer<typeof CodexUsageRateLimitSchema>
 
+// Credit-based plans (e.g. Codex Pro on `limit_id: premium`) bill from a
+// balance instead of a 5h/weekly rolling window. When the subscription
+// is also exhausted the codex transcript shows primary=null + secondary=null
+// + credits.has_credits=false; the indicator needs to surface that
+// distinctly from a fresh-account "no rate-limit data yet" state.
+export const CodexUsageCreditsSchema = z.object({
+    hasCredits: z.boolean().optional(),
+    unlimited: z.boolean().optional(),
+    balance: z.string().optional()
+})
+
+export type CodexUsageCredits = z.infer<typeof CodexUsageCreditsSchema>
+
 export const CodexUsageSchema = z.object({
     contextWindow: z.object({
         usedTokens: z.number(),
@@ -54,6 +67,14 @@ export const CodexUsageSchema = z.object({
         fiveHour: CodexUsageRateLimitSchema.optional(),
         weekly: CodexUsageRateLimitSchema.optional()
     }).optional().default({}),
+    credits: CodexUsageCreditsSchema.optional(),
+    // Codex surfaces 'primary' / 'secondary' / 'credits' as the canonical
+    // names. Carry through as-is so the UI can render the exact phrase
+    // (e.g. 'You have exceeded your weekly limit', or 'You have run out
+    // of credits') without re-deriving from the boolean state.
+    rateLimitReachedType: z.string().optional(),
+    planType: z.string().optional(),
+    limitId: z.string().optional(),
     totalTokenUsage: CodexTokenUsageSchema.optional(),
     lastTokenUsage: CodexTokenUsageSchema.optional()
 })
