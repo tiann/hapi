@@ -31,7 +31,12 @@ export const RPC_METHODS = {
     ListPiCommands: 'listPiCommands',
     RenamePiSession: 'renamePiSession',
     ListOpencodeModels: 'listOpencodeModels',
-    ListOpencodeModelsForCwd: 'listOpencodeModelsForCwd'
+    ListOpencodeModelsForCwd: 'listOpencodeModelsForCwd',
+    PiSteer: 'piSteer',
+    PiFollowUp: 'piFollowUp',
+    PiSetSteeringMode: 'piSetSteeringMode',
+    PiSetFollowUpMode: 'piSetFollowUpMode',
+    PiGetMessages: 'piGetMessages',
 } as const
 
 export type RpcMethod = typeof RPC_METHODS[keyof typeof RPC_METHODS]

@@ -95,6 +95,18 @@ import type { PiThinkingLevel } from '@hapi/protocol'
 export type { PiThinkingLevel }
 export { PI_THINKING_LEVELS, PI_THINKING_LEVEL_LABELS } from '@hapi/protocol'
 
+// Image content for native Pi image passing
+export interface PiImageContent {
+    type: 'image'
+    source: {
+        type: 'base64'
+        media_type: string
+        data: string
+    }
+}
+
+export type PiStreamingBehavior = 'steer' | 'followUp'
+
 export type PiCommandSummary = {
     name: string
     description?: string
@@ -108,7 +120,9 @@ export type PiCommandsResponse = {
 }
 
 export type PiRpcCommand =
-    | { type: 'prompt'; message: string }
+    | { type: 'prompt'; message: string; images?: PiImageContent[]; streamingBehavior?: PiStreamingBehavior }
+    | { type: 'steer'; message: string; images?: PiImageContent[] }
+    | { type: 'follow_up'; message: string; images?: PiImageContent[] }
     | { type: 'abort' }
     | { type: 'new_session' }
     | { type: 'get_state' }
@@ -117,7 +131,10 @@ export type PiRpcCommand =
     | { type: 'set_session_name'; name: string }
     | { type: 'set_thinking_level'; level: PiThinkingLevel }
     | { type: 'cycle_thinking_level' }
-    | { type: 'get_commands' };
+    | { type: 'get_commands' }
+    | { type: 'set_steering_mode'; mode: 'all' | 'one-at-a-time' }
+    | { type: 'set_follow_up_mode'; mode: 'all' | 'one-at-a-time' }
+    | { type: 'get_messages' };
 
 // ============================================================================
 // Pi RPC Responses (stdout)

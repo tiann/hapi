@@ -15,6 +15,10 @@ import type {
     OpencodeModelSummary,
     PathExistsResponse,
     PiCommandsResponse,
+    PiMessagesResponse,
+    PiQueueModeResponse,
+    PiSteerResponse,
+    PiFollowUpResponse,
     SlashCommandsResponse,
     UploadFileResponse
 } from '@hapi/protocol/apiTypes'
@@ -40,6 +44,10 @@ export type RpcOpencodeModel = OpencodeModelSummary
 export type RpcListOpencodeModelsResponse = OpencodeModelsResponse
 export type RpcListPiModelsResponse = import('@hapi/protocol/apiTypes').ListPiModelsResponse
 export type RpcListPiCommandsResponse = PiCommandsResponse
+export type RpcPiSteerResponse = PiSteerResponse
+export type RpcPiFollowUpResponse = PiFollowUpResponse
+export type RpcPiQueueModeResponse = PiQueueModeResponse
+export type RpcPiMessagesResponse = PiMessagesResponse
 
 export class RpcGateway {
     constructor(
@@ -271,6 +279,26 @@ export class RpcGateway {
 
     async listPiCommandsForSession(sessionId: string): Promise<RpcListPiCommandsResponse> {
         return await this.sessionRpc(sessionId, RPC_METHODS.ListPiCommands, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListPiCommandsResponse
+    }
+
+    async steerPiSession(sessionId: string, message: string): Promise<RpcPiSteerResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.PiSteer, { message }) as RpcPiSteerResponse
+    }
+
+    async followUpPiSession(sessionId: string, message: string): Promise<RpcPiFollowUpResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.PiFollowUp, { message }) as RpcPiFollowUpResponse
+    }
+
+    async setPiSteeringMode(sessionId: string, mode: 'all' | 'one-at-a-time'): Promise<RpcPiQueueModeResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.PiSetSteeringMode, { mode }) as RpcPiQueueModeResponse
+    }
+
+    async setPiFollowUpMode(sessionId: string, mode: 'all' | 'one-at-a-time'): Promise<RpcPiQueueModeResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.PiSetFollowUpMode, { mode }) as RpcPiQueueModeResponse
+    }
+
+    async getPiMessages(sessionId: string): Promise<RpcPiMessagesResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.PiGetMessages, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcPiMessagesResponse
     }
 
     private async sessionRpc(

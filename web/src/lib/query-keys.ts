@@ -19,6 +19,7 @@ export const queryKeys = {
     sessionCursorModels: (sessionId: string) => ['session-cursor-models', sessionId] as const,
     sessionPiModels: (sessionId: string) => ['session-pi-models', sessionId] as const,
     sessionPiCommands: (sessionId: string) => ['session-pi-commands', sessionId] as const,
+    sessionPiMessages: (sessionId: string) => ['session-pi-messages', sessionId] as const,
     machineCursorModels: (machineId: string) => ['machine-cursor-models', machineId] as const,
     sessionOpencodeModels: (sessionId: string) => ['session-opencode-models', sessionId] as const,
     machineOpencodeModelsForCwd: (machineId: string, cwd: string) => ['machine-opencode-models', machineId, cwd] as const,

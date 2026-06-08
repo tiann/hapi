@@ -8,7 +8,7 @@
  */
 
 import { isKnownFlavor, type LocalResumeTarget, type ResumableSession } from '@hapi/protocol'
-import type { SlashCommandsResponse, PiCommandsResponse } from '@hapi/protocol/apiTypes'
+import type { SlashCommandsResponse, PiCommandsResponse, PiMessagesResponse, PiQueueModeResponse, PiSteerResponse, PiFollowUpResponse } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, CodexCollaborationMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { Server } from 'socket.io'
@@ -31,6 +31,10 @@ import {
     type RpcListOpencodeModelsResponse,
     type RpcListPiModelsResponse,
     type RpcListPiCommandsResponse,
+    type RpcPiSteerResponse,
+    type RpcPiFollowUpResponse,
+    type RpcPiQueueModeResponse,
+    type RpcPiMessagesResponse,
     type RpcCursorModel,
     type RpcOpencodeModel,
     type RpcPathExistsResponse,
@@ -42,7 +46,7 @@ import { SessionCache } from './sessionCache'
 export type { Session, SyncEvent } from '@hapi/protocol/types'
 export type { Machine } from './machineCache'
 export type { SyncEventListener } from './eventPublisher'
-export type { RpcListPiCommandsResponse } from './rpcGateway'
+export type { RpcListPiCommandsResponse, RpcPiSteerResponse, RpcPiFollowUpResponse, RpcPiQueueModeResponse, RpcPiMessagesResponse } from './rpcGateway'
 export type {
     RpcCodexModel,
     RpcCommandResponse,
@@ -999,5 +1003,25 @@ export class SyncEngine {
 
     async listPiCommandsForSession(sessionId: string): Promise<RpcListPiCommandsResponse> {
         return await this.rpcGateway.listPiCommandsForSession(sessionId)
+    }
+
+    async steerPiSession(sessionId: string, message: string): Promise<RpcPiSteerResponse> {
+        return await this.rpcGateway.steerPiSession(sessionId, message)
+    }
+
+    async followUpPiSession(sessionId: string, message: string): Promise<RpcPiFollowUpResponse> {
+        return await this.rpcGateway.followUpPiSession(sessionId, message)
+    }
+
+    async setPiSteeringMode(sessionId: string, mode: 'all' | 'one-at-a-time'): Promise<RpcPiQueueModeResponse> {
+        return await this.rpcGateway.setPiSteeringMode(sessionId, mode)
+    }
+
+    async setPiFollowUpMode(sessionId: string, mode: 'all' | 'one-at-a-time'): Promise<RpcPiQueueModeResponse> {
+        return await this.rpcGateway.setPiFollowUpMode(sessionId, mode)
+    }
+
+    async getPiMessages(sessionId: string): Promise<RpcPiMessagesResponse> {
+        return await this.rpcGateway.getPiMessages(sessionId)
     }
 }

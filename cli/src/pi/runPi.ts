@@ -10,10 +10,10 @@ import { convertAgentMessage } from '@/agent/messageConverter';
 import { PiTransport } from './PiTransport';
 import { convertPiEvent } from './PiEventConverter';
 import { PiMessageAccumulator } from './PiMessageAccumulator';
-import type { PiResponseEvent, PiThinkingLevel, PiCommandSummary } from './types';
+import type { PiResponseEvent, PiThinkingLevel, PiCommandSummary, PiImageContent } from './types';
 import type { SlashCommandsResponse } from '@hapi/protocol/apiTypes';
 import type { PiPermissionMode } from '@hapi/protocol/modes';
-import type { ListPiModelsResponse, PiModelSummary, PiCommandsResponse } from '@hapi/protocol/apiTypes';
+import type { ListPiModelsResponse, PiModelSummary, PiCommandsResponse, PiSteerResponse, PiFollowUpResponse, PiQueueModeResponse, PiMessagesResponse, PiMessageEntry } from '@hapi/protocol/apiTypes';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 
 export async function runPi(opts: {
@@ -180,6 +180,15 @@ export async function runPi(opts: {
     // Cached command/skill list from the last get_commands response.
     let cachedPiCommands: PiCommandSummary[] = [];
 
+    // Track Pi's streaming state. When streaming, user messages are sent as
+    // `steer` (mid-turn steering) instead of `prompt` (new turn).
+    let piIsStreaming = false;
+
+    // Steering and follow-up queue modes. Persisted so RPC handlers
+    // can read current state and web UI can reflect it.
+    let currentSteeringMode: 'all' | 'one-at-a-time' = 'all';
+    let currentFollowUpMode: 'all' | 'one-at-a-time' = 'all';
+
     function parsePiCommands(data: unknown): PiCommandSummary[] {
         const rawCommands = (data as Record<string, unknown>)?.commands;
         if (!Array.isArray(rawCommands)) return [];
@@ -191,6 +200,27 @@ export async function runPi(opts: {
                 source: (['extension', 'prompt', 'skill'].includes(c.source as string) ? c.source : 'skill') as PiCommandSummary['source'],
             }))
             .filter((c) => c.name.length > 0);
+    }
+
+    // Extract text content from a Pi AgentMessage object.
+    // Pi's get_messages returns rich AgentMessage objects with various content
+    // block types. We flatten to plain text for the HAPI web UI.
+    function extractTextFromPiMessage(m: Record<string, unknown>): string {
+        const content = m.content;
+        if (typeof content === 'string') return content;
+        if (Array.isArray(content)) {
+            return content
+                .filter((b): b is Record<string, unknown> => typeof b === 'object' && b !== null)
+                .map((b) => {
+                    if (b.type === 'text' && typeof b.text === 'string') return b.text;
+                    if (b.type === 'tool_result' && typeof b.content === 'string') return b.content;
+                    if (b.type === 'tool_use' && typeof b.name === 'string') return `[tool: ${b.name}]`;
+                    return '';
+                })
+                .filter(Boolean)
+                .join('\n');
+        }
+        return '';
     }
 
 // --- Transport event handlers ---
@@ -270,6 +300,7 @@ export async function runPi(opts: {
         // Update keep-alive with thinking state for agent_start/turn_start/turn_end
         if (event.type === 'agent_start' || event.type === 'turn_start') {
             session.keepAlive(true, startingMode);
+            piIsStreaming = true;
             // agent_start fires once per accepted prompt. Consume the
             // oldest pending localId so the user's bubble transitions
             // out of the floating queued bar. turn_start is intentionally
@@ -281,6 +312,9 @@ export async function runPi(opts: {
             }
         } else if (event.type === 'turn_end') {
             session.keepAlive(false, startingMode);
+            piIsStreaming = false;
+        } else if (event.type === 'agent_end') {
+            piIsStreaming = false;
         }
     });
 
@@ -336,6 +370,13 @@ export async function runPi(opts: {
                     currentThinkingLevel = thinkingLevel;
                     logger.debug(`[pi] Initial thinking level: ${thinkingLevel}`);
                 }
+                // Capture initial steering/follow-up modes
+                if (data?.steeringMode === 'all' || data?.steeringMode === 'one-at-a-time') {
+                    currentSteeringMode = data.steeringMode;
+                }
+                if (data?.followUpMode === 'all' || data?.followUpMode === 'one-at-a-time') {
+                    currentFollowUpMode = data.followUpMode;
+                }
                 break;
             }
             case 'set_model': {
@@ -379,6 +420,24 @@ export async function runPi(opts: {
                 break;
             case 'prompt':
                 logger.debug('[pi] Prompt accepted');
+                break;
+            case 'steer':
+                logger.debug('[pi] Steer accepted');
+                break;
+            case 'follow_up':
+                logger.debug('[pi] Follow-up accepted');
+                break;
+            case 'set_steering_mode':
+                logger.debug('[pi] Steering mode set');
+                resolvePendingRpc(response);
+                break;
+            case 'set_follow_up_mode':
+                logger.debug('[pi] Follow-up mode set');
+                resolvePendingRpc(response);
+                break;
+            case 'get_messages':
+                logger.debug('[pi] Messages retrieved');
+                resolvePendingRpc(response);
                 break;
             default:
                 logger.debug(`[pi] Response for ${command}`);
@@ -531,12 +590,130 @@ export async function runPi(opts: {
         }
     );
 
-    // --- User message handler ---
+    // --- Helper: extract PiImageContent[] from attachments ---
+    // Converts image attachments to Pi's native base64 format.
+    // Non-image attachments fall through to @path text references.
+    function extractPiImages(attachments: import('@/api/types').AttachmentMetadata[] | undefined): PiImageContent[] | undefined {
+        if (!attachments || attachments.length === 0) return undefined;
+        const images: PiImageContent[] = [];
+        for (const att of attachments) {
+            if (!att.mimeType.startsWith('image/')) continue;
+            try {
+                const fs = require('fs') as typeof import('fs');
+                const data = fs.readFileSync(att.path);
+                images.push({
+                    type: 'image',
+                    source: {
+                        type: 'base64',
+                        media_type: att.mimeType,
+                        data: data.toString('base64'),
+                    },
+                });
+            } catch {
+                // Skip unreadable files — they'll still be referenced
+                // as @path in the text fallback.
+            }
+        }
+        return images.length > 0 ? images : undefined;
+    }
 
+    // --- Pi steer RPC ---
+    // Web sends a steering message mid-stream. Delegates to the same
+    // onUserMessage path which already checks piIsStreaming.
+    session.rpcHandlerManager.registerHandler<{ message: string }, PiSteerResponse>(
+        RPC_METHODS.PiSteer,
+        async (params) => {
+            if (!params || typeof params.message !== 'string' || params.message.trim().length === 0) {
+                return { success: false, error: 'Empty message' };
+            }
+            transport.send({ type: 'steer', message: params.message.trim() });
+            return { success: true };
+        }
+    );
+
+    // --- Pi follow-up RPC ---
+    // Queue a message for after the current turn.
+    session.rpcHandlerManager.registerHandler<{ message: string }, PiFollowUpResponse>(
+        RPC_METHODS.PiFollowUp,
+        async (params) => {
+            if (!params || typeof params.message !== 'string' || params.message.trim().length === 0) {
+                return { success: false, error: 'Empty message' };
+            }
+            transport.send({ type: 'follow_up', message: params.message.trim() });
+            return { success: true };
+        }
+    );
+
+    // --- Pi queue mode RPCs ---
+    session.rpcHandlerManager.registerHandler<{ mode: 'all' | 'one-at-a-time' }, PiQueueModeResponse>(
+        RPC_METHODS.PiSetSteeringMode,
+        async (params) => {
+            const mode = params?.mode;
+            if (mode !== 'all' && mode !== 'one-at-a-time') {
+                return { success: false, error: 'Invalid mode' };
+            }
+            transport.send({ type: 'set_steering_mode', mode });
+            currentSteeringMode = mode;
+            return { success: true };
+        }
+    );
+
+    session.rpcHandlerManager.registerHandler<{ mode: 'all' | 'one-at-a-time' }, PiQueueModeResponse>(
+        RPC_METHODS.PiSetFollowUpMode,
+        async (params) => {
+            const mode = params?.mode;
+            if (mode !== 'all' && mode !== 'one-at-a-time') {
+                return { success: false, error: 'Invalid mode' };
+            }
+            transport.send({ type: 'set_follow_up_mode', mode });
+            currentFollowUpMode = mode;
+            return { success: true };
+        }
+    );
+
+    // --- Pi get_messages RPC ---
+    // Retrieves Pi's internal message history. Pi returns AgentMessage[]
+    // objects; we convert them to a simplified format for web rendering.
+    session.rpcHandlerManager.registerHandler<Record<string, never>, PiMessagesResponse>(
+        RPC_METHODS.PiGetMessages,
+        async () => {
+            try {
+                const data = await sendPiRpcAndWait({ type: 'get_messages' });
+                const rawMessages = (data as Record<string, unknown>)?.messages;
+                if (!Array.isArray(rawMessages)) {
+                    return { success: true, messages: [] };
+                }
+                const messages: PiMessageEntry[] = rawMessages
+                    .filter((m): m is Record<string, unknown> => typeof m === 'object' && m !== null)
+                    .map((m) => ({
+                        entryId: typeof m.entryId === 'string' ? m.entryId : '',
+                        role: m.role === 'user' ? 'user' as const : 'assistant' as const,
+                        text: extractTextFromPiMessage(m),
+                    }))
+                    .filter((m) => m.entryId.length > 0);
+                return { success: true, messages };
+            } catch (error) {
+                logger.debug('[pi] PiGetMessages RPC failed:', error);
+                return {
+                    success: false,
+                    error: error instanceof Error ? error.message : 'Failed to get Pi messages',
+                };
+            }
+        }
+    );
+
+    // --- User message handler ---
+    // When Pi is streaming, user messages are sent as `steer` for mid-turn
+    // steering. Otherwise, they are sent as regular `prompt`.
     session.onUserMessage((message, localId) => {
         const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
+        const images = extractPiImages(message.content.attachments);
         if (localId) pendingLocalIds.push(localId);
-        transport.send({ type: 'prompt', message: formattedText });
+        if (piIsStreaming) {
+            transport.send({ type: 'steer', message: formattedText, images });
+        } else {
+            transport.send({ type: 'prompt', message: formattedText, images });
+        }
     });
 
     // --- Cancel handler ---

@@ -565,6 +565,40 @@ export class ApiClient {
         )
     }
 
+    async steerPiSession(sessionId: string, message: string): Promise<import('@hapi/protocol/apiTypes').PiSteerResponse> {
+        return await this.request<import('@hapi/protocol/apiTypes').PiSteerResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/pi-steer`,
+            { method: 'POST', body: JSON.stringify({ message }) }
+        )
+    }
+
+    async followUpPiSession(sessionId: string, message: string): Promise<import('@hapi/protocol/apiTypes').PiFollowUpResponse> {
+        return await this.request<import('@hapi/protocol/apiTypes').PiFollowUpResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/pi-follow-up`,
+            { method: 'POST', body: JSON.stringify({ message }) }
+        )
+    }
+
+    async setPiSteeringMode(sessionId: string, mode: 'all' | 'one-at-a-time'): Promise<import('@hapi/protocol/apiTypes').PiQueueModeResponse> {
+        return await this.request<import('@hapi/protocol/apiTypes').PiQueueModeResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/pi-steering-mode`,
+            { method: 'POST', body: JSON.stringify({ mode }) }
+        )
+    }
+
+    async setPiFollowUpMode(sessionId: string, mode: 'all' | 'one-at-a-time'): Promise<import('@hapi/protocol/apiTypes').PiQueueModeResponse> {
+        return await this.request<import('@hapi/protocol/apiTypes').PiQueueModeResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/pi-follow-up-mode`,
+            { method: 'POST', body: JSON.stringify({ mode }) }
+        )
+    }
+
+    async getPiMessages(sessionId: string): Promise<import('@hapi/protocol/apiTypes').PiMessagesResponse> {
+        return await this.request<import('@hapi/protocol/apiTypes').PiMessagesResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/pi-messages`
+        )
+    }
+
     async getMachineCursorModels(machineId: string): Promise<CursorModelsResponse> {
         return await this.request<CursorModelsResponse>(
             `/api/machines/${encodeURIComponent(machineId)}/cursor-models`

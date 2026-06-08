@@ -737,5 +737,139 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
     })
 
+    // --- Pi steer: send a steering message during active streaming ---
+    app.post('/sessions/:id/pi-steer', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) return sessionResult
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (flavor !== 'pi') {
+            return c.json({ success: false, error: 'Pi steer is only available for Pi sessions' }, 400)
+        }
+
+        const body = await c.req.json().catch(() => null) as { message?: string } | null
+        if (!body?.message || typeof body.message !== 'string' || body.message.trim().length === 0) {
+            return c.json({ success: false, error: 'message is required' }, 400)
+        }
+
+        try {
+            return c.json(await engine.steerPiSession(sessionResult.sessionId, body.message.trim()))
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to steer Pi session'
+            }, 500)
+        }
+    })
+
+    // --- Pi follow-up: queue a message for after the current turn ---
+    app.post('/sessions/:id/pi-follow-up', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) return sessionResult
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (flavor !== 'pi') {
+            return c.json({ success: false, error: 'Pi follow-up is only available for Pi sessions' }, 400)
+        }
+
+        const body = await c.req.json().catch(() => null) as { message?: string } | null
+        if (!body?.message || typeof body.message !== 'string' || body.message.trim().length === 0) {
+            return c.json({ success: false, error: 'message is required' }, 400)
+        }
+
+        try {
+            return c.json(await engine.followUpPiSession(sessionResult.sessionId, body.message.trim()))
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to follow up Pi session'
+            }, 500)
+        }
+    })
+
+    // --- Pi queue modes ---
+    app.post('/sessions/:id/pi-steering-mode', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) return sessionResult
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (flavor !== 'pi') {
+            return c.json({ success: false, error: 'Pi steering mode is only available for Pi sessions' }, 400)
+        }
+
+        const body = await c.req.json().catch(() => null) as { mode?: string } | null
+        if (body?.mode !== 'all' && body?.mode !== 'one-at-a-time') {
+            return c.json({ success: false, error: 'mode must be "all" or "one-at-a-time"' }, 400)
+        }
+
+        try {
+            return c.json(await engine.setPiSteeringMode(sessionResult.sessionId, body.mode))
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to set steering mode'
+            }, 500)
+        }
+    })
+
+    app.post('/sessions/:id/pi-follow-up-mode', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) return sessionResult
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (flavor !== 'pi') {
+            return c.json({ success: false, error: 'Pi follow-up mode is only available for Pi sessions' }, 400)
+        }
+
+        const body = await c.req.json().catch(() => null) as { mode?: string } | null
+        if (body?.mode !== 'all' && body?.mode !== 'one-at-a-time') {
+            return c.json({ success: false, error: 'mode must be "all" or "one-at-a-time"' }, 400)
+        }
+
+        try {
+            return c.json(await engine.setPiFollowUpMode(sessionResult.sessionId, body.mode))
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to set follow-up mode'
+            }, 500)
+        }
+    })
+
+    // --- Pi message history ---
+    app.get('/sessions/:id/pi-messages', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) return sessionResult
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (flavor !== 'pi') {
+            return c.json({ success: false, error: 'Pi messages are only available for Pi sessions' }, 400)
+        }
+
+        try {
+            return c.json(await engine.getPiMessages(sessionResult.sessionId))
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to get Pi messages'
+            }, 500)
+        }
+    })
+
     return app
 }

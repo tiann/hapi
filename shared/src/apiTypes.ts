@@ -336,6 +336,36 @@ export type PiCommandsResponse = {
     error?: string
 }
 
+export type PiSteeringMode = 'all' | 'one-at-a-time'
+export type PiFollowUpMode = 'all' | 'one-at-a-time'
+
+export type PiSteerResponse = {
+    success: boolean
+    error?: string
+}
+
+export type PiFollowUpResponse = {
+    success: boolean
+    error?: string
+}
+
+export type PiQueueModeResponse = {
+    success: boolean
+    error?: string
+}
+
+export type PiMessageEntry = {
+    entryId: string
+    role: 'user' | 'assistant'
+    text: string
+}
+
+export type PiMessagesResponse = {
+    success: boolean
+    messages?: PiMessageEntry[]
+    error?: string
+}
+
 export type ListPiCommandsResponse = PiCommandsResponse
 
 export type SlashCommand = {
