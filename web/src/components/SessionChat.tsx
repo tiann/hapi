@@ -30,6 +30,7 @@ import { useHappyRuntime } from '@/lib/assistant-runtime'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
 import { useTranslation } from '@/lib/use-translation'
 import { SessionHeader } from '@/components/SessionHeader'
+import { CursorMigrationBanner } from '@/components/CursorMigrationBanner'
 import { TeamPanel } from '@/components/TeamPanel'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
@@ -975,6 +976,8 @@ function SessionChatInner(props: SessionChatProps) {
                     })
                 }}
             />
+
+            <CursorMigrationBanner metadata={props.session.metadata} />
 
             {props.session.teamState && (
                 <TeamPanel teamState={props.session.teamState} />

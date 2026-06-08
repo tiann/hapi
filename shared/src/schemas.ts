@@ -39,6 +39,7 @@ export const MetadataSchema = z.object({
     opencodeSessionId: z.string().optional(),
     cursorSessionId: z.string().optional(),
     cursorSessionProtocol: z.enum(['acp', 'stream-json']).optional(),
+    cursorMigrationState: z.enum(['in_progress']).optional(),
     kimiSessionId: z.string().optional(),
     tools: z.array(z.string()).optional(),
     slashCommands: z.array(z.string()).optional(),
