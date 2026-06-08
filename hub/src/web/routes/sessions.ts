@@ -14,7 +14,7 @@ import {
     UploadFileRequestSchema
 } from '@hapi/protocol'
 import type { SlashCommand } from '@hapi/protocol/apiTypes'
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import type { SyncEngine, Session } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
@@ -677,68 +677,11 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
     })
 
-    app.get('/sessions/:id/pi-models', async (c) => {
-        const engine = requireSyncEngine(c, getSyncEngine)
-        if (engine instanceof Response) {
-            return engine
-        }
-
-        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
-        if (sessionResult instanceof Response) {
-            return sessionResult
-        }
-
-        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'pi') {
-            return c.json({
-                success: false,
-                error: 'Pi models are only available for Pi sessions'
-            }, 400)
-        }
-
-        try {
-            const result = await engine.listPiModelsForSession(sessionResult.sessionId)
-            return c.json(result)
-        } catch (error) {
-            return c.json({
-                success: false,
-                error: error instanceof Error ? error.message : 'Failed to list Pi models'
-            }, 500)
-        }
-    })
-
-    app.get('/sessions/:id/pi-commands', async (c) => {
-        const engine = requireSyncEngine(c, getSyncEngine)
-        if (engine instanceof Response) {
-            return engine
-        }
-
-        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
-        if (sessionResult instanceof Response) {
-            return sessionResult
-        }
-
-        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'pi') {
-            return c.json({
-                success: false,
-                error: 'Pi commands are only available for Pi sessions'
-            }, 400)
-        }
-
-        try {
-            const result = await engine.listPiCommandsForSession(sessionResult.sessionId)
-            return c.json(result)
-        } catch (error) {
-            return c.json({
-                success: false,
-                error: error instanceof Error ? error.message : 'Failed to list Pi commands'
-            }, 500)
-        }
-    })
-
-    // --- Pi steer: send a steering message during active streaming ---
-    app.post('/sessions/:id/pi-steer', async (c) => {
+    // Helper: guard + flavor check + error handling for Pi session endpoints
+    async function withPiSession(
+        c: Context<WebAppEnv>,
+        handler: (ctx: { sessionId: string; engine: SyncEngine }) => Promise<Response>
+    ): Promise<Response> {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) return engine
 
@@ -747,334 +690,143 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
 
         const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
         if (flavor !== 'pi') {
-            return c.json({ success: false, error: 'Pi steer is only available for Pi sessions' }, 400)
-        }
-
-        const body = await c.req.json().catch(() => null) as { message?: string } | null
-        if (!body?.message || typeof body.message !== 'string' || body.message.trim().length === 0) {
-            return c.json({ success: false, error: 'message is required' }, 400)
+            return c.json({ success: false, error: 'Not a Pi session' }, 400)
         }
 
         try {
-            return c.json(await engine.steerPiSession(sessionResult.sessionId, body.message.trim()))
+            return await handler({ sessionId: sessionResult.sessionId, engine })
         } catch (error) {
             return c.json({
                 success: false,
-                error: error instanceof Error ? error.message : 'Failed to steer Pi session'
+                error: error instanceof Error ? error.message : 'Internal error'
             }, 500)
         }
-    })
+    }
 
-    // --- Pi follow-up: queue a message for after the current turn ---
-    app.post('/sessions/:id/pi-follow-up', async (c) => {
-        const engine = requireSyncEngine(c, getSyncEngine)
-        if (engine instanceof Response) return engine
+    // --- Pi models & commands ---
+    app.get('/sessions/:id/pi-models', (c) =>
+        withPiSession(c, async ({ sessionId, engine }) =>
+            c.json(await engine.listPiModelsForSession(sessionId))
+        )
+    )
 
-        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
-        if (sessionResult instanceof Response) return sessionResult
+    app.get('/sessions/:id/pi-commands', (c) =>
+        withPiSession(c, async ({ sessionId, engine }) =>
+            c.json(await engine.listPiCommandsForSession(sessionId))
+        )
+    )
 
-        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'pi') {
-            return c.json({ success: false, error: 'Pi follow-up is only available for Pi sessions' }, 400)
-        }
+    // --- Pi steer & follow-up ---
+    app.post('/sessions/:id/pi-steer', (c) =>
+        withPiSession(c, async ({ sessionId, engine }) => {
+            const body = await c.req.json().catch(() => null) as { message?: string } | null
+            if (!body?.message || typeof body.message !== 'string' || body.message.trim().length === 0) {
+                return c.json({ success: false, error: 'message is required' }, 400)
+            }
+            return c.json(await engine.steerPiSession(sessionId, body.message.trim()))
+        })
+    )
 
-        const body = await c.req.json().catch(() => null) as { message?: string } | null
-        if (!body?.message || typeof body.message !== 'string' || body.message.trim().length === 0) {
-            return c.json({ success: false, error: 'message is required' }, 400)
-        }
-
-        try {
-            return c.json(await engine.followUpPiSession(sessionResult.sessionId, body.message.trim()))
-        } catch (error) {
-            return c.json({
-                success: false,
-                error: error instanceof Error ? error.message : 'Failed to follow up Pi session'
-            }, 500)
-        }
-    })
+    app.post('/sessions/:id/pi-follow-up', (c) =>
+        withPiSession(c, async ({ sessionId, engine }) => {
+            const body = await c.req.json().catch(() => null) as { message?: string } | null
+            if (!body?.message || typeof body.message !== 'string' || body.message.trim().length === 0) {
+                return c.json({ success: false, error: 'message is required' }, 400)
+            }
+            return c.json(await engine.followUpPiSession(sessionId, body.message.trim()))
+        })
+    )
 
     // --- Pi queue modes ---
-    app.post('/sessions/:id/pi-steering-mode', async (c) => {
-        const engine = requireSyncEngine(c, getSyncEngine)
-        if (engine instanceof Response) return engine
+    app.post('/sessions/:id/pi-steering-mode', (c) =>
+        withPiSession(c, async ({ sessionId, engine }) => {
+            const body = await c.req.json().catch(() => null) as { mode?: string } | null
+            if (body?.mode !== 'all' && body?.mode !== 'one-at-a-time') {
+                return c.json({ success: false, error: 'mode must be "all" or "one-at-a-time"' }, 400)
+            }
+            return c.json(await engine.setPiSteeringMode(sessionId, body.mode))
+        })
+    )
 
-        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
-        if (sessionResult instanceof Response) return sessionResult
-
-        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'pi') {
-            return c.json({ success: false, error: 'Pi steering mode is only available for Pi sessions' }, 400)
-        }
-
-        const body = await c.req.json().catch(() => null) as { mode?: string } | null
-        if (body?.mode !== 'all' && body?.mode !== 'one-at-a-time') {
-            return c.json({ success: false, error: 'mode must be "all" or "one-at-a-time"' }, 400)
-        }
-
-        try {
-            return c.json(await engine.setPiSteeringMode(sessionResult.sessionId, body.mode))
-        } catch (error) {
-            return c.json({
-                success: false,
-                error: error instanceof Error ? error.message : 'Failed to set steering mode'
-            }, 500)
-        }
-    })
-
-    app.post('/sessions/:id/pi-follow-up-mode', async (c) => {
-        const engine = requireSyncEngine(c, getSyncEngine)
-        if (engine instanceof Response) return engine
-
-        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
-        if (sessionResult instanceof Response) return sessionResult
-
-        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'pi') {
-            return c.json({ success: false, error: 'Pi follow-up mode is only available for Pi sessions' }, 400)
-        }
-
-        const body = await c.req.json().catch(() => null) as { mode?: string } | null
-        if (body?.mode !== 'all' && body?.mode !== 'one-at-a-time') {
-            return c.json({ success: false, error: 'mode must be "all" or "one-at-a-time"' }, 400)
-        }
-
-        try {
-            return c.json(await engine.setPiFollowUpMode(sessionResult.sessionId, body.mode))
-        } catch (error) {
-            return c.json({
-                success: false,
-                error: error instanceof Error ? error.message : 'Failed to set follow-up mode'
-            }, 500)
-        }
-    })
+    app.post('/sessions/:id/pi-follow-up-mode', (c) =>
+        withPiSession(c, async ({ sessionId, engine }) => {
+            const body = await c.req.json().catch(() => null) as { mode?: string } | null
+            if (body?.mode !== 'all' && body?.mode !== 'one-at-a-time') {
+                return c.json({ success: false, error: 'mode must be "all" or "one-at-a-time"' }, 400)
+            }
+            return c.json(await engine.setPiFollowUpMode(sessionId, body.mode))
+        })
+    )
 
     // --- Pi message history ---
-    app.get('/sessions/:id/pi-messages', async (c) => {
-        const engine = requireSyncEngine(c, getSyncEngine)
-        if (engine instanceof Response) return engine
+    app.get('/sessions/:id/pi-messages', (c) =>
+        withPiSession(c, async ({ sessionId, engine }) =>
+            c.json(await engine.getPiMessages(sessionId))
+        )
+    )
 
-        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
-        if (sessionResult instanceof Response) return sessionResult
+    // --- Pi advanced session features ---
+    app.post('/sessions/:id/pi-compact', (c) =>
+        withPiSession(c, async ({ sessionId, engine }) => {
+            const body = await c.req.json().catch(() => ({})) as { customInstructions?: string }
+            return c.json(await engine.compactPiSession(sessionId, body.customInstructions))
+        })
+    )
 
-        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'pi') {
-            return c.json({ success: false, error: 'Pi messages are only available for Pi sessions' }, 400)
-        }
+    app.post('/sessions/:id/pi-auto-compaction', (c) =>
+        withPiSession(c, async ({ sessionId, engine }) => {
+            const body = await c.req.json().catch(() => ({})) as { enabled?: boolean }
+            if (typeof body.enabled !== 'boolean') {
+                return c.json({ success: false, error: 'enabled (boolean) is required' }, 400)
+            }
+            return c.json(await engine.setPiAutoCompaction(sessionId, body.enabled))
+        })
+    )
 
-        try {
-            return c.json(await engine.getPiMessages(sessionResult.sessionId))
-        } catch (error) {
-            return c.json({
-                success: false,
-                error: error instanceof Error ? error.message : 'Failed to get Pi messages'
-            }, 500)
-        }
-    })
+    app.post('/sessions/:id/pi-fork', (c) =>
+        withPiSession(c, async ({ sessionId, engine }) => {
+            const body = await c.req.json().catch(() => ({})) as { entryId?: string }
+            if (!body.entryId || typeof body.entryId !== 'string') {
+                return c.json({ success: false, error: 'entryId is required' }, 400)
+            }
+            return c.json(await engine.forkPiSession(sessionId, body.entryId))
+        })
+    )
 
-    // === P3: Pi advanced session features ===
+    app.get('/sessions/:id/pi-fork-messages', (c) =>
+        withPiSession(c, async ({ sessionId, engine }) =>
+            c.json(await engine.getPiForkMessages(sessionId))
+        )
+    )
 
-    // --- Pi compact ---
-    app.post('/sessions/:id/pi-compact', async (c) => {
-        const engine = requireSyncEngine(c, getSyncEngine)
-        if (engine instanceof Response) return engine
+    app.post('/sessions/:id/pi-clone', (c) =>
+        withPiSession(c, async ({ sessionId, engine }) =>
+            c.json(await engine.clonePiSession(sessionId))
+        )
+    )
 
-        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
-        if (sessionResult instanceof Response) return sessionResult
+    app.post('/sessions/:id/pi-switch-session', (c) =>
+        withPiSession(c, async ({ sessionId, engine }) => {
+            const body = await c.req.json().catch(() => ({})) as { sessionPath?: string }
+            if (!body.sessionPath || typeof body.sessionPath !== 'string') {
+                return c.json({ success: false, error: 'sessionPath is required' }, 400)
+            }
+            return c.json(await engine.switchPiSession(sessionId, body.sessionPath))
+        })
+    )
 
-        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'pi') {
-            return c.json({ success: false, error: 'Not a Pi session' }, 400)
-        }
+    app.get('/sessions/:id/pi-stats', (c) =>
+        withPiSession(c, async ({ sessionId, engine }) =>
+            c.json(await engine.getPiSessionStats(sessionId))
+        )
+    )
 
-        const body = await c.req.json().catch(() => ({})) as { customInstructions?: string }
-
-        try {
-            return c.json(await engine.compactPiSession(sessionResult.sessionId, body.customInstructions))
-        } catch (error) {
-            return c.json({
-                success: false,
-                error: error instanceof Error ? error.message : 'Failed to compact Pi session'
-            }, 500)
-        }
-    })
-
-    // --- Pi set auto compaction ---
-    app.post('/sessions/:id/pi-auto-compaction', async (c) => {
-        const engine = requireSyncEngine(c, getSyncEngine)
-        if (engine instanceof Response) return engine
-
-        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
-        if (sessionResult instanceof Response) return sessionResult
-
-        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'pi') {
-            return c.json({ success: false, error: 'Not a Pi session' }, 400)
-        }
-
-        const body = await c.req.json().catch(() => ({})) as { enabled?: boolean }
-        if (typeof body.enabled !== 'boolean') {
-            return c.json({ success: false, error: 'enabled (boolean) is required' }, 400)
-        }
-
-        try {
-            return c.json(await engine.setPiAutoCompaction(sessionResult.sessionId, body.enabled))
-        } catch (error) {
-            return c.json({
-                success: false,
-                error: error instanceof Error ? error.message : 'Failed to set auto compaction'
-            }, 500)
-        }
-    })
-
-    // --- Pi fork ---
-    app.post('/sessions/:id/pi-fork', async (c) => {
-        const engine = requireSyncEngine(c, getSyncEngine)
-        if (engine instanceof Response) return engine
-
-        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
-        if (sessionResult instanceof Response) return sessionResult
-
-        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'pi') {
-            return c.json({ success: false, error: 'Not a Pi session' }, 400)
-        }
-
-        const body = await c.req.json().catch(() => ({})) as { entryId?: string }
-        if (!body.entryId || typeof body.entryId !== 'string') {
-            return c.json({ success: false, error: 'entryId is required' }, 400)
-        }
-
-        try {
-            return c.json(await engine.forkPiSession(sessionResult.sessionId, body.entryId))
-        } catch (error) {
-            return c.json({
-                success: false,
-                error: error instanceof Error ? error.message : 'Failed to fork Pi session'
-            }, 500)
-        }
-    })
-
-    // --- Pi get fork messages ---
-    app.get('/sessions/:id/pi-fork-messages', async (c) => {
-        const engine = requireSyncEngine(c, getSyncEngine)
-        if (engine instanceof Response) return engine
-
-        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
-        if (sessionResult instanceof Response) return sessionResult
-
-        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'pi') {
-            return c.json({ success: false, error: 'Not a Pi session' }, 400)
-        }
-
-        try {
-            return c.json(await engine.getPiForkMessages(sessionResult.sessionId))
-        } catch (error) {
-            return c.json({
-                success: false,
-                error: error instanceof Error ? error.message : 'Failed to get fork messages'
-            }, 500)
-        }
-    })
-
-    // --- Pi clone ---
-    app.post('/sessions/:id/pi-clone', async (c) => {
-        const engine = requireSyncEngine(c, getSyncEngine)
-        if (engine instanceof Response) return engine
-
-        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
-        if (sessionResult instanceof Response) return sessionResult
-
-        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'pi') {
-            return c.json({ success: false, error: 'Not a Pi session' }, 400)
-        }
-
-        try {
-            return c.json(await engine.clonePiSession(sessionResult.sessionId))
-        } catch (error) {
-            return c.json({
-                success: false,
-                error: error instanceof Error ? error.message : 'Failed to clone Pi session'
-            }, 500)
-        }
-    })
-
-    // --- Pi switch session ---
-    app.post('/sessions/:id/pi-switch-session', async (c) => {
-        const engine = requireSyncEngine(c, getSyncEngine)
-        if (engine instanceof Response) return engine
-
-        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
-        if (sessionResult instanceof Response) return sessionResult
-
-        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'pi') {
-            return c.json({ success: false, error: 'Not a Pi session' }, 400)
-        }
-
-        const body = await c.req.json().catch(() => ({})) as { sessionPath?: string }
-        if (!body.sessionPath || typeof body.sessionPath !== 'string') {
-            return c.json({ success: false, error: 'sessionPath is required' }, 400)
-        }
-
-        try {
-            return c.json(await engine.switchPiSession(sessionResult.sessionId, body.sessionPath))
-        } catch (error) {
-            return c.json({
-                success: false,
-                error: error instanceof Error ? error.message : 'Failed to switch Pi session'
-            }, 500)
-        }
-    })
-
-    // --- Pi get session stats ---
-    app.get('/sessions/:id/pi-stats', async (c) => {
-        const engine = requireSyncEngine(c, getSyncEngine)
-        if (engine instanceof Response) return engine
-
-        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
-        if (sessionResult instanceof Response) return sessionResult
-
-        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'pi') {
-            return c.json({ success: false, error: 'Not a Pi session' }, 400)
-        }
-
-        try {
-            return c.json(await engine.getPiSessionStats(sessionResult.sessionId))
-        } catch (error) {
-            return c.json({
-                success: false,
-                error: error instanceof Error ? error.message : 'Failed to get Pi session stats'
-            }, 500)
-        }
-    })
-
-    // --- Pi export HTML ---
-    app.post('/sessions/:id/pi-export-html', async (c) => {
-        const engine = requireSyncEngine(c, getSyncEngine)
-        if (engine instanceof Response) return engine
-
-        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
-        if (sessionResult instanceof Response) return sessionResult
-
-        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'pi') {
-            return c.json({ success: false, error: 'Not a Pi session' }, 400)
-        }
-
-        const body = await c.req.json().catch(() => ({})) as { outputPath?: string }
-
-        try {
-            return c.json(await engine.exportPiSessionHtml(sessionResult.sessionId, body.outputPath))
-        } catch (error) {
-            return c.json({
-                success: false,
-                error: error instanceof Error ? error.message : 'Failed to export Pi session HTML'
-            }, 500)
-        }
-    })
+    app.post('/sessions/:id/pi-export-html', (c) =>
+        withPiSession(c, async ({ sessionId, engine }) => {
+            const body = await c.req.json().catch(() => ({})) as { outputPath?: string }
+            return c.json(await engine.exportPiSessionHtml(sessionId, body.outputPath))
+        })
+    )
 
     return app
 }

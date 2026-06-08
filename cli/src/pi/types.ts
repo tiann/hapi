@@ -92,22 +92,11 @@ export type PiAgentEvent =
 // ============================================================================
 
 import type { PiThinkingLevel } from '@hapi/protocol'
-export type { PiThinkingLevel }
+import type { PiCommandSummary, PiCommandsResponse } from '@hapi/protocol/apiTypes'
+export type { PiThinkingLevel, PiCommandSummary, PiCommandsResponse }
 export { PI_THINKING_LEVELS, PI_THINKING_LEVEL_LABELS } from '@hapi/protocol'
 
 export type PiStreamingBehavior = 'steer' | 'followUp'
-
-export type PiCommandSummary = {
-    name: string
-    description?: string
-    source: 'extension' | 'prompt' | 'skill'
-}
-
-export type PiCommandsResponse = {
-    success: boolean
-    commands?: PiCommandSummary[]
-    error?: string
-}
 
 export type PiRpcCommand =
     | { type: 'prompt'; message: string; streamingBehavior?: PiStreamingBehavior }
