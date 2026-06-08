@@ -158,7 +158,21 @@ for i in $(seq 0 $((layer_count - 1))); do
 
     echo "Layer $((i + 1))/$layer_count: merging $merge_ref ..."
     if ! git -C "$DRIVER" merge --no-edit "$merge_ref"; then
+        # `git merge` exits 1 on any conflict, even when git rerere then
+        # auto-resolves and stages everything. Detect that case: if no
+        # unmerged paths remain (and no conflict markers leaked through),
+        # commit the rerere-replay and continue. This is the whole point
+        # of rerere-train.sh - the operator already taught git how to
+        # resolve these collisions on a prior rebuild.
+        unmerged="$(git -C "$DRIVER" diff --name-only --diff-filter=U 2>/dev/null)"
+        markers="$(git -C "$DRIVER" grep -lE '^<<<<<<< |^>>>>>>> ' 2>/dev/null || true)"
+        if [[ -z "$unmerged" && -z "$markers" ]]; then
+            echo "Layer $((i + 1))/$layer_count: conflicts auto-resolved by git rerere; committing replay"
+            git -C "$DRIVER" commit --no-edit --no-verify -q
+            continue
+        fi
         echo "ERROR: merge conflict merging $merge_ref into $DRIVER_BRANCH" >&2
+        echo "       unmerged: $(echo "$unmerged" | wc -l) file(s); markers: $(echo "$markers" | wc -l) file(s)" >&2
         echo "Resolve in $DRIVER, commit, or fix manifest order." >&2
         exit 1
     fi
