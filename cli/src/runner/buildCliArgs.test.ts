@@ -71,6 +71,15 @@ describe('buildCliArgs', () => {
         expect(args).toContain('high')
     })
 
+    it('passes --collaboration-mode through for codex', () => {
+        const args = buildCliArgs('codex', {
+            directory: '/tmp',
+            collaborationMode: 'plan',
+        })
+        expect(args).toContain('--collaboration-mode')
+        expect(args).toContain('plan')
+    })
+
     it('validates all known permission modes', () => {
         for (const mode of ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'ask', 'read-only', 'safe-yolo', 'yolo']) {
             const args = buildCliArgs('claude', {

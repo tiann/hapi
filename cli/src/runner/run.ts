@@ -936,6 +936,9 @@ export function buildCliArgs(
   if (options.modelReasoningEffort && (agent === 'codex' || agent === 'opencode')) {
     args.push('--model-reasoning-effort', options.modelReasoningEffort);
   }
+  if (options.collaborationMode && agent === 'codex') {
+    args.push('--collaboration-mode', options.collaborationMode);
+  }
   if (options.permissionMode && (PERMISSION_MODES as readonly string[]).includes(options.permissionMode)) {
     args.push('--permission-mode', options.permissionMode);
   } else if (yolo) {

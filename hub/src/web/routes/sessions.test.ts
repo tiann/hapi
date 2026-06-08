@@ -680,6 +680,7 @@ describe('sessions routes', () => {
             undefined,
             'thread-forked',
             undefined,
+            'default',
             'default'
         ]])
         expect(copyCalls).toEqual([['session-1', 'session-forked', 'local-2']])

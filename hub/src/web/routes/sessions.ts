@@ -692,7 +692,8 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                 undefined,
                 fork.threadId,
                 undefined,
-                session.permissionMode
+                session.permissionMode,
+                session.collaborationMode ?? undefined
             )
             if (spawn.type === 'error') {
                 return c.json({

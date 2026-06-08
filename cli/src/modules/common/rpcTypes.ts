@@ -1,4 +1,4 @@
-import type { AgentFlavor } from '@hapi/protocol'
+import type { AgentFlavor, CodexCollaborationMode } from '@hapi/protocol'
 
 export interface SpawnSessionOptions {
     machineId?: string
@@ -10,6 +10,7 @@ export interface SpawnSessionOptions {
     model?: string
     effort?: string
     modelReasoningEffort?: string
+    collaborationMode?: CodexCollaborationMode
     yolo?: boolean
     permissionMode?: string
     token?: string

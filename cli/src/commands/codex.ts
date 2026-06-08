@@ -4,7 +4,7 @@ import { initializeToken } from '@/ui/tokenInit'
 import { maybeAutoStartServer } from '@/utils/autoStartServer'
 import type { CommandDefinition } from './types'
 import { CODEX_PERMISSION_MODES } from '@hapi/protocol/modes'
-import type { CodexPermissionMode } from '@hapi/protocol/types'
+import type { CodexCollaborationMode, CodexPermissionMode } from '@hapi/protocol/types'
 import type { ReasoningEffort } from '@/codex/appServerTypes'
 import { assertCodexLocalSupported } from '@/codex/utils/codexVersion'
 
@@ -36,6 +36,7 @@ export const codexCommand: CommandDefinition = {
                 resumeSessionId?: string
                 model?: string
                 modelReasoningEffort?: ReasoningEffort
+                collaborationMode?: CodexCollaborationMode
             } = {}
             const unknownArgs: string[] = []
             let hasExplicitPermissionMode = false
@@ -76,6 +77,12 @@ export const codexCommand: CommandDefinition = {
                         throw new Error('Missing --model-reasoning-effort value')
                     }
                     options.modelReasoningEffort = parseReasoningEffort(effort)
+                } else if (arg === '--collaboration-mode') {
+                    const mode = commandArgs[++i]
+                    if (mode !== 'default' && mode !== 'plan') {
+                        throw new Error(`Invalid --collaboration-mode value: ${mode ?? '(missing)'}`)
+                    }
+                    options.collaborationMode = mode
                 } else {
                     unknownArgs.push(arg)
                 }
