@@ -2560,8 +2560,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 return { status: 'not-active' };
             }
 
-            const item = session.queue.takeByLocalId(localId);
-            if (!item) {
+            const taken = session.queue.takeByLocalIdWithIndex(localId);
+            if (!taken) {
                 return { status: 'not-found' };
             }
 
@@ -2569,11 +2569,12 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 await appServerClient.steerTurn({
                     threadId: this.currentThreadId,
                     expectedTurnId: this.currentTurnId,
-                    input: [{ type: 'text', text: item.message }]
+                    input: [{ type: 'text', text: taken.item.message }]
                 });
+                session.emitMessagesConsumed([localId]);
                 return { status: 'steered', localId };
             } catch (error) {
-                session.queue.unshift(item.message, item.mode, item.localId, item.isolate);
+                session.queue.restoreAt(taken.index, taken.item);
                 return {
                     status: 'failed',
                     error: error instanceof Error ? error.message : String(error)

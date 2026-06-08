@@ -595,6 +595,21 @@ describe('MessageQueue2', () => {
             expect(taken).toBeNull();
             expect(queue.size()).toBe(1);
         });
+
+        it('should restore a taken item at its original position', () => {
+            const queue = new MessageQueue2<string>(mode => mode);
+            queue.push('msg1', 'local', 'id-abc');
+            queue.push('msg2', 'local', 'id-def');
+            queue.push('msg3', 'local', 'id-ghi');
+
+            const taken = queue.takeByLocalIdWithIndex('id-def');
+            expect(taken?.item.message).toBe('msg2');
+            expect(taken?.index).toBe(1);
+
+            queue.restoreAt(taken!.index, taken!.item);
+
+            expect(queue.queue.map(item => item.localId)).toEqual(['id-abc', 'id-def', 'id-ghi']);
+        });
     });
 
     it('should differentiate between pushImmediate and pushIsolateAndClear behavior', async () => {

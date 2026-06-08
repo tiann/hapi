@@ -239,11 +239,20 @@ export class MessageQueue2<T> {
      * than the normal batch drain, such as steering it into an active turn.
      */
     takeByLocalId(localId: string): QueueItem<T> | null {
+        return this.takeByLocalIdWithIndex(localId)?.item ?? null;
+    }
+
+    takeByLocalIdWithIndex(localId: string): { item: QueueItem<T>; index: number } | null {
         if (!localId) return null;
-        const idx = this.queue.findIndex(item => item.localId === localId);
-        if (idx === -1) return null;
-        const [item] = this.queue.splice(idx, 1);
-        return item ?? null;
+        const index = this.queue.findIndex(item => item.localId === localId);
+        if (index === -1) return null;
+        const [item] = this.queue.splice(index, 1);
+        return item ? { item, index } : null;
+    }
+
+    restoreAt(index: number, item: QueueItem<T>): void {
+        const boundedIndex = Math.max(0, Math.min(index, this.queue.length));
+        this.queue.splice(boundedIndex, 0, item);
     }
 
     /**
