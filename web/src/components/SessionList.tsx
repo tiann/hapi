@@ -101,21 +101,29 @@ function getGroupDisplayName(directory: string): string {
 export const UNKNOWN_MACHINE_ID = '__unknown__'
 export const GROUP_SESSION_PREVIEW_LIMIT = DEFAULT_SESSION_PREVIEW_LIMIT
 
+export function getSessionDedupKey(session: SessionSummary): string | null {
+    const agentId = session.metadata?.agentSessionId?.trim()
+    if (!agentId) return null
+    // Scope by flavor: agentSessionId is flattened from native ids and can retain a
+    // stale cross-flavor value (codexSessionId ?? claudeSessionId ?? ...).
+    return `${session.metadata?.flavor ?? 'unknown'}:${agentId}`
+}
+
 export function deduplicateSessionsByAgentId(sessions: SessionSummary[], selectedSessionId?: string | null): SessionSummary[] {
     const byAgentId = new Map<string, SessionSummary[]>()
     const result: SessionSummary[] = []
 
     for (const session of sessions) {
-        const agentId = session.metadata?.agentSessionId
-        if (!agentId) {
+        const dedupKey = getSessionDedupKey(session)
+        if (!dedupKey) {
             result.push(session)
             continue
         }
-        const group = byAgentId.get(agentId)
+        const group = byAgentId.get(dedupKey)
         if (group) {
             group.push(session)
         } else {
-            byAgentId.set(agentId, [session])
+            byAgentId.set(dedupKey, [session])
         }
     }
 
@@ -132,6 +140,34 @@ export function deduplicateSessionsByAgentId(sessions: SessionSummary[], selecte
     }
 
     return result
+}
+
+function hasSidebarTitleSignal(session: SessionSummary): boolean {
+    const meta = session.metadata
+    if (!meta) return false
+    if (meta.name?.trim()) return true
+    if (meta.summary?.text?.trim()) return true
+    return false
+}
+
+export function isSidebarEmptySessionStub(session: SessionSummary): boolean {
+    if (session.active) return false
+    const meta = session.metadata
+    if (!meta) return true
+    if (meta.agentSessionId?.trim()) return false
+    if (hasSidebarTitleSignal(session)) return false
+    return true
+}
+
+export function shouldShowSessionInSidebar(session: SessionSummary, selectedSessionId?: string | null): boolean {
+    if (session.id === selectedSessionId) return true
+    if (session.active) return true
+    return !isSidebarEmptySessionStub(session)
+}
+
+export function prepareSidebarSessions(sessions: SessionSummary[], selectedSessionId?: string | null): SessionSummary[] {
+    return deduplicateSessionsByAgentId(sessions, selectedSessionId)
+        .filter(session => shouldShowSessionInSidebar(session, selectedSessionId))
 }
 
 function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
@@ -771,8 +807,8 @@ export function SessionList(props: {
     }
 
     const allSessions = useMemo(
-        () => props.sessions,
-        [props.sessions]
+        () => prepareSidebarSessions(props.sessions, selectedSessionId),
+        [props.sessions, selectedSessionId]
     )
     const visibleSessions = useMemo(
         () => isSearching
@@ -920,7 +956,7 @@ export function SessionList(props: {
                     <div className="text-xs text-[var(--app-hint)]">
                         {isSearching
                             ? t('sessions.search.count', { n: visibleSessions.length, total: allSessions.length })
-                            : t('sessions.count', { n: props.sessions.length, m: allGroups.length })}
+                            : t('sessions.count', { n: allSessions.length, m: allGroups.length })}
                     </div>
                     <button
                         type="button"

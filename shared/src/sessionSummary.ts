@@ -18,6 +18,7 @@ export type SessionSummaryMetadata = {
     flavor?: string | null
     worktree?: WorktreeMetadata
     agentSessionId?: string
+    lifecycleState?: string
 }
 
 export type SessionSummary = {
@@ -68,7 +69,8 @@ export function toSessionSummary(session: Session): SessionSummary {
             ?? session.metadata.opencodeSessionId
             ?? session.metadata.cursorSessionId
             ?? session.metadata.kimiSessionId
-            ?? undefined
+            ?? undefined,
+        lifecycleState: session.metadata.lifecycleState
     } : null
 
     const todoProgress = session.todos?.length ? {
