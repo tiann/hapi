@@ -726,7 +726,9 @@ export function SessionChat(props: {
                                 ? (props.session.active && !controlledByUser && !codexModelsState.error ? handleModelChange : undefined)
                                 : agentFlavor === 'cursor'
                                     ? (props.session.active && !cursorModelsState.error ? handleModelChange : undefined)
-                                    : handleModelChange
+                                    : agentFlavor === 'pi'
+                                        ? (props.session.active && !piModelsState.error ? handleModelChange : undefined)
+                                        : handleModelChange
                         }
                         onModelReasoningEffortChange={
                             (agentFlavor === 'codex' || agentFlavor === 'opencode') && props.session.active && !controlledByUser
