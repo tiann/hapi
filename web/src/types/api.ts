@@ -28,6 +28,8 @@ export type {
     OpencodeModelsResponse,
     OpencodeModelSummary,
     PathExistsResponse,
+    PiModelSummary,
+    PiModelsResponse,
     SlashCommand,
     SlashCommandsResponse,
     SessionResponse,

@@ -96,7 +96,8 @@ export type PiRpcCommand =
     | { type: 'abort' }
     | { type: 'new_session' }
     | { type: 'get_state' }
-    | { type: 'set_model'; provider: string; modelId: string };
+    | { type: 'set_model'; provider: string; modelId: string }
+    | { type: 'get_available_models' };
 
 // ============================================================================
 // Pi RPC Responses (stdout)

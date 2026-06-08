@@ -35,6 +35,7 @@ import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useCodexModels } from '@/hooks/queries/useCodexModels'
 import { useCursorModels } from '@/hooks/queries/useCursorModels'
 import { useOpencodeModels } from '@/hooks/queries/useOpencodeModels'
+import { usePiModels } from '@/hooks/queries/usePiModels'
 import { useVoiceOptional } from '@/lib/voice-context'
 import { VoiceBackendSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
 import { isRemoteTerminalSupported } from '@/utils/terminalSupport'
@@ -220,6 +221,21 @@ export function SessionChat(props: {
                 }))
         ]
     }, [agentFlavor, cursorModelsState.availableModels])
+    const piModelsState = usePiModels({
+        api: props.api,
+        sessionId: props.session.id,
+        enabled: agentFlavor === 'pi' && props.session.active
+    })
+    const piModelOptions = useMemo(() => {
+        if (agentFlavor !== 'pi') {
+            return undefined
+        }
+
+        return piModelsState.availableModels.map((piModel) => ({
+            value: piModel.modelId,
+            label: piModel.name ?? piModel.modelId
+        }))
+    }, [agentFlavor, piModelsState.availableModels])
     const {
         abortSession,
         switchSession,
@@ -686,7 +702,9 @@ export function SessionChat(props: {
                                     ? cursorModelOptions
                                     : agentFlavor === 'opencode'
                                         ? opencodeModelOptions
-                                        : undefined
+                                        : agentFlavor === 'pi'
+                                            ? piModelOptions
+                                            : undefined
                         }
                         active={props.session.active}
                         allowSendWhenInactive

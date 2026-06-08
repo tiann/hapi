@@ -12,6 +12,7 @@ import { convertPiEvent } from './PiEventConverter';
 import { PiMessageAccumulator } from './PiMessageAccumulator';
 import type { PiResponseEvent } from './types';
 import type { PiPermissionMode } from '@hapi/protocol/modes';
+import type { ListPiModelsResponse, PiModelSummary } from '@hapi/protocol/apiTypes';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 
 export async function runPi(opts: {
@@ -106,6 +107,36 @@ export async function runPi(opts: {
     const pendingLocalIds: string[] = [];
 
     const assistantMessageAccumulator = new PiMessageAccumulator();
+
+    // Promise-based RPC resolution for commands that need request-response
+    // semantics (e.g. get_available_models). The transport is event-driven,
+    // so we stash resolve/reject callbacks and wire them up when the
+    // matching response arrives.
+    const pendingRpcResolvers = new Map<string, {
+        resolve: (data: unknown) => void;
+        reject: (error: Error) => void;
+    }>();
+
+    function sendPiRpcAndWait(command: { type: string }, timeoutMs = 10_000): Promise<unknown> {
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                pendingRpcResolvers.delete(command.type);
+                reject(new Error(`Pi RPC ${command.type} timed out after ${timeoutMs}ms`));
+            }, timeoutMs);
+
+            pendingRpcResolvers.set(command.type, {
+                resolve: (data) => { clearTimeout(timer); pendingRpcResolvers.delete(command.type); resolve(data); },
+                reject: (error) => { clearTimeout(timer); pendingRpcResolvers.delete(command.type); reject(error); },
+            });
+
+            transport.send(command as import('./types').PiRpcCommand);
+        });
+    }
+
+    // Cached model list from the last get_available_models response.
+    // Populated automatically after get_state, and refreshed on demand
+    // via ListPiModels RPC.
+    let cachedPiModels: PiModelSummary[] = [];
 
 // --- Transport event handlers ---
 
@@ -255,6 +286,33 @@ export async function runPi(opts: {
                 logger.debug(`[pi] Model changed to: ${(data?.modelId as string) ?? model}`);
                 break;
             }
+            case 'get_available_models': {
+                const data = response.data as Record<string, unknown> | undefined;
+                const rawModels = data?.models;
+                if (Array.isArray(rawModels)) {
+                    cachedPiModels = rawModels
+                        .filter((m): m is Record<string, unknown> => typeof m === 'object' && m !== null)
+                        .map((m) => ({
+                            provider: typeof m.provider === 'string' ? m.provider : 'unknown',
+                            modelId: typeof m.id === 'string' ? m.id : '',
+                            ...(typeof m.name === 'string' ? { name: m.name } : {}),
+                            ...(typeof m.contextWindow === 'number' ? { contextWindow: m.contextWindow } : {}),
+                        }))
+                        .filter((m) => m.modelId.length > 0);
+                    logger.debug(`[pi] Available models: ${cachedPiModels.map((m) => m.modelId).join(', ')}`);
+                    // Push to session metadata so hub/web can access
+                    session.updateMetadata((meta) => ({
+                        ...meta,
+                        piAvailableModels: cachedPiModels,
+                    }));
+                }
+                // Resolve any pending RPC promise
+                const resolver = pendingRpcResolvers.get('get_available_models');
+                if (resolver) {
+                    resolver.resolve(response.data);
+                }
+                break;
+            }
             case 'new_session':
                 logger.debug('[pi] Pi session initialized');
                 break;
@@ -297,6 +355,55 @@ export async function runPi(opts: {
         }
     });
 
+    // --- Pi model discovery RPC ---
+    // Hub routes ListPiModels to fetch the available model list.
+    // Returns cached models if available (populated by auto-discovery),
+    // otherwise sends get_available_models to Pi and waits for response.
+    session.rpcHandlerManager.registerHandler<Record<string, never>, ListPiModelsResponse>(
+        RPC_METHODS.ListPiModels,
+        async () => {
+            // Return cached models if available
+            if (cachedPiModels.length > 0) {
+                return {
+                    success: true,
+                    availableModels: cachedPiModels,
+                    currentModelId: currentModel,
+                };
+            }
+
+            try {
+                const data = await sendPiRpcAndWait({ type: 'get_available_models' }) as {
+                    models?: Array<Record<string, unknown>>;
+                };
+                const rawModels = data?.models;
+                if (!Array.isArray(rawModels)) {
+                    return { success: true, availableModels: [], currentModelId: currentModel };
+                }
+                const models: PiModelSummary[] = rawModels
+                    .filter((m): m is Record<string, unknown> => typeof m === 'object' && m !== null)
+                    .map((m) => ({
+                        provider: typeof m.provider === 'string' ? m.provider : 'unknown',
+                        modelId: typeof m.id === 'string' ? m.id : '',
+                        ...(typeof m.name === 'string' ? { name: m.name } : {}),
+                        ...(typeof m.contextWindow === 'number' ? { contextWindow: m.contextWindow } : {}),
+                    }))
+                    .filter((m) => m.modelId.length > 0);
+                cachedPiModels = models;
+                return {
+                    success: true,
+                    availableModels: models,
+                    currentModelId: currentModel,
+                };
+            } catch (error) {
+                logger.debug('[pi] ListPiModels RPC failed:', error);
+                return {
+                    success: false,
+                    error: error instanceof Error ? error.message : 'Failed to list Pi models',
+                };
+            }
+        }
+    );
+
     // --- User message handler ---
 
     session.onUserMessage((message, localId) => {
@@ -330,6 +437,10 @@ export async function runPi(opts: {
 
         transport.send({ type: 'new_session' });
         transport.send({ type: 'get_state' });
+        // Auto-discover available models after init. Result is pushed to
+        // session metadata and cached for the ListPiModels RPC handler.
+        // Fire-and-forget — the response handler updates cachedPiModels.
+        transport.send({ type: 'get_available_models' });
 
         // Block until cleanup is triggered by error/close handler
         await new Promise<void>((resolve) => {

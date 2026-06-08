@@ -29,6 +29,7 @@ import {
     type RpcListCodexModelsResponse,
     type RpcListCursorModelsResponse,
     type RpcListOpencodeModelsResponse,
+    type RpcListPiModelsResponse,
     type RpcCursorModel,
     type RpcOpencodeModel,
     type RpcPathExistsResponse,
@@ -979,5 +980,9 @@ export class SyncEngine {
 
     async listOpencodeModelsForCwd(machineId: string, cwd: string): Promise<RpcListOpencodeModelsResponse> {
         return await this.rpcGateway.listOpencodeModelsForCwd(machineId, cwd)
+    }
+
+    async listPiModelsForSession(sessionId: string): Promise<RpcListPiModelsResponse> {
+        return await this.rpcGateway.listPiModelsForSession(sessionId)
     }
 }

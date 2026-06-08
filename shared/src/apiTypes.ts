@@ -308,6 +308,22 @@ export type CursorModelsResponse = OpencodeModelsResponse
 
 export type ListCursorModelsResponse = CursorModelsResponse
 
+export type PiModelSummary = {
+    provider: string
+    modelId: string
+    name?: string
+    contextWindow?: number
+}
+
+export type PiModelsResponse = {
+    success: boolean
+    availableModels?: PiModelSummary[]
+    currentModelId?: string | null
+    error?: string
+}
+
+export type ListPiModelsResponse = PiModelsResponse
+
 export type SlashCommand = {
     name: string
     description?: string
