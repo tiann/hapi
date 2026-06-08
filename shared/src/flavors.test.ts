@@ -37,6 +37,16 @@ describe('hasCapability', () => {
         expect(hasCapability('opencode', Capabilities.Effort)).toBe(false)
     })
 
+    test('pi supports model-change but not effort', () => {
+        expect(hasCapability('pi', Capabilities.ModelChange)).toBe(true)
+        expect(hasCapability('pi', Capabilities.Effort)).toBe(false)
+    })
+
+    test('kimi supports model-change but not effort', () => {
+        expect(hasCapability('kimi', Capabilities.ModelChange)).toBe(true)
+        expect(hasCapability('kimi', Capabilities.Effort)).toBe(false)
+    })
+
     test('unknown flavor returns false', () => {
         expect(hasCapability('unknown-flavor', Capabilities.ModelChange)).toBe(false)
     })
@@ -54,6 +64,8 @@ describe('getFlavorLabel', () => {
         expect(getFlavorLabel('codex')).toBe('Codex')
         expect(getFlavorLabel('cursor')).toBe('Cursor')
         expect(getFlavorLabel('opencode')).toBe('OpenCode')
+        expect(getFlavorLabel('pi')).toBe('Pi')
+        expect(getFlavorLabel('kimi')).toBe('Kimi')
     })
 
     test('unknown flavor returns Unknown', () => {
@@ -73,6 +85,8 @@ describe('isKnownFlavor', () => {
         expect(isKnownFlavor('codex')).toBe(true)
         expect(isKnownFlavor('cursor')).toBe(true)
         expect(isKnownFlavor('opencode')).toBe(true)
+        expect(isKnownFlavor('pi')).toBe(true)
+        expect(isKnownFlavor('kimi')).toBe(true)
     })
 
     test('returns false for unknown/null/undefined', () => {
@@ -89,6 +103,8 @@ describe('convenience functions', () => {
         expect(supportsModelChange('codex')).toBe(true)
         expect(supportsModelChange('opencode')).toBe(true)
         expect(supportsModelChange('cursor')).toBe(true)
+        expect(supportsModelChange('pi')).toBe(true)
+        expect(supportsModelChange('kimi')).toBe(true)
         expect(supportsModelChange(null)).toBe(false)
     })
 
@@ -96,6 +112,8 @@ describe('convenience functions', () => {
         expect(supportsEffort('claude')).toBe(true)
         expect(supportsEffort('codex')).toBe(false)
         expect(supportsEffort('gemini')).toBe(false)
+        expect(supportsEffort('pi')).toBe(false)
+        expect(supportsEffort('kimi')).toBe(false)
         expect(supportsEffort(null)).toBe(false)
     })
 })
