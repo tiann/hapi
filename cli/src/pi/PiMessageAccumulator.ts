@@ -96,7 +96,7 @@ export class PiMessageAccumulator {
             out.push({ type: 'reasoning', text: reasoning, id: streamId })
         }
         if (text) {
-            out.push({ type: 'text', text, id: streamId })
+            out.push({ type: 'text', text })
         }
         return out
     }

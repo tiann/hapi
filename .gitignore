@@ -48,3 +48,5 @@ test-results/
 playwright-report/
 e2e-output/
 .xyz-harness
+.agents/
+.pi/
