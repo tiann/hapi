@@ -9,7 +9,7 @@ import type { PendingSchedule } from './ScheduleTimePicker'
 import { useFue } from '@/lib/use-fue'
 import { FueCallout, FueDot } from '@/components/Fue'
 import { useComposerToolbarLayout, type ComposerToolbarItemId, type ComposerToolbarLayout } from '@/hooks/useComposerToolbarLayout'
-import { getCodexUsageRingPercent, getCodexUsageRows, isCodexUsageBlocked } from './codexUsageDisplay'
+import { getCodexUsageRing, getCodexUsageRingTitle, getCodexUsageRows, isCodexUsageBlocked } from './codexUsageDisplay'
 
 function ToolbarItemSlot(props: { item: ComposerToolbarItemId; children: ReactNode }) {
     return <>{props.children}</>
@@ -485,7 +485,7 @@ function CodexUsageIndicator(props: { usage?: CodexUsage | null }) {
     const [open, setOpen] = useState(false)
     const [position, setPosition] = useState<{ left: number; bottom: number } | null>(null)
     const buttonRef = useRef<HTMLButtonElement | null>(null)
-    const percent = getCodexUsageRingPercent(props.usage)
+    const ring = getCodexUsageRing(props.usage)
 
     const updatePosition = useCallback(() => {
         const button = buttonRef.current
@@ -511,11 +511,12 @@ function CodexUsageIndicator(props: { usage?: CodexUsage | null }) {
         }
     }, [open, updatePosition])
 
-    if (!props.usage || percent === null) {
+    if (!props.usage || ring === null) {
         return null
     }
 
     const rows = getCodexUsageRows(props.usage)
+    const percent = ring.percent
     const roundedPercent = Math.round(percent)
     const blocked = isCodexUsageBlocked(props.usage)
     // Blocked beats high-usage threshold: a Pro account with primary=null,
@@ -524,17 +525,19 @@ function CodexUsageIndicator(props: { usage?: CodexUsage | null }) {
     // threshold; this avoids a future change to that threshold accidentally
     // demoting the blocked state.
     const isHighUsage = blocked || percent > 85
-    const usageColor = isHighUsage ? '#991b1b' : 'var(--app-link)'
-    const textColor = isHighUsage ? '#991b1b' : 'var(--app-hint)'
+    const isAmber = !isHighUsage && percent > 60
+    const usageColor = isHighUsage ? '#991b1b' : isAmber ? '#b45309' : 'var(--app-link)'
+    const textColor = isHighUsage ? '#991b1b' : isAmber ? '#b45309' : 'var(--app-hint)'
     const background = `conic-gradient(${usageColor} ${percent * 3.6}deg, var(--app-divider) 0deg)`
+    const ringTitle = getCodexUsageRingTitle(ring, props.usage)
 
     return (
         <div className="relative">
             <button
                 ref={buttonRef}
                 type="button"
-                aria-label="Codex usage"
-                title="Codex usage"
+                aria-label={ringTitle}
+                title={ringTitle}
                 className="flex h-8 w-8 items-center justify-center rounded-full text-[10px] font-normal transition-colors hover:bg-[var(--app-bg)]"
                 style={{ color: textColor }}
                 onClick={() => {
@@ -562,12 +565,29 @@ function CodexUsageIndicator(props: { usage?: CodexUsage | null }) {
                     <div className="space-y-2">
                         {rows.map((row) => {
                             const critical = row.severity === 'critical'
+                            const dominant = row.dominant === true
                             const labelColor = critical ? '#991b1b' : 'var(--app-fg)'
                             const valueColor = critical ? '#991b1b' : 'var(--app-fg)'
+                            const emphasised = critical || dominant
+                            // Dominant row carries a subtle left accent bar
+                            // that points the eye at the axis driving the
+                            // ring percent (e.g. weekly 100% when the ring
+                            // reads 100). Avoids the previous reading where
+                            // 'why is the ring at X?' required mental
+                            // cross-reference of 4 popover rows.
+                            const borderColor = critical
+                                ? '#991b1b'
+                                : dominant
+                                    ? 'var(--app-link)'
+                                    : 'transparent'
                             return (
-                                <div key={row.label} className="flex items-start justify-between gap-3">
+                                <div
+                                    key={row.label}
+                                    className="flex items-start justify-between gap-3 rounded-sm pl-2 -ml-2"
+                                    style={{ borderLeft: `3px solid ${borderColor}` }}
+                                >
                                     <div className="min-w-0">
-                                        <div style={{ color: labelColor }} className={critical ? 'font-semibold' : undefined}>{row.label}</div>
+                                        <div style={{ color: labelColor }} className={emphasised ? 'font-semibold' : undefined}>{row.label}</div>
                                         {row.detail ? (
                                             <div className="mt-0.5 break-words text-xs text-[var(--app-hint)]">{row.detail}</div>
                                         ) : null}
