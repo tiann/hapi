@@ -2,46 +2,78 @@ import { describe, expect, it } from 'vitest'
 import type { CodexUsage } from '@hapi/protocol/types'
 import {
     formatCodexUsageReset,
+    getCodexUsageRing,
     getCodexUsageRingPercent,
+    getCodexUsageRingTitle,
     getCodexUsageRows,
     isCodexUsageBlocked
 } from './codexUsageDisplay'
 
 describe('codexUsageDisplay', () => {
-    it('prefers context window percent for the ring', () => {
+    it('surfaces the most-pressing axis - rate limit beats lower context fill', () => {
+        // Reproduces the bug screenshot from 2026-06-09: ctx=80% but
+        // weekly=100%. Original PR #537 preferred context and silently
+        // hid the hard weekly cap behind a softer context reading. Ring
+        // must report 100 + axis='weekly' so the popover dominant-marker
+        // and ring colour both reflect the real constraint.
         const usage: CodexUsage = {
             contextWindow: {
-                usedTokens: 20_000,
-                limitTokens: 100_000,
-                percent: 20,
+                usedTokens: 207_000,
+                limitTokens: 258_400,
+                percent: 80,
                 updatedAt: 1
             },
             rateLimits: {
-                fiveHour: {
-                    usedPercent: 80,
-                    windowMinutes: 300
-                }
+                fiveHour: { usedPercent: 1, windowMinutes: 300 },
+                weekly: { usedPercent: 100, windowMinutes: 10080 }
             }
         }
 
-        expect(getCodexUsageRingPercent(usage)).toBe(20)
+        const ring = getCodexUsageRing(usage)
+        expect(ring).toEqual({ percent: 100, axis: 'weekly' })
+        expect(getCodexUsageRingPercent(usage)).toBe(100)
+        expect(getCodexUsageRingTitle(ring!, usage)).toContain('Weekly')
     })
 
-    it('falls back to the highest rate-limit usage for the ring', () => {
+    it('reports context when context dominates the rate-limit axes', () => {
+        const usage: CodexUsage = {
+            contextWindow: {
+                usedTokens: 80_000,
+                limitTokens: 100_000,
+                percent: 80,
+                updatedAt: 1
+            },
+            rateLimits: {
+                fiveHour: { usedPercent: 20, windowMinutes: 300 },
+                weekly: { usedPercent: 30, windowMinutes: 10080 }
+            }
+        }
+        expect(getCodexUsageRing(usage)).toEqual({ percent: 80, axis: 'context' })
+    })
+
+    it('falls back to the highest rate-limit usage when context is absent', () => {
         const usage: CodexUsage = {
             rateLimits: {
-                fiveHour: {
-                    usedPercent: 30,
-                    windowMinutes: 300
-                },
-                weekly: {
-                    usedPercent: 60,
-                    windowMinutes: 10080
-                }
+                fiveHour: { usedPercent: 30, windowMinutes: 300 },
+                weekly: { usedPercent: 60, windowMinutes: 10080 }
             }
         }
 
-        expect(getCodexUsageRingPercent(usage)).toBe(60)
+        expect(getCodexUsageRing(usage)).toEqual({ percent: 60, axis: 'weekly' })
+    })
+
+    it('marks the dominant row so the popover can highlight the axis driving the ring', () => {
+        const usage: CodexUsage = {
+            contextWindow: { usedTokens: 207_000, limitTokens: 258_400, percent: 80, updatedAt: 1 },
+            rateLimits: {
+                fiveHour: { usedPercent: 1, windowMinutes: 300 },
+                weekly: { usedPercent: 100, windowMinutes: 10080 }
+            }
+        }
+        const rows = getCodexUsageRows(usage)
+        const dominant = rows.filter((r) => r.dominant)
+        expect(dominant.map((r) => r.label)).toEqual(['1 Week Usage'])
+        expect(rows.find((r) => r.label === 'Context Window')?.dominant).toBeFalsy()
     })
 
     it('formats detail rows and reset times', () => {
