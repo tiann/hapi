@@ -922,11 +922,12 @@ export function buildCliArgs(
   if (options.resumeSessionId) {
     if (agent === 'codex') {
       args.push('resume', options.resumeSessionId);
+    } else if (agent === 'cursor') {
+      args.push('--resume', options.resumeSessionId);
     } else if (agent === 'pi') {
       // Pi uses --session-id for exact session resume (RPC mode)
       args.push('--session-id', options.resumeSessionId);
     } else {
-      // claude, cursor, gemini, kimi, opencode all use --resume <id>
       args.push('--resume', options.resumeSessionId);
     }
   }
