@@ -21,7 +21,12 @@ type AgentFlavor = 'cursor' | 'claude' | 'codex'
 type HapiMessageContent = Record<string, unknown>
 
 const BACKFILL_META = { sentFrom: 'backfill' }
-const MAX_MESSAGES = 2000
+// Per-attach cap on imported messages. Set high enough to cover real chats
+// (jessica-story founding chat: 2974 lines; agent-notify 5.4MB chats can hit
+// 6k+ lines). Override via --max-messages or HAPI_BACKFILL_MAX_MESSAGES env.
+// At 50k we'd cap on roughly 30MB of jsonl input — generous, and the import
+// is one-time per session so there's no steady-state cost.
+const DEFAULT_MAX_MESSAGES = 50_000
 
 function argValue(name: string): string | undefined {
     const i = process.argv.indexOf(name)
@@ -34,7 +39,8 @@ function argValue(name: string): string | undefined {
 function usage(): never {
     console.error(`Usage: bun scripts/backfill-agent-transcript.ts \\
   --session <hapiSessionId> (--agent cursor|claude|codex --chat-id <uuid> | --transcript <path>) \\
-  [--project <projectDir>]  # tie-breaker when the same chat UUID exists under multiple Cursor/Claude projects
+  [--project <projectDir>]   # tie-breaker when the same chat UUID exists under multiple Cursor/Claude projects
+  [--max-messages <N>]       # per-attach import cap (default 50000; env: HAPI_BACKFILL_MAX_MESSAGES)
   [--db ~/.hapi/hapi.db] [--dry-run] [--force]`)
     process.exit(2)
 }
@@ -247,7 +253,12 @@ function convertCodexTranscriptLine(row: Record<string, unknown>): { userMessage
     return null
 }
 
-export function transcriptLinesToHapiMessages(agent: AgentFlavor, transcriptPath: string): HapiMessageContent[] {
+export function transcriptLinesToHapiMessages(
+    agent: AgentFlavor,
+    transcriptPath: string,
+    opts?: { maxMessages?: number }
+): HapiMessageContent[] {
+    const max = opts?.maxMessages ?? DEFAULT_MAX_MESSAGES
     const raw = readFileSync(transcriptPath, 'utf8')
     const lines = raw.split('\n').filter((l) => l.trim())
     const out: HapiMessageContent[] = []
@@ -346,7 +357,16 @@ export function transcriptLinesToHapiMessages(agent: AgentFlavor, transcriptPath
         }
     }
 
-    return out.slice(0, MAX_MESSAGES)
+    return out.slice(0, max)
+}
+
+/**
+ * Count raw transcript-line records that WOULD be considered for backfill,
+ * before any per-attach cap. Lets callers detect truncation without
+ * re-parsing the whole file.
+ */
+export function countTranscriptRecords(transcriptPath: string): number {
+    return readFileSync(transcriptPath, 'utf8').split('\n').filter((l) => l.trim()).length
 }
 
 function insertBackfillMessage(
@@ -366,6 +386,19 @@ function insertBackfillMessage(
     return 'inserted'
 }
 
+export type BackfillResult = {
+    inserted: number
+    skipped: number
+    transcriptPath: string
+    total: number
+    /** Raw line count of the source transcript before any per-attach cap. */
+    rawTranscriptLines: number
+    /** The cap actually applied this run (DEFAULT_MAX_MESSAGES or override). */
+    maxMessagesApplied: number
+    /** True iff rawTranscriptLines exceeded the cap and we dropped the tail. */
+    truncated: boolean
+}
+
 export function backfillSessionMessages(opts: {
     dbPath: string
     sessionId: string
@@ -375,15 +408,31 @@ export function backfillSessionMessages(opts: {
     projectHint?: string
     dryRun?: boolean
     force?: boolean
-}): { inserted: number; skipped: number; transcriptPath: string; total: number } {
+    /** Override per-attach cap (default 50_000). Also accepts HAPI_BACKFILL_MAX_MESSAGES env. */
+    maxMessages?: number
+}): BackfillResult {
     const transcriptPath = opts.transcriptPath ?? resolveTranscriptPath(opts.agent, opts.chatId, opts.projectHint)
     if (!transcriptPath) {
         throw new Error(`transcript not found for ${opts.agent} chat ${opts.chatId}`)
     }
 
-    const messages = transcriptLinesToHapiMessages(opts.agent, transcriptPath)
+    const envMax = process.env.HAPI_BACKFILL_MAX_MESSAGES
+        ? parseInt(process.env.HAPI_BACKFILL_MAX_MESSAGES, 10)
+        : undefined
+    const maxMessagesApplied = opts.maxMessages ?? (envMax && envMax > 0 ? envMax : DEFAULT_MAX_MESSAGES)
+    const rawTranscriptLines = countTranscriptRecords(transcriptPath)
+    const truncated = rawTranscriptLines > maxMessagesApplied
+
+    if (truncated) {
+        console.warn(
+            `warn: transcript has ${rawTranscriptLines} records, capping at ${maxMessagesApplied} (${rawTranscriptLines - maxMessagesApplied} dropped). ` +
+            `Raise the cap via --max-messages or HAPI_BACKFILL_MAX_MESSAGES.`
+        )
+    }
+
+    const messages = transcriptLinesToHapiMessages(opts.agent, transcriptPath, { maxMessages: maxMessagesApplied })
     if (messages.length === 0) {
-        return { inserted: 0, skipped: 0, transcriptPath, total: 0 }
+        return { inserted: 0, skipped: 0, transcriptPath, total: 0, rawTranscriptLines, maxMessagesApplied, truncated }
     }
 
     const prevAllowNewer = process.env.HAPI_STORE_ALLOW_NEWER_SCHEMA
@@ -402,7 +451,7 @@ export function backfillSessionMessages(opts: {
         }
 
         if (opts.dryRun) {
-            return { inserted: messages.length, skipped: 0, transcriptPath, total: messages.length }
+            return { inserted: messages.length, skipped: 0, transcriptPath, total: messages.length, rawTranscriptLines, maxMessagesApplied, truncated }
         }
 
         let inserted = 0
@@ -414,7 +463,7 @@ export function backfillSessionMessages(opts: {
             else skipped += 1
         }
 
-        return { inserted, skipped, transcriptPath, total: messages.length }
+        return { inserted, skipped, transcriptPath, total: messages.length, rawTranscriptLines, maxMessagesApplied, truncated }
     } finally {
         store.close()
         if (prevAllowNewer === undefined) {
@@ -431,6 +480,7 @@ if (import.meta.main) {
     const chatId = argValue('--chat-id')
     const transcript = argValue('--transcript')
     const projectHint = argValue('--project')
+    const maxMessagesRaw = argValue('--max-messages')
     const dbPath = expandHome(argValue('--db') ?? process.env.HAPI_DB ?? join(homedir(), '.hapi', 'hapi.db'))
     const dryRun = process.argv.includes('--dry-run')
     const force = process.argv.includes('--force')
@@ -441,6 +491,11 @@ if (import.meta.main) {
 
     const agent = agentRaw as AgentFlavor
     const resolvedChatId = chatId ?? basename(transcript!, '.jsonl')
+    const maxMessages = maxMessagesRaw ? parseInt(maxMessagesRaw, 10) : undefined
+    if (maxMessages !== undefined && (!Number.isFinite(maxMessages) || maxMessages <= 0)) {
+        console.error(`--max-messages must be a positive integer; got ${maxMessagesRaw}`)
+        process.exit(2)
+    }
 
     const result = backfillSessionMessages({
         dbPath,
@@ -450,7 +505,8 @@ if (import.meta.main) {
         transcriptPath: transcript ? expandHome(transcript) : undefined,
         projectHint: projectHint ? expandHome(projectHint) : undefined,
         dryRun,
-        force
+        force,
+        maxMessages
     })
 
     console.log(JSON.stringify({ ok: true, dryRun, ...result }, null, 2))

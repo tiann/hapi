@@ -127,3 +127,69 @@ describe('resolveTranscriptPath: duplicate UUID across Cursor projects', () => {
         }
     })
 })
+
+describe('backfillSessionMessages: truncation reporting', () => {
+    const dirs: string[] = []
+    afterEach(() => {
+        for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+    })
+
+    it('flags truncated=true when transcript exceeds --max-messages cap', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-backfill-trunc-'))
+        dirs.push(dir)
+        const dbPath = join(dir, 'hapi.db')
+        const transcript = join(dir, 't.jsonl')
+        // 5 user turns, cap at 3 -> truncated
+        writeFileSync(transcript, Array.from({ length: 5 }, (_, i) =>
+            JSON.stringify({ role: 'user', message: { content: [{ type: 'text', text: `msg ${i}` }] } })
+        ).join('\n') + '\n')
+
+        const store = new Store(dbPath)
+        const session = store.sessions.getOrCreateSession('trunc-test', {
+            path: dir, host: 'test', flavor: 'cursor',
+            cursorSessionId: '22222222-2222-4222-8222-222222222222'
+        }, null, 'default')
+        store.close()
+
+        const result = backfillSessionMessages({
+            dbPath,
+            sessionId: session.id,
+            agent: 'cursor',
+            chatId: '22222222-2222-4222-8222-222222222222',
+            transcriptPath: transcript,
+            maxMessages: 3
+        })
+        expect(result.rawTranscriptLines).toBe(5)
+        expect(result.maxMessagesApplied).toBe(3)
+        expect(result.truncated).toBe(true)
+        expect(result.inserted).toBe(3)
+    })
+
+    it('flags truncated=false when transcript fits within cap', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-backfill-fit-'))
+        dirs.push(dir)
+        const dbPath = join(dir, 'hapi.db')
+        const transcript = join(dir, 't.jsonl')
+        writeFileSync(transcript, JSON.stringify({
+            role: 'user', message: { content: [{ type: 'text', text: 'one and done' }] }
+        }) + '\n')
+
+        const store = new Store(dbPath)
+        const session = store.sessions.getOrCreateSession('fit-test', {
+            path: dir, host: 'test', flavor: 'cursor',
+            cursorSessionId: '33333333-3333-4333-8333-333333333333'
+        }, null, 'default')
+        store.close()
+
+        const result = backfillSessionMessages({
+            dbPath,
+            sessionId: session.id,
+            agent: 'cursor',
+            chatId: '33333333-3333-4333-8333-333333333333',
+            transcriptPath: transcript
+        })
+        expect(result.rawTranscriptLines).toBe(1)
+        expect(result.truncated).toBe(false)
+        expect(result.inserted).toBe(1)
+    })
+})

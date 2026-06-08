@@ -281,6 +281,11 @@ async function main(): Promise<void> {
     const explicitAgent = argValue('--agent')
     const explicitProject = argValue('--project')
     const explicitName = argValue('--name')
+    const maxMessagesRaw = argValue('--max-messages')
+    const maxMessages = maxMessagesRaw ? parseInt(maxMessagesRaw, 10) : undefined
+    if (maxMessages !== undefined && (!Number.isFinite(maxMessages) || maxMessages <= 0)) {
+        throw new Error(`--max-messages must be a positive integer; got ${maxMessagesRaw}`)
+    }
 
     const indexHit = resolveFromIndex(token.replace(/^#/, ''), indexPath)
     const chatId = (indexHit?.id ?? token).trim()
@@ -317,7 +322,8 @@ async function main(): Promise<void> {
             chatId,
             projectHint: projectPath,
             dryRun,
-            force: hasFlag('--force')
+            force: hasFlag('--force'),
+            maxMessages
         })
         report.pathTaken = 'backfill-only'
         report.hapiSessionId = forceSession
@@ -388,7 +394,8 @@ async function main(): Promise<void> {
                     chatId,
                     projectHint: projectPath,
                     dryRun,
-                    force: row.c > 0
+                    force: row.c > 0,
+                    maxMessages
                 })
                 report.backfill = bf
                 report.messagesInSqlite = row.c + (dryRun ? bf.total : bf.inserted)
@@ -408,6 +415,16 @@ async function main(): Promise<void> {
             const jwt = process.env.HAPI_JWT ?? hubAuth(hub, settingsPath)
             hubRename(hub, jwt, sessionToName, sessionName)
         }
+    }
+
+    // Surface backfill truncation prominently at the end of the report so it
+    // doesn't get lost in the per-stream warnings buried mid-output.
+    const bfReport = report.backfill as { truncated?: boolean; rawTranscriptLines?: number; maxMessagesApplied?: number; inserted?: number } | null
+    if (bfReport && bfReport.truncated) {
+        console.warn(
+            `\nwarn: BACKFILL TRUNCATED — imported ${bfReport.inserted} of ${bfReport.rawTranscriptLines} transcript records ` +
+            `(cap ${bfReport.maxMessagesApplied}). Re-run with --max-messages ${bfReport.rawTranscriptLines} to capture the tail.\n`
+        )
     }
 
     console.log(JSON.stringify(report, null, 2))
