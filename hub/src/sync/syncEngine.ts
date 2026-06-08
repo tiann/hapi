@@ -444,15 +444,6 @@ export class SyncEngine {
 
     async renameSession(sessionId: string, name: string): Promise<void> {
         await this.sessionCache.renameSession(sessionId, name)
-        // Notify Pi agent so its internal session state stays in sync
-        const session = this.sessionCache.getSession(sessionId)
-        if (session?.active && session.metadata?.flavor === 'pi') {
-            try {
-                await this.rpcGateway.renamePiSession(sessionId, name)
-            } catch {
-                // Best-effort: Pi rename notification is not critical for HAPI operation
-            }
-        }
     }
 
     async deleteSession(sessionId: string): Promise<void> {

@@ -3,7 +3,7 @@ import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFacto
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
 import { registerLocalHandoffHandler } from '@/agent/localHandoff';
 import { createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle';
-import { registerSessionConfigRpc } from '@/agent/sessionConfigRpc';
+import { resolveSessionConfigPermissionMode } from '@/agent/sessionConfigRpc';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import { convertAgentMessage } from '@/agent/messageConverter';
@@ -488,39 +488,69 @@ export async function runPi(opts: {
     }
 
     // --- Session config RPC ---
+    // Pi self-handles the RPC (like Claude) because the hub sends `effort`
+    // (not `modelReasoningEffort`) for this agent flavor, and the
+    // shared sessionConfigRpc helper only knows about `modelReasoningEffort`.
 
-    registerSessionConfigRpc<PiPermissionMode>({
-        rpcHandlerManager: session.rpcHandlerManager,
-        flavor: 'pi',
-        modelMode: 'nullable',
-        effortMode: 'nullable',
-        onApply: (config) => {
-            if (config.permissionMode !== undefined) {
-                currentPermissionMode = config.permissionMode;
-            }
-            if (config.model !== undefined) {
-                currentModel = config.model;
-            }
-            if (config.effort !== undefined) {
-                currentThinkingLevel = config.effort as PiThinkingLevel | null;
-            }
-        },
-        onAfterApply: () => {
-            // Only forward set_model once we know the provider from
-            // get_state. Until then, the bootstrap-time model already
-            // applied, so suppressing here is a no-op for "same model
-            // config" rather than a wrong-model emit.
-            if (currentModel && currentProvider) {
-                transport.send({ type: 'set_model', provider: currentProvider, modelId: currentModel });
-            } else if (currentModel && !currentProvider) {
-                logger.debug('[pi] set_model suppressed: provider unknown until get_state');
-            }
-            // Forward thinking level changes to Pi
-            if (currentThinkingLevel) {
-                transport.send({ type: 'set_thinking_level', level: currentThinkingLevel });
-            }
-            session.keepAlive(false, startingMode);
+    const PI_THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+
+    const resolveThinkingLevel = (value: unknown): PiThinkingLevel | null => {
+        if (value === null) return null;
+        if (typeof value !== 'string') throw new Error('Invalid effort');
+        const trimmed = value.trim().toLowerCase();
+        if (!trimmed) throw new Error('Invalid effort');
+        if (!PI_THINKING_LEVELS.includes(trimmed as PiThinkingLevel)) {
+            throw new Error('Invalid effort');
         }
+        return trimmed as PiThinkingLevel;
+    };
+
+    const resolveModel = (value: unknown): string | null => {
+        if (value === null) return null;
+        if (typeof value !== 'string') {
+            throw new Error('Invalid model');
+        }
+        const trimmed = value.trim();
+        if (!trimmed) {
+            throw new Error('Invalid model');
+        }
+        return trimmed;
+    };
+
+    session.rpcHandlerManager.registerHandler(RPC_METHODS.SetSessionConfig, async (payload: unknown) => {
+        if (!payload || typeof payload !== 'object') {
+            throw new Error('Invalid session config payload');
+        }
+        const config = payload as { permissionMode?: unknown; model?: unknown; effort?: unknown };
+
+        if (config.permissionMode !== undefined) {
+            currentPermissionMode = resolveSessionConfigPermissionMode<PiPermissionMode>(config.permissionMode, 'pi');
+        }
+        if (config.model !== undefined) {
+            currentModel = resolveModel(config.model);
+        }
+        if (config.effort !== undefined) {
+            currentThinkingLevel = resolveThinkingLevel(config.effort);
+        }
+
+        // Forward changes to Pi process
+        if (currentModel && currentProvider) {
+            transport.send({ type: 'set_model', provider: currentProvider, modelId: currentModel });
+        } else if (currentModel && !currentProvider) {
+            logger.debug('[pi] set_model suppressed: provider unknown until get_state');
+        }
+        if (currentThinkingLevel) {
+            transport.send({ type: 'set_thinking_level', level: currentThinkingLevel });
+        }
+        session.keepAlive(false, startingMode);
+
+        return {
+            applied: {
+                permissionMode: currentPermissionMode,
+                model: currentModel,
+                effort: currentThinkingLevel
+            }
+        };
     });
 
     // --- Pi model discovery RPC ---
@@ -557,21 +587,6 @@ export async function runPi(opts: {
                     error: error instanceof Error ? error.message : 'Failed to list Pi models',
                 };
             }
-        }
-    );
-
-    // --- Pi rename session RPC ---
-    // Hub calls this after renaming a Pi session via REST so Pi's internal
-    // session state stays in sync with HAPI's DB.
-    session.rpcHandlerManager.registerHandler<{ name: string }, { success: boolean }>(
-        RPC_METHODS.RenamePiSession,
-        async (params) => {
-            if (!params || typeof params.name !== 'string' || params.name.trim().length === 0) {
-                return { success: false };
-            }
-            transport.send({ type: 'set_session_name', name: params.name.trim() });
-            logger.debug(`[pi] Session name forwarded to Pi: ${params.name}`);
-            return { success: true };
         }
     );
 
