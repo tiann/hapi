@@ -871,5 +871,210 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
     })
 
+    // === P3: Pi advanced session features ===
+
+    // --- Pi compact ---
+    app.post('/sessions/:id/pi-compact', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) return sessionResult
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (flavor !== 'pi') {
+            return c.json({ success: false, error: 'Not a Pi session' }, 400)
+        }
+
+        const body = await c.req.json().catch(() => ({})) as { customInstructions?: string }
+
+        try {
+            return c.json(await engine.compactPiSession(sessionResult.sessionId, body.customInstructions))
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to compact Pi session'
+            }, 500)
+        }
+    })
+
+    // --- Pi set auto compaction ---
+    app.post('/sessions/:id/pi-auto-compaction', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) return sessionResult
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (flavor !== 'pi') {
+            return c.json({ success: false, error: 'Not a Pi session' }, 400)
+        }
+
+        const body = await c.req.json().catch(() => ({})) as { enabled?: boolean }
+        if (typeof body.enabled !== 'boolean') {
+            return c.json({ success: false, error: 'enabled (boolean) is required' }, 400)
+        }
+
+        try {
+            return c.json(await engine.setPiAutoCompaction(sessionResult.sessionId, body.enabled))
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to set auto compaction'
+            }, 500)
+        }
+    })
+
+    // --- Pi fork ---
+    app.post('/sessions/:id/pi-fork', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) return sessionResult
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (flavor !== 'pi') {
+            return c.json({ success: false, error: 'Not a Pi session' }, 400)
+        }
+
+        const body = await c.req.json().catch(() => ({})) as { entryId?: string }
+        if (!body.entryId || typeof body.entryId !== 'string') {
+            return c.json({ success: false, error: 'entryId is required' }, 400)
+        }
+
+        try {
+            return c.json(await engine.forkPiSession(sessionResult.sessionId, body.entryId))
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to fork Pi session'
+            }, 500)
+        }
+    })
+
+    // --- Pi get fork messages ---
+    app.get('/sessions/:id/pi-fork-messages', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) return sessionResult
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (flavor !== 'pi') {
+            return c.json({ success: false, error: 'Not a Pi session' }, 400)
+        }
+
+        try {
+            return c.json(await engine.getPiForkMessages(sessionResult.sessionId))
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to get fork messages'
+            }, 500)
+        }
+    })
+
+    // --- Pi clone ---
+    app.post('/sessions/:id/pi-clone', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) return sessionResult
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (flavor !== 'pi') {
+            return c.json({ success: false, error: 'Not a Pi session' }, 400)
+        }
+
+        try {
+            return c.json(await engine.clonePiSession(sessionResult.sessionId))
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to clone Pi session'
+            }, 500)
+        }
+    })
+
+    // --- Pi switch session ---
+    app.post('/sessions/:id/pi-switch-session', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) return sessionResult
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (flavor !== 'pi') {
+            return c.json({ success: false, error: 'Not a Pi session' }, 400)
+        }
+
+        const body = await c.req.json().catch(() => ({})) as { sessionPath?: string }
+        if (!body.sessionPath || typeof body.sessionPath !== 'string') {
+            return c.json({ success: false, error: 'sessionPath is required' }, 400)
+        }
+
+        try {
+            return c.json(await engine.switchPiSession(sessionResult.sessionId, body.sessionPath))
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to switch Pi session'
+            }, 500)
+        }
+    })
+
+    // --- Pi get session stats ---
+    app.get('/sessions/:id/pi-stats', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) return sessionResult
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (flavor !== 'pi') {
+            return c.json({ success: false, error: 'Not a Pi session' }, 400)
+        }
+
+        try {
+            return c.json(await engine.getPiSessionStats(sessionResult.sessionId))
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to get Pi session stats'
+            }, 500)
+        }
+    })
+
+    // --- Pi export HTML ---
+    app.post('/sessions/:id/pi-export-html', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) return sessionResult
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (flavor !== 'pi') {
+            return c.json({ success: false, error: 'Not a Pi session' }, 400)
+        }
+
+        const body = await c.req.json().catch(() => ({})) as { outputPath?: string }
+
+        try {
+            return c.json(await engine.exportPiSessionHtml(sessionResult.sessionId, body.outputPath))
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to export Pi session HTML'
+            }, 500)
+        }
+    })
+
     return app
 }

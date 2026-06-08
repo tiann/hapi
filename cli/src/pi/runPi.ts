@@ -10,10 +10,10 @@ import { convertAgentMessage } from '@/agent/messageConverter';
 import { PiTransport } from './PiTransport';
 import { convertPiEvent } from './PiEventConverter';
 import { PiMessageAccumulator } from './PiMessageAccumulator';
-import type { PiResponseEvent, PiThinkingLevel, PiCommandSummary, PiImageContent } from './types';
+import type { PiResponseEvent, PiThinkingLevel, PiCommandSummary, PiImageContent, PiSessionStats, PiCompactionResult, PiForkMessageEntry } from './types';
 import type { SlashCommandsResponse } from '@hapi/protocol/apiTypes';
 import type { PiPermissionMode } from '@hapi/protocol/modes';
-import type { ListPiModelsResponse, PiModelSummary, PiCommandsResponse, PiSteerResponse, PiFollowUpResponse, PiQueueModeResponse, PiMessagesResponse, PiMessageEntry } from '@hapi/protocol/apiTypes';
+import type { ListPiModelsResponse, PiModelSummary, PiCommandsResponse, PiSteerResponse, PiFollowUpResponse, PiQueueModeResponse, PiMessagesResponse, PiMessageEntry, PiCompactResponse, PiSetAutoCompactionResponse, PiForkResponse, PiForkMessagesResponse, PiCloneResponse, PiSwitchSessionResponse, PiSessionStatsResponse, PiExportHtmlResponse } from '@hapi/protocol/apiTypes';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 
 export async function runPi(opts: {
@@ -122,7 +122,7 @@ export async function runPi(opts: {
         reject: (error: Error) => void;
     }>();
 
-    function sendPiRpcAndWait(command: { type: string }, timeoutMs = 10_000): Promise<unknown> {
+    function sendPiRpcAndWait(command: Record<string, unknown>, timeoutMs = 10_000): Promise<unknown> {
         const id = ++rpcIdCounter;
         return new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
@@ -135,7 +135,7 @@ export async function runPi(opts: {
                 reject: (error) => { clearTimeout(timer); pendingRpcResolvers.delete(id); reject(error); },
             });
 
-            transport.send({ ...command, id: String(id) } as import('./types').PiRpcCommand);
+            transport.send({ ...command, id: String(id) } as unknown as import('./types').PiRpcCommand);
         });
     }
 
@@ -439,6 +439,39 @@ export async function runPi(opts: {
                 logger.debug('[pi] Messages retrieved');
                 resolvePendingRpc(response);
                 break;
+            // P3 responses
+            case 'compact':
+                logger.debug('[pi] Compact completed');
+                resolvePendingRpc(response);
+                break;
+            case 'set_auto_compaction':
+                logger.debug('[pi] Auto compaction toggled');
+                resolvePendingRpc(response);
+                break;
+            case 'fork':
+                logger.debug('[pi] Fork completed');
+                resolvePendingRpc(response);
+                break;
+            case 'get_fork_messages':
+                logger.debug('[pi] Fork messages retrieved');
+                resolvePendingRpc(response);
+                break;
+            case 'clone':
+                logger.debug('[pi] Clone completed');
+                resolvePendingRpc(response);
+                break;
+            case 'switch_session':
+                logger.debug('[pi] Session switched');
+                resolvePendingRpc(response);
+                break;
+            case 'get_session_stats':
+                logger.debug('[pi] Session stats retrieved');
+                resolvePendingRpc(response);
+                break;
+            case 'export_html':
+                logger.debug('[pi] HTML export completed');
+                resolvePendingRpc(response);
+                break;
             default:
                 logger.debug(`[pi] Response for ${command}`);
         }
@@ -697,6 +730,221 @@ export async function runPi(opts: {
                 return {
                     success: false,
                     error: error instanceof Error ? error.message : 'Failed to get Pi messages',
+                };
+            }
+        }
+    );
+
+    // === P3 RPC Handlers ===
+
+    // --- Pi compact RPC ---
+    // Triggers manual context compaction. Pi returns a CompactionResult with
+    // the summary and first kept entry ID.
+    session.rpcHandlerManager.registerHandler<{ customInstructions?: string }, PiCompactResponse>(
+        RPC_METHODS.PiCompact,
+        async (params) => {
+            try {
+                const command: import('./types').PiRpcCommand = { type: 'compact' };
+                if (params?.customInstructions) {
+                    (command as Record<string, unknown>).customInstructions = params.customInstructions;
+                }
+                const data = await sendPiRpcAndWait(command, 60_000);
+                const result = data as Record<string, unknown> | null;
+                if (!result) {
+                    return { success: true };
+                }
+                return {
+                    success: true,
+                    result: {
+                        summary: typeof result.summary === 'string' ? result.summary : '',
+                        firstKeptEntryId: typeof result.firstKeptEntryId === 'string' ? result.firstKeptEntryId : '',
+                        tokensBefore: typeof result.tokensBefore === 'number' ? result.tokensBefore : 0,
+                    },
+                };
+            } catch (error) {
+                logger.debug('[pi] PiCompact RPC failed:', error);
+                return {
+                    success: false,
+                    error: error instanceof Error ? error.message : 'Failed to compact Pi session',
+                };
+            }
+        }
+    );
+
+    // --- Pi set_auto_compaction RPC ---
+    session.rpcHandlerManager.registerHandler<{ enabled: boolean }, PiSetAutoCompactionResponse>(
+        RPC_METHODS.PiSetAutoCompaction,
+        async (params) => {
+            if (params === undefined || params === null || typeof params.enabled !== 'boolean') {
+                return { success: false, error: 'enabled (boolean) is required' };
+            }
+            try {
+                await sendPiRpcAndWait({ type: 'set_auto_compaction', enabled: params.enabled });
+                return { success: true };
+            } catch (error) {
+                logger.debug('[pi] PiSetAutoCompaction RPC failed:', error);
+                return {
+                    success: false,
+                    error: error instanceof Error ? error.message : 'Failed to set auto compaction',
+                };
+            }
+        }
+    );
+
+    // --- Pi fork RPC ---
+    // Forks the session at the given entry ID. Returns the fork summary text.
+    session.rpcHandlerManager.registerHandler<{ entryId: string }, PiForkResponse>(
+        RPC_METHODS.PiFork,
+        async (params) => {
+            if (!params?.entryId || typeof params.entryId !== 'string') {
+                return { success: false, error: 'entryId is required' };
+            }
+            try {
+                const data = await sendPiRpcAndWait({ type: 'fork', entryId: params.entryId });
+                const result = data as Record<string, unknown> | null;
+                return {
+                    success: true,
+                    text: result && typeof result.text === 'string' ? result.text : undefined,
+                };
+            } catch (error) {
+                logger.debug('[pi] PiFork RPC failed:', error);
+                return {
+                    success: false,
+                    error: error instanceof Error ? error.message : 'Failed to fork Pi session',
+                };
+            }
+        }
+    );
+
+    // --- Pi get_fork_messages RPC ---
+    // Retrieves messages from the current fork context.
+    session.rpcHandlerManager.registerHandler<Record<string, never>, PiForkMessagesResponse>(
+        RPC_METHODS.PiGetForkMessages,
+        async () => {
+            try {
+                const data = await sendPiRpcAndWait({ type: 'get_fork_messages' });
+                const rawMessages = (data as Record<string, unknown>)?.messages;
+                if (!Array.isArray(rawMessages)) {
+                    return { success: true, messages: [] };
+                }
+                const messages: PiForkMessageEntry[] = rawMessages
+                    .filter((m): m is Record<string, unknown> => typeof m === 'object' && m !== null)
+                    .map((m) => ({
+                        entryId: typeof m.entryId === 'string' ? m.entryId : '',
+                        text: typeof m.text === 'string' ? m.text : '',
+                    }))
+                    .filter((m) => m.entryId.length > 0);
+                return { success: true, messages };
+            } catch (error) {
+                logger.debug('[pi] PiGetForkMessages RPC failed:', error);
+                return {
+                    success: false,
+                    error: error instanceof Error ? error.message : 'Failed to get fork messages',
+                };
+            }
+        }
+    );
+
+    // --- Pi clone RPC ---
+    // Clones the current Pi session.
+    session.rpcHandlerManager.registerHandler<Record<string, never>, PiCloneResponse>(
+        RPC_METHODS.PiClone,
+        async () => {
+            try {
+                await sendPiRpcAndWait({ type: 'clone' });
+                return { success: true };
+            } catch (error) {
+                logger.debug('[pi] PiClone RPC failed:', error);
+                return {
+                    success: false,
+                    error: error instanceof Error ? error.message : 'Failed to clone Pi session',
+                };
+            }
+        }
+    );
+
+    // --- Pi switch_session RPC ---
+    // Switches Pi to a different session by path.
+    session.rpcHandlerManager.registerHandler<{ sessionPath: string }, PiSwitchSessionResponse>(
+        RPC_METHODS.PiSwitchSession,
+        async (params) => {
+            if (!params?.sessionPath || typeof params.sessionPath !== 'string') {
+                return { success: false, error: 'sessionPath is required' };
+            }
+            try {
+                await sendPiRpcAndWait({ type: 'switch_session', sessionPath: params.sessionPath });
+                return { success: true };
+            } catch (error) {
+                logger.debug('[pi] PiSwitchSession RPC failed:', error);
+                return {
+                    success: false,
+                    error: error instanceof Error ? error.message : 'Failed to switch Pi session',
+                };
+            }
+        }
+    );
+
+    // --- Pi get_session_stats RPC ---
+    // Returns token counts, message counts, cost.
+    session.rpcHandlerManager.registerHandler<Record<string, never>, PiSessionStatsResponse>(
+        RPC_METHODS.PiGetSessionStats,
+        async () => {
+            try {
+                const data = await sendPiRpcAndWait({ type: 'get_session_stats' });
+                const raw = data as Record<string, unknown> | null;
+                if (!raw) {
+                    return { success: false, error: 'Empty response from Pi' };
+                }
+                const tokens = raw.tokens as Record<string, unknown> | undefined;
+                return {
+                    success: true,
+                    stats: {
+                        sessionId: typeof raw.sessionId === 'string' ? raw.sessionId : '',
+                        userMessages: typeof raw.userMessages === 'number' ? raw.userMessages : 0,
+                        assistantMessages: typeof raw.assistantMessages === 'number' ? raw.assistantMessages : 0,
+                        toolCalls: typeof raw.toolCalls === 'number' ? raw.toolCalls : 0,
+                        totalMessages: typeof raw.totalMessages === 'number' ? raw.totalMessages : 0,
+                        tokens: {
+                            input: typeof tokens?.input === 'number' ? tokens.input : 0,
+                            output: typeof tokens?.output === 'number' ? tokens.output : 0,
+                            cacheRead: typeof tokens?.cacheRead === 'number' ? tokens.cacheRead : 0,
+                            cacheWrite: typeof tokens?.cacheWrite === 'number' ? tokens.cacheWrite : 0,
+                            total: typeof tokens?.total === 'number' ? tokens.total : 0,
+                        },
+                        cost: typeof raw.cost === 'number' ? raw.cost : 0,
+                    },
+                };
+            } catch (error) {
+                logger.debug('[pi] PiGetSessionStats RPC failed:', error);
+                return {
+                    success: false,
+                    error: error instanceof Error ? error.message : 'Failed to get Pi session stats',
+                };
+            }
+        }
+    );
+
+    // --- Pi export_html RPC ---
+    // Exports the session as an HTML file. Returns the output path.
+    session.rpcHandlerManager.registerHandler<{ outputPath?: string }, PiExportHtmlResponse>(
+        RPC_METHODS.PiExportHtml,
+        async (params) => {
+            try {
+                const command: import('./types').PiRpcCommand = { type: 'export_html' };
+                if (params?.outputPath) {
+                    (command as Record<string, unknown>).outputPath = params.outputPath;
+                }
+                const data = await sendPiRpcAndWait(command, 30_000);
+                const result = data as Record<string, unknown> | null;
+                return {
+                    success: true,
+                    path: result && typeof result.path === 'string' ? result.path : undefined,
+                };
+            } catch (error) {
+                logger.debug('[pi] PiExportHtml RPC failed:', error);
+                return {
+                    success: false,
+                    error: error instanceof Error ? error.message : 'Failed to export Pi session HTML',
                 };
             }
         }

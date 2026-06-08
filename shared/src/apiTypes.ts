@@ -366,6 +366,82 @@ export type PiMessagesResponse = {
     error?: string
 }
 
+// P3: Compact
+export type PiCompactResponse = {
+    success: boolean
+    result?: {
+        summary: string
+        firstKeptEntryId: string
+        tokensBefore: number
+    }
+    error?: string
+}
+
+export type PiSetAutoCompactionResponse = {
+    success: boolean
+    error?: string
+}
+
+// P3: Fork
+export type PiForkResponse = {
+    success: boolean
+    text?: string
+    error?: string
+}
+
+export type PiForkMessageEntry = {
+    entryId: string
+    text: string
+}
+
+export type PiForkMessagesResponse = {
+    success: boolean
+    messages?: PiForkMessageEntry[]
+    error?: string
+}
+
+// P3: Clone
+export type PiCloneResponse = {
+    success: boolean
+    error?: string
+}
+
+// P3: Switch session
+export type PiSwitchSessionResponse = {
+    success: boolean
+    error?: string
+}
+
+// P3: Session stats
+export type PiSessionStats = {
+    sessionId: string
+    userMessages: number
+    assistantMessages: number
+    toolCalls: number
+    totalMessages: number
+    tokens: {
+        input: number
+        output: number
+        cacheRead: number
+        cacheWrite: number
+        total: number
+    }
+    cost: number
+}
+
+export type PiSessionStatsResponse = {
+    success: boolean
+    stats?: PiSessionStats
+    error?: string
+}
+
+// P3: HTML export
+export type PiExportHtmlResponse = {
+    success: boolean
+    path?: string
+    error?: string
+}
+
 export type ListPiCommandsResponse = PiCommandsResponse
 
 export type SlashCommand = {

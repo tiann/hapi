@@ -134,7 +134,15 @@ export type PiRpcCommand =
     | { type: 'get_commands' }
     | { type: 'set_steering_mode'; mode: 'all' | 'one-at-a-time' }
     | { type: 'set_follow_up_mode'; mode: 'all' | 'one-at-a-time' }
-    | { type: 'get_messages' };
+    | { type: 'get_messages' }
+    | { type: 'compact'; customInstructions?: string }
+    | { type: 'set_auto_compaction'; enabled: boolean }
+    | { type: 'fork'; entryId: string }
+    | { type: 'get_fork_messages' }
+    | { type: 'clone' }
+    | { type: 'switch_session'; sessionPath: string }
+    | { type: 'get_session_stats' }
+    | { type: 'export_html'; outputPath?: string };
 
 // ============================================================================
 // Pi RPC Responses (stdout)
@@ -146,4 +154,34 @@ export interface PiResponseEvent {
     success: boolean;
     error?: string;
     data?: unknown;
+}
+
+// P3: Session stats returned by get_session_stats
+export interface PiSessionStats {
+    sessionId: string
+    userMessages: number
+    assistantMessages: number
+    toolCalls: number
+    totalMessages: number
+    tokens: {
+        input: number
+        output: number
+        cacheRead: number
+        cacheWrite: number
+        total: number
+    }
+    cost: number
+}
+
+// P3: Compaction result returned by compact
+export interface PiCompactionResult {
+    summary: string
+    firstKeptEntryId: string
+    tokensBefore: number
+}
+
+// P3: Fork message entry returned by get_fork_messages
+export interface PiForkMessageEntry {
+    entryId: string
+    text: string
 }

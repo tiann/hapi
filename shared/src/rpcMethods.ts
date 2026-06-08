@@ -37,6 +37,14 @@ export const RPC_METHODS = {
     PiSetSteeringMode: 'piSetSteeringMode',
     PiSetFollowUpMode: 'piSetFollowUpMode',
     PiGetMessages: 'piGetMessages',
+    PiCompact: 'piCompact',
+    PiSetAutoCompaction: 'piSetAutoCompaction',
+    PiFork: 'piFork',
+    PiGetForkMessages: 'piGetForkMessages',
+    PiClone: 'piClone',
+    PiSwitchSession: 'piSwitchSession',
+    PiGetSessionStats: 'piGetSessionStats',
+    PiExportHtml: 'piExportHtml',
 } as const
 
 export type RpcMethod = typeof RPC_METHODS[keyof typeof RPC_METHODS]

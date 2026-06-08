@@ -599,6 +599,68 @@ export class ApiClient {
         )
     }
 
+    // P3: Compact
+    async compactPiSession(sessionId: string, customInstructions?: string): Promise<import('@hapi/protocol/apiTypes').PiCompactResponse> {
+        return await this.request<import('@hapi/protocol/apiTypes').PiCompactResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/pi-compact`,
+            { method: 'POST', body: JSON.stringify({ customInstructions }) }
+        )
+    }
+
+    // P3: Set auto compaction
+    async setPiAutoCompaction(sessionId: string, enabled: boolean): Promise<import('@hapi/protocol/apiTypes').PiSetAutoCompactionResponse> {
+        return await this.request<import('@hapi/protocol/apiTypes').PiSetAutoCompactionResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/pi-auto-compaction`,
+            { method: 'POST', body: JSON.stringify({ enabled }) }
+        )
+    }
+
+    // P3: Fork
+    async forkPiSession(sessionId: string, entryId: string): Promise<import('@hapi/protocol/apiTypes').PiForkResponse> {
+        return await this.request<import('@hapi/protocol/apiTypes').PiForkResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/pi-fork`,
+            { method: 'POST', body: JSON.stringify({ entryId }) }
+        )
+    }
+
+    // P3: Get fork messages
+    async getPiForkMessages(sessionId: string): Promise<import('@hapi/protocol/apiTypes').PiForkMessagesResponse> {
+        return await this.request<import('@hapi/protocol/apiTypes').PiForkMessagesResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/pi-fork-messages`
+        )
+    }
+
+    // P3: Clone
+    async clonePiSession(sessionId: string): Promise<import('@hapi/protocol/apiTypes').PiCloneResponse> {
+        return await this.request<import('@hapi/protocol/apiTypes').PiCloneResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/pi-clone`,
+            { method: 'POST' }
+        )
+    }
+
+    // P3: Switch session
+    async switchPiSession(sessionId: string, sessionPath: string): Promise<import('@hapi/protocol/apiTypes').PiSwitchSessionResponse> {
+        return await this.request<import('@hapi/protocol/apiTypes').PiSwitchSessionResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/pi-switch-session`,
+            { method: 'POST', body: JSON.stringify({ sessionPath }) }
+        )
+    }
+
+    // P3: Get session stats
+    async getPiSessionStats(sessionId: string): Promise<import('@hapi/protocol/apiTypes').PiSessionStatsResponse> {
+        return await this.request<import('@hapi/protocol/apiTypes').PiSessionStatsResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/pi-stats`
+        )
+    }
+
+    // P3: Export HTML
+    async exportPiSessionHtml(sessionId: string, outputPath?: string): Promise<import('@hapi/protocol/apiTypes').PiExportHtmlResponse> {
+        return await this.request<import('@hapi/protocol/apiTypes').PiExportHtmlResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/pi-export-html`,
+            { method: 'POST', body: JSON.stringify({ outputPath }) }
+        )
+    }
+
     async getMachineCursorModels(machineId: string): Promise<CursorModelsResponse> {
         return await this.request<CursorModelsResponse>(
             `/api/machines/${encodeURIComponent(machineId)}/cursor-models`

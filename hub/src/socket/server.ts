@@ -129,7 +129,6 @@ export function createSocketServer(deps: SocketServerDeps): {
         const auth = socket.handshake.auth as Record<string, unknown> | undefined
         const token = typeof auth?.token === 'string' ? auth.token : null
         if (!token) {
-            console.error('[Terminal NS] Missing token, auth:', JSON.stringify(auth))
             return next(new Error('Missing token'))
         }
 
@@ -137,16 +136,13 @@ export function createSocketServer(deps: SocketServerDeps): {
             const verified = await jwtVerify(token, deps.jwtSecret, { algorithms: ['HS256'] })
             const parsed = jwtPayloadSchema.safeParse(verified.payload)
             if (!parsed.success) {
-                console.error('[Terminal NS] Invalid token payload:', JSON.stringify(parsed.error.issues))
                 return next(new Error('Invalid token payload'))
             }
-            console.log('[Terminal NS] Auth success, uid:', parsed.data.uid, 'ns:', parsed.data.ns)
             socket.data.userId = parsed.data.uid
             socket.data.namespace = parsed.data.ns
             next()
             return
-        } catch (err) {
-            console.error('[Terminal NS] JWT verify failed:', err instanceof Error ? err.message : err)
+        } catch {
             return next(new Error('Invalid token'))
         }
     })
