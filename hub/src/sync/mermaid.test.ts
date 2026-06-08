@@ -113,7 +113,7 @@ describe('extractFailingMermaidBlocks', () => {
     })
 
     it('returns [] for mermaid 11.12+ diagram types (radar-beta, treemap, treeview-beta, venn-beta, wardley-beta, ishikawa)', () => {
-        for (const type of ['radar-beta', 'treemap', 'treeView-beta', 'venn-beta', 'wardley-beta', 'ishikawa']) {
+        for (const type of ['radar-beta', 'treemap', 'treeview-beta', 'venn-beta', 'wardley-beta', 'ishikawa']) {
             const msg = assistantMessage(`\`\`\`mermaid\n${type}\n  A --> B\n\`\`\``)
             expect(extractFailingMermaidBlocks(msg), `should accept ${type}`).toEqual([])
         }
