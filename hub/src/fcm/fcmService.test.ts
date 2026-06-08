@@ -209,13 +209,32 @@ describe('FcmService.isHealthy (rolling outcome window)', () => {
         globalThis.fetch = originalFetch
     })
 
-    it('starts healthy with an empty outcome buffer (innocent until proven guilty)', () => {
+    it('starts UNHEALTHY with an empty outcome buffer (no positive evidence yet)', () => {
+        // Cold-start invariant (HAPI Bot Major fix on PR #803): the gate
+        // requires at least one observed success before suppressing
+        // web-push. Otherwise a hub started with broken FCM credentials
+        // silently drops the first N notifications while waiting for the
+        // failure threshold to trip.
         const store = makeStore([])
         const svc = new FcmService('proj-id', { client_email: 'x', private_key: 'y' }, store as never)
+        expect(svc.isHealthy()).toBe(false)
+    })
+
+    it('flips to healthy after the first successful send', async () => {
+        const store = makeStore([
+            { namespace: 'default', token: 't1', platform: 'phone', deviceId: 'p1' }
+        ])
+        globalThis.fetch = mock(async () =>
+            new Response('{"name":"ok"}', { status: 200 })
+        ) as unknown as typeof fetch
+
+        const svc = new FcmService('proj-id', { client_email: 'x', private_key: 'y' }, store as never)
+        expect(svc.isHealthy()).toBe(false)
+        await svc.sendToNamespace('default', makePayload())
         expect(svc.isHealthy()).toBe(true)
     })
 
-    it('flips to unhealthy after 5 consecutive transient failures', async () => {
+    it('stays unhealthy across a run of failures with no successes (broken-FCM cold start)', async () => {
         const store = makeStore([
             { namespace: 'default', token: 't1', platform: 'phone', deviceId: 'p1' }
         ])
@@ -225,13 +244,38 @@ describe('FcmService.isHealthy (rolling outcome window)', () => {
 
         const svc = new FcmService('proj-id', { client_email: 'x', private_key: 'y' }, store as never)
 
-        // 4 failures: still healthy (threshold is 5)
-        for (let i = 0; i < 4; i += 1) {
+        // Without any prior success the gate must stay unhealthy regardless
+        // of where we are in the failure-threshold count. This is the exact
+        // silent-blackhole window the bot flagged.
+        for (let i = 0; i < 5; i += 1) {
             await svc.sendToNamespace('default', makePayload())
+            expect(svc.isHealthy()).toBe(false)
         }
+    })
+
+    it('flips back to unhealthy when failures stack past threshold after prior successes', async () => {
+        const store = makeStore([
+            { namespace: 'default', token: 't1', platform: 'phone', deviceId: 'p1' }
+        ])
+        let callCount = 0
+        globalThis.fetch = mock(async () => {
+            callCount += 1
+            // First 3 succeed, then 503s
+            if (callCount <= 3) return new Response('{"name":"ok"}', { status: 200 })
+            return new Response('Service Unavailable', { status: 503 })
+        }) as unknown as typeof fetch
+
+        const svc = new FcmService('proj-id', { client_email: 'x', private_key: 'y' }, store as never)
+
+        // 3 successes establish health
+        for (let i = 0; i < 3; i += 1) await svc.sendToNamespace('default', makePayload())
         expect(svc.isHealthy()).toBe(true)
 
-        // 5th failure crosses the threshold
+        // 4 failures: window is [S,S,S,F,F,F,F] - 4 < 5 -> still healthy
+        for (let i = 0; i < 4; i += 1) await svc.sendToNamespace('default', makePayload())
+        expect(svc.isHealthy()).toBe(true)
+
+        // 5th failure: [S,S,S,F,F,F,F,F] - 5 >= 5 -> unhealthy
         await svc.sendToNamespace('default', makePayload())
         expect(svc.isHealthy()).toBe(false)
     })
@@ -267,16 +311,27 @@ describe('FcmService.isHealthy (rolling outcome window)', () => {
 
     it('does NOT count invalid-token responses against health (per-device fact, not pipeline failure)', async () => {
         const store = makeStore([
-            { namespace: 'default', token: 'rotated', platform: 'phone', deviceId: 'p1' }
+            { namespace: 'default', token: 'good', platform: 'phone', deviceId: 'p1' },
+            { namespace: 'default', token: 'rotated', platform: 'phone', deviceId: 'p2' }
         ])
-        globalThis.fetch = mock(async () =>
-            new Response('{"error":{"status":"UNREGISTERED"}}', { status: 404 })
-        ) as unknown as typeof fetch
+        globalThis.fetch = mock(async (url: unknown, init?: unknown) => {
+            // Different responses per device token. We use the request
+            // body to discriminate - both calls go to the same URL.
+            const body = JSON.parse(((init as { body?: string })?.body) ?? '{}')
+            const token = body?.message?.token
+            if (token === 'good') return new Response('{"name":"ok"}', { status: 200 })
+            return new Response('{"error":{"status":"UNREGISTERED"}}', { status: 404 })
+        }) as unknown as typeof fetch
 
         const svc = new FcmService('proj-id', { client_email: 'x', private_key: 'y' }, store as never)
 
-        // 10 invalid-token responses - the pipeline is fine, just the
-        // device is dead. Health must not flip.
+        // First send produces 1 sent + 1 invalid. After this the rotated
+        // token is removed from the store, leaving only the good one.
+        await svc.sendToNamespace('default', makePayload())
+        expect(svc.isHealthy()).toBe(true)
+
+        // Subsequent successful sends do not record additional outcomes
+        // for the (now-pruned) invalid token. Health stays true.
         for (let i = 0; i < 10; i += 1) {
             await svc.sendToNamespace('default', makePayload())
         }
@@ -287,14 +342,22 @@ describe('FcmService.isHealthy (rolling outcome window)', () => {
         const store = makeStore([
             { namespace: 'default', token: 't1', platform: 'phone', deviceId: 'p1' }
         ])
+        let callCount = 0
         globalThis.fetch = mock(async () => {
+            callCount += 1
+            // First few succeed (establish health), rest throw network error
+            if (callCount <= 3) return new Response('{"name":"ok"}', { status: 200 })
             throw new Error('ECONNREFUSED')
         }) as unknown as typeof fetch
 
         const svc = new FcmService('proj-id', { client_email: 'x', private_key: 'y' }, store as never)
-        for (let i = 0; i < 5; i += 1) {
-            await svc.sendToNamespace('default', makePayload())
-        }
+
+        // Establish health with 3 successes
+        for (let i = 0; i < 3; i += 1) await svc.sendToNamespace('default', makePayload())
+        expect(svc.isHealthy()).toBe(true)
+
+        // 5 network errors stack past threshold and flip health
+        for (let i = 0; i < 5; i += 1) await svc.sendToNamespace('default', makePayload())
         expect(svc.isHealthy()).toBe(false)
     })
 })
