@@ -107,6 +107,18 @@ describe('extractFailingMermaidBlocks', () => {
         expect(extractFailingMermaidBlocks(assistantMessage(text))).toEqual([])
     })
 
+    it('skips YAML frontmatter when determining diagram type', () => {
+        const text = '```mermaid\n---\ntitle: My diagram\n---\ngraph TD\n  A --> B\n```'
+        expect(extractFailingMermaidBlocks(assistantMessage(text))).toEqual([])
+    })
+
+    it('returns [] for mermaid 11.12+ diagram types (radar-beta, treemap, treeview-beta, venn-beta, wardley-beta, ishikawa)', () => {
+        for (const type of ['radar-beta', 'treemap', 'treeView-beta', 'venn-beta', 'wardley-beta', 'ishikawa']) {
+            const msg = assistantMessage(`\`\`\`mermaid\n${type}\n  A --> B\n\`\`\``)
+            expect(extractFailingMermaidBlocks(msg), `should accept ${type}`).toEqual([])
+        }
+    })
+
     it('detects an empty block as invalid', () => {
         const msg = assistantMessage('```mermaid\n\n```')
         const issues = extractFailingMermaidBlocks(msg)

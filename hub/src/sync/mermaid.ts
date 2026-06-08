@@ -1,8 +1,8 @@
 import { isObject } from '@hapi/protocol'
 import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 
-// Diagram types recognised by mermaid v11. Checked case-insensitively against
-// the first token of each ```mermaid block.
+// Diagram types recognised by mermaid v11 (up to 11.14). Checked
+// case-insensitively against the first non-blank, non-directive token.
 const KNOWN_DIAGRAM_TYPES = new Set([
     'flowchart',
     'graph',
@@ -31,6 +31,13 @@ const KNOWN_DIAGRAM_TYPES = new Set([
     'c4deployment',
     'zenuml',
     'kanban',
+    // Added in 11.12–11.14
+    'radar-beta',
+    'treemap',
+    'treeview-beta',
+    'venn-beta',
+    'wardley-beta',
+    'ishikawa',
 ])
 
 export interface MermaidIssue {
@@ -50,10 +57,16 @@ function extractTextFromContent(content: unknown): string | null {
 }
 
 function getDiagramType(code: string): string {
+    let inFrontmatter = false
     for (const line of code.split('\n')) {
         const trimmed = line.trim()
-        if (!trimmed || trimmed.startsWith('%%')) continue
-        return trimmed.split(/\s/)[0].toLowerCase()
+        if (!trimmed) continue
+        if (trimmed === '---') {
+            inFrontmatter = !inFrontmatter
+            continue
+        }
+        if (inFrontmatter || trimmed.startsWith('%%')) continue
+        return trimmed.split(/\s+/)[0].toLowerCase()
     }
     return ''
 }
