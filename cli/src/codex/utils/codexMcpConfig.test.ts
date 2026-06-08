@@ -23,6 +23,24 @@ describe('codexMcpConfig', () => {
             ]);
         });
 
+        it('builds per-tool approval mode config', () => {
+            const mcpServers = {
+                hapi: {
+                    command: 'hapi',
+                    args: ['mcp'],
+                    tools: {
+                        change_title: {
+                            approval_mode: 'approve' as const
+                        }
+                    }
+                }
+            };
+
+            const args = buildMcpServerConfigArgs(mcpServers);
+
+            expect(args).toContain('mcp_servers.hapi.tools.change_title.approval_mode="approve"');
+        });
+
         it('builds config args for multiple MCP servers', () => {
             const mcpServers = {
                 hapi: { command: 'hapi', args: ['mcp'] },

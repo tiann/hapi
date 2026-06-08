@@ -61,7 +61,8 @@ function buildMcpServerConfig(mcpServers: McpServersConfig): Record<string, unkn
     for (const [name, server] of Object.entries(mcpServers)) {
         config[`mcp_servers.${name}`] = {
             command: server.command,
-            args: server.args
+            args: server.args,
+            ...(server.tools ? { tools: server.tools } : {})
         };
     }
 

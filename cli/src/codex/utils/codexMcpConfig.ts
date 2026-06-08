@@ -9,6 +9,7 @@
 
 import { createHash } from 'node:crypto';
 import { getHappyCliCommand } from '@/utils/spawnHappyCLI';
+import type { McpServersConfig } from './buildHapiMcpBridge';
 
 /**
  * Escape a string value for use in a TOML string literal.
@@ -121,7 +122,7 @@ export function buildSessionStartHookConfigArgs(port: number, token: string): st
  * @returns Array of CLI arguments to pass to codex
  */
 export function buildMcpServerConfigArgs(
-    mcpServers: Record<string, { command: string; args: string[] }>
+    mcpServers: McpServersConfig
 ): string[] {
     const configArgs: string[] = [];
 
@@ -133,6 +134,15 @@ export function buildMcpServerConfigArgs(
         // Use TOML literal strings to avoid shell-quote mangling on Windows.
         const argsToml = buildTomlLiteralArray(server.args);
         configArgs.push('-c', `mcp_servers.${name}.args=${argsToml}`);
+
+        for (const [toolName, tool] of Object.entries(server.tools ?? {})) {
+            if (tool.approval_mode) {
+                configArgs.push(
+                    '-c',
+                    `mcp_servers.${name}.tools.${toolName}.approval_mode="${escapeTomlString(tool.approval_mode)}"`
+                );
+            }
+        }
     }
 
     return configArgs;
