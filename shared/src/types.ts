@@ -5,6 +5,7 @@ export type {
     AttachmentMetadata,
     CodexTokenUsage,
     CodexUsage,
+    CodexUsageCredits,
     CodexUsageRateLimit,
     DecryptedMessage,
     Metadata,

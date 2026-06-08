@@ -4,6 +4,35 @@ export type CodexUsageRow = {
     label: string
     value: string
     detail?: string
+    severity?: 'critical' | 'warn'
+}
+
+// Subscription-and-credits exhausted: codex sends primary=null +
+// secondary=null + credits.has_credits=false. The indicator should treat
+// this as a "you are blocked, full red" state so users with a Pro
+// subscription that ALSO topped up credits don't get a silent 80% ring.
+export function isCodexUsageBlocked(usage: CodexUsage | null | undefined): boolean {
+    if (!usage) return false
+    if (usage.credits?.unlimited) return false
+    const hasCreditsExplicitlyFalse = usage.credits?.hasCredits === false
+    const balanceZero = usage.credits?.balance === '0' || usage.credits?.balance === '0.00'
+    const noTimeWindows = !usage.rateLimits?.fiveHour && !usage.rateLimits?.weekly
+    const reachedType = typeof usage.rateLimitReachedType === 'string' && usage.rateLimitReachedType.length > 0
+    return reachedType || (noTimeWindows && (hasCreditsExplicitlyFalse || balanceZero))
+}
+
+function formatCreditsValue(credits: NonNullable<CodexUsage['credits']>): string {
+    if (credits.unlimited) return 'Unlimited'
+    if (credits.balance !== undefined) return `$${credits.balance}`
+    if (credits.hasCredits === false) return 'Out'
+    if (credits.hasCredits === true) return 'Available'
+    return '-'
+}
+
+function formatRateLimitReachedType(value: string): string {
+    return value
+        .replace(/_/g, ' ')
+        .replace(/\b\w/g, (ch) => ch.toUpperCase())
 }
 
 function clampPercent(value: number): number {
@@ -51,6 +80,12 @@ export function getCodexUsageRingPercent(usage: CodexUsage | null | undefined): 
     if (!usage) {
         return null
     }
+    // Blocked accounts (subscription window AND credits both exhausted, or
+    // explicit rate_limit_reached_type) must read 100% so the ring stops
+    // misrepresenting the state as 'context window 80%, plenty of room'.
+    if (isCodexUsageBlocked(usage)) {
+        return 100
+    }
     if (usage.contextWindow) {
         return clampPercent(usage.contextWindow.percent)
     }
@@ -66,6 +101,13 @@ export function getCodexUsageRingPercent(usage: CodexUsage | null | undefined): 
 
 export function getCodexUsageRows(usage: CodexUsage, locale?: string): CodexUsageRow[] {
     const rows: CodexUsageRow[] = []
+    if (usage.rateLimitReachedType) {
+        rows.push({
+            label: 'Limit Reached',
+            value: formatRateLimitReachedType(usage.rateLimitReachedType),
+            severity: 'critical'
+        })
+    }
     if (usage.contextWindow) {
         rows.push({
             label: 'Context Window',
@@ -87,6 +129,26 @@ export function getCodexUsageRows(usage: CodexUsage, locale?: string): CodexUsag
             label: '1 Week Usage',
             value: formatRateLimit(usage.rateLimits.weekly),
             detail: reset ? `resets ${reset}` : undefined
+        })
+    }
+    // Surface credit-billing state when codex reports it - either an
+    // unlimited flag, a hard balance, or an explicit has_credits=false.
+    // Subscription-and-credits-exhausted accounts (Pro + top-up both at
+    // zero) get a critical severity so the row is visually distinct
+    // from a normal "5h Usage 50%" entry.
+    if (usage.credits) {
+        const balanceZero = usage.credits.balance === '0' || usage.credits.balance === '0.00'
+        const exhausted = usage.credits.hasCredits === false || balanceZero
+        const severity = !usage.credits.unlimited && exhausted ? 'critical' : undefined
+        rows.push({
+            label: 'Credits',
+            value: formatCreditsValue(usage.credits),
+            detail: usage.credits.unlimited
+                ? 'unlimited'
+                : exhausted
+                    ? 'subscription / top-up exhausted'
+                    : undefined,
+            ...(severity ? { severity } : {})
         })
     }
     if (usage.totalTokenUsage) {

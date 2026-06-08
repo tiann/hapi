@@ -1,4 +1,4 @@
-import type { CodexTokenUsage, CodexUsage, CodexUsageRateLimit } from '@hapi/protocol/types';
+import type { CodexTokenUsage, CodexUsage, CodexUsageCredits, CodexUsageRateLimit } from '@hapi/protocol/types';
 
 type NormalizerOptions = {
     now?: number;
@@ -112,6 +112,44 @@ function collectRateLimitCandidates(value: unknown): unknown[] {
     return [];
 }
 
+function extractRateLimitsRoot(value: unknown): Record<string, unknown> | null {
+    const record = asRecord(value);
+    if (!record) return null;
+    const direct = asRecord(record.rate_limits ?? record.rateLimits);
+    return direct ?? record;
+}
+
+function normalizeCredits(value: unknown): CodexUsageCredits | undefined {
+    const record = asRecord(value);
+    if (!record) return undefined;
+
+    const hasCreditsRaw = record.has_credits ?? record.hasCredits;
+    const unlimitedRaw = record.unlimited;
+    const balanceRaw = record.balance;
+
+    const hasCredits = typeof hasCreditsRaw === 'boolean' ? hasCreditsRaw : undefined;
+    const unlimited = typeof unlimitedRaw === 'boolean' ? unlimitedRaw : undefined;
+    let balance: string | undefined;
+    if (typeof balanceRaw === 'string' && balanceRaw.length > 0) {
+        balance = balanceRaw;
+    } else if (typeof balanceRaw === 'number' && Number.isFinite(balanceRaw)) {
+        balance = String(balanceRaw);
+    }
+
+    if (hasCredits === undefined && unlimited === undefined && balance === undefined) {
+        return undefined;
+    }
+    return {
+        ...(hasCredits !== undefined ? { hasCredits } : {}),
+        ...(unlimited !== undefined ? { unlimited } : {}),
+        ...(balance !== undefined ? { balance } : {})
+    };
+}
+
+function asNonEmptyString(value: unknown): string | undefined {
+    return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
+}
+
 function unwrapUsagePayload(value: unknown): Record<string, unknown> | null {
     const record = asRecord(value);
     if (!record) return null;
@@ -170,6 +208,14 @@ export function normalizeCodexUsage(value: unknown, options: NormalizerOptions =
         }
     }
 
+    const rateLimitsRoot = extractRateLimitsRoot(record);
+    const credits = normalizeCredits(rateLimitsRoot?.credits);
+    const rateLimitReachedType = asNonEmptyString(
+        rateLimitsRoot?.rate_limit_reached_type ?? rateLimitsRoot?.rateLimitReachedType
+    );
+    const planType = asNonEmptyString(rateLimitsRoot?.plan_type ?? rateLimitsRoot?.planType);
+    const limitId = asNonEmptyString(rateLimitsRoot?.limit_id ?? rateLimitsRoot?.limitId);
+
     const contextWindow = contextLimit !== null && contextLimit > 0 && contextUsed !== null
         ? {
             usedTokens: contextUsed,
@@ -179,13 +225,25 @@ export function normalizeCodexUsage(value: unknown, options: NormalizerOptions =
         }
         : undefined;
 
-    if (!contextWindow && !totalTokenUsage && !lastTokenUsage && !rateLimits.fiveHour && !rateLimits.weekly) {
+    if (
+        !contextWindow
+        && !totalTokenUsage
+        && !lastTokenUsage
+        && !rateLimits.fiveHour
+        && !rateLimits.weekly
+        && !credits
+        && !rateLimitReachedType
+    ) {
         return null;
     }
 
     return {
         ...(contextWindow ? { contextWindow } : {}),
         rateLimits,
+        ...(credits ? { credits } : {}),
+        ...(rateLimitReachedType ? { rateLimitReachedType } : {}),
+        ...(planType ? { planType } : {}),
+        ...(limitId ? { limitId } : {}),
         ...(totalTokenUsage ? { totalTokenUsage } : {}),
         ...(lastTokenUsage ? { lastTokenUsage } : {})
     };
