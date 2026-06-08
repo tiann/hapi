@@ -482,6 +482,7 @@ export class SessionCache {
                 }
             }
             session.serviceTier = config.serviceTier
+            this.markRuntimeConfigUpdated(sessionId, 'serviceTier', appliedAt)
         }
         if (config.collaborationMode !== undefined) {
             session.collaborationMode = config.collaborationMode
