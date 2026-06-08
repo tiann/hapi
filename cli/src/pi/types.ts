@@ -95,16 +95,6 @@ import type { PiThinkingLevel } from '@hapi/protocol'
 export type { PiThinkingLevel }
 export { PI_THINKING_LEVELS, PI_THINKING_LEVEL_LABELS } from '@hapi/protocol'
 
-// Image content for native Pi image passing
-export interface PiImageContent {
-    type: 'image'
-    source: {
-        type: 'base64'
-        media_type: string
-        data: string
-    }
-}
-
 export type PiStreamingBehavior = 'steer' | 'followUp'
 
 export type PiCommandSummary = {
@@ -120,9 +110,9 @@ export type PiCommandsResponse = {
 }
 
 export type PiRpcCommand =
-    | { type: 'prompt'; message: string; images?: PiImageContent[]; streamingBehavior?: PiStreamingBehavior }
-    | { type: 'steer'; message: string; images?: PiImageContent[] }
-    | { type: 'follow_up'; message: string; images?: PiImageContent[] }
+    | { type: 'prompt'; message: string; streamingBehavior?: PiStreamingBehavior }
+    | { type: 'steer'; message: string }
+    | { type: 'follow_up'; message: string }
     | { type: 'abort' }
     | { type: 'new_session' }
     | { type: 'get_state' }

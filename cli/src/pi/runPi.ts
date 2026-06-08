@@ -6,12 +6,11 @@ import { createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecy
 import { registerSessionConfigRpc } from '@/agent/sessionConfigRpc';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
-import { readFileSync } from 'fs';
 import { convertAgentMessage } from '@/agent/messageConverter';
 import { PiTransport } from './PiTransport';
 import { convertPiEvent } from './PiEventConverter';
 import { PiMessageAccumulator } from './PiMessageAccumulator';
-import type { PiResponseEvent, PiThinkingLevel, PiCommandSummary, PiImageContent, PiSessionStats, PiCompactionResult, PiForkMessageEntry } from './types';
+import type { PiResponseEvent, PiThinkingLevel, PiCommandSummary, PiSessionStats, PiCompactionResult, PiForkMessageEntry } from './types';
 import type { SlashCommandsResponse } from '@hapi/protocol/apiTypes';
 import type { PiPermissionMode } from '@hapi/protocol/modes';
 import type { ListPiModelsResponse, PiModelSummary, PiCommandsResponse, PiSteerResponse, PiFollowUpResponse, PiQueueModeResponse, PiMessagesResponse, PiMessageEntry, PiCompactResponse, PiSetAutoCompactionResponse, PiForkResponse, PiForkMessagesResponse, PiCloneResponse, PiSwitchSessionResponse, PiSessionStatsResponse, PiExportHtmlResponse } from '@hapi/protocol/apiTypes';
@@ -634,32 +633,6 @@ export async function runPi(opts: {
         }
     );
 
-    // --- Helper: extract PiImageContent[] from attachments ---
-    // Converts image attachments to Pi's native base64 format.
-    // Non-image attachments fall through to @path text references.
-    function extractPiImages(attachments: import('@/api/types').AttachmentMetadata[] | undefined): PiImageContent[] | undefined {
-        if (!attachments || attachments.length === 0) return undefined;
-        const images: PiImageContent[] = [];
-        for (const att of attachments) {
-            if (!att.mimeType.startsWith('image/')) continue;
-            try {
-                const data = readFileSync(att.path);
-                images.push({
-                    type: 'image',
-                    source: {
-                        type: 'base64',
-                        media_type: att.mimeType,
-                        data: data.toString('base64'),
-                    },
-                });
-            } catch {
-                // Skip unreadable files — they'll still be referenced
-                // as @path in the text fallback.
-            }
-        }
-        return images.length > 0 ? images : undefined;
-    }
-
     // --- Pi steer RPC ---
     // Web sends a steering message mid-stream. Delegates to the same
     // onUserMessage path which already checks piIsStreaming.
@@ -965,12 +938,11 @@ export async function runPi(opts: {
     // steering. Otherwise, they are sent as regular `prompt`.
     session.onUserMessage((message, localId) => {
         const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
-        const images = extractPiImages(message.content.attachments);
         if (localId) pendingLocalIds.push(localId);
         if (piIsStreaming) {
-            transport.send({ type: 'steer', message: formattedText, images });
+            transport.send({ type: 'steer', message: formattedText });
         } else {
-            transport.send({ type: 'prompt', message: formattedText, images });
+            transport.send({ type: 'prompt', message: formattedText });
         }
     });
 
