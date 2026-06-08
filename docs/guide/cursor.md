@@ -48,13 +48,15 @@ Set mode via `--mode` flag or change from the web UI during a session.
 - **Legacy sessions** - Cursor sessions created before the ACP migration can still resume temporarily via stream-json. Start a new Cursor session to get ACP permissions, plans, todos, and question support.
 - **Session resume** - ACP sessions resume through `session/load`. Old stream-json `session_id` values are not loadable via ACP; those sessions keep using the legacy path until you start fresh.
 
-### Headless safety: AskQuestion behavior
+### Legacy stream-json safety: AskQuestion behavior
 
-When running cursor-agent under `--print --output-format stream-json` (HAPI's current remote mode), the cursor-agent CLI returns a synthetic `Questions skipped by the user, continue with the information you already have` response for the `AskQuestion` tool because there is no IDE surface to render the question. The agent's underlying model can interpret this as legitimate user consent and act on it.
+New cursor remote sessions go through ACP, which handles `AskQuestion` via the bidirectional `cursor/ask_question` extension method and is immune to the issue below. The intercept described here exists only for legacy sessions that resume via the older `agent -p` stream-json launcher.
 
-HAPI intercepts this synthetic response in the stream-json event converter and rewrites it to an explicit `no_input_surface` error (`is_error: true`), so agents do not act on fabricated user consent. Defense-in-depth: any `AskQuestion` (or `name=unknown`) tool completion that arrives within ~500 ms of its start event with a trivial payload is treated the same way, in case cursor-agent changes the synthetic-string text in a future release.
+When running cursor-agent under `--print --output-format stream-json`, the cursor-agent CLI returns a synthetic `Questions skipped by the user, continue with the information you already have` response for the `AskQuestion` tool because there is no IDE surface to render the question. The agent's underlying model can interpret this as legitimate user consent and act on it.
 
-Agents running under HAPI's Cursor remote mode should fall back to plain-text prompting (markdown options + waiting for a regular user message) until the [ACP migration (tiann/hapi#781)](https://github.com/tiann/hapi/issues/781) lands and `cursor/ask_question` becomes available as a proper bidirectional ACP method. At that point this intercept becomes unnecessary and is removed.
+HAPI's legacy event converter intercepts this synthetic response and rewrites it to an explicit `no_input_surface` error (`status: failed`), so downstream consumers (web UI, Telegram, log readers) surface the fabrication as an error instead of silently passing through fabricated consent. The intercept scans the raw `tool_call` payload for the literal marker text and is scoped to `AskQuestion`-shaped (and converter-fallback `name=unknown`) calls; legitimate read/write/function tools are not affected.
+
+The intercept drains naturally with the legacy session population - resumed pre-ACP sessions are the only path that still hits this code.
 
 Tracking issue: [tiann/hapi#784](https://github.com/tiann/hapi/issues/784).
 
