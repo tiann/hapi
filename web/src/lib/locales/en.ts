@@ -231,6 +231,7 @@ export default {
   'chat.settings': 'Settings',
   'chat.terminal': 'Terminal',
   'chat.switchRemote': 'Switch to remote mode',
+  'chat.sendError.fallback': "Couldn't send your message. Edit and try again.",
 
   // Codex review
   'codexReview.title': 'Codex review',
@@ -404,6 +405,12 @@ export default {
   'scratchlist.count.one': '1 item',
   'scratchlist.count.other': '{n} items',
   'scratchlist.emptyHint': 'Park notes, drafts, or ideas here. Nothing is sent until you promote it.',
+  'scratchlist.drawerHint': 'Type below — Send adds the next message to the scratchlist instead of the chat. Click the note icon again to leave.',
+  'scratchlist.toggleAriaLabel': 'Scratchlist drawer',
+  'scratchlist.toggleTooltip': 'Scratchlist — park notes & drafts (Ctrl/Cmd+Shift+S)',
+  'scratchlist.sendToScratchlist': 'Send to scratchlist',
+  'scratchlist.fueTitle': 'New: Scratchlist',
+  'scratchlist.fueBody': 'Park notes & drafts here without sending. The Send button glows amber while you stash; click the icon (or Ctrl/Cmd+Shift+S) again to leave.',
   'scratchlist.addPlaceholder': 'Note, draft, or idea — Enter to add',
   'scratchlist.addAriaLabel': 'Add scratchlist entry',
   'scratchlist.add': 'Add',
@@ -414,7 +421,12 @@ export default {
   'scratchlist.action.moveDown': 'Move entry down',
   'scratchlist.action.promoteToComposer': 'Copy into composer',
   'scratchlist.action.promoteToQueue': 'Send to queue',
+  'scratchlist.action.copy': 'Copy to clipboard',
+  'scratchlist.action.copied': 'Copied!',
   'scratchlist.action.delete': 'Delete entry',
+  'fue.newFeatureDot': 'New feature available',
+  'fue.gotIt': 'Got it',
+  'fue.closeAriaLabel': 'Close explainer',
   'composer.codexSlashUnsupported.title': 'Codex command unavailable',
   'composer.codexSlashUnsupported.body': 'HAPI remote mode does not yet run built-in Codex slash commands like {command}. Use natural language instead, or run it in the local Codex TUI.',
 
