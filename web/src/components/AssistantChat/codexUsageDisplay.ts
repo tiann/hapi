@@ -7,6 +7,17 @@ export type CodexUsageRow = {
     severity?: 'critical' | 'warn'
 }
 
+// Codex sends balance as a precision-preserving string ('250.0000000000',
+// '0', '0.0000000000'). Number() handles all of those uniformly without
+// risking a literal-match miss on a new trailing-zero variant.
+function parseCreditsBalance(raw: string | undefined): number | null {
+    if (raw === undefined) return null
+    const trimmed = raw.trim()
+    if (trimmed.length === 0) return null
+    const n = Number(trimmed)
+    return Number.isFinite(n) ? n : null
+}
+
 // Subscription-and-credits exhausted: codex sends primary=null +
 // secondary=null + credits.has_credits=false. The indicator should treat
 // this as a "you are blocked, full red" state so users with a Pro
@@ -15,15 +26,35 @@ export function isCodexUsageBlocked(usage: CodexUsage | null | undefined): boole
     if (!usage) return false
     if (usage.credits?.unlimited) return false
     const hasCreditsExplicitlyFalse = usage.credits?.hasCredits === false
-    const balanceZero = usage.credits?.balance === '0' || usage.credits?.balance === '0.00'
+    const parsedBalance = parseCreditsBalance(usage.credits?.balance)
+    const balanceZero = parsedBalance !== null && parsedBalance === 0
     const noTimeWindows = !usage.rateLimits?.fiveHour && !usage.rateLimits?.weekly
     const reachedType = typeof usage.rateLimitReachedType === 'string' && usage.rateLimitReachedType.length > 0
     return reachedType || (noTimeWindows && (hasCreditsExplicitlyFalse || balanceZero))
 }
 
+// Codex's protocol field is 'balance' with no declared unit. Credits
+// are an internal billing token consumed at token-mix-dependent rates
+// (per the OpenAI Codex rate card, GPT-5.5 burns 125 credits per 1M
+// input tokens / 750 per 1M output, and a $5 top-up grants 125 credits
+// ~ $0.04/credit). Render as a bare count; the row label 'Credits'
+// carries the unit and any USD conversion belongs in chatgpt.com's
+// billing UI, not the indicator. See
+// https://help.openai.com/en/articles/20001106-codex-rate-card
+function formatCreditsBalance(raw: string): string {
+    const n = parseCreditsBalance(raw)
+    if (n === null) return raw
+    if (n === 0) return '0'
+    const decimals = Math.abs(n) >= 1 ? 2 : 4
+    return n.toLocaleString(undefined, {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: decimals
+    })
+}
+
 function formatCreditsValue(credits: NonNullable<CodexUsage['credits']>): string {
     if (credits.unlimited) return 'Unlimited'
-    if (credits.balance !== undefined) return `$${credits.balance}`
+    if (credits.balance !== undefined) return formatCreditsBalance(credits.balance)
     if (credits.hasCredits === false) return 'Out'
     if (credits.hasCredits === true) return 'Available'
     return '-'
@@ -137,7 +168,8 @@ export function getCodexUsageRows(usage: CodexUsage, locale?: string): CodexUsag
     // zero) get a critical severity so the row is visually distinct
     // from a normal "5h Usage 50%" entry.
     if (usage.credits) {
-        const balanceZero = usage.credits.balance === '0' || usage.credits.balance === '0.00'
+        const parsedBalance = parseCreditsBalance(usage.credits.balance)
+        const balanceZero = parsedBalance !== null && parsedBalance === 0
         const exhausted = usage.credits.hasCredits === false || balanceZero
         const severity = !usage.credits.unlimited && exhausted ? 'critical' : undefined
         rows.push({
