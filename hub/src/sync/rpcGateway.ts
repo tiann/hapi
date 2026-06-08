@@ -14,6 +14,7 @@ import type {
     OpencodeModelsResponse,
     OpencodeModelSummary,
     PathExistsResponse,
+    PiCommandsResponse,
     SlashCommandsResponse,
     UploadFileResponse
 } from '@hapi/protocol/apiTypes'
@@ -38,6 +39,7 @@ export type RpcListCursorModelsResponse = CursorModelsResponse
 export type RpcOpencodeModel = OpencodeModelSummary
 export type RpcListOpencodeModelsResponse = OpencodeModelsResponse
 export type RpcListPiModelsResponse = import('@hapi/protocol/apiTypes').ListPiModelsResponse
+export type RpcListPiCommandsResponse = PiCommandsResponse
 
 export class RpcGateway {
     constructor(
@@ -261,6 +263,14 @@ export class RpcGateway {
 
     async listPiModelsForSession(sessionId: string): Promise<RpcListPiModelsResponse> {
         return await this.sessionRpc(sessionId, RPC_METHODS.ListPiModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListPiModelsResponse
+    }
+
+    async renamePiSession(sessionId: string, name: string): Promise<{ success: boolean }> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.RenamePiSession, { name }) as { success: boolean }
+    }
+
+    async listPiCommandsForSession(sessionId: string): Promise<RpcListPiCommandsResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.ListPiCommands, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListPiCommandsResponse
     }
 
     private async sessionRpc(

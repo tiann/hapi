@@ -457,7 +457,7 @@ describe('sessions routes', () => {
 
         expect(response.status).toBe(400)
         expect(await response.json()).toEqual({
-            error: 'Effort selection is only supported for Claude sessions'
+            error: 'Effort selection is only supported for Claude and Pi sessions'
         })
         expect(applySessionConfigCalls).toEqual([])
     })

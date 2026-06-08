@@ -10,9 +10,10 @@ import { convertAgentMessage } from '@/agent/messageConverter';
 import { PiTransport } from './PiTransport';
 import { convertPiEvent } from './PiEventConverter';
 import { PiMessageAccumulator } from './PiMessageAccumulator';
-import type { PiResponseEvent } from './types';
+import type { PiResponseEvent, PiThinkingLevel, PiCommandSummary } from './types';
+import type { SlashCommandsResponse } from '@hapi/protocol/apiTypes';
 import type { PiPermissionMode } from '@hapi/protocol/modes';
-import type { ListPiModelsResponse, PiModelSummary } from '@hapi/protocol/apiTypes';
+import type { ListPiModelsResponse, PiModelSummary, PiCommandsResponse } from '@hapi/protocol/apiTypes';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 
 export async function runPi(opts: {
@@ -58,6 +59,7 @@ export async function runPi(opts: {
     // "same-model set_session_config" is a no-op, not a wrong-model emit.
     let currentProvider: string | null = null;
     let currentPermissionMode: PiPermissionMode = opts.permissionMode ?? 'default';
+    let currentThinkingLevel: import('./types').PiThinkingLevel | null = null;
 
     const transportArgs = ['--mode', 'rpc'];
     if (opts.resumeSessionId) {
@@ -174,6 +176,22 @@ export async function runPi(opts: {
     // Populated automatically after get_state, and refreshed on demand
     // via ListPiModels RPC.
     let cachedPiModels: PiModelSummary[] = [];
+
+    // Cached command/skill list from the last get_commands response.
+    let cachedPiCommands: PiCommandSummary[] = [];
+
+    function parsePiCommands(data: unknown): PiCommandSummary[] {
+        const rawCommands = (data as Record<string, unknown>)?.commands;
+        if (!Array.isArray(rawCommands)) return [];
+        return rawCommands
+            .filter((c): c is Record<string, unknown> => typeof c === 'object' && c !== null)
+            .map((c) => ({
+                name: typeof c.name === 'string' ? c.name : '',
+                ...(typeof c.description === 'string' ? { description: c.description } : {}),
+                source: (['extension', 'prompt', 'skill'].includes(c.source as string) ? c.source : 'skill') as PiCommandSummary['source'],
+            }))
+            .filter((c) => c.name.length > 0);
+    }
 
 // --- Transport event handlers ---
 
@@ -312,6 +330,12 @@ export async function runPi(opts: {
                     session.updateMetadata((meta) => ({ ...meta, piSessionId }));
                     logger.debug(`[pi] Session ID persisted to metadata: ${piSessionId}`);
                 }
+                // Capture initial thinking level from Pi's state
+                const thinkingLevel = typeof data?.thinkingLevel === 'string' ? data.thinkingLevel as PiThinkingLevel : undefined;
+                if (thinkingLevel) {
+                    currentThinkingLevel = thinkingLevel;
+                    logger.debug(`[pi] Initial thinking level: ${thinkingLevel}`);
+                }
                 break;
             }
             case 'set_model': {
@@ -338,6 +362,15 @@ export async function runPi(opts: {
                 resolvePendingRpc(response);
                 break;
             }
+            case 'get_commands': {
+                const commands = parsePiCommands(response.data);
+                if (commands.length > 0) {
+                    cachedPiCommands = commands;
+                    logger.debug(`[pi] Available commands: ${commands.map((c) => c.name).join(', ')}`);
+                }
+                resolvePendingRpc(response);
+                break;
+            }
             case 'new_session':
                 logger.debug('[pi] Pi session initialized');
                 break;
@@ -358,12 +391,16 @@ export async function runPi(opts: {
         rpcHandlerManager: session.rpcHandlerManager,
         flavor: 'pi',
         modelMode: 'nullable',
+        effortMode: 'nullable',
         onApply: (config) => {
             if (config.permissionMode !== undefined) {
                 currentPermissionMode = config.permissionMode;
             }
             if (config.model !== undefined) {
                 currentModel = config.model;
+            }
+            if (config.effort !== undefined) {
+                currentThinkingLevel = config.effort as PiThinkingLevel | null;
             }
         },
         onAfterApply: () => {
@@ -375,6 +412,10 @@ export async function runPi(opts: {
                 transport.send({ type: 'set_model', provider: currentProvider, modelId: currentModel });
             } else if (currentModel && !currentProvider) {
                 logger.debug('[pi] set_model suppressed: provider unknown until get_state');
+            }
+            // Forward thinking level changes to Pi
+            if (currentThinkingLevel) {
+                transport.send({ type: 'set_thinking_level', level: currentThinkingLevel });
             }
             session.keepAlive(false, startingMode);
         }
@@ -417,6 +458,79 @@ export async function runPi(opts: {
         }
     );
 
+    // --- Pi rename session RPC ---
+    // Hub calls this after renaming a Pi session via REST so Pi's internal
+    // session state stays in sync with HAPI's DB.
+    session.rpcHandlerManager.registerHandler<{ name: string }, { success: boolean }>(
+        RPC_METHODS.RenamePiSession,
+        async (params) => {
+            if (!params || typeof params.name !== 'string' || params.name.trim().length === 0) {
+                return { success: false };
+            }
+            transport.send({ type: 'set_session_name', name: params.name.trim() });
+            logger.debug(`[pi] Session name forwarded to Pi: ${params.name}`);
+            return { success: true };
+        }
+    );
+
+    // --- Pi commands (skills) RPC ---
+    // Hub routes ListPiCommands to discover Pi's available skills/commands.
+    // Uses cached commands from auto-discovery after get_state, or queries on demand.
+    session.rpcHandlerManager.registerHandler<Record<string, never>, PiCommandsResponse>(
+        RPC_METHODS.ListPiCommands,
+        async () => {
+            if (cachedPiCommands.length > 0) {
+                return { success: true, commands: cachedPiCommands };
+            }
+
+            try {
+                const data = await sendPiRpcAndWait({ type: 'get_commands' });
+                const commands = parsePiCommands(data);
+                if (commands.length > 0) {
+                    cachedPiCommands = commands;
+                }
+                return { success: true, commands };
+            } catch (error) {
+                logger.debug('[pi] ListPiCommands RPC failed:', error);
+                return {
+                    success: false,
+                    error: error instanceof Error ? error.message : 'Failed to list Pi commands',
+                };
+            }
+        }
+    );
+
+    // --- Slash commands (Pi skills/commands) ---
+    // Maps Pi's get_commands output to the HAPI SlashCommand format so the
+    // existing web autocomplete pipeline works without modification.
+    session.rpcHandlerManager.registerHandler<{ agent?: string }, SlashCommandsResponse>(
+        RPC_METHODS.ListSlashCommands,
+        async () => {
+            let commands = cachedPiCommands;
+            if (commands.length === 0) {
+                try {
+                    const data = await sendPiRpcAndWait({ type: 'get_commands' });
+                    commands = parsePiCommands(data);
+                    if (commands.length > 0) {
+                        cachedPiCommands = commands;
+                    }
+                } catch {
+                    // Fall through to return empty
+                }
+            }
+            return {
+                success: true,
+                commands: commands.map((cmd) => ({
+                    name: cmd.name,
+                    description: cmd.description,
+                    source: cmd.source === 'skill' ? 'plugin' as const
+                        : cmd.source === 'prompt' ? 'user' as const
+                        : 'plugin' as const,
+                })),
+            };
+        }
+    );
+
     // --- User message handler ---
 
     session.onUserMessage((message, localId) => {
@@ -454,6 +568,9 @@ export async function runPi(opts: {
         // session metadata and cached for the ListPiModels RPC handler.
         // Fire-and-forget — the response handler updates cachedPiModels.
         transport.send({ type: 'get_available_models' });
+        // Auto-discover available commands/skills after init.
+        // Fire-and-forget — the response handler updates cachedPiCommands.
+        transport.send({ type: 'get_commands' });
 
         // Block until cleanup is triggered by error/close handler
         await new Promise<void>((resolve) => {

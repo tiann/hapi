@@ -28,6 +28,8 @@ export const RPC_METHODS = {
     ListCodexModels: 'listCodexModels',
     ListCursorModels: 'listCursorModels',
     ListPiModels: 'listPiModels',
+    ListPiCommands: 'listPiCommands',
+    RenamePiSession: 'renamePiSession',
     ListOpencodeModels: 'listOpencodeModels',
     ListOpencodeModelsForCwd: 'listOpencodeModelsForCwd'
 } as const

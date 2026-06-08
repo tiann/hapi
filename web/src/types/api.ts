@@ -30,6 +30,8 @@ export type {
     PathExistsResponse,
     PiModelSummary,
     PiModelsResponse,
+    PiCommandSummary,
+    PiCommandsResponse,
     SlashCommand,
     SlashCommandsResponse,
     SessionResponse,

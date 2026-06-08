@@ -8,7 +8,7 @@
  */
 
 import { isKnownFlavor, type LocalResumeTarget, type ResumableSession } from '@hapi/protocol'
-import type { SlashCommandsResponse } from '@hapi/protocol/apiTypes'
+import type { SlashCommandsResponse, PiCommandsResponse } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, CodexCollaborationMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { Server } from 'socket.io'
@@ -30,6 +30,7 @@ import {
     type RpcListCursorModelsResponse,
     type RpcListOpencodeModelsResponse,
     type RpcListPiModelsResponse,
+    type RpcListPiCommandsResponse,
     type RpcCursorModel,
     type RpcOpencodeModel,
     type RpcPathExistsResponse,
@@ -41,6 +42,7 @@ import { SessionCache } from './sessionCache'
 export type { Session, SyncEvent } from '@hapi/protocol/types'
 export type { Machine } from './machineCache'
 export type { SyncEventListener } from './eventPublisher'
+export type { RpcListPiCommandsResponse } from './rpcGateway'
 export type {
     RpcCodexModel,
     RpcCommandResponse,
@@ -430,6 +432,15 @@ export class SyncEngine {
 
     async renameSession(sessionId: string, name: string): Promise<void> {
         await this.sessionCache.renameSession(sessionId, name)
+        // Notify Pi agent so its internal session state stays in sync
+        const session = this.sessionCache.getSession(sessionId)
+        if (session?.active && session.metadata?.flavor === 'pi') {
+            try {
+                await this.rpcGateway.renamePiSession(sessionId, name)
+            } catch {
+                // Best-effort: Pi rename notification is not critical for HAPI operation
+            }
+        }
     }
 
     async deleteSession(sessionId: string): Promise<void> {
@@ -984,5 +995,9 @@ export class SyncEngine {
 
     async listPiModelsForSession(sessionId: string): Promise<RpcListPiModelsResponse> {
         return await this.rpcGateway.listPiModelsForSession(sessionId)
+    }
+
+    async listPiCommandsForSession(sessionId: string): Promise<RpcListPiCommandsResponse> {
+        return await this.rpcGateway.listPiCommandsForSession(sessionId)
     }
 }

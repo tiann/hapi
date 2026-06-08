@@ -4,6 +4,7 @@ import type { AgentFlavor } from './modes'
 export const Capabilities = {
     ModelChange: 'model-change',
     Effort: 'effort',
+    ThinkingLevel: 'thinking-level',
 } as const
 
 export type Capability = typeof Capabilities[keyof typeof Capabilities]
@@ -16,7 +17,7 @@ const FLAVOR_CAPS: Record<AgentFlavor, ReadonlySet<Capability>> = {
     codex: new Set([Capabilities.ModelChange]),
     cursor: new Set([Capabilities.ModelChange]),
     opencode: new Set([Capabilities.ModelChange]),
-    pi: new Set([Capabilities.ModelChange]),
+    pi: new Set([Capabilities.ModelChange, Capabilities.Effort, Capabilities.ThinkingLevel]),
 }
 
 // --- Flavor display names ---
@@ -52,6 +53,10 @@ export function supportsModelChange(flavor: string | null | undefined): boolean 
 
 export function supportsEffort(flavor: string | null | undefined): boolean {
     return hasCapability(flavor, Capabilities.Effort)
+}
+
+export function supportsThinkingLevel(flavor: string | null | undefined): boolean {
+    return hasCapability(flavor, Capabilities.ThinkingLevel)
 }
 
 export function isCodexFamilyFlavor(flavor: string | null | undefined): boolean {

@@ -37,9 +37,10 @@ describe('hasCapability', () => {
         expect(hasCapability('opencode', Capabilities.Effort)).toBe(false)
     })
 
-    test('pi supports model-change but not effort', () => {
+    test('pi supports model-change and effort and thinking-level', () => {
         expect(hasCapability('pi', Capabilities.ModelChange)).toBe(true)
-        expect(hasCapability('pi', Capabilities.Effort)).toBe(false)
+        expect(hasCapability('pi', Capabilities.Effort)).toBe(true)
+        expect(hasCapability('pi', Capabilities.ThinkingLevel)).toBe(true)
     })
 
     test('kimi supports model-change but not effort', () => {
@@ -112,7 +113,7 @@ describe('convenience functions', () => {
         expect(supportsEffort('claude')).toBe(true)
         expect(supportsEffort('codex')).toBe(false)
         expect(supportsEffort('gemini')).toBe(false)
-        expect(supportsEffort('pi')).toBe(false)
+        expect(supportsEffort('pi')).toBe(true)
         expect(supportsEffort('kimi')).toBe(false)
         expect(supportsEffort(null)).toBe(false)
     })

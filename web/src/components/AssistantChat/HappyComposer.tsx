@@ -34,6 +34,7 @@ import { useTranslation } from '@/lib/use-translation'
 import { getModelOptionsForFlavor, getNextModelForFlavor } from './modelOptions'
 import { getClaudeComposerEffortOptions } from './claudeEffortOptions'
 import { getCodexComposerReasoningEffortOptions } from './codexReasoningEffortOptions'
+import { getPiThinkingLevelOptions } from './piThinkingLevelOptions'
 
 export interface TextInputState {
     text: string
@@ -304,8 +305,10 @@ export function HappyComposer(props: {
         [agentFlavor, modelReasoningEffort]
     )
     const claudeEffortOptions = useMemo(
-        () => getClaudeComposerEffortOptions(effort),
-        [effort]
+        () => agentFlavor === 'pi'
+            ? getPiThinkingLevelOptions(effort)
+            : getClaudeComposerEffortOptions(effort),
+        [agentFlavor, effort]
     )
     const permissionModes = useMemo(
         () => permissionModeOptions.map((option) => option.mode),

@@ -445,8 +445,8 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'claude') {
-            return c.json({ error: 'Effort selection is only supported for Claude sessions' }, 400)
+        if (flavor !== 'claude' && flavor !== 'pi') {
+            return c.json({ error: 'Effort selection is only supported for Claude and Pi sessions' }, 400)
         }
 
         try {
@@ -703,6 +703,36 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to list Pi models'
+            }, 500)
+        }
+    })
+
+    app.get('/sessions/:id/pi-commands', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (flavor !== 'pi') {
+            return c.json({
+                success: false,
+                error: 'Pi commands are only available for Pi sessions'
+            }, 400)
+        }
+
+        try {
+            const result = await engine.listPiCommandsForSession(sessionResult.sessionId)
+            return c.json(result)
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to list Pi commands'
             }, 500)
         }
     })

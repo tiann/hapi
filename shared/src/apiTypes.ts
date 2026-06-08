@@ -324,6 +324,20 @@ export type PiModelsResponse = {
 
 export type ListPiModelsResponse = PiModelsResponse
 
+export type PiCommandSummary = {
+    name: string
+    description?: string
+    source: 'extension' | 'prompt' | 'skill'
+}
+
+export type PiCommandsResponse = {
+    success: boolean
+    commands?: PiCommandSummary[]
+    error?: string
+}
+
+export type ListPiCommandsResponse = PiCommandsResponse
+
 export type SlashCommand = {
     name: string
     description?: string

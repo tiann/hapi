@@ -91,13 +91,33 @@ export type PiAgentEvent =
 // Pi RPC Commands (stdin)
 // ============================================================================
 
+import type { PiThinkingLevel } from '@hapi/protocol'
+export type { PiThinkingLevel }
+export { PI_THINKING_LEVELS, PI_THINKING_LEVEL_LABELS } from '@hapi/protocol'
+
+export type PiCommandSummary = {
+    name: string
+    description?: string
+    source: 'extension' | 'prompt' | 'skill'
+}
+
+export type PiCommandsResponse = {
+    success: boolean
+    commands?: PiCommandSummary[]
+    error?: string
+}
+
 export type PiRpcCommand =
     | { type: 'prompt'; message: string }
     | { type: 'abort' }
     | { type: 'new_session' }
     | { type: 'get_state' }
     | { type: 'set_model'; provider: string; modelId: string }
-    | { type: 'get_available_models' };
+    | { type: 'get_available_models' }
+    | { type: 'set_session_name'; name: string }
+    | { type: 'set_thinking_level'; level: PiThinkingLevel }
+    | { type: 'cycle_thinking_level' }
+    | { type: 'get_commands' };
 
 // ============================================================================
 // Pi RPC Responses (stdout)

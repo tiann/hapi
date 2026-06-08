@@ -559,6 +559,12 @@ export class ApiClient {
         )
     }
 
+    async getSessionPiCommands(sessionId: string): Promise<import('@hapi/protocol/apiTypes').PiCommandsResponse> {
+        return await this.request<import('@hapi/protocol/apiTypes').PiCommandsResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/pi-commands`
+        )
+    }
+
     async getMachineCursorModels(machineId: string): Promise<CursorModelsResponse> {
         return await this.request<CursorModelsResponse>(
             `/api/machines/${encodeURIComponent(machineId)}/cursor-models`
