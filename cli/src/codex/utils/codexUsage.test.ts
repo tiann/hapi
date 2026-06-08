@@ -133,4 +133,90 @@ describe('normalizeCodexUsage', () => {
     it('returns null when no supported usage fields are present', () => {
         expect(normalizeCodexUsage({ message: 'hello' })).toBeNull();
     });
+
+    it('extracts credits + plan metadata for premium-credits accounts with both windows null', () => {
+        // Shape captured from a live Codex Pro account whose 5h subscription
+        // window AND topped-up credits are both exhausted (rollout JSONL,
+        // 2026-06-08). primary/secondary are explicitly null because the
+        // plan no longer bills by window; the constraint is credits.balance.
+        const usage = normalizeCodexUsage({
+            info: {
+                model_context_window: 258_400,
+                total_token_usage: {
+                    input_tokens: 51_733_893,
+                    cached_input_tokens: 50_161_280,
+                    output_tokens: 74_915,
+                    reasoning_output_tokens: 27_228,
+                    total_tokens: 51_808_808
+                },
+                last_token_usage: {
+                    input_tokens: 206_333,
+                    cached_input_tokens: 205_696,
+                    output_tokens: 41,
+                    reasoning_output_tokens: 0,
+                    total_tokens: 206_374
+                }
+            },
+            rate_limits: {
+                limit_id: 'premium',
+                limit_name: null,
+                primary: null,
+                secondary: null,
+                credits: {
+                    has_credits: false,
+                    unlimited: false,
+                    balance: '0'
+                },
+                plan_type: null,
+                rate_limit_reached_type: null
+            }
+        }, { now: 3_000_000 });
+
+        expect(usage?.rateLimits.fiveHour).toBeUndefined();
+        expect(usage?.rateLimits.weekly).toBeUndefined();
+        expect(usage?.credits).toEqual({
+            hasCredits: false,
+            unlimited: false,
+            balance: '0'
+        });
+        expect(usage?.limitId).toBe('premium');
+        // plan_type and rate_limit_reached_type were null in the captured
+        // shape - those should drop out instead of surfacing as 'null'.
+        expect(usage?.planType).toBeUndefined();
+        expect(usage?.rateLimitReachedType).toBeUndefined();
+    });
+
+    it('preserves rate_limit_reached_type when codex flags an explicit cap', () => {
+        const usage = normalizeCodexUsage({
+            info: { model_context_window: 100_000 },
+            rate_limits: {
+                limit_id: 'plus',
+                plan_type: 'plus',
+                primary: { used_percent: 100, window_minutes: 300 },
+                secondary: { used_percent: 100, window_minutes: 10080 },
+                credits: null,
+                rate_limit_reached_type: 'weekly'
+            }
+        });
+
+        expect(usage?.rateLimitReachedType).toBe('weekly');
+        expect(usage?.planType).toBe('plus');
+        expect(usage?.limitId).toBe('plus');
+        expect(usage?.credits).toBeUndefined();
+    });
+
+    it('surfaces a non-blocking unlimited credit balance without exhausting flags', () => {
+        const usage = normalizeCodexUsage({
+            info: { model_context_window: 100_000 },
+            rate_limits: {
+                credits: { has_credits: true, unlimited: true, balance: '0' }
+            }
+        });
+
+        expect(usage?.credits).toEqual({
+            hasCredits: true,
+            unlimited: true,
+            balance: '0'
+        });
+    });
 });
