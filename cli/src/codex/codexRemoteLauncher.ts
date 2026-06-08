@@ -2571,7 +2571,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     expectedTurnId: this.currentTurnId,
                     input: [{ type: 'text', text: taken.item.message }]
                 });
-                session.emitMessagesConsumed([localId]);
+                session.client.emitMessagesConsumed([localId]);
                 return { status: 'steered', localId };
             } catch (error) {
                 session.queue.restoreAt(taken.index, taken.item);
