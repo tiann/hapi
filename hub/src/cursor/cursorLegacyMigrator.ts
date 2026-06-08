@@ -77,8 +77,15 @@ export interface CursorLegacyMigratorDeps {
      * review #34 P2.
      */
     hostName?: () => string
-    /** Spawn factory for the verify probe. Override in tests to inject a mock probe. */
-    createProbe?: (env: NodeJS.ProcessEnv) => AcpVerifyProbe
+    /**
+     * Spawn factory for the verify probe. Override in tests to inject a mock probe.
+     * The second arg is the session-owner home (`metadata.homeDir`) resolved by
+     * `migrateOne`, which the default factory passes through to the probe as
+     * `agentLookupHome` so service-account hub deployments resolve `agent` under
+     * the human user's `~/.local/bin` rather than the hub user's. tiann/hapi#844
+     * upstream Codex Major.
+     */
+    createProbe?: (env: NodeJS.ProcessEnv, agentLookupHome: string) => AcpVerifyProbe
     /**
      * Optional escape hatch for the operator-driven CLI/REST flow that wants
      * to reserve the global agent-acp-active lock for the entire migration
@@ -306,17 +313,20 @@ export class CursorLegacyMigrator {
         this.deps = {
             homeDir: deps.homeDir ?? (() => homedir()),
             hostName: deps.hostName ?? (() => process.env.HAPI_HOSTNAME?.trim() || hostname()),
-            createProbe: deps.createProbe ?? ((env) => new AcpVerifyProbe({
+            createProbe: deps.createProbe ?? ((env, agentLookupHome) => new AcpVerifyProbe({
                 env,
                 skipLockAcquire: true,
-                // Codex #34 P2 (round 13): in service-account-hub deployments
-                // where process.env.HOME differs from the human user who
-                // installed Cursor, the verify probe needs the recorded
-                // session-owner home to resolve $HOME/.local/bin/agent on
-                // PATH. Thread the migrator's homeDir dep through so the
-                // probe doesn't fall back to process.env.HOME when a more
-                // specific lookup home is available.
-                agentLookupHome: this.deps.homeDir()
+                // tiann/hapi#844 upstream Codex Major: `migrateOne` resolves the
+                // legacy store under `metadata.homeDir` (the recorded session-
+                // owner home), so the probe MUST also look up `agent` under
+                // that same home. Earlier rounds plumbed `agentLookupHome` into
+                // the factory default using `this.deps.homeDir()` (the HUB's
+                // home), which falls back to the hub user's `~/.local/bin` on
+                // service-account deployments where the human installed Cursor
+                // under a different account. The caller (`verifyInTempHome`)
+                // now passes the resolved `sourceHome` through to keep the
+                // store and the binary discovery rooted in the same home.
+                agentLookupHome
             })),
             // Default: never refuse based on the global lock. The verify probe
             // is isolated via HAPI_HOME override in verifyInTempHome, so the
@@ -816,7 +826,7 @@ export class CursorLegacyMigrator {
                     env.HOMEPATH = fakeHome
                 }
             }
-            const probe = this.deps.createProbe(env)
+            const probe = this.deps.createProbe(env, opts.sourceHome)
             const verifyStart = this.deps.now()
             const verifyDeadline = verifyStart + this.opts.verifyTimeoutMs
             try {

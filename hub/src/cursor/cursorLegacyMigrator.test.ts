@@ -506,6 +506,98 @@ describe('CursorLegacyMigrator.migrateOne — happy path', () => {
         }
     })
 
+    it('passes metadata.homeDir (NOT deps.homeDir) as agentLookupHome to the verify probe (tiann/hapi#844)', async () => {
+        // tiann/hapi#844 upstream Codex Major: the default createProbe factory
+        // used `this.deps.homeDir()` for `agentLookupHome`, which on service-
+        // account hub deployments resolves to the hub user's $HOME — but the
+        // legacy store lives under the human user's home (metadata.homeDir).
+        // Earlier rounds wired `agentLookupHome` into the factory default
+        // but never threaded the resolved sourceHome through, so verification
+        // silently looked up `agent` under the wrong home and migrations
+        // fell back to legacy. The fix: createProbe takes a 2nd arg, and
+        // verifyInTempHome passes opts.sourceHome through.
+        const userHome = mkdtempSync(join(tmpdir(), 'hapi-migrator-user-home-'))
+        try {
+            const hubHome = h.home // distinct from userHome
+            const cursorSessionId = 'service-account-uuid'
+            const userChatsDir = join(userHome, '.cursor', 'chats', 'wsh-svc', cursorSessionId)
+            mkdirSync(userChatsDir, { recursive: true })
+            const sourceStore = join(userChatsDir, 'store.db')
+            buildSyntheticLegacyStore({ path: sourceStore })
+            const userAcpDir = join(userHome, '.cursor', 'acp-sessions')
+            mkdirSync(userAcpDir, { recursive: true })
+            const session = h.makeSession({
+                metadata: {
+                    path: '/workspace/svc',
+                    host: 'h',
+                    flavor: 'cursor',
+                    cursorSessionId,
+                    homeDir: userHome
+                }
+            })
+            let capturedAgentLookupHome: string | null = null
+            const migrator = new CursorLegacyMigrator({}, {
+                homeDir: () => hubHome,
+                hostName: () => 'h',
+                tmpDir: () => h.tmp,
+                now: () => 1_700_000_000_000,
+                createProbe: (_env, agentLookupHome) => {
+                    capturedAgentLookupHome = agentLookupHome
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    return makeMockProbe() as any
+                },
+                awaitLockRelease: async () => true,
+                isAgentAcpTransportActive: () => ({ active: false, holderPid: null }),
+                acquireAcpActiveLock: () => ({ release() {} }),
+                checkpointLegacyStore: () => {},
+                getCurrentSession: () => null,
+                logger: { debug() {}, info() {}, warn() {}, error() {} },
+                archiveSession: async (id) => { h.archiveCalls.push(id) },
+                updateSessionAfterMigrate: () => ({ ok: true })
+            })
+            const out = await migrator.migrateOne(session, {})
+            expect(out.ok).toBe(true)
+            expect(capturedAgentLookupHome as unknown as string).toBe(userHome)
+            expect(capturedAgentLookupHome as unknown as string).not.toBe(hubHome)
+        } finally {
+            try { rmSync(userHome, { recursive: true, force: true }) } catch {}
+        }
+    })
+
+    it('falls back to deps.homeDir() for agentLookupHome when metadata.homeDir is absent (legacy session records)', async () => {
+        // Older session records may lack metadata.homeDir (the field was added
+        // in a later CLI rev). For those, the migrator falls back to
+        // this.deps.homeDir() for both the store lookup AND agentLookupHome.
+        const cursorSessionId = 'no-metadata-home-uuid'
+        h.placeLegacyStore(cursorSessionId)
+        const session = h.makeSession({
+            metadata: { path: '/workspace/legacy', host: 'h', flavor: 'cursor', cursorSessionId }
+        })
+        let capturedAgentLookupHome: string | null = null
+        const migrator = new CursorLegacyMigrator({}, {
+            homeDir: () => h.home,
+            hostName: () => 'h',
+            tmpDir: () => h.tmp,
+            now: () => 1_700_000_000_000,
+            createProbe: (_env, agentLookupHome) => {
+                capturedAgentLookupHome = agentLookupHome
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                return makeMockProbe() as any
+            },
+            awaitLockRelease: async () => true,
+            isAgentAcpTransportActive: () => ({ active: false, holderPid: null }),
+            acquireAcpActiveLock: () => ({ release() {} }),
+            checkpointLegacyStore: () => {},
+            getCurrentSession: () => null,
+            logger: { debug() {}, info() {}, warn() {}, error() {} },
+            archiveSession: async (id) => { h.archiveCalls.push(id) },
+            updateSessionAfterMigrate: () => ({ ok: true })
+        })
+        const out = await migrator.migrateOne(session, {})
+        expect(out.ok).toBe(true)
+        expect(capturedAgentLookupHome as unknown as string).toBe(h.home)
+    })
+
     it('--keep-source preserves the legacy source after success', async () => {
         const cursorSessionId = 'keep-uuid'
         const sourceStore = h.placeLegacyStore(cursorSessionId)
