@@ -138,18 +138,18 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         const mermaidIssues = extractFailingMermaidBlocks(content)
         if (mermaidIssues.length > 0) {
             const hintText = buildMermaidRenderIssueHint(mermaidIssues)
-            const hintSeq = Date.now()
+            const hintCreatedAt = Date.now()
             socket.emit('update', {
                 id: randomUUID(),
-                seq: hintSeq,
-                createdAt: hintSeq,
+                seq: msg.seq,
+                createdAt: hintCreatedAt,
                 body: {
                     t: 'new-message' as const,
                     sid,
                     message: {
                         id: randomUUID(),
-                        seq: hintSeq,
-                        createdAt: hintSeq,
+                        seq: msg.seq,
+                        createdAt: hintCreatedAt,
                         localId: null,
                         content: {
                             role: 'user',
