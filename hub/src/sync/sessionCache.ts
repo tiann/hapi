@@ -7,7 +7,7 @@ import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
 import { extractBackgroundTaskDelta } from './backgroundTasks'
 
 const QUEUED_MESSAGE_THINKING_GRACE_MS = 15_000
-type RuntimeConfigKey = 'permissionMode' | 'model' | 'modelReasoningEffort' | 'effort' | 'collaborationMode'
+type RuntimeConfigKey = 'permissionMode' | 'model' | 'modelReasoningEffort' | 'effort' | 'serviceTier' | 'collaborationMode'
 
 export class SessionCache {
     private readonly sessions: Map<string, Session> = new Map()
