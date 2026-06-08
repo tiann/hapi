@@ -6,6 +6,7 @@ import { createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecy
 import { registerSessionConfigRpc } from '@/agent/sessionConfigRpc';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
+import { readFileSync } from 'fs';
 import { convertAgentMessage } from '@/agent/messageConverter';
 import { PiTransport } from './PiTransport';
 import { convertPiEvent } from './PiEventConverter';
@@ -318,6 +319,45 @@ export async function runPi(opts: {
         }
     });
 
+    // Handle get_state response: extract model, provider, session ID,
+    // thinking level, and queue modes from Pi's initial state.
+    function handleGetState(
+        data: Record<string, unknown> | undefined,
+        model: string | null,
+        onUpdate: (update: { model?: string | null; permissionMode?: PiPermissionMode }) => void
+    ): void {
+        // Model + provider
+        if (data?.model && typeof data.model === 'object') {
+            const modelObj = data.model as Record<string, unknown>;
+            const newModel = (modelObj.modelId as string) ?? model;
+            const provider = modelObj.provider;
+            if (typeof provider === 'string' && provider.length > 0) {
+                currentProvider = provider;
+            }
+            onUpdate({ model: newModel });
+            logger.debug(`[pi] Initial model: ${newModel} (provider=${currentProvider ?? 'unknown'})`);
+        }
+        // Persist piSessionId for session resume
+        const piSessionId = typeof data?.sessionId === 'string' ? data.sessionId as string : undefined;
+        if (piSessionId) {
+            session.updateMetadata((meta) => ({ ...meta, piSessionId }));
+            logger.debug(`[pi] Session ID persisted to metadata: ${piSessionId}`);
+        }
+        // Thinking level
+        const thinkingLevel = typeof data?.thinkingLevel === 'string' ? data.thinkingLevel as PiThinkingLevel : undefined;
+        if (thinkingLevel) {
+            currentThinkingLevel = thinkingLevel;
+            logger.debug(`[pi] Initial thinking level: ${thinkingLevel}`);
+        }
+        // Queue modes
+        if (data?.steeringMode === 'all' || data?.steeringMode === 'one-at-a-time') {
+            currentSteeringMode = data.steeringMode;
+        }
+        if (data?.followUpMode === 'all' || data?.followUpMode === 'one-at-a-time') {
+            currentFollowUpMode = data.followUpMode;
+        }
+    }
+
     function handleResponse(
         response: PiResponseEvent,
         model: string | null,
@@ -347,36 +387,7 @@ export async function runPi(opts: {
         switch (command) {
             case 'get_state': {
                 const data = response.data as Record<string, unknown> | undefined;
-                if (data?.model && typeof data.model === 'object') {
-                    const modelObj = data.model as Record<string, unknown>;
-                    const newModel = (modelObj.modelId as string) ?? model;
-                    const provider = modelObj.provider;
-                    if (typeof provider === 'string' && provider.length > 0) {
-                        currentProvider = provider;
-                    }
-                    onUpdate({ model: newModel });
-                    logger.debug(`[pi] Initial model: ${newModel} (provider=${currentProvider ?? 'unknown'})`);
-                }
-                // Persist piSessionId to metadata for session resume support.
-                // Pi's get_state returns { sessionId: "<uuid>", sessionFile: "..." }.
-                const piSessionId = typeof data?.sessionId === 'string' ? data.sessionId as string : undefined;
-                if (piSessionId) {
-                    session.updateMetadata((meta) => ({ ...meta, piSessionId }));
-                    logger.debug(`[pi] Session ID persisted to metadata: ${piSessionId}`);
-                }
-                // Capture initial thinking level from Pi's state
-                const thinkingLevel = typeof data?.thinkingLevel === 'string' ? data.thinkingLevel as PiThinkingLevel : undefined;
-                if (thinkingLevel) {
-                    currentThinkingLevel = thinkingLevel;
-                    logger.debug(`[pi] Initial thinking level: ${thinkingLevel}`);
-                }
-                // Capture initial steering/follow-up modes
-                if (data?.steeringMode === 'all' || data?.steeringMode === 'one-at-a-time') {
-                    currentSteeringMode = data.steeringMode;
-                }
-                if (data?.followUpMode === 'all' || data?.followUpMode === 'one-at-a-time') {
-                    currentFollowUpMode = data.followUpMode;
-                }
+                handleGetState(data, model, onUpdate);
                 break;
             }
             case 'set_model': {
@@ -632,8 +643,7 @@ export async function runPi(opts: {
         for (const att of attachments) {
             if (!att.mimeType.startsWith('image/')) continue;
             try {
-                const fs = require('fs') as typeof import('fs');
-                const data = fs.readFileSync(att.path);
+                const data = readFileSync(att.path);
                 images.push({
                     type: 'image',
                     source: {
