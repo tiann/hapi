@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import { extractFailingMermaidBlocks, buildMermaidRenderIssueHint } from './mermaid'
 
-// Helper to wrap text in a Claude-style assistant message envelope
+// Bare { type:'assistant', message:... } envelope (e.g. test / older formats)
 function assistantMessage(text: string): unknown {
     return {
         type: 'assistant',
@@ -12,11 +12,68 @@ function assistantMessage(text: string): unknown {
     }
 }
 
+// role:'agent' + type:'output' — the real live-session format for Claude
+function agentOutputMessage(text: string): unknown {
+    return {
+        role: 'agent',
+        content: {
+            type: 'output',
+            data: {
+                type: 'assistant',
+                message: {
+                    role: 'assistant',
+                    content: [{ type: 'text', text }]
+                }
+            }
+        },
+        meta: { sentFrom: 'cli' }
+    }
+}
+
+// role:'agent' + type:'codex' — Codex/Gemini/OpenCode format
+function agentCodexMessage(text: string): unknown {
+    return {
+        role: 'agent',
+        content: {
+            type: 'codex',
+            data: {
+                type: 'message',
+                message: text
+            }
+        },
+        meta: { sentFrom: 'cli' }
+    }
+}
+
 describe('extractFailingMermaidBlocks', () => {
     it('returns [] for non-assistant messages', () => {
         expect(extractFailingMermaidBlocks({ type: 'user', message: { role: 'user', content: 'hello' } })).toEqual([])
         expect(extractFailingMermaidBlocks(null)).toEqual([])
         expect(extractFailingMermaidBlocks('plain string')).toEqual([])
+    })
+
+    it('returns an issue for invalid mermaid in live-session agent output (Claude format)', () => {
+        const msg = agentOutputMessage('```mermaid\ngrph TD\n  A --> B\n```')
+        const issues = extractFailingMermaidBlocks(msg)
+        expect(issues).toHaveLength(1)
+        expect(issues[0].snippet).toContain('grph TD')
+    })
+
+    it('returns [] for valid mermaid in live-session agent output (Claude format)', () => {
+        const msg = agentOutputMessage('```mermaid\ngraph TD\n  A --> B\n```')
+        expect(extractFailingMermaidBlocks(msg)).toEqual([])
+    })
+
+    it('returns an issue for invalid mermaid in codex agent format', () => {
+        const msg = agentCodexMessage('```mermaid\ngrph TD\n  A --> B\n```')
+        const issues = extractFailingMermaidBlocks(msg)
+        expect(issues).toHaveLength(1)
+        expect(issues[0].snippet).toContain('grph TD')
+    })
+
+    it('returns [] for valid mermaid in codex agent format', () => {
+        const msg = agentCodexMessage('```mermaid\nflowchart LR\n  A --> B\n```')
+        expect(extractFailingMermaidBlocks(msg)).toEqual([])
     })
 
     it('returns [] when no mermaid blocks present', () => {

@@ -73,16 +73,36 @@ function findInvalidMermaidBlocks(markdown: string): MermaidIssue[] {
     return issues
 }
 
+function extractTextFromRecord(record: { role: string; content: unknown }): string | null {
+    if (record.role === 'assistant') {
+        return extractTextFromContent(record.content)
+    }
+    if (record.role === 'agent' && isObject(record.content)) {
+        if (record.content.type === 'output' && isObject(record.content.data)) {
+            // Claude: data is { type: 'assistant', message: { role: 'assistant', content: [...] } }
+            const inner = unwrapRoleWrappedRecordEnvelope(record.content.data)
+            if (inner?.role === 'assistant') return extractTextFromContent(inner.content)
+        } else if (record.content.type === 'codex' && isObject(record.content.data)) {
+            // Codex/Gemini/OpenCode: data is { type: 'message', message: <string> }
+            if (record.content.data.type === 'message' && typeof record.content.data.message === 'string') {
+                return record.content.data.message
+            }
+        }
+    }
+    return null
+}
+
 /**
  * Inspects a message content blob (as stored in the hub DB) and returns one
  * entry per ```mermaid block whose first token is not a recognised diagram
- * type. Only processes assistant-role messages; returns [] for everything else.
+ * type. Handles both the bare role:'assistant' format and the live-session
+ * role:'agent' wrapper (type:'output' for Claude, type:'codex' for Codex/Gemini).
  */
 export function extractFailingMermaidBlocks(messageContent: unknown): MermaidIssue[] {
     const record = unwrapRoleWrappedRecordEnvelope(messageContent)
-    if (!record || record.role !== 'assistant') return []
+    if (!record) return []
 
-    const text = extractTextFromContent(record.content)
+    const text = extractTextFromRecord(record)
     if (!text) return []
 
     return findInvalidMermaidBlocks(text)
