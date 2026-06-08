@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
+import type { PiMessagesResponse } from '@/types/api'
 import type { PiMessageEntry } from '@hapi/protocol/apiTypes'
 import { queryKeys } from '@/lib/query-keys'
 
@@ -26,7 +27,7 @@ export function usePiMessages(args: {
             if (!sessionId) {
                 throw new Error('Pi messages target unavailable')
             }
-            return await api.getPiMessages(sessionId)
+            return await api.callPiEndpoint<PiMessagesResponse>(sessionId, 'messages')
         },
         enabled,
         staleTime: 30_000,

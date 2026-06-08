@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
+import type { PiForkMessagesResponse } from '@/types/api'
 import type { PiForkMessageEntry } from '@hapi/protocol/apiTypes'
 import { queryKeys } from '@/lib/query-keys'
 
@@ -26,7 +27,7 @@ export function usePiForkMessages(args: {
             if (!sessionId) {
                 throw new Error('Pi fork messages target unavailable')
             }
-            return await api.getPiForkMessages(sessionId)
+            return await api.callPiEndpoint<PiForkMessagesResponse>(sessionId, 'fork-messages')
         },
         enabled,
         staleTime: 60_000,

@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
+import type { PiSessionStatsResponse } from '@/types/api'
 import type { PiSessionStats } from '@hapi/protocol/apiTypes'
 import { queryKeys } from '@/lib/query-keys'
 
@@ -26,7 +27,7 @@ export function usePiSessionStats(args: {
             if (!sessionId) {
                 throw new Error('Pi session stats target unavailable')
             }
-            return await api.getPiSessionStats(sessionId)
+            return await api.callPiEndpoint<PiSessionStatsResponse>(sessionId, 'stats')
         },
         enabled,
         staleTime: 30_000,

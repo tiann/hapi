@@ -33,20 +33,6 @@ import type {
     MachineListDirectoryResponse,
     MachinePathsExistsResponse,
     OpencodeModelsResponse,
-    PiCloneResponse,
-    PiCommandsResponse,
-    PiCompactResponse,
-    PiExportHtmlResponse,
-    PiFollowUpResponse,
-    PiForkMessagesResponse,
-    PiForkResponse,
-    PiMessagesResponse,
-    PiModelsResponse,
-    PiQueueModeResponse,
-    PiSessionStatsResponse,
-    PiSetAutoCompactionResponse,
-    PiSteerResponse,
-    PiSwitchSessionResponse,
     UploadFileResponse
 } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor } from '@hapi/protocol'
@@ -567,111 +553,11 @@ export class ApiClient {
         )
     }
 
-    async getSessionPiModels(sessionId: string): Promise<PiModelsResponse> {
-        return await this.request<PiModelsResponse>(
-            `/api/sessions/${encodeURIComponent(sessionId)}/pi-models`
-        )
-    }
-
-    async getSessionPiCommands(sessionId: string): Promise<PiCommandsResponse> {
-        return await this.request<PiCommandsResponse>(
-            `/api/sessions/${encodeURIComponent(sessionId)}/pi-commands`
-        )
-    }
-
-    async steerPiSession(sessionId: string, message: string): Promise<PiSteerResponse> {
-        return await this.request<PiSteerResponse>(
-            `/api/sessions/${encodeURIComponent(sessionId)}/pi-steer`,
-            { method: 'POST', body: JSON.stringify({ message }) }
-        )
-    }
-
-    async followUpPiSession(sessionId: string, message: string): Promise<PiFollowUpResponse> {
-        return await this.request<PiFollowUpResponse>(
-            `/api/sessions/${encodeURIComponent(sessionId)}/pi-follow-up`,
-            { method: 'POST', body: JSON.stringify({ message }) }
-        )
-    }
-
-    async setPiSteeringMode(sessionId: string, mode: 'all' | 'one-at-a-time'): Promise<PiQueueModeResponse> {
-        return await this.request<PiQueueModeResponse>(
-            `/api/sessions/${encodeURIComponent(sessionId)}/pi-steering-mode`,
-            { method: 'POST', body: JSON.stringify({ mode }) }
-        )
-    }
-
-    async setPiFollowUpMode(sessionId: string, mode: 'all' | 'one-at-a-time'): Promise<PiQueueModeResponse> {
-        return await this.request<PiQueueModeResponse>(
-            `/api/sessions/${encodeURIComponent(sessionId)}/pi-follow-up-mode`,
-            { method: 'POST', body: JSON.stringify({ mode }) }
-        )
-    }
-
-    async getPiMessages(sessionId: string): Promise<PiMessagesResponse> {
-        return await this.request<PiMessagesResponse>(
-            `/api/sessions/${encodeURIComponent(sessionId)}/pi-messages`
-        )
-    }
-
-    // P3: Compact
-    async compactPiSession(sessionId: string, customInstructions?: string): Promise<PiCompactResponse> {
-        return await this.request<PiCompactResponse>(
-            `/api/sessions/${encodeURIComponent(sessionId)}/pi-compact`,
-            { method: 'POST', body: JSON.stringify({ customInstructions }) }
-        )
-    }
-
-    // P3: Set auto compaction
-    async setPiAutoCompaction(sessionId: string, enabled: boolean): Promise<PiSetAutoCompactionResponse> {
-        return await this.request<PiSetAutoCompactionResponse>(
-            `/api/sessions/${encodeURIComponent(sessionId)}/pi-auto-compaction`,
-            { method: 'POST', body: JSON.stringify({ enabled }) }
-        )
-    }
-
-    // P3: Fork
-    async forkPiSession(sessionId: string, entryId: string): Promise<PiForkResponse> {
-        return await this.request<PiForkResponse>(
-            `/api/sessions/${encodeURIComponent(sessionId)}/pi-fork`,
-            { method: 'POST', body: JSON.stringify({ entryId }) }
-        )
-    }
-
-    // P3: Get fork messages
-    async getPiForkMessages(sessionId: string): Promise<PiForkMessagesResponse> {
-        return await this.request<PiForkMessagesResponse>(
-            `/api/sessions/${encodeURIComponent(sessionId)}/pi-fork-messages`
-        )
-    }
-
-    // P3: Clone
-    async clonePiSession(sessionId: string): Promise<PiCloneResponse> {
-        return await this.request<PiCloneResponse>(
-            `/api/sessions/${encodeURIComponent(sessionId)}/pi-clone`,
-            { method: 'POST' }
-        )
-    }
-
-    // P3: Switch session
-    async switchPiSession(sessionId: string, sessionPath: string): Promise<PiSwitchSessionResponse> {
-        return await this.request<PiSwitchSessionResponse>(
-            `/api/sessions/${encodeURIComponent(sessionId)}/pi-switch-session`,
-            { method: 'POST', body: JSON.stringify({ sessionPath }) }
-        )
-    }
-
-    // P3: Get session stats
-    async getPiSessionStats(sessionId: string): Promise<PiSessionStatsResponse> {
-        return await this.request<PiSessionStatsResponse>(
-            `/api/sessions/${encodeURIComponent(sessionId)}/pi-stats`
-        )
-    }
-
-    // P3: Export HTML
-    async exportPiSessionHtml(sessionId: string, outputPath?: string): Promise<PiExportHtmlResponse> {
-        return await this.request<PiExportHtmlResponse>(
-            `/api/sessions/${encodeURIComponent(sessionId)}/pi-export-html`,
-            { method: 'POST', body: JSON.stringify({ outputPath }) }
+    /** Generic Pi session endpoint — replaces per-method wrappers. */
+    async callPiEndpoint<T = unknown>(sessionId: string, path: string, init?: RequestInit): Promise<T> {
+        return await this.request<T>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/pi-${path}`,
+            init
         )
     }
 

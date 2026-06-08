@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
-import type { PiModelSummary } from '@/types/api'
+import type { PiModelSummary, PiModelsResponse } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
 
 export function usePiModels(args: {
@@ -27,7 +27,7 @@ export function usePiModels(args: {
             if (!sessionId) {
                 throw new Error('Pi models target unavailable')
             }
-            return await api.getSessionPiModels(sessionId)
+            return await api.callPiEndpoint<PiModelsResponse>(sessionId, 'models')
         },
         enabled,
         staleTime: 60_000,

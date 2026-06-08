@@ -14,19 +14,6 @@ import type {
     OpencodeModelsResponse,
     OpencodeModelSummary,
     PathExistsResponse,
-    PiCommandsResponse,
-    PiMessagesResponse,
-    PiQueueModeResponse,
-    PiSteerResponse,
-    PiFollowUpResponse,
-    PiCompactResponse,
-    PiSetAutoCompactionResponse,
-    PiForkResponse,
-    PiForkMessagesResponse,
-    PiCloneResponse,
-    PiSwitchSessionResponse,
-    PiSessionStatsResponse,
-    PiExportHtmlResponse,
     SlashCommandsResponse,
     UploadFileResponse
 } from '@hapi/protocol/apiTypes'
@@ -50,20 +37,7 @@ export type RpcCursorModel = CursorModelSummary
 export type RpcListCursorModelsResponse = CursorModelsResponse
 export type RpcOpencodeModel = OpencodeModelSummary
 export type RpcListOpencodeModelsResponse = OpencodeModelsResponse
-export type RpcListPiModelsResponse = import('@hapi/protocol/apiTypes').ListPiModelsResponse
-export type RpcListPiCommandsResponse = PiCommandsResponse
-export type RpcPiSteerResponse = PiSteerResponse
-export type RpcPiFollowUpResponse = PiFollowUpResponse
-export type RpcPiQueueModeResponse = PiQueueModeResponse
-export type RpcPiMessagesResponse = PiMessagesResponse
-export type RpcPiCompactResponse = PiCompactResponse
-export type RpcPiSetAutoCompactionResponse = PiSetAutoCompactionResponse
-export type RpcPiForkResponse = PiForkResponse
-export type RpcPiForkMessagesResponse = PiForkMessagesResponse
-export type RpcPiCloneResponse = PiCloneResponse
-export type RpcPiSwitchSessionResponse = PiSwitchSessionResponse
-export type RpcPiSessionStatsResponse = PiSessionStatsResponse
-export type RpcPiExportHtmlResponse = PiExportHtmlResponse
+
 
 export class RpcGateway {
     constructor(
@@ -285,72 +259,10 @@ export class RpcGateway {
         return await this.machineRpc(machineId, RPC_METHODS.ListOpencodeModelsForCwd, { cwd }) as RpcListOpencodeModelsResponse
     }
 
-    async listPiModelsForSession(sessionId: string): Promise<RpcListPiModelsResponse> {
-        return await this.sessionRpc(sessionId, RPC_METHODS.ListPiModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListPiModelsResponse
-    }
-
-    async listPiCommandsForSession(sessionId: string): Promise<RpcListPiCommandsResponse> {
-        return await this.sessionRpc(sessionId, RPC_METHODS.ListPiCommands, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListPiCommandsResponse
-    }
-
-    async steerPiSession(sessionId: string, message: string): Promise<RpcPiSteerResponse> {
-        return await this.sessionRpc(sessionId, RPC_METHODS.PiSteer, { message }) as RpcPiSteerResponse
-    }
-
-    async followUpPiSession(sessionId: string, message: string): Promise<RpcPiFollowUpResponse> {
-        return await this.sessionRpc(sessionId, RPC_METHODS.PiFollowUp, { message }) as RpcPiFollowUpResponse
-    }
-
-    async setPiSteeringMode(sessionId: string, mode: 'all' | 'one-at-a-time'): Promise<RpcPiQueueModeResponse> {
-        return await this.sessionRpc(sessionId, RPC_METHODS.PiSetSteeringMode, { mode }) as RpcPiQueueModeResponse
-    }
-
-    async setPiFollowUpMode(sessionId: string, mode: 'all' | 'one-at-a-time'): Promise<RpcPiQueueModeResponse> {
-        return await this.sessionRpc(sessionId, RPC_METHODS.PiSetFollowUpMode, { mode }) as RpcPiQueueModeResponse
-    }
-
-    async getPiMessages(sessionId: string): Promise<RpcPiMessagesResponse> {
-        return await this.sessionRpc(sessionId, RPC_METHODS.PiGetMessages, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcPiMessagesResponse
-    }
-
-    // P3: Compact
-    async compactPiSession(sessionId: string, customInstructions?: string): Promise<RpcPiCompactResponse> {
-        return await this.sessionRpc(sessionId, RPC_METHODS.PiCompact, { customInstructions }, 60_000) as RpcPiCompactResponse
-    }
-
-    // P3: Set auto compaction
-    async setPiAutoCompaction(sessionId: string, enabled: boolean): Promise<RpcPiSetAutoCompactionResponse> {
-        return await this.sessionRpc(sessionId, RPC_METHODS.PiSetAutoCompaction, { enabled }) as RpcPiSetAutoCompactionResponse
-    }
-
-    // P3: Fork
-    async forkPiSession(sessionId: string, entryId: string): Promise<RpcPiForkResponse> {
-        return await this.sessionRpc(sessionId, RPC_METHODS.PiFork, { entryId }) as RpcPiForkResponse
-    }
-
-    // P3: Get fork messages
-    async getPiForkMessages(sessionId: string): Promise<RpcPiForkMessagesResponse> {
-        return await this.sessionRpc(sessionId, RPC_METHODS.PiGetForkMessages, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcPiForkMessagesResponse
-    }
-
-    // P3: Clone
-    async clonePiSession(sessionId: string): Promise<RpcPiCloneResponse> {
-        return await this.sessionRpc(sessionId, RPC_METHODS.PiClone, {}) as RpcPiCloneResponse
-    }
-
-    // P3: Switch session
-    async switchPiSession(sessionId: string, sessionPath: string): Promise<RpcPiSwitchSessionResponse> {
-        return await this.sessionRpc(sessionId, RPC_METHODS.PiSwitchSession, { sessionPath }) as RpcPiSwitchSessionResponse
-    }
-
-    // P3: Get session stats
-    async getPiSessionStats(sessionId: string): Promise<RpcPiSessionStatsResponse> {
-        return await this.sessionRpc(sessionId, RPC_METHODS.PiGetSessionStats, {}) as RpcPiSessionStatsResponse
-    }
-
-    // P3: Export HTML
-    async exportPiSessionHtml(sessionId: string, outputPath?: string): Promise<RpcPiExportHtmlResponse> {
-        return await this.sessionRpc(sessionId, RPC_METHODS.PiExportHtml, { outputPath }, 30_000) as RpcPiExportHtmlResponse
+    /** Generic Pi RPC call — routes all Pi-specific session RPCs through
+     *  a single entry point instead of per-method wrappers. */
+    async callPiRpc<T = unknown>(sessionId: string, method: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<T> {
+        return await this.sessionRpc(sessionId, method, params ?? {}, timeoutMs ?? DEFAULT_RPC_TIMEOUT_MS) as T
     }
 
     private async sessionRpc(

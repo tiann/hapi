@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
+import type { PiCommandsResponse } from '@/types/api'
 import type { PiCommandSummary } from '@hapi/protocol/apiTypes'
 import { queryKeys } from '@/lib/query-keys'
 
@@ -26,7 +27,7 @@ export function usePiCommands(args: {
             if (!sessionId) {
                 throw new Error('Pi commands target unavailable')
             }
-            return await api.getSessionPiCommands(sessionId)
+            return await api.callPiEndpoint<PiCommandsResponse>(sessionId, 'commands')
         },
         enabled,
         staleTime: 60_000,
