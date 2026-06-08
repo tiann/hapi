@@ -1,17 +1,44 @@
 const meta = {
   name: 'pi-adaptation-review-loop',
-  description: 'Loop: review Pi adaptation vs other APC agents, fix issues, repeat until clean. With diff guard and safety constraints.',
+  description: 'Loop: review Pi adaptation vs other APC agents, fix issues, repeat until clean. Uses file-based output instead of structured output for reliability.',
 };
 
 const { execSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 const MAX_ROUNDS = 5;
-const MAX_CHANGED_FILES_PER_ROUND = 20;
+const MAX_FILES_PER_ROUND = 30;
 const EXEC_TIMEOUT_MS = 30000;
+const OUTPUT_FILE = path.join(process.cwd(), '.pi', 'review-result.json');
 let round = 0;
-let lastMustFix = -1;
+let lastMustFix = null;
 let preCommitHash = '';
 
-/** Delete all refs under refs/pi-rewind/ */
+// #7: git repo 前置检查
+try {
+  execSync('git rev-parse --git-dir', { encoding: 'utf8', timeout: EXEC_TIMEOUT_MS });
+} catch {
+  throw new Error('Not inside a git repository. This workflow requires a git repo.');
+}
+
+function getAgentDirs() {
+  const nonAgent = new Set([
+    'pi', 'test', 'types', 'utils', 'modules', 'ui', 'api', 'runner',
+    'terminal', 'runtime', 'commands', 'bin', 'constants', 'parsers',
+    'lib', 'index', 'bootstrap', 'configuration', 'projectPath',
+    'persistence', 'agent',
+  ]);
+  try {
+    const cliSrc = path.join(process.cwd(), 'cli', 'src');
+    return fs.readdirSync(cliSrc, { withFileTypes: true })
+      .filter(e => e.isDirectory() && !nonAgent.has(e.name))
+      .map(e => `- ${e.name} (cli/src/${e.name}/)`)
+      .join('\n');
+  } catch {
+    return '- Claude Code (cli/src/claude/)\n- Codex (cli/src/codex/)\n- Gemini (cli/src/gemini/)\n- Opencode (cli/src/opencode/)\n- Kimi (cli/src/kimi/)\n- Cursor (cli/src/cursor/)';
+  }
+}
+
 function cleanRewindRefs() {
   try {
     const refs = execSync('git for-each-ref --format="%(refname)" refs/pi-rewind/', {
@@ -23,7 +50,8 @@ function cleanRewindRefs() {
   } catch { /* no refs to clean */ }
 }
 
-/** Rollback to a known-good commit hash */
+// Rollback to the commit hash at the start of this round.
+// This discards ALL commits made during the round (design intent: atomic round).
 function rollbackTo(targetHash) {
   if (!targetHash) return;
   try {
@@ -31,16 +59,61 @@ function rollbackTo(targetHash) {
   } catch { /* best effort */ }
 }
 
-cleanRewindRefs();
+// #5: 增加对 issues 数组内元素结构的校验
+function isValidIssue(issue) {
+  return (
+    issue &&
+    typeof issue === 'object' &&
+    typeof issue.severity === 'string' &&
+    typeof issue.category === 'string' &&
+    typeof issue.description === 'string' &&
+    typeof issue.fixed === 'boolean'
+  );
+}
+
+function readResultFile() {
+  let raw = '';
+  try {
+    raw = fs.readFileSync(OUTPUT_FILE, 'utf8').trim();
+    const obj = JSON.parse(raw);
+    if (
+      typeof obj.mustFixCount === 'number' &&
+      obj.mustFixCount >= 0 &&
+      Array.isArray(obj.issues) &&
+      obj.issues.every(isValidIssue)
+    ) {
+      return { data: obj, error: null };
+    }
+    return {
+      data: null,
+      error: `Validation failed: mustFixCount type=${typeof obj.mustFixCount}, issues.isArray=${Array.isArray(obj.issues)}`,
+    };
+  } catch (err) {
+    return {
+      data: null,
+      error: `${err.name}: ${err.message}. Raw (first 200 chars): ${raw.slice(0, 200)}`,
+    };
+  }
+}
+
+function cleanupResultFile() {
+  try { fs.unlinkSync(OUTPUT_FILE); } catch { /* ok */ }
+}
+
+// #4: 提取 gc 清理为独立函数，供 abort 路径复用
+function runFinalCleanup() {
+  try {
+    execSync('git reflog expire --expire=now --all', { timeout: EXEC_TIMEOUT_MS });
+    execSync('git gc --prune=now', { timeout: 60000 });
+  } catch { /* best effort */ }
+}
 
 while (round < MAX_ROUNDS) {
   round++;
-
-  // Snapshot HEAD before this round starts, so we can rollback if needed
+  cleanupResultFile();
   preCommitHash = execSync('git rev-parse HEAD', { encoding: 'utf8' }).trim();
 
-  // Node 1: Review + Fix
-  const reviewResult = await agent({
+  await agent({
     prompt: `## Pi Adaptation Review - Round ${round}
 
 You are working on the HAPI project (branch: feat-pi-support).
@@ -50,12 +123,7 @@ You are working on the HAPI project (branch: feat-pi-support).
 **Step 1: Review Pi agent adaptation**
 
 Compare Pi agent code against other agent implementations in HAPI:
-- Claude Code (cli/src/claude/)
-- Codex (cli/src/codex/)
-- Gemini (cli/src/gemini/)
-- Opencode (cli/src/opencode/)
-- Kimi (cli/src/kimi/)
-- Cursor (cli/src/cursor/)
+${getAgentDirs()}
 
 Search for Pi-related files and review:
 1. Interface alignment (lifecycle, message format, event emission)
@@ -77,83 +145,98 @@ Classify findings as:
 - FORBIDDEN: git checkout <branch>, git reset, git restore, git stash, git rebase, git merge
 - FORBIDDEN: pi rewind command
 - FORBIDDEN: any cross-branch file operations
-- BEFORE committing: verify git diff --stat shows <= ${MAX_CHANGED_FILES_PER_ROUND} files changed
-- If your fix would touch > ${MAX_CHANGED_FILES_PER_ROUND} files, split into smaller commits
+- Per-round limit: total files changed in this round must be <= ${MAX_FILES_PER_ROUND}
+- If your fix would touch > ${MAX_FILES_PER_ROUND} files, only fix the most critical subset this round
 
 Commit message: "fix(pi): review round ${round} - N must-fix issues"
 
 **IMPORTANT: mustFixCount is the count BEFORE fixes. Fixes do not change this number.**
 
-### Output
-Fill mustFixCount with the number of must-fix issues found during review (before fixing).`,
-    schema: {
-      type: 'object',
-      properties: {
-        mustFixCount: { type: 'number', minimum: 0, description: 'Number of must-fix issues found during review (before fixes)' },
-        suggestionCount: { type: 'number', minimum: 0, description: 'Number of suggestions' },
-        issues: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              severity: { type: 'string', enum: ['MUST-FIX', 'SUGGESTION'] },
-              category: { type: 'string' },
-              description: { type: 'string' },
-              fixed: { type: 'boolean' },
-            },
-            required: ['severity', 'category', 'description'],
-          },
-        },
-        summary: { type: 'string' },
-      },
-      required: ['mustFixCount', 'suggestionCount', 'issues', 'summary'],
-    },
+## Output [MANDATORY]
+After completing all steps, write a JSON file to ${OUTPUT_FILE} with this exact format:
+
+\`\`\`json
+{
+  "mustFixCount": <number of must-fix issues found BEFORE fixing>,
+  "suggestionCount": <number of suggestions>,
+  "issues": [
+    {
+      "severity": "MUST-FIX" | "SUGGESTION",
+      "category": "<e.g. types, lifecycle, ui, config>",
+      "description": "<what the issue is>",
+      "fixed": true | false
+    }
+  ],
+  "summary": "<brief summary of findings and fixes>"
+}
+\`\`\`
+
+You MUST write this file. The workflow cannot continue without it.`,
     description: `pi-review-round-${round}`,
   });
 
-  lastMustFix = reviewResult.mustFixCount;
+  // Read result from file instead of structured output
+  const { data: reviewResult, error: readError } = readResultFile();
 
-  // Node 2: Diff guard — verify agent didn't make dangerous changes
+  // #2: 移除无上下文的 retry agent，直接 abort
+  // 原实现中 retry agent 不继承上一轮 agent 的上下文，
+  // 写出的结果必然是编造的，没有参考价值
+
+  if (!reviewResult) {
+    cleanupResultFile();
+    runFinalCleanup();
+    return {
+      rounds: round,
+      clean: false,
+      aborted: true,
+      abortReason: `Round ${round}: ${readError || 'agent did not write result file'}`,
+      lastMustFixCount: lastMustFix ?? 'N/A (round not completed)',
+    };
+  }
+
+  lastMustFix = reviewResult.mustFixCount;
+  cleanupResultFile();
+
+  // Diff guard
+  // #1: 用 git diff --name-only 精确统计变更文件数
   const currentHead = execSync('git rev-parse HEAD', { encoding: 'utf8' }).trim();
   const hasNewCommit = currentHead !== preCommitHash;
 
   if (hasNewCommit) {
-    const diffStat = execSync(`git diff --stat ${preCommitHash}..${currentHead}`, {
-      encoding: 'utf8', timeout: EXEC_TIMEOUT_MS,
-    });
-    const fileCount = (diffStat.match(/\n/g) || []).length - 1; // last line is summary
-
-    if (fileCount > MAX_CHANGED_FILES_PER_ROUND) {
-      // Too many files changed — rollback and abort
+    const changedFiles = execSync(
+      `git diff --name-only ${preCommitHash}..${currentHead}`,
+      { encoding: 'utf8', timeout: EXEC_TIMEOUT_MS },
+    ).trim().split('\n').filter(Boolean);
+    const fileCount = changedFiles.length;
+    if (fileCount > MAX_FILES_PER_ROUND) {
       rollbackTo(preCommitHash);
       cleanRewindRefs();
+      // #3: abort 路径补充 cleanup result file 和 gc
+      cleanupResultFile();
+      runFinalCleanup();
       return {
         rounds: round,
         clean: false,
         aborted: true,
-        abortReason: `Round ${round} changed ${fileCount} files (max ${MAX_CHANGED_FILES_PER_ROUND}). Rolled back.`,
+        abortReason: `Round ${round} changed ${fileCount} files (max ${MAX_FILES_PER_ROUND}). Rolled back.`,
         lastMustFixCount: lastMustFix,
       };
     }
   }
 
-  // Cleanup pi-rewind refs after each round
   cleanRewindRefs();
 
-  // Node 3: Pure logic — continue or break
+  // Continue or break
   if (lastMustFix === 0) break;
 }
 
 // Final cleanup
-try {
-  execSync('git reflog expire --expire=now --all', { timeout: EXEC_TIMEOUT_MS });
-  execSync('git gc --prune=now', { timeout: 60000 });
-} catch { /* best effort */ }
+runFinalCleanup();
 
 return {
   rounds: round,
   clean: lastMustFix === 0,
-  lastMustFixCount: lastMustFix,
+  lastMustFixCount: lastMustFix ?? 'N/A',
   message: lastMustFix === 0
     ? `Clean! All issues resolved after ${round} round(s).`
     : `Max rounds (${MAX_ROUNDS}) reached, ${lastMustFix} must-fix issues remain.`,
