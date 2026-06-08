@@ -133,6 +133,7 @@ export default {
   'session.action.rename': '重命名',
   'session.action.export': '导出对话',
   'session.action.archive': '归档',
+  'session.action.reopen': '重新打开',
   'session.action.delete': '删除',
   'session.action.copy': '复制',
 
@@ -151,6 +152,9 @@ export default {
   'dialog.archive.description': '确定要归档 "{name}" 吗？这将断开活动会话。',
   'dialog.archive.confirm': '归档',
   'dialog.archive.confirming': '归档中…',
+
+  'dialog.reopen.errorTitle': '无法重新打开会话',
+  'dialog.reopen.dismiss': '关闭',
 
   'dialog.delete.title': '删除会话',
   'dialog.delete.description': '确定要删除 "{name}" 吗？此操作无法撤销。',

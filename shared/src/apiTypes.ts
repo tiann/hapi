@@ -101,6 +101,22 @@ export const ResumeSessionRequestSchema = z.object({
 
 export type ResumeSessionRequest = z.infer<typeof ResumeSessionRequestSchema>
 
+export const ReopenSessionResponseSchema = z.object({
+    ok: z.literal(true),
+    sessionId: z.string(),
+    resumed: z.boolean(),
+    cursorSessionProtocol: z.enum(['acp', 'stream-json']).optional()
+})
+
+export type ReopenSessionResponse = z.infer<typeof ReopenSessionResponseSchema>
+
+export const ReopenSessionMissingMetadataResponseSchema = z.object({
+    error: z.string(),
+    missing: z.array(z.string()).nonempty()
+})
+
+export type ReopenSessionMissingMetadataResponse = z.infer<typeof ReopenSessionMissingMetadataResponseSchema>
+
 export const SessionCollaborationModeRequestSchema = z.object({
     mode: CodexCollaborationModeSchema
 })

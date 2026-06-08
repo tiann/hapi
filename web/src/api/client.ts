@@ -33,6 +33,7 @@ import type {
     MachineListDirectoryResponse,
     MachinePathsExistsResponse,
     OpencodeModelsResponse,
+    ReopenSessionResponse,
     UploadFileResponse
 } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor } from '@hapi/protocol'
@@ -46,12 +47,15 @@ type ApiClientOptions = {
 
 type ErrorPayload = {
     error?: unknown
+    code?: unknown
 }
 
 function parseErrorCode(bodyText: string): string | undefined {
     try {
         const parsed = JSON.parse(bodyText) as ErrorPayload
-        return typeof parsed.error === 'string' ? parsed.error : undefined
+        if (typeof parsed.code === 'string') return parsed.code
+        if (typeof parsed.error === 'string') return parsed.error
+        return undefined
     } catch {
         return undefined
     }
@@ -131,7 +135,13 @@ export class ApiClient {
 
         if (!res.ok) {
             const body = await res.text().catch(() => '')
-            throw new Error(`HTTP ${res.status} ${res.statusText}: ${body}`)
+            const code = parseErrorCode(body)
+            throw new ApiError(
+                `HTTP ${res.status} ${res.statusText}: ${body}`,
+                res.status,
+                code,
+                body || undefined
+            )
         }
 
         return await res.json() as T
@@ -406,6 +416,13 @@ export class ApiClient {
             method: 'POST',
             body: JSON.stringify({})
         })
+    }
+
+    async reopenSession(sessionId: string): Promise<ReopenSessionResponse> {
+        return await this.request<ReopenSessionResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/reopen`,
+            { method: 'POST', body: JSON.stringify({}) }
+        )
     }
 
     async switchSession(sessionId: string): Promise<void> {

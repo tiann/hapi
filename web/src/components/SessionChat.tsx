@@ -709,6 +709,13 @@ export function SessionChat(props: {
                 onOpenOutline={() => setOutlineOpen(true)}
                 api={props.api}
                 onSessionDeleted={props.onBack}
+                onSessionReopened={(newSessionId) => {
+                    navigate({
+                        to: '/sessions/$sessionId',
+                        params: { sessionId: newSessionId },
+                        replace: true
+                    })
+                }}
             />
 
             {props.session.teamState && (

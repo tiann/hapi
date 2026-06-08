@@ -512,6 +512,134 @@ export class SessionCache {
         this.refreshSession(sessionId)
     }
 
+    /**
+     * Clear archive-related metadata on an archived session so it can be resumed.
+     * - Removes `lifecycleState`, `archivedBy`, `archiveReason`, and stamps
+     *   `lifecycleStateSince` so subsequent CLI lifecycle writes still win on time.
+     * - For Cursor sessions that pre-date #799 (no `cursorSessionProtocol` set, but a
+     *   `cursorSessionId` exists) defaults the protocol to `stream-json` so routing
+     *   reaches the legacy launcher instead of the new ACP path.
+     *
+     * Returns the protocol that was applied (or already present) for cursor sessions,
+     * or `undefined` for other flavors. Throws on version mismatch / store error.
+     * No-op when metadata is null (callers should pre-check).
+     */
+    async clearSessionArchiveMetadata(sessionId: string): Promise<{ cursorSessionProtocol?: 'acp' | 'stream-json' }> {
+        const session = this.sessions.get(sessionId)
+        if (!session) {
+            throw new Error('Session not found')
+        }
+
+        const currentMetadata = session.metadata
+        if (!currentMetadata) {
+            throw new Error('Session metadata missing')
+        }
+
+        const next: Record<string, unknown> = { ...currentMetadata }
+        delete next.lifecycleState
+        delete next.archivedBy
+        delete next.archiveReason
+        next.lifecycleStateSince = Date.now()
+
+        let cursorSessionProtocol: 'acp' | 'stream-json' | undefined
+        if (currentMetadata.flavor === 'cursor') {
+            const existing = currentMetadata.cursorSessionProtocol
+            if (existing === 'acp' || existing === 'stream-json') {
+                cursorSessionProtocol = existing
+            } else if (currentMetadata.cursorSessionId) {
+                // Pre-#799 default: presence of cursorSessionId without protocol means stream-json.
+                cursorSessionProtocol = 'stream-json'
+                next.cursorSessionProtocol = 'stream-json'
+            }
+        }
+
+        const result = this.store.sessions.updateSessionMetadata(
+            sessionId,
+            next,
+            session.metadataVersion,
+            session.namespace,
+            { touchUpdatedAt: false }
+        )
+
+        if (result.result === 'error') {
+            throw new Error('Failed to update session metadata')
+        }
+
+        if (result.result === 'version-mismatch') {
+            throw new Error('Session was modified concurrently. Please try again.')
+        }
+
+        this.refreshSession(sessionId)
+        return cursorSessionProtocol ? { cursorSessionProtocol } : {}
+    }
+
+    /**
+     * Restore archive-related metadata fields that were captured before a reopen attempt.
+     * Used when `resumeSession` fails after `clearSessionArchiveMetadata` already ran so the
+     * session does not drift into a "not archived, not active" zombie state.
+     *
+     * Restores the four archive fields **exactly**: if a field was present in the snapshot
+     * it is written, if it was absent it is deleted (covering the case where
+     * `clearSessionArchiveMetadata` stamped a fresh `lifecycleStateSince` on a row that did
+     * not have one originally). Other concurrent edits (e.g. a rename in flight) are
+     * preserved. Returns silently if the session is gone or its metadata is unset; throws
+     * on version mismatch so the caller can decide whether to retry.
+     */
+    async restoreSessionArchiveMetadata(
+        sessionId: string,
+        snapshot: {
+            lifecycleState?: string
+            archivedBy?: string
+            archiveReason?: string
+            lifecycleStateSince?: number
+        }
+    ): Promise<void> {
+        const session = this.sessions.get(sessionId)
+        if (!session) return
+        const current = session.metadata
+        if (!current) return
+
+        const next: Record<string, unknown> = { ...current }
+        if (snapshot.lifecycleState !== undefined) {
+            next.lifecycleState = snapshot.lifecycleState
+        } else {
+            delete next.lifecycleState
+        }
+        if (snapshot.archivedBy !== undefined) {
+            next.archivedBy = snapshot.archivedBy
+        } else {
+            delete next.archivedBy
+        }
+        if (snapshot.archiveReason !== undefined) {
+            next.archiveReason = snapshot.archiveReason
+        } else {
+            delete next.archiveReason
+        }
+        if (snapshot.lifecycleStateSince !== undefined) {
+            next.lifecycleStateSince = snapshot.lifecycleStateSince
+        } else {
+            delete next.lifecycleStateSince
+        }
+
+        const result = this.store.sessions.updateSessionMetadata(
+            sessionId,
+            next,
+            session.metadataVersion,
+            session.namespace,
+            { touchUpdatedAt: false }
+        )
+
+        if (result.result === 'error') {
+            throw new Error('Failed to restore archive metadata')
+        }
+
+        if (result.result === 'version-mismatch') {
+            throw new Error('Session was modified concurrently during reopen rollback')
+        }
+
+        this.refreshSession(sessionId)
+    }
+
     async deleteSession(sessionId: string): Promise<void> {
         const session = this.sessions.get(sessionId)
         if (!session) {
