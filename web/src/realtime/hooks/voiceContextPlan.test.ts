@@ -25,17 +25,18 @@ describe('buildSessionVoiceContextPlan', () => {
         const session = makeSession('sess-1')
         const messages = Array.from({ length: 10 }, (_, i) => makeMessage(i + 1, `line ${i + 1}`))
 
-        const plan = buildSessionVoiceContextPlan(session, messages)
+        const plan = buildSessionVoiceContextPlan(session, messages, 'Codex')
 
         expect(plan.bootstrap).toContain('sess-1')
         expect(plan.bootstrap).toContain('Auth refactor')
         expect(utf8ByteLength(plan.bootstrap)).toBeLessThanOrEqual(ELEVENLABS_WEBRTC_CONTEXT_MAX_BYTES)
         expect(plan.streamChunks.length).toBeGreaterThan(0)
         expect(plan.messagesInBootstrap).toBeLessThanOrEqual(2)
+        expect(plan.bootstrap).not.toContain('Claude Code')
     })
 
     test('handles missing session', () => {
-        const plan = buildSessionVoiceContextPlan(null, [])
+        const plan = buildSessionVoiceContextPlan(null, [], 'Claude')
         expect(plan.bootstrap).toBe('Session not available')
         expect(plan.streamChunks).toEqual([])
     })
