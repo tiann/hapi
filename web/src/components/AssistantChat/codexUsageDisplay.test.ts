@@ -102,9 +102,32 @@ describe('codexUsageDisplay', () => {
 
         const rows = getCodexUsageRows(usage)
         const creditsRow = rows.find((row) => row.label === 'Credits')
-        expect(creditsRow?.value).toBe('$0')
+        expect(creditsRow?.value).toBe('0')
         expect(creditsRow?.severity).toBe('critical')
         expect(creditsRow?.detail).toBe('subscription / top-up exhausted')
+    })
+
+    it('formats credit balances without $ prefix and trims trailing zeros', () => {
+        // Codex sends balance as a precision-preserving string. Real
+        // payloads observed: '0' (empty), '250.0000000000' (just topped
+        // up $250), '0.0000000000' (also empty). All three must render
+        // cleanly without a $ prefix or trailing zero noise.
+        const cases: Array<{ raw: string; expected: string; blocked: boolean }> = [
+            { raw: '0', expected: '0', blocked: true },
+            { raw: '0.0000000000', expected: '0', blocked: true },
+            { raw: '250.0000000000', expected: '250', blocked: false },
+            { raw: '12.345', expected: '12.35', blocked: false }
+        ]
+        for (const { raw, expected, blocked } of cases) {
+            const usage: CodexUsage = {
+                rateLimits: {},
+                credits: { hasCredits: !blocked, unlimited: false, balance: raw }
+            }
+            const rows = getCodexUsageRows(usage)
+            const creditsRow = rows.find((row) => row.label === 'Credits')
+            expect(creditsRow?.value, `balance="${raw}"`).toBe(expected)
+            expect(isCodexUsageBlocked(usage), `balance="${raw}"`).toBe(blocked)
+        }
     })
 
     it('renders Limit Reached header when codex emits rate_limit_reached_type', () => {
