@@ -783,7 +783,7 @@ export function SessionChat(props: {
                         <QueuedMessagesBar
                             sessionId={props.session.id}
                             api={props.api}
-                            enableSteer={agentFlavor === 'codex' && !controlledByUser}
+                            enableSteer={props.session.active && agentFlavor === 'codex' && !controlledByUser}
                             onEdit={({ pendingSchedule: restored }) => {
                                 // Restore the schedule so the clock button re-activates
                                 setPendingSchedule(restored)
