@@ -724,7 +724,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             if (!body?.message || typeof body.message !== 'string' || body.message.trim().length === 0) {
                 return c.json({ success: false, error: 'message is required' }, 400)
             }
-            return c.json(await engine.callPiRpc(sessionId, RPC_METHODS.PiSteer, { message: body.message.trim() }))
+            return c.json(await engine.callPiRpc(sessionId, RPC_METHODS.Steer, { message: body.message.trim() }))
         })
     )
 
@@ -734,7 +734,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             if (!body?.message || typeof body.message !== 'string' || body.message.trim().length === 0) {
                 return c.json({ success: false, error: 'message is required' }, 400)
             }
-            return c.json(await engine.callPiRpc(sessionId, RPC_METHODS.PiFollowUp, { message: body.message.trim() }))
+            return c.json(await engine.callPiRpc(sessionId, RPC_METHODS.FollowUp, { message: body.message.trim() }))
         })
     )
 
@@ -745,7 +745,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             if (body?.mode !== 'all' && body?.mode !== 'one-at-a-time') {
                 return c.json({ success: false, error: 'mode must be "all" or "one-at-a-time"' }, 400)
             }
-            return c.json(await engine.callPiRpc(sessionId, RPC_METHODS.PiSetSteeringMode, { mode: body.mode }))
+            return c.json(await engine.callPiRpc(sessionId, RPC_METHODS.SetSteeringMode, { mode: body.mode }))
         })
     )
 
@@ -755,14 +755,14 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             if (body?.mode !== 'all' && body?.mode !== 'one-at-a-time') {
                 return c.json({ success: false, error: 'mode must be "all" or "one-at-a-time"' }, 400)
             }
-            return c.json(await engine.callPiRpc(sessionId, RPC_METHODS.PiSetFollowUpMode, { mode: body.mode }))
+            return c.json(await engine.callPiRpc(sessionId, RPC_METHODS.SetFollowUpMode, { mode: body.mode }))
         })
     )
 
     // --- Pi message history ---
     app.get('/sessions/:id/pi-messages', (c) =>
         withPiSession(c, async ({ sessionId, engine }) =>
-            c.json(await engine.callPiRpc(sessionId, RPC_METHODS.PiGetMessages, {}, 120_000))
+            c.json(await engine.callPiRpc(sessionId, RPC_METHODS.GetMessages, {}, 120_000))
         )
     )
 
@@ -770,7 +770,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
     app.post('/sessions/:id/pi-compact', (c) =>
         withPiSession(c, async ({ sessionId, engine }) => {
             const body = await c.req.json().catch(() => ({})) as { customInstructions?: string }
-            return c.json(await engine.callPiRpc(sessionId, RPC_METHODS.PiCompact, { customInstructions: body.customInstructions }, 60_000))
+            return c.json(await engine.callPiRpc(sessionId, RPC_METHODS.Compact, { customInstructions: body.customInstructions }, 60_000))
         })
     )
 
@@ -780,7 +780,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             if (typeof body.enabled !== 'boolean') {
                 return c.json({ success: false, error: 'enabled (boolean) is required' }, 400)
             }
-            return c.json(await engine.callPiRpc(sessionId, RPC_METHODS.PiSetAutoCompaction, { enabled: body.enabled }))
+            return c.json(await engine.callPiRpc(sessionId, RPC_METHODS.SetAutoCompaction, { enabled: body.enabled }))
         })
     )
 
@@ -790,19 +790,19 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             if (!body.entryId || typeof body.entryId !== 'string') {
                 return c.json({ success: false, error: 'entryId is required' }, 400)
             }
-            return c.json(await engine.callPiRpc(sessionId, RPC_METHODS.PiFork, { entryId: body.entryId }))
+            return c.json(await engine.callPiRpc(sessionId, RPC_METHODS.Fork, { entryId: body.entryId }))
         })
     )
 
     app.get('/sessions/:id/pi-fork-messages', (c) =>
         withPiSession(c, async ({ sessionId, engine }) =>
-            c.json(await engine.callPiRpc(sessionId, RPC_METHODS.PiGetForkMessages, {}, 120_000))
+            c.json(await engine.callPiRpc(sessionId, RPC_METHODS.GetForkMessages, {}, 120_000))
         )
     )
 
     app.post('/sessions/:id/pi-clone', (c) =>
         withPiSession(c, async ({ sessionId, engine }) =>
-            c.json(await engine.callPiRpc(sessionId, RPC_METHODS.PiClone))
+            c.json(await engine.callPiRpc(sessionId, RPC_METHODS.Clone))
         )
     )
 
@@ -812,20 +812,20 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             if (!body.sessionPath || typeof body.sessionPath !== 'string') {
                 return c.json({ success: false, error: 'sessionPath is required' }, 400)
             }
-            return c.json(await engine.callPiRpc(sessionId, RPC_METHODS.PiSwitchSession, { sessionPath: body.sessionPath }))
+            return c.json(await engine.callPiRpc(sessionId, RPC_METHODS.SwitchSession, { sessionPath: body.sessionPath }))
         })
     )
 
     app.get('/sessions/:id/pi-stats', (c) =>
         withPiSession(c, async ({ sessionId, engine }) =>
-            c.json(await engine.callPiRpc(sessionId, RPC_METHODS.PiGetSessionStats))
+            c.json(await engine.callPiRpc(sessionId, RPC_METHODS.GetSessionStats))
         )
     )
 
     app.post('/sessions/:id/pi-export-html', (c) =>
         withPiSession(c, async ({ sessionId, engine }) => {
             const body = await c.req.json().catch(() => ({})) as { outputPath?: string }
-            return c.json(await engine.callPiRpc(sessionId, RPC_METHODS.PiExportHtml, { outputPath: body.outputPath }))
+            return c.json(await engine.callPiRpc(sessionId, RPC_METHODS.ExportHtml, { outputPath: body.outputPath }))
         })
     )
 

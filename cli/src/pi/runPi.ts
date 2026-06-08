@@ -652,7 +652,7 @@ export async function runPi(opts: {
     // Web sends a steering message mid-stream. Delegates to the same
     // onUserMessage path which already checks piIsStreaming.
     session.rpcHandlerManager.registerHandler<{ message: string }, PiSteerResponse>(
-        RPC_METHODS.PiSteer,
+        RPC_METHODS.Steer,
         async (params) => {
             if (!params || typeof params.message !== 'string' || params.message.trim().length === 0) {
                 return { success: false, error: 'Empty message' };
@@ -665,7 +665,7 @@ export async function runPi(opts: {
     // --- Pi follow-up RPC ---
     // Queue a message for after the current turn.
     session.rpcHandlerManager.registerHandler<{ message: string }, PiFollowUpResponse>(
-        RPC_METHODS.PiFollowUp,
+        RPC_METHODS.FollowUp,
         async (params) => {
             if (!params || typeof params.message !== 'string' || params.message.trim().length === 0) {
                 return { success: false, error: 'Empty message' };
@@ -677,7 +677,7 @@ export async function runPi(opts: {
 
     // --- Pi queue mode RPCs ---
     session.rpcHandlerManager.registerHandler<{ mode: 'all' | 'one-at-a-time' }, PiQueueModeResponse>(
-        RPC_METHODS.PiSetSteeringMode,
+        RPC_METHODS.SetSteeringMode,
         async (params) => {
             const mode = params?.mode;
             if (mode !== 'all' && mode !== 'one-at-a-time') {
@@ -690,7 +690,7 @@ export async function runPi(opts: {
     );
 
     session.rpcHandlerManager.registerHandler<{ mode: 'all' | 'one-at-a-time' }, PiQueueModeResponse>(
-        RPC_METHODS.PiSetFollowUpMode,
+        RPC_METHODS.SetFollowUpMode,
         async (params) => {
             const mode = params?.mode;
             if (mode !== 'all' && mode !== 'one-at-a-time') {
@@ -706,7 +706,7 @@ export async function runPi(opts: {
     // Retrieves Pi's internal message history. Pi returns AgentMessage[]
     // objects; we convert them to a simplified format for web rendering.
     session.rpcHandlerManager.registerHandler<Record<string, never>, PiMessagesResponse>(
-        RPC_METHODS.PiGetMessages,
+        RPC_METHODS.GetMessages,
         async () => {
             try {
                 const data = await sendPiRpcAndWait({ type: 'get_messages' });
@@ -739,7 +739,7 @@ export async function runPi(opts: {
     // Triggers manual context compaction. Pi returns a CompactionResult with
     // the summary and first kept entry ID.
     session.rpcHandlerManager.registerHandler<{ customInstructions?: string }, PiCompactResponse>(
-        RPC_METHODS.PiCompact,
+        RPC_METHODS.Compact,
         async (params) => {
             try {
                 const command: import('./types').PiRpcCommand = { type: 'compact' };
@@ -771,7 +771,7 @@ export async function runPi(opts: {
 
     // --- Pi set_auto_compaction RPC ---
     session.rpcHandlerManager.registerHandler<{ enabled: boolean }, PiSetAutoCompactionResponse>(
-        RPC_METHODS.PiSetAutoCompaction,
+        RPC_METHODS.SetAutoCompaction,
         async (params) => {
             if (params === undefined || params === null || typeof params.enabled !== 'boolean') {
                 return { success: false, error: 'enabled (boolean) is required' };
@@ -792,7 +792,7 @@ export async function runPi(opts: {
     // --- Pi fork RPC ---
     // Forks the session at the given entry ID. Returns the fork summary text.
     session.rpcHandlerManager.registerHandler<{ entryId: string }, PiForkResponse>(
-        RPC_METHODS.PiFork,
+        RPC_METHODS.Fork,
         async (params) => {
             if (!params?.entryId || typeof params.entryId !== 'string') {
                 return { success: false, error: 'entryId is required' };
@@ -817,7 +817,7 @@ export async function runPi(opts: {
     // --- Pi get_fork_messages RPC ---
     // Retrieves messages from the current fork context.
     session.rpcHandlerManager.registerHandler<Record<string, never>, PiForkMessagesResponse>(
-        RPC_METHODS.PiGetForkMessages,
+        RPC_METHODS.GetForkMessages,
         async () => {
             try {
                 const data = await sendPiRpcAndWait({ type: 'get_fork_messages' });
@@ -846,7 +846,7 @@ export async function runPi(opts: {
     // --- Pi clone RPC ---
     // Clones the current Pi session.
     session.rpcHandlerManager.registerHandler<Record<string, never>, PiCloneResponse>(
-        RPC_METHODS.PiClone,
+        RPC_METHODS.Clone,
         async () => {
             try {
                 await sendPiRpcAndWait({ type: 'clone' });
@@ -864,7 +864,7 @@ export async function runPi(opts: {
     // --- Pi switch_session RPC ---
     // Switches Pi to a different session by path.
     session.rpcHandlerManager.registerHandler<{ sessionPath: string }, PiSwitchSessionResponse>(
-        RPC_METHODS.PiSwitchSession,
+        RPC_METHODS.SwitchSession,
         async (params) => {
             if (!params?.sessionPath || typeof params.sessionPath !== 'string') {
                 return { success: false, error: 'sessionPath is required' };
@@ -885,7 +885,7 @@ export async function runPi(opts: {
     // --- Pi get_session_stats RPC ---
     // Returns token counts, message counts, cost.
     session.rpcHandlerManager.registerHandler<Record<string, never>, PiSessionStatsResponse>(
-        RPC_METHODS.PiGetSessionStats,
+        RPC_METHODS.GetSessionStats,
         async () => {
             try {
                 const data = await sendPiRpcAndWait({ type: 'get_session_stats' });
@@ -925,7 +925,7 @@ export async function runPi(opts: {
     // --- Pi export_html RPC ---
     // Exports the session as an HTML file. Returns the output path.
     session.rpcHandlerManager.registerHandler<{ outputPath?: string }, PiExportHtmlResponse>(
-        RPC_METHODS.PiExportHtml,
+        RPC_METHODS.ExportHtml,
         async (params) => {
             try {
                 const command: import('./types').PiRpcCommand = { type: 'export_html' };
