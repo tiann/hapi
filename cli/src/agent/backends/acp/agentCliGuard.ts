@@ -1,4 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+    existsSync,
+    mkdirSync,
+    readdirSync,
+    readFileSync,
+    rmSync,
+    writeFileSync
+} from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -17,6 +24,10 @@ function getAcpLockDir(): string {
     return join(home, 'locks', 'agent-acp-active');
 }
 
+function getPidsDir(lockDir: string): string {
+    return join(lockDir, 'pids');
+}
+
 function readLockPid(lockDir: string): number | null {
     const pidPath = join(lockDir, 'pid');
     if (!existsSync(pidPath)) {
@@ -33,6 +44,46 @@ function readLockPid(lockDir: string): number | null {
     } catch {
         return null;
     }
+}
+
+function readLockCount(lockDir: string): number {
+    const countPath = join(lockDir, 'count');
+    if (!existsSync(countPath)) {
+        return 0;
+    }
+
+    try {
+        const raw = readFileSync(countPath, 'utf8').trim();
+        const count = Number(raw);
+        if (!Number.isInteger(count) || count < 0) {
+            return 0;
+        }
+        return count;
+    } catch {
+        return 0;
+    }
+}
+
+function writeLockCount(lockDir: string, count: number): void {
+    writeFileSync(join(lockDir, 'count'), String(Math.max(0, count)), 'utf8');
+}
+
+function addLockPid(lockDir: string, pid: number): void {
+    const pidsDir = getPidsDir(lockDir);
+    mkdirSync(pidsDir, { recursive: true });
+    writeFileSync(join(pidsDir, String(pid)), String(pid), 'utf8');
+}
+
+function removeLockPid(lockDir: string, pid: number): void {
+    try {
+        rmSync(join(getPidsDir(lockDir), String(pid)), { force: true });
+    } catch {
+        // Best effort.
+    }
+}
+
+function isLegacyLock(lockDir: string): boolean {
+    return existsSync(join(lockDir, 'pid')) && !existsSync(join(lockDir, 'count'));
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -58,6 +109,46 @@ function removeAcpLockDir(): void {
     }
 }
 
+function reconcileRefcountLock(lockDir: string): boolean {
+    const pidsDir = getPidsDir(lockDir);
+    if (!existsSync(pidsDir)) {
+        removeAcpLockDir();
+        return false;
+    }
+
+    let liveCount = 0;
+    for (const entry of readdirSync(pidsDir)) {
+        const pid = Number(entry);
+        if (!Number.isInteger(pid) || pid <= 0) {
+            try {
+                rmSync(join(pidsDir, entry), { force: true });
+            } catch {
+                // Best effort.
+            }
+            continue;
+        }
+
+        if (isProcessAlive(pid)) {
+            liveCount += 1;
+            continue;
+        }
+
+        try {
+            rmSync(join(pidsDir, entry), { force: true });
+        } catch {
+            // Best effort.
+        }
+    }
+
+    if (liveCount <= 0) {
+        removeAcpLockDir();
+        return false;
+    }
+
+    writeLockCount(lockDir, liveCount);
+    return true;
+}
+
 /** Remove lock directories left behind by SIGKILL / crash / reboot. */
 function clearStaleAcpLockIfNeeded(): void {
     const lockDir = getAcpLockDir();
@@ -65,10 +156,15 @@ function clearStaleAcpLockIfNeeded(): void {
         return;
     }
 
-    const pid = readLockPid(lockDir);
-    if (pid === null || !isProcessAlive(pid)) {
-        removeAcpLockDir();
+    if (isLegacyLock(lockDir)) {
+        const pid = readLockPid(lockDir);
+        if (pid === null || !isProcessAlive(pid)) {
+            removeAcpLockDir();
+        }
+        return;
     }
+
+    reconcileRefcountLock(lockDir);
 }
 
 export function registerActiveAcpTransport(): void {
@@ -76,7 +172,8 @@ export function registerActiveAcpTransport(): void {
     const lockDir = getAcpLockDir();
     try {
         mkdirSync(lockDir, { recursive: true });
-        writeFileSync(join(lockDir, 'pid'), String(process.pid));
+        writeLockCount(lockDir, readLockCount(lockDir) + 1);
+        addLockPid(lockDir, process.pid);
     } catch {
         // Another process may have created the lock; in-process guard still applies.
     }
@@ -84,10 +181,27 @@ export function registerActiveAcpTransport(): void {
 
 export function unregisterActiveAcpTransport(): void {
     activeAcpTransportCount = Math.max(0, activeAcpTransportCount - 1);
-    if (activeAcpTransportCount > 0) {
+
+    const lockDir = getAcpLockDir();
+    if (!existsSync(lockDir)) {
         return;
     }
-    removeAcpLockDir();
+
+    if (isLegacyLock(lockDir)) {
+        if (activeAcpTransportCount <= 0) {
+            removeAcpLockDir();
+        }
+        return;
+    }
+
+    try {
+        if (activeAcpTransportCount <= 0) {
+            removeLockPid(lockDir, process.pid);
+        }
+        reconcileRefcountLock(lockDir);
+    } catch {
+        // Best effort.
+    }
 }
 
 export function isAgentAcpTransportActive(): boolean {
@@ -95,7 +209,17 @@ export function isAgentAcpTransportActive(): boolean {
         return true;
     }
     clearStaleAcpLockIfNeeded();
-    return existsSync(getAcpLockDir());
+    const lockDir = getAcpLockDir();
+    if (!existsSync(lockDir)) {
+        return false;
+    }
+
+    if (isLegacyLock(lockDir)) {
+        const pid = readLockPid(lockDir);
+        return pid !== null && isProcessAlive(pid);
+    }
+
+    return readLockCount(lockDir) > 0;
 }
 
 export function _resetAgentCliGuardForTests(): void {

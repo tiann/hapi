@@ -24,6 +24,7 @@ import { join } from 'path';
 import { buildMachineMetadata } from '@/agent/sessionFactory';
 import { resolveWorkspaceRoots } from '@/utils/workspaceRoot';
 import { hashRunnerCliApiToken } from './runnerIdentity';
+import { scheduleCursorModelsPrewarm } from '@/modules/common/cursorModelsPrewarm';
 
 export async function startRunner(options: { workspaceRoots?: string[] } = {}): Promise<void> {
   // We don't have cleanup function at the time of server construction
@@ -720,6 +721,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
     // Connect to server
     apiMachine.connect();
+    scheduleCursorModelsPrewarm();
 
     // Visible startup banner. Use console.log so it always appears on stdout,
     // regardless of the verbose/quiet logger setting.

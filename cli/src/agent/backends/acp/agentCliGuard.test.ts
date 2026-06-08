@@ -15,6 +15,21 @@ function lockDir(): string {
     return join(testHome, 'locks', 'agent-acp-active');
 }
 
+function writeTestAcpLock(args: { count: number; pids: number[] }): void {
+    const dir = lockDir();
+    mkdirSync(join(dir, 'pids'), { recursive: true });
+    writeFileSync(join(dir, 'count'), String(args.count), 'utf8');
+    for (const pid of args.pids) {
+        writeFileSync(join(dir, 'pids', String(pid)), String(pid), 'utf8');
+    }
+}
+
+function writeLegacyAcpLock(pid: number): void {
+    const dir = lockDir();
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'pid'), String(pid), 'utf8');
+}
+
 describe('agentCliGuard', () => {
     const previousHome = process.env.HAPI_HOME;
 
@@ -35,32 +50,72 @@ describe('agentCliGuard', () => {
         expect(isAgentAcpTransportActive()).toBe(false);
     });
 
-    test('clears stale cross-process lock when pid is not running', () => {
+    test('keeps cross-process lock until the last transport unregisters', () => {
         process.env.HAPI_HOME = testHome;
-        const dir = lockDir();
-        mkdirSync(dir, { recursive: true });
-        writeFileSync(join(dir, 'pid'), '99999999');
+        registerActiveAcpTransport();
+        registerActiveAcpTransport();
 
+        unregisterActiveAcpTransport();
+        expect(isAgentAcpTransportActive()).toBe(true);
+        expect(existsSync(lockDir())).toBe(true);
+
+        unregisterActiveAcpTransport();
         expect(isAgentAcpTransportActive()).toBe(false);
-        expect(existsSync(dir)).toBe(false);
+        expect(existsSync(lockDir())).toBe(false);
     });
 
-    test('keeps lock when pid file points at a live process', () => {
+    test('leaves refcount at one after the first of two in-process unregisters', () => {
         process.env.HAPI_HOME = testHome;
+        registerActiveAcpTransport();
+        registerActiveAcpTransport();
+
         const dir = lockDir();
-        mkdirSync(dir, { recursive: true });
-        writeFileSync(join(dir, 'pid'), String(process.pid));
+        unregisterActiveAcpTransport();
 
         expect(isAgentAcpTransportActive()).toBe(true);
         expect(existsSync(dir)).toBe(true);
+        expect(existsSync(join(dir, 'pids', String(process.pid)))).toBe(true);
     });
 
-    test('clears lock when pid file is missing or invalid', () => {
+    test('clears stale cross-process lock when pid is not running', () => {
+        process.env.HAPI_HOME = testHome;
+        writeLegacyAcpLock(99999999);
+
+        expect(isAgentAcpTransportActive()).toBe(false);
+        expect(existsSync(lockDir())).toBe(false);
+    });
+
+    test('keeps legacy lock when pid file points at a live process', () => {
+        process.env.HAPI_HOME = testHome;
+        writeLegacyAcpLock(process.pid);
+
+        expect(isAgentAcpTransportActive()).toBe(true);
+        expect(existsSync(lockDir())).toBe(true);
+    });
+
+    test('clears refcount lock when pid entries are missing or invalid', () => {
         process.env.HAPI_HOME = testHome;
         const dir = lockDir();
         mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, 'count'), '1', 'utf8');
 
         expect(isAgentAcpTransportActive()).toBe(false);
         expect(existsSync(dir)).toBe(false);
+    });
+
+    test('clears refcount lock when all pid entries are stale', () => {
+        process.env.HAPI_HOME = testHome;
+        writeTestAcpLock({ count: 2, pids: [99999998, 99999999] });
+
+        expect(isAgentAcpTransportActive()).toBe(false);
+        expect(existsSync(lockDir())).toBe(false);
+    });
+
+    test('reconciles refcount lock down to live pid entries', () => {
+        process.env.HAPI_HOME = testHome;
+        writeTestAcpLock({ count: 3, pids: [process.pid, 99999999] });
+
+        expect(isAgentAcpTransportActive()).toBe(true);
+        expect(existsSync(lockDir())).toBe(true);
     });
 });

@@ -34,6 +34,7 @@ import {
 } from './cursorModelsSharedCache';
 import {
     _resetCursorModelsCacheForTests,
+    buildCursorModelsSeedPayload,
     listCursorModels,
     parseCursorModelsOutput,
     seedCursorModelsCache
@@ -46,6 +47,33 @@ afterEach(() => {
     vi.mocked(isAgentAcpTransportActive).mockReturnValue(false)
     spawnMock.mockReset()
     acpProbeMock.runCursorAcpModelProbe.mockReset()
+})
+
+describe('buildCursorModelsSeedPayload', () => {
+    test('inherits cliModelSkus from shared cache when ACP snapshot has none', () => {
+        writeSharedCursorModelsCache({
+            success: true,
+            availableModels: [{ modelId: 'gpt-5.5[context=272k,reasoning=medium,fast=false]', name: 'gpt-5.5' }],
+            currentModelId: 'gpt-5.5[context=272k,reasoning=medium,fast=false]',
+            cliModelSkus: [
+                { modelId: 'gpt-5.5-medium', name: 'GPT-5.5 1M' },
+                { modelId: 'gpt-5.5-high', name: 'GPT-5.5 High' }
+            ]
+        })
+
+        const seeded = buildCursorModelsSeedPayload(
+            {
+                availableModels: [{ modelId: 'gpt-5.5[context=272k,reasoning=medium,fast=false]', name: 'gpt-5.5' }],
+                currentModelId: 'gpt-5.5[context=272k,reasoning=medium,fast=false]'
+            },
+            readSharedCursorModelsCache()
+        )
+
+        expect(seeded.cliModelSkus?.map((row) => row.modelId)).toEqual([
+            'gpt-5.5-medium',
+            'gpt-5.5-high'
+        ])
+    })
 })
 
 describe('parseCursorModelsOutput', () => {
@@ -153,6 +181,107 @@ describe('listCursorModels', () => {
         expect(readSharedCursorModelsCache()?.currentModelId).toBe('composer-2.5[fast=true]')
     })
 
+    test('unions partial response cliModelSkus with fuller shared cache while lock is active', async () => {
+        vi.mocked(isAgentAcpTransportActive).mockReturnValue(true)
+        setCursorAcpModelsSnapshot({
+            availableModels: [{ modelId: 'gpt-5.5[context=272k,reasoning=medium,fast=false]', name: 'gpt-5.5' }],
+            currentModelId: 'gpt-5.5[context=272k,reasoning=medium,fast=false]',
+            cliModelSkus: [
+                { modelId: 'gpt-5.5-high-fast', name: 'GPT-5.5 High Fast' },
+                { modelId: 'gpt-5.5-low', name: 'GPT-5.5 1M Low' }
+            ]
+        } as never)
+        writeSharedCursorModelsCache({
+            success: true,
+            availableModels: [{ modelId: 'gpt-5.5[context=272k,reasoning=medium,fast=false]', name: 'gpt-5.5' }],
+            currentModelId: 'gpt-5.5[context=272k,reasoning=medium,fast=false]',
+            cliModelSkus: [
+                { modelId: 'gpt-5.5-high-fast', name: 'GPT-5.5 High Fast' },
+                { modelId: 'gpt-5.5-low', name: 'GPT-5.5 1M Low' },
+                { modelId: 'gpt-5.5-medium', name: 'GPT-5.5 1M' },
+                { modelId: 'gpt-5.5-high', name: 'GPT-5.5 High' }
+            ]
+        })
+
+        const result = await listCursorModels()
+
+        expect(result.cliModelSkus?.map((row) => row.modelId)).toEqual([
+            'gpt-5.5-high-fast',
+            'gpt-5.5-low',
+            'gpt-5.5-medium',
+            'gpt-5.5-high'
+        ])
+        expect(spawnMock).not.toHaveBeenCalled()
+    })
+
+    test('enriches live ACP snapshot with fuller shared cliModelSkus while lock is active', async () => {
+        vi.mocked(isAgentAcpTransportActive).mockReturnValue(true)
+        setCursorAcpModelsSnapshot({
+            availableModels: [{ modelId: 'gpt-5.5[context=272k,reasoning=medium,fast=false]', name: 'gpt-5.5' }],
+            currentModelId: 'gpt-5.5[context=272k,reasoning=medium,fast=false]'
+        })
+        writeSharedCursorModelsCache({
+            success: true,
+            availableModels: [{ modelId: 'gpt-5.5[context=272k,reasoning=medium,fast=false]', name: 'gpt-5.5' }],
+            currentModelId: 'gpt-5.5[context=272k,reasoning=medium,fast=false]',
+            cliModelSkus: [
+                { modelId: 'gpt-5.5-high-fast', name: 'GPT-5.5 High Fast' },
+                { modelId: 'gpt-5.5-low', name: 'GPT-5.5 1M Low' },
+                { modelId: 'gpt-5.5-medium', name: 'GPT-5.5 1M' },
+                { modelId: 'gpt-5.5-high', name: 'GPT-5.5 High' }
+            ]
+        })
+
+        const result = await listCursorModels()
+
+        expect(result.cliModelSkus?.map((row) => row.modelId)).toEqual([
+            'gpt-5.5-high-fast',
+            'gpt-5.5-low',
+            'gpt-5.5-medium',
+            'gpt-5.5-high'
+        ])
+        expect(spawnMock).not.toHaveBeenCalled()
+    })
+
+    test('unions shared partial cliModelSkus with probe results when lock is inactive', async () => {
+        writeSharedCursorModelsCache({
+            success: true,
+            availableModels: [{ modelId: 'gpt-5.5[context=272k,reasoning=medium,fast=false]', name: 'gpt-5.5' }],
+            currentModelId: 'gpt-5.5[context=272k,reasoning=medium,fast=false]',
+            cliModelSkus: [
+                { modelId: 'gpt-5.5-medium', name: 'GPT-5.5 1M' }
+            ]
+        })
+        spawnMock.mockImplementation(() => ({
+            stdout: {
+                on: vi.fn((event: string, handler: (chunk: Buffer) => void) => {
+                    if (event === 'data') {
+                        handler(Buffer.from(
+                            'gpt-5.5-high-fast - GPT-5.5 High Fast\n'
+                            + 'gpt-5.5-high - GPT-5.5 High\n'
+                        ));
+                    }
+                })
+            },
+            stderr: { on: vi.fn() },
+            on: vi.fn((event: string, handler: (code: number) => void) => {
+                if (event === 'exit') {
+                    setTimeout(() => handler(0), 0);
+                }
+            }),
+            kill: vi.fn()
+        }));
+
+        const result = await listCursorModels();
+
+        expect(result.cliModelSkus?.map((row) => row.modelId)).toEqual([
+            'gpt-5.5-medium',
+            'gpt-5.5-high-fast',
+            'gpt-5.5-high'
+        ]);
+        expect(spawnMock).toHaveBeenCalled();
+    });
+
     test('prefers ACP wire probe over CLI slug probe when cache is empty', async () => {
         acpProbeMock.runCursorAcpModelProbe.mockResolvedValue({
             success: true,
@@ -214,6 +343,21 @@ describe('listCursorModels', () => {
             availableModels: [],
             currentModelId: null
         });
+    });
+
+    test('skips CLI slug probe when ACP lock is active after ACP probe', async () => {
+        vi.mocked(isAgentAcpTransportActive)
+            .mockReturnValueOnce(false)
+            .mockReturnValueOnce(true);
+        acpProbeMock.runCursorAcpModelProbe.mockResolvedValue({
+            success: false,
+            error: 'no wires'
+        });
+
+        const result = await listCursorModels();
+
+        expect(spawnMock).not.toHaveBeenCalled();
+        expect(result).toEqual({ success: false, error: 'no wires' });
     });
 
     test('prefers live ACP snapshot over cache while ACP transport is active', async () => {

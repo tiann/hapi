@@ -17,7 +17,8 @@ import { setCursorAcpModelsSnapshot } from './utils/cursorAcpModelsBridge';
 import { buildCursorModelsSnapshotFromAcp } from './utils/cursorAcpModelsSnapshot';
 import { CursorExtensionAdapter } from './utils/cursorExtensionAdapter';
 import { applyCursorAcpMode, applyCursorAcpModel, wireIdForCursorSessionState } from './utils/cursorModeConfig';
-import { seedCursorModelsCache } from '@/modules/common/cursorModels';
+import { buildCursorModelsSeedPayload, seedCursorModelsCache } from '@/modules/common/cursorModels';
+import { readSharedCursorModelsCache } from '@/modules/common/cursorModelsSharedCache';
 import type { AcpSdkBackend } from '@/agent/backends/acp';
 
 class CursorAcpRemoteLauncher extends RemoteLauncherBase {
@@ -442,8 +443,9 @@ function syncCursorModelsFromAcp(backend: AcpSdkBackend, acpSessionId: string): 
         return;
     }
 
+    const payload = buildCursorModelsSeedPayload(snapshot, readSharedCursorModelsCache());
     setCursorAcpModelsSnapshot(snapshot);
-    seedCursorModelsCache({ success: true, ...snapshot });
+    seedCursorModelsCache(payload);
 }
 
 function toAcpMcpServers(config: Record<string, { command: string; args: string[] }>): McpServerStdio[] {

@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest'
 import {
     buildSessionCursorPickerState,
     isCursorEffortWireInCatalog,
+    isSessionCursorCatalogAwaitingSkus,
+    isSessionCursorCatalogLoading,
+    isSessionCursorCatalogPending,
+    isSessionCursorCatalogPendingWithTimeout,
     resolveSessionCursorBaseSelectValue,
     resolveSessionCursorModelChange
 } from '@/lib/sessionChatCursorModel'
@@ -128,6 +132,168 @@ describe('CLI sku variants in session picker', () => {
             wireId: 'gpt-5.5-high-fast',
             shouldApply: true
         })
+    })
+})
+
+describe('session cursor catalog readiness', () => {
+    const dualPicker = buildSessionCursorPickerState({
+        sessionModels: [
+            { modelId: 'gpt-5.5[context=272k,reasoning=medium,fast=false]', name: 'gpt-5.5' },
+            { modelId: 'gpt-5.5[context=272k,reasoning=high,fast=false]', name: 'gpt-5.5' }
+        ],
+        machineModels: [],
+        cliModelSkus: [],
+        sessionModel: 'gpt-5.5[context=272k,reasoning=medium,fast=false]',
+        sessionCurrentModelId: 'gpt-5.5[context=272k,reasoning=medium,fast=false]'
+    })
+
+    it('waits for session and machine loading', () => {
+        expect(isSessionCursorCatalogLoading({
+            sessionLoading: true,
+            machineLoading: false,
+            hasMachineId: true,
+            sessionError: null,
+            machineError: null
+        })).toBe(true)
+        expect(isSessionCursorCatalogLoading({
+            sessionLoading: false,
+            machineLoading: true,
+            hasMachineId: true,
+            sessionError: null,
+            machineError: null
+        })).toBe(true)
+        expect(isSessionCursorCatalogLoading({
+            sessionLoading: false,
+            machineLoading: false,
+            hasMachineId: true,
+            sessionError: null,
+            machineError: null
+        })).toBe(false)
+    })
+
+    it('does not wait for machine loading after machine error or without machine id', () => {
+        expect(isSessionCursorCatalogLoading({
+            sessionLoading: false,
+            machineLoading: true,
+            hasMachineId: true,
+            sessionError: null,
+            machineError: 'boom'
+        })).toBe(false)
+        expect(isSessionCursorCatalogLoading({
+            sessionLoading: false,
+            machineLoading: true,
+            hasMachineId: false,
+            sessionError: null,
+            machineError: null
+        })).toBe(false)
+    })
+
+    it('awaits SKUs for dual picker when merged catalog is still empty', () => {
+        expect(isSessionCursorCatalogAwaitingSkus({
+            sessionLoading: false,
+            machineLoading: false,
+            sessionError: null,
+            machineError: null,
+            mergedSkus: [],
+            picker: dualPicker
+        })).toBe(true)
+        expect(isSessionCursorCatalogAwaitingSkus({
+            sessionLoading: false,
+            machineLoading: false,
+            sessionError: null,
+            machineError: null,
+            mergedSkus: [{ modelId: 'gpt-5.5-medium', name: 'GPT-5.5 1M' }],
+            picker: dualPicker
+        })).toBe(false)
+    })
+
+    it('combines loading and SKU awaiting into pending state', () => {
+        expect(isSessionCursorCatalogPending({
+            sessionLoading: false,
+            machineLoading: true,
+            hasMachineId: true,
+            sessionError: null,
+            machineError: null,
+            mergedSkus: [],
+            picker: dualPicker
+        })).toBe(true)
+        expect(isSessionCursorCatalogPending({
+            sessionLoading: false,
+            machineLoading: false,
+            hasMachineId: true,
+            sessionError: null,
+            machineError: null,
+            mergedSkus: [],
+            picker: dualPicker
+        })).toBe(true)
+        expect(isSessionCursorCatalogPending({
+            sessionLoading: false,
+            machineLoading: false,
+            hasMachineId: true,
+            sessionError: null,
+            machineError: null,
+            mergedSkus: [{ modelId: 'gpt-5.5-medium', name: 'GPT-5.5 1M' }],
+            picker: dualPicker
+        })).toBe(false)
+    })
+
+    it('does not await SKUs for flat picker sessions', () => {
+        const flatPicker = buildSessionCursorPickerState({
+            sessionModels: [{ modelId: 'composer-2.5[fast=true]', name: 'composer-2.5' }],
+            machineModels: [],
+            cliModelSkus: [],
+            sessionModel: 'composer-2.5[fast=true]',
+            sessionCurrentModelId: 'composer-2.5[fast=true]'
+        })
+
+        expect(isSessionCursorCatalogPending({
+            sessionLoading: false,
+            machineLoading: false,
+            hasMachineId: true,
+            sessionError: null,
+            machineError: null,
+            mergedSkus: [],
+            picker: flatPicker
+        })).toBe(false)
+    })
+
+    it('stays pending for loading even when SKU timeout has elapsed', () => {
+        expect(isSessionCursorCatalogPendingWithTimeout({
+            sessionLoading: true,
+            machineLoading: false,
+            hasMachineId: true,
+            sessionError: null,
+            machineError: null,
+            mergedSkus: [],
+            picker: dualPicker,
+            awaitingStartedAtMs: 0,
+            nowMs: 20_000,
+            timeoutMs: 15_000
+        })).toBe(true)
+    })
+
+    it('degrades SKU awaiting after timeout while keeping loading pending', () => {
+        const startedAt = 1_000
+        const args = {
+            sessionLoading: false,
+            machineLoading: false,
+            hasMachineId: true,
+            sessionError: null,
+            machineError: null,
+            mergedSkus: [] as const,
+            picker: dualPicker,
+            awaitingStartedAtMs: startedAt,
+            timeoutMs: 15_000
+        }
+
+        expect(isSessionCursorCatalogPendingWithTimeout({
+            ...args,
+            nowMs: startedAt + 5_000
+        })).toBe(true)
+        expect(isSessionCursorCatalogPendingWithTimeout({
+            ...args,
+            nowMs: startedAt + 15_000
+        })).toBe(false)
     })
 })
 

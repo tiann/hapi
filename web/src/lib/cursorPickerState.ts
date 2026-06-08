@@ -13,6 +13,25 @@ import {
     type CursorModelOption
 } from '@/lib/cursorModelOptions'
 
+export function mergeCursorCliModelSkus(
+    ...sources: readonly (readonly CursorModelSummary[])[]
+): CursorModelSummary[] {
+    const sorted = [...sources].sort((a, b) => b.length - a.length);
+    const merged = new Map<string, CursorModelSummary>();
+    for (const source of sorted) {
+        for (const entry of source) {
+            const modelId = entry.modelId.trim();
+            if (!modelId) {
+                continue;
+            }
+            if (!merged.has(modelId)) {
+                merged.set(modelId, entry);
+            }
+        }
+    }
+    return [...merged.values()];
+}
+
 export type CursorPickerMode = 'dual' | 'flat'
 
 export type CursorPickerOption = { value: string; label: string }

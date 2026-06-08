@@ -26,4 +26,19 @@ describe('cursorModelsSharedCache', () => {
         writeSharedCursorModelsCache({ success: true, availableModels: [], currentModelId: null });
         expect(readSharedCursorModelsCache()).toBeNull();
     });
+
+    test('round-trips cliModelSkus with wire catalog', () => {
+        const payload = {
+            success: true as const,
+            availableModels: [{ modelId: 'gpt-5.5[context=272k,reasoning=medium,fast=false]', name: 'gpt-5.5' }],
+            currentModelId: 'gpt-5.5[context=272k,reasoning=medium,fast=false]',
+            cliModelSkus: [
+                { modelId: 'gpt-5.5-medium', name: 'GPT-5.5 1M' }
+            ]
+        };
+
+        writeSharedCursorModelsCache(payload);
+
+        expect(readSharedCursorModelsCache()?.cliModelSkus).toEqual(payload.cliModelSkus);
+    });
 });

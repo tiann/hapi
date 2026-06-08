@@ -36,11 +36,14 @@ import { useCodexModels } from '@/hooks/queries/useCodexModels'
 import { useCursorModels } from '@/hooks/queries/useCursorModels'
 import { useCursorModelsForMachine } from '@/hooks/queries/useCursorModelsForMachine'
 import {
-    buildCursorCatalogFromSources,
-    buildCursorPickerState,
+    mergeCursorCliModelSkus,
     resolveCursorBaseFromWire
 } from '@/lib/cursorPickerState'
 import {
+    buildSessionCursorPickerState,
+    isSessionCursorCatalogAwaitingSkus,
+    isSessionCursorCatalogPendingWithTimeout,
+    SESSION_CURSOR_CATALOG_SKU_TIMEOUT_MS,
     resolveSessionCursorBaseSelectValue,
     resolveSessionCursorModelChange,
     resolveSessionCursorVariantSelectValue
@@ -225,39 +228,73 @@ export function SessionChat(props: {
         machineId: sessionMachineId,
         enabled: agentFlavor === 'cursor' && props.session.active && Boolean(sessionMachineId)
     })
-    const sessionCliModelSkus = useMemo(() => {
-        if (cursorModelsState.cliModelSkus.length > 0) {
-            return cursorModelsState.cliModelSkus
-        }
-        return machineCursorModelsState.cliModelSkus
-    }, [cursorModelsState.cliModelSkus, machineCursorModelsState.cliModelSkus])
+    const sessionCliModelSkus = useMemo(() => (
+        mergeCursorCliModelSkus(
+            machineCursorModelsState.cliModelSkus,
+            cursorModelsState.cliModelSkus
+        )
+    ), [cursorModelsState.cliModelSkus, machineCursorModelsState.cliModelSkus])
     const cursorPicker = useMemo(() => {
         if (agentFlavor !== 'cursor') {
             return null
         }
 
-        const catalog = buildCursorCatalogFromSources({
+        return buildSessionCursorPickerState({
             sessionModels: cursorModelsState.availableModels,
             machineModels: machineCursorModelsState.availableModels,
             cliModelSkus: sessionCliModelSkus,
-            currentWireId: cursorModelsState.currentModelId ?? props.session.model,
-            sessionModelFromHub: props.session.model,
-            defaultValue: null
-        })
-        return buildCursorPickerState({
-            catalog,
-            currentWireId: props.session.model ?? cursorModelsState.currentModelId,
-            defaultValue: null
+            sessionModel: props.session.model,
+            sessionCurrentModelId: cursorModelsState.currentModelId
         })
     }, [
         agentFlavor,
         cursorModelsState.availableModels,
-        cursorModelsState.cliModelSkus,
         cursorModelsState.currentModelId,
         machineCursorModelsState.availableModels,
         sessionCliModelSkus,
         props.session.model
     ])
+    const cursorCatalogReadinessArgs = useMemo(() => ({
+        sessionLoading: cursorModelsState.isLoading,
+        machineLoading: machineCursorModelsState.isLoading,
+        hasMachineId: Boolean(sessionMachineId),
+        sessionError: cursorModelsState.error,
+        machineError: machineCursorModelsState.error,
+        mergedSkus: sessionCliModelSkus,
+        picker: cursorPicker
+    }), [
+        cursorModelsState.isLoading,
+        cursorModelsState.error,
+        machineCursorModelsState.isLoading,
+        machineCursorModelsState.error,
+        sessionMachineId,
+        sessionCliModelSkus,
+        cursorPicker
+    ])
+    const cursorCatalogAwaitingSkus = useMemo(
+        () => isSessionCursorCatalogAwaitingSkus(cursorCatalogReadinessArgs),
+        [cursorCatalogReadinessArgs]
+    )
+    const [cursorSkuAwaitingSince, setCursorSkuAwaitingSince] = useState<number | null>(null)
+    const [cursorCatalogNowMs, setCursorCatalogNowMs] = useState(() => Date.now())
+    useEffect(() => {
+        if (cursorCatalogAwaitingSkus) {
+            setCursorSkuAwaitingSince((previous) => previous ?? Date.now())
+            const timer = setTimeout(
+                () => setCursorCatalogNowMs(Date.now()),
+                SESSION_CURSOR_CATALOG_SKU_TIMEOUT_MS
+            )
+            return () => clearTimeout(timer)
+        }
+        setCursorSkuAwaitingSince(null)
+        setCursorCatalogNowMs(Date.now())
+        return undefined
+    }, [cursorCatalogAwaitingSkus])
+    const cursorCatalogPending = isSessionCursorCatalogPendingWithTimeout({
+        ...cursorCatalogReadinessArgs,
+        awaitingStartedAtMs: cursorSkuAwaitingSince,
+        nowMs: cursorCatalogNowMs
+    })
 
     useEffect(() => {
         if (agentFlavor !== 'cursor' || !cursorPicker) {
@@ -816,7 +853,7 @@ export function SessionChat(props: {
                                 ? codexModelOptions
                                 : agentFlavor === 'cursor'
                                     ? (
-                                        cursorModelsState.isLoading
+                                        cursorCatalogPending
                                         || !cursorPicker
                                         || cursorPicker.modelOptions.length === 0
                                             ? undefined
@@ -847,10 +884,13 @@ export function SessionChat(props: {
                                 : undefined
                         }
                         selectedModelVariant={
-                            agentFlavor === 'cursor' ? cursorVariantSelectValue : undefined
+                            agentFlavor === 'cursor' && !cursorCatalogPending
+                                ? cursorVariantSelectValue
+                                : undefined
                         }
                         modelEffortOptions={
                             agentFlavor === 'cursor'
+                                && !cursorCatalogPending
                                 && cursorPicker?.mode === 'dual'
                                 && cursorModelEffortOptions
                                 && cursorModelEffortOptions.length > 1
@@ -863,7 +903,7 @@ export function SessionChat(props: {
                                 : agentFlavor === 'cursor'
                                     ? (props.session.active
                                         && !controlledByUser
-                                        && !cursorModelsState.isLoading
+                                        && !cursorCatalogPending
                                         && !cursorModelsState.error
                                         && cursorPicker
                                         && cursorPicker.modelOptions.length > 0
@@ -875,6 +915,7 @@ export function SessionChat(props: {
                             agentFlavor === 'cursor'
                                 && props.session.active
                                 && !controlledByUser
+                                && !cursorCatalogPending
                                 && !cursorModelsState.error
                                 ? handleCursorEffortChange
                                 : undefined

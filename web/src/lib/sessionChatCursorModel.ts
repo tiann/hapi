@@ -112,6 +112,85 @@ export function resolveSessionCursorVariantSelectValue(
     return null
 }
 
+export function isSessionCursorCatalogLoading(args: {
+    sessionLoading: boolean
+    machineLoading: boolean
+    hasMachineId: boolean
+    sessionError: string | null
+    machineError: string | null
+}): boolean {
+    if (args.sessionLoading) {
+        return true
+    }
+    if (args.hasMachineId && args.machineLoading && !args.machineError) {
+        return true
+    }
+    return false
+}
+
+export function isSessionCursorCatalogAwaitingSkus(args: {
+    sessionLoading: boolean
+    machineLoading: boolean
+    sessionError: string | null
+    machineError: string | null
+    mergedSkus: readonly CursorModelSummary[]
+    picker: CursorPickerState | null
+}): boolean {
+    if (args.sessionLoading || args.machineLoading) {
+        return false
+    }
+    if (args.sessionError || args.machineError) {
+        return false
+    }
+    if (!args.picker || args.picker.mode !== 'dual') {
+        return false
+    }
+    if (args.mergedSkus.length > 0) {
+        return false
+    }
+    return args.picker.showEffortPicker
+}
+
+export const SESSION_CURSOR_CATALOG_SKU_TIMEOUT_MS = 15_000
+
+export function isSessionCursorCatalogPending(args: {
+    sessionLoading: boolean
+    machineLoading: boolean
+    hasMachineId: boolean
+    sessionError: string | null
+    machineError: string | null
+    mergedSkus: readonly CursorModelSummary[]
+    picker: CursorPickerState | null
+}): boolean {
+    return isSessionCursorCatalogLoading(args)
+        || isSessionCursorCatalogAwaitingSkus(args)
+}
+
+export function isSessionCursorCatalogPendingWithTimeout(args: {
+    sessionLoading: boolean
+    machineLoading: boolean
+    hasMachineId: boolean
+    sessionError: string | null
+    machineError: string | null
+    mergedSkus: readonly CursorModelSummary[]
+    picker: CursorPickerState | null
+    awaitingStartedAtMs: number | null
+    nowMs?: number
+    timeoutMs?: number
+}): boolean {
+    if (!isSessionCursorCatalogPending(args)) {
+        return false
+    }
+    if (!isSessionCursorCatalogAwaitingSkus(args)) {
+        return true
+    }
+    if (args.awaitingStartedAtMs === null) {
+        return true
+    }
+    const elapsed = (args.nowMs ?? Date.now()) - args.awaitingStartedAtMs
+    return elapsed < (args.timeoutMs ?? SESSION_CURSOR_CATALOG_SKU_TIMEOUT_MS)
+}
+
 export function buildSessionCursorPickerState(args: {
     sessionModels: readonly CursorModelSummary[]
     machineModels: readonly CursorModelSummary[]
