@@ -82,19 +82,14 @@ describe('buildCliArgs', () => {
         }
     })
 
-    it('skips --resume for pi (resume is out of scope; would create orphan session)', () => {
-        // Pi session resume is currently out of scope — hub has no
-        // piSessionId path on Metadata, so the resume would succeed at
-        // the pi CLI level but the new session would be untracked. The
-        // hub already returns null from resolveAgentResumeId for
-        // flavor='pi' and falls through to fresh spawn, but if a
-        // resumeSessionId is somehow attached at the runner layer we
-        // must NOT forward --resume to the pi binary.
+    it('uses --session-id for pi resume (not --resume)', () => {
         const args = buildCliArgs('pi', {
             directory: '/tmp',
             resumeSessionId: 'some-pi-session-id',
         })
         expect(args).not.toContain('--resume')
+        expect(args).toContain('--session-id')
+        expect(args).toContain('some-pi-session-id')
         expect(args[0]).toBe('pi')
     })
 

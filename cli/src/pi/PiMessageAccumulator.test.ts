@@ -26,7 +26,7 @@ describe('PiMessageAccumulator', () => {
 
         const flushed = acc.handleEvent(makeEvent('message_end', { message: {} }));
         expect(flushed).toEqual([
-            { type: 'text', text: 'hello world', id: 'pi-stream' }
+            { type: 'text', text: 'hello world' }
         ]);
     });
 
@@ -59,7 +59,7 @@ describe('PiMessageAccumulator', () => {
         const flushed = acc.handleEvent(makeEvent('message_end', { message: {} }));
         expect(flushed).toEqual([
             { type: 'reasoning', text: 'thinking', id: 'pi-stream' },
-            { type: 'text', text: 'reply', id: 'pi-stream' }
+            { type: 'text', text: 'reply' }
         ]);
     });
 
@@ -72,7 +72,7 @@ describe('PiMessageAccumulator', () => {
 
         const flushed = acc.handleEvent(makeEvent('message_end', { message: {} }));
         expect(flushed).toEqual([
-            { type: 'text', text: 'only text', id: 'pi-stream' }
+            { type: 'text', text: 'only text' }
         ]);
     });
 
@@ -105,7 +105,7 @@ describe('PiMessageAccumulator', () => {
         }));
         const flushed = acc.handleEvent(makeEvent('message_end', { message: {} }));
         expect(flushed).toEqual([
-            { type: 'text', text: 'x', id: '2' }
+            { type: 'text', text: 'x' }
         ]);
     });
 
@@ -120,7 +120,7 @@ describe('PiMessageAccumulator', () => {
         }));
         const flushed = acc.handleEvent(makeEvent('message_end', { message: {} }));
         expect(flushed).toEqual([
-            { type: 'text', text: 'ab', id: '7' }
+            { type: 'text', text: 'ab' }
         ]);
     });
 
@@ -138,7 +138,7 @@ describe('PiMessageAccumulator', () => {
         }));
         const flushed = acc.handleEvent(makeEvent('message_end', { message: {} }));
         expect(flushed).toEqual([
-            { type: 'text', text: 'second', id: 'pi-stream' }
+            { type: 'text', text: 'second' }
         ]);
     });
 
@@ -153,7 +153,7 @@ describe('PiMessageAccumulator', () => {
             message: { usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3 } }
         }));
         expect(flushed).toEqual([
-            { type: 'text', text: 'incomplete', id: 'pi-stream' }
+            { type: 'text', text: 'incomplete' }
         ]);
     });
 
@@ -170,7 +170,7 @@ describe('PiMessageAccumulator', () => {
             assistantMessageEvent: { type: 'text_delta', delta: 'once' }
         }));
         expect(acc.handleEvent(makeEvent('message_end', { message: {} }))).toEqual([
-            { type: 'text', text: 'once', id: 'pi-stream' }
+            { type: 'text', text: 'once' }
         ]);
         // Second message_end with no content buffered — must be empty,
         // not a duplicate.
@@ -197,7 +197,7 @@ describe('PiMessageAccumulator', () => {
         }));
         const flushed = acc.handleEvent(makeEvent('message_end', { message: {} }));
         expect(flushed).toEqual([
-            { type: 'text', text: 'real content', id: 'pi-stream' }
+            { type: 'text', text: 'real content' }
         ]);
     });
 
@@ -221,7 +221,7 @@ describe('PiMessageAccumulator', () => {
             assistantMessageEvent: { type: 'text_delta', delta: 'leak' }
         }));
         expect(acc.flushIfActive()).toEqual([
-            { type: 'text', text: 'leak', id: 'pi-stream' }
+            { type: 'text', text: 'leak' }
         ]);
         // Second call must be empty.
         expect(acc.flushIfActive()).toEqual([]);
