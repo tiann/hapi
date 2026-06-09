@@ -17,7 +17,7 @@ export function useSessionActions(
     switchSession: () => Promise<void>
     setPermissionMode: (mode: PermissionMode) => Promise<void>
     setCollaborationMode: (mode: CodexCollaborationMode) => Promise<void>
-    setModel: (model: string | null) => Promise<void>
+    setModel: (model: { provider: string; modelId: string } | string | null) => Promise<void>
     setModelReasoningEffort: (modelReasoningEffort: string | null) => Promise<void>
     setEffort: (effort: string | null) => Promise<void>
     renameSession: (name: string) => Promise<void>
@@ -92,7 +92,7 @@ export function useSessionActions(
     })
 
     const modelMutation = useMutation({
-        mutationFn: async (model: string | null) => {
+        mutationFn: async (model: { provider: string; modelId: string } | string | null) => {
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')
             }

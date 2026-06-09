@@ -30,6 +30,7 @@ export type {
     PathExistsResponse,
     PiModelSummary,
     PiModelsResponse,
+    PiThinkingLevelMap,
     SlashCommand,
     SlashCommandsResponse,
     SessionResponse,

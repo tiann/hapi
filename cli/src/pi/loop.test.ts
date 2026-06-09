@@ -72,6 +72,45 @@ describe('parsePiModels', () => {
         ]);
     });
 
+    it('parses reasoning and thinkingLevelMap', () => {
+        const data = {
+            models: [
+                {
+                    id: 'claude-sonnet-4',
+                    provider: 'anthropic',
+                    name: 'Claude Sonnet 4',
+                    reasoning: true,
+                    thinkingLevelMap: { off: null, low: 'low', medium: 'medium', high: 'high' },
+                },
+                { id: 'gpt-4o', provider: 'openai', reasoning: false },
+                { id: 'deepseek-r1', provider: 'deepseek', thinkingLevelMap: {} },
+            ],
+        };
+        const result = parsePiModels(data);
+        expect(result).toEqual([
+            {
+                provider: 'anthropic',
+                modelId: 'claude-sonnet-4',
+                name: 'Claude Sonnet 4',
+                reasoning: true,
+                thinkingLevelMap: { off: null, low: 'low', medium: 'medium', high: 'high' },
+            },
+            { provider: 'openai', modelId: 'gpt-4o', reasoning: false },
+            { provider: 'deepseek', modelId: 'deepseek-r1' },
+        ]);
+    });
+
+    it('ignores non-boolean reasoning and invalid thinkingLevelMap', () => {
+        const data = {
+            models: [
+                { id: 'm1', reasoning: 'yes', thinkingLevelMap: 'not-an-object' },
+            ],
+        };
+        expect(parsePiModels(data)).toEqual([
+            { provider: 'unknown', modelId: 'm1' },
+        ]);
+    });
+
     it('filters out models with empty id', () => {
         const data = {
             models: [

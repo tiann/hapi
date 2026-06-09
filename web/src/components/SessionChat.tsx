@@ -8,6 +8,7 @@ import type {
     DecryptedMessage,
     PermissionMode,
     Session,
+    PiModelSummary,
     SlashCommand
 } from '@/types/api'
 import type { ChatBlock, NormalizedMessage } from '@/chat/types'
@@ -226,6 +227,8 @@ export function SessionChat(props: {
         sessionId: props.session.id,
         enabled: agentFlavor === 'pi' && props.session.active
     })
+    // Fallback to cached models from metadata when session is inactive
+    const piCachedModels = (props.session.metadata as Record<string, unknown> | null)?.piAvailableModels as PiModelSummary[] | undefined ?? []
     const piModelOptions = useMemo(() => {
         if (agentFlavor !== 'pi') {
             return undefined
@@ -474,7 +477,7 @@ export function SessionChat(props: {
     }, [setCollaborationMode, props.onRefresh, haptic])
 
     // Model mode change handler
-    const handleModelChange = useCallback(async (model: string | null) => {
+    const handleModelChange = useCallback(async (model: { provider: string; modelId: string } | string | null) => {
         try {
             await setModel(model)
             haptic.notification('success')
@@ -619,7 +622,7 @@ export function SessionChat(props: {
             <AssistantRuntimeProvider runtime={runtime}>
                 <div className="relative flex min-h-0 flex-1 flex-col">
                     <HappyThread
-                        key={props.session.id}
+                        key={`thread-${props.session.id}`}
                         api={props.api}
                         sessionId={props.session.id}
                         metadata={props.session.metadata}
@@ -667,7 +670,7 @@ export function SessionChat(props: {
                          * the race inside the panel.
                          */}
                         <ScratchlistHost
-                            key={props.session.id}
+                            key={`scratch-${props.session.id}`}
                             sessionId={props.session.id}
                             onSend={props.onSend}
                         />
@@ -682,7 +685,7 @@ export function SessionChat(props: {
                     </div>
 
                     <HappyComposer
-                        key={props.session.id}
+                        key={`composer-${props.session.id}`}
                         sessionId={props.session.id}
                         disabled={props.isSending}
                         pendingSchedule={pendingSchedule}
@@ -706,6 +709,7 @@ export function SessionChat(props: {
                                             ? piModelOptions
                                             : undefined
                         }
+                        piModels={agentFlavor === 'pi' ? (piModelsState.availableModels.length > 0 ? piModelsState.availableModels : piCachedModels) : undefined}
                         active={props.session.active}
                         allowSendWhenInactive
                         thinking={props.session.thinking}

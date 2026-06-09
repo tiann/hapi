@@ -439,7 +439,7 @@ export class SyncEngine {
         sessionId: string,
         config: {
             permissionMode?: PermissionMode
-            model?: string | null
+            model?: { provider: string; modelId: string } | string | null
             modelReasoningEffort?: string | null
             effort?: string | null
             collaborationMode?: CodexCollaborationMode
@@ -454,22 +454,17 @@ export class SyncEngine {
             return
         }
 
-        const result = await this.rpcGateway.requestSessionConfig(sessionId, config)
+        const result = await this.rpcGateway.requestSessionConfig(sessionId, config) as Record<string, unknown>
         if (!result || typeof result !== 'object') {
             throw new Error('Invalid response from session config RPC')
         }
-        const obj = result as {
-            applied?: {
-                permissionMode?: Session['permissionMode']
-                model?: Session['model']
-                modelReasoningEffort?: Session['modelReasoningEffort']
-                effort?: Session['effort']
-                collaborationMode?: Session['collaborationMode']
-            }
+        // Surface the actual CLI error instead of a generic message
+        if ('error' in result && typeof result.error === 'string') {
+            throw new Error(`Session config rejected: ${result.error}`)
         }
-        const applied = obj.applied
+        const applied = (result as Record<string, unknown>).applied as Record<string, unknown> | undefined
         if (!applied || typeof applied !== 'object') {
-            throw new Error('Missing applied session config')
+            throw new Error(`Missing applied session config, got: ${JSON.stringify(result)}`)
         }
 
         const requestedKeys = Object.keys(config) as Array<keyof typeof config>

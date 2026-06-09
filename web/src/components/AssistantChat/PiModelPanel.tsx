@@ -1,0 +1,72 @@
+import { useTranslation } from '@/lib/use-translation'
+import type { PiModelSummary } from '@/types/api'
+import { groupModelsByProvider } from './piModelGroups'
+import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
+
+export function PiModelPanel(props: {
+    models: PiModelSummary[]
+    currentModel: { provider: string; modelId: string } | null
+    controlsDisabled?: boolean
+    onSelect: (model: PiModelSummary) => void
+    onClose: () => void
+}) {
+    const { t } = useTranslation()
+    const groups = groupModelsByProvider(props.models)
+    const disabled = props.controlsDisabled ?? false
+
+    const isSelected = (piModel: PiModelSummary) =>
+        props.currentModel?.provider === piModel.provider &&
+        props.currentModel?.modelId === piModel.modelId
+
+    return (
+        <FloatingOverlay maxHeight={360}>
+            <div className="py-2">
+                <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
+                    {t('misc.model')}
+                </div>
+                {groups.map((group) => (
+                    <div key={group.provider}>
+                        <div className="px-3 pt-2 pb-0.5 text-xs font-medium text-[var(--app-link)]">
+                            {group.label}
+                        </div>
+                        {group.models.map((piModel) => {
+                            const selected = isSelected(piModel)
+                            return (
+                                <button
+                                    key={`${piModel.provider}:${piModel.modelId}`}
+                                    type="button"
+                                    disabled={disabled}
+                                    className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                                        disabled
+                                            ? 'cursor-not-allowed opacity-50'
+                                            : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
+                                    }`}
+                                    onClick={() => {
+                                        props.onSelect(piModel)
+                                        props.onClose()
+                                    }}
+                                    onMouseDown={(e) => e.preventDefault()}
+                                >
+                                    <div
+                                        className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
+                                            selected
+                                                ? 'border-[var(--app-link)]'
+                                                : 'border-[var(--app-hint)]'
+                                        }`}
+                                    >
+                                        {selected && (
+                                            <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
+                                        )}
+                                    </div>
+                                    <span className={selected ? 'text-[var(--app-link)]' : ''}>
+                                        {piModel.name ?? piModel.modelId}
+                                    </span>
+                                </button>
+                            )
+                        })}
+                    </div>
+                ))}
+            </div>
+        </FloatingOverlay>
+    )
+}

@@ -107,8 +107,19 @@ export const SessionCollaborationModeRequestSchema = z.object({
 
 export type SessionCollaborationModeRequest = z.infer<typeof SessionCollaborationModeRequestSchema>
 
+export type SessionModelIdentifier =
+    | string
+    | { provider: string; modelId: string }
+    | null
+
 export const SessionModelRequestSchema = z.object({
-    model: z.string().trim().min(1).nullable()
+    model: z.union([
+        z.string().trim().min(1),
+        z.object({
+            provider: z.string().trim().min(1),
+            modelId: z.string().trim().min(1),
+        }),
+    ]).nullable()
 })
 
 export type SessionModelRequest = z.infer<typeof SessionModelRequestSchema>
@@ -308,11 +319,18 @@ export type CursorModelsResponse = OpencodeModelsResponse
 
 export type ListCursorModelsResponse = CursorModelsResponse
 
+/** Maps thinking levels to provider-specific values. null = unsupported. */
+export type PiThinkingLevelMap = Partial<Record<string, string | null>>
+
 export type PiModelSummary = {
     provider: string
     modelId: string
     name?: string
     contextWindow?: number
+    /** Whether the model supports reasoning/thinking */
+    reasoning?: boolean
+    /** Maps Pi thinking levels to provider values; null = unsupported level */
+    thinkingLevelMap?: PiThinkingLevelMap
 }
 
 export type PiModelsResponse = {

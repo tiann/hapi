@@ -88,7 +88,7 @@ export class RpcGateway {
         sessionId: string,
         config: {
             permissionMode?: PermissionMode
-            model?: string | null
+            model?: { provider: string; modelId: string } | string | null
             modelReasoningEffort?: string | null
             effort?: string | null
             collaborationMode?: CodexCollaborationMode

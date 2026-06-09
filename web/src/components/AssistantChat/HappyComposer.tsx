@@ -12,7 +12,7 @@ import {
     useRef,
     useState
 } from 'react'
-import type { AgentState, CodexCollaborationMode, PermissionMode, ThreadGoal } from '@/types/api'
+import type { AgentState, CodexCollaborationMode, PermissionMode, PiModelSummary, ThreadGoal } from '@/types/api'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import type { ConversationStatus } from '@/realtime/types'
 import { useActiveWord } from '@/hooks/useActiveWord'
@@ -20,7 +20,8 @@ import { useActiveSuggestions } from '@/hooks/useActiveSuggestions'
 import { applySuggestion } from '@/utils/applySuggestion'
 import { usePlatform } from '@/hooks/usePlatform'
 import { usePWAInstall } from '@/hooks/usePWAInstall'
-import { supportsEffort, supportsModelChange } from '@hapi/protocol'
+import { supportsEffort, supportsModelChange, PI_THINKING_LEVEL_LABELS } from '@hapi/protocol'
+import type { PiThinkingLevel } from '@hapi/protocol'
 import { markSkillUsed } from '@/lib/recent-skills'
 import { useComposerDraft } from '@/hooks/useComposerDraft'
 import { useComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
@@ -34,7 +35,12 @@ import { useTranslation } from '@/lib/use-translation'
 import { getModelOptionsForFlavor, getNextModelForFlavor } from './modelOptions'
 import { getClaudeComposerEffortOptions } from './claudeEffortOptions'
 import { getCodexComposerReasoningEffortOptions } from './codexReasoningEffortOptions'
-import { getPiThinkingLevelOptions } from './piThinkingLevelOptions'
+import { getPiThinkingLevelOptions, getHighestThinkingLevel, isThinkingLevelSupported } from './piThinkingLevelOptions'
+import { groupModelsByProvider } from './piModelGroups'
+import { PiModelPanel } from './PiModelPanel'
+import { PiThinkingLevelPanel } from './PiThinkingLevelPanel'
+import { PiPermissionPanel } from './PiPermissionPanel'
+import type { PermissionModeOption } from './PiPermissionPanel'
 
 export interface TextInputState {
     text: string
@@ -63,9 +69,11 @@ export function HappyComposer(props: {
     controlledByUser?: boolean
     agentFlavor?: string | null
     availableModelOptions?: Array<{ value: string | null; label: string }>
+    /** Full Pi model data with thinkingLevelMap for provider grouping + thinking level filtering */
+    piModels?: PiModelSummary[]
     onCollaborationModeChange?: (mode: CodexCollaborationMode) => void
     onPermissionModeChange?: (mode: PermissionMode) => void
-    onModelChange?: (model: string | null) => void
+    onModelChange?: (model: { provider: string; modelId: string } | string | null) => void
     onModelReasoningEffortChange?: (modelReasoningEffort: string | null) => void
     onEffortChange?: (effort: string | null) => void
     onSwitchToRemote?: () => void
@@ -104,6 +112,7 @@ export function HappyComposer(props: {
         controlledByUser = false,
         agentFlavor,
         availableModelOptions,
+        piModels,
         onCollaborationModeChange,
         onPermissionModeChange,
         onModelChange,
@@ -158,6 +167,8 @@ export function HappyComposer(props: {
         selection: { start: 0, end: 0 }
     })
     const [showSettings, setShowSettings] = useState(false)
+    const [showPiModelPanel, setShowPiModelPanel] = useState(false)
+    const [showPiThinkingPanel, setShowPiThinkingPanel] = useState(false)
     const [isAborting, setIsAborting] = useState(false)
     const [isSwitching, setIsSwitching] = useState(false)
     const [showContinueHint, setShowContinueHint] = useState(false)
@@ -304,11 +315,30 @@ export function HappyComposer(props: {
             : [],
         [agentFlavor, modelReasoningEffort]
     )
+    // Pi: group models by provider for hierarchical display
+    const piModelGroups = useMemo(
+        () => piModels && piModels.length > 0 ? groupModelsByProvider(piModels) : null,
+        [piModels]
+    )
+    // Pi: find the currently selected model's thinkingLevelMap for effort filtering
+    const selectedPiModel = useMemo(
+        () => piModels?.find((m) => m.modelId === model),
+        [piModels, model]
+    )
+
+    // Pi: reset effort to highest supported level when model changes and current level is unsupported
+    useEffect(() => {
+        if (!effort || !selectedPiModel || !onEffortChange) return
+        if (selectedPiModel.reasoning === false) return
+        if (!isThinkingLevelSupported(effort, selectedPiModel.thinkingLevelMap)) {
+            onEffortChange(getHighestThinkingLevel(selectedPiModel.thinkingLevelMap))
+        }
+    }, [selectedPiModel, effort, onEffortChange])
     const claudeEffortOptions = useMemo(
         () => agentFlavor === 'pi'
-            ? getPiThinkingLevelOptions(effort)
+            ? getPiThinkingLevelOptions(effort, selectedPiModel?.thinkingLevelMap)
             : getClaudeComposerEffortOptions(effort),
-        [agentFlavor, effort]
+        [agentFlavor, effort, selectedPiModel]
     )
     const permissionModes = useMemo(
         () => permissionModeOptions.map((option) => option.mode),
@@ -493,7 +523,7 @@ export function HappyComposer(props: {
         haptic('light')
     }, [onCollaborationModeChange, controlsDisabled, haptic])
 
-    const handleModelChange = useCallback((nextModel: string | null) => {
+    const handleModelChange = useCallback((nextModel: { provider: string; modelId: string } | string | null) => {
         if (!onModelChange || controlsDisabled) return
         onModelChange(nextModel)
         setShowSettings(false)
@@ -516,9 +546,11 @@ export function HappyComposer(props: {
 
     const showCollaborationSettings = Boolean(onCollaborationModeChange && collaborationModeOptions.length > 0)
     const showPermissionSettings = Boolean(onPermissionModeChange && permissionModeOptions.length > 0)
-    const showModelSettings = Boolean(onModelChange && supportsModelChange(agentFlavor) && modelOptions.length > 0)
+    const showModelSettings = Boolean(onModelChange && supportsModelChange(agentFlavor) && (piModels && piModels.length > 0 || modelOptions.length > 0))
     const showModelReasoningEffortSettings = Boolean(onModelReasoningEffortChange && codexReasoningEffortOptions.length > 0)
-    const showEffortSettings = Boolean(onEffortChange && supportsEffort(agentFlavor))
+    // For Pi: hide effort when selected model explicitly has reasoning: false
+    const piEffortHidden = piModels && selectedPiModel && selectedPiModel.reasoning === false
+    const showEffortSettings = Boolean(onEffortChange && supportsEffort(agentFlavor) && !piEffortHidden)
     const showSettingsButton = Boolean(
         showCollaborationSettings
         || showPermissionSettings
@@ -538,7 +570,105 @@ export function HappyComposer(props: {
         // rejected send path.
     }, [api])
 
+    // Pi: selected model info for UI labels and thinking level filtering
+    const piModelLabel = agentFlavor === 'pi'
+        ? (selectedPiModel?.name ?? selectedPiModel?.modelId ?? 'Model')
+        : undefined
+    const piThinkingLabel = agentFlavor === 'pi'
+        ? (() => {
+            if (!selectedPiModel) return 'Thinking'
+            const effectiveLevel = effort && isThinkingLevelSupported(effort, selectedPiModel.thinkingLevelMap)
+                ? effort
+                : getHighestThinkingLevel(selectedPiModel.thinkingLevelMap)
+            return effectiveLevel
+                ? (PI_THINKING_LEVEL_LABELS[effectiveLevel as PiThinkingLevel] ?? effectiveLevel)
+                : 'Thinking'
+        })()
+        : undefined
+    const piHasModels = piModels && piModels.length > 0
+
+    const closeAllPanels = useCallback(() => {
+        setShowSettings(false)
+        setShowPiModelPanel(false)
+        setShowPiThinkingPanel(false)
+    }, [])
+
+    const handlePiModelToggle = useCallback(() => {
+        if (controlsDisabled) return
+        setShowPiModelPanel((v) => !v)
+        setShowSettings(false)
+        setShowPiThinkingPanel(false)
+        haptic('light')
+    }, [controlsDisabled, haptic])
+
+    const handlePiThinkingToggle = useCallback(() => {
+        if (controlsDisabled) return
+        setShowPiThinkingPanel((v) => !v)
+        setShowSettings(false)
+        setShowPiModelPanel(false)
+        haptic('light')
+    }, [controlsDisabled, haptic])
+
     const overlays = useMemo(() => {
+        // Pi flavor: separate floating panels for permission, model, and thinking level
+        if (agentFlavor === 'pi') {
+            const panels: React.ReactNode[] = []
+
+            // Permission panel (from gear button)
+            if (showSettings && showPermissionSettings) {
+                panels.push(
+                    <div key="perm" className="absolute bottom-[100%] mb-2 left-2 w-48">
+                        <PiPermissionPanel
+                            options={permissionModeOptions as PermissionModeOption[]}
+                            currentMode={permissionMode}
+                            controlsDisabled={controlsDisabled}
+                            onSelect={(mode) => handlePermissionChange(mode)}
+                            onClose={closeAllPanels}
+                        />
+                    </div>
+                )
+            }
+
+            // Model selection panel
+            if (showPiModelPanel && piModels && piModels.length > 0) {
+                const currentPiModel = model
+                    ? piModels.find(m => m.modelId === model) ?? null
+                    : null
+                panels.push(
+                    <div key="model" className="absolute bottom-[100%] mb-2 left-2 w-64">
+                        <PiModelPanel
+                            models={piModels}
+                            currentModel={currentPiModel ? { provider: currentPiModel.provider, modelId: currentPiModel.modelId } : null}
+                            controlsDisabled={controlsDisabled}
+                            onSelect={(piModel) => {
+                                handleModelChange({ provider: piModel.provider, modelId: piModel.modelId })
+                            }}
+                            onClose={closeAllPanels}
+                        />
+                    </div>
+                )
+            }
+
+            // Thinking level panel
+            if (showPiThinkingPanel && selectedPiModel?.reasoning !== false) {
+                panels.push(
+                    <div key="thinking" className="absolute bottom-[100%] mb-2 left-2 w-48">
+                        <PiThinkingLevelPanel
+                            currentLevel={effort}
+                            reasoning={selectedPiModel?.reasoning}
+                            thinkingLevelMap={selectedPiModel?.thinkingLevelMap}
+                            controlsDisabled={controlsDisabled}
+                            onSelect={(level) => handleEffortChange(level)}
+                            onClose={closeAllPanels}
+                        />
+                    </div>
+                )
+            }
+
+            if (panels.length > 0) return <>{panels}</>
+        }
+
+        // Non-Pi flavors: original unified gear menu
         if (showSettings && (showCollaborationSettings || showPermissionSettings || showModelSettings || showModelReasoningEffortSettings || showEffortSettings)) {
             return (
                 <div className="absolute bottom-[100%] mb-2 w-full">
@@ -630,35 +760,74 @@ export function HappyComposer(props: {
                                 <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
                                     {t('misc.model')}
                                 </div>
-                                {modelOptions.map((option) => (
-                                    <button
-                                        key={option.value ?? 'auto'}
-                                        type="button"
-                                        disabled={controlsDisabled}
-                                        className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
-                                            controlsDisabled
-                                                ? 'cursor-not-allowed opacity-50'
-                                                : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
-                                        }`}
-                                        onClick={() => handleModelChange(option.value)}
-                                        onMouseDown={(e) => e.preventDefault()}
-                                    >
-                                        <div
-                                            className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
-                                                model === option.value
-                                                    ? 'border-[var(--app-link)]'
-                                                    : 'border-[var(--app-hint)]'
-                                            }`}
-                                        >
-                                            {model === option.value && (
-                                                <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
-                                            )}
+                                {piModelGroups ? (
+                                    piModelGroups.map((group) => (
+                                        <div key={group.provider}>
+                                            <div className="px-3 pt-2 pb-0.5 text-xs font-medium text-[var(--app-hint)]">
+                                                {group.label}
+                                            </div>
+                                            {group.models.map((piModel) => (
+                                                <button
+                                                    key={piModel.modelId}
+                                                    type="button"
+                                                    disabled={controlsDisabled}
+                                                    className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                                                        controlsDisabled
+                                                            ? 'cursor-not-allowed opacity-50'
+                                                            : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
+                                                    }`}
+                                                    onClick={() => handleModelChange({ provider: piModel.provider, modelId: piModel.modelId })}
+                                                    onMouseDown={(e) => e.preventDefault()}
+                                                >
+                                                    <div
+                                                        className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
+                                                            model === piModel.modelId
+                                                                ? 'border-[var(--app-link)]'
+                                                                : 'border-[var(--app-hint)]'
+                                                    }`}
+                                                    >
+                                                        {model === piModel.modelId && (
+                                                            <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
+                                                        )}
+                                                    </div>
+                                                    <span className={model === piModel.modelId ? 'text-[var(--app-link)]' : ''}>
+                                                        {piModel.name ?? piModel.modelId}
+                                                    </span>
+                                                </button>
+                                            ))}
                                         </div>
-                                        <span className={model === option.value ? 'text-[var(--app-link)]' : ''}>
-                                            {option.label}
-                                        </span>
-                                    </button>
-                                ))}
+                                    ))
+                                ) : (
+                                    modelOptions.map((option) => (
+                                        <button
+                                            key={option.value ?? 'auto'}
+                                            type="button"
+                                            disabled={controlsDisabled}
+                                            className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                                                controlsDisabled
+                                                    ? 'cursor-not-allowed opacity-50'
+                                                    : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
+                                            }`}
+                                            onClick={() => handleModelChange(option.value)}
+                                            onMouseDown={(e) => e.preventDefault()}
+                                        >
+                                            <div
+                                                className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
+                                                    model === option.value
+                                                        ? 'border-[var(--app-link)]'
+                                                        : 'border-[var(--app-hint)]'
+                                            }`}
+                                            >
+                                                {model === option.value && (
+                                                    <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
+                                                )}
+                                            </div>
+                                            <span className={model === option.value ? 'text-[var(--app-link)]' : ''}>
+                                                {option.label}
+                                            </span>
+                                        </button>
+                                    ))
+                                )}
                             </div>
                         ) : null}
 
@@ -765,6 +934,12 @@ export function HappyComposer(props: {
         return null
     }, [
         showSettings,
+        showPiModelPanel,
+        showPiThinkingPanel,
+        agentFlavor,
+        piModels,
+        selectedPiModel,
+        closeAllPanels,
         showCollaborationSettings,
         showPermissionSettings,
         showModelSettings,
@@ -866,6 +1041,14 @@ export function HappyComposer(props: {
                             onSchedule={setPendingSchedule}
                             onClearSchedule={isControlled ? onClearScheduleProp : () => setPendingScheduleLocal(null)}
                             hasAttachments={hasAttachments}
+                            piModelLabel={piModelLabel}
+                            piModelDisabled={controlsDisabled || !piHasModels}
+                            piModelOpen={showPiModelPanel}
+                            onPiModelToggle={handlePiModelToggle}
+                            piThinkingLabel={piThinkingLabel}
+                            piThinkingDisabled={controlsDisabled || !piHasModels || !selectedPiModel || selectedPiModel.reasoning === false}
+                            piThinkingOpen={showPiThinkingPanel}
+                            onPiThinkingToggle={handlePiThinkingToggle}
                         />
                     </div>
                 </ComposerPrimitive.Root>

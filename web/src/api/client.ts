@@ -429,7 +429,7 @@ export class ApiClient {
         })
     }
 
-    async setModel(sessionId: string, model: string | null): Promise<void> {
+    async setModel(sessionId: string, model: { provider: string; modelId: string } | string | null): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/model`, {
             method: 'POST',
             body: JSON.stringify({ model })

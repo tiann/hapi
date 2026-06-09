@@ -145,17 +145,53 @@ export async function runPi(opts: {
         return trimmed;
     };
 
+    /**
+     * Extract provider from structured model identifier. Supports three forms:
+     * - null → no provider
+     * - string (legacy, fallback) → search cachedPiModels; use last-known provider
+     * - { provider, modelId } → use the explicit provider
+     */
+    const extractProviderFromModel = (
+        value: unknown,
+        fallbackModelId: string | null
+    ): string | null | undefined => {
+        if (value === null) return null;
+        if (typeof value === 'object' && value !== null && 'provider' in value && 'modelId' in value) {
+            const v = value as { provider?: unknown; modelId?: unknown };
+            if (typeof v.provider === 'string' && typeof v.modelId === 'string') {
+                return v.provider;
+            }
+        }
+        if (typeof value === 'string' && fallbackModelId) {
+            const cached = piSession.cachedPiModels.find(m => m.modelId === fallbackModelId);
+            if (cached) return cached.provider;
+        }
+        return undefined; // signal: don't touch currentProvider
+    };
+
     apiSession.rpcHandlerManager.registerHandler(RPC_METHODS.SetSessionConfig, async (payload: unknown) => {
         if (!payload || typeof payload !== 'object') {
             throw new Error('Invalid session config payload');
         }
         const config = payload as { permissionMode?: unknown; model?: unknown; effort?: unknown };
+        logger.debug(`[pi] SetSessionConfig received: ${JSON.stringify(config)}`);
 
         if (config.permissionMode !== undefined) {
             piSession.currentPermissionMode = resolveSessionConfigPermissionMode<PiPermissionMode>(config.permissionMode, 'pi');
         }
         if (config.model !== undefined) {
-            piSession.currentModel = resolveModel(config.model);
+            const modelValue = config.model;
+            logger.debug(`[pi] SetSessionConfig model: ${JSON.stringify(modelValue)}`);
+            piSession.currentModel = resolveModel(
+                typeof modelValue === 'object' && modelValue !== null && 'modelId' in modelValue
+                    ? (modelValue as { modelId: string }).modelId
+                    : modelValue
+            );
+            const explicitProvider = extractProviderFromModel(config.model, piSession.currentModel);
+            if (explicitProvider !== undefined) {
+                piSession.currentProvider = explicitProvider;
+            }
+            logger.debug(`[pi] SetSessionConfig resolved: model=${piSession.currentModel}, provider=${piSession.currentProvider}`);
         }
         if (config.effort !== undefined) {
             piSession.currentThinkingLevel = resolveThinkingLevel(config.effort);
@@ -172,13 +208,14 @@ export async function runPi(opts: {
         }
         piSession.pushKeepAlive();
 
-        return {
+        const appliedResult = {
             applied: {
                 permissionMode: piSession.currentPermissionMode,
                 model: piSession.currentModel,
                 effort: piSession.currentThinkingLevel
             }
         };
+        return appliedResult;
     });
 
     // --- Pi model discovery RPC ---

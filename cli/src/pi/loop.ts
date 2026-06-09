@@ -9,6 +9,19 @@ import type { PiModelSummary } from '@hapi/protocol/apiTypes';
 
 // --- Response parsers (exported for RPC handler reuse) ---
 
+function parseThinkingLevelMap(raw: unknown): Record<string, string | null> | undefined {
+    if (typeof raw !== 'object' || raw === null) return undefined;
+    const map: Record<string, string | null> = {};
+    for (const [key, val] of Object.entries(raw as Record<string, unknown>)) {
+        if (typeof val === 'string') {
+            map[key] = val;
+        } else if (val === null) {
+            map[key] = null;
+        }
+    }
+    return Object.keys(map).length > 0 ? map : undefined;
+}
+
 export function parsePiModels(data: unknown): PiModelSummary[] {
     const rawModels = (data as Record<string, unknown>)?.models;
     if (!Array.isArray(rawModels)) return [];
@@ -19,6 +32,8 @@ export function parsePiModels(data: unknown): PiModelSummary[] {
             modelId: typeof m.id === 'string' ? m.id : '',
             ...(typeof m.name === 'string' ? { name: m.name } : {}),
             ...(typeof m.contextWindow === 'number' ? { contextWindow: m.contextWindow } : {}),
+            ...(typeof m.reasoning === 'boolean' ? { reasoning: m.reasoning } : {}),
+            ...(m.thinkingLevelMap ? { thinkingLevelMap: parseThinkingLevelMap(m.thinkingLevelMap) } : {}),
         }))
         .filter((m) => m.modelId.length > 0);
 }
@@ -101,7 +116,8 @@ function handleGetState(
 ): void {
     if (data?.model && typeof data.model === 'object') {
         const modelObj = data.model as Record<string, unknown>;
-        const newModel = (modelObj.modelId as string) ?? session.currentModel;
+        // Pi returns model.id (not modelId). Fallback to modelId for forward compat.
+        const newModel = (modelObj.id as string) ?? (modelObj.modelId as string) ?? session.currentModel;
         const provider = modelObj.provider;
         if (typeof provider === 'string' && provider.length > 0) {
             session.currentProvider = provider;
@@ -154,13 +170,15 @@ function handleResponse(
         }
         case 'set_model': {
             const data = response.data as Record<string, unknown> | undefined;
-            if (data?.modelId) {
-                session.currentModel = data.modelId as string;
+            // Pi returns model.id (not modelId). Fallback to modelId for forward compat.
+            const modelId = (data?.id as string) ?? (data?.modelId as string);
+            if (modelId) {
+                session.currentModel = modelId;
             }
             if (data && typeof data.provider === 'string' && data.provider.length > 0) {
                 session.currentProvider = data.provider;
             }
-            logger.debug(`[pi] Model changed to: ${(data?.modelId as string) ?? session.currentModel}`);
+            logger.debug(`[pi] Model changed to: ${modelId ?? session.currentModel}`);
             break;
         }
         case 'get_available_models': {
@@ -212,6 +230,10 @@ export function wireTransportEvents(
     const assistantMessageAccumulator = new PiMessageAccumulator();
 
     transport.onEvent((event) => {
+        // Debug: log all event types to diagnose missing Pi output
+        if (event.type !== 'keep_alive') {
+            logger.debug(`[pi][event] ${event.type}`);
+        }
         if (event.type === 'response') {
             handleResponse(event as unknown as PiResponseEvent, session, pendingLocalIds);
             return;
