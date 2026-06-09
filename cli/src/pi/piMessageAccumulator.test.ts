@@ -208,22 +208,4 @@ describe('PiMessageAccumulator', () => {
         const flushed = acc.handleEvent(makeEvent('message_end', { message: {} }));
         expect(flushed).toEqual([]);
     });
-
-    it('flushIfActive returns empty when not active', () => {
-        const acc = new PiMessageAccumulator();
-        expect(acc.flushIfActive()).toEqual([]);
-    });
-
-    it('flushIfActive returns content and deactivates', () => {
-        const acc = new PiMessageAccumulator();
-        acc.handleEvent(makeEvent('message_start', { message: {} }));
-        acc.handleEvent(makeEvent('message_update', {
-            assistantMessageEvent: { type: 'text_delta', delta: 'leak' }
-        }));
-        expect(acc.flushIfActive()).toEqual([
-            { type: 'text', text: 'leak' }
-        ]);
-        // Second call must be empty.
-        expect(acc.flushIfActive()).toEqual([]);
-    });
 });

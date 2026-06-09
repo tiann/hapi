@@ -70,15 +70,6 @@ export class PiMessageAccumulator {
         return []
     }
 
-    /**
-     * Force-flush any pending content. Used by runPi as a safety net on
-     * transport close / crash.
-     */
-    flushIfActive(): AgentMessage[] {
-        if (this.active) return this.flush()
-        return []
-    }
-
     private flush(): AgentMessage[] {
         const streamId = this.streamId
         const reasoning = this.reasoning

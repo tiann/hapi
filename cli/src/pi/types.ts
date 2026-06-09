@@ -92,9 +92,8 @@ export type PiAgentEvent =
 // ============================================================================
 
 import type { PiThinkingLevel } from '@hapi/protocol'
-import type { PiCommandSummary, PiCommandsResponse } from '@hapi/protocol/apiTypes'
-export type { PiThinkingLevel, PiCommandSummary, PiCommandsResponse }
-export { PI_THINKING_LEVELS, PI_THINKING_LEVEL_LABELS } from '@hapi/protocol'
+import type { PiCommandSummary } from '@hapi/protocol/apiTypes'
+export type { PiThinkingLevel, PiCommandSummary }
 
 export type PiStreamingBehavior = 'steer' | 'followUp'
 
@@ -133,34 +132,4 @@ export interface PiResponseEvent {
     success: boolean;
     error?: string;
     data?: unknown;
-}
-
-// P3: Session stats returned by get_session_stats
-export interface PiSessionStats {
-    sessionId: string
-    userMessages: number
-    assistantMessages: number
-    toolCalls: number
-    totalMessages: number
-    tokens: {
-        input: number
-        output: number
-        cacheRead: number
-        cacheWrite: number
-        total: number
-    }
-    cost: number
-}
-
-// P3: Compaction result returned by compact
-export interface PiCompactionResult {
-    summary: string
-    firstKeptEntryId: string
-    tokensBefore: number
-}
-
-// P3: Fork message entry returned by get_fork_messages
-export interface PiForkMessageEntry {
-    entryId: string
-    text: string
 }

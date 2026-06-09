@@ -107,10 +107,6 @@ export class PiTransport {
         this.process.kill('SIGTERM');
     }
 
-    isRunning(): boolean {
-        return this.process !== null && !this.killed && !this.exited;
-    }
-
     private handleStdout(chunk: string): void {
         this.buffer += chunk;
         let newlineIndex = this.buffer.indexOf('\n');

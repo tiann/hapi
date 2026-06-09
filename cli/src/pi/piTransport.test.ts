@@ -207,33 +207,4 @@ describe('PiTransport', () => {
             expect(closeHandler).toHaveBeenCalledWith(null, 'SIGTERM');
         });
     });
-
-    describe('isRunning()', () => {
-        it('should return false before start', () => {
-            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
-            expect(transport.isRunning()).toBe(false);
-        });
-
-        it('should return true after start', () => {
-            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
-            transport.start();
-            expect(transport.isRunning()).toBe(true);
-        });
-
-        it('should return false after process exits', () => {
-            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
-            transport.start();
-
-            mockProcess.emit('close', 0, null);
-            expect(transport.isRunning()).toBe(false);
-        });
-
-        it('should return false after kill', () => {
-            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
-            transport.start();
-
-            transport.kill();
-            expect(transport.isRunning()).toBe(false);
-        });
-    });
 });

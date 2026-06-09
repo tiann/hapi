@@ -1,6 +1,6 @@
 import type { PiModelSummary } from '@/types/api'
 
-export type ProviderGroup = {
+type ProviderGroup = {
     provider: string
     label: string
     models: PiModelSummary[]

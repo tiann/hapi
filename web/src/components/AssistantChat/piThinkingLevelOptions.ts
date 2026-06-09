@@ -1,7 +1,7 @@
 import { PI_THINKING_LEVELS, PI_THINKING_LEVEL_LABELS, type PiThinkingLevel } from '@hapi/protocol'
 import type { PiThinkingLevelMap } from '@/types/api'
 
-export type PiThinkingLevelOption = {
+type PiThinkingLevelOption = {
     value: string
     label: string
 }
