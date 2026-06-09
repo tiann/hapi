@@ -28,22 +28,8 @@ export const RPC_METHODS = {
     ListCodexModels: 'listCodexModels',
     ListCursorModels: 'listCursorModels',
     ListPiModels: 'listPiModels',
-    ListPiCommands: 'listPiCommands',
     ListOpencodeModels: 'listOpencodeModels',
     ListOpencodeModelsForCwd: 'listOpencodeModelsForCwd',
-    Steer: 'steer',
-    FollowUp: 'followUp',
-    SetSteeringMode: 'setSteeringMode',
-    SetFollowUpMode: 'setFollowUpMode',
-    GetMessages: 'getMessages',
-    Compact: 'compact',
-    SetAutoCompaction: 'setAutoCompaction',
-    Fork: 'fork',
-    GetForkMessages: 'getForkMessages',
-    Clone: 'clone',
-    SwitchSession: 'switchSession',
-    GetSessionStats: 'getSessionStats',
-    ExportHtml: 'exportHtml',
 } as const
 
 export type RpcMethod = typeof RPC_METHODS[keyof typeof RPC_METHODS]
