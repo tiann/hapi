@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { convertPiEvent } from './PiEventConverter';
+import { convertPiEvent } from './piEventConverter';
 import type { PiAgentEvent } from './types';
 
 describe('convertPiEvent', () => {

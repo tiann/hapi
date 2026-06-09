@@ -1,8 +1,8 @@
 import { logger } from '@/ui/logger';
 import { convertAgentMessage } from '@/agent/messageConverter';
-import { PiTransport } from './PiTransport';
-import { convertPiEvent } from './PiEventConverter';
-import { PiMessageAccumulator } from './PiMessageAccumulator';
+import { PiTransport } from './piTransport';
+import { convertPiEvent } from './piEventConverter';
+import { PiMessageAccumulator } from './piMessageAccumulator';
 import type { PiResponseEvent, PiCommandSummary, PiRpcCommand, PiThinkingLevel } from './types';
 import type { PiSession } from './session';
 import type { PiModelSummary } from '@hapi/protocol/apiTypes';

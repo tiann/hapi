@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { PiMessageAccumulator } from './PiMessageAccumulator';
+import { PiMessageAccumulator } from './piMessageAccumulator';
 
 describe('PiMessageAccumulator', () => {
     function makeEvent(type: string, extra: Record<string, unknown> = {}): any {

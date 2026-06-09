@@ -6,7 +6,7 @@ import { createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecy
 import { resolveSessionConfigPermissionMode } from '@/agent/sessionConfigRpc';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
-import { PiTransport } from './PiTransport';
+import { PiTransport } from './piTransport';
 import { PiSession } from './session';
 import { parsePiModels, parsePiCommands, sendPiRpcAndWait, wireTransportEvents } from './loop';
 import type { PiThinkingLevel } from './types';

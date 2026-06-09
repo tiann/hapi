@@ -35,7 +35,7 @@ function createMockProcess(): ChildProcessWithoutNullStreams & EventEmitter {
     return emitter;
 }
 
-const { PiTransport } = await import('./PiTransport');
+const { PiTransport } = await import('./piTransport');
 
 describe('PiTransport', () => {
     let mockProcess: ReturnType<typeof createMockProcess>;
