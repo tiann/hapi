@@ -1,5 +1,5 @@
 import { ComposerPrimitive } from '@assistant-ui/react'
-import { Children, isValidElement, useCallback, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from 'react'
+import { Children, isValidElement, useRef, useState, type ReactElement, type ReactNode } from 'react'
 import type { CodexUsage } from '@hapi/protocol/types'
 import type { ConversationStatus } from '@/realtime/types'
 import { useTranslation } from '@/lib/use-translation'
@@ -9,7 +9,8 @@ import type { PendingSchedule } from './ScheduleTimePicker'
 import { useFue } from '@/lib/use-fue'
 import { FueCallout, FueDot } from '@/components/Fue'
 import { useComposerToolbarLayout, type ComposerToolbarItemId, type ComposerToolbarLayout } from '@/hooks/useComposerToolbarLayout'
-import { getCodexUsageRing, getCodexUsageRingTitle, getCodexUsageRows, isCodexUsageBlocked } from './codexUsageDisplay'
+import { AgentBudgetIndicator } from './AgentBudgetIndicator'
+import { toCodexBudgetState } from './codexBudgetAdapter'
 
 function ToolbarItemSlot(props: { item: ComposerToolbarItemId; children: ReactNode }) {
     return <>{props.children}</>
@@ -482,125 +483,8 @@ export function UnifiedButton(props: {
 }
 
 function CodexUsageIndicator(props: { usage?: CodexUsage | null }) {
-    const [open, setOpen] = useState(false)
-    const [position, setPosition] = useState<{ left: number; bottom: number } | null>(null)
-    const buttonRef = useRef<HTMLButtonElement | null>(null)
-    const ring = getCodexUsageRing(props.usage)
-
-    const updatePosition = useCallback(() => {
-        const button = buttonRef.current
-        if (!button) return
-        const rect = button.getBoundingClientRect()
-        const width = 288
-        const margin = 8
-        const maxLeft = Math.max(margin, window.innerWidth - width - margin)
-        setPosition({
-            left: Math.min(Math.max(margin, rect.right - width), maxLeft),
-            bottom: Math.max(margin, window.innerHeight - rect.top + margin)
-        })
-    }, [])
-
-    useLayoutEffect(() => {
-        if (!open) return
-        updatePosition()
-        window.addEventListener('resize', updatePosition)
-        window.addEventListener('scroll', updatePosition, true)
-        return () => {
-            window.removeEventListener('resize', updatePosition)
-            window.removeEventListener('scroll', updatePosition, true)
-        }
-    }, [open, updatePosition])
-
-    if (!props.usage || ring === null) {
-        return null
-    }
-
-    const rows = getCodexUsageRows(props.usage)
-    const percent = ring.percent
-    const roundedPercent = Math.round(percent)
-    const blocked = isCodexUsageBlocked(props.usage)
-    // Blocked beats high-usage threshold: a Pro account with primary=null,
-    // secondary=null AND credits.balance="0" should read full red even
-    // though percent (forced to 100 upstream) would already trip the >85
-    // threshold; this avoids a future change to that threshold accidentally
-    // demoting the blocked state.
-    const isHighUsage = blocked || percent > 85
-    const isAmber = !isHighUsage && percent > 60
-    const usageColor = isHighUsage ? '#991b1b' : isAmber ? '#b45309' : 'var(--app-link)'
-    const textColor = isHighUsage ? '#991b1b' : isAmber ? '#b45309' : 'var(--app-hint)'
-    const background = `conic-gradient(${usageColor} ${percent * 3.6}deg, var(--app-divider) 0deg)`
-    const ringTitle = getCodexUsageRingTitle(ring, props.usage)
-
-    return (
-        <div className="relative">
-            <button
-                ref={buttonRef}
-                type="button"
-                aria-label={ringTitle}
-                title={ringTitle}
-                className="flex h-8 w-8 items-center justify-center rounded-full text-[10px] font-normal transition-colors hover:bg-[var(--app-bg)]"
-                style={{ color: textColor }}
-                onClick={() => {
-                    updatePosition()
-                    setOpen((value) => !value)
-                }}
-            >
-                <span
-                    className="flex h-6 w-6 items-center justify-center rounded-full"
-                    style={{ background }}
-                >
-                    <span className="flex h-[21px] w-[21px] items-center justify-center rounded-full bg-[var(--app-secondary-bg)]">
-                        {roundedPercent}
-                    </span>
-                </span>
-            </button>
-            {open && position ? (
-                <div
-                    className="fixed z-[9999] w-72 rounded-md border border-[var(--app-divider)] bg-[var(--app-bg)] p-3 text-sm shadow-lg"
-                    style={{ left: position.left, bottom: position.bottom }}
-                >
-                    <div className="mb-2 text-xs font-semibold uppercase text-[var(--app-hint)]">
-                        Codex Usage
-                    </div>
-                    <div className="space-y-2">
-                        {rows.map((row) => {
-                            const critical = row.severity === 'critical'
-                            const dominant = row.dominant === true
-                            const labelColor = critical ? '#991b1b' : 'var(--app-fg)'
-                            const valueColor = critical ? '#991b1b' : 'var(--app-fg)'
-                            const emphasised = critical || dominant
-                            // Dominant row carries a subtle left accent bar
-                            // that points the eye at the axis driving the
-                            // ring percent (e.g. weekly 100% when the ring
-                            // reads 100). Avoids the previous reading where
-                            // 'why is the ring at X?' required mental
-                            // cross-reference of 4 popover rows.
-                            const borderColor = critical
-                                ? '#991b1b'
-                                : dominant
-                                    ? 'var(--app-link)'
-                                    : 'transparent'
-                            return (
-                                <div
-                                    key={row.label}
-                                    className="flex items-start justify-between gap-3 rounded-sm pl-2 -ml-2"
-                                    style={{ borderLeft: `3px solid ${borderColor}` }}
-                                >
-                                    <div className="min-w-0">
-                                        <div style={{ color: labelColor }} className={emphasised ? 'font-semibold' : undefined}>{row.label}</div>
-                                        {row.detail ? (
-                                            <div className="mt-0.5 break-words text-xs text-[var(--app-hint)]">{row.detail}</div>
-                                        ) : null}
-                                    </div>
-                                    <div className="shrink-0 font-medium" style={{ color: valueColor }}>{row.value}</div>
-                                </div>
-                            )
-                        })}
-                    </div>
-                </div>
-            ) : null}
-        </div>
-    )
+    const state = toCodexBudgetState(props.usage)
+    return <AgentBudgetIndicator state={state} popoverTitle="Codex Usage" />
 }
 
 export function ComposerButtons(props: {
