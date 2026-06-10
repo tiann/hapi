@@ -273,6 +273,40 @@ describe('SyncEngine.maybeAutoMigrateLegacyCursorSession', () => {
             expect(getStoredMetadata(session.id)?.cursorMigrationState).toBe('in_progress')
         })
 
+        // tiann/hapi#872: on ambiguous_legacy_store / size_mismatch
+        // refusals the helper must REPLACE the in-progress flag with
+        // 'ambiguous' (not clear it) so the web banner can surface an
+        // actionable state instead of silently disappearing.
+        it('promotes cursorMigrationState to "ambiguous" on ambiguous_legacy_store refusal (tiann/hapi#872)', async () => {
+            const session = insertLegacy('session-ambiguous-banner')
+            ;(engine as unknown as { buildMigratorForRequest: (req: unknown) => unknown }).buildMigratorForRequest = () => ({
+                migrateOne: async (s: Session) => ({
+                    ok: false,
+                    sessionId: s.id,
+                    reason: 'ambiguous_legacy_store',
+                    message: '3 candidates found',
+                    durationMs: 1
+                })
+            })
+            await callHelper(session)
+            expect(getStoredMetadata(session.id)?.cursorMigrationState).toBe('ambiguous')
+        })
+
+        it('promotes cursorMigrationState to "ambiguous" on size_mismatch refusal (tiann/hapi#872)', async () => {
+            const session = insertLegacy('session-size-mismatch-banner')
+            ;(engine as unknown as { buildMigratorForRequest: (req: unknown) => unknown }).buildMigratorForRequest = () => ({
+                migrateOne: async (s: Session) => ({
+                    ok: false,
+                    sessionId: s.id,
+                    reason: 'size_mismatch',
+                    message: 'candidate has 19 blobs vs 6000 messages',
+                    durationMs: 1
+                })
+            })
+            await callHelper(session)
+            expect(getStoredMetadata(session.id)?.cursorMigrationState).toBe('ambiguous')
+        })
+
         it('flipCursorSessionProtocolToAcp clears cursorMigrationState in the same metadata write that flips protocol', () => {
             const session = insertLegacy('session-flip-clears-flag')
             const store = (engine as unknown as { store: Store }).store

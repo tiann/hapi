@@ -179,6 +179,8 @@ export type CursorMigrateRefusalReason =
     | 'session_resumed_during_migrate'
     | 'legacy_store_modified_during_migrate'
     | 'cross_host_session'
+    | 'ambiguous_legacy_store'
+    | 'size_mismatch'
     | 'internal_error'
 
 export const UploadFileRequestSchema = z.object({
