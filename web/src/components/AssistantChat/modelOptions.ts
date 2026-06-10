@@ -105,8 +105,9 @@ export function getModelOptionsForFlavor(
     if (flavor === 'kimi') {
         return withCurrentModelOption([{ value: null, label: 'Default' }], currentModel)
     }
-    // Pi has no predefined model list — show just the auto/default option
-    // rather than falling through to the Claude preset cycler (which would
+    // Pi model list is provided dynamically via piModels prop in SessionChat,
+    // not through this function. Show just the auto/default option here to
+    // prevent falling through to the Claude preset cycler (which would
     // surface unrelated Claude models and let set-session-config push
     // `sonnet`/`opus` ids into a Pi session).
     if (flavor === 'pi') {
@@ -153,9 +154,8 @@ export function getNextModelForFlavor(
     if (flavor === 'kimi') {
         return normalizeCurrentModel(currentModel)
     }
-    // Pi has no predefined model list — pressing the Ctrl/Cmd+M shortcut
-    // must not fall through to the Claude preset cycler, same reasoning as
-    // opencode above.
+    // Pi model list is provided dynamically via piModels prop — pressing
+    // Ctrl/Cmd+M must not fall through to the Claude preset cycler.
     if (flavor === 'pi') {
         return normalizeCurrentModel(currentModel)
     }

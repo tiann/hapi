@@ -1,5 +1,6 @@
 import type { AgentMessage } from '@/agent/types'
 import type { PiAgentEvent, PiAssistantMessageEvent } from './types'
+import { PiAssistantMessageEventSchema } from './schemas'
 
 /**
  * Accumulates Pi assistant-message text/thinking deltas into a single
@@ -38,16 +39,17 @@ export class PiMessageAccumulator {
 
         if (event.type === 'message_update') {
             const updateEvent = event as { assistantMessageEvent?: PiAssistantMessageEvent }
-            const ame = updateEvent.assistantMessageEvent
-            if (!ame) return []
-            const streamId = (ame as { contentIndex?: number }).contentIndex?.toString() ?? 'pi-stream'
+            const rawAme = updateEvent.assistantMessageEvent
+            if (!rawAme) return []
+            const ameResult = PiAssistantMessageEventSchema.safeParse(rawAme)
+            if (!ameResult.success) return []
+            const ame = ameResult.data
+            const streamId = ame.contentIndex?.toString() ?? 'pi-stream'
             this.streamId = streamId
-            if (ame.type === 'text_delta') {
-                const delta = (ame as { delta?: string }).delta
-                if (delta) this.text += delta
-            } else if (ame.type === 'thinking_delta') {
-                const delta = (ame as { delta?: string }).delta
-                if (delta) this.reasoning += delta
+            if (ame.type === 'text_delta' && ame.delta) {
+                this.text += ame.delta
+            } else if (ame.type === 'thinking_delta' && ame.delta) {
+                this.reasoning += ame.delta
             }
             // Other assistant message events (text_start/thinking_start/
             // text_end/thinking_end) carry the full partial state — we

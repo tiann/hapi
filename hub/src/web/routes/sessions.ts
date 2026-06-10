@@ -10,6 +10,7 @@ import {
     SessionModelRequestSchema,
     SessionPermissionModeRequestSchema,
     supportsModelChange,
+    supportsEffort,
     toSessionSummary,
     UploadFileRequestSchema
 } from '@hapi/protocol'
@@ -446,8 +447,8 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'claude' && flavor !== 'pi') {
-            return c.json({ error: 'Effort selection is only supported for Claude and Pi sessions' }, 400)
+        if (!supportsEffort(flavor)) {
+            return c.json({ error: 'Effort selection is not supported for this session type' }, 400)
         }
 
         try {

@@ -9,6 +9,7 @@ import { getInvokedCwd } from '@/utils/invokedCwd';
 import { PiTransport } from './piTransport';
 import { PiSession } from './session';
 import { parsePiModels, parsePiCommands, sendPiRpcAndWait, wireTransportEvents } from './loop';
+import { PiThinkingLevelSchema, SetSessionConfigPayloadSchema } from './schemas';
 import type { PiThinkingLevel } from './types';
 import type { SlashCommandsResponse } from '@hapi/protocol/apiTypes';
 import type { PiPermissionMode } from '@hapi/protocol/modes';
@@ -124,56 +125,13 @@ export async function runPi(opts: {
     wireTransportEvents(transport, piSession, pendingLocalIds);
 
     // --- Session config RPC ---
-    const PI_THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
 
-    const resolveThinkingLevel = (value: unknown): PiThinkingLevel | null => {
-        if (value === null) return null;
-        if (typeof value !== 'string') throw new Error('Invalid effort');
-        const trimmed = value.trim().toLowerCase();
-        if (!trimmed) throw new Error('Invalid effort');
-        if (!PI_THINKING_LEVELS.includes(trimmed as PiThinkingLevel)) {
-            throw new Error('Invalid effort');
-        }
-        return trimmed as PiThinkingLevel;
-    };
-
-    const resolveModel = (value: unknown): string | null => {
-        if (value === null) return null;
-        if (typeof value !== 'string') throw new Error('Invalid model');
-        const trimmed = value.trim();
-        if (!trimmed) throw new Error('Invalid model');
-        return trimmed;
-    };
-
-    /**
-     * Extract provider from structured model identifier. Supports three forms:
-     * - null → no provider
-     * - string (legacy, fallback) → search cachedPiModels; use last-known provider
-     * - { provider, modelId } → use the explicit provider
-     */
-    const extractProviderFromModel = (
-        value: unknown,
-        fallbackModelId: string | null
-    ): string | null | undefined => {
-        if (value === null) return null;
-        if (typeof value === 'object' && value !== null && 'provider' in value && 'modelId' in value) {
-            const v = value as { provider?: unknown; modelId?: unknown };
-            if (typeof v.provider === 'string' && typeof v.modelId === 'string') {
-                return v.provider;
-            }
-        }
-        if (typeof value === 'string' && fallbackModelId) {
-            const cached = piSession.cachedPiModels.find(m => m.modelId === fallbackModelId);
-            if (cached) return cached.provider;
-        }
-        return undefined; // signal: don't touch currentProvider
-    };
-
-    apiSession.rpcHandlerManager.registerHandler(RPC_METHODS.SetSessionConfig, async (payload: unknown) => {
-        if (!payload || typeof payload !== 'object') {
+    apiSession.rpcHandlerManager.registerHandler(RPC_METHODS.SetSessionConfig, async (rawPayload: unknown) => {
+        const parsed = SetSessionConfigPayloadSchema.safeParse(rawPayload);
+        if (!parsed.success) {
             throw new Error('Invalid session config payload');
         }
-        const config = payload as { permissionMode?: unknown; model?: unknown; effort?: unknown };
+        const config = parsed.data;
         logger.debug(`[pi] SetSessionConfig received: ${JSON.stringify(config)}`);
 
         if (config.permissionMode !== undefined) {
@@ -182,19 +140,34 @@ export async function runPi(opts: {
         if (config.model !== undefined) {
             const modelValue = config.model;
             logger.debug(`[pi] SetSessionConfig model: ${JSON.stringify(modelValue)}`);
-            piSession.currentModel = resolveModel(
-                typeof modelValue === 'object' && modelValue !== null && 'modelId' in modelValue
-                    ? (modelValue as { modelId: string }).modelId
-                    : modelValue
-            );
-            const explicitProvider = extractProviderFromModel(config.model, piSession.currentModel);
-            if (explicitProvider !== undefined) {
-                piSession.currentProvider = explicitProvider;
+
+            if (modelValue === null) {
+                piSession.currentModel = null;
+                piSession.currentProvider = null;
+            } else if (typeof modelValue === 'string') {
+                const trimmed = modelValue.trim();
+                if (!trimmed) throw new Error('Invalid model');
+                piSession.currentModel = trimmed;
+                // Fallback: search cached models for provider
+                const cached = piSession.cachedPiModels.find(m => m.modelId === trimmed);
+                if (cached) piSession.currentProvider = cached.provider;
+            } else {
+                // { provider, modelId } form
+                piSession.currentModel = modelValue.modelId;
+                piSession.currentProvider = modelValue.provider;
             }
             logger.debug(`[pi] SetSessionConfig resolved: model=${piSession.currentModel}, provider=${piSession.currentProvider}`);
         }
         if (config.effort !== undefined) {
-            piSession.currentThinkingLevel = resolveThinkingLevel(config.effort);
+            if (config.effort === null) {
+                piSession.currentThinkingLevel = null;
+            } else {
+                const result = PiThinkingLevelSchema.safeParse(
+                    typeof config.effort === 'string' ? config.effort.trim().toLowerCase() : config.effort,
+                );
+                if (!result.success) throw new Error('Invalid effort');
+                piSession.currentThinkingLevel = result.data;
+            }
         }
 
         // Forward changes to Pi process
@@ -208,14 +181,13 @@ export async function runPi(opts: {
         }
         piSession.pushKeepAlive();
 
-        const appliedResult = {
+        return {
             applied: {
                 permissionMode: piSession.currentPermissionMode,
                 model: piSession.currentModel,
-                effort: piSession.currentThinkingLevel
-            }
+                effort: piSession.currentThinkingLevel,
+            },
         };
-        return appliedResult;
     });
 
     // --- Pi model discovery RPC ---
@@ -230,7 +202,7 @@ export async function runPi(opts: {
                 };
             }
             try {
-                const data = await sendPiRpcAndWait(transport, { type: 'get_available_models' });
+                const data = await sendPiRpcAndWait(piSession, transport, { type: 'get_available_models' });
                 const models = parsePiModels(data);
                 if (models.length > 0) {
                     piSession.cachedPiModels = models;
@@ -253,7 +225,7 @@ export async function runPi(opts: {
             let commands = piSession.cachedPiCommands;
             if (commands.length === 0) {
                 try {
-                    const data = await sendPiRpcAndWait(transport, { type: 'get_commands' });
+                    const data = await sendPiRpcAndWait(piSession, transport, { type: 'get_commands' });
                     commands = parsePiCommands(data);
                     if (commands.length > 0) {
                         piSession.cachedPiCommands = commands;

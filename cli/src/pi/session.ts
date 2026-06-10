@@ -3,6 +3,7 @@ import type { Metadata } from '@/api/types';
 import type { PiPermissionMode } from '@hapi/protocol/modes';
 import type { PiCommandSummary, PiThinkingLevel } from './types';
 import type { PiModelSummary } from '@hapi/protocol/apiTypes';
+import type { PiRpcResolver } from './loop';
 
 /**
  * Pi session state and hub communication wrapper.
@@ -33,6 +34,9 @@ export class PiSession {
     // Cached data from Pi
     cachedPiModels: PiModelSummary[] = [];
     cachedPiCommands: PiCommandSummary[] = [];
+
+    // RPC resolver — initialized by wireTransportEvents, session-scoped
+    rpcResolver: PiRpcResolver | null = null;
 
     private keepAliveInterval: NodeJS.Timeout | null = null;
 

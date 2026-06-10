@@ -56,7 +56,10 @@ export const MetadataSchema = z.object({
     preferredPermissionMode: PermissionModeSchema.optional(),
     flavor: z.string().nullish(),
     capabilities: SessionCapabilitiesSchema.optional(),
-    worktree: WorktreeMetadataSchema.optional()
+    worktree: WorktreeMetadataSchema.optional(),
+    // Cached Pi model list — written by CLI, read by web (inactive session fallback).
+    // Minimal shape: each entry must have modelId; other fields (provider, name, etc.) pass through.
+    piAvailableModels: z.array(z.object({ modelId: z.string() }).passthrough()).optional()
 })
 
 export type Metadata = z.infer<typeof MetadataSchema>

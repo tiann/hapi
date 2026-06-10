@@ -361,7 +361,7 @@ describe('sendPiRpcAndWait', () => {
         wireTransportEvents(mockTransport, session, []);
         // Now sendPiRpcAndWait should not throw (it will hang waiting for response,
         // but the resolver is initialized)
-        const rpcPromise = sendPiRpcAndWait(mockTransport, { type: 'test' }, 100);
+        const rpcPromise = sendPiRpcAndWait(session, mockTransport, { type: 'test' }, 100);
         // It will timeout, but no 'not initialized' error
         await expect(rpcPromise).rejects.toThrow('timed out');
     });

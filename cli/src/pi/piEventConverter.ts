@@ -17,16 +17,6 @@ import type {
 export function convertPiEvent(event: PiAgentEvent): AgentMessage[] {
     try {
         switch (event.type) {
-            case 'message_update': {
-                // Text and thinking deltas are accumulated in runPi and
-                // flushed as a single snapshot on `message_end` (matching
-                // codex's ReasoningProcessor pattern). The converter
-                // intentionally emits nothing here — other assistant
-                // message events (text_start/thinking_start/etc.) are
-                // also swallowed to avoid duplicate full-snapshot text.
-                return [];
-            }
-
             case 'tool_execution_start': {
                 const e = event as PiToolExecutionStartEvent;
                 return [{
@@ -71,11 +61,15 @@ export function convertPiEvent(event: PiAgentEvent): AgentMessage[] {
                 return messages;
             }
 
-            // Lifecycle and other events — not converted to AgentMessage
+            // Lifecycle and other events — not converted to AgentMessage.
+            // message_start/update/end are handled by PiMessageAccumulator
+            // in loop.ts before this converter is called — they never reach here,
+            // but are listed for exhaustive matching.
             case 'agent_start':
             case 'agent_end':
             case 'turn_start':
             case 'message_start':
+            case 'message_update':
             case 'message_end':
             case 'tool_execution_update':
             case 'extension_ui_request':

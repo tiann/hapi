@@ -234,11 +234,14 @@ export function SessionChat(props: {
             return undefined
         }
 
-        return piModelsState.availableModels.map((piModel) => ({
+        const models = piModelsState.availableModels.length > 0
+            ? piModelsState.availableModels
+            : piCachedModels
+        return models.map((piModel) => ({
             value: piModel.modelId,
             label: piModel.name ?? piModel.modelId
         }))
-    }, [agentFlavor, piModelsState.availableModels])
+    }, [agentFlavor, piModelsState.availableModels, piCachedModels])
     const {
         abortSession,
         switchSession,

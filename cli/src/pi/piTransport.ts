@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { logger } from '@/ui/logger';
+import { PiAgentEventSchema } from './schemas';
 import type { PiAgentEvent, PiRpcCommand } from './types';
 
 export interface PiTransportOptions {
@@ -126,8 +127,9 @@ export class PiTransport {
     private handleLine(line: string): void {
         try {
             const parsed = JSON.parse(line);
-            if (typeof parsed === 'object' && parsed !== null) {
-                this.eventHandler?.(parsed as PiAgentEvent);
+            const result = PiAgentEventSchema.safeParse(parsed);
+            if (result.success) {
+                this.eventHandler?.(result.data as PiAgentEvent);
             }
         } catch {
             logger.debug(`[pi] Skipping malformed JSON: ${line.slice(0, 100)}`);
