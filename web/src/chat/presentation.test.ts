@@ -96,6 +96,18 @@ describe('getEventPresentation — token-count', () => {
     })
 })
 
+describe('getEventPresentation — agent error', () => {
+    it('formats agent error events with a warning icon', () => {
+        const result = getEventPresentation({
+            type: 'error',
+            message: 'Error: T: [canceled] http/2 stream closed with error code CANCEL (0x8)'
+        })
+
+        expect(result.icon).toBe('⚠️')
+        expect(result.text).toContain('http/2 stream closed')
+    })
+})
+
 describe('getEventPresentation — thread goals', () => {
     it('formats goal status updates', () => {
         const result = getEventPresentation({

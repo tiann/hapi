@@ -10,7 +10,11 @@ const harness = vi.hoisted(() => ({
     events: [] as string[],
     setModelImpl: null as null | ((sessionId: string, modelId: string) => Promise<void>),
     setConfigOptionImpl: null as null | ((sessionId: string, configId: string, value: string) => Promise<void>),
-    thoughtLevelOption: null as null | { id: string; currentValue?: string; options: Array<{ value: string; name?: string }> }
+    thoughtLevelOption: null as null | { id: string; currentValue?: string; options: Array<{ value: string; name?: string }> },
+    stderrHandler: null as null | ((error: { type: string; message: string; raw: string }) => void),
+    hangPrompt: false,
+    resolvePrompt: null as null | (() => void),
+    cancelPrompt: vi.fn(async () => {})
 }));
 
 vi.mock('./utils/opencodeBackend', () => ({
@@ -39,12 +43,20 @@ vi.mock('./utils/opencodeBackend', () => ({
             harness.promptContents.push(content);
             harness.events.push('prompt:start');
             harness.promptCount++;
-            await new Promise<void>((resolve) => setImmediate(resolve));
+            if (harness.hangPrompt) {
+                await new Promise<void>((resolve) => {
+                    harness.resolvePrompt = resolve;
+                });
+            } else {
+                await new Promise<void>((resolve) => setImmediate(resolve));
+            }
             harness.events.push('prompt:end');
         }),
-        cancelPrompt: vi.fn(async () => {}),
+        cancelPrompt: harness.cancelPrompt,
         respondToPermission: vi.fn(async () => {}),
-        onStderrError: vi.fn(),
+        onStderrError: vi.fn((handler: (error: { type: string; message: string; raw: string }) => void) => {
+            harness.stderrHandler = handler;
+        }),
         onPermissionRequest: vi.fn(),
         disconnect: vi.fn(async () => {}),
         getSessionModelsMetadata: vi.fn(() => undefined),
@@ -137,6 +149,8 @@ function createSessionStub(items: Array<{ message: string; mode: OpencodeMode }>
         }
     };
 
+    const agentMessages: unknown[] = [];
+
     const session = {
         path: '/tmp/hapi-opencode-test',
         logPath: '/tmp/hapi-opencode-test/test.log',
@@ -156,14 +170,16 @@ function createSessionStub(items: Array<{ message: string; mode: OpencodeMode }>
         onSessionFound(id: string) {
             session.sessionId = id;
         },
-        sendAgentMessage(_message: unknown) {},
+        sendAgentMessage(message: unknown) {
+            agentMessages.push(message);
+        },
         sendSessionEvent(event: { type: string; [key: string]: unknown }) {
             client.sendSessionEvent(event);
         },
         sendUserMessage(_text: string) {}
     };
 
-    return { session, sessionEvents, rpcHandlers, setModelReasoningEffort, pushKeepAlive };
+    return { session, sessionEvents, rpcHandlers, setModelReasoningEffort, pushKeepAlive, agentMessages };
 }
 
 describe('opencodeRemoteLauncher inline model switch', () => {
@@ -176,6 +192,10 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         harness.setModelImpl = null;
         harness.setConfigOptionImpl = null;
         harness.thoughtLevelOption = null;
+        harness.stderrHandler = null;
+        harness.hangPrompt = false;
+        harness.resolvePrompt = null;
+        harness.cancelPrompt.mockClear();
     });
 
     it('calls setModel with opencode flavor between turns when the queued model differs', async () => {
@@ -495,6 +515,58 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             success: false,
             error: 'OpenCode reasoning effort options are not available'
         });
+    });
+
+    it('clears thinking and cancels prompt when a stall stderr error arrives during prompt', async () => {
+        harness.hangPrompt = true;
+        const { session, agentMessages } = createSessionStub([
+            { message: 'first', mode: createMode() }
+        ]);
+
+        const launchPromise = opencodeRemoteLauncher(session as never);
+        await vi.waitFor(() => expect(harness.events).toContain('prompt:start'));
+        expect(session.thinking).toBe(true);
+        expect(harness.stderrHandler).toBeTypeOf('function');
+
+        harness.stderrHandler!({
+            type: 'quota_exceeded',
+            message: 'API quota exceeded. Please check your billing or wait for quota reset.',
+            raw: 'quota exceeded for provider'
+        });
+
+        expect(session.thinking).toBe(false);
+        expect(harness.cancelPrompt).toHaveBeenCalledWith('acp-session-1');
+        expect(agentMessages).toContainEqual({
+            type: 'error',
+            message: 'API quota exceeded. Please check your billing or wait for quota reset.'
+        });
+
+        harness.resolvePrompt!();
+        await launchPromise;
+    });
+
+    it('routes HTTP/2 cancel stderr through the error agent message pipeline', async () => {
+        harness.hangPrompt = true;
+        const { session, agentMessages } = createSessionStub([
+            { message: 'first', mode: createMode() }
+        ]);
+
+        const launchPromise = opencodeRemoteLauncher(session as never);
+        await vi.waitFor(() => expect(harness.stderrHandler).toBeTypeOf('function'));
+
+        const message = 'Error: T: [canceled] http/2 stream closed with error code CANCEL (0x8)';
+        harness.stderrHandler!({
+            type: 'unknown',
+            message,
+            raw: message
+        });
+
+        expect(session.thinking).toBe(false);
+        expect(harness.cancelPrompt).toHaveBeenCalledWith('acp-session-1');
+        expect(agentMessages).toContainEqual({ type: 'error', message });
+
+        harness.resolvePrompt!();
+        await launchPromise;
     });
 
     it('serializes setModel after the previous prompt resolves', async () => {

@@ -50,6 +50,18 @@ describe('convertAgentMessage', () => {
         });
     });
 
+    it('converts error messages into codex error payloads', () => {
+        const converted = convertAgentMessage({
+            type: 'error',
+            message: 'API quota exceeded.'
+        });
+
+        expect(converted).toEqual({
+            type: 'error',
+            message: 'API quota exceeded.'
+        });
+    });
+
     it('converts usage messages into token_count payloads', () => {
         const converted = convertAgentMessage({
             type: 'usage',
