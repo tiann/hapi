@@ -264,6 +264,7 @@ export default function TerminalPage() {
                 const modifierState = modifierStateRef.current
                 dispatchSequence(data, modifierState)
             })
+            terminal.focus()
         },
         [dispatchSequence]
     )
