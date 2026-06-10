@@ -1,18 +1,27 @@
 ---
-description: Cursor-specific markdown discipline - verify table separator column count
+description: Cursor-specific table rendering discipline - prefer fenced ASCII over GFM pipe tables
 alwaysApply: true
 ---
 
-# Cursor markdown table discipline
+# Cursor table rendering discipline
 
-When you (a Cursor agent) emit a GFM markdown table, the separator row must have the **same number of cells** as the header row. Cursor-flavor sessions in this repo have a documented history of emitting tables with mismatched column counts (e.g. 7-column header with a 4-column separator), which a GFM renderer correctly drops to a `<p>` of literal pipe text rather than a `<table>`.
+Cursor-flavor sessions in this repo have a documented history of emitting GFM pipe tables that arrive at the HAPI renderer with cells dropped or separator rows malformed, falling back to a `<p>` of literal pipe text instead of a `<table>`. This has been observed even when the agent believed it had verified the column count before sending.
 
-Before emitting any table:
+**Root cause:** the agent cannot inspect its own emitted bytes — only its intended output. Any self-verification rule like "count the pipes before sending" is unfalsifiable from the agent side. The corruption window sits between agent emission and renderer input and cannot be closed by post-hoc cell counting.
 
-1. Count the `|` characters in the header row.
-2. Confirm the separator row has the same number of `|` characters.
-3. Confirm every data row has the same number of `|` characters.
+**Rule:** when emitting a tabular structure in a Cursor-flavor HAPI session, use a code-fenced ASCII table, not a GFM pipe table. Fenced content bypasses the markdown table parser entirely, so column count mismatch cannot demote the table to a paragraph.
 
-If they don't match, stop and recount. Do not ship the broken table.
+Use this shape:
 
-This rule applies only to Cursor sessions. Other agent flavors (Claude, Codex, OpenCode) receive guidance via their system prompts; Cursor's CLI has no equivalent surface, so the rule lives here in `.cursor/rules/`.
+```
+Column A     | Column B  | Column C
+-------------|-----------|---------
+row 1 cell A | row 1 B   | row 1 C
+row 2 cell A | row 2 B   | row 2 C
+```
+
+Pad cells so the pipes align visually — humans can read the structure without a renderer doing the work.
+
+Reserve GFM pipe tables (`| Col | Col |` with `|---|---|` separator) for cases where the data is two columns wide or fewer and short enough to verify by eye on a single line.
+
+This rule applies only to Cursor sessions. Other agent flavors (Claude, Codex, OpenCode) receive guidance via their HAPI system prompts; Cursor's CLI has no equivalent surface, so the rule lives here in `.cursor/rules/`.
