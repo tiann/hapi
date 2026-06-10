@@ -309,19 +309,239 @@ The actual default for newly-created Cursor sessions should be `model: 'auto'`, 
 
 ---
 
-## Fix 4 - WON'T DO - Cross-flavor quota plumbing
+## Fix 4 - RECONSIDERED 2026-06-08 - see Fix 5-8 below
 
-**Status: explicitly out of scope.**
+**Original status: WON'T DO** ("yak-shaving until a Claude/Codex incident demands it"). The original framing was a cross-flavor *stderr classifier* generalising Fix 1, which is genuinely yak-shaving.
 
-Tempting: generalise the classifier across Claude/Codex/Gemini/Kimi - they all have rate-limit and quota errors with their own phrasings. Build one `AgentFailure` taxonomy in `shared/protocol` and apply per-flavor parsers.
+**Re-evaluated 2026-06-08** after the operator asked the broader question "show me gauges for quota/budget across installed agents." Research surfaced that:
 
-**Why not (now):**
+- **Claude Code** already exposes `rate_limits.{five_hour,seven_day}.{used_percentage,resets_at}` in the statusline-JSON stream piped via stdin (v2.1+ / v1.2.80+, Pro/Max only). No reverse-engineering needed; this is documented at code.claude.com/docs/en/statusline.
+- **Codex** quota surfacing is *already in flight upstream* via [#537](https://github.com/tiann/hapi/pull/537) — open, unmerged, EthanWang. Adds `session.metadata.codexUsage` + a "compact usage ring beside the send button" with context-window/rate-limits/token breakdown.
+- **Cursor (Enterprise)** has an official Admin API: `/teams/spend`, `/teams/daily-usage-data`, `/teams/filtered-usage-events`. Polling at hourly cadence is supported.
+- **Cursor (Pro/Team)** has *no* official quota API — but a reverse-engineered dashboard API exists (`WorkosCursorSessionToken` cookie auth, `GET /api/usage-summary` + `POST /api/dashboard/get-filtered-usage-events`). Documented by `dmwyatt/cursor-usage` and `kdosiodjinud/cursor-chrome-extension`. Brittle but functional.
 
-1. Cursor is the active pain point on this machine - other flavors aren't reporting silent failures today.
-2. Each flavor's stderr is a moving target; classifier maintenance scales linearly with flavor count.
-3. Solving Cursor unblocks the operator; cross-flavor parity is yak-shaving until a Claude/Codex incident demands it.
+The original objection ("each flavor's stderr is a moving target") only applied to the *failure-mode classifier*. The *quota-gauge surface* uses structured data sources that exist today. The framing flips: cross-flavor gauges are tractable, the gauge surface is the work, not classifier yak-shaving.
 
-Revisit only if a non-Cursor flavor produces a similar silent-retry incident. At that point, refactor the classifier into a per-flavor strategy.
+Fix 4's intent (stderr classifier across flavors) remains WON'T DO; the gauge work below replaces it as the cross-flavor scope.
+
+---
+
+## Fix 5 - DO - Claude rate-limit gauges via statusline JSON
+
+**Approach:** intercept the statusline-JSON stream that Claude Code pipes to its `statusLine.command` every render, extract `rate_limits.{five_hour,seven_day}`, forward to the hub as a typed `agentUsage` patch over SSE, render in the composer.
+
+### Data source
+
+Claude Code (v2.1+) writes a JSON object to the stdin of the configured `statusLine.command` on every render and on `refreshInterval` ticks. Shape relevant to us:
+
+```json
+{
+  "model": { "display_name": "Claude Sonnet 4.6" },
+  "context_window": { "used_percentage": 12.4 },
+  "rate_limits": {
+    "five_hour":  { "used_percentage": 42, "resets_at": 1742651200 },
+    "seven_day":  { "used_percentage": 18, "resets_at": 1743120000 }
+  }
+}
+```
+
+`rate_limits` is **present only for Claude.ai subscribers (Pro/Max)** after the first API response in the session. Each window can be independently absent. Handle missing fields gracefully (`jq -r '.rate_limits.five_hour.used_percentage // empty'` style).
+
+Underlying primary source for Anthropic Workbench / direct-API users is the `anthropic-ratelimit-unified-*` response headers (require `anthropic-beta: oauth-2025-04-20`). Same windows: `five_hour`, `seven_day`, `seven_day_sonnet`, `seven_day_opus`. Document this as fallback for non-Claude-Code direct-API setups, but don't implement it for v1 - statusline-JSON covers Claude Code Pro/Max.
+
+### Code changes
+
+| File | Change |
+|------|--------|
+| `cli/src/claude/claudeStatuslineBridge.ts` (new) | Configure / install a HAPI-managed statusline command that captures stdin JSON, extracts `rate_limits`, forwards via `session.sendAgentUsage(...)`. Idempotent install: detect if user already has a statusline configured and either chain or warn. |
+| `cli/src/claude/runClaude.ts` | On session spawn, ensure HAPI statusline bridge is registered for the Claude CLI process |
+| `shared/src/types.ts` / `shared/src/schemas.ts` | Add `AgentUsageSchema` discriminated union (see "Unified surface" below) with `flavor: 'claude'` variant carrying `fiveHour`/`sevenDay` `{usedPercentage, resetsAt}` |
+| `hub/src/sync/messageService.ts` | Persist latest `agentUsage` on `session.metadata.agentUsage`; broadcast SSE patch |
+
+### Constraints
+
+- HAPI installing a custom statusline must not clobber the operator's own. Either prepend-merge or detect existing config and document the conflict.
+- `rate_limits` may be absent for the first N renders of a fresh session (no API responses yet). UI must render "—" rather than 0%.
+- Free-tier (no Claude.ai subscription) Claude Code users get **no** `rate_limits` field at all. Graceful no-op; gauge hidden.
+
+### Branch name
+
+`feat/claude-rate-limit-gauges`. Independent of Cursor work above; can ship in parallel.
+
+---
+
+## Fix 6 - DO (mostly) - Codex quota gauges via #537
+
+**Approach:** wait for upstream PR #537 to merge OR adopt its branch into soup; do nothing original. If #537 stalls, fork the branch into a soup layer and carry it locally; offer to help the author land it.
+
+### Status
+
+[tiann/hapi#537](https://github.com/tiann/hapi/pull/537) by EthanWang is OPEN and unmerged as of 2026-06-08. It adds:
+
+- Codex `token_count` event capture (app-server notifications + transcript tailing)
+- `session.metadata.codexUsage` storage + SSE patches
+- "Compact usage ring beside the send button with popover details for context window, rate limits, and token breakdown"
+
+Branch: `codex/codex-usage-indicator` (head `dsus4wang:codex-usage-indicator`).
+
+### Decision tree
+
+| Upstream status | HAPI action |
+|------------------|-------------|
+| Merges as-is | Pick up on next `hapi-sync-fork-main`; no soup layer needed |
+| Merges with refactor that moves `codexUsage` under `agentUsage` | Re-do soup layer to match new shape |
+| Stalls > 4 weeks | Adopt EthanWang's branch as a soup layer; comment on the PR offering to help |
+| Closed without merge | Re-implement in our own branch following the same shape, generalised to fit Fix 5's `AgentUsage` schema |
+
+### Files we'd own if forking
+
+EthanWang's PR already touches the right files; if we fork we mirror its diff plus a schema-rename to align with `Fix 5`'s `AgentUsage`. Don't re-architect his work.
+
+### Branch name (only if forking)
+
+`feat/codex-usage-indicator-soup` - explicitly a soup-only fork of his upstream branch. Drop on merge.
+
+---
+
+## Fix 7 - DO - Cursor (Enterprise) quota gauges via Admin API
+
+**Approach:** for operators on Cursor Enterprise plan, add an opt-in Admin API key to HAPI machine config; poll `/teams/spend` + `/teams/daily-usage-data` hourly; emit per-user `agentUsage` patches.
+
+### Data source
+
+Cursor Admin API (Enterprise only):
+
+- `GET https://api.cursor.com/teams/spend` - current billing cycle spend per user, includes `spendCents`, `overallSpendCents`, `hardLimitOverrideDollars`
+- `POST /teams/daily-usage-data` - aggregated daily metrics, rate-limited 20 req/min
+- `POST /teams/filtered-usage-events` - granular events with per-model token consumption
+- `POST /teams/user-spend-limit` - rate-limited 250 req/min, lets us SET caps too (out of scope for v1)
+
+Auth: Basic Auth with admin API key (`-u YOUR_API_KEY:`). Get from cursor.com/dashboard → Settings → Advanced → Admin API Keys (Enterprise admin only).
+
+Cadence: **hourly poll** is the documented best-practice (data aggregated at hourly grain). Don't poll faster.
+
+### Code changes
+
+| File | Change |
+|------|--------|
+| `hub/src/cursor/adminApiPoller.ts` (new) | Hourly poll of Admin API; map response to `AgentUsage` shape with `flavor: 'cursor'`, `tier: 'enterprise'`; emit per-user SSE patches |
+| `~/.hapi/settings.json` schema | Add optional `cursorAdminApiKey` + `cursorTeamId` fields. Document in `docs/operator-local-tooling.md`. |
+| `shared/src/schemas.ts` | Add `cursor` variant to `AgentUsageSchema`: `{ flavor: 'cursor', tier: 'enterprise', spendCents, overallSpendCents, spendLimitCents?, billingCycleEnd }` |
+| `hub/src/web/routes/usage.ts` (new) | Optional debug endpoint to force-refresh poll |
+
+### Constraints
+
+- Per-user spend in HAPI requires the HAPI user identity to map to a Cursor user (email match). Document this requirement; gauge shows blank for unmatched users.
+- 20 req/min per team is generous for one hourly poll. No rate-limit budget concern.
+- Admin API key has team-wide read access. Treat as sensitive in HAPI config; never log; never embed in client.
+
+### Branch name
+
+`feat/cursor-enterprise-usage-poller`. Independent of Fix 5 / 6 / 8.
+
+---
+
+## Fix 8 - DO (operator opt-in only) - Cursor (Pro/Team) quota via unofficial dashboard API
+
+**Approach:** for Pro/Team operators (no Admin API access), accept the operator's `WorkosCursorSessionToken` as opt-in config; hit the reverse-engineered dashboard endpoints behind a feature flag; render the same `AgentUsage` shape as Fix 7 with `tier: 'pro'`.
+
+**This is a workaround.** Cursor's dashboard API is undocumented, can break without notice, and there is no SLA. Acceptable as a soup-only fork-layer feature. Probably NOT acceptable upstream (see "Upstream-fitness" updates).
+
+### Data source
+
+Cookie-based session API, reverse-engineered by `dmwyatt/cursor-usage` and others (gist at https://gist.github.com/dmwyatt/1e9359b1862e7cbfe1e754fe4c8db764):
+
+- Auth: `Cookie: WorkosCursorSessionToken=<jwt>` header
+- POST endpoints additionally require `Origin: https://cursor.com` (CSRF)
+- Endpoints:
+  - `GET https://cursor.com/api/usage-summary` - high-level overview
+  - `POST https://cursor.com/api/dashboard/get-filtered-usage-events` - paginated event log with model/cost/token breakdown (body `{}` for latest)
+  - `GET https://cursor.com/api/usage?user=<id>` - per-user usage
+
+Token extraction: DevTools → Application → Cookies → `https://cursor.com` → `WorkosCursorSessionToken`. The cookie is `httpOnly` so script-side extraction in the browser is not possible; operator copies manually.
+
+Token is a JWT with an `exp` claim. HAPI must check `exp` and surface "token expired - please re-extract" rather than silently 401-looping.
+
+### Code changes
+
+| File | Change |
+|------|--------|
+| `hub/src/cursor/dashboardApiPoller.ts` (new) | Hourly poll if `cursorDashboardSessionToken` config present; same `AgentUsage` shape as Fix 7 but with `tier: 'pro'` and warning flag `dataSource: 'unofficial'` |
+| `~/.hapi/settings.json` schema | Add optional `cursorDashboardSessionToken` field with deprecation/expiry handling. Hard warning in docs: "unofficial endpoint, may break, your token expires" |
+| Web UI | Render a small "⚠ unofficial data source" badge on the Cursor gauge when `dataSource: 'unofficial'` is set. Operator knows the data could be stale or wrong. |
+| `docs/operator-local-tooling.md` | Document token-extraction steps + risks + rotation guidance |
+
+### Constraints
+
+- **Brittleness:** every Cursor dashboard release could break this. Add a test that runs against a fixture response and warns clearly if schema drift detected; don't crash hub.
+- **Token rotation:** JWT exp typically 1-2 weeks. Add a check that decodes the JWT, surfaces `expires_at` to operator, and disables the poller cleanly when expired (no infinite 401 loop).
+- **ToS posture:** Cursor's ToS doesn't explicitly forbid reverse-engineering their own dashboard's traffic for personal/operational use, but it's grey. Local-fork only; never propose as upstream.
+- **No CI test against live endpoint** - it'd require a real session cookie and would rate-limit / break on Cursor's side.
+
+### Branch name
+
+`feat/cursor-pro-dashboard-usage-poller`. **Soup-only.** Never PR upstream. Carry indefinitely or until Cursor ships a Pro/Team Admin API.
+
+### Risks
+
+- **Cursor changes endpoint:** poller breaks. Mitigation: clear "data source: unofficial" badge; fixture-based regression test; documented "if this breaks, here's how to re-extract."
+- **Token leak:** operator's session cookie in HAPI settings file. Treat with same care as any auth token. `~/.hapi/settings.json` is already 0600. Document explicitly.
+- **Cursor account lock-out** if Cursor flags the polling as abuse. Mitigation: hourly cadence only (matches docs for the official Admin API), single request per poll, single User-Agent that identifies as HAPI.
+
+---
+
+## Unified surface (Fix 5 + 6 + 7 + 8 land here)
+
+All four data sources converge on one schema in `shared/src/schemas.ts`:
+
+```ts
+export const AgentUsageSchema = z.discriminatedUnion('flavor', [
+  z.object({
+    flavor: z.literal('claude'),
+    dataSource: z.literal('statusline-json'),
+    fiveHour: z.object({ usedPercentage: z.number(), resetsAt: z.number() }).nullish(),
+    sevenDay: z.object({ usedPercentage: z.number(), resetsAt: z.number() }).nullish(),
+    updatedAt: z.number(),
+  }),
+  z.object({
+    flavor: z.literal('codex'),
+    dataSource: z.literal('token-count-event'),
+    // shape from upstream #537; mirror exactly to avoid divergence
+    contextWindow: z.object({ used: z.number(), total: z.number() }).optional(),
+    rateLimits: z.unknown().optional(),
+    tokens: z.unknown().optional(),
+    updatedAt: z.number(),
+  }),
+  z.object({
+    flavor: z.literal('cursor'),
+    dataSource: z.enum(['admin-api', 'unofficial']),
+    tier: z.enum(['enterprise', 'pro', 'team']),
+    spendCents: z.number(),
+    overallSpendCents: z.number(),
+    spendLimitCents: z.number().nullable(),
+    billingCycleEnd: z.number(),
+    updatedAt: z.number(),
+  }),
+])
+```
+
+Stored on `session.metadata.agentUsage`; SSE-patched. Web composer renders flavor-appropriate gauge (Claude: two arcs for 5h/7d; Codex: ring per #537; Cursor: bar + dollars-spent label with optional "⚠ unofficial" badge).
+
+`web/src/components/AssistantChat/AgentUsageGauge.tsx` (new) — single component, discriminates on `flavor`, delegates to `ClaudeGauge` / `CodexGauge` / `CursorGauge` subcomponents.
+
+---
+
+## Updated Upstream-fitness
+
+| Fix | Local-only or upstream-PR? | Notes |
+|-----|----------------------------|-------|
+| **Fix 1-3** (above) | As previously documented | Cursor stderr surfacing + picker UX |
+| **Fix 5** (Claude statusline gauges) | **Strong upstream candidate.** Benefits every Claude-flavor HAPI user. Small additive schema; data source is documented Anthropic API. PR-worthy. |
+| **Fix 6** (Codex gauges) | **Already upstream (#537)** — just wait or help land |
+| **Fix 7** (Cursor Enterprise gauges) | **Upstream candidate** if maintainer accepts Enterprise-only feature behind a config flag. Likely yes (additive, no impact on Pro users). |
+| **Fix 8** (Cursor Pro dashboard scrape) | **NEVER upstream.** Unofficial endpoint, brittle, ToS-grey. Soup-only carry. Mention in upstream issue body for context but propose the *renderer + schema* upstream; the data source is operator-private. |
+
+Updated default plan: ship Fix 5 + Fix 7 + Fix 8 as soup branches; Fix 5 + Fix 7 are upstream PR candidates; Fix 6 we wait on or fork; Fix 8 stays local indefinitely.
 
 ---
 
@@ -376,4 +596,243 @@ Default plan: ship all three as soup branches. Offer Fix 1 and Fix 3 as upstream
 - Web UI shows a clear banner when `agentState.lastError.kind === 'quota_exhausted'` with model picker shortcut.
 - Verification matrix executed; logs captured under `~/coding/hapi/localdocs/operator/`.
 - Fix 4 section remains marked **WON'T DO**.
-- Optional: open upstream PR drafts for Fix 1 and Fix 3 if maintainer signals interest; do not block local merge on either.
+- Fix 9 merged into soup stack as `feat/cursor-detect-inline-model-errors`; tests against fixture stream-events green.
+- Optional: open upstream PR drafts for Fix 1, Fix 3, and Fix 9 if maintainer signals interest; do not block local merge on either.
+
+---
+
+## Fix 9 - DO (HIGH PRIORITY) - Detect inline `T: [...]` / `T: Connection stalled` model errors that DON'T crash the agent
+
+**Status:** Not yet implemented. **Adds a failure mode the original Fix 1 missed.**
+
+### Why this is separate from Fix 1
+
+Fix 1 catches the case where Cursor agent **exits 1** with quota stderr ("out of usage / Switch to Auto / increase your limit"). That is the v1 crash mode.
+
+There is a **second, more dangerous mode** observed repeatedly across 2026-06-08, -09, -10:
+
+- The cursor-agent process **stays alive**.
+- It emits a normal `agent/message` event whose **text starts with `Error: T: ...`** — these are upstream-model errors leaking into the assistant stream.
+- It **then emits a `ready` event** as if the turn ended cleanly.
+- `agentState` does not record the failure.
+- `messageBuffer` shows the `Error: T: ...` line as a regular assistant message, mixed in with the agent's prior text.
+
+If the prior assistant message claimed completion ("All done", "Done", "Committed", "Successfully ..."), the operator scrolls past, sees the green ready dot, and walks away thinking work is deployed. **The actual tool call (e.g. `Edit File`, `git push`) was mid-flight and never completed.**
+
+### Evidence
+
+Live samples on operator's machine 2026-06-08 → 2026-06-10:
+
+| Session | Error text (verbatim from `agent/message`) | Provider | Mid-flight tool when it died |
+|---------|---------------------------------------------|----------|------------------------------|
+| `26a4a7ba` android watch | `Error: T: [resource_exhausted] Error` | Bedrock-routed Claude (`toolu_bdrk_*`) | n/a (idle) |
+| `fc8aa274` valutwarden | `Error: T: [resource_exhausted] Error` (x2) | Bedrock | n/a (idle) |
+| `adee1ba4` enophone & DJ | `Error: T: [canceled] http/2 stream closed with error code CANCEL (0x8)` | Bedrock | mid-`git status` reasoning |
+| `977dbb2b` coolify | `Error: T: Connection stalled` | Vertex (`toolu_vrtx_*`) | **mid-`Edit File` for LOGBOOK, after agent said "All done"** |
+
+Also seen in stream-json mode (Gemini sessions):
+
+- `dac86c84` windows installer: `"Gemini prompt failed: Failed to generate content: The input token count exceeds the maximum number of tokens allowed 1048576."`
+- `dac86c84` windows installer: `"Gemini prompt failed: You have exhausted your capacity on this model."`
+- `e576d070` hapi windows install (fresh 3-message session, account quota): same final text.
+
+These are upstream model errors leaking into the assistant message stream. cursor-agent emits them as ordinary text events because that is how Cursor's CLI surfaces backend-side gRPC errors to its TUI users — fine for an interactive terminal, hostile for a headless runner that persists every assistant message verbatim.
+
+### Goals
+
+1. **Detect** all known upstream-error patterns at the message-event boundary, before persisting and before the `ready` event is treated as success.
+2. **Mark the session** with `metadata.lastModelError` so the UI knows the most recent assistant text is suspect.
+3. **Surface a banner** the operator cannot miss, even on a phone glance.
+4. **Optionally** auto-retry on transient classes; never on context-window or quota classes.
+5. **Never silently overwrite** the agent's text — keep the false-completion message visible but visibly demoted.
+
+### Detection patterns
+
+Add a classifier sibling to `classifyCursorStderr` (Fix 1) that operates on **inline assistant-message text**:
+
+```ts
+type CursorAgentStreamFailure =
+  | { kind: 'resource_exhausted'; raw: string; transient: false }
+  | { kind: 'canceled'; raw: string; transient: true }
+  | { kind: 'connection_stalled'; raw: string; transient: true }
+  | { kind: 'deadline_exceeded'; raw: string; transient: true }
+  | { kind: 'unavailable'; raw: string; transient: true }
+  | { kind: 'context_window'; raw: string; transient: false; provider: 'gemini' | 'unknown' }
+  | { kind: 'capacity_exhausted'; raw: string; transient: false; provider: 'gemini' | 'unknown' }
+  | { kind: 'unknown_t_prefix'; raw: string; transient: false };
+
+function classifyCursorAgentMessage(text: string): CursorAgentStreamFailure | null {
+  if (!text) return null;
+  const trimmed = text.trim();
+
+  // Cursor "T: [...]" pattern — gRPC status leaked to message stream
+  const t = trimmed.match(/^Error:\s*T:\s*(\[(?<code>[^\]]+)\]|(?<word>Connection stalled|.+))/i);
+  if (t?.groups?.code) {
+    const code = t.groups.code.toLowerCase();
+    if (code === 'resource_exhausted') return { kind: 'resource_exhausted', raw: trimmed, transient: false };
+    if (code === 'canceled') return { kind: 'canceled', raw: trimmed, transient: true };
+    if (code === 'deadline_exceeded') return { kind: 'deadline_exceeded', raw: trimmed, transient: true };
+    if (code === 'unavailable') return { kind: 'unavailable', raw: trimmed, transient: true };
+    return { kind: 'unknown_t_prefix', raw: trimmed, transient: false };
+  }
+  if (t?.groups?.word) {
+    const w = t.groups.word.toLowerCase();
+    if (w.startsWith('connection stalled')) return { kind: 'connection_stalled', raw: trimmed, transient: true };
+    return { kind: 'unknown_t_prefix', raw: trimmed, transient: false };
+  }
+
+  // Gemini-stream patterns
+  if (/Gemini prompt failed: Failed to generate content: The input token count exceeds/i.test(trimmed)) {
+    return { kind: 'context_window', raw: trimmed, transient: false, provider: 'gemini' };
+  }
+  if (/Gemini prompt failed: You have exhausted your capacity on this model/i.test(trimmed)) {
+    return { kind: 'capacity_exhausted', raw: trimmed, transient: false, provider: 'gemini' };
+  }
+
+  return null;
+}
+```
+
+### Hook point
+
+In the runner's stream-event reception path — **wherever `agent/message` events are received from the cursor-agent subprocess and forwarded to the hub/DB**. Likely sites:
+
+- `cli/src/cursor/cursorRemoteLauncher.ts` — ACP event handler (look for where `data.type === 'message'` events are processed).
+- `cli/src/agent/messageProcessor.ts` (if it exists) — generic stream-event normaliser.
+- `cli/src/cursor/runCursor.ts` — session loop top-level.
+
+Inside the handler, before `session.appendMessage(...)`:
+
+```ts
+if (event.data?.type === 'message' && typeof event.data.message === 'string') {
+  const failure = classifyCursorAgentMessage(event.data.message);
+  if (failure) {
+    // 1. Persist the suspect message AS-IS so the operator sees what cursor-agent claimed.
+    //    Do not mutate `event.data.message` — mutating an upstream stream event is a
+    //    debugging trap. Mark the session instead.
+    await session.appendMessage(event); // existing path
+
+    // 2. Annotate the session.
+    const priorAssistantClaimsDone = looksLikeCompletionClaim(getLastAssistantTextBefore(event));
+    await session.updateMetadata((meta) => ({
+      ...meta,
+      lastModelError: {
+        kind: failure.kind,
+        transient: 'transient' in failure ? failure.transient : false,
+        provider: 'provider' in failure ? failure.provider : undefined,
+        rawSnippet: failure.raw.slice(0, 400),
+        atTs: Date.now(),
+        priorAssistantClaimsDone,
+      },
+    }));
+
+    // 3. Emit a synthetic banner-event the web UI can render distinctly.
+    session.sendSessionEvent({
+      type: 'modelError',
+      kind: failure.kind,
+      transient: 'transient' in failure ? failure.transient : false,
+      message: humanReadableForKind(failure.kind, failure.raw, priorAssistantClaimsDone),
+    });
+
+    // 4. Suppress treating the next `ready` event as a clean turn-complete.
+    session.markTurnDegraded(failure.kind);
+
+    // 5. Optional auto-retry — see "Auto-retry policy" below.
+    if (session.metadata.cursorAutoRetryOnModelError && shouldAutoRetry(failure)) {
+      await scheduleRetry(session, failure);
+    }
+
+    return;
+  }
+}
+```
+
+`looksLikeCompletionClaim` is a small heuristic — operator has been bitten by exactly the agent saying "All done", "Done.", "Committed.", "Successfully ...", "Fixed!", followed by a silent stall. Match those leading tokens in the prior assistant text within the same turn.
+
+### Auto-retry policy (default OFF, opt-in via `cursorAutoRetryOnModelError`)
+
+| Kind | Auto-retry? | Strategy |
+|------|-------------|----------|
+| `connection_stalled` | yes (1x) | Same model, same last user message, 5s backoff |
+| `canceled` | yes (1x) | Same model, same last user message, 2s backoff |
+| `deadline_exceeded` | yes (1x) | Same model, same last user message, 5s backoff |
+| `unavailable` | yes (1x) | Same model, same last user message, 10s backoff |
+| `resource_exhausted` | optional (1x) | Switch to `--model auto` (overlap with Fix 2). Only if `cursorAutoFallbackOnQuota === true`. |
+| `context_window` | NO | Unrecoverable; surface only. Operator must fork or compact. |
+| `capacity_exhausted` (Gemini) | NO | Account quota; surface only. |
+| `unknown_t_prefix` | NO | Conservative; surface only until pattern is studied. |
+
+Cap: never more than **one** retry per turn. If the retry also fails with any classified error, mark `lastModelError.retriedAndFailed = true` and stop.
+
+### Web UI surface
+
+`web/src/components/SessionView/ModelErrorBanner.tsx` (new):
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│ ⚠ MODEL ERROR — connection_stalled (transient)                          │
+│                                                                          │
+│ The agent said "All done" but its last tool call (Edit File) did not    │
+│ complete. The work is likely INCOMPLETE. Verify before trusting this    │
+│ session's output.                                                        │
+│                                                                          │
+│ [Retry last message]   [Dismiss]   [View raw error]                      │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+Banner is **persistent until acknowledged** (clicking Dismiss writes `metadata.lastModelError.acknowledgedAt`). The `ready` indicator next to the session row should switch from green to amber when `lastModelError && !lastModelError.acknowledgedAt`.
+
+If `priorAssistantClaimsDone === true`, banner copy is harsher: "The model claimed completion before failing. **Verify the work is actually done.**"
+
+### Notification surface
+
+Tie into existing `agent-notify` pipeline:
+
+- Append a final `AGENT_NOTIFY_SUMMARY` line with `status: "needs_review"` and `summary` = banner copy.
+- The voice/TTS path will read it. Operator on phone hears "session X reported model error after claiming done, verify."
+
+### Files touched
+
+| File | Change |
+|------|--------|
+| `cli/src/cursor/cursorRemoteLauncher.ts` (or wherever ACP message events are processed) | Add inline classifier; emit synthetic `modelError` event; mark turn degraded |
+| `cli/src/cursor/cursorAgentMessageClassifier.ts` (new) | `classifyCursorAgentMessage` + `looksLikeCompletionClaim` + unit tests |
+| `cli/src/cursor/cursorAgentMessageClassifier.test.ts` (new) | Fixture set covering every row of Evidence table + benign messages |
+| `shared/src/protocol.ts` | Extend `SessionMetadata` with `lastModelError` (typed) and `cursorAutoRetryOnModelError: boolean` |
+| `shared/src/events.ts` (or wherever session events are typed) | Add `'modelError'` event type |
+| `hub/src/sync/messageService.ts` | Recognise `modelError` events; persist `lastModelError`; broadcast SSE |
+| `web/src/components/SessionView/ModelErrorBanner.tsx` (new) | Banner UI |
+| `web/src/components/SessionView/SessionRow.tsx` (or list view) | Switch ready dot to amber when `lastModelError` unacknowledged |
+| `cli/src/agent/turnState.ts` (or wherever ready handling lives) | `markTurnDegraded` so subsequent ready events don't clear the error state |
+
+### Test plan
+
+1. **Classifier unit tests** — every row of Evidence table → expected `kind`. Plus benign messages ("Here's the diff:", "Done.") → returns null.
+2. **Integration: stream-replay test** — feed cursor-agent stream events through the message handler, including a sequence ending in `Error: T: Connection stalled` followed by a `ready` event. Assert:
+   - The error text persists as an assistant message (visible to operator).
+   - `metadata.lastModelError.kind === 'connection_stalled'`.
+   - `metadata.lastModelError.priorAssistantClaimsDone === true` when the previous message was "All done. Quick LOGBOOK entry:".
+   - A `modelError` session event was emitted.
+   - The `ready` event did NOT clear `lastModelError`.
+3. **Auto-retry off** — same stream, `cursorAutoRetryOnModelError: false`. Confirm no retry spawned.
+4. **Auto-retry on, transient** — `cursorAutoRetryOnModelError: true`, error kind = `connection_stalled`. Confirm exactly ONE retry of the last user message; if the retry classifies as same kind, confirm `retriedAndFailed: true` and no further retry.
+5. **Auto-retry on, non-transient** — error kind = `context_window`. Confirm NO retry.
+6. **UI banner render** — fixture metadata with `lastModelError` set → banner appears with correct copy; click Dismiss → `acknowledgedAt` set; banner gone.
+7. **Cross-flavor isolation** — Claude / Codex flavored sessions never trigger this classifier (it's wired only into the Cursor remote path).
+
+### Branch name
+
+`feat/cursor-detect-inline-model-errors`. Stacks on Fix 1 if it lands first; independent otherwise.
+
+### Risks
+
+- **Cursor changes the leading text.** Pattern is `^Error: T: ...`. If they reformat to `^[ERROR] gRPC: ...` or similar, classifier misses. Mitigation: log all `agent/message` events whose text starts with `Error:` at info level for one release cycle, watch for new patterns, expand classifier.
+- **False positive on agent legitimately writing `Error: T: ` in code or docs.** The pattern is anchored at start of message and very specific to the cursor-agent leak shape; collisions extremely unlikely. The conservative classifier returns `unknown_t_prefix` for anything matching `^Error: T:` it doesn't recognise — this becomes a "warn but don't auto-retry" path.
+- **Retry storm on a permanently-throttled provider.** Cap is one retry per turn, hard. Confirmed in test #4.
+- **Hidden completion-claim heuristics fight Cursor's natural verbiage.** `looksLikeCompletionClaim` is an intentionally narrow regex over the **leading tokens** of the prior message. Tune via fixture set; do not let it grow into NLP.
+
+### Upstream-fitness
+
+**Strong upstream candidate.** Same UX win for every Cursor-flavor HAPI user, regardless of soup. Open as a separate PR distinct from Fix 1's stderr classifier — they target different failure modes and reviewer can take one without the other.
+
+---

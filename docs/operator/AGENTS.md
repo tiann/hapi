@@ -35,6 +35,31 @@ origin    →  https://github.com/heavygee/hapi.git
 - **Never modify maintainer canon** in upstream PRs - see § Upstream file boundaries
 - **Upstream PR branches** start from `upstream/main` only - product code diffs, nothing fork-local
 
+### Upstream collaborator status (heavygee on tiann/hapi)
+
+`heavygee` has **`write`** permission on `tiann/hapi` (verify: `gh api repos/tiann/hapi/collaborators/heavygee/permission`). This is unusual for what is otherwise documented as a fork relationship and post-dates the fork canon. **Status: awaiting explicit guidance from @tiann on the intended scope of this access.**
+
+Until @tiann signals otherwise, default to **fork-contributor discipline** (PRs from `upstream/main`-based branches via `hapi-pr-create`, comments and reviews welcome on others' PRs, no direct writes to upstream branches or other people's work).
+
+**What we self-permit absent guidance:**
+
+- **Label management** on `tiann/hapi` issues and PRs - low-risk, reversible, helpful for triage
+- **Pushing to PR branches via `maintainerCanModify`** *only when* (a) the PR has `maintainerCanModify: true`, (b) we have coordinated with the PR author first (comment + reasonable response window), and (c) we are addressing a clear stall (conflicts, no author iteration, no maintainer review). Stays attributed: author's commits keep their authorship; our rebase / fix commits add `Co-authored-by:` lines
+
+**What we explicitly do NOT do absent guidance:**
+
+- Direct push to `tiann/hapi:main` or any other upstream branch (use the normal PR flow)
+- Merging PRs (ours or others')
+- Force-pushing to others' PR branches
+- Closing issues or PRs we don't own
+- Editing PR titles / bodies / descriptions on others' PRs
+- Modifying repo settings, branch protections, secrets, or `.github/workflows/*`
+- Acting on behalf of @tiann in any communication with contributors
+- Granting or revoking access to others
+- Triggering / dismissing workflows on others' PRs
+
+If @tiann clarifies broader (or narrower) scope, revise this section.
+
 ---
 
 ## Strategic direction: voice-first
