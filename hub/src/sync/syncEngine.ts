@@ -132,7 +132,11 @@ export class SyncEngine {
     private readonly machineCache: MachineCache
     private readonly messageService: MessageService
     private readonly rpcGateway: RpcGateway
+    private readonly io: Server
     private inactivityTimer: NodeJS.Timeout | null = null
+    /** Dedup set keyed by `${sessionId}:${msgId}:${blockIndex}` — prevents duplicate patch-prompt emissions. */
+    private readonly pendingPatches: Map<string, { retries: number; timerId: ReturnType<typeof setTimeout> }> = new Map()
+    private static readonly PATCH_TIMEOUT_MS = 30_000
 
     constructor(
         private readonly store: Store,
@@ -140,6 +144,7 @@ export class SyncEngine {
         rpcRegistry: RpcRegistry,
         sseManager: SSEManager
     ) {
+        this.io = io
         this.eventPublisher = new EventPublisher(sseManager, (event) => this.resolveNamespace(event))
         this.sessionCache = new SessionCache(store, this.eventPublisher)
         this.machineCache = new MachineCache(store, this.eventPublisher)
@@ -391,6 +396,65 @@ export class SyncEngine {
         await this.messageService.sendMessage(sessionId, payload)
         this.sessionCache.markMessageQueued(sessionId)
         this.sessionCache.recordSessionActivity(sessionId, Date.now())
+    }
+
+    /**
+     * Route a patch request from a web client to the active CLI for a session.
+     * Returns 'sent' if the patch-prompt was emitted, 'duplicate' if a patch is
+     * already in flight for this msgId+blockIndex, 'too-many-retries' if the cap
+     * was exceeded, or 'no-cli' if no CLI socket is connected.
+     */
+    requestPatch(
+        sessionId: string,
+        namespace: string,
+        payload: { msgId: string; blockIndex: number; type: 'mermaid' | 'table'; failedCode: string }
+    ): 'sent' | 'duplicate' | 'too-many-retries' | 'no-cli' {
+        const key = `${sessionId}:${payload.msgId}:${payload.blockIndex}`
+        const existing = this.pendingPatches.get(key)
+        if (existing) {
+            if (existing.retries >= 2) {
+                return 'too-many-retries'
+            }
+            // Allow a second attempt (retry) but not more
+            existing.retries++
+        } else {
+            const session = this.sessionCache.getSessionByNamespace(sessionId, namespace)
+            if (!session) {
+                return 'no-cli'
+            }
+            const timerId = setTimeout(() => this.pendingPatches.delete(key), SyncEngine.PATCH_TIMEOUT_MS)
+            this.pendingPatches.set(key, { retries: 1, timerId })
+        }
+
+        const room = this.io.of('/cli').to(`session:${sessionId}`)
+        room.emit('patch-prompt', payload)
+        return 'sent'
+    }
+
+    /**
+     * Called by the CLI `patch-response` handler.  Broadcasts `message-patched`
+     * to all web SSE subscribers and clears the dedup entry.
+     */
+    resolvePatch(
+        sessionId: string,
+        payload: { msgId: string; blockIndex: number; correctedCode: string }
+    ): void {
+        const key = `${sessionId}:${payload.msgId}:${payload.blockIndex}`
+        const entry = this.pendingPatches.get(key)
+        if (entry) {
+            clearTimeout(entry.timerId)
+        }
+        this.pendingPatches.delete(key)
+
+        const session = this.sessionCache.getSession(sessionId)
+        this.eventPublisher.emit({
+            type: 'message-patched',
+            sessionId,
+            namespace: session?.namespace,
+            msgId: payload.msgId,
+            blockIndex: payload.blockIndex,
+            correctedCode: payload.correctedCode
+        })
     }
 
     async cancelQueuedMessage(

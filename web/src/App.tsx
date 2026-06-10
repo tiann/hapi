@@ -15,6 +15,7 @@ import { useVisibilityReporter } from '@/hooks/useVisibilityReporter'
 import { queryKeys } from '@/lib/query-keys'
 import { AppContextProvider } from '@/lib/app-context'
 import { clearMessageWindow, fetchLatestMessages } from '@/lib/message-window-store'
+import { emitPatch } from '@/lib/patch-emitter'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { useTranslation } from '@/lib/use-translation'
 import { VoiceProvider } from '@/lib/voice-context'
@@ -233,6 +234,15 @@ function AppInner() {
     }, [])
 
     const handleSseEvent = useCallback((event: SyncEvent) => {
+        if (event.type === 'message-patched') {
+            emitPatch({
+                sessionId: event.sessionId,
+                msgId: event.msgId,
+                blockIndex: event.blockIndex,
+                correctedCode: event.correctedCode
+            })
+            return
+        }
         if (event.type !== 'messages-invalidated') {
             return
         }

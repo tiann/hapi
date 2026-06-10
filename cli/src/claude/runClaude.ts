@@ -22,6 +22,7 @@ import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { normalizeClaudeSessionModel } from './model';
 import { normalizeClaudeSessionEffort } from './effort';
 import { getInvokedCwd } from '@/utils/invokedCwd';
+import { registerPatchHandler } from '@/claude/utils/patchHandler';
 
 export interface StartOptions {
     model?: string
@@ -353,6 +354,14 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         const removed = messageQueue.cancelByLocalId(localId);
         logger.debug(`[claude] cancelByLocalId(${localId}): ${removed ? 'removed' : 'not found (best-effort)'}`);
         return removed;
+    });
+
+    // Register silent in-place patch handler for mermaid/table render failures.
+    registerPatchHandler(session, {
+        cwd: workingDirectory,
+        model: currentModel ?? null,
+        claudeEnvVars: options.claudeEnvVars,
+        claudeArgs: options.claudeArgs
     });
 
     const resolvePermissionMode = (value: unknown): PermissionMode => {

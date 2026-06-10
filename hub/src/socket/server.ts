@@ -43,6 +43,7 @@ export type SocketServerDeps = {
     onSessionActivity?: (sessionId: string, updatedAt: number) => void
     onSweepImmediateQueued?: (sessionId: string, now: number) => void
     onMessagesConsumed?: (sessionId: string) => void
+    onPatchResponse?: (sessionId: string, payload: { msgId: string; blockIndex: number; correctedCode: string }) => void
 }
 
 export function createSocketServer(deps: SocketServerDeps): {
@@ -122,7 +123,8 @@ export function createSocketServer(deps: SocketServerDeps): {
         onBackgroundTaskDelta: deps.onBackgroundTaskDelta,
         onSessionActivity: deps.onSessionActivity,
         onSweepImmediateQueued: deps.onSweepImmediateQueued,
-        onMessagesConsumed: deps.onMessagesConsumed
+        onMessagesConsumed: deps.onMessagesConsumed,
+        onPatchResponse: deps.onPatchResponse
     }))
 
     terminalNs.use(async (socket, next) => {

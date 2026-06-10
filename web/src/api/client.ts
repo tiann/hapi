@@ -726,4 +726,18 @@ export class ApiClient {
             body: JSON.stringify({})
         })
     }
+
+    /**
+     * Notify the hub that a code block failed to render so the CLI agent can
+     * return a corrected version.  Silently ignores errors (fire-and-forget).
+     */
+    async sendPatchRequest(
+        sessionId: string,
+        payload: { msgId: string; blockIndex: number; type: 'mermaid' | 'table'; failedCode: string }
+    ): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/patch-request`, {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        })
+    }
 }

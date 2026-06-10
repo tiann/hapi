@@ -163,6 +163,7 @@ export class ApiSessionClient extends EventEmitter {
     private pendingMessages: { message: UserMessage; localId?: string }[] = []
     private pendingMessageCallback: ((message: UserMessage, localId?: string) => void) | null = null
     private cancelQueuedMessageCallback: ((localId: string) => boolean) | null = null
+    private patchPromptCallback: ((payload: { msgId: string; blockIndex: number; type: 'mermaid' | 'table'; failedCode: string }) => void) | null = null
     private readonly incomingFilter = new IncomingMessageFilter()
     private backfillInFlight: Promise<void> | null = null
     private needsBackfill = false
@@ -332,7 +333,25 @@ export class ApiSessionClient extends EventEmitter {
             }
         })
 
+        this.socket.on('patch-prompt', (data: { msgId: string; blockIndex: number; type: 'mermaid' | 'table'; failedCode: string }) => {
+            if (!data || typeof data.msgId !== 'string' || typeof data.blockIndex !== 'number') {
+                return
+            }
+            this.patchPromptCallback?.(data)
+        })
+
         this.socket.connect()
+    }
+
+    onPatchPrompt(callback: (payload: { msgId: string; blockIndex: number; type: 'mermaid' | 'table'; failedCode: string }) => void): void {
+        this.patchPromptCallback = callback
+    }
+
+    sendPatchResponse(payload: { msgId: string; blockIndex: number; correctedCode: string }): void {
+        this.socket.emit('patch-response', {
+            sid: this.sessionId,
+            ...payload
+        })
     }
 
     onUserMessage(callback: (data: UserMessage, localId?: string) => void): void {

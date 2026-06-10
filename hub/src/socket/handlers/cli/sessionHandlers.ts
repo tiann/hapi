@@ -70,10 +70,19 @@ export type SessionHandlersDeps = {
     /** Drops the queued-thinking grace so synchronous CLI handlers (e.g. slash
      *  commands) don't leave the spinner stuck for the full grace window. */
     onMessagesConsumed?: (sessionId: string) => void
+    /** Called when the CLI sends back a corrected code block for in-place patching. */
+    onPatchResponse?: (sessionId: string, payload: { msgId: string; blockIndex: number; correctedCode: string }) => void
 }
 
+const patchResponseSchema = z.object({
+    sid: z.string(),
+    msgId: z.string().min(1),
+    blockIndex: z.number().int().nonnegative(),
+    correctedCode: z.string()
+})
+
 export function registerSessionHandlers(socket: CliSocketWithData, deps: SessionHandlersDeps): void {
-    const { store, resolveSessionAccess, emitAccessError, onSessionAlive, onSessionEnd, onWebappEvent, onBackgroundTaskDelta, onSessionActivity, onSweepImmediateQueued, onMessagesConsumed } = deps
+    const { store, resolveSessionAccess, emitAccessError, onSessionAlive, onSessionEnd, onWebappEvent, onBackgroundTaskDelta, onSessionActivity, onSweepImmediateQueued, onMessagesConsumed, onPatchResponse } = deps
 
     socket.on('message', (data: unknown) => {
         const parsed = messageSchema.safeParse(data)
@@ -342,5 +351,21 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         }
 
         onSessionEnd?.(data)
+    })
+
+    socket.on('patch-response', (data: unknown) => {
+        const parsed = patchResponseSchema.safeParse(data)
+        if (!parsed.success) {
+            return
+        }
+        const sessionAccess = resolveSessionAccess(parsed.data.sid)
+        if (!sessionAccess.ok) {
+            return
+        }
+        onPatchResponse?.(parsed.data.sid, {
+            msgId: parsed.data.msgId,
+            blockIndex: parsed.data.blockIndex,
+            correctedCode: parsed.data.correctedCode
+        })
     })
 }

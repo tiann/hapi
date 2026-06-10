@@ -45,10 +45,11 @@ export type CliHandlersDeps = {
     onSessionActivity?: (sessionId: string, updatedAt: number) => void
     onSweepImmediateQueued?: (sessionId: string, now: number) => void
     onMessagesConsumed?: (sessionId: string) => void
+    onPatchResponse?: (sessionId: string, payload: { msgId: string; blockIndex: number; correctedCode: string }) => void
 }
 
 export function registerCliHandlers(socket: CliSocketWithData, deps: CliHandlersDeps): void {
-    const { io, store, rpcRegistry, terminalRegistry, onSessionAlive, onSessionEnd, onMachineAlive, onWebappEvent, onBackgroundTaskDelta, onSessionActivity, onSweepImmediateQueued, onMessagesConsumed } = deps
+    const { io, store, rpcRegistry, terminalRegistry, onSessionAlive, onSessionEnd, onMachineAlive, onWebappEvent, onBackgroundTaskDelta, onSessionActivity, onSweepImmediateQueued, onMessagesConsumed, onPatchResponse } = deps
     const terminalNamespace = io.of('/terminal')
     const namespace = typeof socket.data.namespace === 'string' ? socket.data.namespace : null
 
@@ -111,7 +112,8 @@ export function registerCliHandlers(socket: CliSocketWithData, deps: CliHandlers
         onBackgroundTaskDelta,
         onSessionActivity,
         onSweepImmediateQueued,
-        onMessagesConsumed
+        onMessagesConsumed,
+        onPatchResponse
     })
     registerMachineHandlers(socket, {
         store,

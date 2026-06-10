@@ -197,6 +197,7 @@ export interface ServerToClientEvents {
     'terminal:resize': (data: TerminalResizePayload) => void
     'terminal:close': (data: TerminalClosePayload) => void
     error: (data: { message: string; code?: SocketErrorReason; scope?: 'session' | 'machine'; id?: string }) => void
+    'patch-prompt': (data: { msgId: string; blockIndex: number; type: 'mermaid' | 'table'; failedCode: string }) => void
 }
 
 export interface ClientToServerEvents {
@@ -227,4 +228,5 @@ export interface ClientToServerEvents {
     'terminal:error': (data: TerminalErrorPayload) => void
     ping: (callback: () => void) => void
     'usage-report': (data: unknown) => void
+    'patch-response': (data: { sid: string; msgId: string; blockIndex: number; correctedCode: string }) => void
 }

@@ -370,6 +370,12 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
             status: z.string(),
             subscriptionId: z.string().optional()
         }).optional()
+    }),
+    SessionChangedSchema.extend({
+        type: z.literal('message-patched'),
+        msgId: z.string(),
+        blockIndex: z.number().int().nonnegative(),
+        correctedCode: z.string()
     })
 ])
 
