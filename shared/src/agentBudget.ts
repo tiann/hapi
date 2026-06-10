@@ -27,9 +27,11 @@ export type AgentBudgetAxisId =
     | 'weekly'
     | 'credits'
     // Flavor-specific axes (e.g. 'cursorPremiumRequests', 'geminiRpm')
-    // are permitted via plain string. Keep this loose to avoid blocking
-    // new flavor adapters on a shared enum churn.
-    | string
+    // are permitted. `string & {}` preserves IDE completions for the
+    // well-known ids while still accepting arbitrary strings at compile
+    // time (plain `string` would collapse the union and lose completions).
+    // eslint-disable-next-line @typescript-eslint/ban-types
+    | (string & {})
 
 export type AgentBudgetEffectiveState =
     // All axes well under their caps - safe to keep working.
