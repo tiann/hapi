@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentMessage } from '@/agent/types';
 import { AcpSdkBackend } from './AcpSdkBackend';
 import { buildAcpStdioSpawnOptions } from './AcpStdioTransport';
@@ -185,6 +185,48 @@ describe('AcpSdkBackend', () => {
             availableModels: fixtureModels,
             currentModelId: 'ollama/exaone:4.5-33b-q8'
         });
+    });
+
+    it('merges configOptions model variants into availableModels when both are present', async () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const backendInternal = backend as unknown as {
+            transport: { sendRequest: (method: string, params: unknown) => Promise<unknown>; close: () => Promise<void> } | null;
+        };
+        backendInternal.transport = {
+            sendRequest: async (method) => {
+                if (method === 'session/new') {
+                    return {
+                        sessionId: 'cursor-session-variants',
+                        models: {
+                            availableModels: [
+                                { modelId: 'composer-2.5[fast=true]', name: 'composer-2.5' }
+                            ],
+                            currentModelId: 'composer-2.5[fast=true]'
+                        },
+                        configOptions: [
+                            {
+                                id: 'model-opt',
+                                category: 'model',
+                                currentValue: 'composer-2.5[fast=true]',
+                                options: [
+                                    { value: 'composer-2.5[fast=true]', name: 'composer-2.5' },
+                                    { value: 'composer-2.5[fast=false]', name: 'composer-2.5' }
+                                ]
+                            }
+                        ]
+                    };
+                }
+                return null;
+            },
+            close: async () => {}
+        };
+
+        const sessionId = await backend.newSession({ cwd: '/tmp/x', mcpServers: [] });
+
+        expect(backend.getSessionModelsMetadata(sessionId)?.availableModels.map((entry) => entry.modelId).sort()).toEqual([
+            'composer-2.5[fast=false]',
+            'composer-2.5[fast=true]'
+        ]);
     });
 
     it('captures model metadata from configOptions when models block is missing', async () => {
@@ -668,6 +710,51 @@ describe('AcpSdkBackend', () => {
         expect(turnCompleteIdx).toBeGreaterThan(stragglerIdx);
     });
 
+    it('forwards usage_update to onUpdate during an active prompt', async () => {
+        backendStatics.UPDATE_QUIET_PERIOD_MS = 25;
+        backendStatics.UPDATE_DRAIN_TIMEOUT_MS = 200;
+        backendStatics.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS = 1;
+        backendStatics.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS = 50;
+        backendStatics.LATE_FLUSH_INTERVAL_MS = 5;
+        backendStatics.LATE_FLUSH_QUIET_PERIOD_MS = 10;
+        backendStatics.LATE_FLUSH_WINDOW_MS = 50;
+
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequest: (...args: unknown[]) => Promise<unknown>;
+                close: () => Promise<void>;
+            } | null;
+            handleSessionUpdate: (params: unknown) => void;
+        };
+
+        const messages: AgentMessage[] = [];
+        backendInternal.transport = {
+            sendRequest: async () => {
+                backendInternal.handleSessionUpdate({
+                    sessionId: 'session-1',
+                    update: { sessionUpdate: 'usage_update', used: 1_000, size: 200_000 }
+                });
+                await sleep(5);
+                backendInternal.handleSessionUpdate({
+                    sessionId: 'session-1',
+                    update: { sessionUpdate: 'usage_update', used: 2_500, size: 200_000 }
+                });
+                await sleep(5);
+                return { stopReason: 'end_turn' };
+            },
+            close: async () => {}
+        };
+
+        await backend.prompt('session-1', [{ type: 'text', text: 'hi' }], (m) => messages.push(m));
+
+        const realtimeUsage = messages.filter(
+            (m): m is Extract<AgentMessage, { type: 'usage' }> =>
+                m.type === 'usage' && m.contextTokens !== undefined
+        );
+        expect(realtimeUsage.map((m) => m.contextTokens)).toEqual([1_000, 2_500]);
+    });
+
     it('emits a context-only usage on finalize when the prompt response carries no usage', async () => {
         backendStatics.UPDATE_QUIET_PERIOD_MS = 25;
         backendStatics.UPDATE_DRAIN_TIMEOUT_MS = 200;
@@ -711,5 +798,140 @@ describe('AcpSdkBackend', () => {
             contextTokens: 4_200,
             contextWindow: 200_000
         });
+    });
+
+    it('authenticateIfAvailable calls _client/authenticate when method is advertised', async () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const calls: Array<{ method: string; params: unknown }> = [];
+        const backendInternal = backend as unknown as {
+            initializeResult: { protocolVersion: number; authMethods?: Array<{ id: string }> } | null;
+            transport: { sendRequest: (method: string, params: unknown) => Promise<unknown>; close: () => Promise<void> } | null;
+        };
+        backendInternal.initializeResult = {
+            protocolVersion: 1,
+            authMethods: [{ id: 'cursor_login' }]
+        };
+        backendInternal.transport = {
+            sendRequest: async (method, params) => {
+                calls.push({ method, params });
+                return null;
+            },
+            close: async () => {}
+        };
+
+        await backend.authenticateIfAvailable('cursor_login');
+
+        expect(calls).toEqual([
+            { method: '_client/authenticate', params: { methodId: 'cursor_login' } }
+        ]);
+    });
+
+    it('authenticateIfAvailable does not throw when _client/authenticate is unsupported', async () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const backendInternal = backend as unknown as {
+            initializeResult: { protocolVersion: number; authMethods?: Array<{ id: string }> } | null;
+            transport: { sendRequest: (method: string, params: unknown) => Promise<unknown>; close: () => Promise<void> } | null;
+        };
+        backendInternal.initializeResult = {
+            protocolVersion: 1,
+            authMethods: [{ id: 'cursor_login' }]
+        };
+        backendInternal.transport = {
+            sendRequest: async () => {
+                throw new Error('"Method not found": _client/authenticate');
+            },
+            close: async () => {}
+        };
+
+        await expect(backend.authenticateIfAvailable('cursor_login')).resolves.toBeUndefined();
+    });
+
+    it('authenticateIfAvailable is a no-op when method is not advertised', async () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const calls: Array<{ method: string; params: unknown }> = [];
+        const backendInternal = backend as unknown as {
+            initializeResult: { protocolVersion: number; authMethods?: Array<{ id: string }> } | null;
+            transport: { sendRequest: (method: string, params: unknown) => Promise<unknown>; close: () => Promise<void> } | null;
+        };
+        backendInternal.initializeResult = { protocolVersion: 1, authMethods: [] };
+        backendInternal.transport = {
+            sendRequest: async (method, params) => {
+                calls.push({ method, params });
+                return null;
+            },
+            close: async () => {}
+        };
+
+        await backend.authenticateIfAvailable('cursor_login');
+
+        expect(calls).toEqual([]);
+    });
+
+    it('supportsLoadSession reflects initialize agentCapabilities', () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const backendInternal = backend as unknown as {
+            initializeResult: { protocolVersion: number; agentCapabilities?: { loadSession?: boolean } } | null;
+        };
+        backendInternal.initializeResult = {
+            protocolVersion: 1,
+            agentCapabilities: { loadSession: true }
+        };
+
+        expect(backend.supportsLoadSession()).toBe(true);
+
+        backendInternal.initializeResult = {
+            protocolVersion: 1,
+            agentCapabilities: { loadSession: false }
+        };
+        expect(backend.supportsLoadSession()).toBe(false);
+    });
+
+    it('setMode falls back to session/set_config_option when session/set_mode is missing', async () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const calls: Array<{ method: string; params: unknown }> = [];
+        const backendInternal = backend as unknown as {
+            transport: { sendRequest: (method: string, params: unknown) => Promise<unknown>; registerRequestHandler: (method: string, handler: unknown) => void; close: () => Promise<void> } | null;
+            sessionConfigOptions: Map<string, Array<{ id: string; category?: string; options: Array<{ value: string }> }>>;
+        };
+        backendInternal.transport = {
+            sendRequest: async (method, params) => {
+                calls.push({ method, params });
+                if (method === 'session/set_mode') {
+                    throw new Error('method not found');
+                }
+                return null;
+            },
+            registerRequestHandler: () => {},
+            close: async () => {}
+        };
+        backendInternal.sessionConfigOptions.set('session-1', [
+            { id: 'mode-opt', category: 'mode', options: [{ value: 'agent' }, { value: 'plan' }] }
+        ]);
+
+        await backend.setMode('session-1', 'plan');
+
+        expect(calls).toEqual([
+            { method: 'session/set_mode', params: { sessionId: 'session-1', modeId: 'plan' } },
+            { method: 'session/set_config_option', params: { sessionId: 'session-1', configId: 'mode-opt', value: 'plan' } }
+        ]);
+    });
+
+    it('registerExtensionRequestHandler wires transport handlers', () => {
+        const registered = new Map<string, unknown>();
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const backendInternal = backend as unknown as {
+            transport: { registerRequestHandler: (method: string, handler: unknown) => void; close: () => Promise<void> } | null;
+        };
+        backendInternal.transport = {
+            registerRequestHandler(method, handler) {
+                registered.set(method, handler);
+            },
+            close: async () => {}
+        };
+
+        const handler = vi.fn();
+        backend.registerExtensionRequestHandler('cursor/ask_question', handler);
+
+        expect(registered.get('cursor/ask_question')).toBe(handler);
     });
 });

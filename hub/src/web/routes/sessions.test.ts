@@ -50,10 +50,17 @@ function createSession(overrides?: Partial<Session>): Session {
     }
 }
 
+type ReopenResultMock =
+    | { type: 'success'; sessionId: string; resumed: boolean; cursorSessionProtocol?: 'acp' | 'stream-json' }
+    | { type: 'error'; message: string; code: string }
+    | { type: 'incomplete'; message: string; missing: [string, ...string[]] }
+
 function createApp(session: Session, opts?: {
     resumeSession?: (sessionId: string, namespace: string, resumeOpts?: { permissionMode?: string }) => Promise<{ type: string; sessionId?: string; message?: string; code?: string }>
+    reopenSession?: (sessionId: string, namespace: string) => Promise<ReopenResultMock>
     listSlashCommands?: SyncEngine['listSlashCommands']
     getSessionExport?: (sessionId: string, session: Session) => unknown
+    sessionExists?: boolean
 }) {
     const applySessionConfigCalls: Array<[string, Record<string, unknown>]> = []
     const applySessionConfig = async (sessionId: string, config: Record<string, unknown>) => {
@@ -73,6 +80,14 @@ function createApp(session: Session, opts?: {
         ],
         currentModelId: 'ollama/exaone:4.5-33b-q8'
     })
+    const listOpencodeReasoningEffortOptionsForSession = async () => ({
+        success: true,
+        options: [
+            { value: 'low', name: 'Low' },
+            { value: 'medium', name: 'Medium' }
+        ],
+        currentValue: 'low'
+    })
     const listCursorModelsForSession = async () => ({
         success: true,
         availableModels: [
@@ -82,13 +97,23 @@ function createApp(session: Session, opts?: {
         currentModelId: 'composer-2.5'
     })
     const resumeSession = opts?.resumeSession ?? (async (sessionId: string) => ({ type: 'success', sessionId }))
+    const reopenSession = opts?.reopenSession ?? (async (sessionId: string) => ({
+        type: 'success' as const,
+        sessionId,
+        resumed: true
+    }))
+    const sessionExists = opts?.sessionExists !== false
     const engine = {
-        resolveSessionAccess: () => ({ ok: true, sessionId: session.id, session }),
+        resolveSessionAccess: () => sessionExists
+            ? { ok: true, sessionId: session.id, session }
+            : { ok: false, reason: 'not-found' },
         applySessionConfig,
         listCodexModelsForSession,
         listCursorModelsForSession,
         listOpencodeModelsForSession,
+        listOpencodeReasoningEffortOptionsForSession,
         resumeSession,
+        reopenSession,
         getSessionExport: opts?.getSessionExport ?? (() => ({
             type: 'success',
             payload: {
@@ -446,6 +471,34 @@ describe('sessions routes', () => {
         ])
     })
 
+    it('rejects model changes for local Cursor sessions', async () => {
+        const session = createSession({
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'cursor'
+            },
+            agentState: {
+                controlledByUser: true,
+                requests: {},
+                completedRequests: {}
+            }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'composer-2.5[fast=true]' })
+        })
+
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({
+            error: 'Model selection can only be changed for remote Cursor sessions'
+        })
+        expect(applySessionConfigCalls).toEqual([])
+    })
+
     it('rejects effort changes for non-Claude sessions', async () => {
         const { app, applySessionConfigCalls } = createApp(createSession())
 
@@ -497,6 +550,33 @@ describe('sessions routes', () => {
                 { id: 'gpt-5.5', displayName: 'GPT-5.5', isDefault: true }
             ]
         })
+    })
+
+    it('returns OpenCode reasoning effort options for active OpenCode sessions', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'opencode' }
+        })
+        const { app } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/opencode-reasoning-effort-options')
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            success: true,
+            options: [
+                { value: 'low', name: 'Low' },
+                { value: 'medium', name: 'Medium' }
+            ],
+            currentValue: 'low'
+        })
+    })
+
+    it('rejects opencode-reasoning-effort-options for non-OpenCode sessions', async () => {
+        const { app } = createApp(createSession())
+
+        const response = await app.request('/api/sessions/session-1/opencode-reasoning-effort-options')
+
+        expect(response.status).toBe(400)
     })
 
     it('returns OpenCode models for active OpenCode sessions', async () => {
@@ -707,6 +787,132 @@ describe('sessions routes', () => {
                 { name: 'status', source: 'builtin' }
             ]
         })
+    })
+
+    it('reopens an archived session and reports resumed=true', async () => {
+        const session = createSession({
+            active: false,
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'cursor',
+                cursorSessionId: 'cursor-thread-1',
+                cursorSessionProtocol: 'acp',
+                lifecycleState: 'archived',
+                archivedBy: 'cli',
+                archiveReason: 'User terminated'
+            }
+        })
+        const reopenCalls: Array<[string, string]> = []
+        const { app } = createApp(session, {
+            reopenSession: async (sessionId, namespace) => {
+                reopenCalls.push([sessionId, namespace])
+                return { type: 'success', sessionId, resumed: true, cursorSessionProtocol: 'acp' }
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/reopen', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({})
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            ok: true,
+            sessionId: 'session-1',
+            resumed: true,
+            cursorSessionProtocol: 'acp'
+        })
+        expect(reopenCalls).toEqual([['session-1', 'default']])
+    })
+
+    it('reopens a running session as an idempotent no-op (resumed=false)', async () => {
+        const session = createSession({ active: true })
+        const { app } = createApp(session, {
+            reopenSession: async (sessionId) => ({ type: 'success', sessionId, resumed: false })
+        })
+
+        const response = await app.request('/api/sessions/session-1/reopen', { method: 'POST' })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            ok: true,
+            sessionId: 'session-1',
+            resumed: false
+        })
+    })
+
+    it('returns 422 when a cursor archive is missing cursorSessionId', async () => {
+        const session = createSession({
+            active: false,
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'cursor',
+                lifecycleState: 'archived'
+            }
+        })
+        const { app } = createApp(session, {
+            reopenSession: async () => ({
+                type: 'incomplete',
+                message: 'Cursor session id is missing from metadata; reopen requires the original cursor chat id',
+                missing: ['cursorSessionId']
+            })
+        })
+
+        const response = await app.request('/api/sessions/session-1/reopen', { method: 'POST' })
+
+        expect(response.status).toBe(422)
+        expect(await response.json()).toEqual({
+            error: 'Cursor session id is missing from metadata; reopen requires the original cursor chat id',
+            missing: ['cursorSessionId']
+        })
+    })
+
+    it('returns 404 when reopening a non-existent session', async () => {
+        const session = createSession()
+        const { app } = createApp(session, { sessionExists: false })
+
+        const response = await app.request('/api/sessions/missing-id/reopen', { method: 'POST' })
+
+        expect(response.status).toBe(404)
+        expect(await response.json()).toEqual({ error: 'Session not found' })
+    })
+
+    it('maps engine resume_unavailable into a 409', async () => {
+        const session = createSession({ active: false })
+        const { app } = createApp(session, {
+            reopenSession: async () => ({
+                type: 'error',
+                message: 'Resume session ID unavailable',
+                code: 'resume_unavailable'
+            })
+        })
+
+        const response = await app.request('/api/sessions/session-1/reopen', { method: 'POST' })
+
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({
+            error: 'Resume session ID unavailable',
+            code: 'resume_unavailable'
+        })
+    })
+
+    it('maps engine no_machine_online into a 503', async () => {
+        const session = createSession({ active: false })
+        const { app } = createApp(session, {
+            reopenSession: async () => ({
+                type: 'error',
+                message: 'No machine online',
+                code: 'no_machine_online'
+            })
+        })
+
+        const response = await app.request('/api/sessions/session-1/reopen', { method: 'POST' })
+
+        expect(response.status).toBe(503)
+        expect((await response.json() as { code: string }).code).toBe('no_machine_online')
     })
 
     it('merges RPC and metadata slash commands without hiding built-ins', async () => {

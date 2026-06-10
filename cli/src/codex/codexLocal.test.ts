@@ -80,7 +80,12 @@ describe('codexLocal', () => {
             mcpServers: {
                 hapi: {
                     command: hapiCommandPath,
-                    args: ['mcp', '--url', 'http://127.0.0.1:63995/']
+                    args: ['mcp', '--url', 'http://127.0.0.1:63995/'],
+                    tools: {
+                        change_title: {
+                            approval_mode: 'approve'
+                        }
+                    }
                 }
             },
             sessionHook: {
@@ -108,6 +113,7 @@ describe('codexLocal', () => {
         expect(hookArg).toBeDefined();
         expect(hookArg).toContain('{ hooks = [{ type = "command", command = "');
         expect(args).toContain("mcp_servers.hapi.args=['mcp','--url','http://127.0.0.1:63995/']");
+        expect(args).toContain('mcp_servers.hapi.tools.change_title.approval_mode="approve"');
     });
 
     it('passes reasoning effort through Codex config instead of an unsupported CLI flag', async () => {

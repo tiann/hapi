@@ -7,6 +7,7 @@ import { EditView } from '@/components/ToolCard/views/EditView'
 import { AskUserQuestionView } from '@/components/ToolCard/views/AskUserQuestionView'
 import { RequestUserInputView } from '@/components/ToolCard/views/RequestUserInputView'
 import { ExitPlanModeView } from '@/components/ToolCard/views/ExitPlanModeView'
+import { CursorCreatePlanView } from '@/components/ToolCard/views/CursorCreatePlanView'
 import { MultiEditFullView, MultiEditView } from '@/components/ToolCard/views/MultiEditView'
 import { TodoWriteView } from '@/components/ToolCard/views/TodoWriteView'
 import { UpdatePlanView } from '@/components/ToolCard/views/UpdatePlanView'
@@ -88,6 +89,8 @@ export const toolViewRegistry: Record<string, ToolViewComponent> = {
     close_agent: CodexAgentView,
     AskUserQuestion: AskUserQuestionView,
     ExitPlanMode: ExitPlanModeView,
+    CursorAskQuestion: AskUserQuestionView,
+    CursorCreatePlan: CursorCreatePlanView,
     ask_user_question: AskUserQuestionView,
     exit_plan_mode: ExitPlanModeView,
     request_user_input: RequestUserInputView
@@ -108,6 +111,8 @@ export const toolFullViewRegistry: Record<string, ToolViewComponent> = {
     close_agent: CodexAgentView,
     AskUserQuestion: AskUserQuestionView,
     ExitPlanMode: ExitPlanModeView,
+    CursorAskQuestion: AskUserQuestionView,
+    CursorCreatePlan: CursorCreatePlanView,
     ask_user_question: AskUserQuestionView,
     exit_plan_mode: ExitPlanModeView,
     request_user_input: RequestUserInputView

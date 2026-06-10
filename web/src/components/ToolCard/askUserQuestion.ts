@@ -1,11 +1,15 @@
 import { isObject } from '@hapi/protocol'
 
 export type AskUserQuestionOption = {
+    /** Stable option id from agent protocol (Cursor ACP); falls back to label in UI submit. */
+    id?: string
     label: string
     description: string | null
 }
 
 export type AskUserQuestionQuestion = {
+    /** Stable question id from agent protocol (Cursor ACP); falls back to index in UI submit. */
+    id?: string
     header: string | null
     question: string
     options: AskUserQuestionOption[]
@@ -18,7 +22,9 @@ export type AskUserQuestionQuestionInfo = {
 }
 
 export function isAskUserQuestionToolName(toolName: string): boolean {
-    return toolName === 'AskUserQuestion' || toolName === 'ask_user_question'
+    return toolName === 'AskUserQuestion'
+        || toolName === 'ask_user_question'
+        || toolName === 'CursorAskQuestion'
 }
 
 export function parseAskUserQuestionInput(input: unknown): { questions: AskUserQuestionQuestion[] } {

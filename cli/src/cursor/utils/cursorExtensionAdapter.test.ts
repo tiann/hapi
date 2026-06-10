@@ -1,0 +1,190 @@
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+import type { ApiSessionClient } from '@/api/apiSession';
+import type { AgentState } from '@/api/types';
+import type { AgentMessage } from '@/agent/types';
+import type { AcpSdkBackend } from '@/agent/backends/acp';
+import { CursorExtensionAdapter } from './cursorExtensionAdapter';
+
+type ExtensionHandler = (params: unknown, requestId: string | number | null) => Promise<unknown>;
+
+function createHarness() {
+    const handlers = new Map<string, ExtensionHandler>();
+    let agentState: AgentState = { requests: {}, completedRequests: {} };
+    const messages: AgentMessage[] = [];
+
+    const session = {
+        updateAgentState(handler: (state: AgentState) => AgentState) {
+            agentState = handler(agentState);
+        }
+    } as unknown as ApiSessionClient;
+
+    const backend = {
+        registerExtensionRequestHandler(method: string, handler: ExtensionHandler) {
+            handlers.set(method, handler);
+        }
+    } as unknown as AcpSdkBackend;
+
+    const adapter = new CursorExtensionAdapter(session, backend, (message) => {
+        messages.push(message);
+    });
+
+    return {
+        handlers,
+        adapter,
+        getAgentState: () => agentState,
+        getMessages: () => messages
+    };
+}
+
+describe('CursorExtensionAdapter', () => {
+    beforeEach(() => {
+        vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
+    });
+
+    it('queues cursor/ask_question as CursorAskQuestion pending request', async () => {
+        const { handlers, getAgentState } = createHarness();
+        const handler = handlers.get('cursor/ask_question');
+        expect(handler).toBeTypeOf('function');
+
+        const pending = handler!({
+            toolCallId: 'q-1',
+            questions: [{ id: 'q1', prompt: 'Pick one', options: [{ id: 'a', label: 'A' }] }]
+        }, null);
+
+        expect(getAgentState().requests).toMatchObject({
+            'q-1': {
+                tool: 'CursorAskQuestion',
+                createdAt: 1_700_000_000_000
+            }
+        });
+
+        void pending;
+    });
+
+    it('resolves ask_question with answered outcome and formatted answers', async () => {
+        const { handlers, adapter } = createHarness();
+        const pending = handlers.get('cursor/ask_question')!({
+            toolCallId: 'q-1',
+            questions: []
+        }, null);
+
+        const handled = await adapter.handlePermissionResponse({
+            id: 'q-1',
+            approved: true,
+            answers: { q1: ['opt-a'] }
+        });
+        expect(handled).toBe(true);
+        await expect(pending).resolves.toEqual({
+            outcome: 'answered',
+            answers: [{ questionId: 'q1', selectedOptionIds: ['opt-a'] }]
+        });
+    });
+
+    it('resolves ask_question denial as cancelled', async () => {
+        const { handlers, adapter } = createHarness();
+        const pending = handlers.get('cursor/ask_question')!({ toolCallId: 'q-2' }, null);
+
+        await adapter.handlePermissionResponse({
+            id: 'q-2',
+            approved: false,
+            decision: 'denied'
+        });
+
+        await expect(pending).resolves.toEqual({ outcome: 'cancelled' });
+    });
+
+    it('resolves create_plan approval as accepted', async () => {
+        const { handlers, adapter } = createHarness();
+        const pending = handlers.get('cursor/create_plan')!({
+            toolCallId: 'plan-1',
+            plan: '# Plan'
+        }, null);
+
+        await adapter.handlePermissionResponse({
+            id: 'plan-1',
+            approved: true,
+            decision: 'approved'
+        });
+
+        await expect(pending).resolves.toEqual({ outcome: 'accepted' });
+    });
+
+    it('resolves create_plan denial as rejected', async () => {
+        const { handlers, adapter } = createHarness();
+        const pending = handlers.get('cursor/create_plan')!({ toolCallId: 'plan-2' }, null);
+
+        await adapter.handlePermissionResponse({
+            id: 'plan-2',
+            approved: false,
+            decision: 'denied'
+        });
+
+        await expect(pending).resolves.toEqual({ outcome: 'rejected' });
+    });
+
+    it('returns false from handlePermissionResponse for unrelated permission ids', async () => {
+        const { adapter } = createHarness();
+        const handled = await adapter.handlePermissionResponse({
+            id: 'perm-read',
+            approved: true
+        });
+        expect(handled).toBe(false);
+    });
+
+    it('maps cursor/update_todos to plan agent messages', async () => {
+        const { handlers, getMessages } = createHarness();
+        await handlers.get('cursor/update_todos')!({
+            todos: [
+                { content: 'Step one', status: 'in_progress' },
+                { content: 'Step two', status: 'completed' }
+            ]
+        }, null);
+
+        expect(getMessages()).toEqual([
+            {
+                type: 'plan',
+                items: [
+                    { content: 'Step one', priority: 'medium', status: 'in_progress' },
+                    { content: 'Step two', priority: 'medium', status: 'completed' }
+                ]
+            }
+        ]);
+    });
+
+    it('emits CursorTask tool call and result for cursor/task', async () => {
+        const { handlers, getMessages } = createHarness();
+        await handlers.get('cursor/task')!({
+            toolCallId: 'task-1',
+            title: 'Run tests'
+        }, null);
+
+        expect(getMessages()).toEqual([
+            expect.objectContaining({
+                type: 'tool_call',
+                id: 'task-1',
+                name: 'CursorTask'
+            }),
+            expect.objectContaining({
+                type: 'tool_result',
+                id: 'task-1',
+                status: 'completed'
+            })
+        ]);
+    });
+
+    it('cancelAll resolves pending extension requests as cancelled', async () => {
+        const { handlers, adapter, getAgentState } = createHarness();
+        const askPending = handlers.get('cursor/ask_question')!({ toolCallId: 'q-cancel' }, null);
+        const planPending = handlers.get('cursor/create_plan')!({ toolCallId: 'p-cancel' }, null);
+
+        await adapter.cancelAll('User aborted');
+
+        await expect(askPending).resolves.toEqual({ outcome: 'cancelled' });
+        await expect(planPending).resolves.toEqual({ outcome: 'cancelled' });
+        expect(getAgentState().requests).toEqual({});
+        expect(getAgentState().completedRequests).toMatchObject({
+            'q-cancel': { status: 'canceled', decision: 'abort' },
+            'p-cancel': { status: 'canceled', decision: 'abort' }
+        });
+    });
+});

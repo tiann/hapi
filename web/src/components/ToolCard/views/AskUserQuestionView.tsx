@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import type { ToolViewProps } from '@/components/ToolCard/views/_all'
 import { parseAskUserQuestionInput } from '@/components/ToolCard/askUserQuestion'
+import { isCursorAskQuestionToolName, parseCursorAskQuestionInput } from '@/components/ToolCard/cursorAskQuestion'
 import {
     AskUserQuestionOptionBody,
     askUserQuestionQuoteClassName,
@@ -115,7 +116,9 @@ function renderFreeformAnswers(
 }
 
 export function AskUserQuestionView(props: ToolViewProps) {
-    const parsed = parseAskUserQuestionInput(props.block.tool.input)
+    const parsed = isCursorAskQuestionToolName(props.block.tool.name)
+        ? parseCursorAskQuestionInput(props.block.tool.input)
+        : parseAskUserQuestionInput(props.block.tool.input)
     const questions = parsed.questions
     const rawAnswers = props.block.tool.permission?.answers ?? undefined
     const answers = normalizeAnswers(rawAnswers)

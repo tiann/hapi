@@ -61,6 +61,21 @@ describe('ScratchlistPanel', () => {
         expect(toggle.textContent).toContain('held')
     })
 
+    it('uses the chat user surface for the panel background and keeps a subtle amber border (regression guard for #812)', () => {
+        // The amber chrome was too loud as an always-visible scroll element
+        // (#812). The fix swaps the warning *fill* for the chat-user-surface
+        // tone but keeps the warning *border* as a soft accent so the panel
+        // still reads as a different destination from a normal user message.
+        // The strong amber destination signal lives on the composer Send
+        // button, not here. See PR 827 (swear01) for the styling note this
+        // test guards.
+        renderPanel()
+        const panel = screen.getByTestId('scratchlist-panel')
+        expect(panel.className).toContain('bg-[var(--app-chat-user-surface-bg)]')
+        expect(panel.className).not.toContain('bg-[var(--app-badge-warning-bg)]')
+        expect(panel.className).toContain('border-[var(--app-badge-warning-border)]')
+    })
+
     it('starts collapsed by default; clicking the header expands it', () => {
         renderPanel()
         const toggle = screen.getByRole('button', { name: /Scratchlist/ })
@@ -206,6 +221,63 @@ describe('ScratchlistPanel', () => {
         // Entry remains because the queue rejected the promotion.
         expect(screen.getByText('queue me')).toBeTruthy()
         expect(readScratchlist(SID).map((e) => e.id)).toEqual(['a'])
+    })
+
+    it('copy button writes the entry text to clipboard and shows briefly the "Copied" tooltip', async () => {
+        // Clipboard API isn't implemented in jsdom; install a mock that
+        // captures the writeText call. (web/src/lib/clipboard.ts already
+        // tries navigator.clipboard first, then falls back to execCommand.)
+        const writeText = vi.fn().mockResolvedValue(undefined)
+        Object.defineProperty(navigator, 'clipboard', {
+            value: { writeText },
+            configurable: true,
+        })
+
+        persistScratchlist(SID, [makeEntry({ id: 'a', text: 'copy me' })])
+        renderPanel()
+        expandPanel()
+
+        const copyBtn = screen.getByRole('button', { name: 'Copy to clipboard' })
+        fireEvent.click(copyBtn)
+
+        await waitFor(() => expect(writeText).toHaveBeenCalledWith('copy me'))
+
+        // After the async copy resolves, the same button (it stays in the
+        // DOM, only its label/icon flip) should advertise the success.
+        await waitFor(() =>
+            expect(screen.getByRole('button', { name: 'Copied!' })).toBeTruthy(),
+        )
+        // Entry is preserved — copy is non-destructive.
+        expect(readScratchlist(SID).map((e) => e.id)).toEqual(['a'])
+    })
+
+    it('clipboard write failure leaves the icon in the default state (no false success)', async () => {
+        // Force navigator.clipboard.writeText to reject AND make the
+        // execCommand fallback fail too, so safeCopyToClipboard throws.
+        const writeText = vi.fn().mockRejectedValue(new Error('denied'))
+        Object.defineProperty(navigator, 'clipboard', {
+            value: { writeText },
+            configurable: true,
+        })
+        // jsdom doesn't implement document.execCommand. Define a stub
+        // that returns false so safeCopyToClipboard's fallback path
+        // also fails (covering the "everything failed" branch).
+        Object.defineProperty(document, 'execCommand', {
+            value: () => false,
+            configurable: true,
+            writable: true,
+        })
+
+        persistScratchlist(SID, [makeEntry({ id: 'a', text: 'try copy' })])
+        renderPanel()
+        expandPanel()
+
+        fireEvent.click(screen.getByRole('button', { name: 'Copy to clipboard' }))
+
+        await waitFor(() => expect(writeText).toHaveBeenCalled())
+        // Should NOT flip to "Copied!" because the copy failed.
+        expect(screen.queryByRole('button', { name: 'Copied!' })).toBeNull()
+        expect(screen.getByRole('button', { name: 'Copy to clipboard' })).toBeTruthy()
     })
 
     it('persists collapse state across mounts for the same session', () => {

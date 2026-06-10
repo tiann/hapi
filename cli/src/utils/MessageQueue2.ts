@@ -220,6 +220,42 @@ export class MessageQueue2<T> {
     }
 
     /**
+     * Push a message to the beginning of the queue with isolation preserved.
+     * Mirrors `pushIsolated` but inserts at the head. Use this when requeueing a
+     * batch that was originally collected under isolation (e.g. a slash command
+     * that failed transiently and must retry without batching against sibling
+     * prompts).
+     */
+    unshiftIsolated(message: string, mode: T, localId?: string): void {
+        if (this.closed) {
+            throw new Error('Cannot unshift to closed queue');
+        }
+
+        const modeHash = this.modeHasher(mode);
+        logger.debug(`[MessageQueue2] unshiftIsolated() called with mode hash: ${modeHash}`);
+
+        this.queue.unshift({
+            message,
+            mode,
+            modeHash,
+            localId,
+            isolate: true
+        });
+
+        if (this.onMessageHandler) {
+            this.onMessageHandler(message, mode);
+        }
+
+        if (this.waiter) {
+            const waiter = this.waiter;
+            this.waiter = null;
+            waiter(true);
+        }
+
+        logger.debug(`[MessageQueue2] unshiftIsolated() completed. Queue size: ${this.queue.length}`);
+    }
+
+    /**
      * Remove the first queued message that matches the given localId.
      * Returns true if a message was removed, false if not found.
      * Best-effort: if the CLI is offline when cancel is issued, the message

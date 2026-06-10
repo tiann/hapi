@@ -125,7 +125,7 @@ describe('formatReadyEvent', () => {
 })
 
 describe('formatMessage', () => {
-    it('formats codex stream-json assistant messages for voice context', () => {
+    it('uses the supplied agent label as the assistant prefix', () => {
         const formatted = formatMessage(msg({
             id: '1',
             seq: 1,
@@ -139,10 +139,31 @@ describe('formatMessage', () => {
                     }
                 }
             }
-        }))
+        }), 'Codex')
 
-        expect(formatted).toContain('Claude Code:')
+        expect(formatted).toContain('Codex:')
+        expect(formatted).not.toContain('Claude Code')
         expect(formatted).toContain('<text>Indexed 5,018 items in the search database.</text>')
+    })
+
+    it('threads agentLabel for a different flavor (regression for #680)', () => {
+        const formatted = formatMessage(msg({
+            id: '1',
+            seq: 1,
+            content: {
+                role: 'agent',
+                content: {
+                    type: 'codex',
+                    data: {
+                        type: 'message',
+                        message: 'Cursor is generating a plan.'
+                    }
+                }
+            }
+        }), 'Cursor')
+
+        expect(formatted).toContain('Cursor:')
+        expect(formatted).not.toContain('Claude Code')
     })
 
     it('ignores codex ready and tool-call payloads', () => {
@@ -156,7 +177,7 @@ describe('formatMessage', () => {
                     data: { type: 'ready' }
                 }
             }
-        }))).toBeNull()
+        }), 'Codex')).toBeNull()
     })
 
     it('does not treat session status events as speakable assistant text', () => {
@@ -171,10 +192,10 @@ describe('formatMessage', () => {
                     data: { type: 'message', message: 'Aborting task.' }
                 }
             }
-        }))).toBeNull()
+        }), 'Codex')).toBeNull()
     })
 
-    it('preserves tool-call context for mixed text+tool_use content array', () => {
+    it('preserves tool-call context for mixed text+tool_use content array and uses the agent label', () => {
         const formatted = formatMessage(msg({
             id: '1',
             seq: 1,
@@ -185,10 +206,11 @@ describe('formatMessage', () => {
                     { type: 'tool_use', name: 'Bash', input: { command: 'ls' } }
                 ]
             }
-        }))
+        }), 'Claude')
 
         expect(formatted).toContain('Here is the result.')
-        expect(formatted).toContain('Claude Code is using Bash')
+        expect(formatted).toContain('Claude is using Bash')
+        expect(formatted).not.toContain('Claude Code is using')
     })
 })
 
@@ -209,9 +231,11 @@ describe('formatNewMessages', () => {
                     }
                 }
             })
-        ])
+        ], 'Codex')
 
         expect(update).toContain('New messages in session: session-1')
         expect(update).toContain('Local database file size is 2.43 GiB.')
+        expect(update).toContain('Codex:')
+        expect(update).not.toContain('Claude Code')
     })
 })

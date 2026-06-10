@@ -40,8 +40,7 @@ export const BUILTIN_SLASH_COMMANDS = {
         { name: 'init', description: 'Generate or refresh AGENTS.md for this project', source: 'builtin' },
     ],
     cursor: [
-        { name: 'summarize', description: 'Summarize conversation context to free window space (pass-through to Cursor agent)', source: 'builtin' },
-        { name: 'clear', description: 'Clear conversation context if supported by Cursor agent', source: 'builtin' },
+        { name: 'compress', description: 'Compress conversation context to free window space (pass-through to Cursor agent)', source: 'builtin' },
     ],
 } as const satisfies Record<string, readonly SlashCommand[]>
 

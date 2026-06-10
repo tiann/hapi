@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentBackend, PermissionRequest, PermissionResponse } from './types';
 import { PermissionAdapter } from './permissionAdapter';
@@ -52,6 +52,64 @@ function createHarness() {
     };
 
     new PermissionAdapter(session, backend);
+
+    return {
+        rpcHandlers,
+        respondCalls,
+        getAgentState: () => agentState,
+        emitPermissionRequest(request: PermissionRequest) {
+            if (!permissionHandler) {
+                throw new Error('Permission handler was not registered');
+            }
+            permissionHandler(request);
+        }
+    };
+}
+
+function createHarnessWithInterceptor(
+    intercept: (response: { id: string; approved: boolean; decision?: string }) => Promise<boolean>
+) {
+    let agentState: FakeAgentState = {
+        requests: {},
+        completedRequests: {}
+    };
+
+    const rpcHandlers = new Map<string, (params: unknown) => Promise<unknown> | unknown>();
+    let permissionHandler: ((request: PermissionRequest) => void) | null = null;
+    const respondCalls: Array<{
+        sessionId: string;
+        request: PermissionRequest;
+        response: PermissionResponse;
+    }> = [];
+
+    const session = {
+        rpcHandlerManager: {
+            registerHandler(method: string, handler: (params: unknown) => Promise<unknown> | unknown) {
+                rpcHandlers.set(method, handler);
+            }
+        },
+        updateAgentState(handler: (state: FakeAgentState) => FakeAgentState) {
+            agentState = handler(agentState);
+        }
+    } as unknown as ApiSessionClient;
+
+    const backend: AgentBackend = {
+        async initialize() {},
+        async newSession() {
+            return 'agent-session';
+        },
+        async prompt() {},
+        async cancelPrompt() {},
+        async respondToPermission(sessionId, request, response) {
+            respondCalls.push({ sessionId, request, response });
+        },
+        onPermissionRequest(handler) {
+            permissionHandler = handler;
+        },
+        async disconnect() {}
+    };
+
+    new PermissionAdapter(session, backend, undefined, intercept);
 
     return {
         rpcHandlers,
@@ -353,5 +411,51 @@ describe('PermissionAdapter', () => {
                 tool: 'Patch'
             }
         });
+    });
+
+    it('delegates permission RPC to interceptor before handling standard permissions', async () => {
+        const intercept = vi.fn(async () => true);
+        const harness = createHarnessWithInterceptor(intercept);
+
+        harness.emitPermissionRequest(buildRequest({
+            id: 'perm-intercept',
+            toolCallId: 'perm-intercept',
+            title: 'Read'
+        }));
+
+        const permissionRpc = harness.rpcHandlers.get('permission');
+        await permissionRpc?.({
+            id: 'perm-intercept',
+            approved: true,
+            decision: 'approved'
+        });
+
+        expect(intercept).toHaveBeenCalledWith({
+            id: 'perm-intercept',
+            approved: true,
+            decision: 'approved'
+        });
+        expect(harness.respondCalls).toEqual([]);
+    });
+
+    it('handles permission RPC when interceptor returns false', async () => {
+        const intercept = vi.fn(async () => false);
+        const harness = createHarnessWithInterceptor(intercept);
+
+        harness.emitPermissionRequest(buildRequest({
+            id: 'perm-standard',
+            toolCallId: 'perm-standard',
+            title: 'Read'
+        }));
+
+        const permissionRpc = harness.rpcHandlers.get('permission');
+        await permissionRpc?.({
+            id: 'perm-standard',
+            approved: true,
+            decision: 'approved'
+        });
+
+        expect(intercept).toHaveBeenCalledOnce();
+        expect(harness.respondCalls).toHaveLength(1);
     });
 });

@@ -8,10 +8,14 @@ import type { CursorSession } from './session';
 import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory';
 import { registerLocalHandoffHandler } from '@/agent/localHandoff';
 import { createModeChangeHandler, createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle';
-import { registerSessionConfigRpc } from '@/agent/sessionConfigRpc';
+import {
+    resolveNullableSessionModel,
+    resolveSessionConfigPermissionMode
+} from '@/agent/sessionConfigRpc';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import { enqueueCursorUserMessage } from './cursorUserMessageQueue';
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 
 const formatFailureReason = (message: string): string => {
     const maxLength = 200;
@@ -106,20 +110,57 @@ export async function runCursor(opts: {
         return removed;
     });
 
-    registerSessionConfigRpc<PermissionMode>({
-        rpcHandlerManager: session.rpcHandlerManager,
-        flavor: 'cursor',
-        modelMode: 'nullable',
-        appliedFallback: () => ({ permissionMode: currentPermissionMode }),
-        onApply: (config) => {
-            if (config.permissionMode !== undefined) {
-                currentPermissionMode = config.permissionMode;
+    session.rpcHandlerManager.registerHandler(RPC_METHODS.SetSessionConfig, async (payload: unknown) => {
+        if (!payload || typeof payload !== 'object') {
+            throw new Error('Invalid session config payload');
+        }
+
+        const config = payload as {
+            permissionMode?: unknown;
+            model?: unknown;
+            modelReasoningEffort?: unknown;
+        };
+        const applied: {
+            permissionMode?: PermissionMode;
+            model?: string | null;
+        } = {};
+
+        if (config.modelReasoningEffort !== undefined) {
+            throw new Error('Invalid model reasoning effort');
+        }
+
+        const nextPermissionMode = config.permissionMode !== undefined
+            ? resolveSessionConfigPermissionMode<PermissionMode>(config.permissionMode, 'cursor')
+            : undefined;
+
+        if (config.model !== undefined) {
+            const requestedModel = resolveNullableSessionModel(config.model);
+            const sessionInstance = sessionWrapperRef.current;
+            if (!sessionInstance?.canApplyModelConfig()) {
+                throw new Error('Cursor ACP session is not ready to apply model changes');
             }
-            if (config.model !== undefined) {
-                currentModel = config.model ?? undefined;
+
+            const appliedModel = await sessionInstance.applyModelConfig(requestedModel);
+            currentModel = appliedModel ?? undefined;
+            applied.model = appliedModel;
+        }
+
+        if (nextPermissionMode !== undefined) {
+            currentPermissionMode = nextPermissionMode;
+            applied.permissionMode = currentPermissionMode;
+
+            const sessionInstance = sessionWrapperRef.current;
+            if (sessionInstance) {
+                sessionInstance.setPermissionMode(currentPermissionMode);
+                sessionInstance.pushKeepAlive();
             }
-        },
-        onAfterApply: syncSessionMode
+        }
+
+        return {
+            applied: Object.keys(applied).length > 0
+                ? applied
+                : { permissionMode: currentPermissionMode }
+        };
     });
 
     let crashed = false;
@@ -136,6 +177,7 @@ export async function runCursor(opts: {
             permissionMode: currentPermissionMode,
             resumeSessionId: opts.resumeSessionId,
             model: opts.model,
+            sessionMetadata: bootstrap.metadata,
             onModeChange: createModeChangeHandler(session),
             onSessionReady: (instance) => {
                 sessionWrapperRef.current = instance;

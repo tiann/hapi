@@ -202,7 +202,13 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
                 body: {
                     t: 'update-session' as const,
                     sid,
-                    metadata: { version: result.version, value: metadata },
+                    // Broadcast the persisted (merged) value, not the pre-merge
+                    // payload — otherwise other CLIs in the session room would
+                    // overwrite their local cache with a tokenless metadata
+                    // snapshot even though the DB row was preserved.
+                    // See store.sessions.mergeSessionMetadata for the merge
+                    // contract.
+                    metadata: { version: result.version, value: result.value },
                     agentState: null
                 }
             }

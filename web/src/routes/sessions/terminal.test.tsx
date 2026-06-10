@@ -1,9 +1,29 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { I18nProvider } from '@/lib/i18n-context'
 import TerminalPage from './terminal'
 
 const writeMock = vi.fn()
+const goBackMock = vi.fn()
+const connectMock = vi.fn()
+const resizeMock = vi.fn()
+const disconnectMock = vi.fn()
+const onOutputMock = vi.fn()
+let onExitHandler: ((code: number | null, signal: string | null) => void) | null = null
+
+const onExitRegister = (handler: (code: number | null, signal: string | null) => void) => {
+    onExitHandler = handler
+}
+
+const terminalSocketState = {
+    state: { status: 'connected' as const },
+    connect: connectMock,
+    write: writeMock,
+    resize: resizeMock,
+    disconnect: disconnectMock,
+    onOutput: onOutputMock,
+    onExit: onExitRegister
+}
 
 vi.mock('@tanstack/react-router', () => ({
     useParams: () => ({ sessionId: 'session-1' })
@@ -18,7 +38,7 @@ vi.mock('@/lib/app-context', () => ({
 }))
 
 vi.mock('@/hooks/useAppGoBack', () => ({
-    useAppGoBack: () => vi.fn()
+    useAppGoBack: () => goBackMock
 }))
 
 vi.mock('@/hooks/queries/useSession', () => ({
@@ -32,15 +52,7 @@ vi.mock('@/hooks/queries/useSession', () => ({
 }))
 
 vi.mock('@/hooks/useTerminalSocket', () => ({
-    useTerminalSocket: () => ({
-        state: { status: 'connected' as const },
-        connect: vi.fn(),
-        write: writeMock,
-        resize: vi.fn(),
-        disconnect: vi.fn(),
-        onOutput: vi.fn(),
-        onExit: vi.fn()
-    })
+    useTerminalSocket: () => terminalSocketState
 }))
 
 vi.mock('@/hooks/useLongPress', () => ({
@@ -64,6 +76,7 @@ function renderWithProviders() {
 describe('TerminalPage paste behavior', () => {
     beforeEach(() => {
         vi.clearAllMocks()
+        onExitHandler = null
     })
 
     it('does not open manual paste dialog when clipboard text is empty', async () => {
@@ -96,5 +109,31 @@ describe('TerminalPage paste behavior', () => {
         fireEvent.click(screen.getAllByRole('button', { name: 'Paste' })[0])
 
         expect(await screen.findByText('Paste input')).toBeInTheDocument()
+    })
+})
+
+describe('TerminalPage exit behavior', () => {
+    beforeEach(() => {
+        vi.clearAllMocks()
+        onExitHandler = null
+    })
+
+    it('navigates back to chat shortly after the terminal exits', async () => {
+        renderWithProviders()
+
+        await waitFor(() => {
+            expect(onExitHandler).not.toBeNull()
+        })
+
+        await act(async () => {
+            onExitHandler?.(0, null)
+        })
+
+        await waitFor(
+            () => {
+                expect(goBackMock).toHaveBeenCalledTimes(1)
+            },
+            { timeout: 3000 }
+        )
     })
 })

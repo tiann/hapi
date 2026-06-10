@@ -27,7 +27,7 @@ import { useComposerDraft } from '@/hooks/useComposerDraft'
 import { useComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { Autocomplete } from '@/components/ChatInput/Autocomplete'
-import { StatusBar } from '@/components/AssistantChat/StatusBar'
+import { shouldShowComposerStatusBar, StatusBar } from '@/components/AssistantChat/StatusBar'
 import { ComposerButtons } from '@/components/AssistantChat/ComposerButtons'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { AttachmentItem } from '@/components/AssistantChat/AttachmentItem'
@@ -45,6 +45,31 @@ import type { PermissionModeOption } from './PiPermissionPanel'
 export interface TextInputState {
     text: string
     selection: { start: number; end: number }
+}
+
+/**
+ * One rejected send.  `id` is bumped per failure so two failures with the
+ * same `text` still trigger a fresh restore (the dedupe key is the id, not
+ * the text).
+ *
+ * - `text` is the original input that should be put back into the composer.
+ * - `message` is the user-facing error string we render inline.
+ * - `scheduledAt` is the absolute epoch-ms the rejected send was bound for,
+ *   or null for an immediate send.  When non-null, the composer also
+ *   restores the schedule via `onSchedule` so the operator can edit and
+ *   retry without silently downgrading a scheduled send to immediate.
+ *
+ * Owned by the route component (`router.tsx`); the composer is a pure
+ * consumer that:
+ *  1. restores the text once per `id` via `api.composer().setText`,
+ *  2. restores the schedule (if any) via `onSchedule`, and
+ *  3. shows a red ring + inline message until the user types or sends.
+ */
+export type ComposerSendError = {
+    id: number
+    text: string
+    message: string
+    scheduledAt: number | null
 }
 
 const defaultSuggestionHandler = async (): Promise<Suggestion[]> => []
@@ -71,9 +96,18 @@ export function HappyComposer(props: {
     availableModelOptions?: Array<{ value: string | null; label: string }>
     /** Full Pi model data with thinkingLevelMap for provider grouping + thinking level filtering */
     piModels?: PiModelSummary[]
+    availableModelReasoningEffortOptions?: Array<{ value: string; name?: string }>
+    /** Cursor: selected base model key (not wire id). */
+    selectedModelBase?: string | null
+    /** Cursor: selected variant sku/wire for highlight when session stores an ACP wire id. */
+    selectedModelVariant?: string | null
+    /** Cursor: effort/variant wire ids for the selected base model. */
+    modelEffortOptions?: Array<{ value: string; label: string }>
     onCollaborationModeChange?: (mode: CodexCollaborationMode) => void
     onPermissionModeChange?: (mode: PermissionMode) => void
     onModelChange?: (model: { provider: string; modelId: string } | string | null) => void
+    /** Cursor: effort/variant wire id (separate from base model change). */
+    onModelEffortChange?: (wireId: string | null) => void
     onModelReasoningEffortChange?: (modelReasoningEffort: string | null) => void
     onEffortChange?: (effort: string | null) => void
     onSwitchToRemote?: () => void
@@ -90,6 +124,17 @@ export function HappyComposer(props: {
     pendingSchedule?: PendingSchedule | null
     onSchedule?: (pending: PendingSchedule) => void
     onClearSchedule?: () => void
+    // Scratchlist drawer props - SessionChat owns the state. Threaded
+    // straight through to ComposerButtons. When undefined, the toggle
+    // button doesn't render (back-compat for any other consumer).
+    scratchlistMode?: boolean
+    scratchlistCount?: number
+    onScratchlistToggle?: () => void
+    // Set when the most recent send failed (4xx/5xx/network).  The composer
+    // restores the original text once per `sendError.id` and renders an
+    // inline error affordance until the user dismisses or starts editing.
+    sendError?: ComposerSendError | null
+    onClearSendError?: () => void
 }) {
     const { t } = useTranslation()
     const {
@@ -113,9 +158,14 @@ export function HappyComposer(props: {
         agentFlavor,
         availableModelOptions,
         piModels,
+        availableModelReasoningEffortOptions,
+        selectedModelBase,
+        selectedModelVariant,
+        modelEffortOptions,
         onCollaborationModeChange,
         onPermissionModeChange,
         onModelChange,
+        onModelEffortChange,
         onModelReasoningEffortChange,
         onEffortChange,
         onSwitchToRemote,
@@ -129,7 +179,9 @@ export function HappyComposer(props: {
         onVoiceMicToggle,
         pendingSchedule: pendingScheduleProp,
         onSchedule: onScheduleProp,
-        onClearSchedule: onClearScheduleProp
+        onClearSchedule: onClearScheduleProp,
+        sendError = null,
+        onClearSendError
     } = props
 
     // Use ?? so missing values fall back to default (destructuring defaults only handle undefined)
@@ -182,6 +234,40 @@ export function HappyComposer(props: {
     const prevControlledByUser = useRef(controlledByUser)
 
     useComposerDraft(sessionId, composerText, (text) => api.composer().setText(text))
+
+    // assistant-ui clears `composer.text` synchronously the moment a send is
+    // invoked AND `SessionChat.handleSend` clears `pendingSchedule` the
+    // moment the mutation is accepted, so by the time the mutation's
+    // onError fires both the typed text and the schedule are gone.  When
+    // the route hands us a `sendError`, splice both back in -- once per
+    // `sendError.id` so a second failure with the same text still triggers
+    // a fresh restore.
+    const restoredErrorIdRef = useRef<number | null>(null)
+    useEffect(() => {
+        if (!sendError) {
+            return
+        }
+        if (restoredErrorIdRef.current === sendError.id) {
+            return
+        }
+        restoredErrorIdRef.current = sendError.id
+        // Only restore when the composer is empty.  If the user has already
+        // typed something new (rare -- composer is `disabled` during send,
+        // but possible if isSending toggles before this effect runs), we
+        // would otherwise stomp on their fresh input.
+        if (composerText.length === 0 && sendError.text.length > 0) {
+            api.composer().setText(sendError.text)
+        }
+        // Restore the pending schedule too.  `scheduledAt` was already
+        // resolved to an absolute epoch-ms before the failed send (presets
+        // are computed at send time -- see `resolvePendingSchedule`), so
+        // we feed it back as an 'absolute' PendingSchedule.  The existing
+        // shouldAutoClearPendingSchedule effect in SessionChat handles the
+        // case where the absolute time has passed by the time we restore.
+        if (sendError.scheduledAt !== null && onScheduleProp) {
+            onScheduleProp({ type: 'absolute', ms: sendError.scheduledAt })
+        }
+    }, [sendError, api, composerText, onScheduleProp])
 
     useEffect(() => {
         setInputState((prev) => {
@@ -311,9 +397,13 @@ export function HappyComposer(props: {
     )
     const codexReasoningEffortOptions = useMemo(
         () => agentFlavor === 'codex' || agentFlavor === 'opencode'
-            ? getCodexComposerReasoningEffortOptions(modelReasoningEffort, agentFlavor)
+            ? getCodexComposerReasoningEffortOptions(
+                modelReasoningEffort,
+                agentFlavor,
+                agentFlavor === 'opencode' ? availableModelReasoningEffortOptions : undefined
+            )
             : [],
-        [agentFlavor, modelReasoningEffort]
+        [agentFlavor, modelReasoningEffort, availableModelReasoningEffortOptions]
     )
     // Pi: group models by provider for hierarchical display
     const piModelGroups = useMemo(
@@ -459,7 +549,13 @@ export function HappyComposer(props: {
             end: e.target.selectionEnd
         }
         setInputState({ text: e.target.value, selection })
-    }, [])
+        // Editing the restored text is the operator's "I'm handling it"
+        // signal -- drop the inline error so the affordance doesn't shout
+        // at them while they fix the message.
+        if (sendError && onClearSendError) {
+            onClearSendError()
+        }
+    }, [sendError, onClearSendError])
 
     const handleSelect = useCallback((e: ReactSyntheticEvent<HTMLTextAreaElement>) => {
         const target = e.target as HTMLTextAreaElement
@@ -530,6 +626,14 @@ export function HappyComposer(props: {
         haptic('light')
     }, [onModelChange, controlsDisabled, haptic])
 
+    const handleModelEffortChange = useCallback((nextWireId: string | null) => {
+        const handler = onModelEffortChange ?? onModelChange
+        if (!handler || controlsDisabled) return
+        handler(nextWireId)
+        setShowSettings(false)
+        haptic('light')
+    }, [onModelEffortChange, onModelChange, controlsDisabled, haptic])
+
     const handleModelReasoningEffortChange = useCallback((nextModelReasoningEffort: string | null) => {
         if (!onModelReasoningEffortChange || controlsDisabled) return
         onModelReasoningEffortChange(nextModelReasoningEffort)
@@ -547,6 +651,11 @@ export function HappyComposer(props: {
     const showCollaborationSettings = Boolean(onCollaborationModeChange && collaborationModeOptions.length > 0)
     const showPermissionSettings = Boolean(onPermissionModeChange && permissionModeOptions.length > 0)
     const showModelSettings = Boolean(onModelChange && supportsModelChange(agentFlavor) && (piModels && piModels.length > 0 || modelOptions.length > 0))
+    const showModelEffortSettings = Boolean(
+        (onModelEffortChange ?? onModelChange)
+        && modelEffortOptions
+        && modelEffortOptions.length > 0
+    )
     const showModelReasoningEffortSettings = Boolean(onModelReasoningEffortChange && codexReasoningEffortOptions.length > 0)
     // For Pi: hide effort when selected model explicitly has reasoning: false
     const piEffortHidden = piModels && selectedPiModel && selectedPiModel.reasoning === false
@@ -555,6 +664,7 @@ export function HappyComposer(props: {
         showCollaborationSettings
         || showPermissionSettings
         || showModelSettings
+        || showModelEffortSettings
         || showModelReasoningEffortSettings
         || showEffortSettings
     )
@@ -568,6 +678,11 @@ export function HappyComposer(props: {
         // and async inactive-session resume failure. Clearing here unconditionally
         // would race ahead of that check and drop the user's schedule on every
         // rejected send path.
+        //
+        // The inline send-error affordance is intentionally NOT cleared here:
+        // the route-level state (`onSuccess`/`onError` in router.tsx) replaces
+        // or clears it based on the actual mutation result, so the user keeps
+        // the error context while the new attempt is in flight.
     }, [api])
 
     // Pi: selected model info for UI labels and thinking level filtering
@@ -669,7 +784,7 @@ export function HappyComposer(props: {
         }
 
         // Non-Pi flavors: original unified gear menu
-        if (showSettings && (showCollaborationSettings || showPermissionSettings || showModelSettings || showModelReasoningEffortSettings || showEffortSettings)) {
+        if (showSettings && (showCollaborationSettings || showPermissionSettings || showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings || showEffortSettings)) {
             return (
                 <div className="absolute bottom-[100%] mb-2 w-full">
                     <FloatingOverlay maxHeight={320}>
@@ -751,7 +866,7 @@ export function HappyComposer(props: {
                             </div>
                         ) : null}
 
-                        {(showCollaborationSettings || showPermissionSettings) && (showModelSettings || showModelReasoningEffortSettings || showEffortSettings) ? (
+                        {(showCollaborationSettings || showPermissionSettings) && (showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings || showEffortSettings) ? (
                             <div className="mx-3 h-px bg-[var(--app-divider)]" />
                         ) : null}
 
@@ -798,7 +913,11 @@ export function HappyComposer(props: {
                                         </div>
                                     ))
                                 ) : (
-                                    modelOptions.map((option) => (
+                                    modelOptions.map((option) => {
+                                        const isSelected = selectedModelBase !== undefined
+                                            ? selectedModelBase === option.value
+                                            : model === option.value
+                                        return (
                                         <button
                                             key={option.value ?? 'auto'}
                                             type="button"
@@ -813,25 +932,26 @@ export function HappyComposer(props: {
                                         >
                                             <div
                                                 className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
-                                                    model === option.value
+                                                    isSelected
                                                         ? 'border-[var(--app-link)]'
                                                         : 'border-[var(--app-hint)]'
-                                            }`}
+                                                }`}
                                             >
-                                                {model === option.value && (
+                                                {isSelected && (
                                                     <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
                                                 )}
                                             </div>
-                                            <span className={model === option.value ? 'text-[var(--app-link)]' : ''}>
+                                            <span className={isSelected ? 'text-[var(--app-link)]' : ''}>
                                                 {option.label}
                                             </span>
                                         </button>
-                                    ))
+                                        )
+                                    })
                                 )}
                             </div>
                         ) : null}
 
-                        {(showModelSettings || showModelReasoningEffortSettings) && showEffortSettings ? (
+                        {(showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings) && showEffortSettings ? (
                             <div className="mx-3 h-px bg-[var(--app-divider)]" />
                         ) : null}
 
@@ -943,6 +1063,10 @@ export function HappyComposer(props: {
         showCollaborationSettings,
         showPermissionSettings,
         showModelSettings,
+        showModelEffortSettings,
+        modelEffortOptions,
+        selectedModelBase,
+        selectedModelVariant,
         showModelReasoningEffortSettings,
         showEffortSettings,
         modelOptions,
@@ -973,24 +1097,40 @@ export function HappyComposer(props: {
                 <ComposerPrimitive.Root className="relative" onSubmit={handleSubmit}>
                     {overlays}
 
-                    <StatusBar
-                        active={active}
-                        thinking={thinking}
-                        agentState={agentState}
-                        backgroundTaskCount={backgroundTaskCount}
-                        contextSize={contextSize}
-                        contextCacheRead={contextCacheRead}
-                        contextWindow={contextWindow}
-                        model={model}
-                        modelReasoningEffort={modelReasoningEffort}
-                        permissionMode={permissionMode}
-                        collaborationMode={collaborationMode}
-                        threadGoal={threadGoal}
-                        agentFlavor={agentFlavor}
-                        voiceStatus={voiceStatus}
-                    />
+                    {shouldShowComposerStatusBar(agentFlavor) ? (
+                        <StatusBar
+                            active={active}
+                            thinking={thinking}
+                            agentState={agentState}
+                            backgroundTaskCount={backgroundTaskCount}
+                            contextSize={contextSize}
+                            contextCacheRead={contextCacheRead}
+                            contextWindow={contextWindow}
+                            model={model}
+                            modelReasoningEffort={modelReasoningEffort}
+                            permissionMode={permissionMode}
+                            collaborationMode={collaborationMode}
+                            threadGoal={threadGoal}
+                            agentFlavor={agentFlavor}
+                            voiceStatus={voiceStatus}
+                        />
+                    ) : null}
 
-                    <div className="overflow-hidden rounded-[20px] bg-[var(--app-secondary-bg)]">
+                    {sendError ? (
+                        <div
+                            role="alert"
+                            data-testid="composer-send-error"
+                            className="mb-2 rounded-md bg-[var(--app-subtle-bg)] px-3 py-2 text-sm text-red-600"
+                        >
+                            {sendError.message}
+                        </div>
+                    ) : null}
+
+                    <div
+                        className={`overflow-hidden rounded-[20px] bg-[var(--app-secondary-bg)] ${
+                            sendError ? 'ring-1 ring-red-500' : ''
+                        }`}
+                    >
                         {attachments.length > 0 ? (
                             <div className="flex flex-wrap gap-2 px-4 pt-3">
                                 <ComposerPrimitive.Attachments components={{ Attachment: AttachmentItem }} />
@@ -1049,6 +1189,9 @@ export function HappyComposer(props: {
                             piThinkingDisabled={controlsDisabled || !piHasModels || !selectedPiModel || selectedPiModel.reasoning === false}
                             piThinkingOpen={showPiThinkingPanel}
                             onPiThinkingToggle={handlePiThinkingToggle}
+                            scratchlistMode={props.scratchlistMode}
+                            scratchlistCount={props.scratchlistCount}
+                            onScratchlistToggle={props.onScratchlistToggle}
                         />
                     </div>
                 </ComposerPrimitive.Root>

@@ -43,12 +43,19 @@ export class PermissionAdapter {
     constructor(
         private readonly session: ApiSessionClient,
         private readonly backend: AgentBackend,
-        private readonly getPermissionMode?: () => SessionPermissionMode | undefined
+        private readonly getPermissionMode?: () => SessionPermissionMode | undefined,
+        private readonly interceptPermissionResponse?: (response: PermissionResponseMessage) => Promise<boolean>
     ) {
         this.backend.onPermissionRequest((request) => this.handlePermissionRequest(request));
         this.session.rpcHandlerManager.registerHandler<PermissionResponseMessage, void>(
             RPC_METHODS.Permission,
             async (response) => {
+                if (this.interceptPermissionResponse) {
+                    const handled = await this.interceptPermissionResponse(response);
+                    if (handled) {
+                        return;
+                    }
+                }
                 await this.handlePermissionResponse(response);
             }
         );

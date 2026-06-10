@@ -47,6 +47,37 @@ describe('appServerConfig', () => {
         expect(params.approvalPolicy).toBe('on-request');
     });
 
+    it('passes MCP per-tool approval config through thread config', () => {
+        const params = buildThreadStartParams({
+            cwd: '/workspace/project',
+            mode: { permissionMode: 'default', collaborationMode: 'default' },
+            mcpServers: {
+                hapi: {
+                    command: 'node',
+                    args: ['mcp'],
+                    tools: {
+                        change_title: {
+                            approval_mode: 'approve'
+                        }
+                    }
+                }
+            }
+        });
+
+        expect(params.config).toEqual({
+            'mcp_servers.hapi': {
+                command: 'node',
+                args: ['mcp'],
+                tools: {
+                    change_title: {
+                        approval_mode: 'approve'
+                    }
+                }
+            },
+            developer_instructions: codexSystemPrompt
+        });
+    });
+
     it('ignores CLI overrides when permission mode is not default', () => {
         const params = buildThreadStartParams({
             cwd: '/workspace/project',

@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionSummary } from '@/types/api'
-import { deduplicateSessionsByAgentId, expandSelectedSessionCollapseOverrides, getVisibleSessionPreview, normalizeSearch, sessionMatchesQuery } from './SessionList'
+import {
+    deduplicateSessionsByAgentId,
+    expandSelectedSessionCollapseOverrides,
+    getSessionDedupKey,
+    getVisibleSessionPreview,
+    isSidebarEmptySessionStub,
+    normalizeSearch,
+    prepareSidebarSessions,
+    sessionMatchesQuery,
+    shouldShowSessionInSidebar
+} from './SessionList'
 
 function makeSession(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
     return {
@@ -71,6 +81,25 @@ describe('deduplicateSessionsByAgentId', () => {
         expect(result).toHaveLength(3)
     })
 
+    it('deduplicates cursor sessions by summary agentSessionId', () => {
+        const sessions = [
+            makeSession({
+                id: 'a',
+                active: true,
+                metadata: { path: '/p', flavor: 'cursor', agentSessionId: 'acp-thread-1' },
+                updatedAt: 100
+            }),
+            makeSession({
+                id: 'b',
+                metadata: { path: '/p', flavor: 'cursor', agentSessionId: 'acp-thread-1' },
+                updatedAt: 200
+            })
+        ]
+        const result = deduplicateSessionsByAgentId(sessions)
+        expect(result).toHaveLength(1)
+        expect(result[0].id).toBe('a')
+    })
+
     it('deduplicates independently across different agentSessionIds', () => {
         const sessions = [
             makeSession({ id: 'a', metadata: { path: '/p', agentSessionId: 'thread-1' }, updatedAt: 100 }),
@@ -82,8 +111,115 @@ describe('deduplicateSessionsByAgentId', () => {
         expect(result).toHaveLength(2)
         expect(result.map(s => s.id).sort()).toEqual(['b', 'd'])
     })
+
+    it('does not dedupe across flavors sharing the same flattened agentSessionId', () => {
+        const sessions = [
+            makeSession({
+                id: 'codex',
+                metadata: { path: '/p', flavor: 'codex', agentSessionId: 'stale-shared-id' },
+                updatedAt: 100
+            }),
+            makeSession({
+                id: 'cursor',
+                metadata: { path: '/p', flavor: 'cursor', agentSessionId: 'stale-shared-id' },
+                updatedAt: 200
+            })
+        ]
+
+        expect(getSessionDedupKey(sessions[0])).toBe('codex:stale-shared-id')
+        expect(getSessionDedupKey(sessions[1])).toBe('cursor:stale-shared-id')
+        expect(deduplicateSessionsByAgentId(sessions).map(session => session.id).sort()).toEqual(['codex', 'cursor'])
+        expect(prepareSidebarSessions(sessions).map(session => session.id).sort()).toEqual(['codex', 'cursor'])
+    })
 })
 
+
+describe('isSidebarEmptySessionStub', () => {
+    it('treats inactive sessions without agent id or title as stubs', () => {
+        expect(isSidebarEmptySessionStub(makeSession({
+            id: 'stub',
+            metadata: { path: '/work/hapi' }
+        }))).toBe(true)
+    })
+
+    it('does not treat active sessions as stubs', () => {
+        expect(isSidebarEmptySessionStub(makeSession({
+            id: 'live',
+            active: true,
+            metadata: { path: '/work/hapi' }
+        }))).toBe(false)
+    })
+
+    it('does not treat sessions with agentSessionId as stubs', () => {
+        expect(isSidebarEmptySessionStub(makeSession({
+            id: 'resume',
+            metadata: { path: '/work/hapi', agentSessionId: 'thread-1' }
+        }))).toBe(false)
+    })
+
+    it('does not treat sessions with summary text as stubs', () => {
+        expect(isSidebarEmptySessionStub(makeSession({
+            id: 'titled',
+            metadata: { path: '/work/hapi', summary: { text: 'Fix sidebar' } }
+        }))).toBe(false)
+    })
+})
+
+describe('prepareSidebarSessions', () => {
+    it('hides inactive empty stubs but keeps real sessions', () => {
+        const sessions = [
+            makeSession({ id: 'stub', metadata: { path: '/work/hapi' } }),
+            makeSession({
+                id: 'real',
+                metadata: { path: '/work/hapi', agentSessionId: 'thread-1', summary: { text: 'Real chat' } }
+            })
+        ]
+
+        const result = prepareSidebarSessions(sessions)
+        expect(result.map(session => session.id)).toEqual(['real'])
+    })
+
+    it('keeps the selected inactive stub visible', () => {
+        const sessions = [
+            makeSession({ id: 'stub', metadata: { path: '/work/hapi' } }),
+            makeSession({
+                id: 'real',
+                metadata: { path: '/work/hapi', agentSessionId: 'thread-1' }
+            })
+        ]
+
+        const result = prepareSidebarSessions(sessions, 'stub')
+        expect(result.map(session => session.id).sort()).toEqual(['real', 'stub'])
+    })
+
+    it('deduplicates before filtering stubs', () => {
+        const sessions = [
+            makeSession({ id: 'stub', metadata: { path: '/work/hapi' } }),
+            makeSession({
+                id: 'older',
+                metadata: { path: '/work/hapi', agentSessionId: 'thread-1' },
+                updatedAt: 100
+            }),
+            makeSession({
+                id: 'newer',
+                metadata: { path: '/work/hapi', agentSessionId: 'thread-1' },
+                updatedAt: 200
+            })
+        ]
+
+        const result = prepareSidebarSessions(sessions)
+        expect(result.map(session => session.id)).toEqual(['newer'])
+    })
+})
+
+describe('shouldShowSessionInSidebar', () => {
+    it('always shows active and selected sessions', () => {
+        const stub = makeSession({ id: 'stub', metadata: { path: '/work/hapi' } })
+        expect(shouldShowSessionInSidebar(stub)).toBe(false)
+        expect(shouldShowSessionInSidebar(stub, 'stub')).toBe(true)
+        expect(shouldShowSessionInSidebar({ ...stub, active: true })).toBe(true)
+    })
+})
 
 describe('session list search helpers', () => {
     it('normalizes whitespace and case before filtering', () => {

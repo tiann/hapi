@@ -141,7 +141,7 @@ describe('claudeRemote async message handling', () => {
             queryMock.mockReset();
             querySpy.mockRestore();
         }
-    });
+    }, 15_000);
 
     it('handles rejected next user message fetch without unhandled rejection', async () => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);

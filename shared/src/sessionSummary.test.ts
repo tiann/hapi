@@ -74,4 +74,16 @@ describe('toSessionSummary', () => {
         expect(summary.backgroundTaskCount).toBe(2)
         expect(summary.futureScheduledMessageCount).toBe(0)
     })
+
+    it('includes lifecycleState in summary metadata', () => {
+        const summary = toSessionSummary(makeSession({
+            metadata: {
+                path: '/proj',
+                host: 'local',
+                lifecycleState: 'archived'
+            }
+        }))
+
+        expect(summary.metadata?.lifecycleState).toBe('archived')
+    })
 })

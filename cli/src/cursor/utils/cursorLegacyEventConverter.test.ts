@@ -1,16 +1,11 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
     parseCursorEvent,
     convertCursorEventToAgentMessage,
-    __resetCursorEventConverterStateForTests,
     type CursorStreamEvent
-} from './cursorEventConverter';
+} from './cursorLegacyEventConverter';
 
-describe('cursorEventConverter', () => {
-    beforeEach(() => {
-        __resetCursorEventConverterStateForTests();
-    });
-
+describe('cursorLegacyEventConverter', () => {
     describe('parseCursorEvent', () => {
         it('parses system init event', () => {
             const line =
@@ -64,7 +59,7 @@ describe('cursorEventConverter', () => {
             expect(msg).toEqual({ type: 'turn_complete', stopReason: 'success' });
         });
 
-        it('passes through a normal tool result unchanged (read_file)', () => {
+        it('passes through a normal read_file result unchanged', () => {
             const completedEvent = {
                 type: 'tool_call',
                 subtype: 'completed',
@@ -88,16 +83,7 @@ describe('cursorEventConverter', () => {
     });
 
     describe('#784 transitional safety: AskQuestion synthetic-skip intercept', () => {
-        it('rewrites a tool_call result containing the synthetic skip string to a no_input_surface failure', () => {
-            const startedEvent = {
-                type: 'tool_call',
-                subtype: 'started',
-                call_id: 'q1',
-                session_id: 's1',
-                tool_call: { function: { name: 'AskQuestion', arguments: '{"q":"..."}' } }
-            } as CursorStreamEvent;
-            convertCursorEventToAgentMessage(startedEvent);
-
+        it('rewrites a function-shaped AskQuestion whose result contains the synthetic marker', () => {
             const completedEvent = {
                 type: 'tool_call',
                 subtype: 'completed',
@@ -124,7 +110,7 @@ describe('cursorEventConverter', () => {
             expect(output.message).toMatch(/Re-prompt in plain text/);
         });
 
-        it('matches the synthetic-skip string even when nested deep inside the tool_call payload', () => {
+        it('matches the synthetic-skip string even when nested deep inside the function payload', () => {
             const completedEvent = {
                 type: 'tool_call',
                 subtype: 'completed',
@@ -145,59 +131,30 @@ describe('cursorEventConverter', () => {
             expect(msg).toMatchObject({ type: 'tool_result', id: 'q2', status: 'failed' });
         });
 
-        it('rewrites a sub-500ms AskQuestion completion with a trivial result even without the synthetic string', () => {
-            const startedEvent = {
-                type: 'tool_call',
-                subtype: 'started',
-                call_id: 'q3',
-                session_id: 's1',
-                tool_call: { function: { name: 'AskQuestion', arguments: '{}' } }
-            } as CursorStreamEvent;
-            convertCursorEventToAgentMessage(startedEvent);
-
+        // The marker is detected on the raw `tool_call` payload, not on
+        // `extractToolResult`'s output. That matters for stream-json shapes
+        // the converter labels `name=unknown` (notably the `toolu_vrtx_*`
+        // Anthropic Vertex tool calls) where extractToolResult returns `{}`
+        // and would otherwise hide the marker.
+        it('catches the marker in a name=unknown tool whose extractToolResult would return {}', () => {
             const completedEvent = {
                 type: 'tool_call',
                 subtype: 'completed',
                 call_id: 'q3',
                 session_id: 's1',
-                tool_call: { function: { name: 'AskQuestion', arguments: '{}' } }
+                tool_call: {
+                    id: 'toolu_vrtx_01ALz3pUoYRHEi8jg4hxurGp',
+                    fabricated_response: {
+                        text: 'Questions skipped by the user, continue with the information you already have'
+                    }
+                }
             } as CursorStreamEvent;
             const msg = convertCursorEventToAgentMessage(completedEvent);
             expect(msg).toMatchObject({ type: 'tool_result', id: 'q3', status: 'failed' });
             expect((msg as { output: { kind: string } }).output.kind).toBe('no_input_surface');
         });
 
-        it('rewrites a sub-500ms completion when the converter falls back to name=unknown', () => {
-            const startedEvent = {
-                type: 'tool_call',
-                subtype: 'started',
-                call_id: 'q4',
-                session_id: 's1',
-                tool_call: { function: {} }
-            } as CursorStreamEvent;
-            convertCursorEventToAgentMessage(startedEvent);
-
-            const completedEvent = {
-                type: 'tool_call',
-                subtype: 'completed',
-                call_id: 'q4',
-                session_id: 's1',
-                tool_call: { function: {} }
-            } as CursorStreamEvent;
-            const msg = convertCursorEventToAgentMessage(completedEvent);
-            expect(msg).toMatchObject({ type: 'tool_result', id: 'q4', status: 'failed' });
-        });
-
         it('does NOT rewrite a normal function-tool completion with a real result', () => {
-            const startedEvent = {
-                type: 'tool_call',
-                subtype: 'started',
-                call_id: 'r2',
-                session_id: 's1',
-                tool_call: { function: { name: 'MyCustomTool', arguments: '{}' } }
-            } as CursorStreamEvent;
-            convertCursorEventToAgentMessage(startedEvent);
-
             const completedEvent = {
                 type: 'tool_call',
                 subtype: 'completed',
@@ -224,11 +181,11 @@ describe('cursorEventConverter', () => {
             expect(msg).toMatchObject({ type: 'tool_result', id: 'rw1', status: 'completed' });
         });
 
-        // Regression test for the false positive flagged on PR #801 by the
-        // HAPI auto-review bot: this PR adds the literal synthetic-skip
-        // marker to docs/guide/cursor.md, so a Cursor read_file of that
-        // file would surface the marker inside readToolCall.result.content.
-        // The intercept must NOT rewrite that as a no_input_surface failure.
+        // Regression test: docs/guide/cursor.md contains the literal
+        // synthetic-skip marker, so a Cursor read_file of that file would
+        // surface the marker inside readToolCall.result.content. The
+        // intercept must NOT rewrite that as a no_input_surface failure
+        // because the gate excludes read_file tool calls.
         it('does NOT rewrite a read_file result whose content contains the synthetic marker', () => {
             const completedEvent = {
                 type: 'tool_call',
@@ -284,33 +241,14 @@ describe('cursorEventConverter', () => {
             });
         });
 
-        // Regression test for the second Major finding from the HAPI bot on
-        // PR #801: a legitimate AskQuestion whose prompt text (carried in
-        // `function.arguments`) quotes the synthetic-skip marker - e.g. an
-        // agent debugging this exact bug - must NOT be rewritten when the
-        // user has actually answered. The marker check must look only at the
-        // extracted result, never the agent's input arguments.
-        it('does NOT rewrite an AskQuestion whose arguments quote the marker but whose result is a real answer', async () => {
-            const startedEvent = {
-                type: 'tool_call',
-                subtype: 'started',
-                call_id: 'meta1',
-                session_id: 's1',
-                tool_call: {
-                    function: {
-                        name: 'AskQuestion',
-                        arguments:
-                            '{"prompt":"Do you want to handle the case where cursor-agent returns: Questions skipped by the user, continue with the information you already have"}'
-                    }
-                }
-            } as CursorStreamEvent;
-            convertCursorEventToAgentMessage(startedEvent);
-
-            // Wait past the synthetic latency threshold so the timing
-            // heuristic does not apply - this is a real user answer, not a
-            // zero-latency fabrication.
-            await new Promise((resolve) => setTimeout(resolve, 550));
-
+        // Regression for the second Major finding from the HAPI bot on
+        // PR #801: a legitimate AskQuestion whose prompt text (carried
+        // in `function.arguments`) quotes the synthetic-skip marker -
+        // e.g. an agent debugging this exact bug - must NOT be rewritten
+        // when the user has actually answered. The marker scan must look
+        // only at the response portion of the tool_call, never at the
+        // agent's input arguments.
+        it('does NOT rewrite an AskQuestion whose arguments quote the marker but whose result is a real answer', () => {
             const completedEvent = {
                 type: 'tool_call',
                 subtype: 'completed',
@@ -332,9 +270,6 @@ describe('cursorEventConverter', () => {
                 status: 'completed'
             });
             expect((msg as { output: unknown }).output).toBe('yes, please add the intercept');
-            expect((msg as { output: unknown }).output).not.toMatchObject({
-                kind: 'no_input_surface'
-            });
         });
 
         it('does NOT rewrite a non-AskQuestion function tool whose result happens to contain the marker text', () => {
@@ -360,27 +295,115 @@ describe('cursorEventConverter', () => {
             });
         });
 
-        it('does NOT rewrite an AskQuestion completion that took longer than the synthetic threshold', async () => {
-            const startedEvent = {
-                type: 'tool_call',
-                subtype: 'started',
-                call_id: 'q5',
-                session_id: 's1',
-                tool_call: { function: { name: 'AskQuestion', arguments: '{}' } }
-            } as CursorStreamEvent;
-            convertCursorEventToAgentMessage(startedEvent);
-
-            await new Promise((resolve) => setTimeout(resolve, 550));
-
+        // Regression for the real-traffic false positives observed on PR #801
+        // (see https://github.com/tiann/hapi/issues/784 follow-up data): a
+        // legacy stream-json session carrying Anthropic Vertex Claude tool
+        // calls surfaces every one of them as `name=unknown` with an empty
+        // extracted result. The earlier timing-only defense-in-depth
+        // rewrote those as `no_input_surface` failures. The marker-only
+        // path must let them pass through normally.
+        it('does NOT rewrite a fast name=unknown tool call that lacks the synthetic marker', () => {
             const completedEvent = {
                 type: 'tool_call',
                 subtype: 'completed',
-                call_id: 'q5',
+                call_id: 'toolu_vrtx_01ALz3pUoYRHEi8jg4hxurGp',
+                session_id: 's1',
+                tool_call: {
+                    id: 'toolu_vrtx_01ALz3pUoYRHEi8jg4hxurGp',
+                    name: 'TodoWrite',
+                    input: { todos: [] }
+                }
+            } as CursorStreamEvent;
+            const msg = convertCursorEventToAgentMessage(completedEvent);
+            expect(msg).toMatchObject({
+                type: 'tool_result',
+                id: 'toolu_vrtx_01ALz3pUoYRHEi8jg4hxurGp',
+                status: 'completed'
+            });
+            expect((msg as { output: unknown }).output).not.toMatchObject({
+                kind: 'no_input_surface'
+            });
+        });
+
+        // Regression for the Codex P2 finding on the fork-stage review
+        // of this PR (heavygee/hapi#35): an Anthropic tool_use shape
+        // `{id, name, input, ...}` with a recognizable top-level `name`
+        // must be gate-rejected by the AskQuestion-name set, AND its
+        // agent-controlled `input` field must be excluded from the
+        // marker scan even if the gate were to pass. Concrete case:
+        // an agent debugging or documenting this very bug whose
+        // TodoWrite payload quotes the synthetic-skip marker verbatim.
+        it('does NOT rewrite an Anthropic tool_use shape whose input quotes the marker (Codex P2 regression)', () => {
+            const completedEvent = {
+                type: 'tool_call',
+                subtype: 'completed',
+                call_id: 'toolu_vrtx_meta',
+                session_id: 's1',
+                tool_call: {
+                    id: 'toolu_vrtx_meta',
+                    name: 'TodoWrite',
+                    input: {
+                        todos: [
+                            {
+                                content:
+                                    'Document Questions skipped by the user, continue with the information you already have'
+                            }
+                        ]
+                    }
+                }
+            } as CursorStreamEvent;
+            const msg = convertCursorEventToAgentMessage(completedEvent);
+            expect(msg).toMatchObject({
+                type: 'tool_result',
+                id: 'toolu_vrtx_meta',
+                status: 'completed'
+            });
+            expect((msg as { output: unknown }).output).not.toMatchObject({
+                kind: 'no_input_surface'
+            });
+        });
+
+        // Defense-in-depth companion to the above: even if a tool shape
+        // somehow reached this code path with `name=unknown` (no top-
+        // level name field) and the marker buried inside its `input`,
+        // the AGENT_INPUT_KEYS exclusion must still suppress the
+        // rewrite - the marker only counts as fabricated when it lives
+        // outside agent-controlled input fields.
+        it('does NOT rewrite a name=unknown shape whose marker lives only inside agent input', () => {
+            const completedEvent = {
+                type: 'tool_call',
+                subtype: 'completed',
+                call_id: 'input1',
+                session_id: 's1',
+                tool_call: {
+                    id: 'toolu_vrtx_input',
+                    input: {
+                        prompt:
+                            'Quoting bug: Questions skipped by the user, continue with the information you already have'
+                    }
+                }
+            } as CursorStreamEvent;
+            const msg = convertCursorEventToAgentMessage(completedEvent);
+            expect(msg).toMatchObject({
+                type: 'tool_result',
+                id: 'input1',
+                status: 'completed'
+            });
+        });
+
+        it('does NOT rewrite an empty function-shaped AskQuestion that lacks the marker', () => {
+            const completedEvent = {
+                type: 'tool_call',
+                subtype: 'completed',
+                call_id: 'q4',
                 session_id: 's1',
                 tool_call: { function: { name: 'AskQuestion', arguments: '{}' } }
             } as CursorStreamEvent;
             const msg = convertCursorEventToAgentMessage(completedEvent);
-            expect(msg).toMatchObject({ type: 'tool_result', id: 'q5', status: 'completed' });
+            expect(msg).toMatchObject({ type: 'tool_result', id: 'q4', status: 'completed' });
+            expect((msg as { output: unknown }).output).not.toMatchObject({
+                kind: 'no_input_surface'
+            });
         });
     });
 });

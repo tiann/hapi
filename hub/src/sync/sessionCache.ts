@@ -7,6 +7,7 @@ import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
 import { extractBackgroundTaskDelta } from './backgroundTasks'
 
 const QUEUED_MESSAGE_THINKING_GRACE_MS = 15_000
+type RuntimeConfigKey = 'permissionMode' | 'model' | 'modelReasoningEffort' | 'effort' | 'collaborationMode'
 
 export class SessionCache {
     private readonly sessions: Map<string, Session> = new Map()
@@ -15,6 +16,7 @@ export class SessionCache {
     private readonly deduplicateInProgress: Set<string> = new Set()
     private readonly deduplicatePending: Set<string> = new Set()
     private readonly pendingThinkingUntilBySessionId: Map<string, number> = new Map()
+    private readonly runtimeConfigUpdatedAtBySessionId: Map<string, Partial<Record<RuntimeConfigKey, number>>> = new Map()
 
     constructor(
         private readonly store: Store,
@@ -79,6 +81,7 @@ export class SessionCache {
         if (!stored) {
             const existed = this.sessions.delete(sessionId)
             this.pendingThinkingUntilBySessionId.delete(sessionId)
+            this.runtimeConfigUpdatedAtBySessionId.delete(sessionId)
             if (existed) {
                 this.publisher.emit({ type: 'session-removed', sessionId })
             }
@@ -197,11 +200,11 @@ export class SessionCache {
         if (requestedThinking || pendingThinkingUntil <= hubNow) {
             this.pendingThinkingUntilBySessionId.delete(session.id)
         }
-        if (payload.permissionMode !== undefined) {
+        if (payload.permissionMode !== undefined && !this.isStaleRuntimeKeepAlive(session.id, 'permissionMode', t)) {
             session.permissionMode = payload.permissionMode
             this.persistPreferredPermissionMode(session, payload.permissionMode)
         }
-        if (payload.model !== undefined) {
+        if (payload.model !== undefined && !this.isStaleRuntimeKeepAlive(session.id, 'model', t)) {
             if (payload.model !== session.model) {
                 this.store.sessions.setSessionModel(payload.sid, payload.model, session.namespace, {
                     touchUpdatedAt: false
@@ -209,7 +212,7 @@ export class SessionCache {
             }
             session.model = payload.model
         }
-        if (payload.modelReasoningEffort !== undefined) {
+        if (payload.modelReasoningEffort !== undefined && !this.isStaleRuntimeKeepAlive(session.id, 'modelReasoningEffort', t)) {
             if (payload.modelReasoningEffort !== session.modelReasoningEffort) {
                 this.store.sessions.setSessionModelReasoningEffort(payload.sid, payload.modelReasoningEffort, session.namespace, {
                     touchUpdatedAt: false
@@ -217,7 +220,7 @@ export class SessionCache {
             }
             session.modelReasoningEffort = payload.modelReasoningEffort
         }
-        if (payload.effort !== undefined) {
+        if (payload.effort !== undefined && !this.isStaleRuntimeKeepAlive(session.id, 'effort', t)) {
             if (payload.effort !== session.effort) {
                 this.store.sessions.setSessionEffort(payload.sid, payload.effort, session.namespace, {
                     touchUpdatedAt: false
@@ -225,7 +228,7 @@ export class SessionCache {
             }
             session.effort = payload.effort
         }
-        if (payload.collaborationMode !== undefined) {
+        if (payload.collaborationMode !== undefined && !this.isStaleRuntimeKeepAlive(session.id, 'collaborationMode', t)) {
             session.collaborationMode = payload.collaborationMode
         }
 
@@ -412,9 +415,11 @@ export class SessionCache {
             return
         }
 
+        const appliedAt = Date.now()
         if (config.permissionMode !== undefined) {
             session.permissionMode = config.permissionMode
             this.persistPreferredPermissionMode(session, config.permissionMode)
+            this.markRuntimeConfigUpdated(sessionId, 'permissionMode', appliedAt)
         }
         if (config.model !== undefined) {
             // Normalize object form { provider, modelId } to plain string for DB storage
@@ -430,6 +435,7 @@ export class SessionCache {
                 }
             }
             session.model = normalizedModel
+            this.markRuntimeConfigUpdated(sessionId, 'model', appliedAt)
         }
         if (config.modelReasoningEffort !== undefined) {
             if (config.modelReasoningEffort !== session.modelReasoningEffort) {
@@ -441,6 +447,7 @@ export class SessionCache {
                 }
             }
             session.modelReasoningEffort = config.modelReasoningEffort
+            this.markRuntimeConfigUpdated(sessionId, 'modelReasoningEffort', appliedAt)
         }
         if (config.effort !== undefined) {
             if (config.effort !== session.effort) {
@@ -452,12 +459,33 @@ export class SessionCache {
                 }
             }
             session.effort = config.effort
+            this.markRuntimeConfigUpdated(sessionId, 'effort', appliedAt)
         }
         if (config.collaborationMode !== undefined) {
             session.collaborationMode = config.collaborationMode
+            this.markRuntimeConfigUpdated(sessionId, 'collaborationMode', appliedAt)
         }
 
         this.publisher.emit({ type: 'session-updated', sessionId, data: session })
+    }
+
+    private markRuntimeConfigUpdated(
+        sessionId: string,
+        key: RuntimeConfigKey,
+        at: number
+    ): void {
+        const existing = this.runtimeConfigUpdatedAtBySessionId.get(sessionId) ?? {}
+        existing[key] = at
+        this.runtimeConfigUpdatedAtBySessionId.set(sessionId, existing)
+    }
+
+    private isStaleRuntimeKeepAlive(
+        sessionId: string,
+        key: RuntimeConfigKey,
+        payloadTime: number
+    ): boolean {
+        const updatedAt = this.runtimeConfigUpdatedAtBySessionId.get(sessionId)?.[key]
+        return updatedAt !== undefined && payloadTime < updatedAt
     }
 
     async renameSession(sessionId: string, name: string): Promise<void> {
@@ -483,6 +511,134 @@ export class SessionCache {
 
         if (result.result === 'version-mismatch') {
             throw new Error('Session was modified concurrently. Please try again.')
+        }
+
+        this.refreshSession(sessionId)
+    }
+
+    /**
+     * Clear archive-related metadata on an archived session so it can be resumed.
+     * - Removes `lifecycleState`, `archivedBy`, `archiveReason`, and stamps
+     *   `lifecycleStateSince` so subsequent CLI lifecycle writes still win on time.
+     * - For Cursor sessions that pre-date #799 (no `cursorSessionProtocol` set, but a
+     *   `cursorSessionId` exists) defaults the protocol to `stream-json` so routing
+     *   reaches the legacy launcher instead of the new ACP path.
+     *
+     * Returns the protocol that was applied (or already present) for cursor sessions,
+     * or `undefined` for other flavors. Throws on version mismatch / store error.
+     * No-op when metadata is null (callers should pre-check).
+     */
+    async clearSessionArchiveMetadata(sessionId: string): Promise<{ cursorSessionProtocol?: 'acp' | 'stream-json' }> {
+        const session = this.sessions.get(sessionId)
+        if (!session) {
+            throw new Error('Session not found')
+        }
+
+        const currentMetadata = session.metadata
+        if (!currentMetadata) {
+            throw new Error('Session metadata missing')
+        }
+
+        const next: Record<string, unknown> = { ...currentMetadata }
+        delete next.lifecycleState
+        delete next.archivedBy
+        delete next.archiveReason
+        next.lifecycleStateSince = Date.now()
+
+        let cursorSessionProtocol: 'acp' | 'stream-json' | undefined
+        if (currentMetadata.flavor === 'cursor') {
+            const existing = currentMetadata.cursorSessionProtocol
+            if (existing === 'acp' || existing === 'stream-json') {
+                cursorSessionProtocol = existing
+            } else if (currentMetadata.cursorSessionId) {
+                // Pre-#799 default: presence of cursorSessionId without protocol means stream-json.
+                cursorSessionProtocol = 'stream-json'
+                next.cursorSessionProtocol = 'stream-json'
+            }
+        }
+
+        const result = this.store.sessions.updateSessionMetadata(
+            sessionId,
+            next,
+            session.metadataVersion,
+            session.namespace,
+            { touchUpdatedAt: false }
+        )
+
+        if (result.result === 'error') {
+            throw new Error('Failed to update session metadata')
+        }
+
+        if (result.result === 'version-mismatch') {
+            throw new Error('Session was modified concurrently. Please try again.')
+        }
+
+        this.refreshSession(sessionId)
+        return cursorSessionProtocol ? { cursorSessionProtocol } : {}
+    }
+
+    /**
+     * Restore archive-related metadata fields that were captured before a reopen attempt.
+     * Used when `resumeSession` fails after `clearSessionArchiveMetadata` already ran so the
+     * session does not drift into a "not archived, not active" zombie state.
+     *
+     * Restores the four archive fields **exactly**: if a field was present in the snapshot
+     * it is written, if it was absent it is deleted (covering the case where
+     * `clearSessionArchiveMetadata` stamped a fresh `lifecycleStateSince` on a row that did
+     * not have one originally). Other concurrent edits (e.g. a rename in flight) are
+     * preserved. Returns silently if the session is gone or its metadata is unset; throws
+     * on version mismatch so the caller can decide whether to retry.
+     */
+    async restoreSessionArchiveMetadata(
+        sessionId: string,
+        snapshot: {
+            lifecycleState?: string
+            archivedBy?: string
+            archiveReason?: string
+            lifecycleStateSince?: number
+        }
+    ): Promise<void> {
+        const session = this.sessions.get(sessionId)
+        if (!session) return
+        const current = session.metadata
+        if (!current) return
+
+        const next: Record<string, unknown> = { ...current }
+        if (snapshot.lifecycleState !== undefined) {
+            next.lifecycleState = snapshot.lifecycleState
+        } else {
+            delete next.lifecycleState
+        }
+        if (snapshot.archivedBy !== undefined) {
+            next.archivedBy = snapshot.archivedBy
+        } else {
+            delete next.archivedBy
+        }
+        if (snapshot.archiveReason !== undefined) {
+            next.archiveReason = snapshot.archiveReason
+        } else {
+            delete next.archiveReason
+        }
+        if (snapshot.lifecycleStateSince !== undefined) {
+            next.lifecycleStateSince = snapshot.lifecycleStateSince
+        } else {
+            delete next.lifecycleStateSince
+        }
+
+        const result = this.store.sessions.updateSessionMetadata(
+            sessionId,
+            next,
+            session.metadataVersion,
+            session.namespace,
+            { touchUpdatedAt: false }
+        )
+
+        if (result.result === 'error') {
+            throw new Error('Failed to restore archive metadata')
+        }
+
+        if (result.result === 'version-mismatch') {
+            throw new Error('Session was modified concurrently during reopen rollback')
         }
 
         this.refreshSession(sessionId)

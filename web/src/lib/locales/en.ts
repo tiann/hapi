@@ -118,6 +118,12 @@ export default {
   'session.time.importedFromCodex.minutesAgo': 'imported from Codex {n}m ago',
   'session.time.importedFromCodex.hoursAgo': 'imported from Codex {n}h ago',
   'session.time.importedFromCodex.daysAgo': 'imported from Codex {n}d ago',
+  'session.cursorMigration.banner.title': 'Upgrading Cursor session',
+  'session.cursorMigration.banner.body': 'Switching this legacy chat to the safer ACP protocol. This takes 15-20 seconds for sessions with long history; your conversation will resume automatically and any draft text will survive.',
+
+  // Session inactive
+  'session.inactive.autoResume': 'This session is inactive. Send a message to resume.',
+  'session.inactive.cannotResume': 'This session is inactive and cannot be resumed.',
 
   // Session header
   'session.title': 'Files',
@@ -133,6 +139,7 @@ export default {
   'session.action.rename': 'Rename',
   'session.action.export': 'Export conversation',
   'session.action.archive': 'Archive',
+  'session.action.reopen': 'Reopen',
   'session.action.delete': 'Delete',
   'session.action.copy': 'Copy',
 
@@ -150,6 +157,8 @@ export default {
   'dialog.archive.description': 'Are you sure you want to archive "{name}"? This will disconnect active session.',
   'dialog.archive.confirm': 'Archive',
   'dialog.archive.confirming': 'Archiving…',
+  'dialog.reopen.errorTitle': 'Could not reopen session',
+  'dialog.reopen.dismiss': 'Dismiss',
   'dialog.delete.title': 'Delete Session',
   'dialog.delete.description': 'Are you sure you want to delete "{name}"? This action cannot be undone.',
   'dialog.delete.confirm': 'Delete',
@@ -197,7 +206,9 @@ export default {
   'newSession.model': 'Model',
   'newSession.effort': 'Effort',
   'newSession.model.optional': 'optional',
-  'newSession.model.loadFailed': 'Failed to load Codex models',
+  'newSession.model.loadFailed': 'Failed to load models',
+  'newSession.model.selectVariant': 'Select variant',
+  'newSession.model.cursorUnavailable': 'No Cursor models yet. Start a Cursor session once, or use Default.',
   'newSession.opencodeModel.loading': 'Discovering OpenCode models…',
   'newSession.opencodeModel.loadFailed': 'Failed to load OpenCode models',
   'newSession.opencodeModel.retry': 'Retry',
@@ -226,6 +237,7 @@ export default {
   'chat.settings': 'Settings',
   'chat.terminal': 'Terminal',
   'chat.switchRemote': 'Switch to remote mode',
+  'chat.sendError.fallback': "Couldn't send your message. Edit and try again.",
 
   // Codex review
   'codexReview.title': 'Codex review',
@@ -399,6 +411,12 @@ export default {
   'scratchlist.count.one': '1 item',
   'scratchlist.count.other': '{n} items',
   'scratchlist.emptyHint': 'Park notes, drafts, or ideas here. Nothing is sent until you promote it.',
+  'scratchlist.drawerHint': 'Type below — Send adds the next message to the scratchlist instead of the chat. Click the note icon again to leave.',
+  'scratchlist.toggleAriaLabel': 'Scratchlist drawer',
+  'scratchlist.toggleTooltip': 'Scratchlist — park notes & drafts (Ctrl/Cmd+Shift+S)',
+  'scratchlist.sendToScratchlist': 'Send to scratchlist',
+  'scratchlist.fueTitle': 'New: Scratchlist',
+  'scratchlist.fueBody': 'Park notes & drafts here without sending. The Send button glows amber while you stash; click the icon (or Ctrl/Cmd+Shift+S) again to leave.',
   'scratchlist.addPlaceholder': 'Note, draft, or idea — Enter to add',
   'scratchlist.addAriaLabel': 'Add scratchlist entry',
   'scratchlist.add': 'Add',
@@ -409,7 +427,12 @@ export default {
   'scratchlist.action.moveDown': 'Move entry down',
   'scratchlist.action.promoteToComposer': 'Copy into composer',
   'scratchlist.action.promoteToQueue': 'Send to queue',
+  'scratchlist.action.copy': 'Copy to clipboard',
+  'scratchlist.action.copied': 'Copied!',
   'scratchlist.action.delete': 'Delete entry',
+  'fue.newFeatureDot': 'New feature available',
+  'fue.gotIt': 'Got it',
+  'fue.closeAriaLabel': 'Close explainer',
   'composer.codexSlashUnsupported.title': 'Codex command unavailable',
   'composer.codexSlashUnsupported.body': 'HAPI remote mode does not yet run built-in Codex slash commands like {command}. Use natural language instead, or run it in the local Codex TUI.',
 
@@ -602,6 +625,7 @@ export default {
   'misc.model': 'Model',
   'misc.reasoningEffort': 'Reasoning Effort',
   'misc.effort': 'Effort',
+  'misc.variant': 'Variant',
   'misc.loading': 'Loading…',
   'misc.loadOlder': 'Load older',
   'misc.newMessage': '{n} new message{s}',

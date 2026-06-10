@@ -4,6 +4,7 @@ import { runLocalRemoteSession } from '@/agent/loopBase';
 import { CursorSession } from './session';
 import { cursorLocalLauncher } from './cursorLocalLauncher';
 import { cursorRemoteLauncher } from './cursorRemoteLauncher';
+import type { Metadata } from '@hapi/protocol/schemas';
 import { ApiClient, ApiSessionClient } from '@/lib';
 import type { CursorPermissionMode } from '@hapi/protocol/types';
 
@@ -26,6 +27,7 @@ interface LoopOptions {
     permissionMode?: PermissionMode;
     resumeSessionId?: string;
     model?: string;
+    sessionMetadata?: Metadata | null;
     onSessionReady?: (session: CursorSession) => void;
 }
 
@@ -54,7 +56,7 @@ export async function loop(opts: LoopOptions): Promise<void> {
         startingMode: opts.startingMode,
         logTag: 'cursor-loop',
         runLocal: cursorLocalLauncher,
-        runRemote: cursorRemoteLauncher,
+        runRemote: (session) => cursorRemoteLauncher(session, opts.sessionMetadata),
         onSessionReady: opts.onSessionReady
     });
 }

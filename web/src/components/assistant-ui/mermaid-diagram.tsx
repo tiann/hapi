@@ -21,9 +21,12 @@ async function ensureMermaid(theme: 'light' | 'dark') {
     const mermaid = await getMermaid()
     if (initializedTheme === theme) return mermaid
 
+    mermaid.setParseErrorHandler(() => undefined)
+
     mermaid.initialize({
         startOnLoad: false,
         securityLevel: 'strict',
+        suppressErrorRendering: true,
         theme: theme === 'dark' ? 'dark' : 'default',
         themeVariables: theme === 'dark'
             ? {
@@ -101,6 +104,14 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
         const render = async () => {
             try {
                 const mermaid = await ensureMermaid(theme)
+                const isValid = await mermaid.parse(props.code, { suppressErrors: true })
+                if (cancelled) return
+                if (!isValid) {
+                    setSvg(null)
+                    setRenderError(true)
+                    return
+                }
+
                 const result = await mermaid.render(`mermaid-${id}`, props.code)
                 if (cancelled) return
                 setSvg(result.svg)

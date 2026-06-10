@@ -38,6 +38,8 @@ export const MetadataSchema = z.object({
     geminiSessionId: z.string().optional(),
     opencodeSessionId: z.string().optional(),
     cursorSessionId: z.string().optional(),
+    cursorSessionProtocol: z.enum(['acp', 'stream-json']).optional(),
+    cursorMigrationState: z.enum(['in_progress']).optional(),
     kimiSessionId: z.string().optional(),
     piSessionId: z.string().optional(),
     tools: z.array(z.string()).optional(),

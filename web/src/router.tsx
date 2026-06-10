@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
     Navigate,
@@ -30,7 +30,8 @@ import { useSession } from '@/hooks/queries/useSession'
 import { useSessions } from '@/hooks/queries/useSessions'
 import { useSlashCommands } from '@/hooks/queries/useSlashCommands'
 import { useSkills } from '@/hooks/queries/useSkills'
-import { useSendMessage } from '@/hooks/mutations/useSendMessage'
+import { useSendMessage, type SendErrorInfo } from '@/hooks/mutations/useSendMessage'
+import type { ComposerSendError } from '@/components/AssistantChat/HappyComposer'
 import { queryKeys } from '@/lib/query-keys'
 import { useToast } from '@/lib/toast-context'
 import { useTranslation } from '@/lib/use-translation'
@@ -572,6 +573,23 @@ function SessionsIndexPage() {
     return null
 }
 
+/**
+ * Extract a user-facing message from a thrown send error.
+ * `request<T>` in the api client throws plain `Error` for !res.ok, with the
+ * format `"HTTP <status> <statusText>: <body>"` -- we surface the message as
+ * a single line and fall back to a localized default when nothing usable is
+ * present (e.g. an aborted fetch that resolved with no message).
+ */
+function deriveSendErrorMessage(
+    error: unknown,
+    t: (key: string) => string,
+): string {
+    if (error instanceof Error && error.message) {
+        return error.message
+    }
+    return t('chat.sendError.fallback')
+}
+
 function SessionPage() {
     const { api } = useAppContext()
     const { t } = useTranslation()
@@ -599,6 +617,30 @@ function SessionPage() {
         flushPending,
         setAtBottom,
     } = useMessages(api, sessionId)
+
+    // Tracks the most recent send the hub rejected (4xx/5xx/network), keyed
+    // by the session the failed POST actually targeted (post-resolveSessionId).
+    // assistant-ui clears the composer eagerly when a send is invoked, so to
+    // retain the typed text on error we keep it here and hand it back to the
+    // composer for restore + visual error affordance.  Keying by sessionId
+    // covers the inactive-session resume race: useSendMessage can resolve
+    // the target id, kick off async navigation to it, and then have the POST
+    // fail before navigation completes.  Without keying, we'd restore the
+    // text into the OLD session's composer and the next render would clear
+    // it.  The bumped `id` still lets the composer dedupe restorations of
+    // identical text.
+    const [sendErrors, setSendErrors] = useState<Record<string, ComposerSendError>>({})
+    const sendErrorIdRef = useRef(0)
+    const sendError = sendErrors[sessionId] ?? null
+    const clearSendError = useCallback(() => {
+        setSendErrors((prev) => {
+            if (!(sessionId in prev)) return prev
+            const next = { ...prev }
+            delete next[sessionId]
+            return next
+        })
+    }, [sessionId])
+
     const {
         sendMessage,
         retryMessage,
@@ -607,8 +649,28 @@ function SessionPage() {
         isSessionThinking: session?.thinking ?? false,
         onSuccess: (sentSessionId) => {
             clearDraftsAfterSend(sentSessionId, sessionId)
-            // 中文注释：一旦用户已经在 Hapi 内继续这个 Codex 会话，就清除“刚从 Codex 导入”的标记。
+            // 中文注释：一旦用户已经在 Hapi 内继续这个 Codex 会话，就清除"刚从 Codex 导入"的标记。
             clearCodexImportedSession(session?.metadata?.codexSessionId)
+            // A successful send supersedes any previously-rendered error
+            // for that session.  Other sessions' errors stay put.
+            setSendErrors((prev) => {
+                if (!(sentSessionId in prev)) return prev
+                const next = { ...prev }
+                delete next[sentSessionId]
+                return next
+            })
+        },
+        onError: (info: SendErrorInfo) => {
+            sendErrorIdRef.current += 1
+            setSendErrors((prev) => ({
+                ...prev,
+                [info.sessionId]: {
+                    id: sendErrorIdRef.current,
+                    text: info.text,
+                    message: deriveSendErrorMessage(info.error, t),
+                    scheduledAt: info.scheduledAt
+                }
+            }))
         },
         resolveSessionId: async (currentSessionId) => {
             if (!api || !session || session.active) {
@@ -746,6 +808,8 @@ function SessionPage() {
             onRetryMessage={retryMessage}
             autocompleteSuggestions={getAutocompleteSuggestions}
             availableSlashCommands={slashCommands}
+            sendError={sendError}
+            onClearSendError={clearSendError}
         />
     )
 }

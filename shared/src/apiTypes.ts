@@ -101,6 +101,22 @@ export const ResumeSessionRequestSchema = z.object({
 
 export type ResumeSessionRequest = z.infer<typeof ResumeSessionRequestSchema>
 
+export const ReopenSessionResponseSchema = z.object({
+    ok: z.literal(true),
+    sessionId: z.string(),
+    resumed: z.boolean(),
+    cursorSessionProtocol: z.enum(['acp', 'stream-json']).optional()
+})
+
+export type ReopenSessionResponse = z.infer<typeof ReopenSessionResponseSchema>
+
+export const ReopenSessionMissingMetadataResponseSchema = z.object({
+    error: z.string(),
+    missing: z.array(z.string()).nonempty()
+})
+
+export type ReopenSessionMissingMetadataResponse = z.infer<typeof ReopenSessionMissingMetadataResponseSchema>
+
 export const SessionCollaborationModeRequestSchema = z.object({
     mode: CodexCollaborationModeSchema
 })
@@ -136,6 +152,40 @@ export const RenameSessionRequestSchema = z.object({
 })
 
 export type RenameSessionRequest = z.infer<typeof RenameSessionRequestSchema>
+
+/** Per-session legacy stream-json → ACP migrator request. See tiann/hapi#824. */
+export const CursorMigrateToAcpRequestSchema = z.object({
+    /** Skip removing the legacy ~/.cursor/chats source store.db even after verify passes. */
+    keepSource: z.boolean().optional(),
+    /** Allow migrating a session whose lifecycleState === 'running' by archiving it first. */
+    forceArchiveRunning: z.boolean().optional(),
+    /** Skip the verify-by-prompt step (session/load alone is run). */
+    skipVerify: z.boolean().optional()
+})
+
+export type CursorMigrateToAcpRequest = z.infer<typeof CursorMigrateToAcpRequestSchema>
+
+export type CursorMigrateOutcome =
+    | { ok: true; sessionId: string; acpSessionId: string; replayNotifications: number; durationMs: number; lastUsedModelPreserved: string | null; sourceRemoved: boolean }
+    | { ok: false; sessionId: string; reason: CursorMigrateRefusalReason; message: string; durationMs: number }
+
+export type CursorMigrateRefusalReason =
+    | 'not_cursor_session'
+    | 'already_acp'
+    | 'running_refused'
+    | 'no_cursor_session_id'
+    | 'no_legacy_store_on_disk'
+    | 'target_already_exists'
+    | 'verify_load_failed'
+    | 'verify_prompt_failed'
+    | 'metadata_write_failed'
+    | 'archive_failed'
+    | 'lock_release_timeout'
+    | 'acp_transport_active'
+    | 'session_resumed_during_migrate'
+    | 'legacy_store_modified_during_migrate'
+    | 'cross_host_session'
+    | 'internal_error'
 
 export const UploadFileRequestSchema = z.object({
     filename: z.string().min(1).max(255),
@@ -302,11 +352,25 @@ export type OpencodeModelSummary = {
 export type OpencodeModelsResponse = {
     success: boolean
     availableModels?: OpencodeModelSummary[]
+    /** CLI `agent --list-models` skus grouped under ACP wire bases for variant pickers. */
+    cliModelSkus?: OpencodeModelSummary[]
     currentModelId?: string | null
     error?: string
 }
 
 export type ListOpencodeModelsResponse = OpencodeModelsResponse
+
+export type OpencodeReasoningEffortOption = {
+    value: string
+    name?: string
+}
+
+export type OpencodeReasoningEffortResponse = {
+    success: boolean
+    options?: OpencodeReasoningEffortOption[]
+    currentValue?: string | null
+    error?: string
+}
 
 export type CursorModelSummary = OpencodeModelSummary
 

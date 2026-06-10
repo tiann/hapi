@@ -24,9 +24,11 @@ function isToolAllowedForSession(toolName: string, toolInput: unknown, allowedTo
 
 function isCodexSession(metadata: SessionMetadataSummary | null, toolName: string): boolean {
     return isCodexFamilyFlavor(metadata?.flavor)
+        || metadata?.flavor === 'cursor'
         || toolName.startsWith('Codex')
         || toolName.startsWith('Gemini')
         || toolName.startsWith('OpenCode')
+        || toolName.startsWith('Cursor')
 }
 
 function isClaudeSession(metadata: SessionMetadataSummary | null): boolean {
@@ -141,6 +143,7 @@ export function PermissionFooter(props: {
         || toolName === 'NotebookEdit'
         || toolName === 'exit_plan_mode'
         || toolName === 'ExitPlanMode'
+        || toolName === 'CursorCreatePlan'
 
     const canAllowForSession = !codex && isPending && !hideAllowForSession
     const canAllowAllEdits = claude && isPending && isEditTool

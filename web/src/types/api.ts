@@ -43,6 +43,7 @@ export type {
     AgentState,
     AttachmentMetadata,
     CodexCollaborationMode,
+    Metadata,
     PermissionMode,
     Machine,
     RunnerState,

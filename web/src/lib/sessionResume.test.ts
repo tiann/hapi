@@ -67,6 +67,23 @@ describe('sessionResume', () => {
         }), 5)).toBe(true)
     })
 
+    it('resolveAgentSessionIdFromMetadata still returns cursorSessionId regardless of protocol', () => {
+        expect(resolveAgentSessionIdFromMetadata({
+            path: '/p',
+            host: 'h',
+            flavor: 'cursor',
+            cursorSessionId: 'acp-thread-1',
+            cursorSessionProtocol: 'acp',
+        })).toBe('acp-thread-1')
+        expect(resolveAgentSessionIdFromMetadata({
+            path: '/p',
+            host: 'h',
+            flavor: 'cursor',
+            cursorSessionId: 'legacy-thread-1',
+            cursorSessionProtocol: 'stream-json',
+        })).toBe('legacy-thread-1')
+    })
+
     it('inactiveSessionCanResume rejects inactive sessions with messages but no agent id', () => {
         expect(inactiveSessionCanResume(makeSession(), 3)).toBe(false)
     })
