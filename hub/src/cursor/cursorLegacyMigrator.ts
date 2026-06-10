@@ -599,6 +599,14 @@ export class CursorLegacyMigrator {
         // drawers would silently get the first readdir match - the #844
         // regression documented in tiann/hapi#872.
         const canonicalWorkspacePath = typeof cwd === 'string' ? cwd : ''
+        // Snapshot the full candidate set BEFORE the canonical fast-path
+        // resolves a single drawer. The successful transplant's diagnostic
+        // log captures this count, so it must reflect the pre-rm reality
+        // (the rm step would otherwise leave the log understating the
+        // number of drawers that existed at decision time, undermining
+        // the diagnose-from-journalctl-alone goal). tiann/hapi#873 cold
+        // review Minor #1.
+        const candidatesAtDiscovery = listLegacyChatStoreCandidates(cursorSessionId, home)
         let legacy: LegacyStoreLocation | null
         try {
             legacy = findLegacyChatStore(cursorSessionId, home, canonicalWorkspacePath)
@@ -630,14 +638,29 @@ export class CursorLegacyMigrator {
         if (!legacy) {
             return refusal(session.id, 'no_legacy_store_on_disk', `~/.cursor/chats/*/${cursorSessionId}/store.db not found under ${home}`, start, this.deps.now)
         }
+        // Diagnostic: canonical-path lookup missed but readdir found a
+        // single drawer (we still proceed for regression equivalence,
+        // but this warrants a log because it implies our md5(path) does
+        // not match Cursor's drawer naming for this session - e.g. an
+        // operator hit a path-normalization corner case we have not
+        // mapped). tiann/hapi#873 cold review Major #2.
+        if (canonicalWorkspacePath.length > 0 && legacy.workspaceHash !== workspaceHashFromPath(canonicalWorkspacePath)) {
+            log.warn('[migrator] canonical-path drawer missing; falling back to single readdir candidate', {
+                sessionId: session.id,
+                cursorSessionId,
+                canonicalWorkspacePath,
+                expectedHash: workspaceHashFromPath(canonicalWorkspacePath),
+                pickedHash: legacy.workspaceHash
+            })
+        }
 
-        // tiann/hapi#872: snapshot what discovery saw on disk BEFORE any
-        // destructive step (rm of the source drawer). The
-        // `migrator:transplanted` log on the success path quotes this
-        // count as "1 of N candidates picked" — capturing it AFTER the
-        // source rm would systematically under-report (the picked
-        // drawer is gone) and silently turn the diagnostic into noise.
-        const candidatesAtDiscovery = listLegacyChatStoreCandidates(cursorSessionId, home)
+        // tiann/hapi#872: source-side measurements BEFORE any destructive
+        // step. The `migrator:transplanted` log on the success path quotes
+        // these source values - capturing them AFTER the rm would either
+        // fail (file gone) or read the destination copy by mistake. The
+        // candidate-count snapshot above (`candidatesAtDiscovery`) is the
+        // matching pre-rm capture for the "N candidates discovered"
+        // diagnostic. tiann/hapi#873 cold review.
         const sourceBytesAtDiscovery = (() => {
             try { return statSync(legacy.storeDbPath).size } catch { return -1 }
         })()

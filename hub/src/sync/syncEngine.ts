@@ -585,7 +585,16 @@ export class SyncEngine {
             getHapiMessageCount: (sessionId, _namespace) => {
                 try {
                     return this.store.messages.countMessages(sessionId)
-                } catch {
+                } catch (err) {
+                    // tiann/hapi#873 cold review: a silent 0 here trips
+                    // the migrator's "skip sanity" branch and chronically
+                    // disables the floor. Warn so a broken countMessages
+                    // (lock contention pattern, schema drift) is visible
+                    // in journalctl.
+                    console.warn('[auto-migrate] countMessages threw; size sanity skipped', {
+                        sessionId,
+                        err: err instanceof Error ? err.message : String(err)
+                    })
                     return 0
                 }
             }

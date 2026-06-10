@@ -365,6 +365,27 @@ describe('findLegacyChatStore', () => {
         expect(hash).toMatch(/^[0-9a-f]{32}$/)
     })
 
+    /**
+     * Pins the algorithm contract: workspace-hash is plain md5 of the raw
+     * absolute path bytes, no normalization. Reference values were
+     * independently computed via `printf '%s' <path> | md5sum`. A future
+     * refactor that adds path.resolve() or trims trailing slashes would
+     * change these and silently break Cursor's drawer naming - Cursor
+     * uses raw md5 on whatever absolute path the session was opened
+     * under. tiann/hapi#873 cold review.
+     */
+    it('workspaceHashFromPath matches independently-computed md5 (raw, no normalization)', () => {
+        // Reference values computed via `printf '%s' <path> | md5sum`.
+        expect(workspaceHashFromPath('/home/user/project')).toBe('90722f2638004be06d790eaac9ac1f8a')
+        expect(workspaceHashFromPath('/workspace/example')).toBe('56512a070a25878a45bf0c1a46021ad9')
+        expect(workspaceHashFromPath('/tmp/x')).toBe('7ae3976faedb45a92335f73e4d7bb9e5')
+        // Trailing slash MUST yield a different hash (else /foo and /foo/
+        // would collide on disk, which Cursor's layout does not allow).
+        const noSlash = workspaceHashFromPath('/workspace/example')
+        const withSlash = workspaceHashFromPath('/workspace/example/')
+        expect(noSlash).not.toBe(withSlash)
+    })
+
     it('rejects path-traversal cursorSessionId inputs at the function boundary (tiann/hapi#872 cold review)', () => {
         // External callers may bypass preflightSession; the function must
         // not statSync arbitrary paths when fed a malformed id. All of the
@@ -936,6 +957,26 @@ describe('CursorLegacyMigrator.migrateOne — size sanity (tiann/hapi#872)', () 
             getHapiMessageCount: () => 100
         }).migrateOne(session, {})
         expect(out.ok).toBe(true)
+    })
+
+    it('engages the sanity check when message count is 101 (first value above the skip threshold)', async () => {
+        // The synthetic store has only a handful of blobs (well under
+        // 101/4 = 25). messageCount=101 is the first value that lets the
+        // floor kick in - this test pins the boundary contract so a
+        // future refactor that moves the cutoff to >=100 or >100 is
+        // caught by CI rather than a production session refusal.
+        // tiann/hapi#873 cold review Nit.
+        const cursorSessionId = 'sm-boundary-engaged-uuid'
+        h.placeLegacyStore(cursorSessionId)
+        const session = h.makeSession({
+            metadata: { path: '/workspace/x', host: 'h', flavor: 'cursor', cursorSessionId }
+        })
+        const out = await makeMigrator(h, makeMockProbe(), {
+            getHapiMessageCount: () => 101
+        }).migrateOne(session, {})
+        expect(out.ok).toBe(false)
+        if (out.ok) return
+        expect(out.reason).toBe('size_mismatch')
     })
 })
 
