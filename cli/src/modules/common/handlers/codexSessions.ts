@@ -7,12 +7,15 @@ import {
 } from '../codexSessions';
 import { getErrorMessage, rpcError } from '../rpcResponses';
 
-export function registerCodexSessionHandlers(rpcHandlerManager: RpcHandlerManager): void {
+export function registerCodexSessionHandlers(
+    rpcHandlerManager: RpcHandlerManager,
+    pathAllowed?: (path: string | null) => boolean | Promise<boolean>
+): void {
     rpcHandlerManager.registerHandler<ListCodexSessionsRequest, ListCodexSessionsResponse>('listCodexSessions', async (data) => {
         logger.debug('List Codex sessions request');
 
         try {
-            const result = await listCodexSessions(data ?? {});
+            const result = await listCodexSessions(data ?? {}, pathAllowed);
             return {
                 success: true,
                 sessions: result.sessions,

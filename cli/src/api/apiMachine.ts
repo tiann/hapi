@@ -92,7 +92,14 @@ export class ApiMachineClient {
             logger: (msg, data) => logger.debug(msg, data)
         })
 
-        registerCommonHandlers(this.rpcHandlerManager, getInvokedCwd())
+        registerCommonHandlers(this.rpcHandlerManager, getInvokedCwd(), {
+            codexSessionPathAllowed: this.normalizedWorkspaceRoots?.length
+                ? async (path) => {
+                    if (!path) return false
+                    return this.isWithinWorkspaceRoots(await this.resolveForWorkspaceCheck(path))
+                }
+                : undefined
+        })
 
         this.rpcHandlerManager.registerHandler<PathExistsRequest, PathExistsResponse>(RPC_METHODS.PathExists, async (params) => {
             const rawPaths = Array.isArray(params?.paths) ? params.paths : []

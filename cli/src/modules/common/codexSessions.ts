@@ -392,7 +392,10 @@ export async function findCodexSessionTitle(sessionId: string): Promise<string |
     return parsedSession?.title ?? null;
 }
 
-export async function listCodexSessions(request: ListCodexSessionsRequest = {}): Promise<{ sessions: CodexSessionSummary[]; nextCursor: string | null }> {
+export async function listCodexSessions(
+    request: ListCodexSessionsRequest = {},
+    pathAllowed?: (path: string | null) => boolean | Promise<boolean>
+): Promise<{ sessions: CodexSessionSummary[]; nextCursor: string | null }> {
     const includeOld = request.includeOld === true;
     const olderThanDays = Number.isFinite(request.olderThanDays) && (request.olderThanDays ?? 0) > 0
         ? Number(request.olderThanDays)
@@ -436,7 +439,19 @@ export async function listCodexSessions(request: ListCodexSessionsRequest = {}):
             isOld: entry.updatedAt < cutoff
         }));
 
-    const filtered = includeOld ? sorted : sorted.filter((entry) => !entry.isOld);
+    const ageFiltered = includeOld ? sorted : sorted.filter((entry) => !entry.isOld);
+
+    // Apply workspace-root scoping when the machine runs with --workspace-root.
+    // Sessions whose `path` is outside the allowed roots are dropped so the web
+    // picker never exposes projects from other workspaces. Sessions with a null
+    // path are also excluded when a filter is active.
+    const filtered = pathAllowed
+        ? (await Promise.all(ageFiltered.map(async (entry) => ({
+            entry,
+            allowed: await pathAllowed(entry.path ?? null)
+        })))).filter(({ allowed }) => allowed).map(({ entry }) => entry)
+        : ageFiltered;
+
     const sliced = filtered.slice(offset, offset + limit);
     const nextOffset = offset + sliced.length;
 
