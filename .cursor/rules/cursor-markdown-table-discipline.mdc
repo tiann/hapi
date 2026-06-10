@@ -1,0 +1,18 @@
+---
+description: Cursor-specific markdown discipline - verify table separator column count
+alwaysApply: true
+---
+
+# Cursor markdown table discipline
+
+When you (a Cursor agent) emit a GFM markdown table, the separator row must have the **same number of cells** as the header row. Cursor-flavor sessions in this repo have a documented history of emitting tables with mismatched column counts (e.g. 7-column header with a 4-column separator), which a GFM renderer correctly drops to a `<p>` of literal pipe text rather than a `<table>`.
+
+Before emitting any table:
+
+1. Count the `|` characters in the header row.
+2. Confirm the separator row has the same number of `|` characters.
+3. Confirm every data row has the same number of `|` characters.
+
+If they don't match, stop and recount. Do not ship the broken table.
+
+This rule applies only to Cursor sessions. Other agent flavors (Claude, Codex, OpenCode) receive guidance via their system prompts; Cursor's CLI has no equivalent surface, so the rule lives here in `.cursor/rules/`.
