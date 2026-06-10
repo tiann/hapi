@@ -82,8 +82,12 @@ function handleGetState(
         if (data.model.provider && data.model.provider.length > 0) {
             session.currentProvider = data.model.provider;
         }
-        session.currentModel = newModel ?? null;
-        if (newModel) {
+        // When a startup model was specified, always use it instead of Pi's default.
+        // The provider will be resolved later when get_available_models returns.
+        session.currentModel = session.initialModel ?? newModel ?? null;
+        if (session.initialModel) {
+            logger.debug(`[pi] Startup model preserved: ${session.initialModel} (provider from get_state=${session.currentProvider ?? 'unknown'})`);
+        } else if (newModel) {
             logger.debug(`[pi] Initial model: ${newModel} (provider=${session.currentProvider ?? 'unknown'})`);
         }
     }
@@ -107,6 +111,7 @@ function handleResponse(
     response: PiResponseEvent,
     session: PiSession,
     pendingLocalIds: string[],
+    transport?: PiTransport,
 ): void {
     const { command, success } = response;
     const resolver = session.rpcResolver!;
@@ -152,6 +157,20 @@ function handleResponse(
                     ...meta,
                     piAvailableModels: models,
                 }));
+
+                // Apply startup model if set_model was not yet sent.
+                // At this point initialModel is in currentModel (set by handleGetState),
+                // but provider may still be unknown. Search cached models to resolve it.
+                if (session.initialModel && transport) {
+                    const match = models.find((m) => m.modelId === session.initialModel);
+                    if (match) {
+                        session.currentProvider = match.provider;
+                        transport.send({ type: 'set_model', provider: match.provider, modelId: match.modelId });
+                        logger.debug(`[pi] Startup model applied: ${match.provider}/${match.modelId}`);
+                    } else {
+                        logger.debug(`[pi] Startup model not found in available models: ${session.initialModel}`);
+                    }
+                }
             }
             resolvePendingRpc(resolver, response);
             break;
@@ -197,7 +216,7 @@ export function wireTransportEvents(
             logger.debug(`[pi][event] ${event.type}`);
         }
         if (event.type === 'response') {
-            handleResponse(event as unknown as PiResponseEvent, session, pendingLocalIds);
+            handleResponse(event as unknown as PiResponseEvent, session, pendingLocalIds, transport);
             return;
         }
 

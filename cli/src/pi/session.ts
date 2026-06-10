@@ -26,6 +26,9 @@ export class PiSession {
     currentThinkingLevel: PiThinkingLevel | null;
     // Pi's set_model requires provider + modelId; learned from get_state
     currentProvider: string | null = null;
+    // Startup model from opts.model — prevents get_state from overwriting it
+    // with Pi's default. Applied once when get_available_models returns.
+    readonly initialModel: string | null;
 
     // Streaming state
     piIsStreaming = false;
@@ -58,6 +61,7 @@ export class PiSession {
         this.startingMode = opts.startingMode;
         this.currentPermissionMode = opts.permissionMode ?? 'default';
         this.currentModel = opts.model ?? null;
+        this.initialModel = opts.model?.trim() || null;
         this.currentThinkingLevel = null;
     }
 
