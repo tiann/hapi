@@ -38,7 +38,6 @@ export type RpcListCursorModelsResponse = CursorModelsResponse
 export type RpcOpencodeModel = OpencodeModelSummary
 export type RpcListOpencodeModelsResponse = OpencodeModelsResponse
 
-
 export class RpcGateway {
     constructor(
         private readonly io: Server,

@@ -417,15 +417,19 @@ export class SessionCache {
             this.persistPreferredPermissionMode(session, config.permissionMode)
         }
         if (config.model !== undefined) {
-            if (config.model !== session.model) {
-                const updated = this.store.sessions.setSessionModel(sessionId, config.model, session.namespace, {
+            // Normalize object form { provider, modelId } to plain string for DB storage
+            const normalizedModel = config.model !== null && typeof config.model === 'object'
+                ? config.model.modelId
+                : config.model
+            if (normalizedModel !== session.model) {
+                const updated = this.store.sessions.setSessionModel(sessionId, normalizedModel, session.namespace, {
                     touchUpdatedAt: false
                 })
                 if (!updated) {
                     throw new Error('Failed to update session model')
                 }
             }
-            session.model = config.model
+            session.model = normalizedModel
         }
         if (config.modelReasoningEffort !== undefined) {
             if (config.modelReasoningEffort !== session.modelReasoningEffort) {
