@@ -542,12 +542,22 @@ export function NewSession(props: {
     }, [suggestions, selectedIndex, moveUp, moveDown, clearSuggestions, handleSuggestionSelect])
 
     async function handleCreate() {
-        if (!machineId || !trimmedDirectory) return
+        if (!machineId) return
+
+        // When resuming a Codex session, use that session's recorded workspace
+        // path as the directory. The form's directory input is irrelevant - the
+        // transcript belongs to a specific project and Codex must run there.
+        const selectedCodexSession = agent === 'codex' && selectedCodexSessionId
+            ? (codexSessionsState.sessions.find((s) => s.id === selectedCodexSessionId) ?? null)
+            : null
+        const spawnDirectory = selectedCodexSession?.path ?? trimmedDirectory
+
+        if (!spawnDirectory) return
 
         setError(null)
         try {
-            const existsResult = await checkPathsExists([trimmedDirectory])
-            const directoryExists = existsResult[trimmedDirectory]
+            const existsResult = await checkPathsExists([spawnDirectory])
+            const directoryExists = existsResult[spawnDirectory]
 
             if (sessionType === 'worktree' && directoryExists === false) {
                 haptic.notification('error')
@@ -581,7 +591,7 @@ export function NewSession(props: {
                 : undefined
             const result = await spawnSession({
                 machineId,
-                directory: trimmedDirectory,
+                directory: spawnDirectory,
                 agent,
                 model: resolvedModel,
                 effort: resolvedEffort,
@@ -597,7 +607,7 @@ export function NewSession(props: {
                 haptic.notification('success')
                 clearNewSessionFormDraft()
                 setLastUsedMachineId(machineId)
-                addRecentPath(machineId, trimmedDirectory)
+                addRecentPath(machineId, spawnDirectory)
                 props.onSuccess(result.sessionId)
                 return
             }
@@ -610,7 +620,8 @@ export function NewSession(props: {
         }
     }
 
-    const canCreate = Boolean(machineId && trimmedDirectory && !isFormDisabled && !missingWorktreeDirectory)
+    const hasCodexSessionSelected = agent === 'codex' && Boolean(selectedCodexSessionId)
+    const canCreate = Boolean(machineId && (trimmedDirectory || hasCodexSessionSelected) && !isFormDisabled && !missingWorktreeDirectory)
 
     return (
         <div className="flex flex-col divide-y divide-[var(--app-divider)]">
