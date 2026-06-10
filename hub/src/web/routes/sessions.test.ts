@@ -80,6 +80,14 @@ function createApp(session: Session, opts?: {
         ],
         currentModelId: 'ollama/exaone:4.5-33b-q8'
     })
+    const listOpencodeReasoningEffortOptionsForSession = async () => ({
+        success: true,
+        options: [
+            { value: 'low', name: 'Low' },
+            { value: 'medium', name: 'Medium' }
+        ],
+        currentValue: 'low'
+    })
     const listCursorModelsForSession = async () => ({
         success: true,
         availableModels: [
@@ -103,6 +111,7 @@ function createApp(session: Session, opts?: {
         listCodexModelsForSession,
         listCursorModelsForSession,
         listOpencodeModelsForSession,
+        listOpencodeReasoningEffortOptionsForSession,
         resumeSession,
         reopenSession,
         getSessionExport: opts?.getSessionExport ?? (() => ({
@@ -541,6 +550,33 @@ describe('sessions routes', () => {
                 { id: 'gpt-5.5', displayName: 'GPT-5.5', isDefault: true }
             ]
         })
+    })
+
+    it('returns OpenCode reasoning effort options for active OpenCode sessions', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'opencode' }
+        })
+        const { app } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/opencode-reasoning-effort-options')
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            success: true,
+            options: [
+                { value: 'low', name: 'Low' },
+                { value: 'medium', name: 'Medium' }
+            ],
+            currentValue: 'low'
+        })
+    })
+
+    it('rejects opencode-reasoning-effort-options for non-OpenCode sessions', async () => {
+        const { app } = createApp(createSession())
+
+        const response = await app.request('/api/sessions/session-1/opencode-reasoning-effort-options')
+
+        expect(response.status).toBe(400)
     })
 
     it('returns OpenCode models for active OpenCode sessions', async () => {

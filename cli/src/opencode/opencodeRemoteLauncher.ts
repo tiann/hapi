@@ -11,6 +11,7 @@ import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { createOpencodeBackend } from './utils/opencodeBackend';
 import { OpencodePermissionHandler } from './utils/permissionHandler';
 import { PLAN_MODE_INSTRUCTION, TITLE_INSTRUCTION } from './utils/systemPrompt';
+import { resolveThoughtLevelEffort } from './thoughtLevelEffort';
 
 type OpencodeRemoteLauncherOptions = {
     onReasoningEffortRollback?: (effort: string | null) => void;
@@ -123,6 +124,18 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             };
         });
 
+        session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ListOpencodeReasoningEffortOptions, async () => {
+            const effortOption = backend.getThoughtLevelConfigOption?.(acpSessionId);
+            if (!effortOption) {
+                return { success: false, error: 'OpenCode reasoning effort options are not available' };
+            }
+            return {
+                success: true,
+                options: effortOption.options,
+                currentValue: effortOption.currentValue ?? null
+            };
+        });
+
         this.permissionHandler = new OpencodePermissionHandler(
             session.client,
             backend,
@@ -206,29 +219,46 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 if (!backend.setConfigOption || !thoughtLevelOption || this.setEffortSupported === false) {
                     this.rollbackReasoningEffort(batch, this.currentBackendEffort);
                 } else {
-                    logger.debug(`[opencode-remote] Switching effort inline: ${this.currentBackendEffort ?? '(default)'} -> ${requestedEffort}`);
-                    try {
-                        await backend.setConfigOption(acpSessionId, thoughtLevelOption.id, requestedEffort);
-                        this.currentBackendEffort = requestedEffort;
-                        this.setEffortSupported = true;
-                    } catch (error) {
-                        const message = error instanceof Error ? error.message : String(error);
-                        const methodNotFound = /method not found/i.test(message);
-                        if (methodNotFound && this.setEffortSupported === undefined) {
-                            this.setEffortSupported = false;
-                            logger.warn('[opencode-remote] OpenCode build does not support session/set_config_option; inline effort switching disabled for this session');
-                            session.sendSessionEvent({
-                                type: 'message',
-                                message: 'This OpenCode build does not support inline reasoning effort switching.'
-                            });
-                        } else {
-                            logger.warn('[opencode-remote] Inline effort switch failed', error);
-                            session.sendSessionEvent({
-                                type: 'message',
-                                message: `Failed to switch reasoning effort to ${requestedEffort}. Continuing with ${this.currentBackendEffort ?? '(default)'}.`
-                            });
+                    const resolvedEffort = resolveThoughtLevelEffort(
+                        requestedEffort,
+                        thoughtLevelOption,
+                        this.currentBackendEffort ?? this.defaultBackendEffort
+                    );
+                    if (!resolvedEffort || resolvedEffort === this.currentBackendEffort) {
+                        if (requestedEffort !== resolvedEffort) {
+                            logger.warn(
+                                `[opencode-remote] Unsupported reasoning effort "${requestedEffort}"; continuing with ${resolvedEffort ?? this.currentBackendEffort ?? '(default)'}`
+                            );
+                            this.rollbackReasoningEffort(batch, resolvedEffort ?? this.currentBackendEffort);
                         }
-                        this.rollbackReasoningEffort(batch, this.currentBackendEffort);
+                    } else {
+                        logger.debug(`[opencode-remote] Switching effort inline: ${this.currentBackendEffort ?? '(default)'} -> ${resolvedEffort}`);
+                        try {
+                            await backend.setConfigOption(acpSessionId, thoughtLevelOption.id, resolvedEffort);
+                            this.currentBackendEffort = resolvedEffort;
+                            this.setEffortSupported = true;
+                            if (requestedEffort !== resolvedEffort) {
+                                this.rollbackReasoningEffort(batch, resolvedEffort);
+                            }
+                        } catch (error) {
+                            const message = error instanceof Error ? error.message : String(error);
+                            const methodNotFound = /method not found/i.test(message);
+                            if (methodNotFound && this.setEffortSupported === undefined) {
+                                this.setEffortSupported = false;
+                                logger.warn('[opencode-remote] OpenCode build does not support session/set_config_option; inline effort switching disabled for this session');
+                                session.sendSessionEvent({
+                                    type: 'message',
+                                    message: 'This OpenCode build does not support inline reasoning effort switching.'
+                                });
+                            } else {
+                                logger.warn('[opencode-remote] Inline effort switch failed', error);
+                                session.sendSessionEvent({
+                                    type: 'message',
+                                    message: `Failed to switch reasoning effort to ${resolvedEffort}. Continuing with ${this.currentBackendEffort ?? '(default)'}.`
+                                });
+                            }
+                            this.rollbackReasoningEffort(batch, this.currentBackendEffort);
+                        }
                     }
                 }
             }

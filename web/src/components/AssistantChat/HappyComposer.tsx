@@ -87,6 +87,7 @@ export function HappyComposer(props: {
     controlledByUser?: boolean
     agentFlavor?: string | null
     availableModelOptions?: Array<{ value: string | null; label: string }>
+    availableModelReasoningEffortOptions?: Array<{ value: string; name?: string }>
     /** Cursor: selected base model key (not wire id). */
     selectedModelBase?: string | null
     /** Cursor: selected variant sku/wire for highlight when session stores an ACP wire id. */
@@ -147,6 +148,7 @@ export function HappyComposer(props: {
         controlledByUser = false,
         agentFlavor,
         availableModelOptions,
+        availableModelReasoningEffortOptions,
         selectedModelBase,
         selectedModelVariant,
         modelEffortOptions,
@@ -383,9 +385,13 @@ export function HappyComposer(props: {
     )
     const codexReasoningEffortOptions = useMemo(
         () => agentFlavor === 'codex' || agentFlavor === 'opencode'
-            ? getCodexComposerReasoningEffortOptions(modelReasoningEffort, agentFlavor)
+            ? getCodexComposerReasoningEffortOptions(
+                modelReasoningEffort,
+                agentFlavor,
+                agentFlavor === 'opencode' ? availableModelReasoningEffortOptions : undefined
+            )
             : [],
-        [agentFlavor, modelReasoningEffort]
+        [agentFlavor, modelReasoningEffort, availableModelReasoningEffortOptions]
     )
     const claudeEffortOptions = useMemo(
         () => getClaudeComposerEffortOptions(effort),

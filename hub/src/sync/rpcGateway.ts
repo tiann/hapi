@@ -13,6 +13,7 @@ import type {
     ListDirectoryResponse,
     OpencodeModelsResponse,
     OpencodeModelSummary,
+    OpencodeReasoningEffortResponse,
     PathExistsResponse,
     SlashCommandsResponse,
     UploadFileResponse
@@ -37,6 +38,7 @@ export type RpcCursorModel = CursorModelSummary
 export type RpcListCursorModelsResponse = CursorModelsResponse
 export type RpcOpencodeModel = OpencodeModelSummary
 export type RpcListOpencodeModelsResponse = OpencodeModelsResponse
+export type RpcListOpencodeReasoningEffortOptionsResponse = OpencodeReasoningEffortResponse
 
 export class RpcGateway {
     constructor(
@@ -256,6 +258,10 @@ export class RpcGateway {
 
     async listOpencodeModelsForCwd(machineId: string, cwd: string): Promise<RpcListOpencodeModelsResponse> {
         return await this.machineRpc(machineId, RPC_METHODS.ListOpencodeModelsForCwd, { cwd }) as RpcListOpencodeModelsResponse
+    }
+
+    async listOpencodeReasoningEffortOptionsForSession(sessionId: string): Promise<RpcListOpencodeReasoningEffortOptionsResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.ListOpencodeReasoningEffortOptions, {}) as RpcListOpencodeReasoningEffortOptionsResponse
     }
 
     private async sessionRpc(

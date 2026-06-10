@@ -25,6 +25,8 @@ import type {
 } from '@/types/api'
 import type {
     CodexModelsResponse,
+    CursorMigrateOutcome,
+    CursorMigrateToAcpRequest,
     CursorModelsResponse,
     DeleteUploadResponse,
     FileReadResponse,
@@ -33,6 +35,7 @@ import type {
     MachineListDirectoryResponse,
     MachinePathsExistsResponse,
     OpencodeModelsResponse,
+    OpencodeReasoningEffortResponse,
     ReopenSessionResponse,
     UploadFileResponse
 } from '@hapi/protocol/apiTypes'
@@ -425,6 +428,54 @@ export class ApiClient {
         )
     }
 
+    /**
+     * Migrate a legacy stream-json Cursor session to ACP. See tiann/hapi#824.
+     *
+     * Refusals (e.g. running session, missing on-disk store, target collision)
+     * are returned as structured `{ok: false, reason, message}` outcomes
+     * rather than thrown - the UI surfaces the reason to the operator and the
+     * underlying state on disk is unchanged.
+     *
+     * 401s trigger the same onUnauthorized refresh path as the shared
+     * `request()` helper so an expired JWT silently re-auths instead of
+     * hard-failing the migration dialog (Codex review #34 P2).
+     */
+    async migrateCursorSessionToAcp(sessionId: string, body: CursorMigrateToAcpRequest = {}): Promise<CursorMigrateOutcome> {
+        const path = `/api/sessions/${encodeURIComponent(sessionId)}/migrate-to-acp`
+        const tryOnce = async (overrideToken: string | null): Promise<Response> => {
+            const headers = new Headers({ 'content-type': 'application/json' })
+            const liveToken = this.getToken ? this.getToken() : null
+            const authToken = overrideToken ?? liveToken ?? this.token
+            if (authToken) {
+                headers.set('authorization', `Bearer ${authToken}`)
+            }
+            return fetch(this.buildUrl(path), { method: 'POST', headers, body: JSON.stringify(body) })
+        }
+
+        let res = await tryOnce(null)
+        if (res.status === 401 && this.onUnauthorized) {
+            const refreshed = await this.onUnauthorized()
+            if (refreshed) {
+                this.token = refreshed
+                res = await tryOnce(refreshed)
+            }
+        }
+        if (res.status === 401) {
+            throw new Error('Session expired. Please sign in again.')
+        }
+        const text = await res.text()
+        let parsed: CursorMigrateOutcome | null = null
+        try {
+            parsed = text ? JSON.parse(text) as CursorMigrateOutcome : null
+        } catch {
+            parsed = null
+        }
+        if (parsed && typeof parsed === 'object' && 'ok' in parsed) {
+            return parsed
+        }
+        throw new Error(`HTTP ${res.status} ${res.statusText}: ${text}`)
+    }
+
     async switchSession(sessionId: string): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/switch`, {
             method: 'POST',
@@ -561,6 +612,12 @@ export class ApiClient {
     async getSessionOpencodeModels(sessionId: string): Promise<OpencodeModelsResponse> {
         return await this.request<OpencodeModelsResponse>(
             `/api/sessions/${encodeURIComponent(sessionId)}/opencode-models`
+        )
+    }
+
+    async getSessionOpencodeReasoningEffortOptions(sessionId: string): Promise<OpencodeReasoningEffortResponse> {
+        return await this.request<OpencodeReasoningEffortResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/opencode-reasoning-effort-options`
         )
     }
 

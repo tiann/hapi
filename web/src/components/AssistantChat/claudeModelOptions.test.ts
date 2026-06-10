@@ -10,6 +10,8 @@ describe('getClaudeComposerModelOptions', () => {
             { value: 'sonnet[1m]', label: 'Sonnet 1M' },
             { value: 'opus', label: 'Opus' },
             { value: 'opus[1m]', label: 'Opus 1M' },
+            { value: 'fable', label: 'Fable' },
+            { value: 'fable[1m]', label: 'Fable 1M' },
         ])
     })
 
@@ -20,6 +22,8 @@ describe('getClaudeComposerModelOptions', () => {
             { value: 'sonnet[1m]', label: 'Sonnet 1M' },
             { value: 'opus', label: 'Opus' },
             { value: 'opus[1m]', label: 'Opus 1M' },
+            { value: 'fable', label: 'Fable' },
+            { value: 'fable[1m]', label: 'Fable 1M' },
         ])
     })
 })

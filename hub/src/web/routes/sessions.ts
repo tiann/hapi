@@ -1,4 +1,5 @@
 import {
+    CursorMigrateToAcpRequestSchema,
     DeleteUploadRequestSchema,
     getPermissionModesForFlavor,
     isPermissionModeAllowedForFlavor,
@@ -301,6 +302,54 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
 
         await engine.archiveSession(sessionResult.sessionId)
         return c.json({ ok: true })
+    })
+
+    app.post('/sessions/:id/migrate-to-acp', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        // Codex #34 P2 (round 13): `c.req.json().catch(() => ({}))` silently
+        // converts malformed JSON into an empty object — which then passes
+        // CursorMigrateToAcpRequestSchema (all fields optional) and runs
+        // the migration with DESTRUCTIVE defaults (keepSource defaults to
+        // remove-after-flip). An operator who intended `{"keepSource": true}`
+        // but sent a truncated body would see the legacy store removed
+        // anyway. Distinguish "no body at all" (defaults are fine) from
+        // "malformed JSON" (reject with 400).
+        const rawBody = await c.req.text()
+        let body: unknown = {}
+        if (rawBody.trim().length > 0) {
+            try {
+                body = JSON.parse(rawBody)
+            } catch {
+                return c.json({ error: 'Invalid JSON body' }, 400)
+            }
+        }
+        const parsed = CursorMigrateToAcpRequestSchema.safeParse(body ?? {})
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body', issues: parsed.error.issues }, 400)
+        }
+
+        const namespace = c.get('namespace')
+        const outcome = await engine.migrateLegacyCursorSession(
+            sessionResult.sessionId,
+            namespace,
+            parsed.data
+        )
+        const status = outcome.ok ? 200
+            : outcome.reason === 'already_acp' || outcome.reason === 'not_cursor_session' || outcome.reason === 'no_cursor_session_id' ? 409
+                : outcome.reason === 'running_refused' ? 409
+                    : outcome.reason === 'target_already_exists' ? 409
+                        : outcome.reason === 'no_legacy_store_on_disk' ? 404
+                            : 500
+        return c.json(outcome, status)
     })
 
     app.post('/sessions/:id/switch', async (c) => {
@@ -684,6 +733,36 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to list OpenCode models'
+            }, 500)
+        }
+    })
+
+    app.get('/sessions/:id/opencode-reasoning-effort-options', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (flavor !== 'opencode') {
+            return c.json({
+                success: false,
+                error: 'OpenCode reasoning effort options are only available for OpenCode sessions'
+            }, 400)
+        }
+
+        try {
+            const result = await engine.listOpencodeReasoningEffortOptionsForSession(sessionResult.sessionId)
+            return c.json(result)
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to list OpenCode reasoning effort options'
             }, 500)
         }
     })

@@ -118,6 +118,12 @@ export default {
   'session.time.importedFromCodex.minutesAgo': 'imported from Codex {n}m ago',
   'session.time.importedFromCodex.hoursAgo': 'imported from Codex {n}h ago',
   'session.time.importedFromCodex.daysAgo': 'imported from Codex {n}d ago',
+  'session.cursorMigration.banner.title': 'Upgrading Cursor session',
+  'session.cursorMigration.banner.body': 'Switching this legacy chat to the safer ACP protocol. This takes 15-20 seconds for sessions with long history; your conversation will resume automatically and any draft text will survive.',
+
+  // Session inactive
+  'session.inactive.autoResume': 'This session is inactive. Send a message to resume.',
+  'session.inactive.cannotResume': 'This session is inactive and cannot be resumed.',
 
   // Session header
   'session.title': 'Files',

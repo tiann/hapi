@@ -118,6 +118,12 @@ export default {
   'session.time.importedFromCodex.minutesAgo': '{n} 分钟前从codex客户端导入',
   'session.time.importedFromCodex.hoursAgo': '{n} 小时前从codex客户端导入',
   'session.time.importedFromCodex.daysAgo': '{n} 天前从codex客户端导入',
+  'session.cursorMigration.banner.title': '正在升级 Cursor 会话',
+  'session.cursorMigration.banner.body': '正在将此旧版会话切换到更安全的 ACP 协议。历史较长的会话需要 15-20 秒；对话会自动恢复，已输入但未发送的草稿不会丢失。',
+
+  // Session inactive
+  'session.inactive.autoResume': '此会话已停止。发送消息即可恢复。',
+  'session.inactive.cannotResume': '此会话已停止，无法恢复。',
 
   // Session header
   'session.title': '文件',
@@ -160,6 +166,7 @@ export default {
   'dialog.delete.description': '确定要删除 "{name}" 吗？此操作无法撤销。',
   'dialog.delete.confirm': '删除',
   'dialog.delete.confirming': '删除中…',
+
   'dialog.error.default': '操作失败，请重试。',
 
   // Session export
