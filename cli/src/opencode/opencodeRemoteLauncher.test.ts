@@ -569,6 +569,33 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         await launchPromise;
     });
 
+    it('surfaces non-stall stderr as error without clearing thinking or canceling prompt', async () => {
+        harness.hangPrompt = true;
+        const { session, agentMessages } = createSessionStub([
+            { message: 'first', mode: createMode() }
+        ]);
+
+        const launchPromise = opencodeRemoteLauncher(session as never);
+        await vi.waitFor(() => expect(harness.events).toContain('prompt:start'));
+        expect(session.thinking).toBe(true);
+
+        harness.stderrHandler!({
+            type: 'authentication',
+            message: 'Authentication failed. Please check your credentials.',
+            raw: 'status 401 unauthenticated'
+        });
+
+        expect(session.thinking).toBe(true);
+        expect(harness.cancelPrompt).not.toHaveBeenCalled();
+        expect(agentMessages).toContainEqual({
+            type: 'error',
+            message: 'Authentication failed. Please check your credentials.'
+        });
+
+        harness.resolvePrompt!();
+        await launchPromise;
+    });
+
     it('serializes setModel after the previous prompt resolves', async () => {
         const { session } = createSessionStub([
             { message: 'first', mode: createMode('ollama/a') },
