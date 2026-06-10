@@ -125,6 +125,13 @@ export async function runPi(opts: {
     wireTransportEvents(transport, piSession, pendingLocalIds);
 
     // --- Session config RPC ---
+    //
+    // Pi manually registers SetSessionConfig instead of using
+    // registerSessionConfigRpc() because Pi's wire protocol requires
+    // separate provider + modelId fields (transport.send({ type:
+    // 'set_model', provider, modelId })), while registerSessionConfigRpc
+    // only handles model as a simple string. The hub sends model as
+    // { provider, modelId } for Pi sessions.
 
     apiSession.rpcHandlerManager.registerHandler(RPC_METHODS.SetSessionConfig, async (rawPayload: unknown) => {
         const parsed = SetSessionConfigPayloadSchema.safeParse(rawPayload);

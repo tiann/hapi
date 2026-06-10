@@ -103,6 +103,9 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
     if (metadata.tools !== undefined) preserved.tools = metadata.tools
     if (metadata.slashCommands !== undefined) preserved.slashCommands = metadata.slashCommands
     if (metadata.worktree !== undefined) preserved.worktree = metadata.worktree
+    // Preserve cached Pi model list so the web can show models immediately
+    // on inactive-session view without waiting for an RPC round-trip.
+    if (metadata.piAvailableModels !== undefined) preserved.piAvailableModels = metadata.piAvailableModels
 
     return preserved
 }

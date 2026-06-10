@@ -31,9 +31,21 @@ export function resolveSessionConfigPermissionMode<TPermissionMode extends Permi
     return parsed.data as TPermissionMode
 }
 
+/** Extract `modelId` from either a plain string or a `{ provider, modelId }`
+ *  object (the form Pi sessions receive from the hub). Other agents only pass
+ *  plain strings; the object branch is here for schema consistency so this
+ *  function doesn't throw if the hub later sends the union form to any agent. */
 export function resolveNullableSessionModel(value: unknown): string | null {
     if (value === null) {
         return null
+    }
+    // Pi sessions receive model as { provider, modelId }; extract modelId
+    if (typeof value === 'object' && value !== null) {
+        const modelObj = value as { modelId?: unknown }
+        if (typeof modelObj.modelId === 'string' && modelObj.modelId.trim().length > 0) {
+            return modelObj.modelId.trim()
+        }
+        throw new Error('Invalid model')
     }
     if (typeof value !== 'string' || value.trim().length === 0) {
         throw new Error('Invalid model')
