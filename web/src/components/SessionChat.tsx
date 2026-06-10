@@ -1168,7 +1168,7 @@ function SessionChatInner(props: SessionChatProps) {
                                         && !cursorModelsState.error
                                         && cursorPicker
                                         && cursorPicker.modelOptions.length > 0
-                                        ? handleCursorBaseModelChange
+                                        ? ((model) => handleCursorBaseModelChange(typeof model === 'string' ? model : model?.modelId ?? null))
                                         : undefined)
                                     : agentFlavor === 'pi'
                                         ? (props.session.active && !piModelsState.error ? handleModelChange : undefined)
