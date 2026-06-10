@@ -63,7 +63,7 @@ export function formatRateLimitReachedType(value: string): string {
 }
 
 export function formatCodexUsageReset(resetAt: number | undefined, locale?: string): string | null {
-    if (!resetAt) return null
+    if (!resetAt || resetAt <= 0) return null
     return new Intl.DateTimeFormat(locale, {
         month: 'short',
         day: 'numeric',
