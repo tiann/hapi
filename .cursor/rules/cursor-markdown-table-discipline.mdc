@@ -1,27 +1,25 @@
 ---
-description: Cursor-specific table rendering discipline - prefer fenced ASCII over GFM pipe tables
+description: Cursor sessions - do not emit markdown tables; use lists
 alwaysApply: true
 ---
 
-# Cursor table rendering discipline
+# Cursor table policy: don't
 
-Cursor-flavor sessions in this repo have a documented history of emitting GFM pipe tables that arrive at the HAPI renderer with cells dropped or separator rows malformed, falling back to a `<p>` of literal pipe text instead of a `<table>`. This has been observed even when the agent believed it had verified the column count before sending.
+Cursor-flavor sessions in this repo repeatedly emit tables that arrive at the HAPI renderer with cells dropped, separators malformed, or whole rows merged into a paragraph - even after the agent self-verifies the column counts, even when wrapped in code fences. The corruption window between agent emission and renderer input is not closeable from the agent side.
 
-**Root cause:** the agent cannot inspect its own emitted bytes — only its intended output. Any self-verification rule like "count the pipes before sending" is unfalsifiable from the agent side. The corruption window sits between agent emission and renderer input and cannot be closed by post-hoc cell counting.
+**Rule:** do not emit markdown tables in Cursor sessions. Use bulleted or numbered lists with bold labels instead. Lists render reliably because each item is its own block element; there is no structural shape for a parser to demote.
 
-**Rule:** when emitting a tabular structure in a Cursor-flavor HAPI session, use a code-fenced ASCII table, not a GFM pipe table. Fenced content bypasses the markdown table parser entirely, so column count mismatch cannot demote the table to a paragraph.
+Use:
 
-Use this shape:
+- **Field A:** value
+- **Field B:** value
+- **Field C:** value
 
-```
-Column A     | Column B  | Column C
--------------|-----------|---------
-row 1 cell A | row 1 B   | row 1 C
-row 2 cell A | row 2 B   | row 2 C
-```
+Or for multi-attribute records:
 
-Pad cells so the pipes align visually — humans can read the structure without a renderer doing the work.
+- **Record 1** - field A: x, field B: y, field C: z
+- **Record 2** - field A: x, field B: y, field C: z
 
-Reserve GFM pipe tables (`| Col | Col |` with `|---|---|` separator) for cases where the data is two columns wide or fewer and short enough to verify by eye on a single line.
+Or, for genuinely tabular comparison data, write it inline as prose: "Claude has X and Y, Codex has X but not Y, Cursor has neither."
 
 This rule applies only to Cursor sessions. Other agent flavors (Claude, Codex, OpenCode) receive guidance via their HAPI system prompts; Cursor's CLI has no equivalent surface, so the rule lives here in `.cursor/rules/`.
