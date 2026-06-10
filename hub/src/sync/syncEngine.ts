@@ -904,6 +904,18 @@ export class SyncEngine {
                     // ambiguous flag; the cleanup write below would
                     // wipe both, so suppress it.
                     bannerCleanupNeeded = false
+                } else {
+                    // Promotion to 'ambiguous' failed (cache miss, repeated
+                    // version-mismatch, or non-version write failure). The
+                    // operator-facing warning above already fired; the
+                    // finally{} block will fall through to clear the
+                    // in-progress flag so the user is not left with a
+                    // permanent "Upgrading..." banner. Log so the gap is
+                    // diagnosable from journalctl. tiann/hapi#872.
+                    console.warn('[auto-migrate] failed to promote cursorMigrationState to "ambiguous"; banner will clear via cleanup', {
+                        sessionId: session.id,
+                        reason: outcome.reason
+                    })
                 }
                 return session
             }

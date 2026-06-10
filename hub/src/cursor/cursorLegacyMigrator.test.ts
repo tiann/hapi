@@ -364,6 +364,16 @@ describe('findLegacyChatStore', () => {
         const hash = workspaceHashFromPath('/coding/hapi')
         expect(hash).toMatch(/^[0-9a-f]{32}$/)
     })
+
+    it('rejects path-traversal cursorSessionId inputs at the function boundary (tiann/hapi#872 cold review)', () => {
+        // External callers may bypass preflightSession; the function must
+        // not statSync arbitrary paths when fed a malformed id. All of the
+        // following must return null (and never throw / never probe).
+        for (const id of ['..', '.', '../etc', '/etc/passwd', 'a/b', 'a/../b']) {
+            expect(findLegacyChatStore(id, h.home, '/coding/hapi')).toBeNull()
+            expect(findLegacyChatStore(id, h.home)).toBeNull()
+        }
+    })
 })
 
 describe('readLegacyMetaLastUsedModel', () => {

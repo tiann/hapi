@@ -274,6 +274,17 @@ export function findLegacyChatStore(
     home: string,
     sessionWorkspacePath?: string
 ): LegacyStoreLocation | null {
+    // tiann/hapi#872 cold review (#34-N): findLegacyChatStore is exported
+    // public API and used as a free function in unit tests + the migrator
+    // class. Validate the id at the boundary so an out-of-band caller
+    // cannot pass `..` or `/` and have the inner `join(chatsRoot, wsh, id,
+    // 'store.db')` resolve to an arbitrary on-disk path. The probe is
+    // read-only (`statSync`) so blast radius is small, but the same
+    // CURSOR_SESSION_ID_RE preflightSession applies to in-class callers
+    // is cheap to also enforce here.
+    if (!CURSOR_SESSION_ID_RE.test(cursorSessionId) || cursorSessionId === '.' || cursorSessionId === '..') {
+        return null
+    }
     const chatsRoot = join(home, '.cursor', 'chats')
     if (!existsSync(chatsRoot)) return null
 
@@ -620,6 +631,18 @@ export class CursorLegacyMigrator {
             return refusal(session.id, 'no_legacy_store_on_disk', `~/.cursor/chats/*/${cursorSessionId}/store.db not found under ${home}`, start, this.deps.now)
         }
 
+        // tiann/hapi#872: snapshot what discovery saw on disk BEFORE any
+        // destructive step (rm of the source drawer). The
+        // `migrator:transplanted` log on the success path quotes this
+        // count as "1 of N candidates picked" — capturing it AFTER the
+        // source rm would systematically under-report (the picked
+        // drawer is gone) and silently turn the diagnostic into noise.
+        const candidatesAtDiscovery = listLegacyChatStoreCandidates(cursorSessionId, home)
+        const sourceBytesAtDiscovery = (() => {
+            try { return statSync(legacy.storeDbPath).size } catch { return -1 }
+        })()
+        const sourceBlobCountAtDiscovery = countLegacyStoreBlobs(legacy.storeDbPath) ?? -1
+
         // Size sanity check: even when discovery is unambiguous, the
         // picked legacy store may be a stale sibling that happens to be
         // the only on-disk artifact for this session id (e.g. operator
@@ -948,32 +971,19 @@ export class CursorLegacyMigrator {
             }
         }
 
-        // Diagnostic log on every successful transplant. Captures what
-        // discovery picked AND how many candidates were on disk so that
-        // a future regression of the #844 ambiguous-source bug is
-        // diagnosable from `journalctl -u hapi-hub` alone, without
-        // needing blob-overlap forensics on the destination store.
-        // tiann/hapi#872.
-        const candidatesForLog = listLegacyChatStoreCandidates(cursorSessionId, home)
-        let sourceBytes = -1
-        let sourceBlobCount = -1
-        try {
-            sourceBytes = statSync(join(acpSessionDir, 'store.db')).size
-        } catch {
-            // target gone? happens only mid-rollback paths we don't hit here
-        }
-        try {
-            sourceBlobCount = countLegacyStoreBlobs(join(acpSessionDir, 'store.db')) ?? -1
-        } catch {
-            // best-effort; don't fail a successful migration on a diag read
-        }
+        // tiann/hapi#872: diagnostic log on every successful transplant.
+        // Uses pre-rm snapshots captured at discovery time so the count
+        // and source measurements reflect what was actually on disk, not
+        // what's left after the cleanup rm. Future regression of the #844
+        // ambiguous-source bug is diagnosable from `journalctl -u hapi-hub`
+        // alone, without blob-overlap forensics on the destination store.
         log.info('[migrator] transplanted', {
             sessionId: session.id,
             cursorSessionId,
             workspaceHash: legacy.workspaceHash,
-            candidateCount: candidatesForLog.length,
-            sourceBytes,
-            sourceBlobCount,
+            candidateCount: candidatesAtDiscovery.length,
+            sourceBytes: sourceBytesAtDiscovery,
+            sourceBlobCount: sourceBlobCountAtDiscovery,
             targetAcpPath: join(acpSessionDir, 'store.db'),
             sourceRemoved,
             canonicalHash: canonicalWorkspacePath.length > 0
