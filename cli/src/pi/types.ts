@@ -95,32 +95,16 @@ import type { PiThinkingLevel } from '@hapi/protocol'
 import type { PiCommandSummary } from '@hapi/protocol/apiTypes'
 export type { PiThinkingLevel, PiCommandSummary }
 
-export type PiStreamingBehavior = 'steer' | 'followUp'
-
 export type PiRpcCommand =
-    | { type: 'prompt'; message: string; streamingBehavior?: PiStreamingBehavior }
+    | { type: 'prompt'; message: string }
     | { type: 'steer'; message: string }
-    | { type: 'follow_up'; message: string }
     | { type: 'abort' }
     | { type: 'new_session' }
     | { type: 'get_state' }
     | { type: 'set_model'; provider: string; modelId: string }
     | { type: 'get_available_models' }
-    | { type: 'set_session_name'; name: string }
     | { type: 'set_thinking_level'; level: PiThinkingLevel }
-    | { type: 'cycle_thinking_level' }
-    | { type: 'get_commands' }
-    | { type: 'set_steering_mode'; mode: 'all' | 'one-at-a-time' }
-    | { type: 'set_follow_up_mode'; mode: 'all' | 'one-at-a-time' }
-    | { type: 'get_messages' }
-    | { type: 'compact'; customInstructions?: string }
-    | { type: 'set_auto_compaction'; enabled: boolean }
-    | { type: 'fork'; entryId: string }
-    | { type: 'get_fork_messages' }
-    | { type: 'clone' }
-    | { type: 'switch_session'; sessionPath: string }
-    | { type: 'get_session_stats' }
-    | { type: 'export_html'; outputPath?: string };
+    | { type: 'get_commands' };
 
 // ============================================================================
 // Pi RPC Responses (stdout)

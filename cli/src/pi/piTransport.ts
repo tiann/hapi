@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { logger } from '@/ui/logger';
+import { JsonLineParser } from '@/utils/jsonLineParser';
 import { PiAgentEventSchema } from './schemas';
 import type { PiAgentEvent, PiRpcCommand } from './types';
 
@@ -9,7 +10,7 @@ export interface PiTransportOptions {
     cwd: string;
 }
 
-export class PiTransport {
+export class PiTransport extends JsonLineParser {
     private process: ChildProcessWithoutNullStreams | null = null;
     private eventHandler: ((event: PiAgentEvent) => void) | null = null;
     private closeHandler: ((code: number | null, signal: string | null) => void) | null = null;
@@ -17,10 +18,10 @@ export class PiTransport {
     private killed = false;
     private started = false;
     private exited = false;
-    private buffer = '';
     private readonly options: PiTransportOptions;
 
     constructor(options: PiTransportOptions) {
+        super();
         this.options = options;
     }
 
@@ -39,7 +40,7 @@ export class PiTransport {
         }) as ChildProcessWithoutNullStreams;
 
         this.process.stdout.setEncoding('utf8');
-        this.process.stdout.on('data', (chunk: string) => this.handleStdout(chunk));
+        this.process.stdout.on('data', (chunk: string) => this.feed(chunk));
         this.process.stdout.on('end', () => {
             if (!this.exited && !this.killed) {
                 logger.debug('[pi] stdout ended before process close — treating as exit');
@@ -108,23 +109,7 @@ export class PiTransport {
         this.process.kill('SIGTERM');
     }
 
-    private handleStdout(chunk: string): void {
-        this.buffer += chunk;
-        let newlineIndex = this.buffer.indexOf('\n');
-
-        while (newlineIndex >= 0) {
-            const line = this.buffer.slice(0, newlineIndex).trim();
-            this.buffer = this.buffer.slice(newlineIndex + 1);
-
-            if (line.length > 0) {
-                this.handleLine(line);
-            }
-
-            newlineIndex = this.buffer.indexOf('\n');
-        }
-    }
-
-    private handleLine(line: string): void {
+    protected handleLine(line: string): void {
         try {
             const parsed = JSON.parse(line);
             const result = PiAgentEventSchema.safeParse(parsed);

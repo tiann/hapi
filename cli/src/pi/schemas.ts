@@ -70,7 +70,7 @@ export const PiResponseEventSchema = z.object({
 const VALID_COMMAND_SOURCES = ['extension', 'prompt', 'skill'] as const;
 type PiCommandSource = (typeof VALID_COMMAND_SOURCES)[number];
 
-export const PiCommandSummarySchema = z.object({
+const PiCommandSummarySchema = z.object({
     name: z.string(),
     description: z.string().optional(),
     source: z.enum(VALID_COMMAND_SOURCES),
@@ -95,7 +95,7 @@ const PiCommandEntrySchema = z.object({
     return entry;
 });
 
-export const PiCommandsResponseDataSchema = z.object({
+const PiCommandsResponseDataSchema = z.object({
     commands: z.array(z.unknown()).default([]),
 }).transform(data =>
     data.commands
@@ -126,7 +126,7 @@ const PiModelEntrySchema = z.object({
     return entry;
 });
 
-export const PiModelsResponseDataSchema = z.object({
+const PiModelsResponseDataSchema = z.object({
     models: z.array(z.unknown()).default([]),
 }).transform(data =>
     data.models

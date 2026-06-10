@@ -625,6 +625,10 @@ export function SessionChat(props: {
             <AssistantRuntimeProvider runtime={runtime}>
                 <div className="relative flex min-h-0 flex-1 flex-col">
                     <HappyThread
+                        // Key with prefix: different components under the same session
+                        // (thread, scratchlist, composer) must have distinct keys to avoid
+                        // React reconciliation issues when switching sessions rapidly.
+                        // Without prefixes, React may reuse the wrong component's DOM/localStorage.
                         key={`thread-${props.session.id}`}
                         api={props.api}
                         sessionId={props.session.id}

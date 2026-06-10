@@ -740,19 +740,7 @@ export function SessionList(props: {
         return t('machine.unknown')
     }
 
-    const allSessions = useMemo(
-        () => {
-            if (import.meta.env.DEV) {
-                const ids = props.sessions.map(s => s.id)
-                const dupes = ids.filter((id, i) => ids.indexOf(id) !== i)
-                if (dupes.length > 0) {
-                    console.warn('[SessionList] Duplicate session IDs in props.sessions:', dupes)
-                }
-            }
-            return props.sessions
-        },
-        [props.sessions]
-    )
+    const allSessions = props.sessions
     const visibleSessions = useMemo(
         () => isSearching
             ? allSessions.filter(session => sessionMatchesQuery(
