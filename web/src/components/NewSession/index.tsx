@@ -196,6 +196,14 @@ export function NewSession(props: {
         enabled: agent === 'codex' && Boolean(machineId)
     })
 
+    useEffect(() => {
+        if (!selectedCodexSessionId) return
+        if (codexSessionsState.isLoading) return
+        if (!codexSessionsState.sessions.some((s) => s.id === selectedCodexSessionId)) {
+            setSelectedCodexSessionId('')
+        }
+    }, [selectedCodexSessionId, codexSessionsState.isLoading, codexSessionsState.sessions])
+
     const [opencodeSelectedModel, setOpencodeSelectedModel] = useState<string | null>(null)
     const runnerSpawnError = useMemo(
         () => formatRunnerSpawnError(selectedMachine),
