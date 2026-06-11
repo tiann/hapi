@@ -151,6 +151,15 @@ export default {
   'session.cursorMigration.bannerAmbiguous.title': 'Cursor session upgrade needs manual review',
   'session.cursorMigration.bannerAmbiguous.body': 'This chat exists on disk in multiple workspace folders or the on-disk size does not match the synced history, so HAPI refused to transplant it automatically. Check hub logs for the candidate list (search for "[migrator] ambiguous legacy store" or "[migrator] size sanity check refused"), delete the stale drawers under ~/.cursor/chats/, and reopen the session.',
 
+  // Model error banner
+  'session.modelError.banner.title': 'MODEL ERROR \u2014 {kind}',
+  'session.modelError.banner.subtitle.transient': 'transient',
+  'session.modelError.banner.subtitle.nonTransient': 'non-transient',
+  'session.modelError.banner.claimedDone': 'The agent claimed completion before this error. The work is likely INCOMPLETE.',
+  'session.modelError.banner.midExecution': 'The last agent turn failed mid-execution.',
+  'session.modelError.banner.dismiss': 'Dismiss',
+  'session.modelError.banner.viewRaw': 'View raw error',
+
   // Session inactive
   'session.inactive.autoResume': 'This session is inactive. Send a message to resume.',
   'session.inactive.cannotResume': 'This session is inactive and cannot be resumed.',
