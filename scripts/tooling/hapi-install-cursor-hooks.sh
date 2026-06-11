@@ -14,12 +14,15 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HOOKS_JSON="${REPO_ROOT}/.cursor/hooks.json"
-GUARD_SCRIPT="${REPO_ROOT}/scripts/tooling/hapi-product-code-guard.sh"
+PRODUCT_GUARD="${REPO_ROOT}/scripts/tooling/hapi-product-code-guard.sh"
+SYSTEMCTL_GUARD="${REPO_ROOT}/scripts/tooling/hapi-systemctl-guard.sh"
 
-if [ ! -x "$GUARD_SCRIPT" ]; then
-    echo "ERROR: ${GUARD_SCRIPT} missing or not executable" >&2
-    exit 1
-fi
+for s in "$PRODUCT_GUARD" "$SYSTEMCTL_GUARD"; do
+    if [ ! -x "$s" ]; then
+        echo "ERROR: ${s} missing or not executable" >&2
+        exit 1
+    fi
+done
 
 mkdir -p "${REPO_ROOT}/.cursor"
 
@@ -31,6 +34,10 @@ cat > "$HOOKS_JSON" <<'JSON'
       {
         "command": "./scripts/tooling/hapi-product-code-guard.sh",
         "matcher": "Write|Edit|StrReplace|MultiEdit|EditNotebook"
+      },
+      {
+        "command": "./scripts/tooling/hapi-systemctl-guard.sh",
+        "matcher": "Shell"
       }
     ]
   }
@@ -38,9 +45,12 @@ cat > "$HOOKS_JSON" <<'JSON'
 JSON
 
 echo "Wrote ${HOOKS_JSON}"
-echo "Hook: hapi-product-code-guard.sh -> blocks edits to cli/, hub/, web/, shared/ outside ~/coding/hapi/worktrees/"
+echo "Hooks installed:"
+echo "  hapi-product-code-guard.sh  -> blocks edits to cli/, hub/, web/, shared/ outside ~/coding/hapi/worktrees/"
+echo "  hapi-systemctl-guard.sh     -> blocks 'sudo systemctl <destructive-verb> hapi-{hub,runner,runner-watchdog}.service'"
 echo
-echo "Bypass when needed (operator-approved):"
-echo "  export HAPI_OPERATOR_PRODUCT_EDIT_OVERRIDE=1"
+echo "Bypasses when needed (operator-approved):"
+echo "  HAPI_OPERATOR_PRODUCT_EDIT_OVERRIDE=1   (product-code edits)"
+echo "  HAPI_OPERATOR_SYSTEMCTL_OVERRIDE=1      (systemctl on hapi units)"
 echo
-echo "Restart Cursor (or reload) to pick up the hook."
+echo "Restart Cursor (or reload) to pick up the hooks."

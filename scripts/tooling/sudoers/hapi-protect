@@ -1,0 +1,47 @@
+# /etc/sudoers.d/hapi-protect
+#
+# Install via: sudo bash scripts/tooling/install-hapi-sudoers.sh
+# Validate via: sudo visudo -cf /etc/sudoers.d/hapi-protect
+#
+# Documentation-grade signal that destructive systemctl operations against
+# hapi-{hub,runner,runner-watchdog}.service are operator-only. Actual
+# enforcement happens in the Cursor preToolUse hook
+# (~/coding/hapi/scripts/tooling/hapi-systemctl-guard.sh) because sudoers
+# !command syntax is documented-bypassable per sudoers(5):
+#
+#   "It is generally not effective to 'subtract' commands from ALL using
+#    the '!' operator. A user can trivially circumvent this by copying
+#    the desired command to a different name."
+#
+# Bypasses sudoers can NOT catch (but the Cursor hook does, because it
+# pattern-matches the literal command line of the agent's tool call):
+#   - Shell wrap:  sudo bash -c 'systemctl stop hapi-hub.service'
+#   - Renamed binary:  sudo cp /bin/systemctl /tmp/x; sudo /tmp/x stop hapi-hub.service
+#
+# Bypasses sudoers DOES catch (alternate stable binary path):
+#   - sudo /usr/bin/systemctl stop hapi-hub.service
+#   - sudo /bin/systemctl stop hapi-hub.service
+#
+# What sudo -l shows after install: the negated entries appear as deny
+# rules under "(root)", so an agent (or operator) running `sudo -l` sees
+# the prohibition explicitly.
+#
+# See ~/coding/hapi/.cursor/rules/operator-fork.mdc for full policy.
+
+Cmnd_Alias HAPI_DESTROY = \
+    /bin/systemctl stop hapi-hub.service, \
+    /bin/systemctl stop hapi-runner.service, \
+    /bin/systemctl stop hapi-runner-watchdog.service, \
+    /bin/systemctl restart hapi-hub.service, \
+    /bin/systemctl kill hapi-hub.service, \
+    /bin/systemctl kill hapi-runner.service, \
+    /bin/systemctl disable hapi-hub.service, \
+    /bin/systemctl mask hapi-hub.service, \
+    /usr/bin/systemctl stop hapi-hub.service, \
+    /usr/bin/systemctl stop hapi-runner.service, \
+    /usr/bin/systemctl restart hapi-hub.service, \
+    /usr/bin/systemctl kill hapi-hub.service, \
+    /usr/bin/systemctl disable hapi-hub.service, \
+    /usr/bin/systemctl mask hapi-hub.service
+
+heavygee ALL=(root) !HAPI_DESTROY

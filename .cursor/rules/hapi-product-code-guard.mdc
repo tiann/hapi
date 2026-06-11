@@ -9,7 +9,9 @@ alwaysApply: true
 
 A `preToolUse` hook (`scripts/tooling/hapi-product-code-guard.sh`) blocks `Write` / `Edit` / `StrReplace` / `MultiEdit` / `EditNotebook` calls to these paths when they are not under a worktree. This rule exists so the agent expects the block instead of being surprised by it.
 
-**Per-machine installation:** `.cursor/hooks.json` is gitignored (per-user state). On a fresh clone run `scripts/tooling/hapi-install-cursor-hooks.sh` to install it.
+A sibling `preToolUse` hook (`scripts/tooling/hapi-systemctl-guard.sh`) blocks `Shell` calls that match `sudo systemctl <destructive-verb> hapi-{hub,runner,runner-watchdog}.service`. Same install path, same rationale - see `.cursor/rules/operator-fork.mdc` for the policy.
+
+**Per-machine installation:** `.cursor/hooks.json` is gitignored (per-user state). On a fresh clone run `scripts/tooling/hapi-install-cursor-hooks.sh` to install both hooks. Run `sudo bash scripts/tooling/install-hapi-sudoers.sh` to install the matching sudoers `!`-rule (discoverability layer - shows up in `sudo -l`).
 
 ## Workflow when the operator asks for a code change
 

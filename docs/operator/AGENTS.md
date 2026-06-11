@@ -89,8 +89,7 @@ ElevenLabs ConvAI today: handoff OK, readback weak, payment, no mode machine. Ta
 - `hapi-use-worktree <path>` — operator-only stack switch.
 - `hapi-use-driver` — operator-only swing back to driver.
 - `hapi-driver-rebuild --activate` — same effect (calls hapi-use-worktree internally).
-- `sudo systemctl stop|restart hapi-hub.service` — naked, no patient drain.
-- `sudo systemctl stop|restart hapi-runner.service` — same, kills runner sessions mid-turn.
+- `sudo systemctl stop|restart|kill|disable|mask hapi-{hub,runner,runner-watchdog}.service` — naked, no patient drain. **Blocked at two layers since 2026-06-11**: a Cursor preToolUse hook (`scripts/tooling/hapi-systemctl-guard.sh`) refuses the agent's tool call before sudo even fires, AND a sudoers `!`-rule (`/etc/sudoers.d/hapi-protect`) refuses the call from any shell. The hook catches shell-wrap and renamed-binary bypasses; sudoers `!` is documented-bypassable but visible in `sudo -l` for discoverability. Allowed: `start`, `status`, `is-active` — those are recovery / read-only.
 - `HAPI_STACK_SWITCH_YES=1` — that flag exists for operator cron/CI scripts, **never** for agent tool-calls. The script as of 2026-06-11 refuses `HAPI_STACK_SWITCH_YES=1` from inside the target worktree (the agent self-deletion pattern) and refuses entirely when `HAPI_AGENT_CONTEXT=1` is set in env.
 
 **Allowed: get your branch onto live `:3006` the supported way.**

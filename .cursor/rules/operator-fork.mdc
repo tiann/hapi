@@ -35,6 +35,30 @@ hapi-driver-rebuild --build-web --verify    # merges into driver/integration, bu
 **Other rules:**
 
 - **Before any `hapi-driver-rebuild` or `hapi-use-worktree`:** run `hapi-driver-status --quiet` (exit 0 idle, 75 busy, 2 stale). Operator-side check; agents must not be running these in the first place. See `docs/tooling/driver-soup.md#coordination-avoid-stack-switch-contention`.
-- **NEVER `sudo systemctl restart hapi-hub.service`** or `... stop hapi-hub.service`. It yanks WORKING agents mid-turn. Use **`hapi-restart-hub`** (patient drain, 10min timeout, `--impatient` for hung-hub emergencies). See `docs/tooling/driver-soup.md#patient-restarts-dont-yank-live-agents`.
+
+## sudo systemctl on hapi services: blocked at two layers
+
+`sudo systemctl stop|restart|kill|disable|mask hapi-{hub,runner,runner-watchdog}.service` is **forbidden for agents** and now blocked by two layers as of 2026-06-11:
+
+1. **Cursor preToolUse hook** (`scripts/tooling/hapi-systemctl-guard.sh`) — pattern-matches the agent's Shell tool-call command line and refuses with a recovery message. Catches shell-wrap (`sudo bash -c '...'`) and alternate-binary-path bypasses. This is the **enforcement** layer for agents.
+2. **Sudoers !-deny rule** (`/etc/sudoers.d/hapi-protect`, source at `scripts/tooling/sudoers/hapi-protect`) — sudo refuses the destructive verbs, visible to anyone who runs `sudo -l`. This is the **discoverability** layer; sudoers `!` syntax is documented-bypassable per `sudoers(5)` so it is not the enforcement layer, but it catches direct invocations from any shell (not just Cursor tool calls) and makes the prohibition self-documenting.
+
+Allowed paths:
+
+- `sudo systemctl status hapi-hub.service` — read-only.
+- `sudo systemctl start hapi-hub.service` — recovery action when hub is already down.
+- `sudo systemctl restart hapi-runner.service` — what `hapi-runner-watchdog.service` needs (one-line whitelist in `/etc/sudoers.d/hapi-watchdog`).
+
+For destructive operations use:
+
+- `hapi-restart-hub` — patient drain, 10min timeout (`--impatient` for hung-hub).
+- `hapi-use-worktree <path>` — stack switch with pre-flight schema + auto-revert. Operator-only, see preceding section.
+
+Bypasses (operator-approved):
+
+- `HAPI_OPERATOR_SYSTEMCTL_OVERRIDE=1` — bypasses the Cursor hook only. Sudoers still enforces.
+- Edit `/etc/sudoers.d/hapi-protect` to remove specific entries — bypasses sudoers. Audit trail.
+
+See `docs/tooling/driver-soup.md#patient-restarts-dont-yank-live-agents` for the wrapper rationale.
 - Upstream PR branches: from `upstream/main` only; never include `docs/operator/`, `docs/plans/`, or `CLAUDE.md` in the PR diff (root `AGENTS.md` IS upstream-compatible and may appear in diffs only if a branch updates project-overview content with upstream's blessing).
 - Plans: `docs/plans/`.
