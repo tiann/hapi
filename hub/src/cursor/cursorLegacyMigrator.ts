@@ -242,6 +242,15 @@ function refusal(sessionId: string, reason: CursorMigrateRefusalReason, message:
 /* ---------- public API ---------- */
 
 /**
+ * UUID-ish pattern: a cursor session id MUST be a basename that cannot
+ * escape the chats/acp-sessions trees via path traversal.
+ * Moved here so findLegacyChatStore and listLegacyChatStoreCandidates
+ * can both reference it without a temporal-dead-zone hazard.
+ * tiann/hapi#877 bot Minor.
+ */
+const CURSOR_SESSION_ID_RE = /^[A-Za-z0-9_.-]+$/
+
+/**
  * Resolve the on-disk legacy ~/.cursor/chats/<wsh>/<cursorSessionId>/store.db
  * for the given cursorSessionId.
  *
@@ -289,7 +298,12 @@ export function findLegacyChatStore(
     if (!existsSync(chatsRoot)) return null
 
     // Step 1: canonical-path fast path. Skip readdir entirely if we hit.
-    const canonicalPath = typeof sessionWorkspacePath === 'string' ? sessionWorkspacePath.trim() : ''
+    // Do NOT trim: Cursor hashes the raw workspace path bytes.
+    // Trimming would produce a different hash for a valid POSIX path
+    // whose bytes happen to begin or end with ASCII space, causing a
+    // canonical miss and a potential false ambiguity refusal.
+    // tiann/hapi#877 bot Minor.
+    const canonicalPath = typeof sessionWorkspacePath === 'string' ? sessionWorkspacePath : ''
     if (canonicalPath.length > 0) {
         const canonicalHash = workspaceHashFromPath(canonicalPath)
         const canonicalCandidate = join(chatsRoot, canonicalHash, cursorSessionId, 'store.db')
@@ -320,6 +334,13 @@ export function findLegacyChatStore(
  * can see "1 of N candidates picked" after the fact. tiann/hapi#872.
  */
 export function listLegacyChatStoreCandidates(cursorSessionId: string, home: string): LegacyStoreCandidate[] {
+    // Guard: same boundary check as findLegacyChatStore.  A future direct
+    // caller that skips findLegacyChatStore must not be able to stat paths
+    // outside the intended <wsh>/<cursorSessionId>/store.db shape by passing
+    // a traversal-like id.  tiann/hapi#877 bot Minor.
+    if (!CURSOR_SESSION_ID_RE.test(cursorSessionId) || cursorSessionId === '.' || cursorSessionId === '..') {
+        return []
+    }
     const chatsRoot = join(home, '.cursor', 'chats')
     if (!existsSync(chatsRoot)) return []
     let entries: string[]
@@ -413,13 +434,6 @@ function decodeMetaValue(value: string): Record<string, unknown> | null {
     }
     return null
 }
-
-/**
- * UUID-ish pattern: a cursor session id MUST be a basename that cannot
- * escape the chats/acp-sessions trees via path traversal. Codex review #34
- * P2: validate before any join().
- */
-const CURSOR_SESSION_ID_RE = /^[A-Za-z0-9_.-]+$/
 
 /**
  * Pre-flight: return null if the session can be migrated; return a refusal
