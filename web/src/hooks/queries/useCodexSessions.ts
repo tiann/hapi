@@ -23,11 +23,20 @@ export function useCodexSessions(args: {
             if (!api || !machineId) {
                 throw new Error('Codex sessions target unavailable')
             }
-            return await api.getMachineCodexSessions(machineId, {
-                includeOld,
-                olderThanDays: 180,
-                limit: 200
-            })
+            const sessions: CodexSessionSummary[] = []
+            let cursor: string | undefined
+            do {
+                const page = await api.getMachineCodexSessions(machineId, {
+                    includeOld,
+                    olderThanDays: 180,
+                    limit: 100,
+                    cursor
+                })
+                if (page.success === false) return page
+                sessions.push(...(page.sessions ?? []))
+                cursor = page.nextCursor ?? undefined
+            } while (cursor)
+            return { success: true, sessions, nextCursor: null }
         },
         enabled,
         staleTime: 30_000,
