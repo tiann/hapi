@@ -9,6 +9,7 @@ import { SessionExportDialog } from '@/components/SessionExportDialog'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { CopyIcon, CheckIcon } from '@/components/icons'
+import { hasActiveModelError } from '@/components/ModelErrorBanner'
 
 function PinnedSectionIcon(props: { className?: string }) {
     return (
@@ -965,9 +966,10 @@ function SessionItem(props: {
             : null,
         [s, selected, showDetailedStatus]
     )
+    const modelErrorActive = hasActiveModelError(s.metadata)
     const hasScheduleTooltip = showDetailedStatus && s.futureScheduledMessageCount > 0
     const { attentionId, scheduleId, describedBy } = useSessionRowTooltipIds(
-        Boolean(attention),
+        Boolean(attention) && !modelErrorActive,
         hasScheduleTooltip
     )
     return (
