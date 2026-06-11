@@ -1805,6 +1805,62 @@ describe('session model', () => {
             // completedRequests has req-1
             expect(state.completedRequests?.['req-1']).toBeDefined()
         })
+
+        it('merges duplicate when piSessionId collides', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+
+            const s1 = cache.getOrCreateSession(
+                'tag-1',
+                { path: '/tmp/project', host: 'localhost', flavor: 'pi', piSessionId: 'pi-sess-A' },
+                null,
+                'default'
+            )
+
+            store.messages.addMessage(s1.id, { type: 'text', text: 'hello from s1' }, 'local-1')
+
+            const s2 = cache.getOrCreateSession(
+                'tag-2',
+                { path: '/tmp/project', host: 'localhost', flavor: 'pi', piSessionId: 'pi-sess-A' },
+                null,
+                'default'
+            )
+
+            expect(s1.id).not.toBe(s2.id)
+
+            await cache.deduplicateByAgentSessionId(s2.id)
+
+            expect(cache.getSession(s1.id)).toBeUndefined()
+            expect(cache.getSession(s2.id)).toBeDefined()
+
+            const messages = store.messages.getMessages(s2.id, 100)
+            expect(messages.length).toBeGreaterThanOrEqual(1)
+        })
+
+        it('preserves sessions with different piSessionId', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+
+            const s1 = cache.getOrCreateSession(
+                'tag-1',
+                { path: '/tmp/project', host: 'localhost', flavor: 'pi', piSessionId: 'pi-A' },
+                null,
+                'default'
+            )
+            const s2 = cache.getOrCreateSession(
+                'tag-2',
+                { path: '/tmp/project', host: 'localhost', flavor: 'pi', piSessionId: 'pi-B' },
+                null,
+                'default'
+            )
+
+            await cache.deduplicateByAgentSessionId(s2.id)
+
+            expect(cache.getSession(s1.id)).toBeDefined()
+            expect(cache.getSession(s2.id)).toBeDefined()
+        })
     })
 
     describe('clearSessionArchiveMetadata', () => {

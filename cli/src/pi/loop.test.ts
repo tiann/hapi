@@ -270,6 +270,17 @@ describe('wireTransportEvents', () => {
         expect(session.client.emitMessagesConsumed).toHaveBeenCalledWith(['id-1'], undefined);
     });
 
+    it('handles turn_start — pops pending localId', () => {
+        const transport = createMockTransport();
+        const pendingLocalIds = ['id-turn-1'];
+        wireTransportEvents(transport, session, pendingLocalIds);
+
+        emitEvent({ type: 'turn_start' });
+
+        expect(pendingLocalIds).toEqual([]);
+        expect(session.client.emitMessagesConsumed).toHaveBeenCalledWith(['id-turn-1'], undefined);
+    });
+
     it('handles turn_end — stops streaming', () => {
         const transport = createMockTransport();
         wireTransportEvents(transport, session, []);
@@ -330,6 +341,18 @@ describe('wireTransportEvents', () => {
         expect(session.cachedPiCommands).toEqual([
             { name: 'analyze', source: 'skill' },
         ]);
+    });
+
+    it('handles keep_alive — no side effects', () => {
+        const transport = createMockTransport();
+        wireTransportEvents(transport, session, []);
+
+        session.piIsStreaming = false;
+        emitEvent({ type: 'keep_alive' });
+
+        // keep_alive should not trigger any session mutations
+        expect(session.client.sendAgentMessage).not.toHaveBeenCalled();
+        expect(session.piIsStreaming).toBe(false);
     });
 
     it('handles set_model response — updates model and provider', () => {

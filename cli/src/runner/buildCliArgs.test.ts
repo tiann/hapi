@@ -103,4 +103,22 @@ describe('buildCliArgs', () => {
         expect(args).toContain('--resume')
         expect(args).toContain('some-claude-session-id')
     })
+
+    it('passes --effort for pi agent', () => {
+        const args = buildCliArgs('pi', {
+            directory: '/tmp',
+            effort: 'high',
+        })
+        expect(args).toContain('--effort')
+        expect(args).toContain('high')
+    })
+
+    it('passes --effort for claude agent', () => {
+        const args = buildCliArgs('claude', {
+            directory: '/tmp',
+            effort: 'high',
+        })
+        expect(args).toContain('--effort')
+        expect(args).toContain('high')
+    })
 })

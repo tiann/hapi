@@ -73,6 +73,7 @@ export function convertPiEvent(event: PiAgentEvent): AgentMessage[] {
             case 'message_end':
             case 'tool_execution_update':
             case 'extension_ui_request':
+            case 'keep_alive':
             case 'response':
                 return [];
 

@@ -241,7 +241,7 @@ export function wireTransportEvents(
         // Keep-alive + streaming state tracking
         if (event.type === 'agent_start' || event.type === 'turn_start') {
             session.updateThinkingState(true);
-            if (event.type === 'agent_start' && pendingLocalIds.length > 0) {
+            if (pendingLocalIds.length > 0) {
                 const oldestLocalId = pendingLocalIds.shift()!;
                 session.emitMessagesConsumed([oldestLocalId]);
             }

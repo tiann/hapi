@@ -15,6 +15,7 @@ export type RunnerLifecycle = {
     setExitCode: (code: number) => void
     setArchiveReason: (reason: string) => void
     setSessionEndReason: (reason: SessionEndReason) => void
+    hasExplicitSessionEndReason: () => boolean
     markCrash: (error: unknown) => void
     cleanup: () => Promise<void>
     cleanupAndExit: (codeOverride?: number) => Promise<void>
@@ -25,6 +26,7 @@ export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLi
     let exitCode = 0
     let archiveReason = 'User terminated'
     let sessionEndReason: SessionEndReason = 'terminated'
+    let sessionEndReasonExplicit = false
     let cleanupStarted = false
     let cleanupPromise: Promise<void> | null = null
 
@@ -95,7 +97,10 @@ export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLi
 
     const setSessionEndReason = (reason: SessionEndReason) => {
         sessionEndReason = reason
+        sessionEndReasonExplicit = true
     }
+
+    const hasExplicitSessionEndReason = () => sessionEndReasonExplicit
 
     const markCrash = (error: unknown) => {
         logger.debug(`${logPrefix} Unhandled error:`, error)
@@ -128,6 +133,7 @@ export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLi
         setExitCode,
         setArchiveReason,
         setSessionEndReason,
+        hasExplicitSessionEndReason,
         markCrash,
         cleanup,
         cleanupAndExit,

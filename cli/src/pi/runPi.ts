@@ -21,6 +21,7 @@ export async function runPi(opts: {
     startingMode?: 'local' | 'remote';
     permissionMode?: PiPermissionMode;
     model?: string;
+    effort?: string;
     resumeSessionId?: string;
     existingSessionId?: string;
     workingDirectory?: string;
@@ -122,6 +123,16 @@ export async function runPi(opts: {
     });
 
     // --- Wire transport events to session ---
+    // Restore effort/thinkingLevel from session metadata (resume path)
+    if (opts.effort) {
+        const result = PiThinkingLevelSchema.safeParse(opts.effort.trim().toLowerCase());
+        if (result.success) {
+            piSession.currentThinkingLevel = result.data;
+        } else {
+            logger.debug(`[pi] Ignoring invalid effort value on resume: ${opts.effort}`);
+        }
+    }
+
     wireTransportEvents(transport, piSession, pendingLocalIds);
 
     // --- Session config RPC ---
@@ -185,6 +196,9 @@ export async function runPi(opts: {
         }
         if (piSession.currentThinkingLevel) {
             transport.send({ type: 'set_thinking_level', level: piSession.currentThinkingLevel });
+        } else if (config.effort !== undefined && config.effort === null) {
+            // Hub explicitly requested effort reset → turn off thinking
+            transport.send({ type: 'set_thinking_level', level: 'off' });
         }
         piSession.pushKeepAlive();
 
@@ -213,6 +227,7 @@ export async function runPi(opts: {
                 const models = parsePiModels(data);
                 if (models.length > 0) {
                     piSession.cachedPiModels = models;
+                    piSession.updateMetadata(meta => ({ ...meta, piAvailableModels: models }));
                 }
                 return { success: true, availableModels: models, currentModelId: piSession.currentModel };
             } catch (error) {
@@ -266,9 +281,15 @@ export async function runPi(opts: {
     });
 
     // --- Abort handler ---
+    // Only cancel the current turn, keep session alive for next prompt.
+    // Pi's `abort` command cancels the active turn but the process stays in RPC mode.
     apiSession.rpcHandlerManager.registerHandler(RPC_METHODS.Abort, async () => {
         transport.send({ type: 'abort' });
-        void lifecycle.cleanupAndExit();
+        piSession.piIsStreaming = false;
+        piSession.updateThinkingState(false);
+        if (pendingLocalIds.length > 0) {
+            piSession.emitMessagesConsumed([pendingLocalIds.shift()!]);
+        }
         return { success: true };
     });
 
@@ -277,6 +298,7 @@ export async function runPi(opts: {
         lifecycle.setArchiveReason('Session switched');
         lifecycle.setSessionEndReason('terminated');
         void lifecycle.cleanupAndExit();
+        return { success: true };
     });
 
     // --- Run ---
@@ -302,7 +324,7 @@ export async function runPi(opts: {
         lifecycle.setSessionEndReason('error');
         logger.debug('[pi] Loop error:', error);
     } finally {
-        if (!crashed) {
+        if (!crashed && !lifecycle.hasExplicitSessionEndReason()) {
             lifecycle.setSessionEndReason('completed');
         }
         await safeCleanup();

@@ -1312,6 +1312,8 @@ export class SyncEngine {
             && (prev?.geminiSessionId ?? null) === (next.geminiSessionId ?? null)
             && (prev?.opencodeSessionId ?? null) === (next.opencodeSessionId ?? null)
             && (prev?.cursorSessionId ?? null) === (next.cursorSessionId ?? null)
+            && (prev?.piSessionId ?? null) === (next.piSessionId ?? null)
+            && (prev?.kimiSessionId ?? null) === (next.kimiSessionId ?? null)
     }
 
     private triggerDedupIfNeeded(sessionId: string): void {

@@ -12,6 +12,7 @@ describe('registerLocalHandoffHandler', () => {
         const lifecycle = {
             setArchiveReason: vi.fn(),
             setSessionEndReason: vi.fn(),
+            hasExplicitSessionEndReason: vi.fn(() => false),
             cleanupAndExit: vi.fn(async () => {})
         }
 

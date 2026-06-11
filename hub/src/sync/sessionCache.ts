@@ -917,12 +917,13 @@ export class SessionCache {
 
     private extractAgentSessionId(
         metadata: NonNullable<Session['metadata']>
-    ): { field: 'codexSessionId' | 'claudeSessionId' | 'geminiSessionId' | 'opencodeSessionId' | 'cursorSessionId'; value: string } | null {
+    ): { field: 'codexSessionId' | 'claudeSessionId' | 'geminiSessionId' | 'opencodeSessionId' | 'cursorSessionId' | 'piSessionId'; value: string } | null {
         if (metadata.codexSessionId) return { field: 'codexSessionId', value: metadata.codexSessionId }
         if (metadata.claudeSessionId) return { field: 'claudeSessionId', value: metadata.claudeSessionId }
         if (metadata.geminiSessionId) return { field: 'geminiSessionId', value: metadata.geminiSessionId }
         if (metadata.opencodeSessionId) return { field: 'opencodeSessionId', value: metadata.opencodeSessionId }
         if (metadata.cursorSessionId) return { field: 'cursorSessionId', value: metadata.cursorSessionId }
+        if (metadata.piSessionId) return { field: 'piSessionId', value: metadata.piSessionId }
         return null
     }
 
