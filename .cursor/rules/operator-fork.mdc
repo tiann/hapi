@@ -36,12 +36,25 @@ hapi-driver-rebuild --build-web --verify    # merges into driver/integration, bu
 
 - **Before any `hapi-driver-rebuild` or `hapi-use-worktree`:** run `hapi-driver-status --quiet` (exit 0 idle, 75 busy, 2 stale). Operator-side check; agents must not be running these in the first place. See `docs/tooling/driver-soup.md#coordination-avoid-stack-switch-contention`.
 
-## sudo systemctl on hapi services: blocked at two layers
+## sudo systemctl on hapi services: blocked at three layers (cross-agent)
 
-`sudo systemctl stop|restart|kill|disable|mask hapi-{hub,runner,runner-watchdog}.service` is **forbidden for agents** and now blocked by two layers as of 2026-06-11:
+`sudo systemctl stop|restart|kill|disable|mask hapi-{hub,runner,runner-watchdog}.service` is **forbidden for agents** and blocked by three layers as of 2026-06-11. The layers are complementary — different agents and call shapes hit different layers — and together cover every realistic invocation path:
 
-1. **Cursor preToolUse hook** (`scripts/tooling/hapi-systemctl-guard.sh`) — pattern-matches the agent's Shell tool-call command line and refuses with a recovery message. Catches shell-wrap (`sudo bash -c '...'`) and alternate-binary-path bypasses. This is the **enforcement** layer for agents.
-2. **Sudoers !-deny rule** (`/etc/sudoers.d/hapi-protect`, source at `scripts/tooling/sudoers/hapi-protect`) — sudo refuses the destructive verbs, visible to anyone who runs `sudo -l`. This is the **discoverability** layer; sudoers `!` syntax is documented-bypassable per `sudoers(5)` so it is not the enforcement layer, but it catches direct invocations from any shell (not just Cursor tool calls) and makes the prohibition self-documenting.
+1. **systemctl wrapper on `secure_path`** (`/usr/local/sbin/systemctl`, source `scripts/tooling/sudoers/systemctl-wrapper.sh`, installed via `install-systemctl-wrapper.sh`) — this is the **agent-agnostic** layer. sudo's `secure_path` resolves `/usr/local/sbin` first, so any `sudo systemctl ...` call from any agent (Cursor, Claude, Codex, Gemini, cron, ad-hoc shell) hits the wrapper before reaching `/bin/systemctl`. The wrapper parses argv, refuses destructive verbs against hapi-* units with a recovery message, exec's `/bin/systemctl` for everything else. **Catches `sudo bash -c 'systemctl stop ...'` shell-wrap** because bash inherits sudo's PATH which starts with `/usr/local/sbin`.
+2. **Sudoers !-deny rule** (`/etc/sudoers.d/hapi-protect`, source `scripts/tooling/sudoers/hapi-protect`) — catches the absolute-path bypass `sudo /bin/systemctl stop ...` that the wrapper does not see. Visible in `sudo -l` so the prohibition is self-documenting. Deny rule has no NOPASSWD so sudo asks for a password, effectively refusing under `-n`.
+3. **Cursor preToolUse hook** (`scripts/tooling/hapi-systemctl-guard.sh`) — preempts the call at the agent's Shell tool layer before sudo even fires. Cursor-specific (per-agent hook systems differ), but gives the cleanest recovery message because it returns structured `permission: deny` JSON to the agent. Other agent harnesses can have their own hook ports added later — the wrapper makes those redundant for the systemctl case but they would still give cleaner error UX.
+
+Coverage matrix:
+
+| Call | Wrapper | Sudoers | Cursor hook |
+|------|---------|---------|-------------|
+| `sudo systemctl stop hapi-hub.service` | BLOCK | BLOCK | BLOCK |
+| `sudo bash -c 'systemctl stop hapi-hub.service'` | BLOCK | blind | BLOCK |
+| `sudo /bin/systemctl stop hapi-hub.service` | blind | DENY | BLOCK |
+| `sudo systemctl status hapi-hub.service` | ALLOW | ALLOW | ALLOW |
+| `sudo systemctl start hapi-hub.service` (recovery) | ALLOW | ALLOW | ALLOW |
+| `sudo systemctl restart hapi-runner.service` (watchdog) | ALLOW | ALLOW | ALLOW |
+| `sudo cp /bin/systemctl /tmp/x; sudo /tmp/x stop hapi-*` | blind | blind | blind (documented kill-criterion) |
 
 Allowed paths:
 
@@ -56,7 +69,8 @@ For destructive operations use:
 
 Bypasses (operator-approved):
 
-- `HAPI_OPERATOR_SYSTEMCTL_OVERRIDE=1` — bypasses the Cursor hook only. Sudoers still enforces.
+- `HAPI_OPERATOR_SYSTEMCTL_OVERRIDE=1` — bypasses both the Cursor hook AND the wrapper (`sudo -E systemctl ...` to propagate the env var through sudo). Sudoers still enforces, so for absolute-path destructive calls add a one-shot `/etc/sudoers.d/hapi-protect.disable` or rollback `/usr/local/sbin/systemctl.prev`.
+- `sudo mv /usr/local/sbin/systemctl.prev /usr/local/sbin/systemctl` — rollback the wrapper. Installer keeps the previous binary at `.prev`.
 - Edit `/etc/sudoers.d/hapi-protect` to remove specific entries — bypasses sudoers. Audit trail.
 
 See `docs/tooling/driver-soup.md#patient-restarts-dont-yank-live-agents` for the wrapper rationale.
