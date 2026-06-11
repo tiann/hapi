@@ -132,9 +132,46 @@ Earlier (Fix A + B only) verification, retained for context:
 - `runner.state.json` shows `startedWithArgv: ["runner","start-sync","--workspace-root","/home/heavygee/coding","--workspace-root","/home/heavygee/coding/hapi-driver"]` - Fix B persistence confirmed.
 - Touched `~/coding/hapi-driver/cli/package.json` (mtime drift simulation). 70 seconds later (one heartbeat past): `MainPID` unchanged at 33332, `ActiveState=active`. Pre-fix behavior would have been a new pid or `inactive`. Fix A flag confirmed in production.
 
+## 2026-06-11 update - layout move + pre-flight/auto-revert
+
+The post-2026-06-01 folder reorg moved the watchdog out of `cli/systemd/` (no longer exists at HEAD) and into the primary repo's `scripts/tooling/`. The watchdog had been silently dead since that move because its systemd unit `ExecStart=` still pointed at the old path.
+
+Three outages on 2026-06-10/11 (00:03, 02:14, 02:18 BST) drove a second pass:
+
+1. **Watchdog restored at `scripts/tooling/hapi-runner-watchdog.sh`** (tracked in primary repo, survives rebuilds). Two latent bugs in the original script also fixed:
+   - Probed `/cli/machines/` (returns SPA HTML). Now probes `/api/machines`.
+   - Authenticated using the `cliApiToken` directly as a Bearer. Now does the `/api/auth` exchange first to get a JWT.
+   - Used `jq` without `-r`, so `HEALTHY` got the literal string `"true"` (with quotes) and the comparison always failed.
+   - Read `.lastHeartbeat` from `runner.state.json` which doesn't exist in the current schema. Now uses file mtime directly.
+
+2. **Pre-flight schema check in `hapi-use-worktree.sh`** runs BEFORE the active-link swap and BEFORE the hub stop. Reads target `SCHEMA_VERSION` from `<worktree>/hub/src/store/index.ts` and compares to live `PRAGMA user_version`. If a downgrade is required and `hapi-driver-db-prep.sh` has no path for any hop, the script refuses with a clear three-option recovery message. No services are touched. Skip with `HAPI_SKIP_DB_PREP=1` (mirrors db-prep's own bypass).
+
+3. **Post-swap self-verification + auto-revert in `hapi-use-worktree.sh`** runs AFTER the systemctl restart cycle. Checks (a) hub active + listening on `:3006`, (b) hub `/api/auth` + `/api/machines` answer correctly, (c) runner active, (d) runner registers in `/api/machines` with `runnerState.status == "running"` within 30s. If any fails: swings the symlink back to `PREV_ACTIVE`, re-runs `hapi-driver-db-prep.sh` against it (in case the failed target downgraded the DB), restarts services, and exits non-zero. Skip with `HAPI_SKIP_VERIFY=1`.
+
+### Operator-side patch (one-time, when adopting this update)
+
+```bash
+# Update the watchdog ExecStart to the tracked location.
+sudo sed -i 's|ExecStart=.*hapi-runner-watchdog.sh|ExecStart=/home/heavygee/coding/hapi/scripts/tooling/hapi-runner-watchdog.sh|' \
+  /etc/systemd/system/hapi-runner-watchdog.service
+sudo systemctl daemon-reload
+sudo systemctl restart hapi-runner-watchdog.timer
+
+# Verify
+systemctl cat hapi-runner-watchdog.service | grep ExecStart
+journalctl -u hapi-runner-watchdog.service --since '2 min ago' --no-pager | tail -3
+# Expect: "[watchdog] machine <uuid> present + runner running on http://...; no action"
+```
+
+### Untouched outage class - hub watchdog
+
+The 2026-06-11 00:03 + 02:14 outages were "operator (or HAPI agent) ran `sudo systemctl stop hapi-hub.service` and never started it back" - the hub's own auto-restart only fires on `Result=exit-code`, not on intentional `systemctl stop`. Pre-flight + auto-revert catch this only when the operator went through `hapi-use-worktree`. A symmetric `hapi-hub-watchdog.{service,timer}` (mirroring the runner's) is the natural next layer; deferred for now since the existing safety nets cover the in-script paths.
+
 ## Related
 
 - `docs/plans/2026-05-31-runner-self-restart-bluedeploy-fix.md` - problem statement, evidence, design, 22:40 incident retrospective
-- `cli/systemd/README.md` (in soup) - template inventory + install instructions
+- `scripts/tooling/hapi-runner-watchdog.sh` - the watchdog probe script (post-2026-06-11 location)
+- `scripts/tooling/hapi-use-worktree.sh` - pre-flight + auto-revert (`preflight_schema_check`, `verify_active_stack`, `revert_active_stack`)
+- `scripts/tooling/hapi-driver-db-prep.sh` - schema migration adapter (forward auto, reverse via cases)
 - `docs/tooling/driver-soup.md` - manifest workflow
 - `scripts/tooling/hapi-runner-from-active.sh` - the `ExecStart` helper

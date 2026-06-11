@@ -45,6 +45,78 @@ if [[ ! -d "$WORKTREE/hub" ]] || [[ ! -d "$WORKTREE/cli" ]]; then
     exit 1
 fi
 
+# Pre-flight schema check: refuse the swap if the live DB schema is ahead of
+# the target tree AND we have no downgrade path. Catches the class of outage
+# where someone swings to a feature branch that hasn't merged a schema-bumping
+# layer yet (e.g. 2026-06-11 02:14 inline-model-error-detect: live=v10, target=v9,
+# v10->v9 path exists in db-prep so OK; would refuse if path were missing).
+#
+# Skip with HAPI_SKIP_DB_PREP=1 (mirrors the same env used downstream).
+preflight_schema_check() {
+    [[ "${HAPI_SKIP_DB_PREP:-}" == "1" ]] && return 0
+    local script_dir db_prep db live target
+    script_dir="$(dirname "$(readlink -f "$0")")"
+    db_prep="$script_dir/hapi-driver-db-prep.sh"
+    db="${HAPI_DB_PATH:-$HOME/.hapi/hapi.db}"
+
+    [[ -f "$WORKTREE/hub/src/store/index.ts" ]] || {
+        echo "WARN: pre-flight: $WORKTREE/hub/src/store/index.ts missing; skipping schema check" >&2
+        return 0
+    }
+    [[ -f "$db" ]] || {
+        echo "WARN: pre-flight: $db missing; skipping schema check (fresh install?)" >&2
+        return 0
+    }
+    [[ -x "$db_prep" ]] || {
+        echo "WARN: pre-flight: $db_prep not executable; skipping schema check" >&2
+        return 0
+    }
+
+    target="$(grep -oE 'SCHEMA_VERSION:\s*number\s*=\s*[0-9]+' "$WORKTREE/hub/src/store/index.ts" 2>/dev/null \
+              | head -1 | grep -oE '[0-9]+$' || true)"
+    live="$(sqlite3 "$db" 'PRAGMA user_version;' 2>/dev/null || true)"
+    if [[ -z "$target" || -z "$live" ]]; then
+        echo "WARN: pre-flight: could not parse schema versions (target=$target live=$live); skipping" >&2
+        return 0
+    fi
+
+    echo "Pre-flight schema: live=$live  target=$target  ($db <-> $WORKTREE)"
+
+    if [[ "$live" -eq "$target" ]]; then
+        echo "  match - hub will boot cleanly on this tree."
+    elif [[ "$live" -lt "$target" ]]; then
+        echo "  forward - hub will auto-migrate $live -> $target on boot via stepMigrations."
+    else
+        # Downgrade required. Verify db-prep has a step for every hop.
+        local cur="$live"
+        while [[ "$cur" -gt "$target" ]]; do
+            local prev=$((cur - 1))
+            if ! grep -qE "${cur}_to_${prev}\)" "$db_prep"; then
+                echo "" >&2
+                echo "ERROR: live DB is at v$live but $WORKTREE expects v$target." >&2
+                echo "       No known downgrade path v${cur} -> v${prev} in:" >&2
+                echo "         $db_prep" >&2
+                echo "" >&2
+                echo "  Refusing to swap active link. Options:" >&2
+                echo "    1. Roll forward: pick a worktree that owns v$live (or merge the" >&2
+                echo "       schema-bumping layer into $WORKTREE)." >&2
+                echo "    2. Add a v${cur} -> v${prev} downgrade case to apply_downgrade_step()" >&2
+                echo "       in $db_prep and re-run." >&2
+                echo "    3. Restore from a v$target backup manually (~/.hapi/hapi.db.bak.*)." >&2
+                echo "" >&2
+                return 1
+            fi
+            cur="$prev"
+        done
+        echo "  downgrade path exists ($live -> $target); db-prep will apply after stop."
+    fi
+    return 0
+}
+
+if ! preflight_schema_check; then
+    exit 1
+fi
+
 # Patient drain: poll WORKING session count and wait until it reaches 0 (or
 # we hit the timeout). The drain happens AFTER lock acquire (below) but
 # BEFORE the systemctl stop, so a second patient caller is held by flock at
@@ -158,6 +230,128 @@ else
     fi
     echo "Restarting hapi-hub.service + hapi-runner.service ..."
     sudo systemctl restart hapi-hub.service hapi-runner.service
+fi
+
+# Post-swap self-verification. Hub may take a few seconds to bind 3006 and
+# accept auth. Runner may take a few more to register with hub. If anything
+# fails to come up, swing the symlink BACK to PREV_ACTIVE and restart so the
+# operator is left with a working stack instead of silent damage.
+#
+# Skip with HAPI_SKIP_VERIFY=1 (testing/dev only).
+verify_active_stack() {
+    [[ "${HAPI_SKIP_VERIFY:-}" == "1" ]] && { echo "verify: skipped (HAPI_SKIP_VERIFY=1)"; return 0; }
+
+    local hub_url="http://127.0.0.1:3006"
+    local settings="$HOME/.hapi/settings.json"
+    local timeout=30 elapsed=0 step=2
+
+    echo ""
+    echo "Verifying active stack..."
+
+    # 1) hub systemd is active and listening on 3006.
+    while (( elapsed < timeout )); do
+        if systemctl is-active --quiet hapi-hub.service \
+           && ss -lnt 'sport = :3006' 2>/dev/null | grep -q LISTEN; then
+            break
+        fi
+        sleep "$step"
+        elapsed=$((elapsed + step))
+    done
+    if ! systemctl is-active --quiet hapi-hub.service; then
+        echo "  FAIL: hapi-hub.service not active after ${timeout}s" >&2
+        return 1
+    fi
+    if ! ss -lnt 'sport = :3006' 2>/dev/null | grep -q LISTEN; then
+        echo "  FAIL: hub not listening on :3006 after ${timeout}s" >&2
+        return 1
+    fi
+    echo "  hub: active + listening on :3006"
+
+    # 2) hub responds to authenticated /api/machines.
+    if [[ -f "$settings" ]] && command -v jq >/dev/null; then
+        local cli token resp
+        cli="$(jq -r '.cliApiToken // empty' "$settings" 2>/dev/null || true)"
+        if [[ -n "$cli" ]]; then
+            token="$(curl -sS --max-time 5 -H 'Content-Type: application/json' \
+                -d "{\"accessToken\":\"$cli\"}" "$hub_url/api/auth" 2>/dev/null \
+                | jq -r '.token // empty' 2>/dev/null || true)"
+            if [[ -z "$token" ]]; then
+                echo "  FAIL: hub /api/auth did not return a token" >&2
+                return 1
+            fi
+            resp="$(curl -sS --max-time 5 -H "Authorization: Bearer $token" \
+                "$hub_url/api/machines" 2>/dev/null || true)"
+            if ! echo "$resp" | jq -e '.machines | type == "array"' >/dev/null 2>&1; then
+                echo "  FAIL: hub /api/machines did not return expected JSON shape" >&2
+                return 1
+            fi
+            echo "  hub: /api/auth + /api/machines OK"
+        fi
+    fi
+
+    # 3) runner systemd is active.
+    if ! systemctl is-active --quiet hapi-runner.service; then
+        echo "  FAIL: hapi-runner.service not active" >&2
+        return 1
+    fi
+    echo "  runner: active"
+
+    # 4) runner registers with hub within 30s. (machineId is in settings.json
+    # for this host; if absent, skip this check.)
+    if [[ -f "$settings" ]] && command -v jq >/dev/null; then
+        local mid cli token elapsed=0
+        mid="$(jq -r '.machineId // empty' "$settings" 2>/dev/null || true)"
+        cli="$(jq -r '.cliApiToken // empty' "$settings" 2>/dev/null || true)"
+        if [[ -n "$mid" && -n "$cli" ]]; then
+            token="$(curl -sS --max-time 5 -H 'Content-Type: application/json' \
+                -d "{\"accessToken\":\"$cli\"}" "$hub_url/api/auth" 2>/dev/null \
+                | jq -r '.token // empty' 2>/dev/null || true)"
+            while (( elapsed < timeout )); do
+                local status
+                status="$(curl -sS --max-time 5 -H "Authorization: Bearer $token" \
+                    "$hub_url/api/machines" 2>/dev/null \
+                    | jq -r --arg mid "$mid" \
+                      '.machines[]? | select(.id == $mid) | .runnerState.status // "missing"' 2>/dev/null \
+                    | head -1)"
+                if [[ "$status" == "running" ]]; then
+                    echo "  runner: registered with hub (status=running)"
+                    return 0
+                fi
+                sleep "$step"
+                elapsed=$((elapsed + step))
+            done
+            echo "  FAIL: runner did not register with hub as 'running' within ${timeout}s" >&2
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
+revert_active_stack() {
+    local prev="$1"
+    if [[ -z "$prev" || "$prev" == "unknown" ]] || [[ ! -d "$prev/hub" ]]; then
+        echo "  cannot auto-revert: previous active not recoverable (was: $prev)" >&2
+        return 1
+    fi
+    echo ""
+    echo "Auto-reverting active link: $WORKTREE -> $prev"
+    ln -sfn "$prev" "$ACTIVE_LINK"
+    if [[ -x "$DB_PREP" ]]; then
+        echo "  re-running db-prep against $prev (in case the failed target downgraded the DB)"
+        sudo systemctl stop hapi-hub.service || true
+        "$DB_PREP" "$prev" || echo "  (db-prep on revert returned non-zero; carrying on)"
+    fi
+    sudo systemctl restart hapi-hub.service hapi-runner.service
+    sleep 4
+    echo "  revert: hub=$(systemctl is-active hapi-hub.service)  runner=$(systemctl is-active hapi-runner.service)"
+}
+
+if ! verify_active_stack; then
+    echo "" >&2
+    echo "VERIFICATION FAILED -- attempting auto-revert" >&2
+    revert_active_stack "$PREV_ACTIVE" || true
+    exit 1
 fi
 
 echo ""
