@@ -5,9 +5,10 @@ import { CodexSessionSyncDialog } from './CodexSessionSyncDialog'
 import type { CodexLocalSessionSummary } from '@/types/api'
 
 function renderDialog(
-    sessions: CodexLocalSessionSummary[],
+    sessions: CodexLocalSessionSummary[] = [],
     onConfirm = vi.fn(async () => {}),
-    currentCodexSessionId: string | null = null
+    currentCodexSessionId: string | null = null,
+    onRestartCodexDesktop = vi.fn(async () => {})
 ) {
     const view = render(
         <I18nProvider>
@@ -17,14 +18,14 @@ function renderDialog(
                 sessions={sessions}
                 currentCodexSessionId={currentCodexSessionId}
                 onConfirm={onConfirm}
-                onRestartCodexDesktop={vi.fn()}
+                onRestartCodexDesktop={onRestartCodexDesktop}
                 isPending={false}
                 isRestartingCodexDesktop={false}
                 isLoading={false}
             />
         </I18nProvider>
     )
-    return { ...view, onConfirm }
+    return { ...view, onConfirm, onRestartCodexDesktop }
 }
 
 describe('CodexSessionSyncDialog', () => {
@@ -146,5 +147,23 @@ describe('CodexSessionSyncDialog', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Import' }))
 
         expect(onConfirm).toHaveBeenCalledWith(['codex-session-2'])
+    })
+
+    it('keeps the restart control clear of the close button area', () => {
+        renderDialog()
+
+        const header = screen.getByTestId('codex-import-dialog-header')
+        expect(header).toHaveClass('flex')
+        expect(header).toHaveClass('pr-10')
+        expect(screen.getByRole('button', { name: 'Restart Codex client' })).toHaveClass('shrink-0')
+    })
+
+    it('restarts Codex Desktop from the header control', () => {
+        const onRestartCodexDesktop = vi.fn(async () => {})
+        renderDialog([], undefined, null, onRestartCodexDesktop)
+
+        fireEvent.click(screen.getByRole('button', { name: 'Restart Codex client' }))
+
+        expect(onRestartCodexDesktop).toHaveBeenCalledTimes(1)
     })
 })

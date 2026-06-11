@@ -142,8 +142,8 @@ export function CodexSessionSyncDialog(props: {
     return (
         <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
             <DialogContent className="max-w-xl">
-                <div className="flex items-start justify-between gap-3">
-                    <DialogHeader className="flex-1 text-left">
+                <div className="flex items-start justify-between gap-3 pr-10" data-testid="codex-import-dialog-header">
+                    <DialogHeader className="min-w-0 flex-1 pr-0 text-left">
                         <DialogTitle>{t('codexSync.confirm.title')}</DialogTitle>
                         <DialogDescription className="mt-2">
                             {t('codexSync.confirm.description')}
@@ -153,12 +153,13 @@ export function CodexSessionSyncDialog(props: {
                         type="button"
                         variant="secondary"
                         size="sm"
+                        className="shrink-0"
                         onClick={() => void onRestartCodexDesktop()}
                         disabled={isRestartingCodexDesktop}
                         aria-label={t('codexSync.restart.tooltip')}
                         title={t('codexSync.restart.tooltip')}
                     >
-                        {/* 中文注释：把容易被误解为“刷新页面”的 icon 改成明确文字按钮，直接说明这是重启 Codex 客户端。 */}
+                        {/* 中文注释：右侧预留关闭按钮区域，重启按钮保持在标题行右侧但不压到关闭按钮。 */}
                         {isRestartingCodexDesktop ? t('codexSync.restart.confirming') : t('codexSync.restart.tooltip')}
                     </Button>
                 </div>
