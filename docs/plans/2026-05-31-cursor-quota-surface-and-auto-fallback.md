@@ -802,7 +802,7 @@ Tie into existing `agent-notify` pipeline:
 | `shared/src/events.ts` (or wherever session events are typed) | Add `'modelError'` event type |
 | `hub/src/sync/messageService.ts` | Recognise `modelError` events; persist `lastModelError`; broadcast SSE |
 | `web/src/components/SessionView/ModelErrorBanner.tsx` (new) | Banner UI |
-| `web/src/components/SessionView/SessionRow.tsx` (or list view) | Switch ready dot to amber when `lastModelError` unacknowledged |
+| `web/src/components/SessionView/SessionRow.tsx` (or list view) | Switch ready dot to **pulsing amber** when `lastModelError` unacknowledged. Static amber is not enough — it must animate (CSS `pulse` / `ping` keyframe) to draw attention from the session list without requiring the operator to be inside the session. Stop pulsing when `acknowledgedAt` is set. |
 | `cli/src/agent/turnState.ts` (or wherever ready handling lives) | `markTurnDegraded` so subsequent ready events don't clear the error state |
 
 ### Test plan
