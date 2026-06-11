@@ -82,6 +82,40 @@ ElevenLabs ConvAI today: handoff OK, readback weak, payment, no mode machine. Ta
 
 ---
 
+## Stack-switch tooling: agents do NOT touch live `:3006`
+
+**Forbidden agent tool-calls** — these swing `hapi-active` and restart hub + runner, killing every running agent session including yours:
+
+- `hapi-use-worktree <path>` — operator-only stack switch.
+- `hapi-use-driver` — operator-only swing back to driver.
+- `hapi-driver-rebuild --activate` — same effect (calls hapi-use-worktree internally).
+- `sudo systemctl stop|restart hapi-hub.service` — naked, no patient drain.
+- `sudo systemctl stop|restart hapi-runner.service` — same, kills runner sessions mid-turn.
+- `HAPI_STACK_SWITCH_YES=1` — that flag exists for operator cron/CI scripts, **never** for agent tool-calls. The script as of 2026-06-11 refuses `HAPI_STACK_SWITCH_YES=1` from inside the target worktree (the agent self-deletion pattern) and refuses entirely when `HAPI_AGENT_CONTEXT=1` is set in env.
+
+**Allowed: get your branch onto live `:3006` the supported way.**
+
+Edit (or ask the operator to edit) `~/.config/hapi/driver-manifest.yaml`:
+
+```yaml
+layers:
+  - branch: your/branch-name
+```
+
+Then **operator runs**:
+
+```bash
+hapi-driver-rebuild --build-web --verify    # merges into driver/integration; builds; tests
+hapi-driver-status --quiet                  # exit 0 idle = OK to swing
+hapi-use-driver                              # operator-only, prompts before swing
+```
+
+`--build-web --verify` does NOT touch the live hub. It builds into `web/dist.next/` and atomic-renames; runner + hub keep serving the old code. Web bundle gets swapped in atomically; hub/runner code requires the explicit `hapi-use-driver` step.
+
+**Live evidence on the violation pattern:** outage 2026-06-10 02:14 BST (operator: `inline-model-error-detect` worktree) and 2026-06-11 14:00 BST (agent in session `a2fdb3b2`, same worktree) both ran `hapi-use-worktree ~/coding/hapi/worktrees/inline-model-error-detect` from inside that worktree, killed their own session, and (in the second case) followed up with a naked `sudo systemctl stop hapi-hub.service` an hour later that left the hub down for 14 minutes. Don't be the third entry on this list.
+
+---
+
 ## Upstream PR series
 
 | PR | Scope |

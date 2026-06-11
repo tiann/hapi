@@ -1,5 +1,7 @@
 # Daily Driver + Merge-Train Worktrees
 
+> **AGENTS: read this first.** Do NOT run `hapi-use-worktree`, `hapi-use-driver`, or `hapi-driver-rebuild --activate` to test your own feature branch. These swing the live stack and **kill your own session**. Soup-add your branch via `~/.config/hapi/driver-manifest.yaml` and run `hapi-driver-rebuild --build-web --verify` instead - that builds + tests without touching the live hub. The operator decides when to swing live. The script enforces this since 2026-06-11: it refuses when called from inside the target worktree, or when `HAPI_AGENT_CONTEXT=1` is set. `HAPI_STACK_SWITCH_YES=1` is for operator-side cron/CI, NOT for agent tool-calls.
+
 Three git layers on this machine:
 
 ```

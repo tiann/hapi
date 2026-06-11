@@ -45,6 +45,81 @@ if [[ ! -d "$WORKTREE/hub" ]] || [[ ! -d "$WORKTREE/cli" ]]; then
     exit 1
 fi
 
+# Policy guard: this script swings the live stack and kills running sessions.
+# It is operator-only. Two patterns trip it:
+#
+#   (1) Caller's PWD is at or under the target worktree. That is the agent
+#       self-deletion pattern: an agent working in their own dev branch runs
+#       hapi-use-worktree to test their code, swings the stack to their own
+#       worktree, and the running runner kills the agent's session as soon
+#       as the new hub starts. Both 2026-06-10 02:14 and 2026-06-11 14:00
+#       outages followed this exact pattern.
+#
+#   (2) HAPI_AGENT_CONTEXT=1 is set in the env. This is forward-compat for
+#       runner-side enforcement: when the runner spawns an agent's shell, it
+#       sets this flag, and any tool the agent invokes from that shell
+#       inherits it. Today the runner does not set it yet (see
+#       docs/plans/2026-06-11-agent-context-env-flag.md). Until then this
+#       branch only fires for callers who explicitly set it.
+#
+# Bypass is explicit and named for the situation, not a generic YES flag:
+#   HAPI_USE_WORKTREE_FROM_INSIDE=1   (operator inside the target tree)
+#   HAPI_USE_WORKTREE_FROM_AGENT=1    (operator-driven agent that has cause)
+#
+# HAPI_STACK_SWITCH_YES=1 alone does NOT bypass these guards. Per
+# docs/tooling/driver-soup.md that flag exists for non-interactive operator
+# scripts (cron, CI, hapi-watch-activate-driver), not for agents.
+caller_pwd_inside_target() {
+    local my_pwd target
+    my_pwd="$(realpath "$PWD" 2>/dev/null || echo "")"
+    target="$(realpath "$WORKTREE")"
+    [[ -n "$my_pwd" ]] || return 1
+    [[ "$my_pwd" == "$target" || "$my_pwd" == "$target/"* ]]
+}
+
+if caller_pwd_inside_target && [[ "${HAPI_USE_WORKTREE_FROM_INSIDE:-}" != "1" ]]; then
+    cat >&2 <<EOF
+
+REFUSE: caller PWD is at or under the target worktree.
+        ($(realpath "$PWD") -> $(realpath "$WORKTREE"))
+
+This is the agent self-deletion pattern: hapi-use-worktree swings the live
+stack to the target tree and restarts hub + runner. Running it from inside
+your own dev worktree kills your own running session as a side effect.
+
+Correct workflow for testing a feature branch on the live hub:
+
+    1. Add the branch to ~/.config/hapi/driver-manifest.yaml:
+         layers:
+           - branch: <your-branch>
+    2. hapi-driver-rebuild --build-web --verify
+       (merges into driver/integration, builds, runs typecheck + tests;
+        does NOT touch live hub.)
+    3. Ask the operator to swing live (hapi-use-driver) when ready.
+
+Bypass for genuine operator use from inside the target tree:
+    HAPI_USE_WORKTREE_FROM_INSIDE=1 hapi-use-worktree $WORKTREE
+
+EOF
+    exit 1
+fi
+
+if [[ "${HAPI_AGENT_CONTEXT:-}" == "1" ]] && [[ "${HAPI_USE_WORKTREE_FROM_AGENT:-}" != "1" ]]; then
+    cat >&2 <<EOF
+
+REFUSE: HAPI_AGENT_CONTEXT=1 in environment.
+
+This script is operator-only. Agents must add their feature branch to the
+soup manifest and run hapi-driver-rebuild instead - see the inside-target
+guard above for the full workflow.
+
+Bypass for an operator-driven agent with cause:
+    HAPI_USE_WORKTREE_FROM_AGENT=1 hapi-use-worktree $WORKTREE
+
+EOF
+    exit 1
+fi
+
 # Pre-flight schema check: refuse the swap if the live DB schema is ahead of
 # the target tree AND we have no downgrade path. Catches the class of outage
 # where someone swings to a feature branch that hasn't merged a schema-bumping

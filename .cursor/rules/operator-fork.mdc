@@ -11,7 +11,30 @@ This repo is a **fork** of `tiann/hapi`. Root **`AGENTS.md` is byte-identical to
 
 - **New functionality requests:** also read `docs/tooling/new-feature-intake.md`. Orchestrator spawns feature peers with explicit **done vs owned** intake steps (§0 handoff block).
 - **Workspace** = `~/coding/hapi` (mirror). **`hapi-driver`** = runtime on `:3006` via `hapi-active` — not the default instruction root.
-- **Before any `hapi-driver-rebuild` or `hapi-use-worktree`:** run `hapi-driver-status --quiet` (exit 0 idle, 75 busy, 2 stale). The scripts auto-flock, but the precheck avoids 30-agent collisions on the stack. See `docs/tooling/driver-soup.md#coordination-avoid-stack-switch-contention`.
-- **NEVER `sudo systemctl restart hapi-hub.service`** (or `... hapi-hub.service hapi-runner.service`). It yanks WORKING agents mid-turn. Use **`hapi-restart-hub`** (patient drain, 10min timeout, `--impatient` for hung-hub emergencies). For stack switches use `hapi-use-worktree` (same patient default). See `docs/tooling/driver-soup.md#patient-restarts-dont-yank-live-agents`.
+
+## Stack-switch tooling: operator-only
+
+**Agents MUST NOT run `hapi-use-worktree`, `hapi-use-driver`, or `hapi-driver-rebuild --activate`.** These swing the live stack on `:3006` and restart hub + runner, which kills every running agent session — including the one running the command. Two outages on 2026-06-10 02:14 and 2026-06-11 14:00 BST were caused by agents doing this to test their own dev worktrees.
+
+**`HAPI_STACK_SWITCH_YES=1` is for operator scripts** (cron, CI, `hapi-watch-activate-driver`) — never for agent tool-calls. The script now refuses with `REFUSE: caller PWD is at or under the target worktree` if you try this from inside your own worktree (commit 2026-06-11). It also refuses if `HAPI_AGENT_CONTEXT=1` is set in the env.
+
+**To get your feature branch onto live `:3006`:**
+
+```yaml
+# Operator (or you, with explicit operator approval) edits:
+# ~/.config/hapi/driver-manifest.yaml
+layers:
+  - branch: your/branch-name
+```
+
+```bash
+hapi-driver-rebuild --build-web --verify    # merges into driver/integration, builds, tests; NO hub touch
+# Then ask the operator: "ready for hapi-use-driver?"
+```
+
+**Other rules:**
+
+- **Before any `hapi-driver-rebuild` or `hapi-use-worktree`:** run `hapi-driver-status --quiet` (exit 0 idle, 75 busy, 2 stale). Operator-side check; agents must not be running these in the first place. See `docs/tooling/driver-soup.md#coordination-avoid-stack-switch-contention`.
+- **NEVER `sudo systemctl restart hapi-hub.service`** or `... stop hapi-hub.service`. It yanks WORKING agents mid-turn. Use **`hapi-restart-hub`** (patient drain, 10min timeout, `--impatient` for hung-hub emergencies). See `docs/tooling/driver-soup.md#patient-restarts-dont-yank-live-agents`.
 - Upstream PR branches: from `upstream/main` only; never include `docs/operator/`, `docs/plans/`, or `CLAUDE.md` in the PR diff (root `AGENTS.md` IS upstream-compatible and may appear in diffs only if a branch updates project-overview content with upstream's blessing).
 - Plans: `docs/plans/`.
