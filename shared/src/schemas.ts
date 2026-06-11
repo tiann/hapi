@@ -39,7 +39,13 @@ export const MetadataSchema = z.object({
     opencodeSessionId: z.string().optional(),
     cursorSessionId: z.string().optional(),
     cursorSessionProtocol: z.enum(['acp', 'stream-json']).optional(),
-    cursorMigrationState: z.enum(['in_progress']).optional(),
+    // Drives the web `CursorMigrationBanner`:
+    //   'in_progress' = legacy-to-ACP transplant currently running; banner shows spinner + "Upgrading..."
+    //   'ambiguous'   = migrator refused to transplant (ambiguous source drawer OR size mismatch);
+    //                   banner switches to "Manual review needed" until the operator resolves on disk.
+    //   undefined     = no migration in flight; banner hidden.
+    // tiann/hapi#873.
+    cursorMigrationState: z.enum(['in_progress', 'ambiguous']).optional(),
     kimiSessionId: z.string().optional(),
     tools: z.array(z.string()).optional(),
     slashCommands: z.array(z.string()).optional(),

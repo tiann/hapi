@@ -120,6 +120,8 @@ export default {
   'session.time.importedFromCodex.daysAgo': 'imported from Codex {n}d ago',
   'session.cursorMigration.banner.title': 'Upgrading Cursor session',
   'session.cursorMigration.banner.body': 'Switching this legacy chat to the safer ACP protocol. This takes 15-20 seconds for sessions with long history; your conversation will resume automatically and any draft text will survive.',
+  'session.cursorMigration.bannerAmbiguous.title': 'Cursor session upgrade needs manual review',
+  'session.cursorMigration.bannerAmbiguous.body': 'This chat exists on disk in multiple workspace folders or the on-disk size does not match the synced history, so HAPI refused to transplant it automatically. Check hub logs for the candidate list (search for "[migrator] ambiguous legacy store" or "[migrator] size sanity check refused"), delete the stale drawers under ~/.cursor/chats/, and reopen the session.',
 
   // Session inactive
   'session.inactive.autoResume': 'This session is inactive. Send a message to resume.',

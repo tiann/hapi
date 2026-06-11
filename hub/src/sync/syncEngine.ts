@@ -576,6 +576,27 @@ export class SyncEngine {
                 if (result.result === 'success') return { ok: true }
                 if (result.result === 'session-active') return { ok: false, reason: 'session_active' as const }
                 return { ok: false, reason: 'version_mismatch_or_missing' as const }
+            },
+            // tiann/hapi#872: size sanity check needs to compare HAPI's known
+            // message history against the candidate legacy store's blob
+            // count. The store-handle stays on the engine; we only thread
+            // the count through so the migrator stays free of a direct
+            // hub.Store dependency.
+            getHapiMessageCount: (sessionId, _namespace) => {
+                try {
+                    return this.store.messages.countMessages(sessionId)
+                } catch (err) {
+                    // tiann/hapi#873 cold review: a silent 0 here trips
+                    // the migrator's "skip sanity" branch and chronically
+                    // disables the floor. Warn so a broken countMessages
+                    // (lock contention pattern, schema drift) is visible
+                    // in journalctl.
+                    console.warn('[auto-migrate] countMessages threw; size sanity skipped', {
+                        sessionId,
+                        err: err instanceof Error ? err.message : String(err)
+                    })
+                    return 0
+                }
             }
         })
     }
@@ -872,6 +893,41 @@ export class SyncEngine {
                 if (refreshed) return refreshed
                 return session
             }
+            // tiann/hapi#872: ambiguous source store OR size-mismatch
+            // means the migrator refused to transplant likely-alien
+            // content. Surface this to the UI banner instead of silently
+            // clearing the in-progress flag, so the operator can act
+            // (verify which workspace-hash drawer holds the real history,
+            // delete the stale siblings, retry) rather than have us
+            // silently fall back to the legacy launcher and pretend the
+            // ambiguity never happened.
+            if (outcome.reason === 'ambiguous_legacy_store' || outcome.reason === 'size_mismatch') {
+                console.warn('[auto-migrate] refusing to transplant; surfacing ambiguous banner', {
+                    sessionId: session.id,
+                    reason: outcome.reason,
+                    message: outcome.message
+                })
+                const promoted = this.setCursorMigrationStateAmbiguous(session.id, namespace)
+                if (promoted) {
+                    // We replaced the in-progress flag with the
+                    // ambiguous flag; the cleanup write below would
+                    // wipe both, so suppress it.
+                    bannerCleanupNeeded = false
+                } else {
+                    // Promotion to 'ambiguous' failed (cache miss, repeated
+                    // version-mismatch, or non-version write failure). The
+                    // operator-facing warning above already fired; the
+                    // finally{} block will fall through to clear the
+                    // in-progress flag so the user is not left with a
+                    // permanent "Upgrading..." banner. Log so the gap is
+                    // diagnosable from journalctl. tiann/hapi#872.
+                    console.warn('[auto-migrate] failed to promote cursorMigrationState to "ambiguous"; banner will clear via cleanup', {
+                        sessionId: session.id,
+                        reason: outcome.reason
+                    })
+                }
+                return session
+            }
             // Soft fail — log and let the legacy launcher handle it.
             console.info('[auto-migrate] legacy cursor session left as stream-json', {
                 sessionId: session.id,
@@ -892,6 +948,38 @@ export class SyncEngine {
             }
         }
         return session
+    }
+
+    /**
+     * Replace `cursorMigrationState='in_progress'` with `'ambiguous'` so
+     * the web banner can switch from "Upgrading..." to "Manual resolution
+     * needed". Returns true if the new flag persisted. tiann/hapi#872.
+     */
+    private setCursorMigrationStateAmbiguous(sessionId: string, namespace: string): boolean {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            const latest = this.sessionCache.getSessionByNamespace(sessionId, namespace)
+                ?? this.sessionCache.refreshSession(sessionId)
+            if (!latest?.metadata) return false
+            if (latest.metadata.cursorMigrationState === 'ambiguous') return true
+            const nextMetadata = { ...latest.metadata, cursorMigrationState: 'ambiguous' as const }
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                nextMetadata,
+                latest.metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+            if (result.result === 'success') {
+                this.sessionCache.refreshSession(sessionId)
+                return true
+            }
+            if (result.result === 'version-mismatch') {
+                this.sessionCache.refreshSession(sessionId)
+                continue
+            }
+            return false
+        }
+        return false
     }
 
     /**

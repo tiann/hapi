@@ -145,7 +145,7 @@ Before commit/push/PR: use the **`pre-push-review`** skill (`~/.cursor/skills/pr
 - **RPC**: CLI registers handlers (`rpc-register`), hub routes requests via `rpcGateway.ts`
 - **Versioned updates**: CLI sends `update-metadata`/`update-state` with version; hub rejects stale
 - **Session modes**: `local` (terminal) vs `remote` (web-controlled); switchable mid-session
-- **Permission modes**: `default`, `acceptEdits`, `bypassPermissions`, `plan`
+- **Permission modes**: `default`, `acceptEdits`, `auto`, `bypassPermissions`, `plan`
 - **Namespaces**: Multi-user isolation via `CLI_API_TOKEN:<namespace>` suffix
 
 ## Adding new web features — consider an FUE

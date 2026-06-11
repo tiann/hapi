@@ -32,7 +32,15 @@ import { tmpdir } from 'node:os'
 import type { Metadata } from '@hapi/protocol/schemas'
 import type { Session } from '@hapi/protocol/types'
 import type { AcpRpcResponse } from './acpVerifyProbe'
-import { CursorLegacyMigrator, findLegacyChatStore, readLegacyMetaLastUsedModel } from './cursorLegacyMigrator'
+import {
+    AmbiguousLegacyStoreError,
+    CursorLegacyMigrator,
+    countLegacyStoreBlobs,
+    findLegacyChatStore,
+    listLegacyChatStoreCandidates,
+    readLegacyMetaLastUsedModel,
+    workspaceHashFromPath
+} from './cursorLegacyMigrator'
 import { buildSyntheticLegacyStore } from './fixtures/buildSyntheticLegacyStore'
 /* ---------- mock probe ---------- */
 
@@ -197,7 +205,7 @@ function cleanupHarness(h: Harness): void {
     try { rmSync(h.tmp, { recursive: true, force: true }) } catch {}
 }
 
-function makeMigrator(h: Harness, probe: ReturnType<typeof makeMockProbe> | null, opts: { archiveSession?: (id: string) => Promise<void>; updateOverride?: (sessionId: string, namespace: string, lastUsedModel: string | null) => { ok: true } | { ok: false; reason: 'version_mismatch_or_missing' } | { ok: false; reason: 'session_active' }; isAgentAcpTransportActive?: () => { active: boolean; holderPid: number | null }; getCurrentSession?: (sessionId: string, namespace: string) => { active: boolean; lifecycleState?: string; cursorSessionProtocol?: string } | null; acquireAcpActiveLock?: () => { release(): void } | null; checkpointLegacyStore?: (storeDbPath: string) => void } = {}): CursorLegacyMigrator {
+function makeMigrator(h: Harness, probe: ReturnType<typeof makeMockProbe> | null, opts: { archiveSession?: (id: string) => Promise<void>; updateOverride?: (sessionId: string, namespace: string, lastUsedModel: string | null) => { ok: true } | { ok: false; reason: 'version_mismatch_or_missing' } | { ok: false; reason: 'session_active' }; isAgentAcpTransportActive?: () => { active: boolean; holderPid: number | null }; getCurrentSession?: (sessionId: string, namespace: string) => { active: boolean; lifecycleState?: string; cursorSessionProtocol?: string } | null; acquireAcpActiveLock?: () => { release(): void } | null; checkpointLegacyStore?: (storeDbPath: string) => void; getHapiMessageCount?: (sessionId: string, namespace: string) => number } = {}): CursorLegacyMigrator {
     return new CursorLegacyMigrator({}, {
         homeDir: () => h.home,
         hostName: () => 'h', // matches the test sessions' metadata.host
@@ -227,7 +235,8 @@ function makeMigrator(h: Harness, probe: ReturnType<typeof makeMockProbe> | null
         updateSessionAfterMigrate: opts.updateOverride ?? ((sessionId, namespace, lastUsedModel) => {
             h.updateCalls.push({ sessionId, namespace, lastUsedModel })
             return { ok: true }
-        })
+        }),
+        getHapiMessageCount: opts.getHapiMessageCount
     })
 }
 
@@ -262,6 +271,129 @@ describe('findLegacyChatStore', () => {
         h.placeLegacyStore('uuid-b', { workspaceHash: 'wsh-b' })
         const found = findLegacyChatStore('uuid-b', h.home)
         expect(found?.workspaceHash).toBe('wsh-b')
+    })
+
+    // tiann/hapi#872 — path-priority + ambiguity behaviour added to guard
+    // against the #844 regression where the same cursorSessionId in 2+
+    // workspace-hash drawers silently picked the first readdir match.
+
+    it('regression guard: single drawer still resolves with no canonical-path hint', () => {
+        h.placeLegacyStore('reg-uuid', { workspaceHash: 'wsh-only' })
+        const found = findLegacyChatStore('reg-uuid', h.home)
+        expect(found?.workspaceHash).toBe('wsh-only')
+    })
+
+    it('canonical workspace path wins over any readdir-order match (tiann/hapi#872)', () => {
+        const canonical = '/coding/hapi'
+        const canonicalHash = workspaceHashFromPath(canonical)
+        // Plant the SAME cursorSessionId under three workspace-hash drawers.
+        // The canonical hash for `canonical` is one of them; the other two
+        // are stale siblings.
+        h.placeLegacyStore('same-uuid', { workspaceHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' })
+        h.placeLegacyStore('same-uuid', { workspaceHash: canonicalHash })
+        h.placeLegacyStore('same-uuid', { workspaceHash: 'zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz' })
+        const found = findLegacyChatStore('same-uuid', h.home, canonical)
+        expect(found).not.toBeNull()
+        expect(found?.workspaceHash).toBe(canonicalHash)
+    })
+
+    it('throws AmbiguousLegacyStoreError when 3+ drawers exist and no canonical match (tiann/hapi#872)', () => {
+        h.placeLegacyStore('amb-uuid', { workspaceHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' })
+        h.placeLegacyStore('amb-uuid', { workspaceHash: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' })
+        h.placeLegacyStore('amb-uuid', { workspaceHash: 'cccccccccccccccccccccccccccccccc' })
+        // Pass a canonical workspace path that does NOT correspond to any
+        // of the planted drawers — falls through to readdir scan.
+        let caught: unknown
+        try {
+            findLegacyChatStore('amb-uuid', h.home, '/some/unrelated/cwd')
+        } catch (e) {
+            caught = e
+        }
+        expect(caught).toBeInstanceOf(AmbiguousLegacyStoreError)
+        const err = caught as AmbiguousLegacyStoreError
+        expect(err.cursorSessionId).toBe('amb-uuid')
+        expect(err.candidates).toHaveLength(3)
+        const hashes = err.candidates.map((c) => c.workspaceHash).sort()
+        expect(hashes).toEqual([
+            'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+            'cccccccccccccccccccccccccccccccc'
+        ])
+        for (const c of err.candidates) {
+            expect(typeof c.sizeBytes).toBe('number')
+            expect(c.sizeBytes).toBeGreaterThan(0)
+            expect(typeof c.mtimeMs).toBe('number')
+        }
+    })
+
+    it('throws AmbiguousLegacyStoreError when 2+ drawers exist and no canonical path is supplied (tiann/hapi#872)', () => {
+        h.placeLegacyStore('amb-noarg', { workspaceHash: 'wsh-1-noarg' })
+        h.placeLegacyStore('amb-noarg', { workspaceHash: 'wsh-2-noarg' })
+        let caught: unknown
+        try {
+            findLegacyChatStore('amb-noarg', h.home)
+        } catch (e) {
+            caught = e
+        }
+        expect(caught).toBeInstanceOf(AmbiguousLegacyStoreError)
+        expect((caught as AmbiguousLegacyStoreError).candidates).toHaveLength(2)
+    })
+
+    it('canonical-path hint resolves cleanly even when ambiguity exists', () => {
+        const canonical = '/workspace/canon'
+        const canonicalHash = workspaceHashFromPath(canonical)
+        h.placeLegacyStore('amb-resolved', { workspaceHash: 'wsh-stale-1' })
+        h.placeLegacyStore('amb-resolved', { workspaceHash: canonicalHash })
+        h.placeLegacyStore('amb-resolved', { workspaceHash: 'wsh-stale-2' })
+        expect(() => findLegacyChatStore('amb-resolved', h.home, canonical)).not.toThrow()
+        const found = findLegacyChatStore('amb-resolved', h.home, canonical)
+        expect(found?.workspaceHash).toBe(canonicalHash)
+    })
+
+    it('listLegacyChatStoreCandidates enumerates every drawer (used by transplant diagnostic log)', () => {
+        h.placeLegacyStore('list-uuid', { workspaceHash: 'wsh-1' })
+        h.placeLegacyStore('list-uuid', { workspaceHash: 'wsh-2' })
+        const candidates = listLegacyChatStoreCandidates('list-uuid', h.home)
+        expect(candidates.map((c) => c.workspaceHash).sort()).toEqual(['wsh-1', 'wsh-2'])
+        for (const c of candidates) {
+            expect(c.sizeBytes).toBeGreaterThan(0)
+        }
+    })
+
+    it('workspaceHashFromPath returns a 32-char lowercase hex md5', () => {
+        const hash = workspaceHashFromPath('/coding/hapi')
+        expect(hash).toMatch(/^[0-9a-f]{32}$/)
+    })
+
+    /**
+     * Pins the algorithm contract: workspace-hash is plain md5 of the raw
+     * absolute path bytes, no normalization. Reference values were
+     * independently computed via `printf '%s' <path> | md5sum`. A future
+     * refactor that adds path.resolve() or trims trailing slashes would
+     * change these and silently break Cursor's drawer naming - Cursor
+     * uses raw md5 on whatever absolute path the session was opened
+     * under. tiann/hapi#873 cold review.
+     */
+    it('workspaceHashFromPath matches independently-computed md5 (raw, no normalization)', () => {
+        // Reference values computed via `printf '%s' <path> | md5sum`.
+        expect(workspaceHashFromPath('/home/user/project')).toBe('90722f2638004be06d790eaac9ac1f8a')
+        expect(workspaceHashFromPath('/workspace/example')).toBe('56512a070a25878a45bf0c1a46021ad9')
+        expect(workspaceHashFromPath('/tmp/x')).toBe('7ae3976faedb45a92335f73e4d7bb9e5')
+        // Trailing slash MUST yield a different hash (else /foo and /foo/
+        // would collide on disk, which Cursor's layout does not allow).
+        const noSlash = workspaceHashFromPath('/workspace/example')
+        const withSlash = workspaceHashFromPath('/workspace/example/')
+        expect(noSlash).not.toBe(withSlash)
+    })
+
+    it('rejects path-traversal cursorSessionId inputs at the function boundary (tiann/hapi#872 cold review)', () => {
+        // External callers may bypass preflightSession; the function must
+        // not statSync arbitrary paths when fed a malformed id. All of the
+        // following must return null (and never throw / never probe).
+        for (const id of ['..', '.', '../etc', '/etc/passwd', 'a/b', 'a/../b']) {
+            expect(findLegacyChatStore(id, h.home, '/coding/hapi')).toBeNull()
+            expect(findLegacyChatStore(id, h.home)).toBeNull()
+        }
     })
 })
 
@@ -653,6 +785,216 @@ describe('CursorLegacyMigrator.migrateOne — happy path', () => {
         if (!out.ok) return
         expect(out.lastUsedModelPreserved).toBeNull()
         expect(h.updateCalls[0].lastUsedModel).toBeNull()
+    })
+})
+
+describe('CursorLegacyMigrator.migrateOne — ambiguous source store (tiann/hapi#872)', () => {
+    let h: Harness
+    beforeEach(() => { h = makeHarness() })
+    afterEach(() => cleanupHarness(h))
+
+    it('canonical workspace path on session.metadata.path picks the right drawer when others have the same uuid', async () => {
+        const cursorSessionId = 'pick-canonical-uuid'
+        const canonicalCwd = '/workspace/example'
+        const canonicalHash = workspaceHashFromPath(canonicalCwd)
+        // Plant the REAL store under the canonical drawer; siblings have
+        // smaller decoy stores.
+        const realStore = h.placeLegacyStore(cursorSessionId, { workspaceHash: canonicalHash, name: 'real chat' })
+        h.placeLegacyStore(cursorSessionId, { workspaceHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' })
+        h.placeLegacyStore(cursorSessionId, { workspaceHash: 'zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz' })
+        const session = h.makeSession({
+            metadata: { path: canonicalCwd, host: 'h', flavor: 'cursor', cursorSessionId }
+        })
+        const out = await makeMigrator(h, makeMockProbe()).migrateOne(session, {})
+        expect(out.ok).toBe(true)
+        if (!out.ok) return
+        // Real store removed (proves the canonical drawer was the source).
+        expect(existsSync(realStore)).toBe(false)
+        // ACP target placed and intact.
+        expect(existsSync(join(h.acpSessionsDir, cursorSessionId, 'store.db'))).toBe(true)
+    })
+
+    it('refuses ambiguous_legacy_store when 3 drawers exist and no canonical path matches', async () => {
+        const cursorSessionId = 'ambig-uuid'
+        const storeA = h.placeLegacyStore(cursorSessionId, { workspaceHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' })
+        const storeB = h.placeLegacyStore(cursorSessionId, { workspaceHash: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' })
+        const storeC = h.placeLegacyStore(cursorSessionId, { workspaceHash: 'cccccccccccccccccccccccccccccccc' })
+        const session = h.makeSession({
+            // canonical path does NOT hash to any of the planted drawers
+            metadata: { path: '/workspace/unrelated', host: 'h', flavor: 'cursor', cursorSessionId }
+        })
+        const out = await makeMigrator(h, makeMockProbe()).migrateOne(session, {})
+        expect(out.ok).toBe(false)
+        if (out.ok) return
+        expect(out.reason).toBe('ambiguous_legacy_store')
+        expect(out.message).toContain('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+        expect(out.message).toContain('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
+        expect(out.message).toContain('cccccccccccccccccccccccccccccccc')
+        // No transplant happened.
+        expect(existsSync(join(h.acpSessionsDir, cursorSessionId))).toBe(false)
+        // All three sources untouched.
+        expect(existsSync(storeA)).toBe(true)
+        expect(existsSync(storeB)).toBe(true)
+        expect(existsSync(storeC)).toBe(true)
+    })
+
+    it('proceeds when 3 drawers exist but canonical path resolves to one of them', async () => {
+        const cursorSessionId = 'ambig-resolved-uuid'
+        const canonicalCwd = '/workspace/resolved'
+        const canonicalHash = workspaceHashFromPath(canonicalCwd)
+        const realStore = h.placeLegacyStore(cursorSessionId, { workspaceHash: canonicalHash })
+        h.placeLegacyStore(cursorSessionId, { workspaceHash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' })
+        h.placeLegacyStore(cursorSessionId, { workspaceHash: 'zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz' })
+        const session = h.makeSession({
+            metadata: { path: canonicalCwd, host: 'h', flavor: 'cursor', cursorSessionId }
+        })
+        const out = await makeMigrator(h, makeMockProbe()).migrateOne(session, {})
+        expect(out.ok).toBe(true)
+        // Only the canonical drawer's source got removed; the other two siblings stay.
+        expect(existsSync(realStore)).toBe(false)
+    })
+})
+
+describe('CursorLegacyMigrator.migrateOne — size sanity (tiann/hapi#872)', () => {
+    let h: Harness
+    beforeEach(() => { h = makeHarness() })
+    afterEach(() => cleanupHarness(h))
+
+    it('refuses with size_mismatch when HAPI has > 100 messages and candidate has <messageCount/4 blobs', async () => {
+        const cursorSessionId = 'sm-tiny-uuid'
+        // Synthetic store has a tiny number of blobs (single seed row).
+        const sourceStore = h.placeLegacyStore(cursorSessionId)
+        const session = h.makeSession({
+            metadata: { path: '/workspace/x', host: 'h', flavor: 'cursor', cursorSessionId }
+        })
+        const out = await makeMigrator(h, makeMockProbe(), {
+            getHapiMessageCount: () => 6000
+        }).migrateOne(session, {})
+        expect(out.ok).toBe(false)
+        if (out.ok) return
+        expect(out.reason).toBe('size_mismatch')
+        expect(out.message).toMatch(/HAPI tracks 6000 message/)
+        // Source untouched, no ACP placement.
+        expect(existsSync(sourceStore)).toBe(true)
+        expect(existsSync(join(h.acpSessionsDir, cursorSessionId))).toBe(false)
+    })
+
+    it('proceeds when candidate blob count meets the messageCount/4 floor', async () => {
+        const cursorSessionId = 'sm-big-uuid'
+        const sourceStore = h.placeLegacyStore(cursorSessionId)
+        // Pad the source store's blobs table to clear the floor. The
+        // synthetic store ships `blobs(id TEXT PRIMARY KEY, data BLOB)`
+        // with zero rows; insert enough decoy rows to satisfy the
+        // migrator's sanity check without changing the on-disk layout
+        // in any way the migrator cares about.
+        const Database = require('bun:sqlite').Database
+        const padDb = new Database(sourceStore, { readwrite: true })
+        try {
+            padDb.exec('BEGIN')
+            const stmt = padDb.prepare('INSERT INTO blobs (id, data) VALUES (?, ?)')
+            for (let i = 0; i < 200; i += 1) {
+                stmt.run(`pad-${i}-${Math.random()}`, Buffer.from([0]))
+            }
+            padDb.exec('COMMIT')
+        } finally {
+            padDb.close()
+        }
+        const session = h.makeSession({
+            metadata: { path: '/workspace/x', host: 'h', flavor: 'cursor', cursorSessionId }
+        })
+        const out = await makeMigrator(h, makeMockProbe(), {
+            getHapiMessageCount: () => 600 // floor = 150; padded blobs > 200
+        }).migrateOne(session, {})
+        expect(out.ok).toBe(true)
+        if (!out.ok) return
+        // Sanity: source removed, target placed.
+        expect(existsSync(sourceStore)).toBe(false)
+        expect(existsSync(join(h.acpSessionsDir, cursorSessionId, 'store.db'))).toBe(true)
+    })
+
+    it('skips the sanity check when HAPI message count is 0 (brand new session)', async () => {
+        const cursorSessionId = 'sm-zero-uuid'
+        h.placeLegacyStore(cursorSessionId)
+        const session = h.makeSession({
+            metadata: { path: '/workspace/x', host: 'h', flavor: 'cursor', cursorSessionId }
+        })
+        const out = await makeMigrator(h, makeMockProbe(), {
+            getHapiMessageCount: () => 0
+        }).migrateOne(session, {})
+        expect(out.ok).toBe(true)
+    })
+
+    it('skips the sanity check when the getHapiMessageCount dep is not wired', async () => {
+        const cursorSessionId = 'sm-nodep-uuid'
+        h.placeLegacyStore(cursorSessionId)
+        const session = h.makeSession({
+            metadata: { path: '/workspace/x', host: 'h', flavor: 'cursor', cursorSessionId }
+        })
+        // No getHapiMessageCount override → dep undefined → check disabled.
+        const out = await makeMigrator(h, makeMockProbe()).migrateOne(session, {})
+        expect(out.ok).toBe(true)
+    })
+
+    it('skips the sanity check when getHapiMessageCount throws (fail-open)', async () => {
+        const cursorSessionId = 'sm-throws-uuid'
+        h.placeLegacyStore(cursorSessionId)
+        const session = h.makeSession({
+            metadata: { path: '/workspace/x', host: 'h', flavor: 'cursor', cursorSessionId }
+        })
+        const out = await makeMigrator(h, makeMockProbe(), {
+            getHapiMessageCount: () => { throw new Error('store unreadable') }
+        }).migrateOne(session, {})
+        expect(out.ok).toBe(true)
+    })
+
+    it('skips the sanity check when message count is exactly 100 (boundary; floor only kicks in above 100)', async () => {
+        const cursorSessionId = 'sm-boundary-uuid'
+        h.placeLegacyStore(cursorSessionId)
+        const session = h.makeSession({
+            metadata: { path: '/workspace/x', host: 'h', flavor: 'cursor', cursorSessionId }
+        })
+        const out = await makeMigrator(h, makeMockProbe(), {
+            getHapiMessageCount: () => 100
+        }).migrateOne(session, {})
+        expect(out.ok).toBe(true)
+    })
+
+    it('engages the sanity check when message count is 101 (first value above the skip threshold)', async () => {
+        // The synthetic store has only a handful of blobs (well under
+        // 101/4 = 25). messageCount=101 is the first value that lets the
+        // floor kick in - this test pins the boundary contract so a
+        // future refactor that moves the cutoff to >=100 or >100 is
+        // caught by CI rather than a production session refusal.
+        // tiann/hapi#873 cold review Nit.
+        const cursorSessionId = 'sm-boundary-engaged-uuid'
+        h.placeLegacyStore(cursorSessionId)
+        const session = h.makeSession({
+            metadata: { path: '/workspace/x', host: 'h', flavor: 'cursor', cursorSessionId }
+        })
+        const out = await makeMigrator(h, makeMockProbe(), {
+            getHapiMessageCount: () => 101
+        }).migrateOne(session, {})
+        expect(out.ok).toBe(false)
+        if (out.ok) return
+        expect(out.reason).toBe('size_mismatch')
+    })
+})
+
+describe('countLegacyStoreBlobs (tiann/hapi#872)', () => {
+    let h: Harness
+    beforeEach(() => { h = makeHarness() })
+    afterEach(() => cleanupHarness(h))
+
+    it('returns the blob row count for a real synthetic store', () => {
+        const p = h.placeLegacyStore('blob-count-uuid')
+        const n = countLegacyStoreBlobs(p)
+        expect(typeof n).toBe('number')
+        expect((n ?? -1) >= 0).toBe(true)
+    })
+
+    it('returns null when the store cannot be opened', () => {
+        const n = countLegacyStoreBlobs(join(h.tmp, 'does-not-exist.db'))
+        expect(n).toBeNull()
     })
 })
 

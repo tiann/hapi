@@ -44,6 +44,7 @@
 import { join, dirname } from 'node:path'
 import { homedir, hostname, tmpdir } from 'node:os'
 import { mkdtempSync, copyFileSync, writeFileSync, existsSync, mkdirSync, rmSync, rmdirSync, statSync, readdirSync, readFileSync, chmodSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { Database } from 'bun:sqlite'
 
 import type { CursorMigrateOutcome, CursorMigrateRefusalReason } from '@hapi/protocol/apiTypes'
@@ -151,6 +152,20 @@ export interface CursorLegacyMigratorDeps {
     logger?: { debug: (msg: string, ctx?: unknown) => void; info: (msg: string, ctx?: unknown) => void; warn: (msg: string, ctx?: unknown) => void; error: (msg: string, ctx?: unknown) => void }
     /** Used to update hapi.db sessions.metadata.cursorSessionProtocol = 'acp' and session.model. */
     updateSessionAfterMigrate?: (sessionId: string, namespace: string, lastUsedModel: string | null) => UpdateAfterMigrateResult
+    /**
+     * Best-effort count of messages HAPI has already synced for this session
+     * (read from hapi.db, see hub/src/store/messages.ts). Used to refuse a
+     * transplant when the candidate legacy store contains an order-of-
+     * magnitude fewer blobs than HAPI's known history - the canonical
+     * symptom of the #844 ambiguous-source regression where a sibling
+     * workspace-hash drawer with stale or unrelated content gets picked
+     * up by the readdir scan. Return 0 (or omit the dep) to disable the
+     * sanity check entirely (e.g. unit tests, brand new sessions).
+     *
+     * Hub injects an implementation that calls
+     * `store.messages.countMessages(sessionId)`. tiann/hapi#872.
+     */
+    getHapiMessageCount?: (sessionId: string, namespace: string) => number
 }
 
 export type UpdateAfterMigrateResult =
@@ -161,6 +176,51 @@ export type UpdateAfterMigrateResult =
 export interface LegacyStoreLocation {
     workspaceHash: string
     storeDbPath: string
+}
+
+/**
+ * One legacy store candidate found on disk for a given cursorSessionId.
+ * Carried inside AmbiguousLegacyStoreError so callers and operators can
+ * see the full picture (which workspace-hash drawer, how big, how recently
+ * written) rather than a silently-picked first match.
+ */
+export interface LegacyStoreCandidate {
+    workspaceHash: string
+    storeDbPath: string
+    sizeBytes: number
+    mtimeMs: number
+}
+
+/**
+ * Raised by findLegacyChatStore when the same cursorSessionId exists in
+ * 2+ workspace-hash drawers AND the optional canonical-path probe did not
+ * resolve the ambiguity. The migrator translates this to an
+ * `ambiguous_legacy_store` refusal outcome so the caller can surface a
+ * banner ("manually resolve") instead of transplanting an alien store.
+ *
+ * The first-match-wins behaviour shipped in #844 is exactly the bug we
+ * are guarding against here - see tiann/hapi#872 for the postmortem.
+ */
+export class AmbiguousLegacyStoreError extends Error {
+    public readonly cursorSessionId: string
+    public readonly candidates: ReadonlyArray<LegacyStoreCandidate>
+    constructor(cursorSessionId: string, candidates: ReadonlyArray<LegacyStoreCandidate>) {
+        const hashList = candidates.map((c) => c.workspaceHash).join(', ')
+        super(`cursor session ${cursorSessionId} exists in ${candidates.length} workspace-hash drawers and the canonical workspace path did not resolve to one of them: ${hashList}`)
+        this.name = 'AmbiguousLegacyStoreError'
+        this.cursorSessionId = cursorSessionId
+        this.candidates = candidates
+    }
+}
+
+/**
+ * Compute the cursor workspace-hash for a cwd path. Cursor stores legacy
+ * chats under `~/.cursor/chats/<md5(workspacePath)>/...`; this lets us
+ * jump straight to the right drawer for the session's canonical path
+ * instead of relying on readdir order. tiann/hapi#872.
+ */
+export function workspaceHashFromPath(workspacePath: string): string {
+    return createHash('md5').update(workspacePath).digest('hex')
 }
 
 /* ---------- helpers ---------- */
@@ -182,32 +242,131 @@ function refusal(sessionId: string, reason: CursorMigrateRefusalReason, message:
 /* ---------- public API ---------- */
 
 /**
- * Resolve the on-disk legacy ~/.cursor/chats/<wsh>/<cursorSessionId>/store.db
- * for the given cursorSessionId. Scans workspace-hash dirs because HAPI does
- * not record the workspace-hash; it is hashed from the original cwd by Cursor
- * and not exposed via the agent CLI.
+ * UUID-ish pattern: a cursor session id MUST be a basename that cannot
+ * escape the chats/acp-sessions trees via path traversal.
+ * Moved here so findLegacyChatStore and listLegacyChatStoreCandidates
+ * can both reference it without a temporal-dead-zone hazard.
+ * tiann/hapi#877 bot Minor.
  */
-export function findLegacyChatStore(cursorSessionId: string, home: string): LegacyStoreLocation | null {
+const CURSOR_SESSION_ID_RE = /^[A-Za-z0-9_.-]+$/
+
+/**
+ * Resolve the on-disk legacy ~/.cursor/chats/<wsh>/<cursorSessionId>/store.db
+ * for the given cursorSessionId.
+ *
+ * Cursor stores legacy chats under `~/.cursor/chats/<md5(workspacePath)>/...`,
+ * keyed by the *cwd* the session was opened in. A single cursorSessionId can
+ * land in several `<wsh>` drawers in the wild - e.g. when the same chat was
+ * resumed from a worktree, a sibling workspace, or a diagnostic location. The
+ * original #844 implementation iterated readdir and returned the first match;
+ * tiann/hapi#872 documents how that silently transplanted alien content
+ * over the real store on resume.
+ *
+ * The resolution order here is:
+ *   1. If `sessionWorkspacePath` is provided, hash it and check that drawer
+ *      first. If a store.db exists there, return immediately. This is the
+ *      "we know which cwd you opened it from" fast path.
+ *   2. Otherwise (no canonical path, or no canonical-drawer match), scan
+ *      every `<wsh>` directory and collect every candidate.
+ *      - 0 candidates -> null (caller surfaces no_legacy_store_on_disk).
+ *      - 1 candidate  -> return it (regression-equivalent of pre-#872 single-
+ *                        drawer path).
+ *      - 2+ candidates -> throw AmbiguousLegacyStoreError listing every
+ *                        candidate with its hash, size, and mtime so the
+ *                        caller can surface an actionable refusal banner
+ *                        instead of picking one and transplanting blindly.
+ *
+ * tiann/hapi#872.
+ */
+export function findLegacyChatStore(
+    cursorSessionId: string,
+    home: string,
+    sessionWorkspacePath?: string
+): LegacyStoreLocation | null {
+    // tiann/hapi#872 cold review (#34-N): findLegacyChatStore is exported
+    // public API and used as a free function in unit tests + the migrator
+    // class. Validate the id at the boundary so an out-of-band caller
+    // cannot pass `..` or `/` and have the inner `join(chatsRoot, wsh, id,
+    // 'store.db')` resolve to an arbitrary on-disk path. The probe is
+    // read-only (`statSync`) so blast radius is small, but the same
+    // CURSOR_SESSION_ID_RE preflightSession applies to in-class callers
+    // is cheap to also enforce here.
+    if (!CURSOR_SESSION_ID_RE.test(cursorSessionId) || cursorSessionId === '.' || cursorSessionId === '..') {
+        return null
+    }
     const chatsRoot = join(home, '.cursor', 'chats')
     if (!existsSync(chatsRoot)) return null
+
+    // Step 1: canonical-path fast path. Skip readdir entirely if we hit.
+    // Do NOT trim: Cursor hashes the raw workspace path bytes.
+    // Trimming would produce a different hash for a valid POSIX path
+    // whose bytes happen to begin or end with ASCII space, causing a
+    // canonical miss and a potential false ambiguity refusal.
+    // tiann/hapi#877 bot Minor.
+    const canonicalPath = typeof sessionWorkspacePath === 'string' ? sessionWorkspacePath : ''
+    if (canonicalPath.length > 0) {
+        const canonicalHash = workspaceHashFromPath(canonicalPath)
+        const canonicalCandidate = join(chatsRoot, canonicalHash, cursorSessionId, 'store.db')
+        try {
+            const st = statSync(canonicalCandidate)
+            if (st.isFile()) {
+                return { workspaceHash: canonicalHash, storeDbPath: canonicalCandidate }
+            }
+        } catch {
+            // canonical drawer absent or unreadable; fall through to scan
+        }
+    }
+
+    // Step 2: scan every <wsh>/<cursorSessionId>/store.db.
+    const candidates = listLegacyChatStoreCandidates(cursorSessionId, home)
+    if (candidates.length === 0) return null
+    if (candidates.length === 1) {
+        const only = candidates[0]
+        return { workspaceHash: only.workspaceHash, storeDbPath: only.storeDbPath }
+    }
+    throw new AmbiguousLegacyStoreError(cursorSessionId, candidates)
+}
+
+/**
+ * Enumerate every on-disk legacy candidate for a cursorSessionId. Pure scan,
+ * never throws. Used by findLegacyChatStore for the readdir fallback and by
+ * the migrator for the `migrator:transplanted` diagnostic log so operators
+ * can see "1 of N candidates picked" after the fact. tiann/hapi#872.
+ */
+export function listLegacyChatStoreCandidates(cursorSessionId: string, home: string): LegacyStoreCandidate[] {
+    // Guard: same boundary check as findLegacyChatStore.  A future direct
+    // caller that skips findLegacyChatStore must not be able to stat paths
+    // outside the intended <wsh>/<cursorSessionId>/store.db shape by passing
+    // a traversal-like id.  tiann/hapi#877 bot Minor.
+    if (!CURSOR_SESSION_ID_RE.test(cursorSessionId) || cursorSessionId === '.' || cursorSessionId === '..') {
+        return []
+    }
+    const chatsRoot = join(home, '.cursor', 'chats')
+    if (!existsSync(chatsRoot)) return []
     let entries: string[]
     try {
         entries = readdirSync(chatsRoot)
     } catch {
-        return null
+        return []
     }
+    const candidates: LegacyStoreCandidate[] = []
     for (const wsh of entries) {
         const candidate = join(chatsRoot, wsh, cursorSessionId, 'store.db')
         try {
             const st = statSync(candidate)
             if (st.isFile()) {
-                return { workspaceHash: wsh, storeDbPath: candidate }
+                candidates.push({
+                    workspaceHash: wsh,
+                    storeDbPath: candidate,
+                    sizeBytes: st.size,
+                    mtimeMs: st.mtimeMs
+                })
             }
         } catch {
             // not in this wsh; keep scanning
         }
     }
-    return null
+    return candidates
 }
 
 /**
@@ -237,6 +396,27 @@ export function readLegacyMetaLastUsedModel(storeDbPath: string): { name?: strin
     }
 }
 
+/**
+ * Read the row count of the `blobs` table from a legacy/ACP cursor store.db.
+ * Returns null when the file cannot be opened, the table is missing, or
+ * the read otherwise fails - callers should treat null as "no signal" and
+ * skip any blob-count-based decisions rather than treating it as a hard
+ * zero. tiann/hapi#872.
+ */
+export function countLegacyStoreBlobs(storeDbPath: string): number | null {
+    let db: Database | null = null
+    try {
+        db = new Database(storeDbPath, { readonly: true })
+        const row = db.prepare('SELECT COUNT(*) AS n FROM blobs').get() as { n?: number } | undefined
+        if (!row || typeof row.n !== 'number' || !Number.isFinite(row.n)) return null
+        return row.n
+    } catch {
+        return null
+    } finally {
+        try { db?.close() } catch {}
+    }
+}
+
 function decodeMetaValue(value: string): Record<string, unknown> | null {
     // Try JSON first (newer ACP stores)
     if (value.startsWith('{')) {
@@ -254,13 +434,6 @@ function decodeMetaValue(value: string): Record<string, unknown> | null {
     }
     return null
 }
-
-/**
- * UUID-ish pattern: a cursor session id MUST be a basename that cannot
- * escape the chats/acp-sessions trees via path traversal. Codex review #34
- * P2: validate before any join().
- */
-const CURSOR_SESSION_ID_RE = /^[A-Za-z0-9_.-]+$/
 
 /**
  * Pre-flight: return null if the session can be migrated; return a refusal
@@ -302,7 +475,7 @@ export function preflightSession(session: Session | undefined, now: () => number
 export class CursorLegacyMigrator {
     private readonly opts: Required<Pick<CursorLegacyMigratorOptions, 'lockReleaseTimeoutMs' | 'verifyTimeoutMs' | 'verifyPromptText'>>
     private readonly deps: Required<Pick<CursorLegacyMigratorDeps, 'homeDir' | 'hostName' | 'createProbe' | 'tmpDir' | 'now' | 'awaitLockRelease' | 'isAgentAcpTransportActive' | 'getCurrentSession' | 'logger' | 'acquireAcpActiveLock' | 'checkpointLegacyStore'>>
-        & Pick<CursorLegacyMigratorDeps, 'archiveSession' | 'updateSessionAfterMigrate'>
+        & Pick<CursorLegacyMigratorDeps, 'archiveSession' | 'updateSessionAfterMigrate' | 'getHapiMessageCount'>
 
     constructor(opts: CursorLegacyMigratorOptions, deps: CursorLegacyMigratorDeps) {
         this.opts = {
@@ -345,7 +518,8 @@ export class CursorLegacyMigrator {
             getCurrentSession: deps.getCurrentSession ?? (() => null),
             logger: deps.logger ?? noopLogger(),
             archiveSession: deps.archiveSession,
-            updateSessionAfterMigrate: deps.updateSessionAfterMigrate
+            updateSessionAfterMigrate: deps.updateSessionAfterMigrate,
+            getHapiMessageCount: deps.getHapiMessageCount
         }
     }
 
@@ -431,9 +605,99 @@ export class CursorLegacyMigrator {
         // Locate the legacy store.db on disk BEFORE we archive. If the
         // local filesystem has no such file, we have nothing to migrate
         // and there's no reason to kill the session.
-        const legacy = findLegacyChatStore(cursorSessionId, home)
+        //
+        // Pass the session's canonical workspace path (metadata.path) so
+        // findLegacyChatStore can jump straight to the md5(path) drawer
+        // before falling back to the readdir scan. Without the canonical
+        // hint, a cursorSessionId that exists in multiple <workspace-hash>
+        // drawers would silently get the first readdir match - the #844
+        // regression documented in tiann/hapi#872.
+        const canonicalWorkspacePath = typeof cwd === 'string' ? cwd : ''
+        // Snapshot the full candidate set BEFORE the canonical fast-path
+        // resolves a single drawer. The successful transplant's diagnostic
+        // log captures this count, so it must reflect the pre-rm reality
+        // (the rm step would otherwise leave the log understating the
+        // number of drawers that existed at decision time, undermining
+        // the diagnose-from-journalctl-alone goal). tiann/hapi#873 cold
+        // review Minor #1.
+        const candidatesAtDiscovery = listLegacyChatStoreCandidates(cursorSessionId, home)
+        let legacy: LegacyStoreLocation | null
+        try {
+            legacy = findLegacyChatStore(cursorSessionId, home, canonicalWorkspacePath)
+        } catch (err) {
+            if (err instanceof AmbiguousLegacyStoreError) {
+                const summary = err.candidates
+                    .map((c) => `${c.workspaceHash} (size=${c.sizeBytes}, mtimeMs=${c.mtimeMs})`)
+                    .join('; ')
+                const canonicalHashStr = canonicalWorkspacePath.length > 0
+                    ? workspaceHashFromPath(canonicalWorkspacePath)
+                    : '(no canonical path on session metadata)'
+                log.warn('[migrator] ambiguous legacy store; refusing transplant', {
+                    sessionId: session.id,
+                    cursorSessionId,
+                    canonicalWorkspacePath: canonicalWorkspacePath.length > 0 ? canonicalWorkspacePath : null,
+                    canonicalHash: canonicalHashStr,
+                    candidates: err.candidates
+                })
+                return refusal(
+                    session.id,
+                    'ambiguous_legacy_store',
+                    `legacy store ambiguous: cursorSessionId ${cursorSessionId} exists in ${err.candidates.length} workspace-hash drawers and none matched canonical workspace path md5 (${canonicalHashStr}). Candidates: ${summary}. Resolve manually before migration.`,
+                    start,
+                    this.deps.now
+                )
+            }
+            throw err
+        }
         if (!legacy) {
             return refusal(session.id, 'no_legacy_store_on_disk', `~/.cursor/chats/*/${cursorSessionId}/store.db not found under ${home}`, start, this.deps.now)
+        }
+        // Diagnostic: canonical-path lookup missed but readdir found a
+        // single drawer (we still proceed for regression equivalence,
+        // but this warrants a log because it implies our md5(path) does
+        // not match Cursor's drawer naming for this session - e.g. an
+        // operator hit a path-normalization corner case we have not
+        // mapped). tiann/hapi#873 cold review Major #2.
+        if (canonicalWorkspacePath.length > 0 && legacy.workspaceHash !== workspaceHashFromPath(canonicalWorkspacePath)) {
+            log.warn('[migrator] canonical-path drawer missing; falling back to single readdir candidate', {
+                sessionId: session.id,
+                cursorSessionId,
+                canonicalWorkspacePath,
+                expectedHash: workspaceHashFromPath(canonicalWorkspacePath),
+                pickedHash: legacy.workspaceHash
+            })
+        }
+
+        // tiann/hapi#872: source-side measurements BEFORE any destructive
+        // step. The `migrator:transplanted` log on the success path quotes
+        // these source values - capturing them AFTER the rm would either
+        // fail (file gone) or read the destination copy by mistake. The
+        // candidate-count snapshot above (`candidatesAtDiscovery`) is the
+        // matching pre-rm capture for the "N candidates discovered"
+        // diagnostic. tiann/hapi#873 cold review.
+        const sourceBytesAtDiscovery = (() => {
+            try { return statSync(legacy.storeDbPath).size } catch { return -1 }
+        })()
+        const sourceBlobCountAtDiscovery = countLegacyStoreBlobs(legacy.storeDbPath) ?? -1
+
+        // Size sanity check: even when discovery is unambiguous, the
+        // picked legacy store may be a stale sibling that happens to be
+        // the only on-disk artifact for this session id (e.g. operator
+        // deleted the canonical workspace and a diagnostic location is
+        // all that's left). If HAPI already synced a meaningful history
+        // for the session and the candidate store has wildly fewer blobs
+        // than that history, refuse rather than transplant a shrunken
+        // alien snapshot over the live ACP target. Skips entirely when
+        // HAPI message count is 0 (brand-new / never-synced session).
+        // tiann/hapi#872.
+        const sizeMismatch = this.checkSizeSanity(session, cursorSessionId, legacy.storeDbPath, log)
+        if (sizeMismatch) {
+            log.warn('[migrator] size sanity check refused transplant', {
+                sessionId: session.id,
+                cursorSessionId,
+                ...sizeMismatch.context
+            })
+            return refusal(session.id, 'size_mismatch', sizeMismatch.message, start, this.deps.now)
         }
 
         // Pre-flight: refuse if the ACP target dir already exists. Also
@@ -744,6 +1008,26 @@ export class CursorLegacyMigrator {
             }
         }
 
+        // tiann/hapi#872: diagnostic log on every successful transplant.
+        // Uses pre-rm snapshots captured at discovery time so the count
+        // and source measurements reflect what was actually on disk, not
+        // what's left after the cleanup rm. Future regression of the #844
+        // ambiguous-source bug is diagnosable from `journalctl -u hapi-hub`
+        // alone, without blob-overlap forensics on the destination store.
+        log.info('[migrator] transplanted', {
+            sessionId: session.id,
+            cursorSessionId,
+            workspaceHash: legacy.workspaceHash,
+            candidateCount: candidatesAtDiscovery.length,
+            sourceBytes: sourceBytesAtDiscovery,
+            sourceBlobCount: sourceBlobCountAtDiscovery,
+            targetAcpPath: join(acpSessionDir, 'store.db'),
+            sourceRemoved,
+            canonicalHash: canonicalWorkspacePath.length > 0
+                ? workspaceHashFromPath(canonicalWorkspacePath)
+                : null
+        })
+
         return {
             ok: true,
             sessionId: session.id,
@@ -752,6 +1036,52 @@ export class CursorLegacyMigrator {
             durationMs: this.deps.now() - start,
             lastUsedModelPreserved: lastUsedModel,
             sourceRemoved
+        }
+    }
+
+    /**
+     * Refuse a transplant when the candidate legacy store carries
+     * dramatically fewer blobs than HAPI's known message history for
+     * the session - the canonical symptom of the #844 ambiguous-source
+     * regression where a stale sibling drawer gets picked up by the
+     * readdir scan even when no explicit ambiguity exists (e.g. the
+     * canonical drawer was deleted off disk leaving only a diagnostic
+     * sibling). Returns null when the check passes; returns a refusal
+     * payload otherwise. Skipped entirely when:
+     *   - no `getHapiMessageCount` dep is wired (e.g. unit tests, CLI
+     *     callers that don't have a store handle)
+     *   - HAPI message count is 0 (brand-new / never-synced session)
+     *   - candidate blob count cannot be read (treated as fail-open
+     *     so a corrupted store still goes through the normal verify path
+     *     and surfaces verify_load_failed there)
+     * Thresholds are conservative sanity floors, not exact guarantees:
+     * messageCount > 100 AND blobCount < messageCount / 4. tiann/hapi#872.
+     */
+    private checkSizeSanity(
+        session: Session,
+        cursorSessionId: string,
+        legacyStoreDbPath: string,
+        log: NonNullable<CursorLegacyMigratorDeps['logger']>
+    ): { message: string; context: Record<string, unknown> } | null {
+        if (!this.deps.getHapiMessageCount) return null
+        let messageCount: number
+        try {
+            messageCount = this.deps.getHapiMessageCount(session.id, session.namespace)
+        } catch (err) {
+            log.warn('[migrator] getHapiMessageCount threw; skipping size sanity', {
+                sessionId: session.id,
+                err: err instanceof Error ? err.message : String(err)
+            })
+            return null
+        }
+        if (!Number.isFinite(messageCount) || messageCount <= 100) return null
+        const blobCount = countLegacyStoreBlobs(legacyStoreDbPath)
+        if (blobCount === null) return null
+        const minExpectedBlobs = Math.floor(messageCount / 4)
+        if (blobCount >= minExpectedBlobs) return null
+        return {
+            message: `legacy store size mismatch: HAPI tracks ${messageCount} message(s) for session ${cursorSessionId} but candidate store has only ${blobCount} blob(s) (< messageCount/4 = ${minExpectedBlobs}). Refusing to transplant likely-alien content; resolve manually.`,
+            context: { messageCount, blobCount, minExpectedBlobs, legacyStoreDbPath }
         }
     }
 
