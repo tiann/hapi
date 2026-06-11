@@ -628,6 +628,44 @@ export class SessionCache {
         throw new Error('Session was modified concurrently. Please try again.')
     }
 
+    async acknowledgeModelError(sessionId: string): Promise<void> {
+        const session = this.sessions.get(sessionId)
+        if (!session) {
+            throw new Error('Session not found')
+        }
+
+        const currentMetadata = session.metadata ?? { path: '', host: '' }
+        if (!currentMetadata.lastModelError) {
+            return
+        }
+
+        const newMetadata = {
+            ...currentMetadata,
+            lastModelError: {
+                ...currentMetadata.lastModelError,
+                acknowledgedAt: Date.now()
+            }
+        }
+
+        const result = this.store.sessions.updateSessionMetadata(
+            sessionId,
+            newMetadata,
+            session.metadataVersion,
+            session.namespace,
+            { touchUpdatedAt: false }
+        )
+
+        if (result.result === 'error') {
+            throw new Error('Failed to update session metadata')
+        }
+
+        if (result.result === 'version-mismatch') {
+            throw new Error('Session was modified concurrently. Please try again.')
+        }
+
+        this.refreshSession(sessionId)
+    }
+
     /**
      * Clear archive-related metadata on an archived session so it can be resumed.
      * - Removes `lifecycleState`, `archivedBy`, `archiveReason`, and stamps

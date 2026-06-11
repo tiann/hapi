@@ -651,6 +651,10 @@ export class SyncEngine {
         await this.sessionCache.renameSession(sessionId, name)
     }
 
+    async acknowledgeModelError(sessionId: string): Promise<void> {
+        await this.sessionCache.acknowledgeModelError(sessionId)
+    }
+
     async deleteSession(sessionId: string): Promise<void> {
         await this.sessionCache.deleteSession(sessionId)
     }

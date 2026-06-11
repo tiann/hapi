@@ -19,6 +19,10 @@ import type { EnhancedMode } from './loop';
 import type { CursorStreamEvent } from './utils/cursorLegacyEventConverter';
 import { parseCursorEvent, convertCursorEventToAgentMessage } from './utils/cursorLegacyEventConverter';
 import { cursorPassThroughStatusMessage, parseCursorSpecialCommand } from './cursorSpecialCommands';
+import {
+    classifyCursorAgentMessage,
+    isCompletionClaim
+} from './cursorAgentMessageClassifier';
 
 // Transient `agent` failures (auth expiry, rate limits, transient network) come back
 // as exit code 1 with a recognisable stderr signature. We requeue and retry instead
@@ -107,6 +111,8 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
     private abortController = new AbortController();
     private displayPermissionMode: string | null = null;
     private consecutiveTransientFailures = 0;
+    private lastAssistantText: string | null = null;
+    private turnHasModelError = false;
 
     constructor(session: CursorSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
@@ -134,6 +140,11 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         });
 
         const sendReady = () => {
+            if (this.turnHasModelError) {
+                // Don't clear the error state with a 'ready' — the banner stays
+                // visible until the operator dismisses it.
+                return;
+            }
             session.sendSessionEvent({ type: 'ready' });
         };
 
@@ -176,6 +187,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             logger.debug(`[cursor-remote] Spawning agent with args: ${args.join(' ')}`);
 
             session.onThinkingChange(true);
+            this.turnHasModelError = false;
 
             try {
                 const { exitCode, stderr } = await this.runAgentProcess(args, session.path, (event) => {
@@ -196,6 +208,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                             switch (agentMsg.type) {
                                 case 'text':
                                     messageBuffer.addMessage(agentMsg.text, 'assistant');
+                                    this.handleTextMessageClassification(agentMsg.text);
                                     break;
                                 case 'tool_call':
                                     messageBuffer.addMessage(`Tool: ${agentMsg.name}`, 'tool');
@@ -388,6 +401,39 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         if (permissionMode && permissionMode !== this.displayPermissionMode) {
             this.displayPermissionMode = permissionMode;
             this.messageBuffer.addMessage(`[MODE:${permissionMode}]`, 'system');
+        }
+    }
+
+    private handleTextMessageClassification(text: string): void {
+        const failure = classifyCursorAgentMessage(text);
+        if (failure) {
+            this.turnHasModelError = true;
+            const priorAssistantClaimsDone = this.lastAssistantText !== null
+                && isCompletionClaim(this.lastAssistantText);
+            const rawSnippet = failure.raw.slice(0, 400);
+            const atTs = Date.now();
+
+            this.session.client.updateMetadata((metadata) => ({
+                ...metadata,
+                lastModelError: {
+                    kind: failure.kind,
+                    transient: failure.transient,
+                    rawSnippet,
+                    atTs,
+                    priorAssistantClaimsDone
+                }
+            }));
+
+            this.session.sendSessionEvent({
+                type: 'modelError',
+                kind: failure.kind,
+                transient: failure.transient,
+                rawSnippet,
+                priorAssistantClaimsDone
+            });
+        } else {
+            // Track last benign assistant text for priorAssistantClaimsDone heuristic.
+            this.lastAssistantText = text;
         }
     }
 

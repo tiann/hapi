@@ -20,6 +20,10 @@ import { applyCursorAcpMode, applyCursorAcpModel, wireIdForCursorSessionState } 
 import { buildCursorModelsSeedPayload, seedCursorModelsCache } from '@/modules/common/cursorModels';
 import { readSharedCursorModelsCache } from '@/modules/common/cursorModelsSharedCache';
 import type { AcpSdkBackend } from '@/agent/backends/acp';
+import {
+    classifyCursorAgentMessage,
+    isCompletionClaim
+} from './cursorAgentMessageClassifier';
 
 class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CursorSession;
@@ -33,6 +37,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private defaultBackendModel: string | null = null;
     private unregisterModelApplyHandler: (() => void) | null = null;
     private modelApplySeq = 0;
+    private lastAssistantText: string | null = null;
+    private turnHasModelError = false;
 
     constructor(session: CursorSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
@@ -176,6 +182,10 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         });
 
         const sendReady = () => {
+            if (this.turnHasModelError) {
+                // Don't clear the error state with a 'ready' — banner stays visible.
+                return;
+            }
             session.sendSessionEvent({ type: 'ready' });
         };
 
@@ -217,6 +227,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             }];
 
             session.onThinkingChange(true);
+            this.turnHasModelError = false;
 
             try {
                 await backend.prompt(acpSessionId, promptContent, (message) => {
@@ -279,6 +290,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         switch (message.type) {
             case 'text':
                 this.messageBuffer.addMessage(message.text, 'assistant');
+                this.handleTextMessageClassification(message.text);
                 break;
             case 'reasoning':
                 break;
@@ -300,6 +312,38 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 break;
             default:
                 break;
+        }
+    }
+
+    private handleTextMessageClassification(text: string): void {
+        const failure = classifyCursorAgentMessage(text);
+        if (failure) {
+            this.turnHasModelError = true;
+            const priorAssistantClaimsDone = this.lastAssistantText !== null
+                && isCompletionClaim(this.lastAssistantText);
+            const rawSnippet = failure.raw.slice(0, 400);
+            const atTs = Date.now();
+
+            this.session.client.updateMetadata((metadata) => ({
+                ...metadata,
+                lastModelError: {
+                    kind: failure.kind,
+                    transient: failure.transient,
+                    rawSnippet,
+                    atTs,
+                    priorAssistantClaimsDone
+                }
+            }));
+
+            this.session.sendSessionEvent({
+                type: 'modelError',
+                kind: failure.kind,
+                transient: failure.transient,
+                rawSnippet,
+                priorAssistantClaimsDone
+            });
+        } else {
+            this.lastAssistantText = text;
         }
     }
 
