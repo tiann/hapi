@@ -19,11 +19,16 @@ import type { EnhancedMode } from './loop';
 import type { CursorStreamEvent } from './utils/cursorLegacyEventConverter';
 import { parseCursorEvent, convertCursorEventToAgentMessage } from './utils/cursorLegacyEventConverter';
 import { cursorPassThroughStatusMessage, parseCursorSpecialCommand } from './cursorSpecialCommands';
-import {
-    classifyCursorAgentMessage,
-    isCompletionClaim,
-    type CursorAgentStreamFailure
-} from './cursorAgentMessageClassifier';
+// NOTE: model-error detection (cursorAgentMessageClassifier) is intentionally
+// NOT wired into the legacy launcher. The hub auto-migrates legacy stream-json
+// sessions to ACP at resume time via maybeAutoMigrateLegacyCursorSession (PR
+// #844). The legacy launcher is reached only when migration soft-fails — a
+// degraded fallback path, not a supported flow. Carrying duplicate
+// model-error logic here would (a) double the surface for bugs in the
+// model-error contract, (b) imply legacy is a real path that needs feature
+// parity, and (c) be dead code in practice. New cursor sessions are ACP from
+// inception. If you find yourself wanting model-error detection on this
+// path, fix the migration failure case instead.
 
 // Transient `agent` failures (auth expiry, rate limits, transient network) come back
 // as exit code 1 with a recognisable stderr signature. We requeue and retry instead
@@ -112,8 +117,6 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
     private abortController = new AbortController();
     private displayPermissionMode: string | null = null;
     private consecutiveTransientFailures = 0;
-    private lastAssistantText: string | null = null;
-    private turnHasModelError = false;
 
     constructor(session: CursorSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
@@ -141,11 +144,6 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         });
 
         const sendReady = () => {
-            if (this.turnHasModelError) {
-                // Don't clear the error state with a 'ready' — the banner stays
-                // visible until the operator dismisses it.
-                return;
-            }
             session.sendSessionEvent({ type: 'ready' });
         };
 
@@ -188,7 +186,6 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             logger.debug(`[cursor-remote] Spawning agent with args: ${args.join(' ')}`);
 
             session.onThinkingChange(true);
-            this.turnHasModelError = false;
 
             try {
                 const { exitCode, stderr } = await this.runAgentProcess(args, session.path, (event) => {
@@ -209,7 +206,6 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                             switch (agentMsg.type) {
                                 case 'text':
                                     messageBuffer.addMessage(agentMsg.text, 'assistant');
-                                    this.handleTextMessageClassification(agentMsg.text);
                                     break;
                                 case 'tool_call':
                                     messageBuffer.addMessage(`Tool: ${agentMsg.name}`, 'tool');
@@ -403,61 +399,6 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             this.displayPermissionMode = permissionMode;
             this.messageBuffer.addMessage(`[MODE:${permissionMode}]`, 'system');
         }
-    }
-
-    private handleTextMessageClassification(text: string): void {
-        // Legacy stream-json path doesn't have ACP's structural signals
-        // (onStderrError / RPC rejection / markClosed) — text classifier
-        // is the only model-error signal we have here. If a turn already
-        // has a model error recorded (e.g. a prior message in the same
-        // turn already triggered), don't re-fire.
-        if (this.turnHasModelError) {
-            this.lastAssistantText = text;
-            return;
-        }
-        const failure = classifyCursorAgentMessage(text);
-        if (failure) {
-            this.recordModelError(failure);
-        } else {
-            this.lastAssistantText = text;
-        }
-    }
-
-    /**
-     * Single source of truth for emitting modelError. Mirrors the structure
-     * of cursorAcpRemoteLauncher.recordModelError so the two paths look
-     * identical and the model-error contract is in one shape regardless of
-     * which protocol classified the failure.
-     */
-    private recordModelError(failure: CursorAgentStreamFailure): void {
-        if (this.turnHasModelError) {
-            return;
-        }
-        this.turnHasModelError = true;
-
-        const priorAssistantClaimsDone = this.lastAssistantText !== null
-            && isCompletionClaim(this.lastAssistantText);
-        const rawSnippet = failure.raw.slice(0, 400);
-        const atTs = Date.now();
-
-        this.session.client.updateMetadata((metadata) => ({
-            ...metadata,
-            lastModelError: {
-                kind: failure.kind,
-                transient: failure.transient,
-                rawSnippet,
-                atTs,
-                priorAssistantClaimsDone
-            }
-        }));
-
-        this.session.sendSessionEvent({
-            type: 'modelError',
-            kind: failure.kind,
-            transient: failure.transient,
-            rawSnippet,
-            priorAssistantClaimsDone
-        });
     }
 
     protected async cleanup(): Promise<void> {
