@@ -839,16 +839,39 @@ Tie into existing `agent-notify` pipeline:
 
 ## Sibling perf issue: web client session-refetch storm (2026-06-12)
 
-**Status:** issue + worktree + peer agent in flight (not part of this plan's quota-surfacing scope).
+**Status:** PR open upstream, awaiting review. Local triage in place.
 
 While diagnosing model-error visibility, the operator hit a separate but adjacent problem on their box: `hapi-hub.service` was writing ~9.3 GB/day of syslog, ~95% of which was the `GET /api/sessions/<uuid>` access-log line. Root cause is a per-session refetch storm in the web client (TanStack `useSession` hook with no `staleTime`, plus SSE-handler invalidation fallbacks that bypass the cache-patch path).
 
 This is performance, not correctness, but worth tracking as a sibling because it surfaced through the same diagnostic thread.
 
-- Local triage: `/etc/rsyslog.d/30-hapi-hub-quiet.conf` drops the noise pattern, stops disk bleed.
-- Upstream fix in flight via peer session `5fb78b25` on worktree `worktrees/web-session-refetch-storm` (branch `feat/web-session-refetch-perf`).
-- Issue body draft: `/tmp/web-refetch-storm-issue.md` (peer files on `tiann/hapi`).
-- Peer handoff: `/tmp/peer-refetch-storm-handoff.md`.
-- Fixes: (A) add `staleTime` to `useSession`, (B) audit SSE invalidation fallbacks in `useSSE.ts`, (C) verify session-list page is not N+1-fetching per row.
-- Operator framing: "fleet size should not determine log volume."
+- **Issue:** [tiann/hapi#884](https://github.com/tiann/hapi/issues/884) - "Performance: web client useSession refetch storm dominates hub access logs"
+- **PR:** [tiann/hapi#885](https://github.com/tiann/hapi/pull/885) - `perf(web): suppress useSession refetch storm`
+- **Branch:** `feat/web-session-refetch-perf` on `heavygee/hapi`, commit `a0f46ce1`. 4 files, +106/-5.
+- **Peer session:** `5fb78b25` (codex flavor, idle post-handoff).
+- **Local triage:** `/etc/rsyslog.d/30-hapi-hub-quiet.conf` drops the noise pattern; stops disk bleed. Remove when upstream fix lands locally.
+- **Receipts (before, on this box):** 31,944 `GET /api/sessions/<uuid>` requests in a 5-min idle window, 132 distinct UUIDs, ~106 req/sec (~0.8/sec/session).
+- **After receipts:** not yet measured - requires soup deploy or upstream merge + soup rebuild.
+
+### Fix shape (as merged in PR #885)
+
+- **Fix A:** export `SESSION_DETAIL_STALE_TIME_MS = 30_000`, set `staleTime` in `useSession`. SSE drives freshness; REST is now cold-start / reconnect-recovery only.
+- **Fix B (chosen: observer-count gating):** new exported helper `hasActiveSessionDetailObserver(queryClient, sessionId)` checking `getObserversCount() > 0`. Applied to both `useSSE.ts` invalidation fallback paths (the `!detailPatched` branch AND the `else` branch where `getSessionPatch` returns null). List-summary invalidation kept unchanged.
+- **Fix C:** verified N/A. `SessionList.tsx` consumes `SessionSummary` from the bulk `queryKeys.sessions` query, not per-row `useSession`. No N+1.
+
+### Trade-off accepted
+
+There's a bounded staleness window: if an unstructured SSE event fires for a session while its detail page isn't mounted, the suppressed invalidation means the cache entry isn't marked stale. If the user navigates back within `staleTime` (30s), they may see slightly outdated detail data. Acceptable: structured SSE patches still update the cache directly via `setQueryData`, and the next REST refetch fires after staleTime expires.
+
+### Operator-side close-out (post upstream merge OR post soup deploy)
+
+1. Re-sample `journalctl -u hapi-hub.service` over a 5-min idle window; expect ~0 `GET /api/sessions/<uuid>` lines.
+2. Remove `/etc/rsyslog.d/30-hapi-hub-quiet.conf` workaround.
+3. Restart rsyslog: `sudo systemctl restart rsyslog`.
+
+### Operator framing
+
+> "I should be able to have as many sessions as I wish and it still not produce problematic log growth."
+
+Fleet size should not determine log volume. Per-session detail data already arrives via SSE; the REST refetch was redundant work plus access-log noise.
 
