@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { isObject, toSessionSummary } from '@hapi/protocol'
 import { MachinePatchSchema, MachineSchema, SessionPatchSchema, SessionSchema } from '@hapi/protocol/schemas'
 import type {
@@ -57,6 +57,24 @@ function sortSessionSummaries(left: SessionSummary, right: SessionSummary): numb
 
 function isSessionRecord(value: unknown): value is Session {
     return SessionSchema.safeParse(value).success
+}
+
+/**
+ * Returns true if at least one mounted observer (`useSession` etc.) is currently
+ * subscribed to the session-detail query for `sessionId`.
+ *
+ * `invalidateQueries` with the default `refetchType: 'active'` only refetches
+ * queries that have a live observer, so calling it for an unobserved query is a
+ * no-op for the network — but it still walks the query cache, marks entries
+ * stale, and queues microtasks.  Skipping the call entirely when nobody is
+ * watching avoids that bookkeeping and, more importantly, keeps SSE event
+ * handling from re-triggering REST refetches as the user navigates between
+ * sessions (the previous detail's cache entry can linger inside `gcTime` long
+ * enough to overlap with subsequent SSE invalidations).  See tiann/hapi#884.
+ */
+export function hasActiveSessionDetailObserver(queryClient: QueryClient, sessionId: string): boolean {
+    const query = queryClient.getQueryCache().find({ queryKey: queryKeys.session(sessionId) })
+    return query ? query.getObserversCount() > 0 : false
 }
 
 function getSessionPatch(value: unknown): SessionPatch | null {
@@ -500,14 +518,24 @@ export function useSSE(options: {
                         const detailPatched = patchSessionDetail(event.sessionId, patch)
                         const summaryPatched = patchSessionSummary(event.sessionId, patch)
 
-                        if (!detailPatched) {
+                        // Only fall back to REST invalidation when a useSession observer
+                        // is mounted for this session.  Otherwise an out-of-date or
+                        // GC-eligible detail cache will just refresh on next mount.
+                        // tiann/hapi#884
+                        if (!detailPatched && hasActiveSessionDetailObserver(queryClient, event.sessionId)) {
                             queueSessionDetailInvalidation(event.sessionId)
                         }
                         if (!summaryPatched) {
                             queueSessionListInvalidation()
                         }
                     } else {
-                        queueSessionDetailInvalidation(event.sessionId)
+                        // No structured patch on this event.  The list invalidation
+                        // refreshes the SessionSummary the sidebar/dashboard render
+                        // from; per-session detail only matters if a detail view is
+                        // currently mounted.  tiann/hapi#884
+                        if (hasActiveSessionDetailObserver(queryClient, event.sessionId)) {
+                            queueSessionDetailInvalidation(event.sessionId)
+                        }
                         queueSessionListInvalidation()
                     }
                 }

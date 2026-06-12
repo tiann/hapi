@@ -8,6 +8,12 @@ export function isSessionNotFoundError(error: unknown): boolean {
         && (error.message.includes('HTTP 404') || error.message.includes('Session not found'))
 }
 
+// Session detail freshness is driven by SSE events (`useSSE` patches the cache
+// directly on `session-updated`).  The REST endpoint is only a cold-start /
+// reconnect-recovery path, so a long staleTime cuts focus-refetch and
+// remount-refetch storms without making the UI stale.  See tiann/hapi#884.
+export const SESSION_DETAIL_STALE_TIME_MS = 30_000
+
 export function useSession(api: ApiClient | null, sessionId: string | null): {
     session: Session | null
     isLoading: boolean
@@ -25,6 +31,7 @@ export function useSession(api: ApiClient | null, sessionId: string | null): {
             return await api.getSession(sessionId)
         },
         enabled: Boolean(api && sessionId),
+        staleTime: SESSION_DETAIL_STALE_TIME_MS,
         retry: (failureCount, error) => {
             if (isSessionNotFoundError(error)) {
                 return false
