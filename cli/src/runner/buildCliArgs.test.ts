@@ -66,6 +66,52 @@ describe('buildCliArgs', () => {
 
 
 
+    it('passes --model and --effort through for claude in PTY mode (model/effort at start)', () => {
+        const args = buildCliArgs('claude', {
+            directory: '/tmp',
+            startingMode: 'pty',
+            model: 'opus',
+            effort: 'high',
+        })
+        expect(args).toContain('--model')
+        expect(args[args.indexOf('--model') + 1]).toBe('opus')
+        expect(args).toContain('--effort')
+        expect(args[args.indexOf('--effort') + 1]).toBe('high')
+        expect(args).toContain('--hapi-starting-mode')
+        expect(args[args.indexOf('--hapi-starting-mode') + 1]).toBe('pty')
+    })
+
+    it('does NOT force --yolo for PTY mode (tool approvals are bridged via the PreToolUse hook)', () => {
+        const args = buildCliArgs('claude', { directory: '/tmp', startingMode: 'pty' })
+        expect(args).not.toContain('--yolo')
+    })
+
+    it('still honors explicit yolo (the new-session toggle) in PTY mode', () => {
+        const args = buildCliArgs('claude', { directory: '/tmp', startingMode: 'pty' }, true)
+        expect(args).toContain('--yolo')
+    })
+
+    it('prefers an explicit --permission-mode over yolo in PTY mode', () => {
+        const args = buildCliArgs('claude', { directory: '/tmp', startingMode: 'pty', permissionMode: 'plan' }, true)
+        expect(args).toContain('--permission-mode')
+        expect(args[args.indexOf('--permission-mode') + 1]).toBe('plan')
+        expect(args).not.toContain('--yolo')
+    })
+
+    it('does not add --effort for non-claude agents (claude-only flag)', () => {
+        const args = buildCliArgs('opencode', {
+            directory: '/tmp',
+            effort: 'high',
+        })
+        expect(args).not.toContain('--effort')
+    })
+
+    it('omits --model/--effort when not specified', () => {
+        const args = buildCliArgs('claude', { directory: '/tmp', startingMode: 'pty' })
+        expect(args).not.toContain('--model')
+        expect(args).not.toContain('--effort')
+    })
+
     it('passes --model-reasoning-effort through for opencode', () => {
         const args = buildCliArgs('opencode', {
             directory: '/tmp',

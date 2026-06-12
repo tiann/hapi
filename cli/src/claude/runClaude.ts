@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { logger } from '@/ui/logger';
 import { loop } from '@/claude/loop';
 import type { SessionMode } from '@/agent/loopBase';
@@ -10,6 +11,7 @@ import { parseSpecialCommand } from '@/parsers/specialCommands';
 import { getEnvironmentInfo } from '@/ui/doctor';
 import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { startHookServer } from '@/claude/utils/startHookServer';
+import { PtyPermissionHandler } from '@/claude/utils/ptyPermissionHandler';
 import { generateHookSettingsFile, cleanupHookSettingsFile } from '@/modules/common/hooks/generateHookSettings';
 import { registerKillSessionHandler } from './registerKillSessionHandler';
 import type { Session } from './session';
@@ -22,6 +24,7 @@ import { PermissionModeSchema } from '@hapi/protocol/schemas';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { normalizeClaudeSessionModel } from './model';
 import { normalizeClaudeSessionEffort } from './effort';
+import { computeBackSyncedPermissionMode } from './utils/backSyncPermissionMode';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 
 export interface StartOptions {
@@ -107,6 +110,12 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     // Variable to track current session instance (updated via onSessionReady callback)
     const currentSessionRef: { current: Session | null } = { current: null };
 
+    // PTY mode has no SDK canUseTool callback, so tool approvals are bridged from
+    // a PreToolUse hook to the web via this handler (assigned below once the
+    // permission-mode state exists). Null in SDK/local/remote modes.
+    const isPtyMode = interactive;
+    let ptyPermissionHandler: PtyPermissionHandler | null = null;
+
     const formatFailureReason = (message: string): string => {
         const maxLength = 200;
         if (message.length <= maxLength) {
@@ -128,13 +137,36 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                     currentSession.onSessionFound(sessionId);
                 }
             }
+        },
+        // PTY-mode tool-approval bridge. Resolves once the user answers in the
+        // web modal (may take minutes). Allows by default if the handler isn't
+        // up yet (should not happen in PTY mode).
+        onPreToolUse: async (data) => {
+            if (!ptyPermissionHandler) {
+                return { permissionDecision: 'allow' };
+            }
+            // Reverse-sync: if the user changed claude's mode in the terminal
+            // (Shift+Tab cycles auto → acceptEdits → plan), claude reports it in
+            // the hook payload. Adopt it so the Chat UI / handler stay consistent.
+            // yolo (bypassPermissions) is hapi-only and is never overwritten here.
+            const syncedMode = computeBackSyncedPermissionMode(currentPermissionMode, data.permission_mode);
+            if (syncedMode) {
+                logger.debug(`[pty] adopting claude TUI permission mode: ${currentPermissionMode} → ${syncedMode}`);
+                currentPermissionMode = syncedMode;
+                syncSessionModes();
+            }
+            const toolUseId = data.tool_use_id || `${data.tool_name ?? 'tool'}-${data.session_id ?? ''}`;
+            return ptyPermissionHandler.requestDecision(toolUseId, data.tool_name ?? '', data.tool_input);
         }
     });
     logger.debug(`[START] Hook server started on port ${hookServer.port}`);
 
     const hookSettingsPath = generateHookSettingsFile(hookServer.port, hookServer.token, {
         filenamePrefix: 'session-hook',
-        logLabel: 'generateHookSettings'
+        logLabel: 'generateHookSettings',
+        // PTY sessions rely on the PreToolUse hook for approvals; the SDK path
+        // must NOT register it (it uses canUseTool instead).
+        includePreToolUse: isPtyMode
     });
     logger.debug(`[START] Generated hook settings file: ${hookSettingsPath}`);
 
@@ -147,7 +179,13 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         session,
         logTag: 'claude',
         stopKeepAlive: () => currentSessionRef.current?.stopKeepAlive(),
+        // Tear down the PTY before process.exit. For PTY mode
+        // the launcher registers a kill handler that aborts the controller →
+        // runAgentPty's manager.kill() runs synchronously. No-op in local/remote
+        // mode where no handler is registered.
+        onBeforeClose: () => { currentSessionRef.current?.kill(); },
         onAfterClose: () => {
+            ptyPermissionHandler?.cancelAll('Session ended');
             happyServer.stop();
             hookServer.stop();
             cleanupHookSettingsFile(hookSettingsPath, 'generateHookSettings');
@@ -202,6 +240,23 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         sessionInstance.setEffort(currentEffort);
         logger.debug(`[loop] Synced session config for keepalive: permissionMode=${currentPermissionMode}, model=${currentModel ?? 'auto'}, effort=${currentEffort ?? 'auto'}`);
     };
+
+    // Bring up the PTY tool-approval bridge now that the permission-mode state
+    // exists. It reads the live mode (web dropdown can change it mid-session) and
+    // routes any "approve & switch mode" choice back into that same state.
+    if (isPtyMode) {
+        ptyPermissionHandler = new PtyPermissionHandler(session, {
+            getPermissionMode: () => currentPermissionMode,
+            onModeChange: (mode) => {
+                if (!isPermissionModeAllowedForFlavor(mode, 'claude')) {
+                    return;
+                }
+                currentPermissionMode = mode as PermissionMode;
+                currentSessionRef.current?.setPermissionMode(mode as PermissionMode);
+                syncSessionModes();
+            }
+        });
+    }
     session.onUserMessage((message, localId) => {
         const sessionPermissionMode = currentSessionRef.current?.getPermissionMode();
         if (sessionPermissionMode && isPermissionModeAllowedForFlavor(sessionPermissionMode, 'claude')) {

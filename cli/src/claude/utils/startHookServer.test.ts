@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { request } from 'node:http'
 import { startHookServer, type SessionHookData } from './startHookServer'
 
-const sendHookRequest = async (port: number, body: string, token?: string): Promise<{ statusCode?: number; body: string }> => {
+const sendHookRequest = async (port: number, body: string, token?: string, path = '/hook/session-start'): Promise<{ statusCode?: number; body: string }> => {
     return await new Promise((resolve, reject) => {
         const headers: Record<string, string | number> = {
             'Content-Type': 'application/json',
@@ -15,7 +15,7 @@ const sendHookRequest = async (port: number, body: string, token?: string): Prom
         const req = request({
             host: '127.0.0.1',
             port,
-            path: '/hook/session-start',
+            path,
             method: 'POST',
             headers
         }, (res) => {
@@ -113,5 +113,84 @@ describe('startHookServer', () => {
         }
 
         expect(hookCalled).toBe(false)
+    })
+
+    describe('pre-tool-use', () => {
+        const sendPreToolUse = (port: number, payload: unknown, token?: string) =>
+            sendHookRequest(port, JSON.stringify(payload), token, '/hook/pre-tool-use')
+
+        it('forwards the tool call to onPreToolUse and returns its decision', async () => {
+            let received: unknown = null
+            const server = await startHookServer({
+                onSessionHook: () => {},
+                onPreToolUse: async (data) => {
+                    received = data
+                    return { permissionDecision: 'deny', reason: 'not allowed' }
+                }
+            })
+
+            try {
+                const response = await sendPreToolUse(
+                    server.port,
+                    { tool_name: 'Bash', tool_input: { command: 'ls' }, tool_use_id: 'tc-1', hook_event_name: 'PreToolUse' },
+                    server.token
+                )
+                expect(response.statusCode).toBe(200)
+                expect(JSON.parse(response.body)).toEqual({ permissionDecision: 'deny', reason: 'not allowed' })
+            } finally {
+                server.stop()
+            }
+
+            expect((received as { tool_name?: string }).tool_name).toBe('Bash')
+        })
+
+        it('allows by default when no onPreToolUse handler is wired', async () => {
+            const server = await startHookServer({ onSessionHook: () => {} })
+            try {
+                const response = await sendPreToolUse(
+                    server.port,
+                    { tool_name: 'Bash', tool_use_id: 'tc-2' },
+                    server.token
+                )
+                expect(response.statusCode).toBe(200)
+                expect(JSON.parse(response.body)).toEqual({ permissionDecision: 'allow' })
+            } finally {
+                server.stop()
+            }
+        })
+
+        it('fails closed (deny) when the handler throws', async () => {
+            const server = await startHookServer({
+                onSessionHook: () => {},
+                onPreToolUse: async () => {
+                    throw new Error('bridge down')
+                }
+            })
+            try {
+                const response = await sendPreToolUse(server.port, { tool_name: 'Write', tool_use_id: 'tc-3' }, server.token)
+                expect(response.statusCode).toBe(200)
+                expect(JSON.parse(response.body).permissionDecision).toBe('deny')
+            } finally {
+                server.stop()
+            }
+        })
+
+        it('returns 401 when the token is missing', async () => {
+            let called = false
+            const server = await startHookServer({
+                onSessionHook: () => {},
+                onPreToolUse: async () => {
+                    called = true
+                    return { permissionDecision: 'allow' }
+                }
+            })
+            try {
+                const response = await sendPreToolUse(server.port, { tool_name: 'Bash' })
+                expect(response.statusCode).toBe(401)
+            } finally {
+                server.stop()
+            }
+            expect(called).toBe(false)
+        })
     })
 })

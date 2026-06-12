@@ -22,9 +22,37 @@ export interface SessionHookData {
     [key: string]: unknown;
 }
 
+/**
+ * Data received from Claude's PreToolUse hook (PTY mode only). claude sends this
+ * before every tool call so we can bridge the approval to the web.
+ */
+export interface PreToolUseHookData {
+    session_id?: string;
+    tool_name?: string;
+    tool_input?: unknown;
+    tool_use_id?: string;
+    permission_mode?: string;
+    cwd?: string;
+    hook_event_name?: string;
+    [key: string]: unknown;
+}
+
+/** Decision returned to claude for a PreToolUse tool call. Never 'ask' (would stall the PTY). */
+export interface PreToolUseDecision {
+    permissionDecision: 'allow' | 'deny';
+    reason?: string;
+    updatedInput?: Record<string, unknown>;
+}
+
 export interface HookServerOptions {
     /** Called when a session hook is received with a valid session ID. */
     onSessionHook: (sessionId: string, data: SessionHookData) => void;
+    /**
+     * Called for each PreToolUse hook (PTY mode). Resolves with the allow/deny
+     * decision once the user answers; may legitimately take minutes. When
+     * omitted, tool calls are allowed (no-op), matching --yolo behavior.
+     */
+    onPreToolUse?: (data: PreToolUseHookData) => Promise<PreToolUseDecision>;
     /** Optional token to require for hook requests. */
     token?: string;
 }
@@ -125,6 +153,61 @@ export async function startHookServer(options: HookServerOptions): Promise<HookS
                     logger.debug('[hookServer] Error handling session hook:', error);
                     if (!res.headersSent && !res.writableEnded) {
                         res.writeHead(500).end('error');
+                    }
+                }
+                return;
+            }
+
+            if (req.method === 'POST' && requestPath === '/hook/pre-tool-use') {
+                const providedToken = readHookToken(req);
+                if (providedToken !== hookToken) {
+                    logger.debug('[hookServer] Unauthorized pre-tool-use request');
+                    res.writeHead(401, { 'Content-Type': 'text/plain' }).end('unauthorized');
+                    req.resume();
+                    return;
+                }
+
+                // No request timeout here: a permission decision may legitimately
+                // wait minutes for the user to answer on their phone. claude's own
+                // (generous) hook timeout bounds the wait; if it fires it kills the
+                // forwarder, the socket closes, and we just stop caring about the
+                // orphaned decision (it is cleaned up on session teardown).
+                try {
+                    const chunks: Buffer[] = [];
+                    for await (const chunk of req) {
+                        chunks.push(chunk as Buffer);
+                    }
+                    const body = Buffer.concat(chunks).toString('utf-8');
+
+                    let data: PreToolUseHookData;
+                    try {
+                        const parsed = JSON.parse(body);
+                        if (!parsed || typeof parsed !== 'object') {
+                            res.writeHead(400, { 'Content-Type': 'text/plain' }).end('invalid json');
+                            return;
+                        }
+                        data = parsed as PreToolUseHookData;
+                    } catch (parseError) {
+                        logger.debug('[hookServer] Failed to parse pre-tool-use data:', parseError);
+                        res.writeHead(400, { 'Content-Type': 'text/plain' }).end('invalid json');
+                        return;
+                    }
+
+                    // No handler wired → allow (matches --yolo no-op behavior).
+                    const decision: PreToolUseDecision = options.onPreToolUse
+                        ? await options.onPreToolUse(data)
+                        : { permissionDecision: 'allow' };
+
+                    if (!res.headersSent && !res.writableEnded) {
+                        res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(decision));
+                    }
+                } catch (error) {
+                    logger.debug('[hookServer] Error handling pre-tool-use hook:', error);
+                    if (!res.headersSent && !res.writableEnded) {
+                        // Fail closed: a tool we couldn't adjudicate is denied, not run.
+                        res.writeHead(200, { 'Content-Type': 'application/json' }).end(
+                            JSON.stringify({ permissionDecision: 'deny', reason: 'Permission bridge error.' })
+                        );
                     }
                 }
                 return;
