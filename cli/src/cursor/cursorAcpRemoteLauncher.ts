@@ -52,8 +52,11 @@ import {
     stripRetryableCursorError
 } from './cursorAutoRetry';
 import {
+    classifyAcpRpcRejection,
     classifyCursorAgentMessage,
-    isCompletionClaim
+    isCompletionClaim,
+    mapAcpStderrToFailure,
+    type CursorAgentStreamFailure
 } from './cursorAgentMessageClassifier';
 
 const CURSOR_ABORT_DRAIN_TIMEOUT_MS = 5_000;
@@ -666,6 +669,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                         if (this.userAbortRequested) break;
                         if (!isRetryableCursorError(error)) {
                             this.surfacePromptFailure(error instanceof Error ? error.message : String(error));
+                            const failure = classifyAcpRpcRejection(error);
+                            if (failure) this.recordModelError(failure);
                             break;
                         }
                         this.pendingRetryableError = error instanceof Error ? error.message : String(error);
@@ -680,6 +685,10 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                         continue;
                     }
                     this.surfacePromptFailure(`Cursor Agent failed after ${CURSOR_AUTO_RETRY_LIMIT} retries.`);
+                    const exhaustedFailure = classifyAcpRpcRejection(
+                        this.pendingRetryableError ?? 'Cursor Agent failed after retries'
+                    );
+                    if (exhaustedFailure) this.recordModelError(exhaustedFailure);
                 }
             } finally {
                 this.promptInFlight = false;
@@ -795,6 +804,11 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 session.sendAgentMessage(converted);
             }
             messageBuffer.addMessage(error.message, 'status');
+            // STRUCTURAL signal: route typed stderr into the modelError pipeline
+            // (rate_limited / quota_exhausted / auth_failed / model_not_found)
+            // without text matching. Wired here so connect/load remap retries
+            // keep the same stderr → modelError path as mid-session turns.
+            this.recordModelError(mapAcpStderrToFailure(error));
         });
     }
 
@@ -919,35 +933,68 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     private handleTextMessageClassification(text: string): void {
+        // FALLBACK PATH ONLY. If a structural signal (stderr / RPC) already
+        // classified this turn, do not re-classify the agent's text -- the
+        // text is often the agent's own stringified version of the same
+        // error we already caught structurally, and re-classifying produces
+        // duplicate banners. We still record lastAssistantText so the
+        // priorAssistantClaimsDone heuristic works for any subsequent
+        // structural signal in this turn.
+        if (this.turnHasModelError) {
+            this.lastAssistantText = text;
+            return;
+        }
         const failure = classifyCursorAgentMessage(text);
         if (failure) {
-            this.turnHasModelError = true;
-            const priorAssistantClaimsDone = this.lastAssistantText !== null
-                && isCompletionClaim(this.lastAssistantText);
-            const rawSnippet = failure.raw.slice(0, 400);
-            const atTs = Date.now();
-
-            this.session.client.updateMetadata((metadata) => ({
-                ...metadata,
-                lastModelError: {
-                    kind: failure.kind,
-                    transient: failure.transient,
-                    rawSnippet,
-                    atTs,
-                    priorAssistantClaimsDone
-                }
-            }));
-
-            this.session.sendSessionEvent({
-                type: 'modelError',
-                kind: failure.kind,
-                transient: failure.transient,
-                rawSnippet,
-                priorAssistantClaimsDone
-            });
+            this.recordModelError(failure);
         } else {
             this.lastAssistantText = text;
         }
+    }
+
+    /**
+     * Single source of truth for emitting modelError. All signal paths
+     * (RPC catch / stderr subscriber / text fallback) route through here.
+     * First signal wins: subsequent signals in the same turn are dropped
+     * to avoid banner-flapping when the agent emits both an RPC rejection
+     * AND a stringified text version of the same failure.
+     */
+    private recordModelError(failure: CursorAgentStreamFailure): void {
+        if (this.turnHasModelError) {
+            logger.debug(
+                `[cursor-acp] modelError already recorded for this turn, dropping ${failure.source}/${failure.kind}`
+            );
+            return;
+        }
+        this.turnHasModelError = true;
+
+        const priorAssistantClaimsDone = this.lastAssistantText !== null
+            && isCompletionClaim(this.lastAssistantText);
+        const rawSnippet = failure.raw.slice(0, 400);
+        const atTs = Date.now();
+
+        logger.debug(
+            `[cursor-acp] modelError recorded source=${failure.source} kind=${failure.kind} transient=${failure.transient}`
+        );
+
+        this.session.client.updateMetadata((metadata) => ({
+            ...metadata,
+            lastModelError: {
+                kind: failure.kind,
+                transient: failure.transient,
+                rawSnippet,
+                atTs,
+                priorAssistantClaimsDone
+            }
+        }));
+
+        this.session.sendSessionEvent({
+            type: 'modelError',
+            kind: failure.kind,
+            transient: failure.transient,
+            rawSnippet,
+            priorAssistantClaimsDone
+        });
     }
 
     private installLiveSessionConfigSync(
