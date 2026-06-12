@@ -10,8 +10,13 @@ export function isSessionNotFoundError(error: unknown): boolean {
 
 // Session detail freshness is driven by SSE events (`useSSE` patches the cache
 // directly on `session-updated`).  The REST endpoint is only a cold-start /
-// reconnect-recovery path, so a long staleTime cuts focus-refetch and
-// remount-refetch storms without making the UI stale.  See tiann/hapi#884.
+// reconnect-recovery path, so a long per-query staleTime extends the global
+// default (5s, see `web/src/lib/query-client.ts`) for `useSession` only — this
+// suppresses remount-refetch when the user navigates back to a recently-viewed
+// session within the window, without making the UI stale.  Explicit
+// `invalidateQueries` calls (SSE fallback path, reconnect-recovery in
+// `App.tsx`) still refetch active observers regardless of staleTime, so live
+// updates and recovery flows continue to work.  See tiann/hapi#884.
 export const SESSION_DETAIL_STALE_TIME_MS = 30_000
 
 export function useSession(api: ApiClient | null, sessionId: string | null): {
