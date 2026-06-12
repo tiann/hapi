@@ -89,6 +89,43 @@ describe('classifyCursorAgentMessage', () => {
         // These patterns are anchored at the start
         expect(classifyCursorAgentMessage('Partial text before Error: T: [canceled]')).toBeNull()
     })
+
+    it('does not classify prose that describes the pattern', () => {
+        // Regression: 2026-06-12 self-own. The classifier matched an
+        // assistant message that *described* the patterns it looks for,
+        // because the original Gemini patterns used unanchored "contains".
+        // Real cursor-agent error emits come as the whole message body,
+        // not embedded in narrative prose. Anchored patterns reject prose.
+        const proseDescribingPatterns =
+            "Yes. In the soup since 23:51:24 BST.\n\n" +
+            "Triggers on:\n" +
+            "  - Error: T: [resource_exhausted]\n" +
+            "  - Error: T: Connection stalled\n" +
+            "  - Gemini prompt failed: .*token count exceeds\n" +
+            "  - Gemini prompt failed: .*exhausted your capacity\n"
+        expect(classifyCursorAgentMessage(proseDescribingPatterns)).toBeNull()
+
+        // Same idea, single line embedding the literal description.
+        expect(
+            classifyCursorAgentMessage(
+                'The classifier looks for "Gemini prompt failed: .*token count exceeds" specifically.'
+            )
+        ).toBeNull()
+    })
+
+    it('still classifies real Gemini errors when they ARE the message body', () => {
+        // Whitespace prefix is OK (trimStart handles it) but prose prefix is not.
+        expect(
+            classifyCursorAgentMessage(
+                '  Gemini prompt failed: token count exceeds limit'
+            )?.kind
+        ).toBe('context_window')
+        expect(
+            classifyCursorAgentMessage(
+                'Gemini prompt failed: you have exhausted your capacity'
+            )?.kind
+        ).toBe('capacity_exhausted')
+    })
 })
 
 describe('isCompletionClaim', () => {
