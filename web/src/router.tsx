@@ -950,7 +950,7 @@ function SessionDetailRoute() {
             return
         }
         navigate({ to: '/sessions', replace: true })
-    }, [navigate, sessionNotFound])
+    }, [navigate, sessionNotFound, sessionId])
 
     if (sessionNotFound) {
         return (

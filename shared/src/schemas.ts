@@ -64,6 +64,9 @@ export const MetadataSchema = z.object({
     archiveReason: z.string().optional(),
     preferredPermissionMode: PermissionModeSchema.optional(),
     flavor: z.string().nullish(),
+    // Launch mode, surfaced so the web can show the agent-terminal toggle only
+    // for PTY sessions (a 'remote'/SDK session has no agent PTY to view).
+    startingMode: z.enum(['local', 'remote', 'pty']).nullish(),
     capabilities: SessionCapabilitiesSchema.optional(),
     worktree: WorktreeMetadataSchema.optional(),
     // Cached Pi model list — written by CLI, read by web (inactive session fallback).
@@ -108,6 +111,10 @@ export type AgentStateCompletedRequest = z.infer<typeof AgentStateCompletedReque
 
 export const AgentStateSchema = z.object({
     controlledByUser: z.boolean().nullish(),
+    // The mode the session was started in. Persisted so reopen/resume can
+    // re-spawn in the same mode — notably 'pty', which has no agent terminal
+    // otherwise (a reopened PTY session would silently fall back to 'remote').
+    startingMode: z.enum(['local', 'remote', 'pty']).nullish(),
     requests: z.record(z.string(), AgentStateRequestSchema).nullish(),
     completedRequests: z.record(z.string(), AgentStateCompletedRequestSchema).nullish()
 })
