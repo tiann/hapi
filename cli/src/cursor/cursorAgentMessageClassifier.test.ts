@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { classifyCursorAgentMessage, isCompletionClaim } from './cursorAgentMessageClassifier'
+import {
+    classifyAcpRpcRejection,
+    classifyCursorAgentMessage,
+    isCompletionClaim,
+    mapAcpStderrToFailure
+} from './cursorAgentMessageClassifier'
 
 describe('classifyCursorAgentMessage', () => {
     it('classifies resource_exhausted', () => {
@@ -149,6 +154,122 @@ describe('classifyCursorAgentMessage', () => {
         expect(classifyCursorAgentMessage('\tError: T: [deadline_exceeded]')?.kind).toBe('deadline_exceeded')
         expect(classifyCursorAgentMessage('\n\n  Error: T: [unavailable]')?.kind).toBe('unavailable')
         expect(classifyCursorAgentMessage('\nError: T: Connection stalled after 30s')?.kind).toBe('connection_stalled')
+    })
+
+    it("tags text-classifier results with source='text'", () => {
+        const result = classifyCursorAgentMessage('Error: T: [canceled]')
+        expect(result?.source).toBe('text')
+    })
+})
+
+describe('mapAcpStderrToFailure (structural stderr signal)', () => {
+    it('maps rate_limit -> rate_limited (transient)', () => {
+        const out = mapAcpStderrToFailure({ type: 'rate_limit', raw: 'status 429 ratelimitexceeded' })
+        expect(out.kind).toBe('rate_limited')
+        expect(out.transient).toBe(true)
+        expect(out.source).toBe('stderr')
+        expect(out.raw).toBe('status 429 ratelimitexceeded')
+    })
+
+    it('maps quota_exceeded -> quota_exhausted (non-transient)', () => {
+        const out = mapAcpStderrToFailure({ type: 'quota_exceeded', raw: 'resource exhausted' })
+        expect(out.kind).toBe('quota_exhausted')
+        expect(out.transient).toBe(false)
+        expect(out.source).toBe('stderr')
+    })
+
+    it('maps authentication -> auth_failed (non-transient)', () => {
+        const out = mapAcpStderrToFailure({ type: 'authentication', raw: 'status 401 unauthenticated' })
+        expect(out.kind).toBe('auth_failed')
+        expect(out.transient).toBe(false)
+        expect(out.source).toBe('stderr')
+    })
+
+    it('maps model_not_found -> model_not_found (non-transient)', () => {
+        const out = mapAcpStderrToFailure({ type: 'model_not_found', raw: 'status 404 model not found' })
+        expect(out.kind).toBe('model_not_found')
+        expect(out.transient).toBe(false)
+    })
+
+    it('maps unknown -> unknown_stderr', () => {
+        const out = mapAcpStderrToFailure({ type: 'unknown', raw: 'unexpected exception in agent' })
+        expect(out.kind).toBe('unknown_stderr')
+        expect(out.transient).toBe(false)
+        expect(out.source).toBe('stderr')
+    })
+})
+
+describe('classifyAcpRpcRejection (structural RPC signal)', () => {
+    it('classifies WritableIterable is closed -> transport_closed (transient)', () => {
+        // Real session b52b9117: the agent rejected sendRequest with this
+        // exact message after the writable side of the ACP transport died.
+        const err = new Error('WritableIterable is closed')
+        const out = classifyAcpRpcRejection(err)
+        expect(out).not.toBeNull()
+        expect(out?.kind).toBe('transport_closed')
+        expect(out?.transient).toBe(true)
+        expect(out?.source).toBe('rpc')
+    })
+
+    it('classifies ACP transport closed -> transport_closed', () => {
+        const err = new Error('ACP transport is closed')
+        const out = classifyAcpRpcRejection(err)
+        expect(out?.kind).toBe('transport_closed')
+        expect(out?.transient).toBe(true)
+    })
+
+    it('classifies process exit -> transport_closed (rejectAllPending pathway)', () => {
+        // markClosed wraps the process-exit message in a new Error; pending
+        // sendRequests reject with that error.
+        const err = new Error('ACP process exited (code=137, signal=SIGKILL)')
+        const out = classifyAcpRpcRejection(err)
+        expect(out?.kind).toBe('transport_closed')
+        expect(out?.transient).toBe(true)
+    })
+
+    it('classifies spawn failure -> agent_crashed', () => {
+        const err = new Error('Failed to spawn cursor-agent: ENOENT. Is it installed and on PATH?')
+        const out = classifyAcpRpcRejection(err)
+        expect(out?.kind).toBe('agent_crashed')
+        expect(out?.transient).toBe(true)
+    })
+
+    it('classifies request timeout -> rpc_timeout', () => {
+        const err = new Error("ACP request 'session/prompt' timed out after 120000ms")
+        const out = classifyAcpRpcRejection(err)
+        expect(out?.kind).toBe('rpc_timeout')
+        expect(out?.transient).toBe(true)
+    })
+
+    it('returns null for user cancellations (NOT model errors)', () => {
+        expect(classifyAcpRpcRejection(new Error('Aborted by user'))).toBeNull()
+        expect(classifyAcpRpcRejection(new Error('user cancelled the request'))).toBeNull()
+        expect(classifyAcpRpcRejection(new Error('user canceled the request'))).toBeNull()
+    })
+
+    it('passes through gRPC-status RPC errors with source=rpc', () => {
+        // Cursor-agent sometimes returns the gRPC status as a JSON-RPC
+        // error.message rather than emitting it as a text message.
+        const err = new Error('Error: T: [resource_exhausted] quota exceeded')
+        const out = classifyAcpRpcRejection(err)
+        expect(out?.kind).toBe('quota_exhausted')
+        expect(out?.transient).toBe(false)
+        // The structural source overrides text classification's source tag.
+        expect(out?.source).toBe('rpc')
+    })
+
+    it('falls through to prompt_failed for unrecognised RPC errors', () => {
+        const err = new Error('Some weird internal SDK assertion failed')
+        const out = classifyAcpRpcRejection(err)
+        expect(out?.kind).toBe('prompt_failed')
+        expect(out?.transient).toBe(false)
+        expect(out?.source).toBe('rpc')
+    })
+
+    it('handles non-Error rejection values', () => {
+        const out = classifyAcpRpcRejection('plain string rejection')
+        expect(out?.kind).toBe('prompt_failed')
+        expect(out?.raw).toBe('plain string rejection')
     })
 })
 
