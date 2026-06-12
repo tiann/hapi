@@ -51,8 +51,13 @@ vi.mock('@/hooks/queries/useSession', () => ({
     })
 }))
 
+const capturedTerminalIds: string[] = []
+
 vi.mock('@/hooks/useTerminalSocket', () => ({
-    useTerminalSocket: () => terminalSocketState
+    useTerminalSocket: (opts: { terminalId: string }) => {
+        capturedTerminalIds.push(opts.terminalId)
+        return terminalSocketState
+    }
 }))
 
 vi.mock('@/hooks/useLongPress', () => ({
@@ -109,6 +114,26 @@ describe('TerminalPage paste behavior', () => {
         fireEvent.click(screen.getAllByRole('button', { name: 'Paste' })[0])
 
         expect(await screen.findByText('Paste input')).toBeInTheDocument()
+    })
+})
+
+describe('TerminalPage terminal id', () => {
+    beforeEach(() => {
+        vi.clearAllMocks()
+        capturedTerminalIds.length = 0
+    })
+
+    it('generates a unique terminal id per mount so concurrent viewers do not collide', () => {
+        // Two viewers (tabs/devices) of the SAME session must not share one
+        // terminal id: the hub registry would treat the second viewer's reused
+        // id as a stale reconnect and evict the first viewer's PTY ownership.
+        renderWithProviders()
+        renderWithProviders()
+
+        const distinct = new Set(capturedTerminalIds)
+        expect(distinct.size).toBe(2)
+        // Each id still carries the session for debuggability/scoping.
+        expect([...distinct].every((id) => id.startsWith('term-session-1-'))).toBe(true)
     })
 })
 

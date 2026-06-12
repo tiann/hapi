@@ -31,6 +31,24 @@ export const TerminalResizePayloadSchema = z.object({
 
 export type TerminalResizePayload = z.infer<typeof TerminalResizePayloadSchema>
 
+// Read-only agent-terminal viewer controls (no terminalId — the agent PTY is the
+// session's single TUI, keyed by sessionId). `resize` repaints the agent TUI at a
+// given size; `refresh` forces a repaint of the current screen so a freshly
+// (re)subscribed viewer sees the live state instead of a stale/black buffer.
+export const AgentTerminalResizePayloadSchema = z.object({
+    sessionId: z.string().min(1),
+    cols: z.number().int().positive(),
+    rows: z.number().int().positive()
+})
+
+export type AgentTerminalResizePayload = z.infer<typeof AgentTerminalResizePayloadSchema>
+
+export const AgentTerminalRefreshPayloadSchema = z.object({
+    sessionId: z.string().min(1)
+})
+
+export type AgentTerminalRefreshPayload = z.infer<typeof AgentTerminalRefreshPayloadSchema>
+
 export const TerminalClosePayloadSchema = z.object({
     sessionId: z.string().min(1),
     terminalId: z.string().min(1)
@@ -196,6 +214,11 @@ export interface ServerToClientEvents {
     'terminal:write': (data: TerminalWritePayload) => void
     'terminal:resize': (data: TerminalResizePayload) => void
     'terminal:close': (data: TerminalClosePayload) => void
+    'agent-terminal:resize': (data: AgentTerminalResizePayload) => void
+    'agent-terminal:refresh': (data: AgentTerminalRefreshPayload) => void
+    // Sent to the CLI when the last agent-terminal viewer leaves, so it stops
+    // streaming PTY output to the hub until someone subscribes again.
+    'agent-terminal:idle': (data: AgentTerminalRefreshPayload) => void
     error: (data: { message: string; code?: SocketErrorReason; scope?: 'session' | 'machine'; id?: string }) => void
 }
 
@@ -228,6 +251,10 @@ export interface ClientToServerEvents {
     'terminal:output': (data: TerminalOutputPayload) => void
     'terminal:exit': (data: TerminalExitPayload) => void
     'terminal:error': (data: TerminalErrorPayload) => void
+    'agent-terminal:output': (data: TerminalOutputPayload) => void
+    // Drop the hub's scrollback buffer for this session (a new agent PTY just
+    // spawned, e.g. after archive→restart, so old output must not replay).
+    'agent-terminal:reset': (data: { sessionId: string }) => void
     ping: (callback: () => void) => void
     'usage-report': (data: unknown) => void
 }
