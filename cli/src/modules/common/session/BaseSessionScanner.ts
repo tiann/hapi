@@ -22,7 +22,17 @@ export type SessionFileScanStats<TEvent> = {
 };
 
 type BaseSessionScannerOptions = {
+    /** Poll interval while idle (no recent events). */
     intervalMs: number;
+    /**
+     * Poll interval while "active" — i.e. shortly after a user input or a new
+     * event. Defaults to `intervalMs` (adaptive polling disabled). Set lower
+     * (e.g. 100ms) for snappy updates during a live response without paying that
+     * cost while idle.
+     */
+    activeIntervalMs?: number;
+    /** How long to stay on `activeIntervalMs` after the last activity. */
+    activeWindowMs?: number;
 };
 
 export abstract class BaseSessionScanner<TEvent> {
@@ -33,9 +43,25 @@ export abstract class BaseSessionScanner<TEvent> {
     private intervalId: ReturnType<typeof setInterval> | null = null;
     private stopped = false;
     private scanPromise: Promise<void> | null = null;
+    private currentIntervalMs: number;
+    private activeUntil = 0;
 
     protected constructor(private readonly options: BaseSessionScannerOptions) {
         this.sync = new InvalidateSync(() => this.scan());
+        this.currentIntervalMs = options.intervalMs;
+    }
+
+    private get idleIntervalMs(): number {
+        return this.options.intervalMs;
+    }
+    private get activeIntervalMs(): number {
+        return this.options.activeIntervalMs ?? this.options.intervalMs;
+    }
+    private get activeWindowMs(): number {
+        return this.options.activeWindowMs ?? 3000;
+    }
+    private get adaptiveEnabled(): boolean {
+        return this.activeIntervalMs < this.idleIntervalMs;
     }
 
     protected abstract findSessionFiles(): Promise<string[]>;
@@ -105,7 +131,47 @@ export abstract class BaseSessionScanner<TEvent> {
     public async start(): Promise<void> {
         await this.initialize();
         await this.sync.invalidateAndAwait();
-        this.intervalId = setInterval(() => this.sync.invalidate(), this.options.intervalMs);
+        this.startInterval(this.idleIntervalMs);
+    }
+
+    private startInterval(ms: number): void {
+        if (this.intervalId) {
+            clearInterval(this.intervalId);
+        }
+        this.currentIntervalMs = ms;
+        this.intervalId = setInterval(() => this.tick(), ms);
+    }
+
+    private tick(): void {
+        // Drop back to the idle interval once the active window lapses.
+        if (
+            this.adaptiveEnabled &&
+            this.currentIntervalMs === this.activeIntervalMs &&
+            Date.now() >= this.activeUntil
+        ) {
+            this.startInterval(this.idleIntervalMs);
+        }
+        this.sync.invalidate();
+    }
+
+    /**
+     * Signal external activity (e.g. the user just submitted input) so the
+     * scanner polls at `activeIntervalMs` and re-scans immediately. New events
+     * found during a scan extend the window automatically.
+     */
+    public markActive(): void {
+        this.extendActiveWindow();
+        this.sync.invalidate();
+    }
+
+    private extendActiveWindow(): void {
+        if (!this.adaptiveEnabled) {
+            return;
+        }
+        this.activeUntil = Date.now() + this.activeWindowMs;
+        if (this.currentIntervalMs !== this.activeIntervalMs) {
+            this.startInterval(this.activeIntervalMs);
+        }
     }
 
     public async cleanup(): Promise<void> {
@@ -178,6 +244,11 @@ export abstract class BaseSessionScanner<TEvent> {
             this.setCursor(filePath, nextCursor);
             for (const key of newKeys) {
                 this.recordProcessedKey(key);
+            }
+            if (newEvents.length > 0) {
+                // A live response/tool-call is streaming in — stay on the fast
+                // interval so the next chunk is picked up promptly.
+                this.extendActiveWindow();
             }
         }
         await this.afterScan();
