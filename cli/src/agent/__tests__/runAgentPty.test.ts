@@ -4,13 +4,22 @@ const harness = vi.hoisted(() => {
     let _isRunning = true
     let _onExit: ((code: number | null, signal: string | null) => void) | null = null
     let _onData: ((data: string) => void) | null = null
+    let _onError: ((error: Error) => void) | null = null
     let _echo = true
+    let _spawnError: Error | null = null
 
     const m = {
         get isRunning() { return _isRunning },
         spawn: vi.fn((opts: Record<string, unknown>) => {
             _onExit = (opts.onExit as typeof _onExit) ?? null
             _onData = (opts.onData as typeof _onData) ?? null
+            _onError = (opts.onError as typeof _onError) ?? null
+            // Simulate the manager reporting a spawn failure: onError fires and
+            // the process never enters the running state.
+            if (_spawnError) {
+                _isRunning = false
+                _onError?.(_spawnError)
+            }
         }),
         // By default simulate the agent echoing keystrokes back as output so the
         // echo-confirm in runAgentPty proceeds on the first attempt.
@@ -24,13 +33,14 @@ const harness = vi.hoisted(() => {
     return {
         setRunning(v: boolean) { _isRunning = v },
         setEcho(v: boolean) { _echo = v },
+        setSpawnError(err: Error | null) { _spawnError = err },
         triggerExit(code: number | null = 0, signal: string | null = null) {
             _isRunning = false
             _onExit?.(code, signal)
         },
         triggerData(data: string) { _onData?.(data) },
         reset() {
-            _isRunning = true; _onExit = null; _onData = null; _echo = true
+            _isRunning = true; _onExit = null; _onData = null; _onError = null; _echo = true; _spawnError = null
             m.spawn.mockClear(); m.write.mockClear(); m.kill.mockClear(); m.resize.mockClear()
         },
         m,
@@ -83,6 +93,29 @@ async function reachReady() {
 describe('runAgentPty', () => {
     afterEach(() => { harness.reset() })
 
+    it('rejects (does not silently return) when the PTY fails to spawn', async () => {
+        // A real failure such as `claude` not installed or the terminal failing
+        // to attach: the manager reports onError and never enters running state.
+        // runAgentPty must throw so the caller surfaces the error instead of
+        // treating a never-started PTY as a clean exit and respawning.
+        harness.setSpawnError(new Error('claude: command not found'))
+        const nextMessage = vi.fn()
+        const onReady = vi.fn()
+
+        await expect(runAgentPty(makeOpts({ nextMessage, onReady })))
+            .rejects.toThrow('claude: command not found')
+
+        // It bailed before reaching the message loop / ready callback.
+        expect(nextMessage).not.toHaveBeenCalled()
+        expect(onReady).not.toHaveBeenCalled()
+    })
+
+    it('rejects with a generic error if spawn fails without an onError detail', async () => {
+        harness.setRunning(false) // not running, but no onError fired
+        const promise = runAgentPty(makeOpts({ command: 'mycli', nextMessage: vi.fn() }))
+        await expect(promise).rejects.toThrow('Failed to spawn mycli PTY')
+    })
+
     it('spawns with the given command/args/cwd and calls onReady', async () => {
         const msg = deferred<{ message: string } | null>()
         const onReady = vi.fn()
@@ -94,10 +127,29 @@ describe('runAgentPty', () => {
         expect(spawnArgs.command).toBe('mycli')
         expect(spawnArgs.args).toEqual(['--foo'])
         expect(spawnArgs.cwd).toBe('/work')
-        expect(onReady).toHaveBeenCalled()
+        // onReady fires only once the prompt is actually ready, not right after
+        // spawn — so it has NOT been called yet here.
+        expect(onReady).not.toHaveBeenCalled()
         await reachReady()
+        expect(onReady).toHaveBeenCalled()
         msg.resolve(null)
         await promise
+    })
+
+    it('rejects (and never calls onReady) if the PTY exits before becoming ready', async () => {
+        // Spawn succeeds, but the agent exits before rendering a usable prompt
+        // (bad config, invalid args, auth failure). This must be treated as a
+        // failure — not a ready session — so the caller's give-up breaker counts
+        // it instead of respawning forever.
+        const onReady = vi.fn()
+        const nextMessage = vi.fn()
+        const promise = runAgentPty(makeOpts({ command: 'mycli', onReady, nextMessage }))
+        await tick(0)
+        harness.triggerExit(1) // exits before any ready output
+
+        await expect(promise).rejects.toThrow('mycli PTY exited before becoming ready')
+        expect(onReady).not.toHaveBeenCalled()
+        expect(nextMessage).not.toHaveBeenCalled()
     })
 
     it('injects envVars/extraEnv into the spawn env only (not process.env)', async () => {
@@ -168,6 +220,76 @@ describe('runAgentPty', () => {
         // text then CR, as separate writes
         expect(harness.m.write).toHaveBeenCalledWith('hello')
         expect(harness.m.write).toHaveBeenCalledWith('\r')
+        msg2.resolve(null)
+        await promise
+    })
+
+    it('fires onMessageSubmitted after the write completes, once per real message (not for /clear)', async () => {
+        const msg1 = deferred<{ message: string } | null>()
+        const msg2 = deferred<{ message: string } | null>()
+        const msg3 = deferred<{ message: string } | null>()
+        const nextMessage = vi.fn()
+            .mockImplementationOnce(() => msg1.promise)
+            .mockImplementationOnce(() => msg2.promise)
+            .mockImplementationOnce(() => msg3.promise)
+        const onMessageSubmitted = vi.fn()
+        const promise = runAgentPty(makeOpts({ nextMessage, onMessageSubmitted }))
+        await reachReady()
+
+        // /clear is dropped before the submit path → no post-submit callback,
+        // so a first-message verifier armed here would never fire on a no-op.
+        msg1.resolve({ message: '/clear' })
+        await tick(60)
+        expect(onMessageSubmitted).not.toHaveBeenCalled()
+
+        // A real message fires the callback exactly once, AFTER text + CR were
+        // written — the contract that stops a verifier racing the submit.
+        msg2.resolve({ message: 'hello' })
+        await tick(300)
+        expect(onMessageSubmitted).toHaveBeenCalledTimes(1)
+        expect(onMessageSubmitted).toHaveBeenCalledWith('hello')
+        const lastWriteOrder = Math.max(...harness.m.write.mock.invocationCallOrder)
+        expect(onMessageSubmitted.mock.invocationCallOrder[0]).toBeGreaterThan(lastWriteOrder)
+
+        msg3.resolve(null)
+        await promise
+    })
+
+    it('bracketed-paste wraps a multiline message so only the final CR submits', async () => {
+        const msg1 = deferred<{ message: string } | null>()
+        const msg2 = deferred<{ message: string } | null>()
+        const nextMessage = vi.fn()
+            .mockImplementationOnce(() => msg1.promise)
+            .mockImplementationOnce(() => msg2.promise)
+        const promise = runAgentPty(makeOpts({ nextMessage }))
+        await reachReady()
+        // e.g. an attachment-formatted prompt or a batched queue flush.
+        msg1.resolve({ message: '@/tmp/a.png\n\ndescribe this' })
+        await tick(300)
+        // The whole block is written once, bracketed — embedded newlines stay
+        // literal instead of each acting as Enter.
+        expect(harness.m.write).toHaveBeenCalledWith('\x1b[200~@/tmp/a.png\n\ndescribe this\x1b[201~')
+        // The raw (unbracketed) multiline text must never be written.
+        expect(harness.m.write).not.toHaveBeenCalledWith('@/tmp/a.png\n\ndescribe this')
+        // Exactly one CR submits the whole paste.
+        const crWrites = harness.m.write.mock.calls.filter((c) => c[0] === '\r').length
+        expect(crWrites).toBe(1)
+        msg2.resolve(null)
+        await promise
+    })
+
+    it('does not bracket a single-line message', async () => {
+        const msg1 = deferred<{ message: string } | null>()
+        const msg2 = deferred<{ message: string } | null>()
+        const nextMessage = vi.fn()
+            .mockImplementationOnce(() => msg1.promise)
+            .mockImplementationOnce(() => msg2.promise)
+        const promise = runAgentPty(makeOpts({ nextMessage }))
+        await reachReady()
+        msg1.resolve({ message: 'hello world' })
+        await tick(300)
+        expect(harness.m.write).toHaveBeenCalledWith('hello world')
+        expect(harness.m.write).not.toHaveBeenCalledWith('\x1b[200~hello world\x1b[201~')
         msg2.resolve(null)
         await promise
     })

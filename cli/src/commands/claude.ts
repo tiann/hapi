@@ -78,6 +78,23 @@ export function parseClaudeStartOptions(args: string[]): { options: StartOptions
         }
     }
 
+    // PTY mode surfaces AskUserQuestion / permission requests in the web UI via
+    // claude's PreToolUse hook (see ptyPermissionHandler). `--dangerously-skip-
+    // permissions` makes claude bypass that hook entirely, so the question
+    // renders only in the PTY TUI and never reaches the chat. In PTY mode we
+    // always drop the flag — regardless of the resolved permission mode (an
+    // explicit `--permission-mode default --dangerously-skip-permissions` would
+    // otherwise keep it) — and rely on the hook instead: under bypassPermissions
+    // every request is auto-approved, while question tools are still forwarded to
+    // the web.
+    if (options.interactive) {
+        for (let i = unknownArgs.length - 1; i >= 0; i--) {
+            if (unknownArgs[i] === '--dangerously-skip-permissions') {
+                unknownArgs.splice(i, 1)
+            }
+        }
+    }
+
     if (unknownArgs.length > 0) {
         options.claudeArgs = [...(options.claudeArgs || []), ...unknownArgs]
     }

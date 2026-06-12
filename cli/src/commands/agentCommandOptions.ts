@@ -38,7 +38,7 @@ export function parseRemoteAgentCommandOptions<TPermissionMode extends Permissio
                 // pty-capable flavors read `interactive`.
                 options.interactive = true
             } else {
-                throw new Error('Invalid --hapi-starting-mode (expected local or remote)')
+                throw new Error('Invalid --hapi-starting-mode (expected local, remote, or pty)')
             }
         } else if (arg === '--permission-mode') {
             const mode = args[++i]

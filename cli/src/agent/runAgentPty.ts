@@ -1,5 +1,6 @@
 import { AgentPtyManager } from "@/agent/AgentPtyManager"
 import { parseSpecialCommand } from "@/parsers/specialCommands"
+import { bracketPasteIfMultiline } from "@/agent/bracketedPaste"
 import { logger } from "@/lib"
 
 /**
@@ -65,6 +66,16 @@ export type RunAgentPtyOpts = {
      */
     onThinkingChange?: (thinking: boolean) => void
     onExit?: (code: number | null) => void
+    /**
+     * Fired after a message has been written to the PTY (text + CR) by the
+     * driver's submit path. Callers that want to verify/repair delivery of a
+     * message must hook here rather than at nextMessage time: nextMessage
+     * returns BEFORE waitForInputReady + submitMessage run, so a verifier
+     * started there can race the driver's own submit (and on a slow resume,
+     * fire its repair keystrokes before the message was ever sent — duplicating
+     * it). This hook guarantees the submit already happened.
+     */
+    onMessageSubmitted?: (message: string) => void | Promise<void>
     /**
      * Called once the PTY is spawned with controls for the live terminal. The
      * agent-terminal viewer uses `resize` to repaint the TUI on (re)subscribe so
@@ -180,10 +191,15 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
     // yet, so retry — this is what was dropping the first message. CR is sent
     // separately so the text isn't submitted before it's buffered.
     const submitMessage = async (message: string): Promise<void> => {
+        // Multiline web messages (batched queue flush, attachment prompts,
+        // multiline composer input) must be bracketed-pasted so their embedded
+        // newlines stay literal instead of each submitting a partial line. The
+        // trailing CR sent separately below is what submits the whole block.
+        const payload = bracketPasteIfMultiline(message)
         let echoed = false
         for (let attempt = 0; attempt < 3 && !echoed; attempt++) {
             const before = lastOutputAt
-            manager.write(message)
+            manager.write(payload)
             const waitStart = Date.now()
             while (Date.now() - waitStart < 700) {
                 if (signal?.aborted || !manager.isRunning) return
@@ -206,6 +222,10 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
     signal?.addEventListener('abort', abortHandler, { once: true })
 
     try {
+        // Captured so a spawn failure can be re-thrown (not swallowed): the PTY
+        // manager reports failure via onError + isRunning=false rather than a
+        // throw from spawn().
+        let spawnError: Error | null = null
         manager.spawn({
             command: opts.command,
             args: opts.args,
@@ -248,13 +268,17 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
                 opts.onExit?.(code)
             },
             onError: (error) => {
+                spawnError = error
                 logger.debug(`${debugPrefix} PTY error: ${error.message}`, error)
             },
         })
 
         if (!manager.isRunning) {
-            logger.debug(`${debugPrefix} Failed to spawn ${opts.command} PTY`)
-            return
+            // Surface the failure instead of returning as if it succeeded —
+            // otherwise the caller (e.g. ClaudePtyLauncher) treats a never-started
+            // PTY as a clean exit and silently respawns, hiding real errors like
+            // `claude` not being installed or the terminal failing to attach.
+            throw spawnError ?? new Error(`Failed to spawn ${opts.command} PTY`)
         }
 
         opts.registerControls?.({
@@ -272,12 +296,25 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
             }
         })
 
-        opts.onReady()
-
-        // Spawn the agent up-front and wait until its prompt is ready BEFORE any
-        // message arrives, so the first user message is processed immediately
-        // instead of being consumed as the spawn trigger.
+        // Wait until the prompt is actually usable BEFORE any message arrives, so
+        // the first user message is processed immediately instead of being
+        // consumed as the spawn trigger.
         await waitForInputReady()
+
+        // A successful spawn() does not mean the agent reached a working prompt:
+        // it can spawn and then exit before rendering one (bad config, invalid
+        // args, auth failure). Distinguish that from a healthy start so onReady()
+        // — which the caller uses to mark the session "ready" and to reset its
+        // launch-failure breaker — only fires for a genuinely usable prompt. A
+        // user abort during startup is a clean stop, not a failure.
+        if (signal?.aborted) {
+            return
+        }
+        if (!manager.isRunning) {
+            throw new Error(`${opts.command} PTY exited before becoming ready`)
+        }
+
+        opts.onReady()
 
         while (manager.isRunning) {
             if (signal?.aborted) {
@@ -311,6 +348,9 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
 
             if (process.env.DEBUG_PTY) logger.debug(`${debugPrefix} write(loop): ${next.message}`)
             await submitMessage(next.message)
+            // The message has now been written to the PTY; let a caller verify it
+            // actually landed (and repair it) without racing this submit path.
+            await opts.onMessageSubmitted?.(next.message)
             // The agent is now working on this input — show "thinking" right away
             // (a busy marker reinforces it; the idle marker clears it when done).
             setThinking(true)

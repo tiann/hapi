@@ -134,6 +134,21 @@ export class AgentSessionBase<Mode> {
         }
     };
 
+    private _killHandler: (() => void) | null = null;
+
+    // Graceful-shutdown hook shared by all flavors. The active launcher
+    // registers a teardown handler (e.g. abort the PTY) via setKillHandler; the
+    // runner lifecycle's onBeforeClose calls kill() before process.exit so the
+    // resource is released through the normal finally path rather than relying on
+    // last-resort reapers. No-op when no handler is registered (e.g. local mode).
+    setKillHandler = (handler: () => void): void => {
+        this._killHandler = handler;
+    };
+
+    kill = (): void => {
+        this._killHandler?.();
+    };
+
     protected getKeepAliveRuntime():
         {
             permissionMode?: SessionPermissionMode

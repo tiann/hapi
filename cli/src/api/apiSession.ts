@@ -11,8 +11,10 @@ import type { RawJSONLines } from '@/claude/types'
 import { configuration } from '@/configuration'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from "@hapi/protocol"
 import type { SessionEndReason } from '@hapi/protocol'
-import type { ClientToServerEvents, ServerToClientEvents, Update } from '@hapi/protocol'
+import type { ClientToServerEvents, ServerToClientEvents, TerminalOutputPayload, Update } from '@hapi/protocol'
 import {
+    AgentTerminalRefreshPayloadSchema,
+    AgentTerminalResizePayloadSchema,
     TerminalClosePayloadSchema,
     TerminalOpenPayloadSchema,
     TerminalResizePayloadSchema,
@@ -48,6 +50,10 @@ const SYSTEM_INJECTION_PREFIXES = [
     '<system-reminder>',
 ]
 
+// Cap for the runner-side in-memory agent-terminal screen buffer (matches the
+// hub's scrollback ring). The tail always holds the latest full-screen redraw.
+const AGENT_TERMINAL_LOCAL_BUFFER_BYTES = 256 * 1024
+
 function extractRawUserTextContent(content: unknown): string | null {
     if (typeof content === 'string') {
         return content
@@ -82,7 +88,11 @@ function extractRawUserTextContent(content: unknown): string | null {
  */
 export function isExternalUserMessage(body: RawJSONLines): body is Extract<RawJSONLines, { type: 'user' }> {
     if (body.type !== 'user') return false
-    const text = extractRawUserTextContent(body.message.content)
+    // Defensive: a malformed/minimal user line may lack `.message`. Treat it as
+    // a non-external (forwardable) message rather than throwing.
+    const message = (body as { message?: { content?: unknown } }).message
+    if (!message || typeof message !== 'object') return false
+    const text = extractRawUserTextContent(message.content)
     if (text === null) return false
     if (body.isSidechain === true) return false
     if (body.isMeta === true) return false
@@ -235,6 +245,18 @@ export class ApiSessionClient extends EventEmitter {
     private hasConnectedOnce = false
     readonly rpcHandlerManager: RpcHandlerManager
     private readonly terminalManager: TerminalManager
+    private agentTerminalResize: ((cols: number, rows: number) => void) | null = null
+    private lastAgentTerminalSize: { cols: number; rows: number } | null = null
+    // The agent PTY emits a high-frequency byte stream (spinners ~10Hz, full
+    // redraws). Only forward it to the hub while a viewer is actually subscribed
+    // to the agent terminal — otherwise the hub relays it to an empty room and
+    // buffers it for no one. Enabled on (re)subscribe, disabled when the last
+    // viewer leaves. Default false: chat-only users never open the raw terminal,
+    // so nothing is streamed for them.
+    private agentTerminalActive = false
+    // In-memory copy of the recent agent-PTY screen, captured regardless of the
+    // network gate so a subscribing viewer can be replayed the current screen.
+    private agentTerminalLocalBuffer = ''
     private agentStateLock = new AsyncLock()
     private metadataLock = new AsyncLock()
     private state: ApiSessionClientState
@@ -362,6 +384,29 @@ export class ApiSessionClient extends EventEmitter {
 
         this.socket.on('terminal:close', handleTerminalEvent(TerminalClosePayloadSchema, (payload) => {
             this.terminalManager.close(payload.terminalId)
+        }))
+
+        // Read-only agent-terminal viewer: resize the agent PTY to the viewer's
+        // size, and force a repaint when a viewer (re)subscribes so it sees the
+        // live screen instead of a stale/black buffer replay.
+        this.socket.on('agent-terminal:resize', handleTerminalEvent(AgentTerminalResizePayloadSchema, (payload) => {
+            this.lastAgentTerminalSize = { cols: payload.cols, rows: payload.rows }
+            this.agentTerminalResize?.(payload.cols, payload.rows)
+        }))
+
+        this.socket.on('agent-terminal:refresh', handleTerminalEvent(AgentTerminalRefreshPayloadSchema, () => {
+            // A viewer is subscribed → start streaming (enable BEFORE replay so
+            // the bytes flow), replay the locally-captured current screen (works
+            // even for resumed sessions that don't repaint), then nudge a repaint
+            // as a belt-and-suspenders for any truncated head sequence.
+            this.agentTerminalActive = true
+            this.emitAgentTerminalLocalReplay()
+            this.forceAgentTerminalRepaint()
+        }))
+
+        this.socket.on('agent-terminal:idle', handleTerminalEvent(AgentTerminalRefreshPayloadSchema, () => {
+            // Last viewer left — stop streaming the PTY to the hub.
+            this.agentTerminalActive = false
         }))
 
         this.socket.on('update', (data: Update, ack?: (response: { removed: boolean }) => void) => {
@@ -837,6 +882,77 @@ export class ApiSessionClient extends EventEmitter {
                 message: content
             })
         }, event.type === 'message' ? 'lossless' : 'droppable')
+    }
+
+    emitAgentTerminalOutput(data: string): void {
+        // Always capture the screen locally (in-memory, no network) so a late
+        // subscriber can be replayed the CURRENT screen without depending on a
+        // TUI repaint — resumed (`--resume`) sessions don't reliably redraw on
+        // SIGWINCH, which is what caused the reopen black screen.
+        this.agentTerminalLocalBuffer =
+            (this.agentTerminalLocalBuffer + data).slice(-AGENT_TERMINAL_LOCAL_BUFFER_BYTES)
+        // Gate only the NETWORK forward: with no viewer the hub would relay this
+        // high-frequency byte stream (spinners ~10Hz) to an empty room. On
+        // subscribe, 'agent-terminal:refresh' flips this on and replays the local
+        // buffer (see the handler), so nothing is lost.
+        if (!this.agentTerminalActive) return
+        const payload: TerminalOutputPayload = {
+            sessionId: this.sessionId,
+            terminalId: 'agent',
+            data
+        }
+        this.socket.emit('agent-terminal:output', payload)
+    }
+
+    private emitAgentTerminalLocalReplay(): void {
+        if (!this.agentTerminalLocalBuffer) return
+        this.socket.emit('agent-terminal:output', {
+            sessionId: this.sessionId,
+            terminalId: 'agent',
+            data: this.agentTerminalLocalBuffer
+        })
+    }
+
+    /**
+     * Tell the hub to drop its scrollback buffer for this session. Called when a
+     * fresh agent PTY spawns (e.g. after archive→restart) so a re-subscribing
+     * viewer replays only the NEW session's screen, not a stale mix of the old
+     * one's output and its alt-screen-exit.
+     */
+    resetAgentTerminal(): void {
+        // New PTY → drop the previous screen from both the hub buffer and our
+        // local copy so neither replays stale output.
+        this.agentTerminalLocalBuffer = ''
+        this.socket.emit('agent-terminal:reset', { sessionId: this.sessionId })
+    }
+
+    /**
+     * Register (or clear) the live agent-PTY controls. The PTY launcher calls
+     * this once the agent is spawned so the agent-terminal viewer can resize /
+     * repaint it. Passing null (on exit) makes the controls no-ops.
+     */
+    setAgentTerminalControls(controls: { resize: (cols: number, rows: number) => void; sendKeys: (data: string) => void } | null): void {
+        this.agentTerminalResize = controls?.resize ?? null
+    }
+
+    // Force the agent TUI to repaint its current screen. A plain same-size resize
+    // is a no-op (the kernel only sends SIGWINCH on an actual size change), so we
+    // nudge one row smaller then back — a single transient frame, imperceptible —
+    // which guarantees the TUI redraws the full current screen for a freshly
+    // (re)subscribed viewer.
+    private forceAgentTerminalRepaint(): void {
+        const resize = this.agentTerminalResize
+        if (!resize) return
+        const initial = this.lastAgentTerminalSize ?? { cols: 80, rows: 24 }
+        resize(initial.cols, Math.max(1, initial.rows - 1))
+        // Restore to the LATEST known size (a concurrent viewer resize may have
+        // updated it in the meantime) so the nudge never shrinks the final view.
+        setTimeout(() => {
+            const r = this.agentTerminalResize
+            if (!r) return
+            const cur = this.lastAgentTerminalSize ?? initial
+            r(cur.cols, cur.rows)
+        }, 30)
     }
 
     keepAlive(

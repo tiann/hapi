@@ -1,10 +1,11 @@
 import { ApiSessionClient } from "@/api/apiSession"
 import { MessageQueue2 } from "@/utils/MessageQueue2"
 import { logger } from "@/ui/logger"
-import { runLocalRemoteSession } from "@/agent/loopBase"
+import { runLocalRemoteSession, type SessionMode } from "@/agent/loopBase"
 import { Session } from "./session"
 import { claudeLocalLauncher } from "./claudeLocalLauncher"
 import { claudeRemoteLauncher } from "./claudeRemoteLauncher"
+import { claudePtyLauncher } from "./claudePtyLauncher"
 import { ApiClient } from "@/lib"
 import type { SessionEffort, SessionModel } from "@/api/types"
 import type { ClaudePermissionMode } from "@hapi/protocol/types"
@@ -27,7 +28,7 @@ interface LoopOptions {
     model?: SessionModel
     effort?: SessionEffort
     permissionMode?: PermissionMode
-    startingMode?: 'local' | 'remote'
+    startingMode?: 'local' | 'remote' | 'pty'
     startedBy?: 'runner' | 'terminal'
     onModeChange: (mode: 'local' | 'remote') => void
     mcpServers: Record<string, any>
@@ -48,6 +49,7 @@ export async function loop(opts: LoopOptions) {
     const logPath = logger.logFilePath;
     const startedBy = opts.startedBy ?? 'terminal';
     const startingMode = opts.startingMode ?? 'local';
+    const sessionMode: 'local' | 'remote' = startingMode === 'pty' ? 'remote' : startingMode;
     const session = new Session({
         api: opts.api,
         client: opts.session,
@@ -60,9 +62,9 @@ export async function loop(opts: LoopOptions) {
         messageQueue: opts.messageQueue,
         allowedTools: opts.allowedTools,
         onModeChange: opts.onModeChange,
-        mode: startingMode,
+        mode: sessionMode,
         startedBy,
-        startingMode,
+        startingMode: sessionMode,
         hookSettingsPath: opts.hookSettingsPath,
         permissionMode: opts.permissionMode ?? 'default',
         model: opts.model,
@@ -75,6 +77,7 @@ export async function loop(opts: LoopOptions) {
         logTag: 'loop',
         runLocal: claudeLocalLauncher,
         runRemote: claudeRemoteLauncher,
+        runPty: claudePtyLauncher,
         onSessionReady: opts.onSessionReady
     });
 }

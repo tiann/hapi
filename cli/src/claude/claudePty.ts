@@ -17,6 +17,8 @@ export type ClaudePtyOpts = {
     nextMessage: () => Promise<{ message: string } | null>
     onReady: () => void
     onMessage: (data: string) => void
+    /** Fired after the driver has written a message to the PTY. See runAgentPty. */
+    onMessageSubmitted?: (message: string) => void | Promise<void>
     onThinkingChange?: (thinking: boolean) => void
     onExit?: (code: number | null) => void
     registerControls?: (controls: { resize: (cols: number, rows: number) => void; sendKeys: (data: string) => void }) => void
@@ -87,6 +89,7 @@ export async function claudePty(opts: ClaudePtyOpts): Promise<void> {
             nextMessage: opts.nextMessage,
             onReady: opts.onReady,
             onMessage: opts.onMessage,
+            onMessageSubmitted: opts.onMessageSubmitted,
             onThinkingChange: opts.onThinkingChange,
             onExit: opts.onExit,
             registerControls: opts.registerControls,
