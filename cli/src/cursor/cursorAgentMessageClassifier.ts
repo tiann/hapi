@@ -46,13 +46,19 @@ const PATTERNS: Pattern[] = [
         kind: 'connection_stalled',
         transient: true
     },
+    // Anchor Gemini patterns to start of message: real cursor-agent error
+    // emits are the whole message body, not embedded in prose. Loose
+    // "contains" matching false-positives on assistant messages that merely
+    // *describe* the pattern (e.g. release notes, doc copy, help text, an
+    // assistant explaining how the classifier works). See regression test
+    // "does not classify prose that describes the pattern".
     {
-        test: (t) => /Gemini prompt failed:.*token count exceeds/i.test(t),
+        test: (t) => /^Gemini prompt failed:.*token count exceeds/i.test(t.trimStart()),
         kind: 'context_window',
         transient: false
     },
     {
-        test: (t) => /Gemini prompt failed:.*exhausted your capacity/i.test(t),
+        test: (t) => /^Gemini prompt failed:.*exhausted your capacity/i.test(t.trimStart()),
         kind: 'capacity_exhausted',
         transient: false
     },
