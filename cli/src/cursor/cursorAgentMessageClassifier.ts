@@ -20,38 +20,41 @@ type Pattern = {
     transient: boolean
 }
 
+// Patterns are anchored to the start of the (whitespace-trimmed) message
+// because cursor-agent error emits are the whole message body, often with
+// leading newlines from ACP transport formatting (observed in real session
+// b52b9117: the message text was "\n\nError: T: WritableIterable is closed",
+// which was missed when patterns only saw raw start-of-string). Anchoring
+// also rejects assistant messages that merely *describe* the patterns in
+// prose (the 2026-06-12 self-own where my own response triggered the
+// classifier because it listed the pattern strings). trimStart() on every
+// pattern keeps the contract consistent across the family.
 const PATTERNS: Pattern[] = [
     {
-        test: (t) => /^Error: T: \[resource_exhausted\]/i.test(t),
+        test: (t) => /^Error: T: \[resource_exhausted\]/i.test(t.trimStart()),
         kind: 'quota_exhausted',
         transient: false
     },
     {
-        test: (t) => /^Error: T: \[canceled\]/i.test(t),
+        test: (t) => /^Error: T: \[canceled\]/i.test(t.trimStart()),
         kind: 'canceled',
         transient: true
     },
     {
-        test: (t) => /^Error: T: \[deadline_exceeded\]/i.test(t),
+        test: (t) => /^Error: T: \[deadline_exceeded\]/i.test(t.trimStart()),
         kind: 'deadline_exceeded',
         transient: true
     },
     {
-        test: (t) => /^Error: T: \[unavailable\]/i.test(t),
+        test: (t) => /^Error: T: \[unavailable\]/i.test(t.trimStart()),
         kind: 'unavailable',
         transient: true
     },
     {
-        test: (t) => /^Error: T: Connection stalled/i.test(t),
+        test: (t) => /^Error: T: Connection stalled/i.test(t.trimStart()),
         kind: 'connection_stalled',
         transient: true
     },
-    // Anchor Gemini patterns to start of message: real cursor-agent error
-    // emits are the whole message body, not embedded in prose. Loose
-    // "contains" matching false-positives on assistant messages that merely
-    // *describe* the pattern (e.g. release notes, doc copy, help text, an
-    // assistant explaining how the classifier works). See regression test
-    // "does not classify prose that describes the pattern".
     {
         test: (t) => /^Gemini prompt failed:.*token count exceeds/i.test(t.trimStart()),
         kind: 'context_window',
@@ -64,7 +67,7 @@ const PATTERNS: Pattern[] = [
     },
     // catch-all for unknown `Error: T:` prefixes — placed last
     {
-        test: (t) => /^Error: T:/i.test(t),
+        test: (t) => /^Error: T:/i.test(t.trimStart()),
         kind: 'unknown_t_prefix',
         transient: false
     }
