@@ -21,7 +21,8 @@ import { parseCursorEvent, convertCursorEventToAgentMessage } from './utils/curs
 import { cursorPassThroughStatusMessage, parseCursorSpecialCommand } from './cursorSpecialCommands';
 import {
     classifyCursorAgentMessage,
-    isCompletionClaim
+    isCompletionClaim,
+    type CursorAgentStreamFailure
 } from './cursorAgentMessageClassifier';
 
 // Transient `agent` failures (auth expiry, rate limits, transient network) come back
@@ -411,36 +412,58 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
     }
 
     private handleTextMessageClassification(text: string): void {
+        // Legacy stream-json path doesn't have ACP's structural signals
+        // (onStderrError / RPC rejection / markClosed) — text classifier
+        // is the only model-error signal we have here. If a turn already
+        // has a model error recorded (e.g. a prior message in the same
+        // turn already triggered), don't re-fire.
+        if (this.turnHasModelError) {
+            this.lastAssistantText = text;
+            return;
+        }
         const failure = classifyCursorAgentMessage(text);
         if (failure) {
-            this.turnHasModelError = true;
-            const priorAssistantClaimsDone = this.lastAssistantText !== null
-                && isCompletionClaim(this.lastAssistantText);
-            const rawSnippet = failure.raw.slice(0, 400);
-            const atTs = Date.now();
+            this.recordModelError(failure);
+        } else {
+            this.lastAssistantText = text;
+        }
+    }
 
-            this.session.client.updateMetadata((metadata) => ({
-                ...metadata,
-                lastModelError: {
-                    kind: failure.kind,
-                    transient: failure.transient,
-                    rawSnippet,
-                    atTs,
-                    priorAssistantClaimsDone
-                }
-            }));
+    /**
+     * Single source of truth for emitting modelError. Mirrors the structure
+     * of cursorAcpRemoteLauncher.recordModelError so the two paths look
+     * identical and the model-error contract is in one shape regardless of
+     * which protocol classified the failure.
+     */
+    private recordModelError(failure: CursorAgentStreamFailure): void {
+        if (this.turnHasModelError) {
+            return;
+        }
+        this.turnHasModelError = true;
 
-            this.session.sendSessionEvent({
-                type: 'modelError',
+        const priorAssistantClaimsDone = this.lastAssistantText !== null
+            && isCompletionClaim(this.lastAssistantText);
+        const rawSnippet = failure.raw.slice(0, 400);
+        const atTs = Date.now();
+
+        this.session.client.updateMetadata((metadata) => ({
+            ...metadata,
+            lastModelError: {
                 kind: failure.kind,
                 transient: failure.transient,
                 rawSnippet,
+                atTs,
                 priorAssistantClaimsDone
-            });
-        } else {
-            // Track last benign assistant text for priorAssistantClaimsDone heuristic.
-            this.lastAssistantText = text;
-        }
+            }
+        }));
+
+        this.session.sendSessionEvent({
+            type: 'modelError',
+            kind: failure.kind,
+            transient: failure.transient,
+            rawSnippet,
+            priorAssistantClaimsDone
+        });
     }
 
     protected async cleanup(): Promise<void> {
