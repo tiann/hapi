@@ -126,6 +126,30 @@ describe('classifyCursorAgentMessage', () => {
             )?.kind
         ).toBe('capacity_exhausted')
     })
+
+    it('classifies Error: T: patterns with leading whitespace (real wire format)', () => {
+        // Regression: 2026-06-12 session b52b9117. Cursor ACP transport
+        // emitted "\n\nError: T: WritableIterable is closed" — leading
+        // newlines made the unanchored-tolerant `^Error: T:` regex miss
+        // it because JS `^` matches start of string, not start of line
+        // (without the `m` flag). trimStart() before the test fixes it.
+        const realWireFormat = '\n\nError: T: WritableIterable is closed'
+        const result = classifyCursorAgentMessage(realWireFormat)
+        expect(result).not.toBeNull()
+        expect(result?.kind).toBe('unknown_t_prefix')
+        expect(result?.transient).toBe(false)
+        // Raw text preserved as-is (leading newlines included) so the
+        // banner can show the operator exactly what arrived.
+        expect(result?.raw).toBe(realWireFormat)
+    })
+
+    it('classifies leading-whitespace variants of all Error: T: kinds', () => {
+        expect(classifyCursorAgentMessage('\n\nError: T: [resource_exhausted]')?.kind).toBe('quota_exhausted')
+        expect(classifyCursorAgentMessage('  Error: T: [canceled]')?.kind).toBe('canceled')
+        expect(classifyCursorAgentMessage('\tError: T: [deadline_exceeded]')?.kind).toBe('deadline_exceeded')
+        expect(classifyCursorAgentMessage('\n\n  Error: T: [unavailable]')?.kind).toBe('unavailable')
+        expect(classifyCursorAgentMessage('\nError: T: Connection stalled after 30s')?.kind).toBe('connection_stalled')
+    })
 })
 
 describe('isCompletionClaim', () => {
