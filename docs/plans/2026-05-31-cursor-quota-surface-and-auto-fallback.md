@@ -836,3 +836,19 @@ Tie into existing `agent-notify` pipeline:
 **Strong upstream candidate.** Same UX win for every Cursor-flavor HAPI user, regardless of soup. Open as a separate PR distinct from Fix 1's stderr classifier — they target different failure modes and reviewer can take one without the other.
 
 ---
+
+## Sibling perf issue: web client session-refetch storm (2026-06-12)
+
+**Status:** issue + worktree + peer agent in flight (not part of this plan's quota-surfacing scope).
+
+While diagnosing model-error visibility, the operator hit a separate but adjacent problem on their box: `hapi-hub.service` was writing ~9.3 GB/day of syslog, ~95% of which was the `GET /api/sessions/<uuid>` access-log line. Root cause is a per-session refetch storm in the web client (TanStack `useSession` hook with no `staleTime`, plus SSE-handler invalidation fallbacks that bypass the cache-patch path).
+
+This is performance, not correctness, but worth tracking as a sibling because it surfaced through the same diagnostic thread.
+
+- Local triage: `/etc/rsyslog.d/30-hapi-hub-quiet.conf` drops the noise pattern, stops disk bleed.
+- Upstream fix in flight via peer session `5fb78b25` on worktree `worktrees/web-session-refetch-storm` (branch `feat/web-session-refetch-perf`).
+- Issue body draft: `/tmp/web-refetch-storm-issue.md` (peer files on `tiann/hapi`).
+- Peer handoff: `/tmp/peer-refetch-storm-handoff.md`.
+- Fixes: (A) add `staleTime` to `useSession`, (B) audit SSE invalidation fallbacks in `useSSE.ts`, (C) verify session-list page is not N+1-fetching per row.
+- Operator framing: "fleet size should not determine log volume."
+
