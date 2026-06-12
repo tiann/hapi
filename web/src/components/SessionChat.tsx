@@ -67,6 +67,7 @@ import { useGrokReasoningEffortOptions } from '@/hooks/queries/useGrokReasoningE
 import { usePiModels } from '@/hooks/queries/usePiModels'
 import { useOpencodeReasoningEffortOptions } from '@/hooks/queries/useOpencodeReasoningEffortOptions'
 import { useVoiceOptional } from '@/lib/voice-context'
+import { AgentTerminalView } from '@/components/AgentTerminal/AgentTerminalView'
 import { VoiceBackendSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
 import { isRemoteTerminalSupported } from '@/utils/terminalSupport'
 
@@ -439,11 +440,19 @@ function SessionChatInner(props: SessionChatProps) {
     const sessionInactive = !props.session.active
     const inactiveCanResume = inactiveSessionCanResume(props.session, props.messages.length)
     const terminalSupported = isRemoteTerminalSupported(props.session.metadata)
+    // Offer the agent terminal only for an ACTIVE PTY session: a 'remote'/SDK
+    // session has no agent PTY, and an archived/inactive one has no live PTY (and
+    // no buffer once the runner exits), so its terminal would just be an empty,
+    // misleadingly "connected" view. Matches the composer terminal button, which
+    // is likewise gated on `session.active`.
+    const canViewAgentTerminal =
+        props.session.metadata?.startingMode === 'pty' && props.session.active
     const normalizedCacheRef = useRef<Map<string, { source: DecryptedMessage; normalized: NormalizedMessage | null }>>(new Map())
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
     const visibleGroupsRef = useRef<ToolGroupBlock[]>([])
     const [forceScrollToken, setForceScrollToken] = useState(0)
     const [outlineOpen, setOutlineOpen] = useState(props.initialOutlineOpen ?? false)
+    const [terminalVisible, setTerminalVisible] = useState(false)
     useEffect(() => {
         if (!props.initialOutlineOpen) {
             return
@@ -451,7 +460,6 @@ function SessionChatInner(props: SessionChatProps) {
         setOutlineOpen(true)
         props.onInitialOutlineConsumed?.()
     }, [props.initialOutlineOpen, props.onInitialOutlineConsumed])
-
     const [cursorSelectedBase, setCursorSelectedBase] = useState('auto')
     const lastSyncedCursorModelRef = useRef<string | null | undefined>(undefined)
     const scratchlist = useScratchlist(props.session.id)
@@ -1196,6 +1204,8 @@ function SessionChatInner(props: SessionChatProps) {
                 filesActive={false}
                 onToggleOutline={handleToggleOutline}
                 outlineActive={outlineOpen}
+                onToggleTerminal={canViewAgentTerminal ? () => setTerminalVisible(v => !v) : undefined}
+                terminalActive={terminalVisible}
                 api={props.api}
                 onSessionDeleted={props.onBack}
                 onSessionReopened={(newSessionId) => {
@@ -1209,6 +1219,7 @@ function SessionChatInner(props: SessionChatProps) {
 
             <CursorMigrationBanner metadata={props.session.metadata} />
 
+            <div className="flex flex-col min-h-0 flex-1">
             {props.session.teamState && (
                 <TeamPanel teamState={props.session.teamState} />
             )}
@@ -1226,7 +1237,15 @@ function SessionChatInner(props: SessionChatProps) {
             <AssistantRuntimeProvider runtime={runtime}>
                 <ShareSeedConsumer sessionId={props.session.id} sessionActive={props.session.active} />
                 <DragDropZone disabled={sessionInactive || props.isSending || pendingSchedule != null}>
-
+                    <div className="relative flex min-h-0 flex-1 flex-col">
+                        {canViewAgentTerminal && (
+                            <AgentTerminalView
+                                sessionId={props.session.id}
+                                visible={terminalVisible}
+                                className={terminalVisible ? 'flex-1 min-h-0' : 'hidden'}
+                            />
+                        )}
+                        <div className={(terminalVisible && canViewAgentTerminal) ? 'hidden' : 'flex min-h-0 flex-1 flex-col'}>
                     <HappyThread
                         // Key with prefix: different components under the same session
                         // (thread, scratchlist, composer) must have distinct keys to avoid
@@ -1256,6 +1275,7 @@ function SessionChatInner(props: SessionChatProps) {
                         outlineItems={outlineItems}
                         onOutlineOpenChange={setOutlineOpen}
                     />
+                    </div>
 
                     {codexCollaborationModeSupported && codexModelsState.error ? (
                         <div className="px-3 pb-2">
@@ -1445,8 +1465,10 @@ function SessionChatInner(props: SessionChatProps) {
                         sendError={props.sendError ?? null}
                         onClearSendError={props.onClearSendError}
                     />
+                    </div>
                 </DragDropZone>
             </AssistantRuntimeProvider>
+            </div>
 
             {/* Voice session component - renders nothing but initializes voice backend */}
             {voice && (
