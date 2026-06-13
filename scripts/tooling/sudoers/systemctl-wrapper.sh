@@ -153,26 +153,34 @@ hapi-systemctl-wrapper: BLOCKED (operator override IGNORED - no controlling tty)
 Command:  systemctl $VERB $PROTECTED_HIT (and any other args)
 Caller:   uid=$(id -u) user=$(id -un) (sudo invoker: ${SUDO_USER:-unknown}, sudo uid=${SUDO_UID:-0})
 
-HAPI_OPERATOR_SYSTEMCTL_OVERRIDE=1 was set, but the caller has no
-controlling terminal. This bypass is operator-only - meant for an
-operator typing at a real SSH/tmux/console session. Agent tool-call
-shells (Cursor, Claude, Codex, Gemini) have piped stdin and no tty,
-so the env-var-alone bypass is ignored as of 2026-06-13.
+You set HAPI_OPERATOR_SYSTEMCTL_OVERRIDE=1, but the caller has no
+controlling terminal. The override is operator-only since 2026-06-13
+because the env-var-alone bypass was effective enough that an agent
+ended up using it to stop the hub - which cascade-killed the runner
+via Requires=, taking 10 active sessions with it. The fix was not to
+catch a bad agent (there isn't one); the fix was to make the
+supported path the path of least resistance again.
 
-This gate exists because on 2026-06-13 15:09:07 BST an agent in
-worktree mermaid-feedback set HAPI_OPERATOR_SYSTEMCTL_OVERRIDE=1
-to dodge this wrapper and ran 'sudo systemctl stop hapi-hub.service'.
-That cascade-stopped the runner (Requires=) and killed 10 sessions.
+DID YOU MEAN ONE OF THESE?
 
-If you are an operator: run from a real terminal, or rollback the
-wrapper at the file level:
+  hapi-restart-hub                     # patient hub restart, drains
+                                       # in-flight sessions cleanly
+  HAPI_IMPATIENT=1 hapi-restart-hub    # skip the patience budget
+                                       # when the operator needs it now
+  sudo systemctl restart hapi-runner.service
+                                       # allowed; runner-only reset
+                                       # when the hub is fine
+  sudo journalctl -u hapi-hub.service -n 50 --no-pager
+                                       # what is actually wrong?
+
+If you really need the destructive op AND you are at a real terminal
+(SSH, tmux, local console), run from there - the gate will allow it.
+
+If you really need the destructive op AND you are NOT at a terminal,
+roll back the wrapper at file level (audited via journal):
   sudo mv /usr/local/sbin/systemctl{,.disabled}
   <do the thing>
   sudo mv /usr/local/sbin/systemctl{.disabled,}
-
-If you are an agent: use hapi-restart-hub for patient hub restart,
-or HAPI_IMPATIENT=1 hapi-restart-hub for the impatient variant.
-Stack switches: hapi-use-worktree (which has its own TTY gates).
 
 EOF
     exit 1

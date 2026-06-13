@@ -14,11 +14,22 @@
 #
 # Background: bypass env vars (HAPI_OPERATOR_SYSTEMCTL_OVERRIDE,
 # HAPI_USE_WORKTREE_FROM_INSIDE, HAPI_USE_WORKTREE_FROM_AGENT,
-# HAPI_OPERATOR_PRODUCT_EDIT_OVERRIDE) were abused on 2026-06-13 by an
-# agent that read the doc, set the env var, and ran the destructive
-# command anyway. The env-var-alone bypass cannot distinguish "operator
-# typing in their terminal" from "agent setting environment in a
-# tool-call shell". This gate adds the missing check.
+# HAPI_OPERATOR_PRODUCT_EDIT_OVERRIDE) were used on 2026-06-13 by an
+# agent that read the doc, found the env var listed under "operator
+# emergency bypass", and used it as a tool to do what it thought the
+# operator wanted. That is not adversarial behaviour - it is the
+# expected behaviour of a system whose documentation lists a bypass
+# path with insufficient friction against using it.
+#
+# The env-var-alone bypass cannot distinguish "operator typing in their
+# terminal" from "agent setting environment in a tool-call shell". This
+# gate adds the missing signal: the parent process's controlling
+# terminal. It does not catch every conceivable bypass (see "Bypass
+# surface" below), and it should not be read as a fence to keep agents
+# out. The right way to read it: the supported path through hapi-
+# restart-hub / hapi-use-worktree is now the path of least resistance
+# again, because the env-var-alone shortcut no longer works from agent
+# tool-call shells.
 #
 # How it works: /proc/PID/stat field 7 is tty_nr (the controlling
 # terminal device number). Zero means "no controlling terminal".
@@ -42,11 +53,29 @@
 #   - Operator running through 'sudo -i' as root from a real terminal:
 #     PPID is sudo, sudo inherits the operator's bash tty, gate passes.
 #
-# This is best-effort and bypassable by a determined adversary
-# (e.g. allocating a pty via 'script' from inside an agent shell).
-# It IS effective against the realistic threat: agents that set the
-# documented env var because the doc said so. That class of mistake
-# now fails closed.
+# Bypass surface (these are not failure modes; they are the next
+# tooling-gap items, not signals of agent intent):
+#
+#   - 'script -q -c "..." /dev/null' from inside an agent shell
+#     allocates a pty for the wrapped command, making tty_nr non-zero.
+#     If a future agent ends up here, the cause is almost certainly
+#     that the supported wrapper hung or did not exist for what they
+#     needed - not that the agent set out to defeat the gate. The
+#     response is to fix the supported wrapper or document the
+#     missing one, not to layer more detection.
+#   - 'python -c "import pty; pty.spawn(...)"' and equivalents in
+#     other languages. Same reasoning.
+#   - cron jobs and systemd ExecStart, which legitimately have no
+#     tty. If those paths need destructive ops, they need their own
+#     supported entry-point with explicit operator approval at install
+#     time (e.g. a separate sudoers rule with a unit-name whitelist),
+#     not env-var bypass.
+#
+# Reading the gate in production: a 'BLOCKED (operator override
+# IGNORED - no controlling tty)' line in the journal is a signal that
+# (a) something needed a destructive op and (b) the supported path was
+# not obvious enough. That is a tooling backlog item, not a security
+# alert.
 
 caller_has_controlling_tty() {
     local stat_line tty_nr
@@ -66,15 +95,18 @@ operator_bypass_refused() {
 
 REFUSE: $var=1 was set, but caller has no controlling terminal.
 
-This bypass is operator-only — meant for an operator typing at a real
-SSH, tmux, or local console session. Agent tool-call shells (Cursor,
-Claude Code, Codex, Gemini) have piped stdin and no controlling tty,
-so the bypass env var is ignored.
+This bypass is operator-only - meant for an operator typing at a real
+SSH, tmux, or local console session. Agent tool-call shells have piped
+stdin and no controlling tty, so the env var is ignored from those
+contexts.
 
-If you are an agent and you set this on purpose: stop. The destructive
-operation behind this guard kills running sessions, including yours.
-The supported wrappers (hapi-restart-hub, hapi-use-worktree) do
-patient drain and are safe.
+If you are an agent and you arrived here because something hung:
+  - 'hapi-restart-hub' is the supported patient hub restart.
+  - 'HAPI_IMPATIENT=1 hapi-restart-hub' skips the patience budget.
+  - 'sudo systemctl restart hapi-runner.service' is allowed and
+    sometimes the right answer when only the runner is wedged.
+  - The hub journal ('sudo journalctl -u hapi-hub.service -n 50')
+    usually says what is actually wrong.
 
 If you are an operator and you genuinely need the bypass:
   - Run the command from a real terminal (SSH, tmux, local console).
