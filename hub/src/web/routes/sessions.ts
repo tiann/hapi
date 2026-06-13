@@ -5,6 +5,9 @@ import {
     isPermissionModeAllowedForFlavor,
     RenameSessionRequestSchema,
     ResumeSessionRequestSchema,
+    SCRATCHLIST_MAX_ENTRIES,
+    ScratchlistEntryCreateRequestSchema,
+    ScratchlistEntryUpdateRequestSchema,
     SessionCollaborationModeRequestSchema,
     SessionEffortRequestSchema,
     SessionModelReasoningEffortRequestSchema,
@@ -693,6 +696,131 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             }
             return c.json({ error: message }, 500)
         }
+    })
+
+    /*
+     * Scratchlist v2 (tiann/hapi#893).
+     *
+     * Operator-private notes attached to a session. All four routes use
+     * the existing `requireSessionFromParam` guard so the same auth /
+     * namespace check applies as every other session-scoped route -
+     * scratchlist contents must NOT leak across namespaces, and a 403 /
+     * 404 is returned for sessions the caller cannot access.
+     *
+     * SSE: every successful mutation emits a `session-updated` patch
+     * carrying `scratchlistUpdatedAt` (handled in `SyncEngine`). The web
+     * client uses that as a cache-invalidation token to refetch GET.
+     */
+
+    app.get('/sessions/:id/scratchlist', (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        const entries = engine.listScratchlistEntries(sessionResult.sessionId)
+        return c.json({ entries })
+    })
+
+    app.post('/sessions/:id/scratchlist', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = ScratchlistEntryCreateRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body', issues: parsed.error.issues }, 400)
+        }
+
+        // Server-side cap enforcement. Mirrors the web-side cap so a
+        // malicious / runaway client can't drive the table without
+        // bound. Bypassing the optimistic add path on the web client
+        // (e.g. direct REST call) hits this guard. Bumped only with the
+        // shared SCRATCHLIST_MAX_ENTRIES constant.
+        const currentCount = engine.countScratchlistEntries(sessionResult.sessionId)
+        if (currentCount >= SCRATCHLIST_MAX_ENTRIES) {
+            return c.json({
+                error: `Scratchlist is at its ${SCRATCHLIST_MAX_ENTRIES}-entry cap`,
+                code: 'scratchlist_at_cap'
+            }, 409)
+        }
+
+        const result = engine.createScratchlistEntry(
+            sessionResult.sessionId,
+            parsed.data.text,
+            {
+                entryId: parsed.data.entryId,
+                createdAt: parsed.data.createdAt
+            }
+        )
+        if (result.outcome === 'session-not-found') {
+            return c.json({ error: 'Session not found' }, 404)
+        }
+        // `duplicate` (same entryId already exists) returns 200 with the
+        // canonical row so the migration path can retry idempotently.
+        // The web client treats 200-with-existing as success either way.
+        return c.json({ entry: result.entry }, result.outcome === 'created' ? 201 : 200)
+    })
+
+    app.put('/sessions/:id/scratchlist/:entryId', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const entryId = c.req.param('entryId')
+        if (!entryId) {
+            return c.json({ error: 'Missing entryId' }, 400)
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = ScratchlistEntryUpdateRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body', issues: parsed.error.issues }, 400)
+        }
+
+        const updated = engine.updateScratchlistEntry(
+            sessionResult.sessionId,
+            entryId,
+            parsed.data.text
+        )
+        if (!updated) {
+            return c.json({ error: 'Scratchlist entry not found' }, 404)
+        }
+        return c.json({ entry: updated })
+    })
+
+    app.delete('/sessions/:id/scratchlist/:entryId', (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        const entryId = c.req.param('entryId')
+        if (!entryId) {
+            return c.json({ error: 'Missing entryId' }, 400)
+        }
+        const removed = engine.deleteScratchlistEntry(sessionResult.sessionId, entryId)
+        if (!removed) {
+            return c.json({ error: 'Scratchlist entry not found' }, 404)
+        }
+        return c.json({ ok: true })
     })
 
     app.get('/sessions/:id/slash-commands', async (c) => {
