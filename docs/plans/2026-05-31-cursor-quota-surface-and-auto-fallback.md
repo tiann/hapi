@@ -839,7 +839,29 @@ Tie into existing `agent-notify` pipeline:
 
 ## Sibling perf issue: web client session-refetch storm (2026-06-12)
 
-**Status:** PR open upstream, awaiting review. Local triage in place.
+**Status:** Fix A PR open upstream awaiting review (#885); Fix B' peer in flight on fork worktree (PR submission gated on #885 merging). Local triage in place.
+
+### Fix A (2026-06-12, narrowed to staleTime only)
+
+- **PR:** [tiann/hapi#885](https://github.com/tiann/hapi/pull/885) - `staleTime: 30_000` on `useSession`. Fix A only.
+- Codex review caught a regression in the original Fix B (observer-count gating in `useSSE.ts` suppressed stale-marking, broke remount semantics). Peer reverted Fix B in commit `d2584a9`.
+- Honest assessment: Fix A alone is mostly placebo on a busy install. Helps focus/mount/reconnect refetches; doesn't help the dominant SSE-driven invalidation storm.
+
+### Fix B' (2026-06-13, hub-side schema extension)
+
+- **Peer session:** `7b422b92` (cursor + auto + yolo, engaged 2026-06-13 16:55).
+- **Worktree:** `worktrees/refetch-storm-fix-b` on branch `feat/sse-patch-extend-session-state`.
+- **Approach:** extend `SessionPatchSchema` in `shared/src/schemas.ts` with `todos` / `teamState` / `metadata` / `agentState` (all optional, schema stays `.strict()`). Wire the four emit-sites in `hub/src/socket/handlers/cli/sessionHandlers.ts` (lines 117/128/216/263) to populate the `data` field of each `session-updated` event. Web client's existing `getSessionPatch` cache-write path will then run instead of the invalidation fallback.
+- **Operator decision (2026-06-13):** schema-extend (option (i)) over new event type (option (ii)). Rationale: "is there a compelling reason to make a new event for something this rare? follow the 80/20."
+- **Submission gate:** PR opens against `tiann/hapi:main` only AFTER #885 merges. Implementation work proceeds now on the fork branch; merge happens upstream first, then peer rebases and submits.
+- **Coordination:** scratchlist v2 peer (b2efd739) is also extending `SessionPatchSchema` in the same file. Adjacent additions; merge order doesn't matter; whoever lands first establishes order.
+
+### Operator framing
+
+> "I should be able to have as many sessions as I wish and it still not produce problematic log growth."
+> "we don't wait on the fork - we do the work and we await a merge to submit it"
+
+Fleet size should not determine log volume. Per-session detail data already arrives via SSE; the REST refetch was redundant work plus access-log noise. PR submission cadence respects upstream review preferences (one focused PR at a time) but implementation work on the fork happens in parallel.
 
 While diagnosing model-error visibility, the operator hit a separate but adjacent problem on their box: `hapi-hub.service` was writing ~9.3 GB/day of syslog, ~95% of which was the `GET /api/sessions/<uuid>` access-log line. Root cause is a per-session refetch storm in the web client (TanStack `useSession` hook with no `staleTime`, plus SSE-handler invalidation fallbacks that bypass the cache-patch path).
 
