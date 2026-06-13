@@ -114,7 +114,6 @@ export default {
   'session.tooltip.input.body': 'Reply to:',
   'session.tooltip.background.count.one': '1 task running',
   'session.tooltip.background.count.other': '{count} tasks running',
-  'session.tooltip.unread.body': 'Updated {time}',
   'session.tooltip.scheduled.body': 'Will fire when due.',
   'session.tooltip.moreCount': '+{count} more',
   'session.time.justNow': 'just now',

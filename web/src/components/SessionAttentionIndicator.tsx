@@ -3,7 +3,6 @@ import type { SessionAttention } from '@/lib/sessionAttention'
 import { getSessionAttentionLabelKey } from '@/lib/sessionAttention'
 import { useTranslation } from '@/lib/use-translation'
 import { HoverTooltip } from '@/components/HoverTooltip'
-import { formatRelativeTime } from '@/lib/relativeTime'
 
 const ATTENTION_DOT_CLASS: Record<SessionAttention['kind'], string> = {
     permission: 'bg-amber-500 animate-pulse',
@@ -122,16 +121,8 @@ function AttentionTooltipDetail(props: {
         )
     }
 
-    if (attention.kind === 'unread') {
-        const time = formatRelativeTime(summary.updatedAt, t)
-        if (!time) return null
-        return (
-            <span className="mt-1 block text-[var(--app-hint)]">
-                {t('session.tooltip.unread.body', { time })}
-            </span>
-        )
-    }
-
+    // 'unread' deliberately has no body: the relative-time pill is already
+    // rendered in the session row, so a tooltip body would just duplicate it.
     return null
 }
 

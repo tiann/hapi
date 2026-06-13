@@ -48,8 +48,8 @@ export function HoverTooltip(props: {
                 id={id}
                 className={cn(
                     'pointer-events-none absolute z-30 max-w-[14rem] whitespace-normal',
-                    'rounded-md border border-[var(--app-border)] bg-[var(--app-bg)]',
-                    'px-2 py-1 text-xs leading-snug text-[var(--app-fg)] shadow-md',
+                    'rounded-md border border-[var(--app-border)] bg-[var(--app-secondary-bg)]',
+                    'px-2 py-1 text-xs leading-snug text-[var(--app-fg)] shadow-lg',
                     side === 'top' ? 'bottom-full mb-1' : 'top-full mt-1',
                     alignClasses,
                     'opacity-0 invisible',

@@ -114,7 +114,6 @@ export default {
   'session.tooltip.input.body': '回复:',
   'session.tooltip.background.count.one': '1 个任务运行中',
   'session.tooltip.background.count.other': '{count} 个任务运行中',
-  'session.tooltip.unread.body': '更新于 {time}',
   'session.tooltip.scheduled.body': '到时会自动发送。',
   'session.tooltip.moreCount': '另有 {count} 条',
   'session.time.justNow': '刚刚',

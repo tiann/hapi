@@ -166,7 +166,7 @@ describe('SessionAttentionIndicator tooltip', () => {
         expect(tooltip.textContent).toContain('3 tasks running')
     })
 
-    it('renders relative-time hint for unread attention', () => {
+    it('renders only the title for unread attention (relative time is already on the row)', () => {
         const updatedAt = Date.now() - 5 * 60_000
         const summary = makeSummary({
             id: 's1',
@@ -183,7 +183,8 @@ describe('SessionAttentionIndicator tooltip', () => {
 
         const tooltip = screen.getByRole('tooltip', { hidden: true })
         expect(tooltip.textContent).toContain('New activity')
-        expect(tooltip.textContent).toMatch(/Updated .+ ago|Updated just now/)
+        // The "Nm ago" pill in the session row already shows this; do not duplicate.
+        expect(tooltip.textContent).not.toMatch(/Updated /)
     })
 
     it('exposes aria-label on the dot for screen readers', () => {
