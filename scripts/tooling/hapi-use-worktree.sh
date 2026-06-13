@@ -30,6 +30,43 @@ done
 [[ -n "$WORKTREE" ]] || { echo "Usage: hapi-use-worktree <path-to-worktree> [--impatient]" >&2; exit 2; }
 [[ "${HAPI_IMPATIENT:-}" == "1" ]] && IMPATIENT=1
 
+# TTY check for --impatient. See hapi-restart-hub.sh for the rationale
+# (2026-06-13 incident: agent ran --impatient from tool-call shell,
+# killed 8 in-flight sessions, called it a brief test). Operator at
+# real terminal: tty_nr != 0 on parent. Agent shell: tty_nr=0.
+# HAPI_IMPATIENT_BATCH=1 is the explicit cron/watchdog opt-in.
+_caller_has_tty_for_impatient() {
+    local _stat _tty_nr
+    [ -r "/proc/$PPID/stat" ] || return 1
+    _stat="$(cat "/proc/$PPID/stat" 2>/dev/null)" || return 1
+    _tty_nr=$(printf '%s' "$_stat" | sed 's/.*) //' | awk '{print $5}')
+    [ -n "$_tty_nr" ] && [ "$_tty_nr" != "0" ]
+}
+if [[ "$IMPATIENT" -eq 1 ]] && ! _caller_has_tty_for_impatient && [[ "${HAPI_IMPATIENT_BATCH:-}" != "1" ]]; then
+    cat >&2 <<EOF
+
+REFUSE: --impatient (or HAPI_IMPATIENT=1) requires a controlling terminal.
+
+This script swings the live stack and kills in-flight sessions when
+--impatient is set. The caller has no controlling tty.
+
+Did you actually mean one of these?
+
+  hapi-use-worktree $WORKTREE        patient swing (default,
+                                              waits for in-flight
+                                              sessions, up to 10 min)
+
+  hapi-driver-status                          see who is in flight first
+
+If you are an operator at a real terminal: run from there.
+
+If you are cron/CI that legitimately needs the impatient swing from a
+non-tty context: set HAPI_IMPATIENT_BATCH=1 to acknowledge.
+
+EOF
+    exit 1
+fi
+
 WORKTREE="$(realpath "$WORKTREE")"
 ACTIVE_LINK="${HAPI_ACTIVE_LINK:-$HOME/coding/hapi/active}"
 HUB_ENV="${HAPI_HUB_ENV:-$HOME/.hapi/hub.env}"
