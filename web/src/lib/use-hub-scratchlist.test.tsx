@@ -293,7 +293,62 @@ describe('useHubScratchlist - localStorage migration', () => {
         await waitFor(() => expect(result.current.isLoading).toBe(false))
         await new Promise((r) => setTimeout(r, 30))
         expect(create).not.toHaveBeenCalled()
-        expect(['pre-migrated', 'idle']).toContain(result.current.migrationStatus)
+        // HAPI Bot, PR #896 follow-up: migrationFlag-set without a
+        // dismiss flag now means 'completed' (banner shows on
+        // remount) so the operator gets a chance to see and dismiss
+        // the banner across page reloads.
+        expect(result.current.migrationStatus).toBe('completed')
+    })
+
+    it('reload-before-dismiss leaves the banner visible (PR #896 follow-up)', async () => {
+        // Mount #1: real v1 entries exist, migration runs, status flips
+        // to 'completed', banner is shown but the operator reloads
+        // before clicking dismiss.
+        const sid = makeSid()
+        seedV1Entries(sid)
+        const api = createMockApi({
+            getScratchlist: async () => ({ entries: [] }),
+            createScratchlistEntry: async (_id: string, body: { entryId?: string; text: string; createdAt?: number }) => ({
+                entry: {
+                    entryId: body.entryId ?? 'srv-' + body.text,
+                    text: body.text,
+                    createdAt: body.createdAt ?? Date.now(),
+                    updatedAt: Date.now()
+                }
+            })
+        })
+        const first = renderHook(() => useHubScratchlist(sid, api), { wrapper: createWrapper() })
+        await waitFor(() => expect(first.result.current.migrationStatus).toBe('completed'))
+        first.unmount()
+
+        // Mount #2: simulating a page reload with the migration flag
+        // set but the dismiss flag still absent. Pre-fix the hook
+        // mapped this to 'pre-migrated' and the banner stayed hidden
+        // forever; post-fix the hook maps it to 'completed' so the
+        // banner renders again until the operator clicks dismiss.
+        expect(localStorage.getItem(`hapi.scratchlist.v2.migrated.${sid}`)).toBe('1')
+        expect(localStorage.getItem(`hapi.scratchlist.v2.banner-dismissed.${sid}`)).toBeNull()
+        const second = renderHook(() => useHubScratchlist(sid, api), { wrapper: createWrapper() })
+        await waitFor(() => expect(second.result.current.isLoading).toBe(false))
+        expect(second.result.current.migrationStatus).toBe('completed')
+    })
+
+    it('opts fresh sessions (no v1 entries) out of the banner pre-emptively', async () => {
+        // Companion to the above: a session that NEVER had v1
+        // entries should write BOTH the migrated and dismissed flags
+        // up front so the banner never appears (now or on reload).
+        // Without this opt-out the PR #896 fix would otherwise spam
+        // every brand-new v2 session with a banner that has nothing
+        // to announce.
+        const sid = makeSid()
+        // No seedV1Entries - localStorage is empty for this sid.
+        const api = createMockApi({
+            getScratchlist: async () => ({ entries: [] })
+        })
+        const { result } = renderHook(() => useHubScratchlist(sid, api), { wrapper: createWrapper() })
+        await waitFor(() => expect(result.current.migrationStatus).toBe('dismissed'))
+        expect(localStorage.getItem(`hapi.scratchlist.v2.migrated.${sid}`)).toBe('1')
+        expect(localStorage.getItem(`hapi.scratchlist.v2.banner-dismissed.${sid}`)).toBe('1')
     })
 
     it('dismissMigrationBanner persists the dismissal flag and flips status to dismissed', async () => {
@@ -317,7 +372,7 @@ describe('useHubScratchlist - localStorage migration', () => {
         expect(localStorage.getItem(`hapi.scratchlist.v2.banner-dismissed.${sid}`)).toBe('1')
     })
 
-    it('skips migration when localStorage is empty but still sets the flag (so future loads do not probe again)', async () => {
+    it('skips migration when localStorage is empty and pre-dismisses the banner (HAPI Bot, PR #896 follow-up)', async () => {
         const sid = makeSid()
         const create = vi.fn()
         const api = createMockApi({
@@ -328,7 +383,11 @@ describe('useHubScratchlist - localStorage migration', () => {
         await waitFor(() => expect(result.current.isLoading).toBe(false))
         await waitFor(() => expect(localStorage.getItem(`hapi.scratchlist.v2.migrated.${sid}`)).toBe('1'))
         expect(create).not.toHaveBeenCalled()
-        expect(result.current.migrationStatus).toBe('idle')
+        // Fresh sessions (no v1 entries) get the banner pre-dismissed
+        // so the bot's banner-stickiness fix does not surface a
+        // banner that has nothing to announce.
+        expect(localStorage.getItem(`hapi.scratchlist.v2.banner-dismissed.${sid}`)).toBe('1')
+        expect(result.current.migrationStatus).toBe('dismissed')
     })
 
     it('persists FAILED entries back to localStorage and leaves the flag unset (HAPI Bot, PR #896)', async () => {

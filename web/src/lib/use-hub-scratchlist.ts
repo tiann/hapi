@@ -59,9 +59,11 @@ const MIGRATION_BANNER_DISMISSED_PREFIX = 'hapi.scratchlist.v2.banner-dismissed.
 export type ScratchlistMigrationStatus =
     | 'idle'        // no localStorage entries; nothing to migrate
     | 'migrating'   // POSTs in flight
-    | 'completed'   // migration ran in this mount; banner should show
+    | 'completed'   // migration ran (in this mount or a prior one) and
+                    // the user has not yet dismissed the banner. The
+                    // banner shows in this state, including across
+                    // reloads, until the dismiss flag is written.
     | 'dismissed'   // banner was acknowledged; do not surface again
-    | 'pre-migrated' // migration was completed in a prior session and the user already saw the banner
 
 type HubEntry = {
     entryId: string
@@ -159,7 +161,14 @@ export function useHubScratchlist(
     const [migrationStatus, setMigrationStatus] = useState<ScratchlistMigrationStatus>(() => {
         if (!sessionId) return 'idle'
         if (readBannerDismissed(sessionId)) return 'dismissed'
-        if (readMigrationFlag(sessionId)) return 'pre-migrated'
+        // HAPI Bot, PR #896 follow-up: the migration flag alone does
+        // NOT mean the operator saw the banner. If they reloaded
+        // before clicking dismiss, they need to see it again on
+        // remount - so 'completed' is sticky until the dismiss flag
+        // is written. Sessions that had nothing to migrate write the
+        // dismiss flag pre-emptively in the migration effect, so they
+        // bypass this branch entirely and land in 'dismissed' above.
+        if (readMigrationFlag(sessionId)) return 'completed'
         return 'idle'
     })
 
@@ -191,7 +200,9 @@ export function useHubScratchlist(
         if (readBannerDismissed(sessionId)) {
             setMigrationStatus('dismissed')
         } else if (readMigrationFlag(sessionId)) {
-            setMigrationStatus('pre-migrated')
+            // See useState init comment: migration-flag-set is the
+            // 'banner shows until dismissed' state.
+            setMigrationStatus('completed')
         } else {
             setMigrationStatus('idle')
         }
@@ -218,9 +229,18 @@ export function useHubScratchlist(
 
         const localEntries = readScratchlist(sessionId)
         if (localEntries.length === 0) {
-            // Nothing to migrate but we still mark the session migrated
-            // so subsequent loads skip the localStorage probe.
+            // Nothing to migrate. Mark the session migrated AND
+            // pre-dismiss the banner: there is no v1->v2 transition
+            // to surface for this session, so the operator should not
+            // see the banner at all (now or after a reload). The
+            // init logic now treats migrationFlag-without-dismiss as
+            // 'banner shows', so we have to opt this fresh-session
+            // case out explicitly. Keeps the bot's PR #896 follow-up
+            // banner-stickiness fix from spamming new sessions with
+            // a migration banner they have nothing to migrate from.
             writeMigrationFlag(sessionId)
+            writeBannerDismissed(sessionId)
+            setMigrationStatus('dismissed')
             return
         }
 

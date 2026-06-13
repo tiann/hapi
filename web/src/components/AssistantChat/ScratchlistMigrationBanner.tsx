@@ -1,13 +1,14 @@
 import { useTranslation } from '@/lib/use-translation'
 
 /**
- * tiann/hapi#893 (scratchlist v2): one-time banner shown the first time
- * a v2-aware client encounters localStorage entries on a session and
- * pushes them up to the hub silently.
+ * tiann/hapi#893 (scratchlist v2): one-time banner shown after a v2-
+ * aware client migrates a session's localStorage entries to the hub.
  *
  * Visibility contract:
- *   - Renders only when `migrationStatus === 'completed'` (the hook's
- *     signal that the migration just ran in this session).
+ *   - Renders whenever `migrationStatus === 'completed'`, which is
+ *     sticky across reloads until the operator clicks dismiss (HAPI
+ *     Bot, PR #896 follow-up - the previous behavior swallowed the
+ *     banner if the user reloaded before clicking).
  *   - Operator-affirmative dismissal: clicking the dismiss button writes
  *     the per-session `hapi.scratchlist.v2.banner-dismissed.${id}` flag
  *     so the banner does not reappear on reload.
@@ -28,7 +29,6 @@ export function ScratchlistMigrationBanner({
         | 'migrating'
         | 'completed'
         | 'dismissed'
-        | 'pre-migrated'
     onDismiss: () => void
 }) {
     const { t } = useTranslation()
