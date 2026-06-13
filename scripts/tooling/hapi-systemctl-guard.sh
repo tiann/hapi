@@ -46,8 +46,15 @@ if [ -z "$CMD" ]; then
     exit 0
 fi
 
-# Operator override
-if [ "${HAPI_OPERATOR_SYSTEMCTL_OVERRIDE:-0}" = "1" ]; then
+# Operator override - TTY-gated since 2026-06-13. Cursor invokes this
+# hook with JSON piped on stdin; operator-driven invocation through a
+# Cursor agent has no controlling tty either. The only way [ -t 0 ] is
+# true is if a human is running the script directly with stdin from a
+# terminal - which is not how Cursor calls it. So this gate effectively
+# disables the env-var-alone bypass at the hook layer; the operator
+# bypass path is the wrapper at /usr/local/sbin/systemctl (which has
+# its own TTY gate against the parent process's controlling terminal).
+if [ "${HAPI_OPERATOR_SYSTEMCTL_OVERRIDE:-0}" = "1" ] && [ -t 0 ]; then
     echo '{ "permission": "allow" }'
     exit 0
 fi

@@ -40,8 +40,11 @@ if [ -z "$TARGET" ]; then
     exit 0
 fi
 
-# Operator override
-if [ "${HAPI_OPERATOR_PRODUCT_EDIT_OVERRIDE:-0}" = "1" ]; then
+# Operator override - TTY-gated since 2026-06-13. Same rationale as
+# hapi-systemctl-guard.sh: hooks are called by Cursor with piped stdin,
+# so [ -t 0 ] is false in agent contexts. Effectively removes the
+# env-var-alone bypass at the hook layer for agent tool-calls.
+if [ "${HAPI_OPERATOR_PRODUCT_EDIT_OVERRIDE:-0}" = "1" ] && [ -t 0 ]; then
     echo '{ "permission": "allow" }'
     exit 0
 fi

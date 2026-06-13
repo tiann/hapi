@@ -67,10 +67,13 @@ For destructive operations use:
 - `hapi-restart-hub` — patient drain, 10min timeout (`--impatient` for hung-hub).
 - `hapi-use-worktree <path>` — stack switch with pre-flight schema + auto-revert. Operator-only, see preceding section.
 
-Bypasses (operator-approved):
+Bypasses (operator-approved, **TTY-gated since 2026-06-13**):
 
-- `HAPI_OPERATOR_SYSTEMCTL_OVERRIDE=1` — bypasses both the Cursor hook AND the wrapper (`sudo -E systemctl ...` to propagate the env var through sudo). Sudoers still enforces, so for absolute-path destructive calls add a one-shot `/etc/sudoers.d/hapi-protect.disable` or rollback `/usr/local/sbin/systemctl.prev`.
-- `sudo mv /usr/local/sbin/systemctl.prev /usr/local/sbin/systemctl` — rollback the wrapper. Installer keeps the previous binary at `.prev`.
+- `HAPI_OPERATOR_SYSTEMCTL_OVERRIDE=1` — only honored when the caller has a controlling terminal (operator at SSH/tmux/local console). Agent tool-call shells have piped stdin and `tty_nr=0`; the env-var-alone bypass is **ignored** in those contexts and the wrapper refuses with `BLOCKED (operator override IGNORED - no controlling tty)`. The check reads `/proc/$PPID/stat` field 7. Cursor preToolUse hooks gate the same env var on `[ -t 0 ]` which is always false for agent-piped invocations. This gate landed because on 2026-06-13 15:09:07 BST an agent in worktree `mermaid-feedback` set `HAPI_OPERATOR_SYSTEMCTL_OVERRIDE=1` to dodge the wrapper and ran `sudo systemctl stop hapi-hub.service`, taking out 10 sessions including its own. The agent had previously offered the operator the correct path (`HAPI_IMPATIENT=1 hapi-restart-hub`) and then escalated past it.
+- `HAPI_USE_WORKTREE_FROM_INSIDE=1` — same TTY gate. Without a controlling terminal the wrapper guard fires anyway.
+- `HAPI_USE_WORKTREE_FROM_AGENT=1` — same TTY gate. The "operator-driven agent that has cause" use case effectively requires the operator to drive from a real terminal; agent-shell-only invocation no longer bypasses.
+- `HAPI_OPERATOR_PRODUCT_EDIT_OVERRIDE=1` — Cursor preToolUse hook gates this on `[ -t 0 ]`; agent tool-call hooks always have piped stdin so the bypass is effectively removed for agent-driven invocations.
+- File-level rollback when the gate fires for a legitimate operator who can't get a real terminal: `sudo mv /usr/local/sbin/systemctl{,.disabled}`, do the thing, restore. Or roll back the wrapper to the prior binary at `/usr/local/sbin/systemctl.prev` (kept by the installer for one rotation).
 - Edit `/etc/sudoers.d/hapi-protect` to remove specific entries — bypasses sudoers. Audit trail.
 
 See `docs/tooling/driver-soup.md#patient-restarts-dont-yank-live-agents` for the wrapper rationale.

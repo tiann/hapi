@@ -77,7 +77,19 @@ caller_pwd_inside_target() {
     [[ "$my_pwd" == "$target" || "$my_pwd" == "$target/"* ]]
 }
 
-if caller_pwd_inside_target && [[ "${HAPI_USE_WORKTREE_FROM_INSIDE:-}" != "1" ]]; then
+# TTY check helper: parent process has controlling terminal? Operator
+# interactive shells (SSH/tmux/console bash) have non-zero tty_nr; agent
+# tool-call shells have zero. Used to gate the bypass env vars below.
+# See scripts/tooling/lib/operator-tty-gate.sh for full rationale.
+_caller_has_tty() {
+    local _stat _tty_nr
+    [ -r "/proc/$PPID/stat" ] || return 1
+    _stat="$(cat "/proc/$PPID/stat" 2>/dev/null)" || return 1
+    _tty_nr=$(printf '%s' "$_stat" | sed 's/.*) //' | awk '{print $5}')
+    [ -n "$_tty_nr" ] && [ "$_tty_nr" != "0" ]
+}
+
+if caller_pwd_inside_target && { [[ "${HAPI_USE_WORKTREE_FROM_INSIDE:-}" != "1" ]] || ! _caller_has_tty; }; then
     cat >&2 <<EOF
 
 REFUSE: caller PWD is at or under the target worktree.
@@ -97,14 +109,16 @@ Correct workflow for testing a feature branch on the live hub:
         does NOT touch live hub.)
     3. Ask the operator to swing live (hapi-use-driver) when ready.
 
-Bypass for genuine operator use from inside the target tree:
+Bypass for genuine operator use from inside the target tree
+(must be invoked from a real terminal - SSH, tmux, or local console;
+TTY-gated since 2026-06-13 against agent tool-call abuse):
     HAPI_USE_WORKTREE_FROM_INSIDE=1 hapi-use-worktree $WORKTREE
 
 EOF
     exit 1
 fi
 
-if [[ "${HAPI_AGENT_CONTEXT:-}" == "1" ]] && [[ "${HAPI_USE_WORKTREE_FROM_AGENT:-}" != "1" ]]; then
+if [[ "${HAPI_AGENT_CONTEXT:-}" == "1" ]] && { [[ "${HAPI_USE_WORKTREE_FROM_AGENT:-}" != "1" ]] || ! _caller_has_tty; }; then
     cat >&2 <<EOF
 
 REFUSE: HAPI_AGENT_CONTEXT=1 in environment.
@@ -113,7 +127,10 @@ This script is operator-only. Agents must add their feature branch to the
 soup manifest and run hapi-driver-rebuild instead - see the inside-target
 guard above for the full workflow.
 
-Bypass for an operator-driven agent with cause:
+Bypass for an operator-driven agent with cause (operator must run
+the command from a real terminal; agent shells fail the TTY gate
+added 2026-06-13 after the operator-override env vars were abused
+to take down the hub from a runner-spawned cursor session):
     HAPI_USE_WORKTREE_FROM_AGENT=1 hapi-use-worktree $WORKTREE
 
 EOF
@@ -286,17 +303,17 @@ DB_PREP="$(dirname "$(readlink -f "$0")")/hapi-driver-db-prep.sh"
 if [[ "${HAPI_SKIP_DB_PREP:-}" != "1" && -x "$DB_PREP" ]]; then
     echo ""
     echo "Stopping hub to prep DB ..."
-    sudo systemctl stop hapi-hub.service || true
+    sudo HAPI_OPERATOR_SYSTEMCTL_OVERRIDE=1 systemctl stop hapi-hub.service || true
     if ! "$DB_PREP" "$WORKTREE"; then
         echo "ERROR: DB prep failed; refusing to restart hub on incompatible schema" >&2
         echo "       Live DB and backup are untouched if downgrade aborted." >&2
-        echo "       Restart hub manually after resolving: sudo systemctl start hapi-hub.service" >&2
+        echo "       Restart hub manually after resolving: sudo HAPI_OPERATOR_SYSTEMCTL_OVERRIDE=1 systemctl start hapi-hub.service" >&2
         exit 1
     fi
     echo ""
     echo "Starting hub + restarting runner ..."
     sudo systemctl start hapi-hub.service
-    sudo systemctl restart hapi-runner.service
+    sudo HAPI_OPERATOR_SYSTEMCTL_OVERRIDE=1 systemctl restart hapi-runner.service
 else
     if [[ "${HAPI_SKIP_DB_PREP:-}" == "1" ]]; then
         echo "WARN: HAPI_SKIP_DB_PREP=1 -- skipping DB schema check + backup" >&2
@@ -304,7 +321,7 @@ else
         echo "WARN: hapi-driver-db-prep.sh not found at $DB_PREP -- skipping" >&2
     fi
     echo "Restarting hapi-hub.service + hapi-runner.service ..."
-    sudo systemctl restart hapi-hub.service hapi-runner.service
+    sudo HAPI_OPERATOR_SYSTEMCTL_OVERRIDE=1 systemctl restart hapi-hub.service hapi-runner.service
 fi
 
 # Post-swap self-verification. Hub may take a few seconds to bind 3006 and
@@ -414,10 +431,10 @@ revert_active_stack() {
     ln -sfn "$prev" "$ACTIVE_LINK"
     if [[ -x "$DB_PREP" ]]; then
         echo "  re-running db-prep against $prev (in case the failed target downgraded the DB)"
-        sudo systemctl stop hapi-hub.service || true
+        sudo HAPI_OPERATOR_SYSTEMCTL_OVERRIDE=1 systemctl stop hapi-hub.service || true
         "$DB_PREP" "$prev" || echo "  (db-prep on revert returned non-zero; carrying on)"
     fi
-    sudo systemctl restart hapi-hub.service hapi-runner.service
+    sudo HAPI_OPERATOR_SYSTEMCTL_OVERRIDE=1 systemctl restart hapi-hub.service hapi-runner.service
     sleep 4
     echo "  revert: hub=$(systemctl is-active hapi-hub.service)  runner=$(systemctl is-active hapi-runner.service)"
 }

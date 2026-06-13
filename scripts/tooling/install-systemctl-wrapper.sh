@@ -90,13 +90,40 @@ else
     echo "  OK:   wrapper passes through 'status sshd.service'"
 fi
 
-# F: ALLOW bypass via env var
+# F: non-destructive op (is-enabled) ALWAYS passes through, with or
+# without override env var. This catches a regression where the override
+# check was at the top of the wrapper and refused non-destructive ops in
+# non-tty contexts.
 OUT=$(HAPI_OPERATOR_SYSTEMCTL_OVERRIDE=1 "$TMP" --no-pager is-enabled hapi-hub.service 2>&1 || true)
 if printf '%s' "$OUT" | grep -q 'hapi-systemctl-wrapper: BLOCKED'; then
-    echo "  FAIL: HAPI_OPERATOR_SYSTEMCTL_OVERRIDE=1 did not bypass" >&2
+    echo "  FAIL: non-destructive 'is-enabled' was blocked (regression)" >&2
     SMOKE_FAIL=1
 else
-    echo "  OK:   HAPI_OPERATOR_SYSTEMCTL_OVERRIDE=1 bypasses guard"
+    echo "  OK:   non-destructive 'is-enabled' passes through (override env var ignored, as expected)"
+fi
+
+# G: TTY-gated bypass behaviour. Smoke runs in whatever context the
+# operator runs the installer in. If TTY: override should bypass. If no
+# TTY: override should refuse with 'override IGNORED' message. Either is
+# correct, both are acceptable smoke outcomes.
+if [ -t 0 ]; then
+    OUT=$(HAPI_OPERATOR_SYSTEMCTL_OVERRIDE=1 "$TMP" stop hapi-hub.service 2>&1 || true)
+    if printf '%s' "$OUT" | grep -q 'override IGNORED'; then
+        echo "  WARN: smoke TTY appears active but override was refused - investigate parent tty_nr" >&2
+    elif printf '%s' "$OUT" | grep -q 'hapi-systemctl-wrapper: BLOCKED'; then
+        echo "  FAIL: TTY bypass did not work (override should have allowed)" >&2
+        SMOKE_FAIL=1
+    else
+        echo "  OK:   TTY-context: HAPI_OPERATOR_SYSTEMCTL_OVERRIDE=1 bypasses guard"
+    fi
+else
+    OUT=$(HAPI_OPERATOR_SYSTEMCTL_OVERRIDE=1 "$TMP" stop hapi-hub.service 2>&1 || true)
+    if printf '%s' "$OUT" | grep -q 'override IGNORED'; then
+        echo "  OK:   no-TTY context: override correctly refused (this is the agent-shell defence)"
+    else
+        echo "  FAIL: no-TTY context: override should have been refused" >&2
+        SMOKE_FAIL=1
+    fi
 fi
 
 if [ "$SMOKE_FAIL" = "1" ]; then
