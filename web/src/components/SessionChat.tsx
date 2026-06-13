@@ -28,6 +28,8 @@ import { ScratchlistDrawer } from '@/components/AssistantChat/ScratchlistPanel'
 import { useScratchlist } from '@/lib/use-scratchlist'
 import { useHappyRuntime } from '@/lib/assistant-runtime'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
+import { consumeSharePendingTransfer } from '@/lib/sharePendingState'
+import { deleteShareTransfer, getShareTransfer } from '@/lib/shareTransfer'
 import { useTranslation } from '@/lib/use-translation'
 import { SessionHeader } from '@/components/SessionHeader'
 import { CursorMigrationBanner } from '@/components/CursorMigrationBanner'
@@ -151,6 +153,77 @@ export function shouldRouteToScratchlist(
 
 function isUninvokedScheduledMessage(message: DecryptedMessage): boolean {
     return message.invokedAt == null && message.scheduledAt != null
+}
+
+/**
+ * Consumes a pending Web Share Target transfer once the assistant runtime
+ * is mounted and the session is active enough to accept attachments.
+ *
+ * Lifecycle:
+ *  - First render reads the transfer id out of sessionStorage *atomically*
+ *    via consumeSharePendingTransfer() so a remount cannot replay the
+ *    upload. The id is stashed in a ref because state-setting inside the
+ *    seed effect would change deps mid-flight, fire the cleanup, and
+ *    cancel the in-flight promise before composer.addAttachment lands.
+ *  - The actual seed (composer.setText + composer.addAttachment per file)
+ *    runs once `props.sessionActive` is true. Inactive sessions disable
+ *    the attachmentAdapter, so writing attachments while inactive would
+ *    no-op and leak Blobs in IDB. The seed waits in a re-renderable
+ *    effect for the active flip.
+ *  - `consumedRef` gates the effect to a single seed per component
+ *    instance — refs survive a StrictMode mount/cleanup/remount pair, so
+ *    the second invoke early-returns and the first invoke's async chain
+ *    completes naturally (we deliberately don't cancel on cleanup; the
+ *    upload is idempotent and the only side effects on the composer are
+ *    no-ops once the runtime is unmounted).
+ *  - The IDB row is deleted after the seed completes so a back-button
+ *    refresh of /sessions/:id doesn't re-attach the same payload.
+ */
+function ShareSeedConsumer(props: { sessionActive: boolean }) {
+    const assistantApi = useAssistantApi()
+    const initRef = useRef(false)
+    const transferIdRef = useRef<string | null>(null)
+    const consumedRef = useRef(false)
+
+    if (!initRef.current) {
+        initRef.current = true
+        transferIdRef.current = typeof window !== 'undefined' ? consumeSharePendingTransfer() : null
+    }
+
+    useEffect(() => {
+        if (consumedRef.current) return
+        const transferId = transferIdRef.current
+        if (!transferId) return
+        if (!props.sessionActive) return
+        consumedRef.current = true
+
+        void (async () => {
+            try {
+                const payload = await getShareTransfer(transferId)
+                if (!payload) return
+                const seedText = [payload.title, payload.text, payload.url]
+                    .filter((part) => typeof part === 'string' && part.length > 0)
+                    .join('\n')
+                    .trim()
+                if (seedText.length > 0) {
+                    assistantApi.composer().setText(seedText)
+                }
+                for (const file of payload.files) {
+                    const reconstructed = new File([file.blob], file.name, { type: file.type })
+                    try {
+                        await assistantApi.composer().addAttachment(reconstructed)
+                    } catch (err) {
+                        console.error('share-seed addAttachment failed', err)
+                    }
+                }
+                await deleteShareTransfer(transferId).catch(() => {})
+            } catch (err) {
+                console.error('share-seed pull failed', err)
+            }
+        })()
+    }, [props.sessionActive, assistantApi])
+
+    return null
 }
 
 /**
@@ -1000,6 +1073,7 @@ function SessionChatInner(props: SessionChatProps) {
             ) : null}
 
             <AssistantRuntimeProvider runtime={runtime}>
+                <ShareSeedConsumer sessionActive={props.session.active} />
                 <div className="relative flex min-h-0 flex-1 flex-col">
                     <HappyThread
                         key={props.session.id}

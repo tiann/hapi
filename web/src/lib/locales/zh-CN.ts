@@ -642,4 +642,21 @@ export default {
   'misc.permissionRequired': '需要权限',
   'misc.percentLeft': '剩余 {percent}%',
   'misc.online': '在线',
+
+  // Web Share Target 分享面板
+  'share.title': '分享到 HAPI',
+  'share.subtitle': '选择要附加到的会话。',
+  'share.recentSessions': '最近的活跃会话',
+  'share.newSession': '新建会话',
+  'share.discard': '放弃',
+  'share.loading': '正在加载分享内容…',
+  'share.notFound.title': '未找到分享内容',
+  'share.notFound.body': '此分享链接已过期或被直接打开而没有传输。',
+  'share.error.ingest': '无法读取分享内容,请从源应用重试。',
+  'share.error.noId': '未提供分享 ID,请从系统分享面板打开此页面。',
+  'share.backToSessions': '返回会话列表',
+  'share.preview.text': '分享文本',
+  'share.preview.empty': '(空分享)',
+  'share.preview.files': '{n} 个文件',
+  'share.noActiveSessions': '没有活跃会话。请在下方选择"新建会话"。',
 } as const

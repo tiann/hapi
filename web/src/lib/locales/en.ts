@@ -638,4 +638,21 @@ export default {
   'misc.permissionRequired': 'permission required',
   'misc.percentLeft': '{percent}% left',
   'misc.online': 'online',
+
+  // Web Share Target picker
+  'share.title': 'Share to HAPI',
+  'share.subtitle': 'Pick a session to attach this to.',
+  'share.recentSessions': 'Recent active sessions',
+  'share.newSession': 'New session',
+  'share.discard': 'Discard',
+  'share.loading': 'Loading shared content…',
+  'share.notFound.title': 'Shared content not found',
+  'share.notFound.body': 'This share link expired or was opened directly without a transfer.',
+  'share.error.ingest': "We couldn't read the shared content. Try again from the source app.",
+  'share.error.noId': 'No share id was provided. Open this page from the system share sheet.',
+  'share.backToSessions': 'Back to sessions',
+  'share.preview.text': 'Shared text',
+  'share.preview.empty': '(empty share)',
+  'share.preview.files': '{n} files',
+  'share.noActiveSessions': 'No active sessions. Pick "New session" below.',
 } as const

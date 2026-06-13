@@ -45,6 +45,7 @@ import FilesPage from '@/routes/sessions/files'
 import FilePage from '@/routes/sessions/file'
 import TerminalPage from '@/routes/sessions/terminal'
 import SettingsPage from '@/routes/settings'
+import SharePage from '@/routes/share'
 
 function BackIcon(props: { className?: string }) {
     return (
@@ -1086,6 +1087,25 @@ const settingsRoute = createRoute({
     component: SettingsPage,
 })
 
+// Web Share Target landing route. Service worker (`web/src/sw.ts`)
+// intercepts the manifest's `POST /share` and 303-redirects here with an
+// IDB transfer id. `error=ingest` is set when the SW failed to write IDB.
+const shareRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/share',
+    validateSearch: (search: Record<string, unknown>): { id?: string; error?: string } => {
+        const result: { id?: string; error?: string } = {}
+        if (typeof search.id === 'string' && search.id) {
+            result.id = search.id
+        }
+        if (typeof search.error === 'string' && search.error) {
+            result.error = search.error
+        }
+        return result
+    },
+    component: SharePage,
+})
+
 export const routeTree = rootRoute.addChildren([
     indexRoute,
     sessionsRoute.addChildren([
@@ -1099,6 +1119,7 @@ export const routeTree = rootRoute.addChildren([
     ]),
     browseRoute,
     settingsRoute,
+    shareRoute,
 ])
 
 type RouterHistory = Parameters<typeof createRouter>[0]['history']

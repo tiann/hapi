@@ -99,7 +99,38 @@ export default defineConfig({
                         type: 'image/png',
                         purpose: 'any'
                     }
-                ]
+                ],
+                // Web Share Target — Android Chrome routes POSTs to /share
+                // when the user picks HAPI in the system share sheet. The
+                // service worker (`web/src/sw.ts`) intercepts POST /share,
+                // stashes the multipart payload in IndexedDB, and 303-
+                // redirects to /share?id=<transferId> for the SPA picker.
+                // `*/*` is the broad fallback; explicit MIME prefixes stay
+                // first because some Chrome versions only honor declared
+                // prefixes when surfacing in the share sheet.
+                share_target: {
+                    action: '/share',
+                    method: 'POST',
+                    enctype: 'multipart/form-data',
+                    params: {
+                        title: 'title',
+                        text: 'text',
+                        url: 'url',
+                        files: [
+                            {
+                                name: 'files',
+                                accept: [
+                                    'image/*',
+                                    'application/pdf',
+                                    'text/*',
+                                    'application/json',
+                                    'application/zip',
+                                    '*/*'
+                                ]
+                            }
+                        ]
+                    }
+                }
             },
             injectManifest: {
                 globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}']
