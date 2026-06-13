@@ -306,6 +306,9 @@ export async function runPi(opts: {
     try {
         transport.start();
         transport.send({ type: 'new_session' });
+        if (piSession.currentThinkingLevel) {
+            transport.send({ type: 'set_thinking_level', level: piSession.currentThinkingLevel });
+        }
         transport.send({ type: 'get_state' });
         transport.send({ type: 'get_available_models' });
         transport.send({ type: 'get_commands' });
