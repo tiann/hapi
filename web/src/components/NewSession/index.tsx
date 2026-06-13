@@ -1488,9 +1488,14 @@ export function NewSession(props: {
     const fastModeSelectionPending = agent === 'codex'
         && serviceTier === 'fast'
         && codexModelsState.isLoading
+    const hasSpawnDirectory = Boolean(
+        (agent === 'codex' && selectedCodexImportSession?.cwd)
+            ? selectedCodexImportSession.cwd
+            : trimmedDirectory
+    )
     const canCreate = Boolean(
         machineId
-        && trimmedDirectory
+        && hasSpawnDirectory
         && !isFormDisabled
         && !missingWorktreeDirectory
         && !isLaunchPreferenceValidationPending
