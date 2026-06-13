@@ -20,6 +20,7 @@ import {
 } from '@/lib/scratchlist'
 import { safeCopyToClipboard } from '@/lib/clipboard'
 import { useTranslation } from '@/lib/use-translation'
+import { formatAbsoluteDateTime, formatRelativeTime } from '@/lib/relativeTime'
 
 const STORAGE_KEY_PREFIX = 'hapi.scratchlist-collapsed.v1.'
 
@@ -150,6 +151,57 @@ function CopyIcon() {
     )
 }
 
+function ClockIcon() {
+    return (
+        <svg viewBox="0 0 16 16" fill="none" className="h-3.5 w-3.5" aria-hidden="true">
+            <circle cx="8" cy="8" r="5.5" stroke="currentColor" strokeWidth="1.4" />
+            <path d="M8 5v3l2 1.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+    )
+}
+
+/**
+ * Per-entry age indicator: clock icon with a tooltip showing
+ * smart-relative time (e.g. "2m ago") and the absolute timestamp on a
+ * second line, so an operator can tell at-a-glance how stale a note is.
+ *
+ * Renders nothing when no usable timestamp is available - this happens
+ * for legacy localStorage entries that pre-date the v2 hub-sync work
+ * (no `updatedAt` recorded) AND have no `createdAt` either, which is
+ * vanishingly rare but still a guard against `NaN` titles.
+ *
+ * Falls back to `createdAt` when `updatedAt` is missing so newly-loaded
+ * v1-only rows still get a useful tooltip during the migration window.
+ */
+function EntryAgeIndicator({
+    entry,
+}: {
+    entry: ScratchlistEntry
+}) {
+    const { t } = useTranslation()
+    const stamp = entry.updatedAt ?? entry.createdAt
+    if (!Number.isFinite(stamp) || stamp <= 0) return null
+    const relative = formatRelativeTime(stamp, t)
+    if (!relative) return null
+    const absolute = formatAbsoluteDateTime(stamp)
+    const ariaLabel = t('scratchlist.entry.lastSavedAriaLabel', { time: relative })
+    const title = absolute
+        ? `${t('scratchlist.entry.lastSaved', { time: relative })}\n${absolute}`
+        : t('scratchlist.entry.lastSaved', { time: relative })
+    return (
+        <span
+            role="img"
+            aria-label={ariaLabel}
+            title={title}
+            data-testid="scratchlist-entry-age"
+            data-entry-age={relative}
+            className="flex h-6 w-6 items-center justify-center rounded text-[var(--app-hint)]"
+        >
+            <ClockIcon />
+        </span>
+    )
+}
+
 function ClipboardCheckIcon() {
     return (
         <svg viewBox="0 0 16 16" fill="none" className="h-3.5 w-3.5" aria-hidden="true">
@@ -244,6 +296,7 @@ function ScratchlistInventory({
                             {entry.text}
                         </span>
                         <div className="flex shrink-0 items-center gap-0.5 text-[var(--app-hint)]">
+                            <EntryAgeIndicator entry={entry} />
                             <button
                                 type="button"
                                 aria-label={t('scratchlist.action.moveUp')}
@@ -665,6 +718,7 @@ export function ScratchlistPanel({
                                                     {entry.text}
                                                 </span>
                                                 <div className="flex shrink-0 items-center gap-0.5 text-[var(--app-hint)]">
+                                                    <EntryAgeIndicator entry={entry} />
                                                     <button
                                                         type="button"
                                                         aria-label={t('scratchlist.action.moveUp')}
