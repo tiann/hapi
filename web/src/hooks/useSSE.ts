@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { isObject, toSessionSummary } from '@hapi/protocol'
+import {
+    computePendingRequestKinds,
+    computeTodoProgress,
+    isObject,
+    toSessionSummary,
+    toSessionSummaryMetadata
+} from '@hapi/protocol'
 import { MachinePatchSchema, MachineSchema, SessionPatchSchema, SessionSchema } from '@hapi/protocol/schemas'
 import type {
     Machine,
@@ -349,6 +355,21 @@ export function useSSE(options: {
                     effort: Object.prototype.hasOwnProperty.call(patch, 'effort') ? patch.effort ?? null : current.effort
                 }
 
+                // Structured-patch fields (todos / agentState / metadata) feed
+                // the SessionSummary derivations. Recompute the touched fields
+                // so the session list stays consistent with the detail cache.
+                if (patch.todos !== undefined) {
+                    nextSummary.todoProgress = computeTodoProgress(patch.todos)
+                }
+                if (patch.agentState !== undefined) {
+                    const requests = patch.agentState.value?.requests
+                    nextSummary.pendingRequestsCount = requests ? Object.keys(requests).length : 0
+                    nextSummary.pendingRequestKinds = computePendingRequestKinds(patch.agentState.value)
+                }
+                if (patch.metadata !== undefined) {
+                    nextSummary.metadata = toSessionSummaryMetadata(patch.metadata.value)
+                }
+
                 patched = true
                 nextSessions[index] = nextSummary
                 nextSessions.sort(sortSessionSummaries)
@@ -364,12 +385,34 @@ export function useSSE(options: {
                     return previous
                 }
                 patched = true
+                const nextSession: Session = { ...previous.session }
+                if (patch.active !== undefined) nextSession.active = patch.active
+                if (patch.thinking !== undefined) nextSession.thinking = patch.thinking
+                if (patch.activeAt !== undefined) nextSession.activeAt = patch.activeAt
+                if (patch.updatedAt !== undefined) nextSession.updatedAt = patch.updatedAt
+                if (patch.model !== undefined) nextSession.model = patch.model
+                if (patch.modelReasoningEffort !== undefined) nextSession.modelReasoningEffort = patch.modelReasoningEffort
+                if (patch.effort !== undefined) nextSession.effort = patch.effort
+                if (patch.permissionMode !== undefined) nextSession.permissionMode = patch.permissionMode
+                if (patch.collaborationMode !== undefined) nextSession.collaborationMode = patch.collaborationMode
+                if (patch.backgroundTaskCount !== undefined) nextSession.backgroundTaskCount = patch.backgroundTaskCount
+                if (patch.todos !== undefined) nextSession.todos = patch.todos
+                if (patch.teamState !== undefined) nextSession.teamState = patch.teamState
+                // Versioned fields arrive as { version, value } — unwrap into
+                // the Session's flat metadata/metadataVersion pair (same for
+                // agentState). Spreading the patch wholesale would corrupt
+                // session.metadata with a { version, value } object.
+                if (patch.metadata !== undefined) {
+                    nextSession.metadata = patch.metadata.value
+                    nextSession.metadataVersion = patch.metadata.version
+                }
+                if (patch.agentState !== undefined) {
+                    nextSession.agentState = patch.agentState.value
+                    nextSession.agentStateVersion = patch.agentState.version
+                }
                 return {
                     ...previous,
-                    session: {
-                        ...previous.session,
-                        ...patch
-                    }
+                    session: nextSession
                 }
             })
             return patched

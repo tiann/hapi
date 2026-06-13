@@ -269,9 +269,37 @@ export class SyncEngine {
 
     handleRealtimeEvent(event: SyncEvent): void {
         if (event.type === 'session-updated' && event.sessionId) {
-            // Snapshot agent session IDs before refresh — safe because JS is single-threaded
-            // and refreshSession replaces the Map entry with a new object.
+            // Closes the second half of #884: when a CLI handler emits a
+            // structured patch (todos / teamState / metadata / agentState),
+            // apply it in place and forward the patch as-is. This skips both
+            // the DB re-read AND the full-Session SSE broadcast that the
+            // legacy no-data path went through. Web clients hit
+            // getSessionPatch's truthy path and patch the cache instead of
+            // falling through to the per-session REST invalidation that drove
+            // the refetch storm.
             const before = this.sessionCache.getSession(event.sessionId)
+            const patchApplied = event.data
+                ? this.sessionCache.applySessionPatch(event.sessionId, event.data, event.namespace)
+                : false
+
+            if (patchApplied) {
+                this.eventPublisher.emit(event)
+                // Metadata patches can change the agent session ID embedded in
+                // metadata.{cursorSessionId,claudeSessionId,...}. Dedup needs
+                // the post-patch view, which `applySessionPatch` has already
+                // written into the cache.
+                const after = this.sessionCache.getSession(event.sessionId)
+                if (after?.metadata && !this.hasSameAgentSessionIds(before?.metadata ?? null, after.metadata)) {
+                    void this.sessionCache.deduplicateByAgentSessionId(event.sessionId).catch(() => {
+                        // best-effort: dedup failure is harmless, web-side safety net hides remaining duplicates
+                    })
+                }
+                return
+            }
+
+            // No-data event (or data we can't apply directly, e.g. full
+            // Session payload from a different emitter): fall back to the
+            // legacy refresh-from-DB-and-broadcast path.
             this.sessionCache.refreshSession(event.sessionId)
             const after = this.sessionCache.getSession(event.sessionId)
             if (after?.metadata && !this.hasSameAgentSessionIds(before?.metadata ?? null, after.metadata)) {
