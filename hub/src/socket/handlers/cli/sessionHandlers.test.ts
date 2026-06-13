@@ -65,6 +65,146 @@ describe('cli session handlers', () => {
         expect(webEvents).toHaveLength(0)
     })
 
+    it('emits a structured todos patch when a TodoWrite message lands (closes second half of #884)', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('todos-session', { path: '/tmp', host: 'h' }, null, 'default')
+        const socket = new FakeSocket()
+        const webEvents: SyncEvent[] = []
+
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => {
+                throw new Error('unexpected access error')
+            },
+            onWebappEvent: (event) => {
+                webEvents.push(event)
+            }
+        })
+
+        socket.trigger('message', {
+            sid: session.id,
+            message: {
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: {
+                        type: 'assistant',
+                        message: {
+                            content: [
+                                {
+                                    type: 'tool_use',
+                                    name: 'TodoWrite',
+                                    input: {
+                                        todos: [
+                                            { content: 'pending thing', status: 'pending' },
+                                            { content: 'done thing', status: 'completed' }
+                                        ]
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        })
+
+        const sessionUpdated = webEvents.find((e) => e.type === 'session-updated')
+        expect(sessionUpdated).toBeDefined()
+        if (!sessionUpdated || sessionUpdated.type !== 'session-updated') return
+        expect(sessionUpdated.data).toMatchObject({
+            todos: [
+                { content: 'pending thing', status: 'pending' },
+                { content: 'done thing', status: 'completed' }
+            ]
+        })
+    })
+
+    it('emits a structured metadata patch on update-metadata RPC (closes second half of #884)', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession(
+            'metadata-patch-session',
+            { path: '/tmp/project', host: 'example' },
+            null,
+            'default'
+        )
+        const socket = new FakeSocket()
+        const webEvents: SyncEvent[] = []
+
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => {
+                throw new Error('unexpected access error')
+            },
+            onWebappEvent: (event) => {
+                webEvents.push(event)
+            }
+        })
+
+        socket.trigger(
+            'update-metadata',
+            {
+                sid: session.id,
+                expectedVersion: session.metadataVersion,
+                metadata: { lifecycleState: 'archived' }
+            },
+            () => {}
+        )
+
+        const sessionUpdated = webEvents.find((e) => e.type === 'session-updated')
+        expect(sessionUpdated).toBeDefined()
+        if (!sessionUpdated || sessionUpdated.type !== 'session-updated') return
+        const data = sessionUpdated.data as { metadata?: { version: number; value: Record<string, unknown> } } | undefined
+        expect(data?.metadata?.version).toBe(session.metadataVersion + 1)
+        // Merged value: original path/host preserved + new lifecycleState applied.
+        expect(data?.metadata?.value).toMatchObject({
+            path: '/tmp/project',
+            host: 'example',
+            lifecycleState: 'archived'
+        })
+    })
+
+    it('emits a structured agentState patch on update-state RPC (closes second half of #884)', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession(
+            'agent-state-patch-session',
+            { path: '/tmp', host: 'h' },
+            null,
+            'default'
+        )
+        const socket = new FakeSocket()
+        const webEvents: SyncEvent[] = []
+
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => {
+                throw new Error('unexpected access error')
+            },
+            onWebappEvent: (event) => {
+                webEvents.push(event)
+            }
+        })
+
+        socket.trigger(
+            'update-state',
+            {
+                sid: session.id,
+                expectedVersion: session.agentStateVersion,
+                agentState: { controlledByUser: true }
+            },
+            () => {}
+        )
+
+        const sessionUpdated = webEvents.find((e) => e.type === 'session-updated')
+        expect(sessionUpdated).toBeDefined()
+        if (!sessionUpdated || sessionUpdated.type !== 'session-updated') return
+        const data = sessionUpdated.data as { agentState?: { version: number; value: { controlledByUser?: boolean } } } | undefined
+        expect(data?.agentState?.version).toBe(session.agentStateVersion + 1)
+        expect(data?.agentState?.value).toMatchObject({ controlledByUser: true })
+    })
+
     it('update-metadata broadcasts the merged value, not the pre-merge payload', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession(
