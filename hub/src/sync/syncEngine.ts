@@ -277,19 +277,30 @@ export class SyncEngine {
             // getSessionPatch's truthy path and patch the cache instead of
             // falling through to the per-session REST invalidation that drove
             // the refetch storm.
+            //
+            // `applySessionPatch` MUTATES the cached Session in place (it
+            // reassigns `session.metadata = patch.metadata.value`), so we
+            // MUST snapshot the metadata reference BEFORE calling it.
+            // Reading `before?.metadata` after the mutation would see the
+            // new value and `hasSameAgentSessionIds` would always return
+            // true — breaking the dedup-on-metadata-id-change trigger that
+            // the legacy `refreshSession` path got for free (refresh
+            // REPLACES the cache entry, leaving the old object reference
+            // intact for the caller). Use the snapshot for BOTH branches
+            // so the comparison contract is identical.
             const before = this.sessionCache.getSession(event.sessionId)
+            const beforeMetadata = before?.metadata ?? null
             const patchApplied = event.data
                 ? this.sessionCache.applySessionPatch(event.sessionId, event.data, event.namespace)
                 : false
 
             if (patchApplied) {
                 this.eventPublisher.emit(event)
-                // Metadata patches can change the agent session ID embedded in
-                // metadata.{cursorSessionId,claudeSessionId,...}. Dedup needs
-                // the post-patch view, which `applySessionPatch` has already
-                // written into the cache.
                 const after = this.sessionCache.getSession(event.sessionId)
-                if (after?.metadata && !this.hasSameAgentSessionIds(before?.metadata ?? null, after.metadata)) {
+                if (after?.metadata && !this.hasSameAgentSessionIds(beforeMetadata, after.metadata)) {
+                    if (!this.canRunCursorDedup(after)) {
+                        return
+                    }
                     void this.sessionCache.deduplicateByAgentSessionId(event.sessionId).catch(() => {
                         // best-effort: dedup failure is harmless, web-side safety net hides remaining duplicates
                     })
@@ -302,7 +313,7 @@ export class SyncEngine {
             // legacy refresh-from-DB-and-broadcast path.
             this.sessionCache.refreshSession(event.sessionId)
             const after = this.sessionCache.getSession(event.sessionId)
-            if (after?.metadata && !this.hasSameAgentSessionIds(before?.metadata ?? null, after.metadata)) {
+            if (after?.metadata && !this.hasSameAgentSessionIds(beforeMetadata, after.metadata)) {
                 if (!this.canRunCursorDedup(after)) {
                     return
                 }
