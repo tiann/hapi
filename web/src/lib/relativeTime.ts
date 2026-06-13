@@ -27,3 +27,13 @@ export function formatRelativeTime(
     if (days < 7) return t('session.time.daysAgo', { n: days })
     return formatSessionListDate(new Date(ms))
 }
+
+/**
+ * Absolute date+time string for tooltips that want the precise stamp
+ * alongside the smart-relative label. Locale-aware.
+ */
+export function formatAbsoluteDateTime(value: number): string | null {
+    const ms = value < 1_000_000_000_000 ? value * 1000 : value
+    if (!Number.isFinite(ms)) return null
+    return new Date(ms).toLocaleString()
+}

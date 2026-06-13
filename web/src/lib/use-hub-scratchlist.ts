@@ -113,15 +113,17 @@ function writeBannerDismissed(sessionId: string): void {
 /**
  * Convert hub entries into the in-memory shape the panel components
  * expect (`ScratchlistEntry` from `lib/scratchlist.ts`). Hub `entryId`
- * maps to local `id`. Hub `updatedAt` is dropped from the local view
- * because v1 components don't render it - it's tracked in the cache for
- * SSE reconciliation, not in the props.
+ * maps to local `id`. `updatedAt` is forwarded so the per-entry age
+ * indicator (clock icon + tooltip) can render the smart-relative time
+ * the operator asked for; v1 callers that don't render it just ignore
+ * the field.
  */
 function toLocalEntry(hub: HubEntry): ScratchlistEntry {
     return {
         id: hub.entryId,
         text: hub.text,
-        createdAt: hub.createdAt
+        createdAt: hub.createdAt,
+        updatedAt: hub.updatedAt
     }
 }
 
@@ -473,7 +475,8 @@ export function useHubScratchlist(
             const cached = data.entries.map((e) => ({
                 id: e.entryId,
                 text: e.text,
-                createdAt: e.createdAt
+                createdAt: e.createdAt,
+                updatedAt: e.updatedAt
             }))
             window.localStorage.setItem(
                 `hapi.scratchlist.v1.${sessionId}`,

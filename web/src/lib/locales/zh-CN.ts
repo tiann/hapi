@@ -538,6 +538,8 @@ export default {
   'scratchlist.action.copy': '复制到剪贴板',
   'scratchlist.action.copied': '已复制！',
   'scratchlist.action.delete': '删除条目',
+  'scratchlist.entry.lastSaved': '保存于 {time}',
+  'scratchlist.entry.lastSavedAriaLabel': '条目保存于 {time}',
   'scratchlist.migrationBanner.title': '草稿清单现已跨设备同步',
   'scratchlist.migrationBanner.body': '您现有的笔记已复制到 hub - 没有丢失任何内容。从现在开始,在此会话中的编辑会在您使用的每台设备上显示。',
   'scratchlist.migrationBanner.dismiss': '知道了',
