@@ -10,6 +10,25 @@ const INPUT_REQUEST_TOOLS = new Set([
     'request_user_input'
 ])
 
+/** Cap on `pendingRequests` carried in `SessionSummary`. The list is meant for
+ *  per-row hover copy ("Approve `Bash`, `Edit` (+1 more)"); deep inspection
+ *  should use `Session.agentState.requests`. The `pendingRequestsCount` field
+ *  is the authoritative total — `pendingRequests.length` may be smaller. */
+export const PENDING_REQUEST_SUMMARY_CAP = 5
+
+export type PendingRequest = {
+    id: string
+    kind: PendingRequestKind
+    tool: string
+    /** Epoch ms when the request was raised; falls back to `session.updatedAt`
+     *  for older requests that were stored without `createdAt`. */
+    since: number
+}
+
+function classifyKind(tool: string): PendingRequestKind {
+    return INPUT_REQUEST_TOOLS.has(tool) ? 'input' : 'permission'
+}
+
 export type SessionSummaryMetadata = {
     name?: string
     path: string
@@ -31,10 +50,41 @@ export type SessionSummary = {
     todoProgress: { completed: number; total: number } | null
     pendingRequestsCount: number
     pendingRequestKinds: PendingRequestKind[]
+    /** Capped, oldest-first slice of pending tool requests. Use this for tooltip
+     *  / per-row UX. The full count (which may exceed the cap) is in
+     *  `pendingRequestsCount`. */
+    pendingRequests: PendingRequest[]
     backgroundTaskCount: number
     futureScheduledMessageCount: number
     model: string | null
     effort: string | null
+}
+
+export function getPendingRequests(
+    session: Session,
+    cap: number = PENDING_REQUEST_SUMMARY_CAP
+): PendingRequest[] {
+    const requests = session.agentState?.requests
+    if (!requests) {
+        return []
+    }
+
+    const items: PendingRequest[] = []
+    for (const [id, request] of Object.entries(requests)) {
+        items.push({
+            id,
+            kind: classifyKind(request.tool),
+            tool: request.tool,
+            since: typeof request.createdAt === 'number' ? request.createdAt : session.updatedAt
+        })
+    }
+
+    items.sort((a, b) => {
+        if (a.since !== b.since) return a.since - b.since
+        return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+    })
+
+    return cap >= items.length ? items : items.slice(0, cap)
 }
 
 export function getPendingRequestKinds(session: Session): PendingRequestKind[] {
@@ -45,7 +95,7 @@ export function getPendingRequestKinds(session: Session): PendingRequestKind[] {
 
     const kinds = new Set<PendingRequestKind>()
     for (const request of Object.values(requests)) {
-        kinds.add(INPUT_REQUEST_TOOLS.has(request.tool) ? 'input' : 'permission')
+        kinds.add(classifyKind(request.tool))
     }
 
     return kinds.has('permission') && kinds.has('input')
@@ -88,6 +138,7 @@ export function toSessionSummary(session: Session): SessionSummary {
         todoProgress,
         pendingRequestsCount,
         pendingRequestKinds: getPendingRequestKinds(session),
+        pendingRequests: getPendingRequests(session),
         backgroundTaskCount: session.backgroundTaskCount ?? 0,
         futureScheduledMessageCount: 0,
         model: session.model,

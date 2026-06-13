@@ -43,6 +43,8 @@ export type {
     Metadata,
     PermissionMode,
     Machine,
+    PendingRequest,
+    PendingRequestKind,
     RunnerState,
     Session,
     SessionPatch,

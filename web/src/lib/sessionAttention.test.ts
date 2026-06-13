@@ -12,6 +12,7 @@ function makeSummary(overrides: Partial<SessionSummary> & { id: string }): Sessi
         todoProgress: null,
         pendingRequestsCount: 0,
         pendingRequestKinds: [],
+        pendingRequests: [],
         backgroundTaskCount: 0,
         futureScheduledMessageCount: 0,
         model: null,

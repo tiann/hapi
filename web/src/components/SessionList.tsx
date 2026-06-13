@@ -16,6 +16,8 @@ import { useSessionListStatusMode } from '@/hooks/useSessionListStatusMode'
 import { classifySessionAttention } from '@/lib/sessionAttention'
 import { getSessionLastSeenAt } from '@/lib/sessionLastSeen'
 import { getAttentionLabel, SessionAttentionIndicator } from '@/components/SessionAttentionIndicator'
+import { HoverTooltip } from '@/components/HoverTooltip'
+import { formatRelativeTime } from '@/lib/relativeTime'
 import { getCodexImportedAt, subscribeCodexImportedSessions } from '@/lib/codexImportedSessions'
 import { formatReopenError } from '@/lib/reopenError'
 
@@ -545,19 +547,6 @@ function MachineIcon(props: { className?: string }) {
     )
 }
 
-function formatRelativeTime(value: number, t: (key: string, params?: Record<string, string | number>) => string): string | null {
-    const ms = value < 1_000_000_000_000 ? value * 1000 : value
-    if (!Number.isFinite(ms)) return null
-    const delta = Date.now() - ms
-    if (delta < 60_000) return t('session.time.justNow')
-    const minutes = Math.floor(delta / 60_000)
-    if (minutes < 60) return t('session.time.minutesAgo', { n: minutes })
-    const hours = Math.floor(minutes / 60)
-    if (hours < 24) return t('session.time.hoursAgo', { n: hours })
-    const days = Math.floor(hours / 24)
-    if (days < 7) return t('session.time.daysAgo', { n: days })
-    return new Date(ms).toLocaleDateString()
-}
 
 function formatCodexImportedRelativeTime(value: number, t: (key: string, params?: Record<string, string | number>) => string): string | null {
     const ms = value < 1_000_000_000_000 ? value * 1000 : value
@@ -674,13 +663,25 @@ function SessionItem(props: {
                         ) : attention ? (
                             <SessionAttentionIndicator
                                 attention={attention}
+                                summary={s}
                                 label={attentionLabel ?? ''}
                             />
                         ) : null}
                         {showDetailedStatus && s.futureScheduledMessageCount > 0 ? (
-                            <span title={scheduledLabel} aria-label={scheduledLabel} className="inline-flex shrink-0">
-                                <ScheduleIcon className="h-3.5 w-3.5 text-[var(--app-hint)]" />
-                            </span>
+                            <HoverTooltip
+                                label={scheduledLabel}
+                                target={<ScheduleIcon className="h-3.5 w-3.5 text-[var(--app-hint)]" />}
+                                side="bottom"
+                                align="start"
+                                className="shrink-0"
+                            >
+                                <span className="block">
+                                    <span className="block font-medium">{scheduledLabel}</span>
+                                    <span className="mt-1 block text-[var(--app-hint)]">
+                                        {t('session.tooltip.scheduled.body')}
+                                    </span>
+                                </span>
+                            </HoverTooltip>
                         ) : null}
                     </div>
                     <div className="flex items-center gap-2 shrink-0 text-xs">
