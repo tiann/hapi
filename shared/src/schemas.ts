@@ -254,22 +254,25 @@ export const SessionPatchSchema = z.object({
     thinking: z.boolean().optional(),
     activeAt: z.number().optional(),
     updatedAt: z.number().optional(),
+    // Structured-patch fields for the second half of #884. Letting the four
+    // hub-side emit-sites in cli/sessionHandlers.ts (todos, teamState,
+    // metadata, agentState writes) carry their delta means the web client's
+    // SSE handler can patch the cache in place instead of falling through to
+    // the invalidation fallback that triggers per-session REST refetches.
+    // Versioned wrappers for metadata/agentState mirror the socket.io
+    // `update-session` broadcast shape — the version field is the only safe
+    // way for downstream caches to reject stale patches.
+    metadata: VersionedMetadataPatchSchema.optional(),
+    agentState: VersionedAgentStatePatchSchema.optional(),
+    todos: TodosSchema.optional(),
+    teamState: TeamStateSchema.optional(),
     model: z.string().nullable().optional(),
     modelReasoningEffort: z.string().nullable().optional(),
     effort: z.string().nullable().optional(),
     serviceTier: z.string().nullable().optional(),
     permissionMode: PermissionModeSchema.optional(),
     collaborationMode: CodexCollaborationModeSchema.optional(),
-    backgroundTaskCount: z.number().optional(),
-    // Structured-patch fields for the second half of #884. Letting the four
-    // hub-side emit-sites in cli/sessionHandlers.ts (todos, teamState,
-    // metadata, agentState writes) carry their delta means the web client's
-    // SSE handler can patch the cache in place instead of falling through to
-    // the invalidation fallback that triggers per-session REST refetches.
-    todos: TodosSchema.optional(),
-    teamState: TeamStateSchema.optional(),
-    metadata: VersionedMetadataPatchSchema.optional(),
-    agentState: VersionedAgentStatePatchSchema.optional()
+    backgroundTaskCount: z.number().optional()
 }).strict()
 
 export type SessionPatch = z.infer<typeof SessionPatchSchema>
