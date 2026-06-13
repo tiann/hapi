@@ -450,6 +450,8 @@ export default {
   'scratchlist.action.copy': 'Copy to clipboard',
   'scratchlist.action.copied': 'Copied!',
   'scratchlist.action.delete': 'Delete entry',
+  'scratchlist.entry.lastSaved': 'Saved {time}',
+  'scratchlist.entry.lastSavedAriaLabel': 'Entry saved {time}',
   'scratchlist.migrationBanner.title': 'Scratchlist now syncs across devices',
   'scratchlist.migrationBanner.body': 'Your existing notes were copied to the hub - nothing was lost. From now on, edits in this session will appear on every device that you use.',
   'scratchlist.migrationBanner.dismiss': 'Got it',
