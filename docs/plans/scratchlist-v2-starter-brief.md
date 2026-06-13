@@ -1,6 +1,8 @@
 # Scratchlist v2 starter brief
 
-**Status:** decisions made by operator 2026-06-13; v2 peer spawning now
+**Status (2026-06-13 17:41):** v2.0 SHIPPED. PR [tiann/hapi#896](https://github.com/tiann/hapi/pull/896) open against upstream (issue [#893](https://github.com/tiann/hapi/issues/893), v2.1 tracking issue [#894](https://github.com/tiann/hapi/issues/894)). Branch `heavygee:feat/scratchlist-v2`, commit `604d70df`, +2605/-11 across 24 files. All gates green (hub 456/456, web 982/982, cli 964/964, Playwright 10/10 on v1 panel fixture confirms zero UI regression). Manual cross-device test (laptop + phone PWA) deferred to operator (cannot run from agent shell). Sibling peer 7b422b92 added `todos`/`teamState`/versioned `metadata`/versioned `agentState` to the same `SessionPatchSchema` for Fix B' (#895); v2 peer added `scratchlistUpdatedAt?: number` adjacent - merges cleanly either order. CI on #896 pending at report time.
+
+**Original status (pre-spawn):** decisions made by operator 2026-06-13; v2 peer spawning now
 **Predecessor session:** `c8ee000d-34d8-4b96-b078-da6b25186a75` (archived, lifecycle=archived, name "PR798 scratchlist (resurrected)") - 2,256 messages spanning 2026-06-02 → 2026-06-07
 **v1 issue:** [tiann/hapi#11](https://github.com/heavygee/hapi/issues/11) (filed in fork; upstream tracking is via PR review)
 **v1.0 PR (initial):** [tiann/hapi#772](https://github.com/tiann/hapi/pull/772)
