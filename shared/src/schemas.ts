@@ -293,6 +293,19 @@ export const SessionSchema = z.object({
 
 export type Session = z.infer<typeof SessionSchema>
 
+// Versioned wrappers mirror the socket.io `update-session` broadcast shape so
+// metadata/agentState always travel as an atomic (version, value) pair — the
+// version is the only safe way for downstream caches to reject stale patches.
+const VersionedMetadataPatchSchema = z.object({
+    version: z.number(),
+    value: MetadataSchema.nullable()
+})
+
+const VersionedAgentStatePatchSchema = z.object({
+    version: z.number(),
+    value: AgentStateSchema.nullable()
+})
+
 export const SessionPatchSchema = z.object({
     active: z.boolean().optional(),
     thinking: z.boolean().optional(),
@@ -312,7 +325,16 @@ export const SessionPatchSchema = z.object({
     // signal, not the payload. Keep this minimal: per the operator's 80/20
     // ruling, scratchlist mutations are rare relative to keep-alive
     // patches, so a fresh event type would be overkill.
-    scratchlistUpdatedAt: z.number().optional()
+    scratchlistUpdatedAt: z.number().optional(),
+    // Structured-patch fields for the second half of #884. Letting the four
+    // hub-side emit-sites in cli/sessionHandlers.ts (todos, teamState,
+    // metadata, agentState writes) carry their delta means the web client's
+    // SSE handler can patch the cache in place instead of falling through to
+    // the invalidation fallback that triggers per-session REST refetches.
+    todos: TodosSchema.optional(),
+    teamState: TeamStateSchema.optional(),
+    metadata: VersionedMetadataPatchSchema.optional(),
+    agentState: VersionedAgentStatePatchSchema.optional()
 }).strict()
 
 export type SessionPatch = z.infer<typeof SessionPatchSchema>
