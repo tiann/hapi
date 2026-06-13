@@ -156,6 +156,51 @@ describe('classifyCursorAgentMessage', () => {
         expect(classifyCursorAgentMessage('\nError: T: Connection stalled after 30s')?.kind).toBe('connection_stalled')
     })
 
+    it('classifies error appended to in-flight agent text (real session e7d9b44b)', () => {
+        // Regression: 2026-06-13 session e7d9b44b. cursor-agent appended
+        // a gRPC stringification to the END of a normal narrative output
+        // rather than rejecting the prompt. The structural signals
+        // (RPC rejection / stderr) didn't fire because the agent never
+        // crashed - it just dumped the error into its own text stream.
+        // Start-of-string anchor missed it (text starts with prose);
+        // multiline `^` (start-of-line after the `\n\n`) catches it.
+        const realWireFormat =
+            "Three of the four hit Codex's usage limit (#151, #153, #155) " +
+            "- no code review delivered. Only #157 actually got reviewed. " +
+            "Let me pull the inline comments to see Codex's specific suggestions:\n\n" +
+            "Error: T: [resource_exhausted] Error"
+        const result = classifyCursorAgentMessage(realWireFormat)
+        expect(result).not.toBeNull()
+        expect(result?.kind).toBe('quota_exhausted')
+        expect(result?.transient).toBe(false)
+    })
+
+    it('still rejects bullet-listed pattern descriptions (no false positive)', () => {
+        // Lines indented with whitespace+dash do NOT start with "Error:" -
+        // multiline `^` requires the line to literally begin with the
+        // pattern. Self-own from 2026-06-12 stays prevented.
+        const proseDescribingPatterns =
+            "Yes. In the soup since 23:51:24 BST.\n\n" +
+            "Triggers on:\n" +
+            "  - Error: T: [resource_exhausted]\n" +
+            "  - Error: T: Connection stalled\n" +
+            "  - Gemini prompt failed: .*token count exceeds\n" +
+            "  - Gemini prompt failed: .*exhausted your capacity\n"
+        expect(classifyCursorAgentMessage(proseDescribingPatterns)).toBeNull()
+    })
+
+    it('catches all gRPC kinds when appended after prose+newlines', () => {
+        const prefix = "Working on the task. Got partial results before failure:\n\n"
+        expect(classifyCursorAgentMessage(prefix + 'Error: T: [resource_exhausted] Error')?.kind).toBe('quota_exhausted')
+        expect(classifyCursorAgentMessage(prefix + 'Error: T: [canceled] Operation aborted')?.kind).toBe('canceled')
+        expect(classifyCursorAgentMessage(prefix + 'Error: T: [deadline_exceeded]')?.kind).toBe('deadline_exceeded')
+        expect(classifyCursorAgentMessage(prefix + 'Error: T: [unavailable] Service down')?.kind).toBe('unavailable')
+        expect(classifyCursorAgentMessage(prefix + 'Error: T: Connection stalled')?.kind).toBe('connection_stalled')
+        expect(classifyCursorAgentMessage(prefix + 'Error: T: WritableIterable is closed')?.kind).toBe('unknown_t_prefix')
+        expect(classifyCursorAgentMessage(prefix + 'Gemini prompt failed: token count exceeds 1M')?.kind).toBe('context_window')
+        expect(classifyCursorAgentMessage(prefix + 'Gemini prompt failed: exhausted your capacity')?.kind).toBe('capacity_exhausted')
+    })
+
     it("tags text-classifier results with source='text'", () => {
         const result = classifyCursorAgentMessage('Error: T: [canceled]')
         expect(result?.source).toBe('text')
