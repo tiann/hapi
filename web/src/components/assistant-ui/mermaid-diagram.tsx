@@ -1,6 +1,17 @@
 import type { SyntaxHighlighterProps } from '@assistant-ui/react-markdown'
 import { useAssistantState } from '@assistant-ui/react'
 import { useEffect, useId, useRef, useState, type ComponentPropsWithoutRef } from 'react'
+
+// useAssistantState throws when rendered outside an AssistantRuntimeProvider
+// (e.g. MarkdownRenderer in tool cards / request footers). Return null there.
+function useOptionalMessageId(): string | null {
+    try {
+        // eslint-disable-next-line react-hooks/rules-of-hooks
+        return useAssistantState(({ message }) => message.id)
+    } catch {
+        return null
+    }
+}
 import { cn } from '@/lib/utils'
 import { useOptionalHappyChatContext } from '@/components/AssistantChat/context'
 import { subscribePatch } from '@/lib/patch-emitter'
@@ -142,11 +153,15 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
 
     const id = useId().replace(/:/g, '-')
 
-    // Stable blockIndex claimed once per instance
-    const msgId = useAssistantState(({ message }) => message.id)
+    // Stable blockIndex claimed once per instance.
+    // msgId is null when rendering outside an assistant message (tool cards, etc.)
+    // — in that case the patch loop is disabled and we fall back to error display.
+    const msgId = useOptionalMessageId()
+    const canPatch = msgId !== null
+    const blockKey = msgId ?? `standalone:${id}`
     const blockIndexRef = useRef<number | null>(null)
     if (blockIndexRef.current === null) {
-        blockIndexRef.current = claimBlockIndex(msgId)
+        blockIndexRef.current = claimBlockIndex(blockKey)
     }
     const blockIndex = blockIndexRef.current
 
@@ -179,7 +194,7 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
         const handleRenderFailure = () => {
             if (cancelled) return
             const currentChat = chatRef.current
-            if (!currentChat || patchRetriesRef.current >= MAX_PATCH_RETRIES) {
+            if (!canPatch || !currentChat || patchRetriesRef.current >= MAX_PATCH_RETRIES) {
                 setSvg(null)
                 setStatus('error')
                 return
@@ -188,7 +203,7 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
             setStatus('patching')
             setSvg(null)
             void currentChat.api.sendPatchRequest(currentChat.sessionId, {
-                msgId,
+                msgId: msgId!,
                 blockIndex,
                 type: 'mermaid',
                 failedCode: renderCode
@@ -232,7 +247,7 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
     // Subscribe to message-patched events. Also set a 15s fallback so the
     // component never hangs in 'patching' forever (e.g. CLI crash, lost response).
     useEffect(() => {
-        if (status !== 'patching') return undefined
+        if (status !== 'patching' || !msgId) return undefined
 
         const timer = setTimeout(() => setStatus('error'), 15_000)
 
