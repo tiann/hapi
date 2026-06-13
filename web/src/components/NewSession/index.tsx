@@ -628,8 +628,11 @@ export function NewSession(props: {
         }
     }
 
-    const hasCodexSessionSelected = agent === 'codex' && Boolean(selectedCodexSessionId)
-    const canCreate = Boolean(machineId && (trimmedDirectory || hasCodexSessionSelected) && !isFormDisabled && !missingWorktreeDirectory)
+    const selectedCodexSessionForCreate = agent === 'codex' && selectedCodexSessionId
+        ? (codexSessionsState.sessions.find((s) => s.id === selectedCodexSessionId) ?? null)
+        : null
+    const hasSpawnDirectory = Boolean(selectedCodexSessionForCreate?.path ?? trimmedDirectory)
+    const canCreate = Boolean(machineId && hasSpawnDirectory && !isFormDisabled && !missingWorktreeDirectory)
 
     return (
         <div className="flex flex-col divide-y divide-[var(--app-divider)]">
