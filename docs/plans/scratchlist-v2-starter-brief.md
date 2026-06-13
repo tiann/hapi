@@ -1,6 +1,6 @@
 # Scratchlist v2 starter brief
 
-**Status:** draft - ready to seed a v2 peer agent when operator is ready to start
+**Status:** decisions made by operator 2026-06-13; v2 peer spawning now
 **Predecessor session:** `c8ee000d-34d8-4b96-b078-da6b25186a75` (archived, lifecycle=archived, name "PR798 scratchlist (resurrected)") - 2,256 messages spanning 2026-06-02 → 2026-06-07
 **v1 issue:** [tiann/hapi#11](https://github.com/heavygee/hapi/issues/11) (filed in fork; upstream tracking is via PR review)
 **v1.0 PR (initial):** [tiann/hapi#772](https://github.com/tiann/hapi/pull/772)
@@ -64,12 +64,42 @@ Primary v2 ask: **hub sync** for scratchlist entries. The localStorage cap means
 - **Do NOT add search across scratchlists.** Same reason - separate feature.
 - **Do NOT change the styling.** v1.1 styling was hard-won via the swear01 collaboration. Hub sync is a backend feature; the panel UI should be byte-identical.
 
-### Open questions for the operator (don't decide unilaterally)
+### Operator decisions (RESOLVED 2026-06-13)
 
-1. **Schema choice (A above):** opaque blob on `sessions.metadata.scratchlist` vs new typed table. Typed table is the right answer for the long term but requires hub schema migration; blob is a faster v2.
-2. **SSE event shape (D above):** piggyback on `session-updated` or new dedicated event. Depends on what `tiann/hapi#885` settles for the patch-vs-event design discussion.
-3. **Migration UX (C above):** silent push-up on first open, or one-time prompt "your local scratchlist will sync to your account - ok?" The privacy-paranoid operator might prefer the prompt.
-4. **Retention.** Should hub keep scratchlist entries for archived sessions? Operator's just-now behavior of trying to resume an archived session to get its workspace back suggests yes. v2 should preserve scratchlist data even when `lifecycleState=archived`.
+These were open questions; operator has decided. Peer should treat each as canonical and not relitigate without flagging it back to orchestrator first.
+
+#### 1. Schema choice (A above): TYPED TABLE
+
+> Operator: "I want typed table. Eventually, this data will be visible to and referenced by the overseer as context for the operator's thoughts/plans/desires for this session - I want that readily available and have our ability to reference/link things autonomously by the overseer as they find useful. Schema should enable that future feature from jump."
+
+Implication for peer: design a new `session_scratchlist` (or similar) table with typed columns - `{sessionId, entryId, text, createdAt, updatedAt}` minimum. Plan ahead for the "overseer will read this" use case: ensure the schema supports indexing by sessionId and timestamp queries. Index on `(sessionId, createdAt)` recommended. Don't store as opaque blob on `sessions.metadata`.
+
+#### 2. SSE event shape (D above): PIGGYBACK on `session-updated`
+
+> Operator: "the creation of one of these will be exceedingly rare, vs regular composer typing. follow the 80/20 on that piggyback vs not decision. is there a compelling reason to make a new event for something this rare?"
+
+Implication for peer: extend `SessionPatchSchema` (in `shared/src/schemas.ts`, the `.strict()` zod object that today only carries `active`/`thinking`/`activeAt`/`updatedAt`/`model`/etc.) with a `scratchlistUpdatedAt?: number` (or similar minimal token). Web client's existing `session-updated` SSE handler then patches the cache on receipt. Don't invent a new event type.
+
+This is the same direction the sibling `tiann/hapi#884` Fix B will take (extend `SessionPatchSchema` to include `todos`/`teamState`/`metadata`/`agentState`). Peer should expect that Fix B work to land in parallel - if there's a merge conflict in `SessionPatchSchema`, the v2 peer should add their `scratchlistUpdatedAt` field cleanly alongside whatever Fix B adds; either order works.
+
+#### 3. Migration UX (C above): SILENT push-up + one-time banner
+
+> Operator: "silent - the user has no reason to prefer localstorage, that was merely our expediency. they will have already expected this to be stored in the hub db. a banner similar to the 'upgrading your cursor sessions to acp' would be apropos."
+
+Implication for peer: study `web/src/components/CursorMigrationBanner.tsx` (the existing ACP-upgrade banner) for the dismissal/persistence pattern. Mirror it: first time a v2-aware client encounters localStorage entries on a session, push them up to hub silently AND surface a non-blocking banner explaining what happened, with click-to-dismiss + state persistence so it doesn't reappear. Banner copy should explain (a) what's now in the hub (b) that nothing was lost (c) it now syncs across devices.
+
+#### 4. Retention on archive vs delete: KEEP on archive, prompt-on-delete
+
+> Operator: "yes, but deleted sessions should also delete scratchlists. If a session with scratchlist is attempted to be deleted, there should be an option given to the operator 'you still have scratchlist items in this session. would you like to migrate a summary of this session to a new session and retain your scratchlist there? or just delete' - will need some workshopping on this one, the point is, there might be value for 'future work' here, that would be ideal not to 'lose'."
+
+Implication for peer: TWO scopes to separate.
+
+- **v2.0 (this PR):** scratchlist persists when `lifecycleState=archived`. Resume re-reads from hub. Archive does NOT delete scratchlist data. Delete-session does cascade-delete scratchlist data. Same enforcement as other session-scoped data.
+
+- **v2.1 (a follow-up issue, NOT this PR):** the "delete with summarize-and-migrate" UX flow. This is genuinely workshopping territory - it touches summarisation (which model? cost? cancellable?), the new-session creation flow, and operator UX. **Peer should file a separate tracking issue against `tiann/hapi` for v2.1 with a design proposal section, then move on.** Do NOT implement the prompt in v2.0. The simpler "are you sure? this will also delete N scratchlist entries" confirmation IS in scope for v2.0; the summarize-and-migrate flow is not.
+
+The reason for the split: v2.0 is a clean-shaped feature (storage + sync + migration). v2.1 is a UX feature with hard model/cost/UX questions that need their own design pass. Trying to land both in one PR will bloat reviewer cognitive load and risk scope creep.
+
 
 ---
 
