@@ -6,7 +6,7 @@ import { ScratchlistMigrationBanner } from './ScratchlistMigrationBanner'
 afterEach(() => cleanup())
 
 function renderBanner(props: {
-    migrationStatus: 'idle' | 'migrating' | 'completed' | 'dismissed' | 'pre-migrated'
+    migrationStatus: 'idle' | 'migrating' | 'completed' | 'dismissed'
     onDismiss?: () => void
 }) {
     return render(
@@ -35,10 +35,11 @@ describe('ScratchlistMigrationBanner', () => {
         expect(container.firstChild).toBeNull()
     })
 
-    it('renders nothing for pre-migrated sessions (operator already saw the banner once)', () => {
-        const { container } = renderBanner({ migrationStatus: 'pre-migrated' })
-        expect(container.firstChild).toBeNull()
-    })
+    // 'pre-migrated' was removed by the HAPI Bot PR #896 follow-up:
+    // a session whose migration ran in a prior mount but was not yet
+    // dismissed should now show the banner, not hide it. The
+    // dismissal flag is the only thing that suppresses the banner -
+    // see ScratchlistMigrationBanner doc-comment.
 
     it('renders the banner with title, body, and dismiss button when status is completed', () => {
         renderBanner({ migrationStatus: 'completed' })
