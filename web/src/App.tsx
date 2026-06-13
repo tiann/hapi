@@ -205,9 +205,12 @@ function AppInner() {
         }
         const invalidations = [
             queryClient.invalidateQueries({ queryKey: queryKeys.sessions }),
-            ...(selectedSessionId ? [
-                queryClient.invalidateQueries({ queryKey: queryKeys.session(selectedSessionId) })
-            ] : [])
+            // Invalidate ALL cached session-detail entries on reconnect, not just
+            // the selected one.  With `SESSION_DETAIL_STALE_TIME_MS` extending the
+            // freshness window on `useSession`, a previously-viewed session that
+            // received updates during the SSE gap would otherwise serve stale
+            // cached data on remount.  See tiann/hapi#884.
+            queryClient.invalidateQueries({ queryKey: ['session'] })
         ]
         const refreshMessages = (selectedSessionId && api)
             ? fetchLatestMessages(api, selectedSessionId)
