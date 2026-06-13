@@ -369,6 +369,35 @@ export class SessionCache {
         })
     }
 
+    /**
+     * tiann/hapi#893 (scratchlist v2): emit a `session-updated` SSE patch
+     * carrying `scratchlistUpdatedAt` so other clients viewing the same
+     * session refetch the entries query. Called by `SyncEngine` after
+     * any successful scratchlist mutation. The timestamp is the trigger,
+     * not the payload - clients use it as a change-detection token and
+     * pull entries via the dedicated REST query.
+     *
+     * Per operator decision (see brief): piggyback on `session-updated`
+     * rather than introduce a new event type, because scratchlist
+     * mutations are exceedingly rare relative to keep-alive patches.
+     *
+     * Resolves the namespace from the in-memory session map (or the DB
+     * row as a fallback) so the SSE manager can scope the broadcast
+     * correctly even if the cache is cold.
+     */
+    emitScratchlistChanged(sessionId: string, updatedAt: number = Date.now()): void {
+        const cached = this.sessions.get(sessionId)
+        const namespace = cached?.namespace
+            ?? this.store.sessions.getSession(sessionId)?.namespace
+        if (!namespace) return
+        this.publisher.emit({
+            type: 'session-updated',
+            sessionId,
+            namespace,
+            data: { scratchlistUpdatedAt: updatedAt } satisfies SessionPatch
+        })
+    }
+
     handleSessionEnd(payload: { sid: string; time: number }): void {
         const t = clampAliveTime(payload.time) ?? Date.now()
 

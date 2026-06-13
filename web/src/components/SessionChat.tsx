@@ -27,7 +27,8 @@ import { resolvePendingSchedule } from '@/components/AssistantChat/ScheduleTimeP
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
 import { QueuedMessagesBar } from '@/components/AssistantChat/QueuedMessagesBar'
 import { ScratchlistDrawer } from '@/components/AssistantChat/ScratchlistPanel'
-import { useScratchlist } from '@/lib/use-scratchlist'
+import { useHubScratchlist } from '@/lib/use-hub-scratchlist'
+import { ScratchlistMigrationBanner } from '@/components/AssistantChat/ScratchlistMigrationBanner'
 import { useHappyRuntime } from '@/lib/assistant-runtime'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
 import { consumeSharePendingTransfer } from '@/lib/sharePendingState'
@@ -263,9 +264,9 @@ function ShareSeedConsumer(props: { sessionId: string; sessionActive: boolean })
  * composer-toolbar counter and the drawer share one source of truth.
  */
 export function ScratchlistDrawerHost(props: {
-    entries: ReturnType<typeof useScratchlist>['entries']
-    onMove: ReturnType<typeof useScratchlist>['move']
-    onDelete: ReturnType<typeof useScratchlist>['remove']
+    entries: ReturnType<typeof useHubScratchlist>['entries']
+    onMove: ReturnType<typeof useHubScratchlist>['move']
+    onDelete: ReturnType<typeof useHubScratchlist>['remove']
     onSend: (text: string, attachments?: AttachmentMetadata[], scheduledAt?: number | null) => Promise<boolean>
     /**
      * Called when the operator promotes an entry to the composer.
@@ -410,7 +411,7 @@ function SessionChatInner(props: SessionChatProps) {
     const [outlineOpen, setOutlineOpen] = useState(false)
     const [cursorSelectedBase, setCursorSelectedBase] = useState('auto')
     const lastSyncedCursorModelRef = useRef<string | null | undefined>(undefined)
-    const scratchlist = useScratchlist(props.session.id)
+    const scratchlist = useHubScratchlist(props.session.id, props.api)
     const [scratchlistMode, setScratchlistMode] = useState(false)
     // Mode resets across sessions implicitly: SessionChat is keyed by
     // session.id at the public-export boundary, so a session switch
@@ -1158,6 +1159,19 @@ function SessionChatInner(props: SessionChatProps) {
                             </div>
                         </div>
                     ) : null}
+
+                    {/*
+                     * tiann/hapi#893: one-time banner shown on first
+                     * v2-load when localStorage entries got migrated to
+                     * the hub. Sits above the drawer so the operator
+                     * sees it whether or not the drawer is open.
+                     * Auto-renders nothing unless `migrationStatus ===
+                     * 'completed'`.
+                     */}
+                    <ScratchlistMigrationBanner
+                        migrationStatus={scratchlist.migrationStatus}
+                        onDismiss={scratchlist.dismissMigrationBanner}
+                    />
 
                     <div className="px-3">
                         {/*
