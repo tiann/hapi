@@ -1,4 +1,4 @@
-import { Hono } from 'hono'
+import { Hono, type Env, type Schema } from 'hono'
 import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
 import { join } from 'node:path'
@@ -208,7 +208,10 @@ function findPreviewWebappDistDir(): string | null {
     return null
 }
 
-export function mountPreviewStaticRoutes(app: Hono, distDir: string | null): boolean {
+export function mountPreviewStaticRoutes<E extends Env, S extends Schema, BasePath extends string>(
+    app: Hono<E, S, BasePath>,
+    distDir: string | null
+): boolean {
     if (!distDir || !existsSync(join(distDir, 'index.html'))) {
         return false
     }
@@ -234,7 +237,9 @@ export function mountPreviewStaticRoutes(app: Hono, distDir: string | null): boo
     return true
 }
 
-export function mountMissingPreviewRoutes(app: Hono): void {
+export function mountMissingPreviewRoutes<E extends Env, S extends Schema, BasePath extends string>(
+    app: Hono<E, S, BasePath>
+): void {
     app.get('/new', (c) => c.text('Preview app is not built.\n\nRun:\n  cd web\n  bun run build:preview\n', 503))
     app.get('/new/*', (c) => c.text('Preview app is not built.\n\nRun:\n  cd web\n  bun run build:preview\n', 503))
 }
