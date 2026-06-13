@@ -9,8 +9,13 @@
  */
 
 import { query } from '@/claude/sdk/query'
+import type { SDKUserMessage } from '@/claude/sdk'
 import { logger } from '@/ui/logger'
 import type { ApiSessionClient } from '@/api/apiSession'
+
+async function* singleTurnPrompt(text: string): AsyncGenerator<SDKUserMessage> {
+    yield { type: 'user', message: { role: 'user', content: text } } as SDKUserMessage
+}
 
 const MERMAID_PROMPT = (failedCode: string) =>
     `The following mermaid block failed to render. Return ONLY the corrected mermaid block enclosed in a fenced \`\`\`mermaid ... \`\`\` code fence. Do not include any prose or explanation.\n\n\`\`\`mermaid\n${failedCode}\n\`\`\``
@@ -53,13 +58,13 @@ export function registerPatchHandler(
 
         try {
             const q = query({
-                prompt,
+                prompt: singleTurnPrompt(prompt),
                 options: {
                     cwd: config.cwd,
                     maxTurns: 1,
-                    allowedTools: [],
                     model: config.model ?? undefined,
-                    permissionMode: 'bypassPermissions'
+                    permissionMode: 'default',
+                    canCallTool: async () => ({ behavior: 'deny', message: 'Patch repair runs without tools' })
                 }
             })
 

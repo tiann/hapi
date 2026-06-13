@@ -137,6 +137,7 @@ function MermaidPatchingPlaceholder() {
 // ── Main component ───────────────────────────────────────────────────────────
 
 const MAX_PATCH_RETRIES = 2
+const MAX_PATCH_CODE_CHARS = 16_000
 
 export function MermaidDiagram(props: SyntaxHighlighterProps) {
     const [theme, setTheme] = useState<'light' | 'dark'>(() => resolveTheme())
@@ -195,7 +196,7 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
         const handleRenderFailure = () => {
             if (cancelled) return
             const currentChat = chatRef.current
-            if (!canPatch || !currentChat || patchRetriesRef.current >= MAX_PATCH_RETRIES) {
+            if (!canPatch || !currentChat || renderCode.length > MAX_PATCH_CODE_CHARS || patchRetriesRef.current >= MAX_PATCH_RETRIES) {
                 setSvg(null)
                 setStatus('error')
                 return
