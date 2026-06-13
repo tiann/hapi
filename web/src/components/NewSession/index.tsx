@@ -851,13 +851,10 @@ export function NewSession(props: {
     async function handleCreate() {
         if (!machineId) return
 
-        // When resuming a Codex session, use that session's recorded workspace
-        // path as the directory. The form's directory input is irrelevant - the
-        // transcript belongs to a specific project and Codex must run there.
-        const selectedCodexSession = agent === 'codex' && selectedCodexSessionId
-            ? (codexSessionsState.sessions.find((s) => s.id === selectedCodexSessionId) ?? null)
-            : null
-        const spawnDirectory = selectedCodexSession?.path ?? trimmedDirectory
+        // When importing a Codex session, prefer that session's recorded workspace cwd.
+        const spawnDirectory = (agent === 'codex' && selectedCodexImportSession?.cwd)
+            ? selectedCodexImportSession.cwd
+            : trimmedDirectory
 
         if (!spawnDirectory) return
 
@@ -994,9 +991,14 @@ export function NewSession(props: {
                 deferredDirectoryExists === undefined
                 || (deferredDirectoryExists === true && opencodeModelsState.isLoading)
             ))
+    const hasSpawnDirectory = Boolean(
+        (agent === 'codex' && selectedCodexImportSession?.cwd)
+            ? selectedCodexImportSession.cwd
+            : trimmedDirectory
+    )
     const canCreate = Boolean(
         machineId
-        && trimmedDirectory
+        && hasSpawnDirectory
         && !isFormDisabled
         && !missingWorktreeDirectory
         && !isLaunchPreferenceValidationPending
