@@ -378,6 +378,27 @@ export class SyncEngine {
     }
 
     /**
+     * Read a single entry by id. The route layer uses this to short-
+     * circuit duplicate POSTs (migration retry) BEFORE running the
+     * server-side cap check; otherwise an idempotent retry against a
+     * session that has hit `SCRATCHLIST_MAX_ENTRIES` would 409 when it
+     * should 200 with the existing row.
+     */
+    getScratchlistEntry(
+        sessionId: string,
+        entryId: string
+    ): { entryId: string; text: string; createdAt: number; updatedAt: number } | null {
+        const row = this.store.scratchlist.get(sessionId, entryId)
+        if (!row) return null
+        return {
+            entryId: row.entryId,
+            text: row.text,
+            createdAt: row.createdAt,
+            updatedAt: row.updatedAt
+        }
+    }
+
+    /**
      * Insert a scratchlist entry. Returns the canonical row on success
      * (so the route layer can serialise it without a follow-up read).
      * Emits a `session-updated` SSE patch carrying `scratchlistUpdatedAt`
