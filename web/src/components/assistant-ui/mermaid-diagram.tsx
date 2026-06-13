@@ -151,6 +151,8 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
     const blockIndex = blockIndexRef.current
 
     const chat = useOptionalHappyChatContext()
+    const chatRef = useRef(chat)
+    chatRef.current = chat
     const patchRetriesRef = useRef(0)
 
     // Theme observer
@@ -176,7 +178,8 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
 
         const handleRenderFailure = () => {
             if (cancelled) return
-            if (!chat || patchRetriesRef.current >= MAX_PATCH_RETRIES) {
+            const currentChat = chatRef.current
+            if (!currentChat || patchRetriesRef.current >= MAX_PATCH_RETRIES) {
                 setSvg(null)
                 setStatus('error')
                 return
@@ -184,7 +187,7 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
             patchRetriesRef.current += 1
             setStatus('patching')
             setSvg(null)
-            void chat.api.sendPatchRequest(chat.sessionId, {
+            void currentChat.api.sendPatchRequest(currentChat.sessionId, {
                 msgId,
                 blockIndex,
                 type: 'mermaid',
@@ -224,7 +227,7 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
         return () => {
             cancelled = true
         }
-    }, [id, renderCode, theme, chat, msgId, blockIndex])
+    }, [id, renderCode, theme, msgId, blockIndex])
 
     // Subscribe to message-patched events. Also set a 15s fallback so the
     // component never hangs in 'patching' forever (e.g. CLI crash, lost response).
