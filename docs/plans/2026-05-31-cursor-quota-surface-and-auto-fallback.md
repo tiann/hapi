@@ -839,22 +839,34 @@ Tie into existing `agent-notify` pipeline:
 
 ## Sibling perf issue: web client session-refetch storm (2026-06-12)
 
-**Status:** Fix A PR open upstream awaiting review (#885); Fix B' peer in flight on fork worktree (PR submission gated on #885 merging). Local triage in place.
+**Status:** Fix A PR open upstream awaiting review (#885); Fix B' implementation **DONE** on fork branch, gated on #885 merging before PR submission. Local triage in place.
 
 ### Fix A (2026-06-12, narrowed to staleTime only)
 
-- **PR:** [tiann/hapi#885](https://github.com/tiann/hapi/pull/885) - `staleTime: 30_000` on `useSession`. Fix A only.
+- **PR:** [tiann/hapi#885](https://github.com/tiann/hapi/pull/885) - `staleTime: 30_000` on `useSession`. Fix A only. State as of 2026-06-13 17:19: OPEN, `mergeStateStatus=UNSTABLE` because the `pr-review` AI bot job failed; the actual `test` job passes. pr-review is non-blocking; awaiting upstream maintainer attention only.
 - Codex review caught a regression in the original Fix B (observer-count gating in `useSSE.ts` suppressed stale-marking, broke remount semantics). Peer reverted Fix B in commit `d2584a9`.
 - Honest assessment: Fix A alone is mostly placebo on a busy install. Helps focus/mount/reconnect refetches; doesn't help the dominant SSE-driven invalidation storm.
 
-### Fix B' (2026-06-13, hub-side schema extension)
+### Fix B' (2026-06-13, hub-side schema extension - IMPLEMENTATION DONE)
 
-- **Peer session:** `7b422b92` (cursor + auto + yolo, engaged 2026-06-13 16:55).
-- **Worktree:** `worktrees/refetch-storm-fix-b` on branch `feat/sse-patch-extend-session-state`.
-- **Approach:** extend `SessionPatchSchema` in `shared/src/schemas.ts` with `todos` / `teamState` / `metadata` / `agentState` (all optional, schema stays `.strict()`). Wire the four emit-sites in `hub/src/socket/handlers/cli/sessionHandlers.ts` (lines 117/128/216/263) to populate the `data` field of each `session-updated` event. Web client's existing `getSessionPatch` cache-write path will then run instead of the invalidation fallback.
-- **Operator decision (2026-06-13):** schema-extend (option (i)) over new event type (option (ii)). Rationale: "is there a compelling reason to make a new event for something this rare? follow the 80/20."
-- **Submission gate:** PR opens against `tiann/hapi:main` only AFTER #885 merges. Implementation work proceeds now on the fork branch; merge happens upstream first, then peer rebases and submits.
-- **Coordination:** scratchlist v2 peer (b2efd739) is also extending `SessionPatchSchema` in the same file. Adjacent additions; merge order doesn't matter; whoever lands first establishes order.
+- **Peer session:** `7b422b92` (cursor + auto + yolo, engaged 2026-06-13 16:55, reported back 2026-06-13 17:19).
+- **Worktree:** `worktrees/refetch-storm-fix-b` on branch `feat/sse-patch-extend-session-state`, pushed to `origin`.
+- **Issue filed:** [tiann/hapi#895](https://github.com/tiann/hapi/issues/895) - `perf(hub,web): emit structured patches for session todos/teamState/metadata/agentState changes (closes the second half of #884)`.
+- **Commit:** `05147a6a`. Diff: 10 files, +679/-44.
+- **Approach (as shipped):** extend `SessionPatchSchema` in `shared/src/schemas.ts` with `todos` / `teamState` / versioned `metadata` / versioned `agentState` (all optional, schema stays `.strict()`). Wire the four emit-sites in `hub/src/socket/handlers/cli/sessionHandlers.ts` (lines 117/128/216/263) to populate the `data` field of each `session-updated` event. **Plus three deviations from original handoff that the peer cold-reviewed and corrected:**
+  1. **Web-side changes were required despite handoff "no changes needed" claim.** `patchSessionDetail` blanket-spread `{ ...session, ...patch }` would have written `session.metadata = { version, value }` and corrupted the cache for versioned fields. Fixed with explicit field enumeration. `patchSessionSummary` also needed to recompute summary derivations (`todoProgress`, `pendingRequestKinds`, summary metadata) - extracted three pure helpers in `shared/src/sessionSummary.ts`, identical output.
+  2. **`syncEngine.handleRealtimeEvent` intercept was eating the data silently.** Without this fix, all four hub-side emit-site changes would have been a no-op on the wire (event.data dropped, full Session re-broadcast via refreshSession). Added a fast-path `applySessionPatch` that forwards the patch event as-is; legacy refresh path preserved for empty/no-data events and full-Session emitters elsewhere (`cursor/codexDesktop.ts:1003,1511`).
+  3. **Empty-patch guard.** `applySessionPatch` returns false on `Object.keys(patch).length === 0` so empty events fall through to `refreshSession` instead of becoming SSE events the web would REST-invalidate on. Pinned by test.
+- **Gates (peer-reported, orchestrator-spot-checked):**
+  - `bun typecheck` clean across cli/web/hub/shared
+  - `bun run test:shared` 93 pass / 0 fail
+  - `bun run test:hub` 426 pass / 0 fail (3 integration skips - confirmed pre-existing on `upstream/main` baseline, not introduced by this change)
+  - `bun run test:web` 964 pass / 0 fail
+  - `bun run test:cli` 1 known flake (`should detect version mismatch and kill old runner`) - pre-existing per handoff
+- **Manual verification:** schema/wire round-trip script confirms each patch shape (todos / versioned metadata / versioned agentState) survives JSON.stringify, fails `isSessionRecord` (forces patch branch on web), yields non-empty `getSessionPatch` (so `patchSessionDetail` + `patchSessionSummary` run instead of REST invalidate). Full-Session payloads still parse via `isSessionRecord` (legacy refresh broadcast path unchanged).
+- **Live measurement deferred** to operator's post-merge soup-deploy window (per handoff allowance: peer can document methodology; reporter measures post-merge). The kill-criterion remains: rsyslog stop-rule comes off cleanly and `journalctl -u hapi-hub.service | grep "GET /api/sessions/" | wc -l` over a 5-min idle window drops to ~0.
+- **Submission gate:** PR opens against `tiann/hapi:main` only AFTER #885 merges. Implementation done; rebase + `gh pr create` happens after. Peer is monitoring #885.
+- **Coordination:** scratchlist v2 peer (b2efd739, now under rotated HAPI ID `58e5bcac` after 2026-06-13 16:52:55 hub bounce) is also touching `SessionPatchSchema` in the same file. Both are adjacent optional-field additions; merge order doesn't matter; whoever lands first sets the textual order, the other rebases.
 
 ### Operator framing
 
