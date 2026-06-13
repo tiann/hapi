@@ -157,7 +157,9 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
     // msgId is null when rendering outside an assistant message (tool cards, etc.)
     // — in that case the patch loop is disabled and we fall back to error display.
     const msgId = useOptionalMessageId()
-    const canPatch = msgId !== null
+    const chat = useOptionalHappyChatContext()
+    // Only Claude sessions have a registered patch handler on the CLI side.
+    const canPatch = msgId !== null && chat?.metadata?.flavor === 'claude'
     const blockKey = msgId ?? `standalone:${id}`
     const blockIndexRef = useRef<number | null>(null)
     if (blockIndexRef.current === null) {
@@ -165,7 +167,6 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
     }
     const blockIndex = blockIndexRef.current
 
-    const chat = useOptionalHappyChatContext()
     const chatRef = useRef(chat)
     chatRef.current = chat
     const patchRetriesRef = useRef(0)

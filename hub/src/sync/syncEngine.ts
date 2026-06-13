@@ -410,23 +410,28 @@ export class SyncEngine {
         payload: { msgId: string; blockIndex: number; type: 'mermaid' | 'table'; failedCode: string }
     ): 'sent' | 'duplicate' | 'too-many-retries' | 'no-cli' {
         const key = `${sessionId}:${payload.msgId}:${payload.blockIndex}`
+        const roomName = `session:${sessionId}`
         const existing = this.pendingPatches.get(key)
         if (existing) {
             if (existing.retries >= 2) {
                 return 'too-many-retries'
             }
-            // Allow a second attempt (retry) but not more
             existing.retries++
         } else {
-            const session = this.sessionCache.getSessionByNamespace(sessionId, namespace)
-            if (!session) {
+            // Verify a CLI socket is actually connected — session cache alone can
+            // lag behind disconnects, causing the web client to hang needlessly.
+            if (!this.sessionCache.getSessionByNamespace(sessionId, namespace)) {
+                return 'no-cli'
+            }
+            const sockets = this.io.of('/cli').adapter.rooms.get(roomName)
+            if (!sockets || sockets.size === 0) {
                 return 'no-cli'
             }
             const timerId = setTimeout(() => this.pendingPatches.delete(key), SyncEngine.PATCH_TIMEOUT_MS)
             this.pendingPatches.set(key, { retries: 1, timerId })
         }
 
-        const room = this.io.of('/cli').to(`session:${sessionId}`)
+        const room = this.io.of('/cli').to(roomName)
         room.emit('patch-prompt', payload)
         return 'sent'
     }
