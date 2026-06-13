@@ -48,6 +48,7 @@ import {
 import { SessionTypeSelector } from './SessionTypeSelector'
 import { YoloToggle } from './YoloToggle'
 import { formatRunnerSpawnError } from '../../utils/formatRunnerSpawnError'
+import { isPreviewUiMode } from '@/lib/runtime-config'
 
 export function NewSession(props: {
     api: ApiClient
@@ -61,6 +62,7 @@ export function NewSession(props: {
 }) {
     const { haptic } = usePlatform()
     const { t } = useTranslation()
+    const isPreviewMode = isPreviewUiMode()
     const { spawnSession, isPending, error: spawnError } = useSpawnSession(props.api)
     const { sessions } = useSessions(props.api)
     const isFormDisabled = Boolean(isPending || props.isLoading)
@@ -594,49 +596,8 @@ export function NewSession(props: {
 
     const canCreate = Boolean(machineId && trimmedDirectory && !isFormDisabled && !missingWorktreeDirectory)
 
-    return (
-        <div className="flex flex-col divide-y divide-[var(--app-divider)]">
-            <MachineSelector
-                machines={props.machines}
-                machineId={machineId}
-                isLoading={props.isLoading}
-                isDisabled={isFormDisabled}
-                onChange={handleMachineChange}
-            />
-            {runnerSpawnError ? (
-                <div className="px-3 py-2 text-xs text-red-600">
-                    Runner last spawn error: {runnerSpawnError}
-                </div>
-            ) : null}
-            <DirectorySection
-                directory={directory}
-                suggestions={suggestions}
-                selectedIndex={selectedIndex}
-                isDisabled={isFormDisabled}
-                recentPaths={recentPaths}
-                statusMessage={directoryStatusMessage}
-                statusTone={directoryStatusTone}
-                onDirectoryChange={handleDirectoryChange}
-                onDirectoryFocus={handleDirectoryFocus}
-                onDirectoryBlur={handleDirectoryBlur}
-                onDirectoryKeyDown={handleDirectoryKeyDown}
-                onSuggestionSelect={handleSuggestionSelect}
-                onPathClick={handlePathClick}
-                onChooseFolder={props.onChooseFolder ? handleChooseFolderClick : undefined}
-            />
-            <SessionTypeSelector
-                sessionType={sessionType}
-                worktreeName={worktreeName}
-                worktreeInputRef={worktreeInputRef}
-                isDisabled={isFormDisabled}
-                onSessionTypeChange={setSessionType}
-                onWorktreeNameChange={setWorktreeName}
-            />
-            <AgentSelector
-                agent={agent}
-                isDisabled={isFormDisabled}
-                onAgentChange={setAgent}
-            />
+    const modelControls = (
+        <>
             {agent === 'opencode' ? (
                 <OpencodeModelSelector
                     cwd={deferredDirectory}
@@ -710,6 +671,30 @@ export function NewSession(props: {
                     />
                 )
             )}
+        </>
+    )
+
+    const sessionTypeControl = (
+        <SessionTypeSelector
+            sessionType={sessionType}
+            worktreeName={worktreeName}
+            worktreeInputRef={worktreeInputRef}
+            isDisabled={isFormDisabled}
+            onSessionTypeChange={setSessionType}
+            onWorktreeNameChange={setWorktreeName}
+        />
+    )
+
+    const agentControl = (
+        <AgentSelector
+            agent={agent}
+            isDisabled={isFormDisabled}
+            onAgentChange={setAgent}
+        />
+    )
+
+    const tuningControls = (
+        <>
             <ClaudeEffortSelector
                 agent={agent}
                 effort={effort}
@@ -727,6 +712,71 @@ export function NewSession(props: {
                 isDisabled={isFormDisabled}
                 onToggle={setYoloMode}
             />
+        </>
+    )
+
+    const advancedControls = (
+        <>
+            {sessionTypeControl}
+            {modelControls}
+            {tuningControls}
+        </>
+    )
+
+    return (
+        <div className="flex flex-col divide-y divide-[var(--app-divider)]">
+            <MachineSelector
+                machines={props.machines}
+                machineId={machineId}
+                isLoading={props.isLoading}
+                isDisabled={isFormDisabled}
+                onChange={handleMachineChange}
+            />
+            {runnerSpawnError ? (
+                <div className="px-3 py-2 text-xs text-red-600">
+                    Runner last spawn error: {runnerSpawnError}
+                </div>
+            ) : null}
+            <DirectorySection
+                directory={directory}
+                suggestions={suggestions}
+                selectedIndex={selectedIndex}
+                isDisabled={isFormDisabled}
+                recentPaths={recentPaths}
+                statusMessage={directoryStatusMessage}
+                statusTone={directoryStatusTone}
+                onDirectoryChange={handleDirectoryChange}
+                onDirectoryFocus={handleDirectoryFocus}
+                onDirectoryBlur={handleDirectoryBlur}
+                onDirectoryKeyDown={handleDirectoryKeyDown}
+                onSuggestionSelect={handleSuggestionSelect}
+                onPathClick={handlePathClick}
+                onChooseFolder={props.onChooseFolder ? handleChooseFolderClick : undefined}
+            />
+            {isPreviewMode ? (
+                <>
+                    {agentControl}
+                    <details className="group px-3 py-3">
+                        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-medium text-[var(--app-fg)]">
+                            <span>{t('newSession.advanced')}</span>
+                            <span
+                                aria-hidden="true"
+                                className="h-2 w-2 rotate-45 border-b border-r border-[var(--app-hint)] transition-transform group-open:rotate-[225deg]"
+                            />
+                        </summary>
+                        <div className="-mx-3 mt-3 flex flex-col divide-y divide-[var(--app-divider)] border-t border-[var(--app-divider)]">
+                            {advancedControls}
+                        </div>
+                    </details>
+                </>
+            ) : (
+                <>
+                    {sessionTypeControl}
+                    {agentControl}
+                    {modelControls}
+                    {tuningControls}
+                </>
+            )}
 
             {(error ?? spawnError) ? (
                 <div className="px-3 py-2 text-sm text-red-600">

@@ -8,7 +8,7 @@ import { registerSW } from 'virtual:pwa-register'
 import { initializeFontScale } from '@/hooks/useFontScale'
 import { getTelegramWebApp, isTelegramEnvironment, loadTelegramSdk } from './hooks/useTelegram'
 import { queryClient } from './lib/query-client'
-import { createAppRouter } from './router'
+import { createAppRouter, getAppRouterBasepath } from './router'
 import { I18nProvider } from './lib/i18n-context'
 import { restoreSpaRedirect } from './lib/spaRedirect'
 import { installScrollRestorationGuard } from './lib/scrollStorageGuard'
@@ -76,7 +76,9 @@ async function bootstrap() {
     const history = isTelegram
         ? createMemoryHistory({ initialEntries: [getInitialPath()] })
         : undefined
-    const router = createAppRouter(history)
+    const router = createAppRouter(history, {
+        basepath: isTelegram ? '/' : getAppRouterBasepath()
+    })
 
     ReactDOM.createRoot(document.getElementById('root')!).render(
         <React.StrictMode>

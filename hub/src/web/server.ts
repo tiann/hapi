@@ -190,6 +190,55 @@ function findWebappDistDir(): { distDir: string; indexHtmlPath: string } {
     return { distDir, indexHtmlPath: join(distDir, 'index.html') }
 }
 
+function findPreviewWebappDistDir(): string | null {
+    const configured = process.env.HAPI_WEB_PREVIEW_DIST_DIR?.trim()
+    const candidates = [
+        ...(configured ? [configured] : []),
+        join(process.cwd(), '..', 'web', 'dist-new'),
+        join(import.meta.dir, '..', '..', '..', 'web', 'dist-new'),
+        join(process.cwd(), 'web', 'dist-new')
+    ]
+
+    for (const distDir of candidates) {
+        if (existsSync(join(distDir, 'index.html'))) {
+            return distDir
+        }
+    }
+
+    return null
+}
+
+export function mountPreviewStaticRoutes(app: Hono, distDir: string | null): boolean {
+    if (!distDir || !existsSync(join(distDir, 'index.html'))) {
+        return false
+    }
+
+    app.use('/new/*', async (c, next) => {
+        if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
+            await next()
+            return
+        }
+
+        return await serveStatic({
+            root: distDir,
+            rewriteRequestPath: (path) => path.replace(/^\/new\//, '/')
+        })(c, next)
+    })
+    app.get('/new', async (c, next) => {
+        return await serveStatic({ root: distDir, path: 'index.html' })(c, next)
+    })
+    app.get('/new/*', async (c, next) => {
+        return await serveStatic({ root: distDir, path: 'index.html' })(c, next)
+    })
+
+    return true
+}
+
+export function mountMissingPreviewRoutes(app: Hono): void {
+    app.get('/new', (c) => c.text('Preview app is not built.\n\nRun:\n  cd web\n  bun run build:preview\n', 503))
+    app.get('/new/*', (c) => c.text('Preview app is not built.\n\nRun:\n  cd web\n  bun run build:preview\n', 503))
+}
+
 function serveEmbeddedAsset(asset: EmbeddedWebAsset): Response {
     return new Response(Bun.file(asset.sourcePath), {
         headers: {
@@ -314,6 +363,10 @@ from GitHub Pages instead of through the relay tunnel.
         })
 
         return app
+    }
+
+    if (!mountPreviewStaticRoutes(app, findPreviewWebappDistDir())) {
+        mountMissingPreviewRoutes(app)
     }
 
     const { distDir, indexHtmlPath } = findWebappDistDir()

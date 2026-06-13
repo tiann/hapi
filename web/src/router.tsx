@@ -40,6 +40,7 @@ import { clearDraftsAfterSend } from '@/lib/clearDraftsAfterSend'
 import { inactiveSessionCanResume } from '@/lib/sessionResume'
 import { markSessionSeen } from '@/lib/sessionLastSeen'
 import { clearCodexImportedSession, markCodexSessionsImported } from '@/lib/codexImportedSessions'
+import { getPreviewBasepath } from '@/lib/runtime-config'
 import type { Machine, CodexDuplicateSessionGroup, CodexLocalSessionSummary } from '@/types/api'
 import FilesPage from '@/routes/sessions/files'
 import FilePage from '@/routes/sessions/file'
@@ -1103,13 +1104,18 @@ export const routeTree = rootRoute.addChildren([
 
 type RouterHistory = Parameters<typeof createRouter>[0]['history']
 
-export function createAppRouter(history?: RouterHistory) {
+export function createAppRouter(history?: RouterHistory, options: { basepath?: string } = {}) {
     return createRouter({
         routeTree,
         history,
+        basepath: options.basepath ?? '/',
         scrollRestoration: true,
         getScrollRestorationKey,
     })
+}
+
+export function getAppRouterBasepath(baseUrl: string = import.meta.env.BASE_URL): string {
+    return getPreviewBasepath(baseUrl) ?? '/'
 }
 
 export type AppRouter = ReturnType<typeof createAppRouter>

@@ -3,6 +3,7 @@
 
 # Build output
 **/dist/
+**/dist-new/
 **/.vitepress/cache/
 **/dist-exe/
 **/*.tsbuildinfo
@@ -42,6 +43,8 @@ execplan/
 # Generated npm bundle output (local)
 cli/npm/main/
 .ace-tool/
+.hermes/
+.hermes-prompts/
 
 # Playwright e2e artifacts
 test-results/

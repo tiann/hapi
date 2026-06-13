@@ -18,6 +18,7 @@ import { getSessionLastSeenAt } from '@/lib/sessionLastSeen'
 import { getAttentionLabel, SessionAttentionIndicator } from '@/components/SessionAttentionIndicator'
 import { getCodexImportedAt, subscribeCodexImportedSessions } from '@/lib/codexImportedSessions'
 import { formatReopenError } from '@/lib/reopenError'
+import { isPreviewUiMode } from '@/lib/runtime-config'
 
 type SessionGroup = {
     key: string
@@ -493,6 +494,20 @@ export function getVisibleSessionPreview(
     return visible
 }
 
+export function sortPreviewSessions(sessions: SessionSummary[]): SessionSummary[] {
+    return [...sessions].sort((a, b) => {
+        const rank = (session: SessionSummary) => {
+            if (session.pendingRequestsCount > 0) return 0
+            if (session.active) return 1
+            return 2
+        }
+        const rankA = rank(a)
+        const rankB = rank(b)
+        if (rankA !== rankB) return rankA - rankB
+        return b.updatedAt - a.updatedAt
+    })
+}
+
 function SessionListSearch(props: {
     value: string
     onChange: (value: string) => void
@@ -594,9 +609,18 @@ function SessionItem(props: {
     api: ApiClient | null
     selected?: boolean
     showDetailedStatus?: boolean
+    simplified?: boolean
 }) {
     const { t } = useTranslation()
-    const { session: s, onSelect, showPath = true, api, selected = false, showDetailedStatus = false } = props
+    const {
+        session: s,
+        onSelect,
+        showPath = true,
+        api,
+        selected = false,
+        showDetailedStatus = false,
+        simplified = false
+    } = props
     const { haptic } = usePlatform()
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
@@ -640,7 +664,7 @@ function SessionItem(props: {
     })
 
     const sessionName = getSessionTitle(s)
-    const todoProgress = getTodoProgress(s)
+    const todoProgress = simplified ? null : getTodoProgress(s)
     const attention = useMemo(
         () => showDetailedStatus
             ? classifySessionAttention(s, {
@@ -654,6 +678,7 @@ function SessionItem(props: {
     const scheduledLabel = s.futureScheduledMessageCount > 1
         ? t('session.item.scheduledMessages', { count: s.futureScheduledMessageCount })
         : t('session.item.scheduledMessage')
+    const metadataLabel = s.metadata?.worktree?.basePath ?? s.metadata?.path ?? s.id
     return (
         <>
             <button
@@ -702,7 +727,7 @@ function SessionItem(props: {
                 </div>
                 {showPath ? (
                     <div className="truncate text-xs text-[var(--app-hint)]">
-                        {s.metadata?.path ?? s.id}
+                        {metadataLabel}
                     </div>
                 ) : null}
             </button>
@@ -781,9 +806,10 @@ export function SessionList(props: {
 }) {
     const { t } = useTranslation()
     const { renderHeader = true, api, selectedSessionId, machineLabelsById = {}, onNewSessionInDirectory } = props
+    const isPreviewMode = isPreviewUiMode()
     const { sessionPreviewLimit } = useSessionPreviewLimit()
     const { sessionListStatusMode } = useSessionListStatusMode()
-    const showDetailedStatus = sessionListStatusMode === 'detailed'
+    const showDetailedStatus = isPreviewMode || sessionListStatusMode === 'detailed'
     const [searchQuery, setSearchQuery] = useState('')
     const [, setCodexImportedSessionsVersion] = useState(0)
     const normalizedQuery = normalizeSearch(searchQuery)
@@ -948,6 +974,62 @@ export function SessionList(props: {
             return changed ? next : prev
         })
     }, [allGroups])
+
+    if (isPreviewMode) {
+        return (
+            <div className="mx-auto w-full max-w-content flex flex-col">
+                {renderHeader ? (
+                    <div className="flex items-center justify-between px-3 py-2">
+                        <div className="text-sm font-semibold text-[var(--app-fg)]">
+                            {isSearching
+                                ? t('sessions.search.count', { n: visibleSessions.length, total: allSessions.length })
+                                : t('sessions.count', { n: allSessions.length, m: allGroups.length })}
+                        </div>
+                        <button
+                            type="button"
+                            onClick={props.onNewSession}
+                            className="session-list-new-button rounded-full bg-[var(--app-link)] p-2 text-white shadow-sm transition-opacity hover:opacity-90"
+                            title={t('sessions.new')}
+                        >
+                            <PlusIcon className="h-5 w-5" />
+                        </button>
+                    </div>
+                ) : null}
+
+                {props.sessions.length > 0 ? (
+                    <SessionListSearch value={searchQuery} onChange={setSearchQuery} />
+                ) : null}
+
+                {props.sessions.length === 0 ? (
+                    <SessionsEmptyState
+                        onNewSession={props.onNewSession}
+                        onBrowse={props.onBrowse}
+                    />
+                ) : null}
+
+                {props.sessions.length > 0 && isSearching && visibleSessions.length === 0 ? (
+                    <div className="px-4 py-8 text-center text-sm text-[var(--app-hint)]">
+                        {t('sessions.search.noResults')}
+                    </div>
+                ) : null}
+
+                <div className="flex flex-col gap-1 px-2 pt-1 pb-3">
+                    {sortPreviewSessions(visibleSessions).map((session) => (
+                        <SessionItem
+                            key={session.id}
+                            session={session}
+                            onSelect={props.onSelect}
+                            showPath={Boolean(session.metadata?.path || session.metadata?.worktree?.basePath)}
+                            api={api}
+                            selected={session.id === selectedSessionId}
+                            showDetailedStatus={showDetailedStatus}
+                            simplified
+                        />
+                    ))}
+                </div>
+            </div>
+        )
+    }
 
     return (
         <div className="mx-auto w-full max-w-content flex flex-col">

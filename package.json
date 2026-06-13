@@ -12,6 +12,7 @@
         "download:tunwg": "bun run hub/scripts/download-tunwg.ts",
         "build:hub": "cd hub && bun run build",
         "build:web": "cd web && bun run build",
+        "build:web:preview": "cd web && bun run build:preview",
         "dev:hub": "cd hub && bun run dev",
         "dev:web": "cd web && bun run dev",
         "typecheck": "bun run typecheck:cli && bun run typecheck:web && bun run typecheck:hub",

@@ -9,7 +9,8 @@ import {
     normalizeSearch,
     prepareSidebarSessions,
     sessionMatchesQuery,
-    shouldShowSessionInSidebar
+    shouldShowSessionInSidebar,
+    sortPreviewSessions
 } from './SessionList'
 
 function makeSession(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
@@ -292,6 +293,24 @@ describe('getVisibleSessionPreview', () => {
         }))
 
         expect(getVisibleSessionPreview(sessions, { expanded: true, limit: 2 })).toHaveLength(4)
+    })
+})
+
+describe('sortPreviewSessions', () => {
+    it('prioritizes permission-needed, then live, then recent sessions', () => {
+        const sessions = [
+            makeSession({ id: 'old-live', active: true, updatedAt: 10 }),
+            makeSession({ id: 'recent-inactive', updatedAt: 100 }),
+            makeSession({ id: 'needs-input', pendingRequestsCount: 1, updatedAt: 1 }),
+            makeSession({ id: 'new-live', active: true, updatedAt: 20 }),
+        ]
+
+        expect(sortPreviewSessions(sessions).map(session => session.id)).toEqual([
+            'needs-input',
+            'new-live',
+            'old-live',
+            'recent-inactive',
+        ])
     })
 })
 
