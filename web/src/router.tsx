@@ -771,7 +771,7 @@ function SessionPage() {
                         <button
                             type="button"
                             onClick={() => { void refetchSession() }}
-                            className="rounded-md bg-[var(--app-link)] px-3 py-1.5 text-sm text-white"
+                            className="rounded-md bg-[var(--app-button)] px-3 py-1.5 text-sm text-[var(--app-button-text)]"
                         >
                             Retry
                         </button>
