@@ -5,11 +5,13 @@ import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
 
+const MAX_PATCH_CODE_CHARS = 16_000
+
 const PatchRequestBodySchema = z.object({
     msgId: z.string().min(1),
     blockIndex: z.number().int().nonnegative(),
     type: z.enum(['mermaid', 'table']),
-    failedCode: z.string()
+    failedCode: z.string().min(1).max(MAX_PATCH_CODE_CHARS)
 })
 
 export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
@@ -112,10 +114,7 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (result === 'no-cli') {
             return c.json({ error: 'No active CLI connected' }, 503)
         }
-        if (result === 'too-many-retries') {
-            return c.json({ error: 'Patch retry limit reached' }, 429)
-        }
-        // 'sent' or 'duplicate' — both OK from web's perspective
+        // 'sent' or 'duplicate' — both are 200; web only needs the status for diagnostics
         return c.json({ ok: true, status: result })
     })
 

@@ -135,7 +135,7 @@ export class SyncEngine {
     private readonly io: Server
     private inactivityTimer: NodeJS.Timeout | null = null
     /** Dedup set keyed by `${sessionId}:${msgId}:${blockIndex}` — prevents duplicate patch-prompt emissions. */
-    private readonly pendingPatches: Map<string, { retries: number; timerId: ReturnType<typeof setTimeout> }> = new Map()
+    private readonly pendingPatches: Map<string, { timerId: ReturnType<typeof setTimeout> }> = new Map()
     private static readonly PATCH_TIMEOUT_MS = 30_000
 
     constructor(
@@ -401,23 +401,20 @@ export class SyncEngine {
     /**
      * Route a patch request from a web client to the active CLI for a session.
      * Returns 'sent' if the patch-prompt was emitted, 'duplicate' if a patch is
-     * already in flight for this msgId+blockIndex, 'too-many-retries' if the cap
-     * was exceeded, or 'no-cli' if no CLI socket is connected.
+     * already in flight for this msgId+blockIndex, or 'no-cli' if no CLI socket
+     * is connected.
      */
     requestPatch(
         sessionId: string,
         namespace: string,
         payload: { msgId: string; blockIndex: number; type: 'mermaid' | 'table'; failedCode: string }
-    ): 'sent' | 'duplicate' | 'too-many-retries' | 'no-cli' {
+    ): 'sent' | 'duplicate' | 'no-cli' {
         const key = `${sessionId}:${payload.msgId}:${payload.blockIndex}`
         const roomName = `session:${sessionId}`
-        const existing = this.pendingPatches.get(key)
-        if (existing) {
-            if (existing.retries >= 2) {
-                return 'too-many-retries'
-            }
-            existing.retries++
-        } else {
+        if (this.pendingPatches.has(key)) {
+            return 'duplicate'
+        }
+        {
             // Verify a CLI socket is actually connected — session cache alone can
             // lag behind disconnects, causing the web client to hang needlessly.
             if (!this.sessionCache.getSessionByNamespace(sessionId, namespace)) {
@@ -428,7 +425,7 @@ export class SyncEngine {
                 return 'no-cli'
             }
             const timerId = setTimeout(() => this.pendingPatches.delete(key), SyncEngine.PATCH_TIMEOUT_MS)
-            this.pendingPatches.set(key, { retries: 1, timerId })
+            this.pendingPatches.set(key, { timerId })
         }
 
         const room = this.io.of('/cli').to(roomName)
