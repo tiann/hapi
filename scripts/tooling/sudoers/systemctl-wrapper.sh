@@ -62,6 +62,61 @@ else
     CALLER_HAS_TTY=0
 fi
 
+# Supported-wrapper ancestor check: walk up the parent chain looking
+# for a known supported wrapper script in the cmdline. If found, the
+# call is coming through hapi-restart-hub / hapi-use-worktree /
+# hapi-driver-rebuild - all of which do their own safety contract
+# (patient drain, schema check, etc.) before reaching us. Allow the
+# override regardless of TTY for those paths. This is what makes the
+# supported path work from agent tool-call shells (which have tty_nr=0
+# but legitimately need the wrapper to do the actual restart).
+#
+# Defeating this requires an agent to deliberately impersonate the
+# canonical script path via 'exec -a' - which is significantly more
+# friction than the env-var-alone bypass and has no incidental cause
+# (an agent has to actively read the wrapper source and decide to
+# craft the impersonation). At that level of intent, the answer is
+# better operator tooling, not more wrapper locks - per the project's
+# 'tooling-gap-not-agent-fence' framing in lib/operator-tty-gate.sh.
+SUPPORTED_ANCESTOR=0
+# Walk the parent chain looking for a supported wrapper. Match an argv
+# token (null-separated in /proc/PID/cmdline) whose value EXACTLY equals
+# one of the canonical wrapper paths or their .local/bin symlinks.
+# Exact-match is required because string-contains would fire on any
+# bash command line that mentioned the script path as a literal (e.g.
+# the installer script that runs smoke tests, or any script-source
+# that grep's for these paths).
+_find_supported_ancestor() {
+    local pid=$PPID depth=0 stat_line ppid arg
+    local SUPPORTED_PATHS=(
+        "/home/heavygee/coding/hapi/scripts/tooling/hapi-restart-hub.sh"
+        "/home/heavygee/coding/hapi/scripts/tooling/hapi-use-worktree.sh"
+        "/home/heavygee/coding/hapi/scripts/tooling/hapi-driver-rebuild.sh"
+        "/home/heavygee/.local/bin/hapi-restart-hub"
+        "/home/heavygee/.local/bin/hapi-use-worktree"
+        "/home/heavygee/.local/bin/hapi-driver-rebuild"
+    )
+    while [ "$depth" -lt 10 ] && [ "$pid" -gt 1 ]; do
+        if [ -r "/proc/$pid/cmdline" ]; then
+            # Iterate null-separated argv tokens, exact-match each
+            while IFS= read -r -d '' arg; do
+                for sup in "${SUPPORTED_PATHS[@]}"; do
+                    [ "$arg" = "$sup" ] && return 0
+                done
+            done < "/proc/$pid/cmdline"
+        fi
+        stat_line=$(cat "/proc/$pid/stat" 2>/dev/null) || return 1
+        ppid=$(printf '%s' "$stat_line" | sed 's/.*) //' | awk '{print $2}')
+        [ -z "$ppid" ] || [ "$ppid" = "0" ] && return 1
+        pid=$ppid
+        depth=$((depth + 1))
+    done
+    return 1
+}
+if _find_supported_ancestor; then
+    SUPPORTED_ANCESTOR=1
+fi
+
 # Note: the operator override env var is consulted only when the call
 # would otherwise be refused (destructive verb on a protected unit).
 # Non-destructive ops (status, is-active, show, etc.) and ops on
@@ -143,7 +198,11 @@ fi
 # Agent tool-call shells have no tty, so HAPI_OPERATOR_SYSTEMCTL_OVERRIDE=1
 # is ignored when set from an agent context.
 if [ "${HAPI_OPERATOR_SYSTEMCTL_OVERRIDE:-0}" = "1" ]; then
-    if [ "$CALLER_HAS_TTY" = "1" ]; then
+    if [ "$CALLER_HAS_TTY" = "1" ] || [ "$SUPPORTED_ANCESTOR" = "1" ]; then
+        # Two legitimate paths:
+        #   - operator typing at a real terminal (CALLER_HAS_TTY=1)
+        #   - call coming through a supported wrapper that already
+        #     enforced the safety contract (SUPPORTED_ANCESTOR=1)
         exec "$REAL_SYSTEMCTL" "$@"
     fi
     cat >&2 <<EOF
