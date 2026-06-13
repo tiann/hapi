@@ -741,6 +741,23 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ error: 'Invalid body', issues: parsed.error.issues }, 400)
         }
 
+        // Idempotent-retry short-circuit (HAPI Bot, PR #896 review):
+        // when the caller supplies an explicit entryId AND that id
+        // already exists, return the canonical row with 200 BEFORE the
+        // cap check fires. Otherwise a session sitting at the
+        // 200-entry cap would 409 a duplicate POST that should be a
+        // no-op - which is exactly the path the localStorage migration
+        // retry uses after a partial failure.
+        if (parsed.data.entryId) {
+            const existing = engine.getScratchlistEntry(
+                sessionResult.sessionId,
+                parsed.data.entryId
+            )
+            if (existing) {
+                return c.json({ entry: existing }, 200)
+            }
+        }
+
         // Server-side cap enforcement. Mirrors the web-side cap so a
         // malicious / runaway client can't drive the table without
         // bound. Bypassing the optimistic add path on the web client

@@ -330,6 +330,86 @@ describe('useHubScratchlist - localStorage migration', () => {
         expect(create).not.toHaveBeenCalled()
         expect(result.current.migrationStatus).toBe('idle')
     })
+
+    it('persists FAILED entries back to localStorage and leaves the flag unset (HAPI Bot, PR #896)', async () => {
+        // Migration partial failure: 2 entries in localStorage, the
+        // first POST succeeds and the second throws. Per the bot
+        // review, the failed entry must be written back to
+        // localStorage and the migration flag must NOT advance, so a
+        // future mount can retry. The status drops back to 'idle'
+        // (banner does not render).
+        const sid = makeSid()
+        seedV1Entries(sid)
+        let postCall = 0
+        const create = vi.fn(async (_s: string, body: { text: string; entryId?: string; createdAt?: number }) => {
+            postCall += 1
+            if (postCall === 1) {
+                return {
+                    entry: {
+                        entryId: body.entryId ?? 'a',
+                        text: body.text,
+                        createdAt: body.createdAt ?? 0,
+                        updatedAt: 0
+                    }
+                }
+            }
+            throw new Error('HTTP 500: hub flaked on entry 2')
+        })
+        const api = createMockApi({
+            getScratchlist: async () => ({ entries: [] }),
+            createScratchlistEntry: create
+        })
+        const { result } = renderHook(() => useHubScratchlist(sid, api), { wrapper: createWrapper() })
+        await waitFor(() => expect(create).toHaveBeenCalledTimes(2))
+        await waitFor(() => expect(result.current.migrationStatus).toBe('idle'))
+
+        // Flag must NOT be set: a future mount must retry.
+        expect(localStorage.getItem(`hapi.scratchlist.v2.migrated.${sid}`)).toBeNull()
+        // The failed entry (the second one) must be back in localStorage.
+        const persisted = localStorage.getItem(`hapi.scratchlist.v1.${sid}`)
+        expect(persisted).not.toBeNull()
+        const parsed = JSON.parse(persisted!) as Array<{ id: string; text: string }>
+        expect(parsed.map((e) => e.id)).toEqual(['old-2'])
+        expect(parsed[0]?.text).toBe('another')
+    })
+
+    it('does NOT mirror an empty hub fetch into localStorage before migration runs (HAPI Bot, PR #896)', async () => {
+        // Pre-fix the offline-cache effect would clobber the v1
+        // entries with `[]` the moment the initial fetch returned an
+        // empty list, racing the migration effect's localStorage
+        // read on a future mount. The fix gates the cache mirror on
+        // the migration flag; this test pins it.
+        const sid = makeSid()
+        seedV1Entries(sid)
+        const apiCalls: number[] = []
+        const api = createMockApi({
+            // Block on first fetch so we can inspect localStorage
+            // BEFORE the migration effect kicks off.
+            getScratchlist: async () => {
+                apiCalls.push(Date.now())
+                if (apiCalls.length === 1) {
+                    await new Promise((r) => setTimeout(r, 25))
+                    return { entries: [] }
+                }
+                return {
+                    entries: [
+                        { entryId: 'old-1', text: 'pre-v2 note', createdAt: 100, updatedAt: 100 },
+                        { entryId: 'old-2', text: 'another', createdAt: 200, updatedAt: 200 }
+                    ]
+                }
+            }
+        })
+        const { result } = renderHook(() => useHubScratchlist(sid, api), { wrapper: createWrapper() })
+        // Wait for migration to complete (flag set + status flips).
+        await waitFor(() => expect(result.current.migrationStatus).toBe('completed'), { timeout: 2000 })
+        // localStorage now mirrors hub state (post-migration). It must
+        // contain the v1 entries that round-tripped through the hub
+        // fetch, NOT an empty array.
+        const persisted = localStorage.getItem(`hapi.scratchlist.v1.${sid}`)
+        expect(persisted).not.toBeNull()
+        const parsed = JSON.parse(persisted!) as Array<{ id: string }>
+        expect(parsed.map((e) => e.id).sort()).toEqual(['old-1', 'old-2'])
+    })
 })
 
 describe('useHubScratchlist - reorder (local-only)', () => {
