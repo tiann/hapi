@@ -286,6 +286,21 @@ describe('POST /api/sessions/:id/scratchlist', () => {
         expect(res.status).toBe(409)
     })
 
+    it('rejects oversized entryId with 400 (HAPI Bot, PR #896 follow-up)', async () => {
+        // Server-side guard for the SQLite primary key: an authenticated
+        // client could otherwise grow the table and its index with
+        // arbitrarily large keys. 129 chars is one over the 128-char
+        // cap defined in SCRATCHLIST_MAX_ENTRY_ID_LENGTH.
+        const session = createSession()
+        const app = createApp(session)
+        const res = await app.request('/api/sessions/session-1/scratchlist', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ text: 'oversized id', entryId: 'x'.repeat(129) })
+        })
+        expect(res.status).toBe(400)
+    })
+
     it('returns 404 when the engine reports session-not-found post-auth', async () => {
         // This path covers a race: auth said the session was visible
         // (resolveSessionAccess.ok), but by the time we INSERT the row the

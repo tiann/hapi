@@ -241,6 +241,14 @@ export type RenameSessionRequest = z.infer<typeof RenameSessionRequestSchema>
  */
 export const SCRATCHLIST_MAX_ENTRIES = 200
 export const SCRATCHLIST_MAX_TEXT_LENGTH = 10_000
+/**
+ * Hard cap on client-supplied entry id length. The id is persisted as
+ * part of the SQLite primary key, so without a bound an authenticated
+ * client could grow the table and its index with arbitrarily large
+ * keys. 128 chars comfortably fits a UUID (36) plus any prefix scheme
+ * we might layer on later.
+ */
+export const SCRATCHLIST_MAX_ENTRY_ID_LENGTH = 128
 
 export const ScratchlistEntryCreateRequestSchema = z.object({
     /**
@@ -250,7 +258,7 @@ export const ScratchlistEntryCreateRequestSchema = z.object({
      * tree. New entries created post-v2 can omit this and let the hub
      * generate one.
      */
-    entryId: z.string().min(1).optional(),
+    entryId: z.string().min(1).max(SCRATCHLIST_MAX_ENTRY_ID_LENGTH).optional(),
     text: z.string().min(1).max(SCRATCHLIST_MAX_TEXT_LENGTH),
     /**
      * Optional client-supplied createdAt. Used by the migration path to
