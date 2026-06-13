@@ -48,54 +48,81 @@ type Pattern = {
     transient: boolean
 }
 
-// Patterns are anchored to the start of the (whitespace-trimmed) message
-// because cursor-agent error emits are the whole message body, often with
-// leading newlines from ACP transport formatting (observed in real session
-// b52b9117: the message text was "\n\nError: T: WritableIterable is closed",
-// which was missed when patterns only saw raw start-of-string). Anchoring
-// also rejects assistant messages that merely *describe* the patterns in
-// prose (the 2026-06-12 self-own where my own response triggered the
-// classifier because it listed the pattern strings). trimStart() on every
-// pattern keeps the contract consistent across the family.
+// Patterns are anchored to the start of A LINE (multiline `m` flag), not
+// just start-of-string. Three real cursor-agent failure shapes drove this:
+//
+//   1. Whole-body emit (session b52b9117, 2026-06-12):
+//        "\n\nError: T: WritableIterable is closed"
+//      -- start of message, after leading whitespace.
+//
+//   2. Mid-stream append (session e7d9b44b, 2026-06-13):
+//        "Three of the four hit Codex's usage limit (#151, #153, #155) -
+//         no code review delivered. Only #157 actually got reviewed.
+//         Let me pull the inline comments to see Codex's specific
+//         suggestions:\n\nError: T: [resource_exhausted] Error"
+//      -- cursor-agent appended the gRPC status to the END of an in-flight
+//      text stream rather than rejecting the prompt. Start-of-line `m`
+//      anchor catches this: the `\n\n` separator means `Error: T:` is at
+//      the start of a new line. Pure start-of-string anchoring missed it.
+//
+//   3. Prose that DESCRIBES the patterns (2026-06-12 self-own):
+//        "Triggers on:\n  - Error: T: [resource_exhausted]\n  - ..."
+//      -- each bullet line starts with whitespace+dash, NOT with "Error:".
+//      Multiline `^Error:` rejects it.
+//
+// The diagnostic strength is in the `[snake_case]` bracket form (gRPC's
+// stable status notation) and `Error: T:` prefix - both characteristic of
+// cursor-agent's runtime stringification, rare in genuine prose. The
+// catch-all `Error: T:` is intentionally narrow enough that benign mention
+// would have to literally start a line with "Error: T:" - documented
+// trade-off, the false-positive surface is small and recoverable
+// (operator dismisses banner). The miss surface (this exact failure
+// class going unflagged) is much worse.
+// `^[ \t]*` allows horizontal whitespace before the marker (covers
+// session b52b9117's "  Error: T: [canceled]" wire format with leading
+// spaces). It does NOT allow `\n` consumption, so multi-line strings
+// only match where the marker actually sits at the start of a line.
+// Bullet-list prose like "  - Error: T: ..." still rejects: after
+// `[ \t]*` consumes the spaces, the next char is `-`, not `Error`.
 const PATTERNS: Pattern[] = [
     {
-        test: (t) => /^Error: T: \[resource_exhausted\]/i.test(t.trimStart()),
+        test: (t) => /^[ \t]*Error: T: \[resource_exhausted\]/im.test(t),
         kind: 'quota_exhausted',
         transient: false
     },
     {
-        test: (t) => /^Error: T: \[canceled\]/i.test(t.trimStart()),
+        test: (t) => /^[ \t]*Error: T: \[canceled\]/im.test(t),
         kind: 'canceled',
         transient: true
     },
     {
-        test: (t) => /^Error: T: \[deadline_exceeded\]/i.test(t.trimStart()),
+        test: (t) => /^[ \t]*Error: T: \[deadline_exceeded\]/im.test(t),
         kind: 'deadline_exceeded',
         transient: true
     },
     {
-        test: (t) => /^Error: T: \[unavailable\]/i.test(t.trimStart()),
+        test: (t) => /^[ \t]*Error: T: \[unavailable\]/im.test(t),
         kind: 'unavailable',
         transient: true
     },
     {
-        test: (t) => /^Error: T: Connection stalled/i.test(t.trimStart()),
+        test: (t) => /^[ \t]*Error: T: Connection stalled/im.test(t),
         kind: 'connection_stalled',
         transient: true
     },
     {
-        test: (t) => /^Gemini prompt failed:.*token count exceeds/i.test(t.trimStart()),
+        test: (t) => /^[ \t]*Gemini prompt failed:.*token count exceeds/im.test(t),
         kind: 'context_window',
         transient: false
     },
     {
-        test: (t) => /^Gemini prompt failed:.*exhausted your capacity/i.test(t.trimStart()),
+        test: (t) => /^[ \t]*Gemini prompt failed:.*exhausted your capacity/im.test(t),
         kind: 'capacity_exhausted',
         transient: false
     },
     // catch-all for unknown `Error: T:` prefixes — placed last
     {
-        test: (t) => /^Error: T:/i.test(t.trimStart()),
+        test: (t) => /^[ \t]*Error: T:/im.test(t),
         kind: 'unknown_t_prefix',
         transient: false
     }
