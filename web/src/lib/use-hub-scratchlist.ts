@@ -4,6 +4,7 @@ import type { ApiClient } from '@/api/client'
 import { queryKeys } from '@/lib/query-keys'
 import {
     moveScratchlistEntry,
+    persistScratchlist,
     readScratchlist,
     SCRATCHLIST_MAX_ENTRIES,
     SCRATCHLIST_MAX_TEXT_LENGTH,
@@ -196,18 +197,21 @@ export function useHubScratchlist(
 
     // Migration trigger: runs ONCE per session when:
     //   - api is available
-    //   - hub returned an empty list
     //   - migration flag is unset
     //   - localStorage holds v1 entries
-    // The actual POSTs are sequential to keep retry semantics simple
-    // and to avoid bursts that could trip rate-limit guards. For the
-    // typical case of "a handful of stale entries" this is fine.
+    // Hub being non-empty does NOT block the migration: each POST uses
+    // the entry's original id and the route returns 200 for an
+    // already-existing id (idempotent). So a session that another
+    // device already populated is safely treated as a union with this
+    // device's local entries. The actual POSTs are sequential to keep
+    // retry semantics simple and to avoid bursts that could trip
+    // rate-limit guards. For the typical case of "a handful of stale
+    // entries" this is fine.
     useEffect(() => {
         if (!api || !sessionId) return
         if (migrationAttemptedRef.current) return
         if (query.isLoading || query.isFetching) return
         if (!query.data) return
-        if (query.data.entries.length > 0) return
         if (readMigrationFlag(sessionId)) return
 
         const localEntries = readScratchlist(sessionId)
@@ -222,6 +226,14 @@ export function useHubScratchlist(
         setMigrationStatus('migrating')
 
         void (async () => {
+            // HAPI Bot review on PR #896 caught a data-loss path here:
+            // swallowing per-entry POST failures and still writing the
+            // migration flag would strand entries (the offline-cache
+            // mirror would replace the original localStorage with the
+            // partial hub state). Track failed entries and persist them
+            // back so a future mount retries; do NOT set the flag until
+            // every local entry is reconciled.
+            const failedEntries: ScratchlistEntry[] = []
             try {
                 // Preserve creation order by POSTing in the order
                 // localStorage holds them. The hub orders by createdAt
@@ -240,21 +252,34 @@ export function useHubScratchlist(
                             createdAt: entry.createdAt
                         })
                     } catch {
-                        // Per-entry failure is non-fatal: the hub returns
-                        // 200 with the canonical row for duplicates, and
-                        // any genuine rejection (e.g. cap reached) just
-                        // drops the migrated entry. Logging to console
-                        // would be noise; the user can re-add manually.
+                        // Genuine rejection (cap, network, 5xx...). The
+                        // hub-side route returns 200 for duplicate
+                        // entryId so an idempotent retry doesn't land
+                        // here; only "really did not stick" failures do.
+                        failedEntries.push(entry)
                     }
+                }
+                if (failedEntries.length > 0) {
+                    // Write the unsynced subset back to localStorage so
+                    // a future mount can retry them; leave the flag
+                    // unset so the migration effect re-fires next time.
+                    persistScratchlist(sessionId, failedEntries)
+                    migrationAttemptedRef.current = false
+                    setMigrationStatus('idle')
+                    return
                 }
                 writeMigrationFlag(sessionId)
                 await queryClient.invalidateQueries({ queryKey })
                 setMigrationStatus('completed')
             } catch {
-                // Whole-flow failure (network out, etc): leave the flag
-                // unset so a future mount retries; clear the banner
-                // status so we don't show "completed" for a half-done
-                // migration.
+                // Whole-flow failure (network out, etc): persist the
+                // entries that hadn't been attempted yet plus any that
+                // failed up to the throw, leave the flag unset, and
+                // clear the banner status so we don't show "completed"
+                // for a half-done migration.
+                if (failedEntries.length > 0) {
+                    persistScratchlist(sessionId, failedEntries)
+                }
                 migrationAttemptedRef.current = false
                 setMigrationStatus('idle')
             }
@@ -431,8 +456,17 @@ export function useHubScratchlist(
     // surface (e.g. the standalone `ScratchlistPanel` used by tests)
     // working when offline, and protects against losing freshly-added
     // entries if the hub goes away mid-session.
+    //
+    // CRITICAL: gate on the migration flag. Pre-migration, localStorage
+    // holds the v1 entries that the migration effect needs to read; if
+    // we mirrored an empty hub fetch into localStorage on first render
+    // we'd wipe the very entries we're about to upload (HAPI Bot
+    // review on PR #896 caught a closely-related data-loss path). The
+    // flag also stays unset on partial-failure migrations, which keeps
+    // the failed-entry localStorage write from being clobbered.
     useEffect(() => {
         if (!sessionId) return
+        if (!readMigrationFlag(sessionId)) return
         const data = query.data
         if (!data) return
         try {
@@ -448,7 +482,7 @@ export function useHubScratchlist(
         } catch {
             // Non-fatal: storage quota / private mode.
         }
-    }, [sessionId, query.data])
+    }, [sessionId, query.data, migrationStatus])
 
     const entries: ScratchlistEntry[] = (query.data?.entries ?? []).map(toLocalEntry)
 

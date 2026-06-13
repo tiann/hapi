@@ -61,6 +61,7 @@ function createSession(overrides?: Partial<Session>): Session {
 type EngineOverrides = Partial<{
     listScratchlistEntries: SyncEngine['listScratchlistEntries']
     countScratchlistEntries: SyncEngine['countScratchlistEntries']
+    getScratchlistEntry: SyncEngine['getScratchlistEntry']
     createScratchlistEntry: SyncEngine['createScratchlistEntry']
     updateScratchlistEntry: SyncEngine['updateScratchlistEntry']
     deleteScratchlistEntry: SyncEngine['deleteScratchlistEntry']
@@ -81,6 +82,7 @@ function createApp(session: Session, overrides: EngineOverrides = {}) {
         },
         listScratchlistEntries: overrides.listScratchlistEntries ?? (() => []),
         countScratchlistEntries: overrides.countScratchlistEntries ?? (() => 0),
+        getScratchlistEntry: overrides.getScratchlistEntry ?? (() => null),
         createScratchlistEntry: overrides.createScratchlistEntry
             ?? ((sessionId: string, text: string) => ({
                 outcome: 'created' as const,
@@ -223,6 +225,65 @@ describe('POST /api/sessions/:id/scratchlist', () => {
         expect(res.status).toBe(409)
         const body = await res.json() as { code: string }
         expect(body.code).toBe('scratchlist_at_cap')
+    })
+
+    it('still returns 200 for a duplicate entryId even when the session is at the cap (HAPI Bot, PR #896)', async () => {
+        // The cap check used to fire BEFORE the duplicate check, which
+        // turned an idempotent migration retry into a hard 409 the
+        // moment a session reached `SCRATCHLIST_MAX_ENTRIES`. The fix
+        // short-circuits on getScratchlistEntry first; this test pins
+        // that ordering.
+        const session = createSession()
+        const createCalls: number[] = []
+        const app = createApp(session, {
+            countScratchlistEntries: () => 200,
+            getScratchlistEntry: (_sessionId, entryId) => {
+                if (entryId === 'pre-existing') {
+                    return {
+                        entryId: 'pre-existing',
+                        text: 'already there',
+                        createdAt: 100,
+                        updatedAt: 100
+                    }
+                }
+                return null
+            },
+            createScratchlistEntry: () => {
+                createCalls.push(1)
+                return {
+                    outcome: 'created' as const,
+                    entry: { entryId: 'should-not-fire', text: 'noop', createdAt: 0, updatedAt: 0 }
+                }
+            }
+        })
+        const res = await app.request('/api/sessions/session-1/scratchlist', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ text: 'replay', entryId: 'pre-existing' })
+        })
+        expect(res.status).toBe(200)
+        const body = await res.json() as { entry: { text: string; entryId: string } }
+        expect(body.entry.entryId).toBe('pre-existing')
+        expect(body.entry.text).toBe('already there')
+        // The route must NOT have called createScratchlistEntry: the
+        // duplicate short-circuit returns BEFORE reaching the engine.
+        expect(createCalls).toHaveLength(0)
+    })
+
+    it('still returns 409 for a NEW entryId at the cap', async () => {
+        // Mirror of the test above for the not-duplicate case: a fresh
+        // POST at cap stays a 409.
+        const session = createSession()
+        const app = createApp(session, {
+            countScratchlistEntries: () => 200,
+            getScratchlistEntry: () => null
+        })
+        const res = await app.request('/api/sessions/session-1/scratchlist', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ text: 'fresh', entryId: 'never-seen' })
+        })
+        expect(res.status).toBe(409)
     })
 
     it('returns 404 when the engine reports session-not-found post-auth', async () => {
