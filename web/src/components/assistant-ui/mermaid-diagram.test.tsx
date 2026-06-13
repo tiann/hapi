@@ -17,6 +17,16 @@ vi.mock('mermaid', () => ({
     }
 }))
 
+vi.mock('@assistant-ui/react', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@assistant-ui/react')>()
+    return {
+        ...actual,
+        useAssistantState: vi.fn(<T,>(selector: (s: { message: { id: string } }) => T) =>
+            selector({ message: { id: 'test-msg-id' } })
+        ),
+    }
+})
+
 import { MermaidDiagram } from '@/components/assistant-ui/mermaid-diagram'
 import { MARKDOWN_COMPONENTS_BY_LANGUAGE } from '@/components/assistant-ui/markdown-text'
 
