@@ -99,6 +99,7 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
     if (incomingStoredLocalIds.size > 0) {
         const optimisticStatusByLocalId = new Map<string, DecryptedMessage['status']>()
         const optimisticInvokedAtByLocalId = new Map<string, number | null | undefined>()
+        const optimisticSteeredByLocalId = new Map<string, boolean>()
         for (const msg of merged) {
             if (msg.localId && isOptimisticMessage(msg) && incomingStoredLocalIds.has(msg.localId)) {
                 if (msg.status) {
@@ -106,6 +107,9 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
                 }
                 if (msg.invokedAt !== undefined) {
                     optimisticInvokedAtByLocalId.set(msg.localId, msg.invokedAt)
+                }
+                if (msg.steered) {
+                    optimisticSteeredByLocalId.set(msg.localId, true)
                 }
             }
         }
@@ -115,7 +119,7 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
             }
             return !isOptimisticMessage(msg)
         })
-        if (optimisticStatusByLocalId.size > 0 || optimisticInvokedAtByLocalId.size > 0) {
+        if (optimisticStatusByLocalId.size > 0 || optimisticInvokedAtByLocalId.size > 0 || optimisticSteeredByLocalId.size > 0) {
             merged = merged.map((msg) => {
                 if (!msg.localId) return msg
                 const update: Partial<DecryptedMessage> = {}
@@ -135,6 +139,12 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
                     if (optimisticInvokedAt != null) {
                         update.invokedAt = optimisticInvokedAt
                     }
+                }
+                // The 'steered' marker is live-only (the hub never persists it), so
+                // carry it from the optimistic row onto the replacing server echo —
+                // otherwise the ↳ Steered badge vanishes the moment the echo lands.
+                if (optimisticSteeredByLocalId.has(msg.localId) && !msg.steered) {
+                    update.steered = true
                 }
                 if (Object.keys(update).length > 0) {
                     return { ...msg, ...update }

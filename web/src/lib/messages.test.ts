@@ -10,6 +10,7 @@ function userMessage(partial: Partial<DecryptedMessage> & { id: string }): Decry
         createdAt: partial.createdAt ?? 1_000,
         invokedAt: partial.invokedAt ?? null,
         status: partial.status,
+        steered: partial.steered,
         content: { role: 'user', content: [{ type: 'text', text: 'hi' }] },
     }
 }
@@ -45,6 +46,27 @@ describe('mergeMessages', () => {
         const merged = mergeMessages([optimistic], [serverPending])
         expect(merged).toHaveLength(1)
         expect(merged[0]?.status).toBe('queued')
+    })
+
+    it('carries the live "steered" marker from the optimistic row onto the server echo', () => {
+        // markMessagesConsumed can set steered on the optimistic row before the
+        // server echo arrives; the echo (no steered, since the hub never persists
+        // it) must not drop the badge.
+        const optimisticSteered = userMessage({ id: 'local-s', localId: 'local-s', invokedAt: 4_000, status: 'sent', steered: true })
+        const serverEcho = userMessage({ id: 'server-s', localId: 'local-s', invokedAt: 4_000 })
+
+        const merged = mergeMessages([optimisticSteered], [serverEcho])
+        expect(merged).toHaveLength(1)
+        expect(merged[0]?.steered).toBe(true)
+    })
+
+    it('preserves "steered" across a refetch that omits it', () => {
+        const existing = [userMessage({ id: 'server-s2', localId: 'local-s2', invokedAt: 5_000, steered: true })]
+        const incoming = [userMessage({ id: 'server-s2', localId: 'local-s2', invokedAt: 5_000 })]
+
+        const merged = mergeMessages(existing, incoming)
+        expect(merged).toHaveLength(1)
+        expect(merged[0]?.steered).toBe(true)
     })
 
     it('normalizes a stuck queued status on an invoked message', () => {
