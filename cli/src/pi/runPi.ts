@@ -2,7 +2,7 @@ import { logger } from '@/ui/logger';
 import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
 import { registerLocalHandoffHandler } from '@/agent/localHandoff';
-import { createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle';
+import { createRunnerLifecycle, createModeChangeHandler, setControlledByUser } from '@/agent/runnerLifecycle';
 import { resolveSessionConfigPermissionMode } from '@/agent/sessionConfigRpc';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
@@ -294,10 +294,14 @@ export async function runPi(opts: {
     });
 
     // --- Switch handler ---
-    apiSession.rpcHandlerManager.registerHandler(RPC_METHODS.Switch, async () => {
-        lifecycle.setArchiveReason('Session switched');
-        lifecycle.setSessionEndReason('terminated');
-        void lifecycle.cleanupAndExit();
+    // Unlike Claude/Codex (which use BaseLocalLauncher's restart loop), Pi runs
+    // as a single long-lived subprocess. Switching mode should change control
+    // ownership without killing the process or archiving the session.
+    const handleModeChange = createModeChangeHandler(apiSession);
+    apiSession.rpcHandlerManager.registerHandler(RPC_METHODS.Switch, async (payload: { to?: 'local' | 'remote' } = {}) => {
+        const mode = payload.to ?? 'remote';
+        handleModeChange(mode);
+        piSession.pushKeepAlive();
         return { success: true };
     });
 
