@@ -22,7 +22,7 @@ import type { RpcRegistry } from '../socket/rpcRegistry'
 
 const DEFAULT_RPC_TIMEOUT_MS = 30_000
 const CODEX_MODEL_LIST_RPC_TIMEOUT_MS = 15_000
-const CURSOR_MODEL_LIST_RPC_TIMEOUT_MS = 30_000
+const CURSOR_MODEL_LIST_RPC_TIMEOUT_MS = 120_000
 
 export type RpcCommandResponse = CommandResponse
 export type RpcReadFileResponse = FileReadResponse
