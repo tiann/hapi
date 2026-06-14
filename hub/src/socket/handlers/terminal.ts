@@ -215,7 +215,7 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
         emitCloseToCli(entry)
     })
 
-    const emitToCliForSession = (sessionId: string, event: 'agent-terminal:resize' | 'agent-terminal:refresh' | 'agent-terminal:idle', payload: Record<string, unknown>): void => {
+    const emitToCliForSession = (sessionId: string, event: 'agent-terminal:resize' | 'agent-terminal:refresh' | 'agent-terminal:idle' | 'agent-terminal:input', payload: Record<string, unknown>): void => {
         const cliSocketId = pickCliSocketId(sessionId)
         if (!cliSocketId) return
         const cliSocket = cliNamespace.sockets.get(cliSocketId)
@@ -302,6 +302,24 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
             return
         }
         emitToCliForSession(sessionId, 'agent-terminal:resize', { sessionId, cols, rows })
+    })
+
+    // Raw keystroke(s) from a viewer → relay to the CLI to write into the agent
+    // PTY. Same authorization guard as resize: only an authorized viewer of an
+    // active session in this namespace may drive its TUI.
+    socket.on('agent-terminal:input', (data: unknown) => {
+        const parsed = z.object({
+            sessionId: z.string().min(1),
+            data: z.string().min(1)
+        }).safeParse(data)
+        if (!parsed.success) {
+            return
+        }
+        const { sessionId, data: keys } = parsed.data
+        if (!isAuthorizedSession(sessionId)) {
+            return
+        }
+        emitToCliForSession(sessionId, 'agent-terminal:input', { sessionId, data: keys })
     })
 
     socket.on('disconnect', () => {

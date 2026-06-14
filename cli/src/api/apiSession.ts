@@ -13,6 +13,7 @@ import { AGENT_MESSAGE_PAYLOAD_TYPE } from "@hapi/protocol"
 import type { SessionEndReason } from '@hapi/protocol'
 import type { ClientToServerEvents, ServerToClientEvents, TerminalOutputPayload, Update } from '@hapi/protocol'
 import {
+    AgentTerminalInputPayloadSchema,
     AgentTerminalRefreshPayloadSchema,
     AgentTerminalResizePayloadSchema,
     TerminalClosePayloadSchema,
@@ -180,6 +181,9 @@ export class ApiSessionClient extends EventEmitter {
     readonly rpcHandlerManager: RpcHandlerManager
     private readonly terminalManager: TerminalManager
     private agentTerminalResize: ((cols: number, rows: number) => void) | null = null
+    // Writes raw keystroke(s) from a web viewer into the agent PTY (interactive
+    // TUI navigation). Null until the agent is spawned and after it exits.
+    private agentTerminalSendKeys: ((data: string) => void) | null = null
     private lastAgentTerminalSize: { cols: number; rows: number } | null = null
     // The agent PTY emits a high-frequency byte stream (spinners ~10Hz, full
     // redraws). Only forward it to the hub while a viewer is actually subscribed
@@ -304,12 +308,18 @@ export class ApiSessionClient extends EventEmitter {
             this.terminalManager.close(payload.terminalId)
         }))
 
-        // Read-only agent-terminal viewer: resize the agent PTY to the viewer's
-        // size, and force a repaint when a viewer (re)subscribes so it sees the
-        // live screen instead of a stale/black buffer replay.
+        // Agent-terminal viewer: resize the agent PTY to the viewer's size, and
+        // force a repaint when a viewer (re)subscribes so it sees the live screen
+        // instead of a stale/black buffer replay.
         this.socket.on('agent-terminal:resize', handleTerminalEvent(AgentTerminalResizePayloadSchema, (payload) => {
             this.lastAgentTerminalSize = { cols: payload.cols, rows: payload.rows }
             this.agentTerminalResize?.(payload.cols, payload.rows)
+        }))
+
+        // Raw keystroke(s) typed by a viewer → write into the agent PTY. No-op
+        // (controls null) before the agent is spawned or after it exits.
+        this.socket.on('agent-terminal:input', handleTerminalEvent(AgentTerminalInputPayloadSchema, (payload) => {
+            this.agentTerminalSendKeys?.(payload.data)
         }))
 
         this.socket.on('agent-terminal:refresh', handleTerminalEvent(AgentTerminalRefreshPayloadSchema, () => {
@@ -659,6 +669,7 @@ export class ApiSessionClient extends EventEmitter {
      */
     setAgentTerminalControls(controls: { resize: (cols: number, rows: number) => void; sendKeys: (data: string) => void } | null): void {
         this.agentTerminalResize = controls?.resize ?? null
+        this.agentTerminalSendKeys = controls?.sendKeys ?? null
     }
 
     // Force the agent TUI to repaint its current screen. A plain same-size resize
