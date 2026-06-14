@@ -2631,6 +2631,10 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
         let hasThread = false;
         let pending: QueuedMessage | null = null;
+        // localIds of a steer-fallback message held in `pending`: their consumed
+        // ack is deferred until the message is actually pulled for its real turn,
+        // so it stays queued/recoverable if the CLI exits while waiting.
+        let deferredSteerFallbackLocalIds: string[] = [];
         let suppressReadyForAdminCommand = false;
 
         clearReadyAfterTurnTimer = () => {
@@ -3009,11 +3013,12 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         }
                     } else {
                         // Fell back to a normal turn (turn ended / non-steerable):
-                        // mark consumed so the queued bar clears, then reprocess.
-                        if (steeredLocalIds.length > 0) {
-                            session.client.emitMessagesConsumed(steeredLocalIds);
-                        }
+                        // hold the message in `pending` and defer its consumed ack
+                        // until it is actually pulled for delivery — emitting now
+                        // would stamp invokedAt before the fallback turn is sent and
+                        // lose the message if the CLI exits while waiting.
                         pending = steerBatch;
+                        deferredSteerFallbackLocalIds = steeredLocalIds;
                     }
                 }
                 if (turnInFlight && !this.shouldExit) {
@@ -3042,6 +3047,13 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             let message: QueuedMessage | null = pending;
             const isRetryMessage = Boolean(message);
             pending = null;
+            if (isRetryMessage && deferredSteerFallbackLocalIds.length > 0) {
+                // A steer attempt failed and this message is now being delivered as
+                // a normal turn — emit its consumed ack here (deferred from steer
+                // time) so it stayed queued/recoverable until actually sent.
+                session.client.emitMessagesConsumed(deferredSteerFallbackLocalIds);
+                deferredSteerFallbackLocalIds = [];
+            }
             if (!message) {
                 sameThreadRetryAttempt = 0;
                 sameThreadCompactAttempt = 0;
