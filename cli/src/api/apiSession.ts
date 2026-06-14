@@ -27,6 +27,7 @@ import type {
     Session,
     SessionModel,
     SessionPermissionMode,
+    SessionSteeringMode,
     UserMessage
 } from './types'
 import { AgentStateSchema, CliMessagesResponseSchema, MetadataSchema, UserMessageSchema } from './types'
@@ -574,6 +575,7 @@ export class ApiSessionClient extends EventEmitter {
             modelReasoningEffort?: string | null
             effort?: string | null
             collaborationMode?: SessionCollaborationMode
+            steeringMode?: SessionSteeringMode
         }
     ): void {
         this.socket.volatile.emit('session-alive', {

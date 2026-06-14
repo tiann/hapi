@@ -4,7 +4,7 @@ import { AgentSessionBase } from '@/agent/sessionBase';
 import type { EnhancedMode, PermissionMode } from './loop';
 import type { CodexCliOverrides } from './utils/codexCliOverrides';
 import type { LocalLaunchExitReason } from '@/agent/localLaunchPolicy';
-import type { Metadata, SessionModel, SessionModelReasoningEffort } from '@/api/types';
+import type { Metadata, SessionModel, SessionModelReasoningEffort, SessionSteeringMode } from '@/api/types';
 
 type LocalLaunchFailure = {
     message: string;
@@ -39,6 +39,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         model?: SessionModel;
         modelReasoningEffort?: SessionModelReasoningEffort;
         collaborationMode?: EnhancedMode['collaborationMode'];
+        steeringMode?: SessionSteeringMode;
         replayTranscriptHistoryOnStart?: boolean;
     }) {
         super({
@@ -59,7 +60,8 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
             permissionMode: opts.permissionMode,
             model: opts.model,
             modelReasoningEffort: opts.modelReasoningEffort,
-            collaborationMode: opts.collaborationMode
+            collaborationMode: opts.collaborationMode,
+            steeringMode: opts.steeringMode
         });
 
         this.codexArgs = opts.codexArgs;
@@ -71,6 +73,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         this.model = opts.model;
         this.modelReasoningEffort = opts.modelReasoningEffort;
         this.collaborationMode = opts.collaborationMode;
+        this.steeringMode = opts.steeringMode;
     }
 
     onTranscriptPathFound(path: string): void {
@@ -129,6 +132,11 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
 
     setCollaborationMode = (mode: EnhancedMode['collaborationMode']): void => {
         this.collaborationMode = mode;
+        this.pushKeepAlive();
+    };
+
+    setSteeringMode = (mode: SessionSteeringMode): void => {
+        this.steeringMode = mode;
         this.pushKeepAlive();
     };
 

@@ -1,7 +1,7 @@
 import type { ClientToServerEvents } from '@hapi/protocol'
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
-import type { CodexCollaborationMode, PermissionMode } from '@hapi/protocol/types'
+import type { CodexCollaborationMode, PermissionMode, SteeringMode } from '@hapi/protocol/types'
 import { isRedundantGoalStatusEventContent } from '@hapi/protocol/messages'
 import type { Store, StoredSession } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
@@ -23,6 +23,7 @@ type SessionAlivePayload = {
     modelReasoningEffort?: string | null
     effort?: string | null
     collaborationMode?: CodexCollaborationMode
+    steeringMode?: SteeringMode
 }
 
 type SessionEndPayload = {

@@ -18,6 +18,8 @@ const harness = vi.hoisted(() => ({
     startTurnParams: [] as Array<Record<string, unknown>>,
     startTurnErrors: [] as Error[],
     interruptedTurns: [] as Array<{ threadId: string; turnId: string }>,
+    steerTurnCalls: [] as Array<{ threadId: string; expectedTurnId: string; text: string }>,
+    failNextSteer: false,
     compactThreadIds: [] as string[],
     goalSetCalls: [] as unknown[],
     goalGetCalls: [] as unknown[],
@@ -785,6 +787,18 @@ vi.mock('./codexAppServerClient', () => {
             return {};
         }
 
+        async steerTurn(params?: { threadId?: string; expectedTurnId?: string; input?: Array<{ text?: string }> }): Promise<{ turnId: string }> {
+            const threadId = params?.threadId ?? 'thread-unknown';
+            const expectedTurnId = params?.expectedTurnId ?? 'turn-unknown';
+            const text = params?.input?.[0]?.text ?? '';
+            harness.steerTurnCalls.push({ threadId, expectedTurnId, text });
+            if (harness.failNextSteer) {
+                harness.failNextSteer = false;
+                throw new Error('activeTurnNotSteerable');
+            }
+            return { turnId: expectedTurnId };
+        }
+
         async disconnect(): Promise<void> {}
     }
 
@@ -839,6 +853,7 @@ function createSessionStub(messages = ['hello from launcher test'], mode = creat
     let currentPermissionMode: EnhancedMode['permissionMode'] = mode.permissionMode;
     let currentModel: string | null | undefined = mode.model;
     let currentCollaborationMode: EnhancedMode['collaborationMode'] | undefined = mode.collaborationMode;
+    let currentSteeringMode: 'queue' | 'steer' = 'queue';
     let agentState: FakeAgentState = {
         requests: {},
         completedRequests: {}
@@ -890,6 +905,12 @@ function createSessionStub(messages = ['hello from launcher test'], mode = creat
         setCollaborationMode(nextMode: EnhancedMode['collaborationMode']) {
             currentCollaborationMode = nextMode;
             collaborationModes.push(nextMode);
+        },
+        getSteeringMode() {
+            return currentSteeringMode;
+        },
+        setSteeringMode(nextMode: 'queue' | 'steer') {
+            currentSteeringMode = nextMode;
         },
         onThinkingChange(nextThinking: boolean) {
             session.thinking = nextThinking;
@@ -950,6 +971,8 @@ describe('codexRemoteLauncher', () => {
         harness.startTurnParams = [];
         harness.startTurnErrors = [];
         harness.interruptedTurns = [];
+        harness.steerTurnCalls = [];
+        harness.failNextSteer = false;
         harness.compactThreadIds = [];
         harness.goalSetCalls = [];
         harness.goalGetCalls = [];
@@ -2134,6 +2157,49 @@ describe('codexRemoteLauncher', () => {
             message: 'Context was reset'
         });
         expect(session.thinking).toBe(false);
+    });
+
+    it('steers an in-flight turn via turn/steer instead of starting a new turn when steering mode is "steer"', async () => {
+        harness.suppressTurnCompletion = true;
+        harness.emitTurnAbortedOnInterrupt = true;
+        const { session, rpcHandlers } = createSessionStub(['first message', 'change direction']);
+        session.setSteeringMode('steer');
+
+        const running = codexRemoteLauncher(session as never);
+        await vi.waitFor(() => {
+            expect(harness.steerTurnCalls).toHaveLength(1);
+        });
+
+        // The mid-turn message was steered into the active turn, with the active
+        // turn id as the precondition — not started as a second turn.
+        expect(harness.steerTurnCalls[0]).toEqual({
+            threadId: 'thread-1',
+            expectedTurnId: 'turn-1',
+            text: 'change direction'
+        });
+        expect(harness.startTurnThreadIds).toEqual(['thread-1']);
+
+        await rpcHandlers.get('abort')?.({});
+        const exitReason = await running;
+        expect(exitReason).toBe('exit');
+    });
+
+    it('does not steer (keeps queuing) when steering mode is the default "queue"', async () => {
+        harness.suppressTurnCompletion = true;
+        harness.emitTurnAbortedOnInterrupt = true;
+        // Default queue mode: the second message must NOT be steered into the
+        // running turn; it waits for the turn to end (existing behavior).
+        const { session, rpcHandlers } = createSessionStub(['first message']);
+
+        const running = codexRemoteLauncher(session as never);
+        await vi.waitFor(() => {
+            expect(harness.startTurnThreadIds).toEqual(['thread-1']);
+        });
+
+        await rpcHandlers.get('abort')?.({});
+        const exitReason = await running;
+        expect(exitReason).toBe('exit');
+        expect(harness.steerTurnCalls).toHaveLength(0);
     });
 
     it('interrupts active child agent turns before clearing codex thread state', async () => {

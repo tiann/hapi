@@ -6,7 +6,8 @@ import type {
     SessionEffort,
     SessionModel,
     SessionModelReasoningEffort,
-    SessionPermissionMode
+    SessionPermissionMode,
+    SessionSteeringMode
 } from '@/api/types';
 import { logger } from '@/ui/logger';
 
@@ -27,6 +28,7 @@ export type AgentSessionBaseOptions<Mode> = {
     modelReasoningEffort?: SessionModelReasoningEffort;
     effort?: SessionEffort;
     collaborationMode?: SessionCollaborationMode;
+    steeringMode?: SessionSteeringMode;
 };
 
 export class AgentSessionBase<Mode> {
@@ -51,6 +53,7 @@ export class AgentSessionBase<Mode> {
     protected modelReasoningEffort?: SessionModelReasoningEffort;
     protected effort?: SessionEffort;
     protected collaborationMode?: SessionCollaborationMode;
+    protected steeringMode?: SessionSteeringMode;
 
     constructor(opts: AgentSessionBaseOptions<Mode>) {
         this.path = opts.path;
@@ -69,6 +72,7 @@ export class AgentSessionBase<Mode> {
         this.modelReasoningEffort = opts.modelReasoningEffort;
         this.effort = opts.effort;
         this.collaborationMode = opts.collaborationMode;
+        this.steeringMode = opts.steeringMode;
 
         this.queue.onBatchConsumed = (localIds) => this.client.emitMessagesConsumed(localIds);
 
@@ -138,6 +142,7 @@ export class AgentSessionBase<Mode> {
             modelReasoningEffort?: SessionModelReasoningEffort
             effort?: SessionEffort
             collaborationMode?: SessionCollaborationMode
+            steeringMode?: SessionSteeringMode
         } | undefined {
         if (
             this.permissionMode === undefined
@@ -145,6 +150,7 @@ export class AgentSessionBase<Mode> {
             && this.modelReasoningEffort === undefined
             && this.effort === undefined
             && this.collaborationMode === undefined
+            && this.steeringMode === undefined
         ) {
             return undefined;
         }
@@ -153,7 +159,8 @@ export class AgentSessionBase<Mode> {
             model: this.model,
             modelReasoningEffort: this.modelReasoningEffort,
             effort: this.effort,
-            collaborationMode: this.collaborationMode
+            collaborationMode: this.collaborationMode,
+            steeringMode: this.steeringMode
         };
     }
 
@@ -175,5 +182,9 @@ export class AgentSessionBase<Mode> {
 
     getCollaborationMode(): SessionCollaborationMode | undefined {
         return this.collaborationMode;
+    }
+
+    getSteeringMode(): SessionSteeringMode | undefined {
+        return this.steeringMode;
     }
 }

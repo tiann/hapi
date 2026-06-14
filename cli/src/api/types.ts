@@ -18,7 +18,7 @@ import {
     type CreateSessionResponse,
     type GetSessionResponse
 } from '@hapi/protocol'
-import type { CodexCollaborationMode, Machine, MachineMetadata, PermissionMode, RunnerState } from '@hapi/protocol/types'
+import type { CodexCollaborationMode, Machine, MachineMetadata, PermissionMode, RunnerState, SteeringMode } from '@hapi/protocol/types'
 import { z } from 'zod'
 import { UsageSchema } from '@/claude/types'
 
@@ -38,6 +38,7 @@ export type {
 } from '@hapi/protocol/types'
 export type SessionPermissionMode = PermissionMode
 export type SessionCollaborationMode = CodexCollaborationMode
+export type SessionSteeringMode = SteeringMode
 export type SessionModel = string | null
 export type SessionModelReasoningEffort = string | null
 export type SessionEffort = string | null

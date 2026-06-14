@@ -3,6 +3,7 @@ import {
     DeleteUploadRequestSchema,
     getPermissionModesForFlavor,
     isPermissionModeAllowedForFlavor,
+    isSteeringSupportedForFlavor,
     RenameSessionRequestSchema,
     ResumeSessionRequestSchema,
     SessionCollaborationModeRequestSchema,
@@ -10,6 +11,7 @@ import {
     SessionModelReasoningEffortRequestSchema,
     SessionModelRequestSchema,
     SessionPermissionModeRequestSchema,
+    SessionSteeringModeRequestSchema,
     supportsModelChange,
     toSessionSummary,
     UploadFileRequestSchema
@@ -438,6 +440,40 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ ok: true })
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to apply collaboration mode'
+            return c.json({ error: message }, 409)
+        }
+    })
+
+    app.post('/sessions/:id/steering-mode', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (!isSteeringSupportedForFlavor(flavor)) {
+            return c.json({ error: 'Steering mode is not supported for this agent' }, 400)
+        }
+        if (sessionResult.session.agentState?.controlledByUser === true) {
+            return c.json({ error: 'Steering mode can only be changed for remote sessions' }, 409)
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = SessionSteeringModeRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body' }, 400)
+        }
+
+        try {
+            await engine.applySessionConfig(sessionResult.sessionId, { steeringMode: parsed.data.mode })
+            return c.json({ ok: true })
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to apply steering mode'
             return c.json({ error: message }, 409)
         }
     })

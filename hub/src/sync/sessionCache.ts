@@ -1,5 +1,5 @@
 import { AgentStateSchema, MetadataSchema, TeamStateSchema } from '@hapi/protocol/schemas'
-import type { CodexCollaborationMode, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
+import type { CodexCollaborationMode, PermissionMode, Session, SessionPatch, SteeringMode } from '@hapi/protocol/types'
 import type { Store } from '../store'
 import { clampAliveTime } from './aliveTime'
 import { EventPublisher } from './eventPublisher'
@@ -7,7 +7,7 @@ import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
 import { extractBackgroundTaskDelta } from './backgroundTasks'
 
 const QUEUED_MESSAGE_THINKING_GRACE_MS = 15_000
-type RuntimeConfigKey = 'permissionMode' | 'model' | 'modelReasoningEffort' | 'effort' | 'collaborationMode'
+type RuntimeConfigKey = 'permissionMode' | 'model' | 'modelReasoningEffort' | 'effort' | 'collaborationMode' | 'steeringMode'
 
 export class SessionCache {
     private readonly sessions: Map<string, Session> = new Map()
@@ -149,7 +149,8 @@ export class SessionCache {
             modelReasoningEffort: stored.modelReasoningEffort,
             effort: stored.effort,
             permissionMode: existing?.permissionMode ?? metadata?.preferredPermissionMode,
-            collaborationMode: existing?.collaborationMode
+            collaborationMode: existing?.collaborationMode,
+            steeringMode: existing?.steeringMode
         }
 
         this.sessions.set(sessionId, session)
@@ -174,6 +175,7 @@ export class SessionCache {
         modelReasoningEffort?: string | null
         effort?: string | null
         collaborationMode?: CodexCollaborationMode
+        steeringMode?: SteeringMode
     }): void {
         const t = clampAliveTime(payload.time)
         if (!t) return
@@ -188,6 +190,7 @@ export class SessionCache {
         const previousModelReasoningEffort = session.modelReasoningEffort
         const previousEffort = session.effort
         const previousCollaborationMode = session.collaborationMode
+        const previousSteeringMode = session.steeringMode
         const pendingThinkingUntil = this.pendingThinkingUntilBySessionId.get(session.id) ?? 0
         const requestedThinking = Boolean(payload.thinking)
         const hubNow = Date.now()
@@ -231,6 +234,9 @@ export class SessionCache {
         if (payload.collaborationMode !== undefined && !this.isStaleRuntimeKeepAlive(session.id, 'collaborationMode', t)) {
             session.collaborationMode = payload.collaborationMode
         }
+        if (payload.steeringMode !== undefined && !this.isStaleRuntimeKeepAlive(session.id, 'steeringMode', t)) {
+            session.steeringMode = payload.steeringMode
+        }
 
         const now = Date.now()
         const lastBroadcastAt = this.lastBroadcastAtBySessionId.get(session.id) ?? 0
@@ -239,6 +245,7 @@ export class SessionCache {
             || previousModelReasoningEffort !== session.modelReasoningEffort
             || previousEffort !== session.effort
             || previousCollaborationMode !== session.collaborationMode
+            || previousSteeringMode !== session.steeringMode
         const shouldBroadcast = (!wasActive && session.active)
             || (wasThinking !== session.thinking)
             || modeChanged
@@ -257,7 +264,8 @@ export class SessionCache {
                     model: session.model,
                     modelReasoningEffort: session.modelReasoningEffort,
                     effort: session.effort,
-                    collaborationMode: session.collaborationMode
+                    collaborationMode: session.collaborationMode,
+                    steeringMode: session.steeringMode
                 } satisfies SessionPatch
             })
         }
@@ -408,6 +416,7 @@ export class SessionCache {
             modelReasoningEffort?: string | null
             effort?: string | null
             collaborationMode?: CodexCollaborationMode
+            steeringMode?: SteeringMode
         }
     ): void {
         const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
@@ -460,6 +469,10 @@ export class SessionCache {
         if (config.collaborationMode !== undefined) {
             session.collaborationMode = config.collaborationMode
             this.markRuntimeConfigUpdated(sessionId, 'collaborationMode', appliedAt)
+        }
+        if (config.steeringMode !== undefined) {
+            session.steeringMode = config.steeringMode
+            this.markRuntimeConfigUpdated(sessionId, 'steeringMode', appliedAt)
         }
 
         this.publisher.emit({ type: 'session-updated', sessionId, data: session })

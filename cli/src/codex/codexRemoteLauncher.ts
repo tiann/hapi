@@ -1812,6 +1812,41 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             signal.addEventListener('abort', finish, { once: true });
         });
 
+        // Steering: deliver queued input into the active turn via the app-server
+        // `turn/steer` RPC (non-interrupting). Returns false when the turn is no
+        // longer steerable (ended, or a review/compact turn) so the caller can
+        // fall back to processing the message as a normal subsequent turn.
+        const trySteerActiveTurn = async (batch: QueuedMessage): Promise<boolean> => {
+            const threadId = this.currentThreadId;
+            const turnId = this.currentTurnId;
+            if (!threadId || !turnId) {
+                return false;
+            }
+            try {
+                await appServerClient.steerTurn({
+                    threadId,
+                    input: [{ type: 'text', text: batch.message }],
+                    expectedTurnId: turnId
+                }, { signal: this.abortController.signal });
+                messageBuffer.addMessage(batch.message, 'user');
+                logger.debug(`[Codex] Steered active turn ${turnId} with queued input`);
+                return true;
+            } catch (error) {
+                const detail = error instanceof Error ? error.message : String(error);
+                logger.debug(`[Codex] turn/steer failed (${detail}); falling back to queue-until-turn-end`);
+                return false;
+            }
+        };
+
+        // In 'steer' mode, a message arriving mid-turn must wake the loop (which is
+        // otherwise parked waiting for the turn to end) so it can be steered in.
+        // In the default 'queue' mode this is a no-op and behavior is unchanged.
+        session.queue.setOnMessage(() => {
+            if (turnInFlight && session.getSteeringMode() === 'steer') {
+                wakeLoop();
+            }
+        });
+
         const clearCompactRecovery = (recovery: typeof compactRecovery) => {
             if (!recovery) {
                 return;
@@ -2935,6 +2970,27 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
         while (!this.shouldExit) {
             logActiveHandles('loop-top');
+
+            // Steering: when the operator opted into 'steer' and a turn is in
+            // flight, deliver queued input into the running turn via turn/steer
+            // instead of waiting for it to finish. On failure (turn ended, or a
+            // non-steerable review/compact turn) fall back to the normal path:
+            // process it as a fresh turn once the active turn terminates.
+            if (!pending && turnInFlight && session.getSteeringMode() === 'steer'
+                && this.currentThreadId && this.currentTurnId && session.queue.size() > 0) {
+                const steerBatch = await session.queue.waitForMessagesAndGetAsString(this.abortController.signal);
+                if (steerBatch) {
+                    const steered = await trySteerActiveTurn(steerBatch);
+                    if (!steered) {
+                        pending = steerBatch;
+                    }
+                }
+                if (turnInFlight && !this.shouldExit) {
+                    await waitForTurnOrRecovery(this.abortController.signal);
+                }
+                continue;
+            }
+
             if (!pending && (turnInFlight || recoveryInFlight) && session.queue.size() === 0) {
                 await waitForTurnOrRecovery(this.abortController.signal);
                 if (this.abortController.signal.aborted && !this.shouldExit) {
@@ -3169,6 +3225,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         }
 
         this.clearAbortHandlers(this.session.client.rpcHandlerManager);
+        this.session.queue.setOnMessage(null);
 
         if (this.happyServer) {
             this.happyServer.stop();

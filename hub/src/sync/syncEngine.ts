@@ -9,7 +9,7 @@
 
 import { isKnownFlavor, type LocalResumeTarget, type ResumableSession } from '@hapi/protocol'
 import type { CursorMigrateOutcome, CursorMigrateToAcpRequest, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
-import type { AgentFlavor, CodexCollaborationMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
+import type { AgentFlavor, CodexCollaborationMode, DecryptedMessage, PermissionMode, Session, SteeringMode, SyncEvent } from '@hapi/protocol/types'
 import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { Server } from 'socket.io'
 import type { Store, CancelQueuedMessageResult } from '../store'
@@ -300,6 +300,7 @@ export class SyncEngine {
         modelReasoningEffort?: string | null
         effort?: string | null
         collaborationMode?: CodexCollaborationMode
+        steeringMode?: SteeringMode
     }): void {
         this.sessionCache.handleSessionAlive(payload)
         this.triggerDedupIfNeeded(payload.sid)
@@ -621,6 +622,7 @@ export class SyncEngine {
             modelReasoningEffort?: string | null
             effort?: string | null
             collaborationMode?: CodexCollaborationMode
+            steeringMode?: SteeringMode
         }
     ): Promise<void> {
         const session = this.sessionCache.getSession(sessionId)
@@ -644,6 +646,7 @@ export class SyncEngine {
                 modelReasoningEffort?: Session['modelReasoningEffort']
                 effort?: Session['effort']
                 collaborationMode?: Session['collaborationMode']
+                steeringMode?: Session['steeringMode']
             }
         }
         if (typeof obj.error === 'string' && obj.error.trim().length > 0) {
@@ -754,7 +757,8 @@ export class SyncEngine {
                 effort: session.effort ?? null,
                 modelReasoningEffort: session.modelReasoningEffort ?? null,
                 permissionMode: session.permissionMode,
-                collaborationMode: session.collaborationMode
+                collaborationMode: session.collaborationMode,
+                steeringMode: session.steeringMode
             }
         }
     }
@@ -780,6 +784,7 @@ export class SyncEngine {
                     modelReasoningEffort: target.modelReasoningEffort,
                     permissionMode: target.permissionMode,
                     collaborationMode: target.collaborationMode,
+                    steeringMode: target.steeringMode,
                     updatedAt: session?.updatedAt ?? 0,
                     name: session?.metadata?.name,
                     summary: session?.metadata?.summary?.text,

@@ -15,6 +15,8 @@ import type {
     TurnStartResponse,
     TurnInterruptParams,
     TurnInterruptResponse,
+    TurnSteerParams,
+    TurnSteerResponse,
     ThreadCompactStartParams,
     ThreadCompactStartResponse,
     ThreadGoalSetParams,
@@ -205,6 +207,14 @@ export class CodexAppServerClient {
             timeoutMs: 30_000
         });
         return response as TurnInterruptResponse;
+    }
+
+    async steerTurn(params: TurnSteerParams, options?: { signal?: AbortSignal }): Promise<TurnSteerResponse> {
+        const response = await this.sendRequest('turn/steer', params, {
+            signal: options?.signal,
+            timeoutMs: 30_000
+        });
+        return response as TurnSteerResponse;
     }
 
     async compactThread(

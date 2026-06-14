@@ -12,7 +12,8 @@ import { registerLocalHandoffHandler } from '@/agent/localHandoff';
 import { createModeChangeHandler, createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle';
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
-import { CodexCollaborationModeSchema, PermissionModeSchema } from '@hapi/protocol/schemas';
+import { CodexCollaborationModeSchema, PermissionModeSchema, SteeringModeSchema } from '@hapi/protocol/schemas';
+import type { SteeringMode } from '@hapi/protocol/types';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import type { ReasoningEffort } from './appServerTypes';
@@ -81,6 +82,7 @@ export async function runCodex(opts: {
     let currentModel = opts.model;
     let currentModelReasoningEffort: ReasoningEffort | undefined = opts.modelReasoningEffort;
     let currentCollaborationMode: EnhancedMode['collaborationMode'] = opts.collaborationMode ?? 'default';
+    let currentSteeringMode: SteeringMode = 'queue';
 
     const lifecycle = createRunnerLifecycle({
         session,
@@ -103,10 +105,12 @@ export async function runCodex(opts: {
         }
         sessionInstance.setModelReasoningEffort(currentModelReasoningEffort ?? null);
         sessionInstance.setCollaborationMode(currentCollaborationMode);
+        sessionInstance.setSteeringMode(currentSteeringMode);
         logger.debug(
             `[Codex] Synced session config for keepalive: ` +
             `permissionMode=${currentPermissionMode}, model=${currentModel ?? 'auto'}, ` +
-            `modelReasoningEffort=${currentModelReasoningEffort ?? 'default'}, collaborationMode=${currentCollaborationMode}`
+            `modelReasoningEffort=${currentModelReasoningEffort ?? 'default'}, collaborationMode=${currentCollaborationMode}, ` +
+            `steeringMode=${currentSteeringMode}`
         );
     };
 
@@ -148,6 +152,10 @@ export async function runCodex(opts: {
         const sessionCollaborationMode = sessionWrapperRef.current?.getCollaborationMode();
         if (sessionCollaborationMode) {
             currentCollaborationMode = sessionCollaborationMode;
+        }
+        const sessionSteeringMode = sessionWrapperRef.current?.getSteeringMode();
+        if (sessionSteeringMode) {
+            currentSteeringMode = sessionSteeringMode;
         }
     };
 
@@ -276,6 +284,17 @@ export async function runCodex(opts: {
         return parsed.data;
     };
 
+    const resolveSteeringMode = (value: unknown): SteeringMode => {
+        if (value === null) {
+            return 'queue';
+        }
+        const parsed = SteeringModeSchema.safeParse(value);
+        if (!parsed.success) {
+            throw new Error('Invalid steering mode');
+        }
+        return parsed.data;
+    };
+
     const resolveModelReasoningEffort = (value: unknown): ReasoningEffort | undefined => {
         if (value === null) {
             return undefined;
@@ -301,7 +320,7 @@ export async function runCodex(opts: {
         if (!payload || typeof payload !== 'object') {
             throw new Error('Invalid session config payload');
         }
-        const config = payload as { permissionMode?: unknown; model?: unknown; modelReasoningEffort?: unknown; collaborationMode?: unknown };
+        const config = payload as { permissionMode?: unknown; model?: unknown; modelReasoningEffort?: unknown; collaborationMode?: unknown; steeringMode?: unknown };
 
         if (config.permissionMode !== undefined) {
             currentPermissionMode = resolvePermissionMode(config.permissionMode);
@@ -320,16 +339,22 @@ export async function runCodex(opts: {
             currentCollaborationMode = resolveCollaborationMode(config.collaborationMode);
         }
 
+        if (config.steeringMode !== undefined) {
+            currentSteeringMode = resolveSteeringMode(config.steeringMode);
+        }
+
         applyCurrentConfigToSession({ syncModel: shouldSyncModel });
         const applied: {
             permissionMode: PermissionMode;
             model?: string | null;
             modelReasoningEffort: ReasoningEffort | null;
             collaborationMode: EnhancedMode['collaborationMode'];
+            steeringMode: SteeringMode;
         } = {
             permissionMode: currentPermissionMode,
             modelReasoningEffort: currentModelReasoningEffort ?? null,
-            collaborationMode: currentCollaborationMode
+            collaborationMode: currentCollaborationMode,
+            steeringMode: currentSteeringMode
         };
         if (shouldSyncModel) {
             applied.model = currentModel ?? null;
@@ -355,6 +380,7 @@ export async function runCodex(opts: {
             model: currentModel,
             modelReasoningEffort: currentModelReasoningEffort,
             collaborationMode: currentCollaborationMode,
+            steeringMode: currentSteeringMode,
             resumeSessionId: opts.resumeSessionId,
             replayTranscriptHistoryOnStart,
             onModeChange: createModeChangeHandler(session),
