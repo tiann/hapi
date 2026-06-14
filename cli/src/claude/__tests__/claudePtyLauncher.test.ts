@@ -248,3 +248,77 @@ describe('claudePtyLauncher structured message forwarding', () => {
         expect(sentMessages).toHaveLength(2)
     })
 })
+
+function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
+    let resolve!: (v: T) => void
+    return { promise: new Promise<T>((r) => { resolve = r }), resolve }
+}
+
+describe('claudePtyLauncher turn-interrupt', () => {
+    afterEach(() => {
+        harness.exitReason = 'exit'
+        mockAbortHandlers = null
+        ptyOptsCaptured = null
+    })
+
+    const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms))
+
+    it('sends Esc key to PTY when aborted/stopped and PTY controls are active', async () => {
+        harness.exitReason = null
+
+        const { session } = createSessionStub()
+        const msgPromise = deferred<any>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+
+        const launcherPromise = claudePtyLauncher(session as never)
+
+        await tick(50)
+
+        expect(mockAbortHandlers).toBeTruthy()
+        expect(mockAbortHandlers.onAbort).toBeTypeOf('function')
+
+        // Trigger turn interrupt
+        await mockAbortHandlers.onAbort()
+
+        // Should write Esc key (\x1b) to PTY controls
+        expect(lastSendKeysSpy).toHaveBeenCalledWith('\x1b')
+
+        // Should NOT abort the PTY spawn signal
+        expect(ptyOptsCaptured.signal.aborted).toBe(false)
+
+        harness.exitReason = 'exit'
+        msgPromise.resolve(null)
+        await launcherPromise
+    })
+
+    it('kills the PTY session (aborts the controller) when aborted and PTY controls are NOT active', async () => {
+        harness.exitReason = null
+
+        const { session } = createSessionStub()
+        const msgPromise = deferred<any>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+
+        const { claudePty: mockedClaudePty } = await import('../claudePty')
+        vi.mocked(mockedClaudePty).mockImplementationOnce(async (opts: any) => {
+            ptyOptsCaptured = opts
+            opts.onReady?.()
+            await opts.nextMessage()
+        })
+
+        const launcherPromise = claudePtyLauncher(session as never)
+
+        await tick(50)
+
+        expect(mockAbortHandlers).toBeTruthy()
+
+        // Trigger turn interrupt
+        await mockAbortHandlers.onAbort()
+
+        // No controls registered, should fallback to aborting the controller
+        expect(ptyOptsCaptured.signal.aborted).toBe(true)
+
+        harness.exitReason = 'exit'
+        msgPromise.resolve(null)
+        await launcherPromise
+    })
+})
