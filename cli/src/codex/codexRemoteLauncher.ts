@@ -3017,6 +3017,14 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     }
                 }
                 if (turnInFlight && !this.shouldExit) {
+                    // A message that arrived while trySteerActiveTurn was awaiting the
+                    // RPC may have lost its wakeLoop() (no waiter was installed yet).
+                    // Re-loop to steer it instead of parking until turn completion.
+                    // (Skip when `pending` is set — that message must be processed as
+                    // a fresh turn, so parking until the active turn ends is correct.)
+                    if (!pending && session.getSteeringMode() === 'steer' && session.queue.size() > 0) {
+                        continue;
+                    }
                     await waitForTurnOrRecovery(this.abortController.signal);
                 }
                 continue;
