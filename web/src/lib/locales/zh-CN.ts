@@ -120,6 +120,8 @@ export default {
   'session.time.importedFromCodex.daysAgo': '{n} 天前从codex客户端导入',
   'session.cursorMigration.banner.title': '正在升级 Cursor 会话',
   'session.cursorMigration.banner.body': '正在将此旧版会话切换到更安全的 ACP 协议。历史较长的会话需要 15-20 秒；对话会自动恢复，已输入但未发送的草稿不会丢失。',
+  'session.cursorMigration.bannerAmbiguous.title': 'Cursor 会话升级需要人工处理',
+  'session.cursorMigration.bannerAmbiguous.body': '此会话在磁盘上的多个工作区下存在，或本地存储大小与已同步的历史记录不匹配，因此 HAPI 拒绝自动迁移。请在 hub 日志中搜索 "[migrator] ambiguous legacy store" 或 "[migrator] size sanity check refused" 获取候选列表，删除 ~/.cursor/chats/ 下的陈旧目录后，再重新打开此会话。',
 
   // Session inactive
   'session.inactive.autoResume': '此会话已停止。发送消息即可恢复。',

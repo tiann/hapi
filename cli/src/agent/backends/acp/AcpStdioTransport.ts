@@ -63,6 +63,8 @@ export class AcpStdioTransport {
     private nextId = 1;
     private protocolError: Error | null = null;
     private guardReleased = false;
+    private closed = false;
+    private closeError: Error | null = null;
 
     constructor(options: {
         command: string;
@@ -94,14 +96,14 @@ export class AcpStdioTransport {
             this.releaseAgentCliGuard();
             const message = `ACP process exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`;
             logger.debug(message);
-            this.rejectAllPending(new Error(message));
+            this.markClosed(new Error(message));
         });
 
         this.process.on('error', (error) => {
             this.releaseAgentCliGuard();
             logger.debug('[ACP] Process error', error);
             const message = error instanceof Error ? error.message : String(error);
-            this.rejectAllPending(new Error(
+            this.markClosed(new Error(
                 `Failed to spawn ${options.command}: ${message}. Is it installed and on PATH?`,
                 { cause: error }
             ));
@@ -124,6 +126,10 @@ export class AcpStdioTransport {
     static readonly DEFAULT_TIMEOUT_MS = 120_000;
 
     async sendRequest(method: string, params?: unknown, options?: { timeoutMs?: number }): Promise<unknown> {
+        if (this.closed) {
+            return Promise.reject(this.closeError ?? new Error('ACP transport is closed'));
+        }
+
         const id = this.nextId++;
         const payload: JsonRpcRequest = {
             jsonrpc: '2.0',
@@ -167,6 +173,10 @@ export class AcpStdioTransport {
     }
 
     sendNotification(method: string, params?: unknown): void {
+        if (this.closed) {
+            return;
+        }
+
         const payload: JsonRpcNotification = {
             jsonrpc: '2.0',
             method,
@@ -179,7 +189,7 @@ export class AcpStdioTransport {
         this.process.stdin.end();
         await killProcessByChildProcess(this.process);
         this.releaseAgentCliGuard();
-        this.rejectAllPending(new Error('ACP transport closed'));
+        this.markClosed(new Error('ACP transport closed'));
     }
 
     private releaseAgentCliGuard(): void {
@@ -302,8 +312,27 @@ export class AcpStdioTransport {
     }
 
     private writePayload(payload: JsonRpcRequest | JsonRpcNotification | JsonRpcResponse): void {
-        const serialized = JSON.stringify(payload);
-        this.process.stdin.write(`${serialized}\n`);
+        if (this.closed) {
+            return;
+        }
+
+        try {
+            const serialized = JSON.stringify(payload);
+            this.process.stdin.write(`${serialized}\n`);
+        } catch (error) {
+            const writeError = error instanceof Error ? error : new Error(String(error));
+            this.markClosed(writeError);
+        }
+    }
+
+    private markClosed(error: Error): void {
+        if (this.closed) {
+            return;
+        }
+
+        this.closed = true;
+        this.closeError = error;
+        this.rejectAllPending(error);
     }
 
     private rejectAllPending(error: Error): void {

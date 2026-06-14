@@ -32,7 +32,7 @@ interface PermissionResponse {
     receivedAt?: number;
 }
 
-const PLAN_EXIT_MODES: PermissionMode[] = ['default', 'acceptEdits', 'bypassPermissions'];
+const PLAN_EXIT_MODES: PermissionMode[] = ['default', 'acceptEdits', 'auto', 'bypassPermissions'];
 
 function isAskUserQuestionToolName(toolName: string): boolean {
     return toolName === 'AskUserQuestion' || toolName === 'ask_user_question';

@@ -2,9 +2,12 @@ import packageJson from '../../package.json'
 import { isBunCompiled } from '@/projectPath'
 import { logger } from '@/ui/logger'
 import { getCliArgs } from '@/utils/cliArgs'
+import { ensureLoopbackProxyBypass } from '@/utils/proxyEnv'
 import { resolveCommand } from './registry'
 
 export async function runCli(): Promise<void> {
+    ensureLoopbackProxyBypass()
+
     const args = getCliArgs()
 
     if (args.includes('-v') || args.includes('--version')) {

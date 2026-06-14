@@ -72,7 +72,7 @@ describe('buildCliArgs', () => {
     })
 
     it('validates all known permission modes', () => {
-        for (const mode of ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'ask', 'read-only', 'safe-yolo', 'yolo']) {
+        for (const mode of ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan', 'ask', 'read-only', 'safe-yolo', 'yolo']) {
             const args = buildCliArgs('claude', {
                 directory: '/tmp',
                 permissionMode: mode,

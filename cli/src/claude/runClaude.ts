@@ -153,8 +153,11 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     setControlledByUser(session, startingMode);
 
     // Import MessageQueue2 and create message queue
+    // 'plan' and 'auto' are enforced inside Claude itself (not emulated via
+    // canCallTool like acceptEdits/bypassPermissions), so switching to/from
+    // them must start a new process with the matching --permission-mode flag.
     const messageQueue = new MessageQueue2<EnhancedMode>(mode => hashObject({
-        isPlan: mode.permissionMode === 'plan',
+        agentEnforcedMode: mode.permissionMode === 'plan' || mode.permissionMode === 'auto' ? mode.permissionMode : null,
         model: mode.model,
         effort: mode.effort,
         fallbackModel: mode.fallbackModel,

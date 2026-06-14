@@ -186,6 +186,11 @@ export async function runCursor(opts: {
         });
     } catch (error) {
         crashed = true;
+        const errMsg = error instanceof Error ? error.message : String(error);
+        session.sendSessionEvent({
+            type: 'message',
+            message: `Cursor Agent failed: ${errMsg}`
+        });
         lifecycle.markCrash(error);
         logger.debug('[cursor] Loop error:', error);
     } finally {

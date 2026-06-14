@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, it, test } from 'bun:test'
 import {
     PI_PERMISSION_MODES,
     getPermissionModeLabel,
@@ -72,6 +72,10 @@ describe('isPermissionModeAllowedForFlavor', () => {
         expect(isPermissionModeAllowedForFlavor('bypassPermissions', 'pi')).toBe(false)
     })
 
+    test("auto is NOT allowed for pi (Claude-only)", () => {
+        expect(isPermissionModeAllowedForFlavor('auto', 'pi')).toBe(false)
+    })
+
     test("read-only is NOT allowed for pi (Codex/Gemini/Kimi-only)", () => {
         expect(isPermissionModeAllowedForFlavor('read-only', 'pi')).toBe(false)
     })
@@ -102,5 +106,22 @@ describe('getPermissionModeTone', () => {
 
     test("default tone is neutral", () => {
         expect(getPermissionModeTone('default')).toBe('neutral')
+    })
+})
+
+describe('claude auto permission mode', () => {
+    it('is allowed for claude only', () => {
+        expect(isPermissionModeAllowedForFlavor('auto', 'claude')).toBe(true)
+        expect(isPermissionModeAllowedForFlavor('auto', 'codex')).toBe(false)
+        expect(isPermissionModeAllowedForFlavor('auto', 'gemini')).toBe(false)
+        expect(isPermissionModeAllowedForFlavor('auto', 'cursor')).toBe(false)
+        expect(isPermissionModeAllowedForFlavor('auto', 'opencode')).toBe(false)
+        expect(isPermissionModeAllowedForFlavor('auto', 'kimi')).toBe(false)
+        expect(isPermissionModeAllowedForFlavor('auto', 'pi')).toBe(false)
+    })
+
+    it('has a label and tone', () => {
+        expect(getPermissionModeLabel('auto')).toBe('Auto')
+        expect(getPermissionModeTone('auto')).toBe('warning')
     })
 })

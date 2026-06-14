@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import { I18nProvider } from '@/lib/i18n-context'
-import { CursorMigrationBanner, isCursorMigrationInProgress } from './CursorMigrationBanner'
+import { CursorMigrationBanner, isCursorMigrationAmbiguous, isCursorMigrationInProgress } from './CursorMigrationBanner'
 import type { Metadata } from '@/types/api'
 
 function renderWithProviders(ui: React.ReactElement) {
@@ -82,5 +82,32 @@ describe('CursorMigrationBanner', () => {
         renderWithProviders(<CursorMigrationBanner metadata={metadata({ cursorMigrationState: 'in_progress' })} />)
         const status = screen.getByRole('status')
         expect(status).toHaveAttribute('aria-live', 'polite')
+    })
+
+    /**
+     * tiann/hapi#873: when the migrator refuses to transplant a legacy
+     * store (ambiguous source or size mismatch), the hub promotes
+     * cursorMigrationState to 'ambiguous'. The banner must switch to a
+     * "manual review needed" surface rather than disappear.
+     */
+    it('renders the ambiguous banner when cursorMigrationState is ambiguous', () => {
+        renderWithProviders(<CursorMigrationBanner metadata={metadata({ cursorMigrationState: 'ambiguous' })} />)
+        expect(screen.getByTestId('cursor-migration-banner-ambiguous')).toBeInTheDocument()
+        expect(screen.getByText('Cursor session upgrade needs manual review')).toBeInTheDocument()
+        expect(screen.queryByTestId('cursor-migration-banner')).not.toBeInTheDocument()
+    })
+
+    it('uses role=alert on the ambiguous banner so it surfaces over the in-progress styling', () => {
+        renderWithProviders(<CursorMigrationBanner metadata={metadata({ cursorMigrationState: 'ambiguous' })} />)
+        const alert = screen.getByRole('alert')
+        expect(alert).toHaveAttribute('aria-live', 'polite')
+    })
+
+    it('isCursorMigrationAmbiguous returns true only for the ambiguous state', () => {
+        expect(isCursorMigrationAmbiguous(metadata({ cursorMigrationState: 'ambiguous' }))).toBe(true)
+        expect(isCursorMigrationAmbiguous(metadata({ cursorMigrationState: 'in_progress' }))).toBe(false)
+        expect(isCursorMigrationAmbiguous(metadata())).toBe(false)
+        expect(isCursorMigrationAmbiguous(null)).toBe(false)
+        expect(isCursorMigrationAmbiguous(undefined)).toBe(false)
     })
 })
