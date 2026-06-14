@@ -43,12 +43,24 @@ function compareMessages(a: DecryptedMessage, b: DecryptedMessage): number {
     return a.id.localeCompare(b.id)
 }
 
+// Invariant: a message the CLI has consumed (invokedAt set) is delivered, not
+// queued. A message delivered immediately — e.g. steered into the active turn —
+// can carry a stale optimistic 'queued' status while its invokedAt is already
+// set; normalize so the queued clock never lingers on a delivered message.
+function clearStaleQueuedStatus(list: DecryptedMessage[]): DecryptedMessage[] {
+    return list.map((msg) =>
+        msg.status === 'queued' && msg.invokedAt != null
+            ? { ...msg, status: 'sent' as DecryptedMessage['status'] }
+            : msg
+    )
+}
+
 export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedMessage[]): DecryptedMessage[] {
     if (existing.length === 0) {
-        return [...incoming].sort(compareMessages)
+        return clearStaleQueuedStatus([...incoming]).sort(compareMessages)
     }
     if (incoming.length === 0) {
-        return [...existing].sort(compareMessages)
+        return clearStaleQueuedStatus([...existing]).sort(compareMessages)
     }
 
     const byId = new Map<string, DecryptedMessage>()
@@ -99,7 +111,15 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
                 if (!msg.localId) return msg
                 const update: Partial<DecryptedMessage> = {}
                 if (optimisticStatusByLocalId.has(msg.localId) && !msg.status) {
-                    update.status = optimisticStatusByLocalId.get(msg.localId)
+                    const optimisticStatus = optimisticStatusByLocalId.get(msg.localId)
+                    // Don't carry an optimistic 'queued' status onto a server message
+                    // the CLI has already consumed (invokedAt set). This happens when a
+                    // message is delivered immediately — e.g. steered into the active
+                    // turn — so its server echo arrives pre-invoked; inheriting 'queued'
+                    // would pin the queued clock on an already-delivered message.
+                    if (optimisticStatus !== 'queued' || msg.invokedAt == null) {
+                        update.status = optimisticStatus
+                    }
                 }
                 if (optimisticInvokedAtByLocalId.has(msg.localId) && msg.invokedAt == null) {
                     const optimisticInvokedAt = optimisticInvokedAtByLocalId.get(msg.localId)
@@ -139,6 +159,7 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
         result.push(optimistic)
     }
 
-    result.sort(compareMessages)
-    return result
+    const normalized = clearStaleQueuedStatus(result)
+    normalized.sort(compareMessages)
+    return normalized
 }
