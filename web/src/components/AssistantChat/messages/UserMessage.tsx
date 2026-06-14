@@ -47,6 +47,7 @@ export function HappyUserMessage() {
         return message.content.find((part) => part.type === 'text')?.text ?? ''
     })
     const invokedAt = useAssistantState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.invokedAt)
+    const steered = useAssistantState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.steered === true)
 
     const hasMetadata = invokedAt != null
 
@@ -117,6 +118,14 @@ export function HappyUserMessage() {
                     )}
                 </div>
                 <div className="flex justify-end items-center gap-2">
+                    {steered && (
+                        <span
+                            title="Steered into the active turn"
+                            className="inline-flex items-center gap-0.5 text-[10px] leading-none text-[var(--app-hint)]"
+                        >
+                            ↳ Steered
+                        </span>
+                    )}
                     <MessageTimestamp className="text-[10px] leading-none text-[var(--app-hint)]" />
                     {hasMetadata && (
                         <button

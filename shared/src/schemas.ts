@@ -190,7 +190,10 @@ export const DecryptedMessageSchema = z.object({
     content: z.unknown(),
     createdAt: z.number(),
     invokedAt: z.number().nullable().optional(),
-    scheduledAt: z.number().nullable().optional()
+    scheduledAt: z.number().nullable().optional(),
+    // Set on the client when a message was steered into an active turn (live
+    // signal via the messages-consumed event; not persisted by the hub).
+    steered: z.boolean().optional()
 })
 
 export type DecryptedMessage = z.infer<typeof DecryptedMessageSchema>
@@ -354,7 +357,10 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
     SessionChangedSchema.extend({
         type: z.literal('messages-consumed'),
         localIds: z.array(z.string()),
-        invokedAt: z.number()
+        invokedAt: z.number(),
+        // True when the messages were steered into an active turn (not a normal
+        // queue drain) so the web can mark them as steered.
+        steered: z.boolean().optional()
     }),
     SessionChangedSchema.extend({
         type: z.literal('message-cancelled'),

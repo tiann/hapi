@@ -1084,7 +1084,7 @@ export function removeOptimisticMessage(sessionId: string, localId: string): voi
  *  Also handles server-loaded messages (status=undefined) that have a matching localId.
  *  `invokedAt` is provided by the hub and used as the stable display-position
  *  timestamp for composite cursor pagination. */
-export function markMessagesConsumed(sessionId: string, localIds: string[], invokedAt: number): void {
+export function markMessagesConsumed(sessionId: string, localIds: string[], invokedAt: number, steered?: boolean): void {
     if (localIds.length === 0) return
     const idSet = new Set(localIds)
     updateState(sessionId, (prev) => {
@@ -1108,7 +1108,8 @@ export function markMessagesConsumed(sessionId: string, localIds: string[], invo
                 // Strict null to stay consistent with isQueuedForInvocation and the rest
                 // of this file.
                 const needsInvokedAt = message.invokedAt === null
-                if (!needsStatus && !needsInvokedAt) {
+                const needsSteered = steered === true && message.steered !== true
+                if (!needsStatus && !needsInvokedAt && !needsSteered) {
                     return message
                 }
                 changed = true
@@ -1118,6 +1119,9 @@ export function markMessagesConsumed(sessionId: string, localIds: string[], invo
                 }
                 if (needsInvokedAt) {
                     update.invokedAt = invokedAt
+                }
+                if (needsSteered) {
+                    update.steered = true
                 }
                 return { ...message, ...update }
             })

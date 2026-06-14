@@ -279,7 +279,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         onSessionAlive?.(data)
     })
 
-    socket.on('messages-consumed', (data: { sid: string; localIds: string[]; clearQueuedThinkingGrace?: boolean }) => {
+    socket.on('messages-consumed', (data: { sid: string; localIds: string[]; clearQueuedThinkingGrace?: boolean; steered?: boolean }) => {
         if (!data || typeof data.sid !== 'string' || !Array.isArray(data.localIds)) {
             return
         }
@@ -308,7 +308,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             // failure would broadcast an `invokedAt` that was never persisted —
             // live clients would hide the queued rows while a refresh / secondary
             // client would see them as queued again, diverging the state.
-            onWebappEvent?.({ type: 'messages-consumed', sessionId: data.sid, localIds, invokedAt })
+            onWebappEvent?.({ type: 'messages-consumed', sessionId: data.sid, localIds, invokedAt, ...(data.steered ? { steered: true } : {}) })
         } catch (err) {
             console.error('markMessagesInvoked failed', err)
         }

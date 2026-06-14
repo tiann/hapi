@@ -2978,10 +2978,26 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             // process it as a fresh turn once the active turn terminates.
             if (!pending && turnInFlight && session.getSteeringMode() === 'steer'
                 && this.currentThreadId && this.currentTurnId && session.queue.size() > 0) {
+                // Capture (and suppress) the automatic messages-consumed for this
+                // batch so we can re-emit it with the steered flag when the steer
+                // succeeds — the web uses that flag to mark the message as steered.
+                let steeredLocalIds: string[] = [];
+                const autoOnBatchConsumed = session.queue.onBatchConsumed;
+                session.queue.onBatchConsumed = (localIds) => { steeredLocalIds = localIds; };
                 const steerBatch = await session.queue.waitForMessagesAndGetAsString(this.abortController.signal);
+                session.queue.onBatchConsumed = autoOnBatchConsumed;
                 if (steerBatch) {
                     const steered = await trySteerActiveTurn(steerBatch);
-                    if (!steered) {
+                    if (steered) {
+                        if (steeredLocalIds.length > 0) {
+                            session.client.emitMessagesConsumed(steeredLocalIds, { steered: true });
+                        }
+                    } else {
+                        // Fell back to a normal turn (turn ended / non-steerable):
+                        // mark consumed so the queued bar clears, then reprocess.
+                        if (steeredLocalIds.length > 0) {
+                            session.client.emitMessagesConsumed(steeredLocalIds);
+                        }
                         pending = steerBatch;
                     }
                 }

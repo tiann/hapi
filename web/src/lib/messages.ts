@@ -69,8 +69,17 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
     }
     for (const msg of incoming) {
         const existing = byId.get(msg.id)
-        if (existing && existing.invokedAt != null && msg.invokedAt == null) {
-            byId.set(msg.id, { ...msg, invokedAt: existing.invokedAt })
+        if (existing) {
+            // Preserve client-only signals the incoming (server) copy can't carry:
+            // a late ack timestamp and the live 'steered' marker (not persisted).
+            const preserved: Partial<DecryptedMessage> = {}
+            if (existing.invokedAt != null && msg.invokedAt == null) {
+                preserved.invokedAt = existing.invokedAt
+            }
+            if (existing.steered && !msg.steered) {
+                preserved.steered = true
+            }
+            byId.set(msg.id, Object.keys(preserved).length > 0 ? { ...msg, ...preserved } : msg)
         } else {
             byId.set(msg.id, msg)
         }
