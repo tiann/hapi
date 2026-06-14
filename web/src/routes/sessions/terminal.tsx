@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { PointerEvent } from 'react'
 import { useParams } from '@tanstack/react-router'
 import type { Terminal } from '@xterm/xterm'
 import { useAppContext } from '@/lib/app-context'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { useSession } from '@/hooks/queries/useSession'
 import { useTerminalSocket } from '@/hooks/useTerminalSocket'
-import { useLongPress } from '@/hooks/useLongPress'
+import { useQuickKeyInput, QuickKeyRows } from '@/components/QuickKeys/QuickKeys'
 import { useTranslation } from '@/lib/use-translation'
 import { randomId } from '@/lib/randomId'
 import { TerminalView } from '@/components/Terminal/TerminalView'
@@ -55,132 +54,7 @@ function ConnectionIndicator(props: { status: 'idle' | 'connecting' | 'connected
     )
 }
 
-type QuickInput = {
-    label: string
-    sequence?: string
-    description: string
-    modifier?: 'ctrl' | 'alt'
-    popup?: {
-        label: string
-        sequence: string
-        description: string
-    }
-}
-
-type ModifierState = {
-    ctrl: boolean
-    alt: boolean
-}
-
-function applyModifierState(sequence: string, state: ModifierState): string {
-    let modified = sequence
-    if (state.alt) {
-        modified = `\u001b${modified}`
-    }
-    if (state.ctrl && modified.length === 1) {
-        const code = modified.toUpperCase().charCodeAt(0)
-        if (code >= 64 && code <= 95) {
-            modified = String.fromCharCode(code - 64)
-        }
-    }
-    return modified
-}
-
-function shouldResetModifiers(sequence: string, state: ModifierState): boolean {
-    if (!sequence) {
-        return false
-    }
-    return state.ctrl || state.alt
-}
-
 const EXIT_NAVIGATION_DELAY_MS = 700
-
-const QUICK_INPUT_ROWS: QuickInput[][] = [
-    [
-        { label: 'Esc', sequence: '\u001b', description: 'Escape' },
-        {
-            label: '/',
-            sequence: '/',
-            description: 'Forward slash',
-            popup: { label: '?', sequence: '?', description: 'Question mark' },
-        },
-        {
-            label: '-',
-            sequence: '-',
-            description: 'Hyphen',
-            popup: { label: '|', sequence: '|', description: 'Pipe' },
-        },
-        { label: 'Home', sequence: '\u001b[H', description: 'Home' },
-        { label: '↑', sequence: '\u001b[A', description: 'Arrow up' },
-        { label: 'End', sequence: '\u001b[F', description: 'End' },
-        { label: 'PgUp', sequence: '\u001b[5~', description: 'Page up' },
-    ],
-    [
-        { label: 'Tab', sequence: '\t', description: 'Tab' },
-        { label: 'Ctrl', description: 'Control', modifier: 'ctrl' },
-        { label: 'Alt', description: 'Alternate', modifier: 'alt' },
-        { label: '←', sequence: '\u001b[D', description: 'Arrow left' },
-        { label: '↓', sequence: '\u001b[B', description: 'Arrow down' },
-        { label: '→', sequence: '\u001b[C', description: 'Arrow right' },
-        { label: 'PgDn', sequence: '\u001b[6~', description: 'Page down' },
-    ],
-]
-
-function QuickKeyButton(props: {
-    input: QuickInput
-    disabled: boolean
-    isActive: boolean
-    onPress: (sequence: string) => void
-    onToggleModifier: (modifier: 'ctrl' | 'alt') => void
-}) {
-    const { input, disabled, isActive, onPress, onToggleModifier } = props
-    const modifier = input.modifier
-    const popupSequence = input.popup?.sequence
-    const popupDescription = input.popup?.description
-    const hasPopup = Boolean(popupSequence)
-    const longPressDisabled = disabled || Boolean(modifier) || !hasPopup
-
-    const handleClick = useCallback(() => {
-        if (modifier) {
-            onToggleModifier(modifier)
-            return
-        }
-        onPress(input.sequence ?? '')
-    }, [modifier, onToggleModifier, onPress, input.sequence])
-
-    const handlePointerDown = useCallback((event: PointerEvent<HTMLButtonElement>) => {
-        if (event.pointerType === 'touch') {
-            event.preventDefault()
-        }
-    }, [])
-
-    const longPressHandlers = useLongPress({
-        onLongPress: () => {
-            if (popupSequence && !modifier) {
-                onPress(popupSequence)
-            }
-        },
-        onClick: handleClick,
-        disabled: longPressDisabled,
-    })
-
-    return (
-        <button
-            type="button"
-            {...longPressHandlers}
-            onPointerDown={handlePointerDown}
-            disabled={disabled}
-            aria-pressed={modifier ? isActive : undefined}
-            className={`flex-1 border-l border-[var(--app-border)] px-2 py-1.5 text-xs font-medium text-[var(--app-fg)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-button)] focus-visible:ring-inset disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent first:border-l-0 active:bg-[var(--app-subtle-bg)] sm:px-3 sm:text-sm ${
-                isActive ? 'bg-[var(--app-link)] text-[var(--app-bg)]' : 'hover:bg-[var(--app-subtle-bg)]'
-            }`}
-            aria-label={input.description}
-            title={popupDescription ? `${input.description} (long press: ${popupDescription})` : input.description}
-        >
-            {input.label}
-        </button>
-    )
-}
 
 export default function TerminalPage() {
     const { t } = useTranslation()
@@ -194,11 +68,8 @@ export default function TerminalPage() {
     const inputDisposableRef = useRef<{ dispose: () => void } | null>(null)
     const connectOnceRef = useRef(false)
     const lastSizeRef = useRef<{ cols: number; rows: number } | null>(null)
-    const modifierStateRef = useRef<ModifierState>({ ctrl: false, alt: false })
     const exitNavTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
     const [exitInfo, setExitInfo] = useState<{ code: number | null; signal: string | null } | null>(null)
-    const [ctrlActive, setCtrlActive] = useState(false)
-    const [altActive, setAltActive] = useState(false)
     const [pasteDialogOpen, setPasteDialogOpen] = useState(false)
     const [manualPasteText, setManualPasteText] = useState('')
 
@@ -237,36 +108,21 @@ export default function TerminalPage() {
         })
     }, [onExit, goBack])
 
-    useEffect(() => {
-        modifierStateRef.current = { ctrl: ctrlActive, alt: altActive }
-    }, [ctrlActive, altActive])
-
-    const resetModifiers = useCallback(() => {
-        setCtrlActive(false)
-        setAltActive(false)
-    }, [])
-
-    const dispatchSequence = useCallback(
-        (sequence: string, modifierState: ModifierState) => {
-            write(applyModifierState(sequence, modifierState))
-            if (shouldResetModifiers(sequence, modifierState)) {
-                resetModifiers()
-            }
-        },
-        [write, resetModifiers]
-    )
+    // Raw terminal input AND the quick-key buttons share one sticky-modifier
+    // state via the dispatcher, so toggling Ctrl then typing sends the control
+    // code. onData is intentionally ungated; the buttons gate via `disabled`.
+    const { ctrlActive, altActive, dispatch, toggleModifier, resetModifiers } = useQuickKeyInput({ onSend: write })
 
     const handleTerminalMount = useCallback(
         (terminal: Terminal) => {
             terminalRef.current = terminal
             inputDisposableRef.current?.dispose()
             inputDisposableRef.current = terminal.onData((data) => {
-                const modifierState = modifierStateRef.current
-                dispatchSequence(data, modifierState)
+                dispatch(data)
             })
             terminal.focus()
         },
-        [dispatchSequence]
+        [dispatch]
     )
 
     const handleResize = useCallback(
@@ -387,11 +243,10 @@ export default function TerminalPage() {
             if (quickInputDisabled) {
                 return
             }
-            const modifierState = { ctrl: ctrlActive, alt: altActive }
-            dispatchSequence(sequence, modifierState)
+            dispatch(sequence)
             terminalRef.current?.focus()
         },
-        [quickInputDisabled, ctrlActive, altActive, dispatchSequence]
+        [quickInputDisabled, dispatch]
     )
 
     const handleModifierToggle = useCallback(
@@ -399,16 +254,10 @@ export default function TerminalPage() {
             if (quickInputDisabled) {
                 return
             }
-            if (modifier === 'ctrl') {
-                setCtrlActive((value) => !value)
-                setAltActive(false)
-            } else {
-                setAltActive((value) => !value)
-                setCtrlActive(false)
-            }
+            toggleModifier(modifier)
             terminalRef.current?.focus()
         },
-        [quickInputDisabled]
+        [quickInputDisabled, toggleModifier]
     )
 
     if (!session) {
@@ -496,29 +345,13 @@ export default function TerminalPage() {
                         >
                             {t('button.paste')}
                         </button>
-                        {QUICK_INPUT_ROWS.map((row, rowIndex) => (
-                            <div
-                                key={`terminal-quick-row-${rowIndex}`}
-                                className="flex items-stretch overflow-hidden rounded-md bg-[var(--app-secondary-bg)]"
-                            >
-                                {row.map((input) => {
-                                    const modifier = input.modifier
-                                    const isCtrl = modifier === 'ctrl'
-                                    const isAlt = modifier === 'alt'
-                                    const isActive = (isCtrl && ctrlActive) || (isAlt && altActive)
-                                    return (
-                                        <QuickKeyButton
-                                            key={input.label}
-                                            input={input}
-                                            disabled={quickInputDisabled}
-                                            isActive={isActive}
-                                            onPress={handleQuickInput}
-                                            onToggleModifier={handleModifierToggle}
-                                        />
-                                    )
-                                })}
-                            </div>
-                        ))}
+                        <QuickKeyRows
+                            ctrlActive={ctrlActive}
+                            altActive={altActive}
+                            disabled={quickInputDisabled}
+                            onPress={handleQuickInput}
+                            onToggleModifier={handleModifierToggle}
+                        />
                     </div>
                 </div>
             </div>
