@@ -299,8 +299,14 @@ class ClaudePtyLauncher extends RemoteLauncherBase {
     }
 
     private async handleAbortRequest(): Promise<void> {
-        logger.debug('[pty]: handleAbortRequest')
-        await this.abort()
+        logger.debug('[pty]: handleAbortRequest (interrupt)')
+        if (this.ptyControls) {
+            logger.debug('[pty]: Sending interrupt key (Esc) to PTY')
+            this.ptyControls.sendKeys('\x1b')
+        } else {
+            logger.debug('[pty]: No PTY controls active, falling back to aborting the controller')
+            await this.abort()
+        }
     }
 
     private async handleSwitchRequest(): Promise<void> {
