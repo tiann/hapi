@@ -48,6 +48,7 @@ export type {
     SessionPatch,
     SessionSummary,
     SessionSummaryMetadata,
+    SteeringMode,
     TeamMember,
     TeamMessage,
     TeamState,

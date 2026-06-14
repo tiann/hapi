@@ -1,8 +1,9 @@
 import { z } from 'zod'
-import { CODEX_COLLABORATION_MODES, PERMISSION_MODES } from './modes'
+import { CODEX_COLLABORATION_MODES, PERMISSION_MODES, STEERING_MODES } from './modes'
 
 export const PermissionModeSchema = z.enum(PERMISSION_MODES)
 export const CodexCollaborationModeSchema = z.enum(CODEX_COLLABORATION_MODES)
+export const SteeringModeSchema = z.enum(STEERING_MODES)
 export const SessionEndReasonSchema = z.enum(['completed', 'terminated', 'error', 'handoff'])
 export type SessionEndReason = z.infer<typeof SessionEndReasonSchema>
 
@@ -215,7 +216,8 @@ export const SessionSchema = z.object({
     modelReasoningEffort: z.string().nullable().optional().default(null),
     effort: z.string().nullable().optional().default(null),
     permissionMode: PermissionModeSchema.optional(),
-    collaborationMode: CodexCollaborationModeSchema.optional()
+    collaborationMode: CodexCollaborationModeSchema.optional(),
+    steeringMode: SteeringModeSchema.optional()
 })
 
 export type Session = z.infer<typeof SessionSchema>
@@ -230,6 +232,7 @@ export const SessionPatchSchema = z.object({
     effort: z.string().nullable().optional(),
     permissionMode: PermissionModeSchema.optional(),
     collaborationMode: CodexCollaborationModeSchema.optional(),
+    steeringMode: SteeringModeSchema.optional(),
     backgroundTaskCount: z.number().optional()
 }).strict()
 

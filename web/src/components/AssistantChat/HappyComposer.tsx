@@ -1,4 +1,4 @@
-import { getCodexCollaborationModeOptions, getPermissionModeOptionsForFlavor } from '@hapi/protocol'
+import { getCodexCollaborationModeOptions, getPermissionModeOptionsForFlavor, getSteeringModeOptionsForFlavor } from '@hapi/protocol'
 import { ComposerPrimitive, useAssistantApi, useAssistantState } from '@assistant-ui/react'
 import {
     type ChangeEvent as ReactChangeEvent,
@@ -12,7 +12,7 @@ import {
     useRef,
     useState
 } from 'react'
-import type { AgentState, CodexCollaborationMode, PermissionMode, ThreadGoal } from '@/types/api'
+import type { AgentState, CodexCollaborationMode, PermissionMode, SteeringMode, ThreadGoal } from '@/types/api'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import type { ConversationStatus } from '@/realtime/types'
 import { useActiveWord } from '@/hooks/useActiveWord'
@@ -72,6 +72,7 @@ export function HappyComposer(props: {
     disabled?: boolean
     permissionMode?: PermissionMode
     collaborationMode?: CodexCollaborationMode
+    steeringMode?: SteeringMode
     threadGoal?: ThreadGoal | null
     model?: string | null
     modelReasoningEffort?: string | null
@@ -95,6 +96,7 @@ export function HappyComposer(props: {
     /** Cursor: effort/variant wire ids for the selected base model. */
     modelEffortOptions?: Array<{ value: string; label: string }>
     onCollaborationModeChange?: (mode: CodexCollaborationMode) => void
+    onSteeringModeChange?: (mode: SteeringMode) => void
     onPermissionModeChange?: (mode: PermissionMode) => void
     onModelChange?: (model: string | null) => void
     /** Cursor: effort/variant wire id (separate from base model change). */
@@ -133,6 +135,7 @@ export function HappyComposer(props: {
         disabled = false,
         permissionMode: rawPermissionMode,
         collaborationMode: rawCollaborationMode,
+        steeringMode: rawSteeringMode,
         threadGoal,
         model: rawModel,
         modelReasoningEffort: rawModelReasoningEffort,
@@ -153,6 +156,7 @@ export function HappyComposer(props: {
         selectedModelVariant,
         modelEffortOptions,
         onCollaborationModeChange,
+        onSteeringModeChange,
         onPermissionModeChange,
         onModelChange,
         onModelEffortChange,
@@ -177,6 +181,7 @@ export function HappyComposer(props: {
     // Use ?? so missing values fall back to default (destructuring defaults only handle undefined)
     const permissionMode = rawPermissionMode ?? 'default'
     const collaborationMode = rawCollaborationMode ?? 'default'
+    const steeringMode = rawSteeringMode ?? 'queue'
     const model = rawModel ?? null
     const modelReasoningEffort = rawModelReasoningEffort ?? null
     const effort = rawEffort ?? null
@@ -377,6 +382,10 @@ export function HappyComposer(props: {
     )
     const collaborationModeOptions = useMemo(
         () => agentFlavor === 'codex' ? getCodexCollaborationModeOptions() : [],
+        [agentFlavor]
+    )
+    const steeringModeOptions = useMemo(
+        () => getSteeringModeOptionsForFlavor(agentFlavor),
         [agentFlavor]
     )
     const modelOptions = useMemo(
@@ -586,6 +595,13 @@ export function HappyComposer(props: {
         haptic('light')
     }, [onCollaborationModeChange, controlsDisabled, haptic])
 
+    const handleSteeringChange = useCallback((mode: SteeringMode) => {
+        if (!onSteeringModeChange || controlsDisabled) return
+        onSteeringModeChange(mode)
+        setShowSettings(false)
+        haptic('light')
+    }, [onSteeringModeChange, controlsDisabled, haptic])
+
     const handleModelChange = useCallback((nextModel: string | null) => {
         if (!onModelChange || controlsDisabled) return
         onModelChange(nextModel)
@@ -616,6 +632,7 @@ export function HappyComposer(props: {
     }, [onEffortChange, controlsDisabled, haptic])
 
     const showCollaborationSettings = Boolean(onCollaborationModeChange && collaborationModeOptions.length > 0)
+    const showSteeringSettings = Boolean(onSteeringModeChange && steeringModeOptions.length > 0)
     const showPermissionSettings = Boolean(onPermissionModeChange && permissionModeOptions.length > 0)
     const showModelSettings = Boolean(onModelChange && supportsModelChange(agentFlavor) && modelOptions.length > 0)
     const showModelEffortSettings = Boolean(
@@ -733,7 +750,48 @@ export function HappyComposer(props: {
                             </div>
                         ) : null}
 
-                        {(showCollaborationSettings || showPermissionSettings) && (showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings || showEffortSettings) ? (
+                        {(showCollaborationSettings || showPermissionSettings) && showSteeringSettings ? (
+                            <div className="mx-3 h-px bg-[var(--app-divider)]" />
+                        ) : null}
+
+                        {showSteeringSettings ? (
+                            <div className="py-2">
+                                <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
+                                    {t('misc.steeringMode')}
+                                </div>
+                                {steeringModeOptions.map((option) => (
+                                    <button
+                                        key={option.mode}
+                                        type="button"
+                                        disabled={controlsDisabled}
+                                        className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                                            controlsDisabled
+                                                ? 'cursor-not-allowed opacity-50'
+                                                : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
+                                        }`}
+                                        onClick={() => handleSteeringChange(option.mode)}
+                                        onMouseDown={(e) => e.preventDefault()}
+                                    >
+                                        <div
+                                            className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
+                                                steeringMode === option.mode
+                                                    ? 'border-[var(--app-link)]'
+                                                    : 'border-[var(--app-hint)]'
+                                            }`}
+                                        >
+                                            {steeringMode === option.mode && (
+                                                <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
+                                            )}
+                                        </div>
+                                        <span className={steeringMode === option.mode ? 'text-[var(--app-link)]' : ''}>
+                                            {t(`misc.steeringMode.${option.mode}`)}
+                                        </span>
+                                    </button>
+                                ))}
+                            </div>
+                        ) : null}
+
+                        {(showCollaborationSettings || showPermissionSettings || showSteeringSettings) && (showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings || showEffortSettings) ? (
                             <div className="mx-3 h-px bg-[var(--app-divider)]" />
                         ) : null}
 
@@ -939,13 +997,17 @@ export function HappyComposer(props: {
         selectedIndex,
         controlsDisabled,
         collaborationMode,
+        steeringMode,
         permissionMode,
         model,
         modelReasoningEffort,
         effort,
         collaborationModeOptions,
+        steeringModeOptions,
+        showSteeringSettings,
         permissionModeOptions,
         handleCollaborationChange,
+        handleSteeringChange,
         handlePermissionChange,
         handleModelChange,
         handleModelReasoningEffortChange,

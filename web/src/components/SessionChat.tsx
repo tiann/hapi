@@ -8,8 +8,10 @@ import type {
     DecryptedMessage,
     PermissionMode,
     Session,
-    SlashCommand
+    SlashCommand,
+    SteeringMode
 } from '@/types/api'
+import { isSteeringSupportedForFlavor } from '@hapi/protocol'
 import type { ChatBlock, NormalizedMessage } from '@/chat/types'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
@@ -389,6 +391,7 @@ function SessionChatInner(props: SessionChatProps) {
     const agentFlavor = props.session.metadata?.flavor ?? null
     const controlledByUser = props.session.agentState?.controlledByUser === true
     const codexCollaborationModeSupported = agentFlavor === 'codex' && !controlledByUser
+    const steeringModeSupported = isSteeringSupportedForFlavor(agentFlavor) && !controlledByUser
     const codexModelsState = useCodexModels({
         api: props.api,
         sessionId: props.session.id,
@@ -557,6 +560,7 @@ function SessionChatInner(props: SessionChatProps) {
         switchSession,
         setPermissionMode,
         setCollaborationMode,
+        setSteeringMode,
         setModel,
         setModelReasoningEffort,
         setEffort
@@ -788,6 +792,17 @@ function SessionChatInner(props: SessionChatProps) {
             console.error('Failed to set collaboration mode:', e)
         }
     }, [setCollaborationMode, props.onRefresh, haptic])
+
+    const handleSteeringModeChange = useCallback(async (mode: SteeringMode) => {
+        try {
+            await setSteeringMode(mode)
+            haptic.notification('success')
+            props.onRefresh()
+        } catch (e) {
+            haptic.notification('error')
+            console.error('Failed to set steering mode:', e)
+        }
+    }, [setSteeringMode, props.onRefresh, haptic])
 
     // Model mode change handler
     const handleModelChange = useCallback(async (model: string | null) => {
@@ -1071,6 +1086,7 @@ function SessionChatInner(props: SessionChatProps) {
                         onClearSchedule={() => setPendingSchedule(null)}
                         permissionMode={props.session.permissionMode}
                         collaborationMode={codexCollaborationModeSupported ? props.session.collaborationMode : undefined}
+                        steeringMode={steeringModeSupported ? props.session.steeringMode : undefined}
                         threadGoal={reduced.latestGoal}
                         model={props.session.model}
                         modelReasoningEffort={agentFlavor === 'codex' || agentFlavor === 'opencode' ? props.session.modelReasoningEffort : undefined}
@@ -1108,6 +1124,11 @@ function SessionChatInner(props: SessionChatProps) {
                         onCollaborationModeChange={
                             codexCollaborationModeSupported && props.session.active && !controlledByUser
                                 ? handleCollaborationModeChange
+                                : undefined
+                        }
+                        onSteeringModeChange={
+                            steeringModeSupported && props.session.active && !controlledByUser
+                                ? handleSteeringModeChange
                                 : undefined
                         }
                         onPermissionModeChange={handlePermissionModeChange}

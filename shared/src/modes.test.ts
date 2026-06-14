@@ -26,9 +26,9 @@ describe('claude auto permission mode', () => {
 })
 
 describe('steering mode', () => {
-    it('is supported for codex and claude only', () => {
+    it('is supported for codex only (Claude steering is TUI-only, not in the SDK)', () => {
         expect(isSteeringSupportedForFlavor('codex')).toBe(true)
-        expect(isSteeringSupportedForFlavor('claude')).toBe(true)
+        expect(isSteeringSupportedForFlavor('claude')).toBe(false)
         expect(isSteeringSupportedForFlavor('cursor')).toBe(false)
         expect(isSteeringSupportedForFlavor('gemini')).toBe(false)
         expect(isSteeringSupportedForFlavor('opencode')).toBe(false)
@@ -37,9 +37,9 @@ describe('steering mode', () => {
         expect(isSteeringSupportedForFlavor(null)).toBe(false)
     })
 
-    it('returns queue+steer options for supported flavors and none otherwise', () => {
+    it('returns queue+steer options for codex and none otherwise', () => {
         expect(getSteeringModeOptionsForFlavor('codex').map((o) => o.mode)).toEqual(['queue', 'steer'])
-        expect(getSteeringModeOptionsForFlavor('claude').map((o) => o.mode)).toEqual(['queue', 'steer'])
+        expect(getSteeringModeOptionsForFlavor('claude')).toEqual([])
         expect(getSteeringModeOptionsForFlavor('cursor')).toEqual([])
         expect(getSteeringModeOptionsForFlavor(undefined)).toEqual([])
     })

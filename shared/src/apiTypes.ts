@@ -5,7 +5,8 @@ import {
     DecryptedMessageSchema,
     MachineSchema,
     PermissionModeSchema,
-    SessionSchema
+    SessionSchema,
+    SteeringModeSchema
 } from './schemas'
 import { AgentFlavorSchema } from './modes'
 import type {
@@ -122,6 +123,12 @@ export const SessionCollaborationModeRequestSchema = z.object({
 })
 
 export type SessionCollaborationModeRequest = z.infer<typeof SessionCollaborationModeRequestSchema>
+
+export const SessionSteeringModeRequestSchema = z.object({
+    mode: SteeringModeSchema
+})
+
+export type SessionSteeringModeRequest = z.infer<typeof SessionSteeringModeRequestSchema>
 
 export const SessionModelRequestSchema = z.object({
     model: z.string().trim().min(1).nullable()

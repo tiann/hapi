@@ -18,6 +18,7 @@ import type {
     SlashCommandsResponse,
     SkillsResponse,
     SpawnResponse,
+    SteeringMode,
     VisibilityPayload,
     HapiSessionExport,
     SessionResponse,
@@ -492,6 +493,13 @@ export class ApiClient {
 
     async setCollaborationMode(sessionId: string, mode: CodexCollaborationMode): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/collaboration-mode`, {
+            method: 'POST',
+            body: JSON.stringify({ mode })
+        })
+    }
+
+    async setSteeringMode(sessionId: string, mode: SteeringMode): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/steering-mode`, {
             method: 'POST',
             body: JSON.stringify({ mode })
         })
