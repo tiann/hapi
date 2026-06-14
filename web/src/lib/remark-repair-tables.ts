@@ -81,8 +81,7 @@ function visitTables(
     node: { type: string; children?: unknown[]; align?: unknown; position?: { start: { offset: number }; end: { offset: number } } },
     parent: MdastParent | null,
     index: number,
-    source: string,
-    repairCount: { n: number }
+    source: string
 ): void {
     if (node.type === 'table' && parent && node.position && Array.isArray(node.align)) {
         const tableSource = source.slice(node.position.start.offset, node.position.end.offset)
@@ -100,7 +99,6 @@ function visitTables(
                     const repaired = parseTableBlock(newLines.join('\n'))
                     if (repaired) {
                         parent.children.splice(index, 1, repaired as unknown as Table)
-                        repairCount.n++
                         return
                     }
                 }
@@ -114,8 +112,7 @@ function visitTables(
                 node.children[i] as typeof node,
                 node as unknown as MdastParent,
                 i,
-                source,
-                repairCount
+                source
             )
         }
     }
@@ -124,7 +121,6 @@ function visitTables(
 export default function remarkRepairTables() {
     return (tree: Root, file: VFile) => {
         const source = String(file.value)
-        const repairCount = { n: 0 }
-        visitTables(tree as unknown as Parameters<typeof visitTables>[0], null, 0, source, repairCount)
+        visitTables(tree as unknown as Parameters<typeof visitTables>[0], null, 0, source)
     }
 }

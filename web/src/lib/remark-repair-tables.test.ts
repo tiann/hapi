@@ -34,6 +34,12 @@ describe('remarkRepairTables', () => {
         expect(out).toContain('x')
         expect(out).toContain('y')
         expect(out).toContain('z')
+        // Structural check: each output row has exactly 3 pipe-delimited cells
+        const rows = out.trim().split('\n').filter(l => l.trim().startsWith('|'))
+        for (const row of rows) {
+            const cells = row.split('|').filter(c => c.trim())
+            expect(cells).toHaveLength(3)
+        }
     })
 
     it('repairs separator with 1 cell for a 4-column header', () => {
