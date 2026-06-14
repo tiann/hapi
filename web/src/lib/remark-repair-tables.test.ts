@@ -15,16 +15,6 @@ function process(md: string): string {
         .toString()
 }
 
-/** Count <th> / <td> cells in a stringified table row. */
-function parseTableCols(md: string): number[][] {
-    // remark-stringify outputs | cell | cell | rows
-    const rows = md.split('\n').filter(l => l.trim().startsWith('|') && !l.trim().match(/^\|[\s|:-]+\|$/))
-    return rows.map(row => {
-        const inner = row.trim().replace(/^\||\|$/g, '')
-        return inner.split('|').map(c => c.trim())
-    }).map(cells => cells.map(c => c.length))
-}
-
 describe('remarkRepairTables', () => {
     it('leaves a valid 3-column table unchanged', () => {
         const md = '| A | B | C |\n|---|---|---|\n| x | y | z |\n'
@@ -63,10 +53,23 @@ describe('remarkRepairTables', () => {
     })
 
     it('preserves alignment hints in the separator cells that exist', () => {
+        // :--- = left, ---: = right — these must survive in the repaired separator
         const md = '| A | B | C |\n|:---|---:|\n| x | y | z |\n'
         const out = process(md)
         expect(out).toContain('C')
         expect(out).toContain('z')
+        // remark-stringify reflects alignment as :-- and --: in the separator row
+        expect(out).toMatch(/:--/)
+        expect(out).toMatch(/--:/)
+    })
+
+    it('handles a header-only table (no data rows)', () => {
+        // Some agents emit tables with only a header + broken separator and no data rows
+        const md = '| A | B | C |\n|---|\n'
+        const out = process(md)
+        expect(out).toContain('A')
+        expect(out).toContain('B')
+        expect(out).toContain('C')
     })
 
     it('does not modify a table where separator already matches', () => {
