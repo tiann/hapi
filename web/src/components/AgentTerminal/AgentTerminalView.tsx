@@ -3,6 +3,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { useAgentTerminalSocket } from '@/hooks/useAgentTerminalSocket'
+import { useQuickKeyInput, QuickKeyRows } from '@/components/QuickKeys/QuickKeys'
 import { useAppContext } from '@/lib/app-context'
 
 function resolveThemeColors(): { background: string; foreground: string; selectionBackground: string } {
@@ -19,9 +20,10 @@ type AgentTerminalViewProps = {
     className?: string
 }
 
-// Output-only view of the agent PTY. Input is handled by the shared chat
-// composer (HappyComposer) so there is a single composer with correct IME
-// handling — no separate terminal input bar.
+// Interactive view of the agent PTY. The chat composer remains the primary way
+// to send messages (multiline, IME, mobile), but this terminal also accepts raw
+// keystrokes + quick keys so a viewer can drive TUI screens the composer cannot
+// express (escape a /usage screen, answer a /model dialog, send Ctrl-C).
 export function AgentTerminalView(props: AgentTerminalViewProps) {
     const { sessionId, visible, className } = props
     const { token, baseUrl } = useAppContext()
@@ -37,11 +39,16 @@ export function AgentTerminalView(props: AgentTerminalViewProps) {
         unsubscribe,
         onOutput,
         resize,
+        sendInput,
     } = useAgentTerminalSocket({
         baseUrl,
         token,
         sessionId,
     })
+
+    // Raw keystrokes (terminal typing AND quick keys) share one sticky-modifier
+    // state, then go to the agent PTY via sendInput.
+    const { ctrlActive, altActive, dispatch, toggleModifier } = useQuickKeyInput({ onSend: sendInput })
 
     const onOutputRef = useRef(onOutput)
     useEffect(() => {
@@ -52,6 +59,13 @@ export function AgentTerminalView(props: AgentTerminalViewProps) {
     useEffect(() => {
         resizeRef.current = resize
     }, [resize])
+
+    // Dispatch is stable, but the terminal is created once (mount effect), so
+    // read it through a ref to avoid re-creating the terminal on identity change.
+    const dispatchRef = useRef(dispatch)
+    useEffect(() => {
+        dispatchRef.current = dispatch
+    }, [dispatch])
 
     useEffect(() => {
         const container = containerRef.current
@@ -94,8 +108,16 @@ export function AgentTerminalView(props: AgentTerminalViewProps) {
             terminal.write(data)
         })
 
+        // Interactive: forward typed keystrokes to the agent PTY (with sticky
+        // modifiers applied) so a viewer can drive TUI screens the chat composer
+        // cannot express (e.g. escape a /usage screen, answer a dialog).
+        const inputDisposable = terminal.onData((data) => {
+            dispatchRef.current(data)
+        })
+
         abortController.signal.addEventListener('abort', () => {
             observer.disconnect()
+            inputDisposable.dispose()
             fitAddon.dispose()
             terminal.dispose()
         })
@@ -151,6 +173,22 @@ export function AgentTerminalView(props: AgentTerminalViewProps) {
             </div>
 
             <div ref={containerRef} className="flex-1 min-h-0 p-2 bg-[var(--app-bg)]" />
+
+            <div className="flex flex-col gap-1 px-2 pb-2 pt-1">
+                <QuickKeyRows
+                    ctrlActive={ctrlActive}
+                    altActive={altActive}
+                    disabled={state.status !== 'connected'}
+                    onPress={(sequence) => {
+                        dispatch(sequence)
+                        terminalRef.current?.focus()
+                    }}
+                    onToggleModifier={(modifier) => {
+                        toggleModifier(modifier)
+                        terminalRef.current?.focus()
+                    }}
+                />
+            </div>
         </div>
     )
 }

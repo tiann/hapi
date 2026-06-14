@@ -360,6 +360,52 @@ describe('terminal socket handlers', () => {
         })
     })
 
+    describe('agent-terminal:input', () => {
+        it('forwards raw keystrokes to the CLI socket for an authorized active session', () => {
+            const { terminalSocket, cliNamespace } = createHarness()
+            const cliSocket = new FakeSocket('cli-socket-1')
+            connectCliSocket(cliNamespace, cliSocket, 'session-1')
+
+            terminalSocket.trigger('agent-terminal:input', { sessionId: 'session-1', data: '\u001b' })
+
+            const inputEvent = lastEmit(cliSocket, 'agent-terminal:input')
+            expect(inputEvent?.data).toEqual({ sessionId: 'session-1', data: '\u001b' })
+        })
+
+        it('does not forward input when the session is inactive (same guard as resize)', () => {
+            const { terminalSocket, cliNamespace } = createHarness({ sessionActive: false })
+            const cliSocket = new FakeSocket('cli-socket-1')
+            connectCliSocket(cliNamespace, cliSocket, 'session-1')
+
+            terminalSocket.trigger('agent-terminal:input', { sessionId: 'session-1', data: 'a' })
+
+            expect(lastEmit(cliSocket, 'agent-terminal:input')).toBeUndefined()
+        })
+
+        it('drops malformed input (empty data) without emitting', () => {
+            const { terminalSocket, cliNamespace } = createHarness()
+            const cliSocket = new FakeSocket('cli-socket-1')
+            connectCliSocket(cliNamespace, cliSocket, 'session-1')
+
+            terminalSocket.trigger('agent-terminal:input', { sessionId: 'session-1', data: '' })
+
+            expect(lastEmit(cliSocket, 'agent-terminal:input')).toBeUndefined()
+        })
+
+        it('does not forward input to a session in another namespace (no cross-namespace keystroke injection)', () => {
+            // The socket's namespace is 'default'; the session belongs to 'other'.
+            // A CLI socket IS connected, so without the namespace guard the relay
+            // would inject keystrokes into another namespace's live agent PTY.
+            const { terminalSocket, cliNamespace } = createHarness({ sessionNamespace: 'other' })
+            const cliSocket = new FakeSocket('cli-socket-1')
+            connectCliSocket(cliNamespace, cliSocket, 'session-1')
+
+            terminalSocket.trigger('agent-terminal:input', { sessionId: 'session-1', data: 'a' })
+
+            expect(lastEmit(cliSocket, 'agent-terminal:input')).toBeUndefined()
+        })
+    })
+
     it('enforces per-socket terminal limits', () => {
         const { terminalSocket, cliNamespace } = createHarness({ maxTerminalsPerSocket: 1 })
         const cliSocket = new FakeSocket('cli-socket-1')

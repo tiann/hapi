@@ -49,6 +49,17 @@ export const AgentTerminalRefreshPayloadSchema = z.object({
 
 export type AgentTerminalRefreshPayload = z.infer<typeof AgentTerminalRefreshPayloadSchema>
 
+// Raw keystroke(s) typed into the agent TUI from a web viewer — the agent PTY is
+// the session's single TUI, keyed by sessionId (no terminalId). Lets a remote
+// viewer navigate TUI screens (e.g. answer/escape a /usage or /model dialog) that
+// the structured chat composer cannot express.
+export const AgentTerminalInputPayloadSchema = z.object({
+    sessionId: z.string().min(1),
+    data: z.string().min(1)
+})
+
+export type AgentTerminalInputPayload = z.infer<typeof AgentTerminalInputPayloadSchema>
+
 export const TerminalClosePayloadSchema = z.object({
     sessionId: z.string().min(1),
     terminalId: z.string().min(1)
@@ -216,6 +227,9 @@ export interface ServerToClientEvents {
     'terminal:close': (data: TerminalClosePayload) => void
     'agent-terminal:resize': (data: AgentTerminalResizePayload) => void
     'agent-terminal:refresh': (data: AgentTerminalRefreshPayload) => void
+    // Raw keystroke(s) from a web viewer, relayed to the CLI to write into the
+    // agent PTY (interactive TUI navigation; see AgentTerminalInputPayload).
+    'agent-terminal:input': (data: AgentTerminalInputPayload) => void
     // Sent to the CLI when the last agent-terminal viewer leaves, so it stops
     // streaming PTY output to the hub until someone subscribes again.
     'agent-terminal:idle': (data: AgentTerminalRefreshPayload) => void

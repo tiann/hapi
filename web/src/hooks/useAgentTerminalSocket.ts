@@ -26,6 +26,7 @@ export function useAgentTerminalSocket(options: UseAgentTerminalSocketOptions): 
     unsubscribe: () => void
     onOutput: (handler: (data: string) => void) => void
     resize: (cols: number, rows: number) => void
+    sendInput: (data: string) => void
 } {
     const [state, setState] = useState<AgentTerminalConnectionState>({ status: 'idle' })
     const socketRef = useRef<Socket | null>(null)
@@ -177,6 +178,15 @@ export function useAgentTerminalSocket(options: UseAgentTerminalSocketOptions): 
         outputHandlerRef.current = handler
     }, [])
 
+    const sendInput = useCallback((data: string) => {
+        const socket = socketRef.current
+        const sessionId = sessionIdRef.current
+        if (!socket?.connected || !sessionId || !data) {
+            return
+        }
+        socket.emit('agent-terminal:input', { sessionId, data })
+    }, [])
+
     return {
         state,
         connect,
@@ -184,6 +194,7 @@ export function useAgentTerminalSocket(options: UseAgentTerminalSocketOptions): 
         resubscribe,
         unsubscribe,
         onOutput,
-        resize
+        resize,
+        sendInput
     }
 }
