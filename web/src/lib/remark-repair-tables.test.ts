@@ -49,6 +49,10 @@ describe('remarkRepairTables', () => {
         expect(out).toContain('Z')
         expect(out).toContain('a')
         expect(out).toContain('d')
+        const rows = out.trim().split('\n').filter(l => l.trim().startsWith('|'))
+        for (const row of rows) {
+            expect(row.split('|').filter(c => c.trim())).toHaveLength(4)
+        }
     })
 
     it('repairs separator without surrounding pipes', () => {
@@ -67,6 +71,10 @@ describe('remarkRepairTables', () => {
         // remark-stringify reflects alignment as :-- and --: in the separator row
         expect(out).toMatch(/:--/)
         expect(out).toMatch(/--:/)
+        const rows = out.trim().split('\n').filter(l => l.trim().startsWith('|'))
+        for (const row of rows) {
+            expect(row.split('|').filter(c => c.trim())).toHaveLength(3)
+        }
     })
 
     it('handles a header-only table (no data rows)', () => {
@@ -76,6 +84,10 @@ describe('remarkRepairTables', () => {
         expect(out).toContain('A')
         expect(out).toContain('B')
         expect(out).toContain('C')
+        const rows = out.trim().split('\n').filter(l => l.trim().startsWith('|'))
+        for (const row of rows) {
+            expect(row.split('|').filter(c => c.trim())).toHaveLength(3)
+        }
     })
 
     it('does not modify a table where separator already matches', () => {
