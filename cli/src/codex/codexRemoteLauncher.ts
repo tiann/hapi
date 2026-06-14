@@ -2987,6 +2987,21 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 const steerBatch = await session.queue.waitForMessagesAndGetAsString(this.abortController.signal);
                 session.queue.onBatchConsumed = autoOnBatchConsumed;
                 if (steerBatch) {
+                    // Isolated control commands (/clear, /compact, /goal) must run
+                    // through their own handlers — never inject their literal text
+                    // into the active turn via turn/steer. Hand them to the normal
+                    // loop path immediately (handleSpecialCommand / handleGoalCommand
+                    // interrupt the active turn), matching queue-mode behavior.
+                    const isControlCommand = steerBatch.isolate
+                        || Boolean(parseCodexSpecialCommand(steerBatch.message).type)
+                        || parseGoalCommand(steerBatch.message) !== null;
+                    if (isControlCommand) {
+                        if (steeredLocalIds.length > 0) {
+                            session.client.emitMessagesConsumed(steeredLocalIds);
+                        }
+                        pending = steerBatch;
+                        continue;
+                    }
                     const steered = await trySteerActiveTurn(steerBatch);
                     if (steered) {
                         if (steeredLocalIds.length > 0) {

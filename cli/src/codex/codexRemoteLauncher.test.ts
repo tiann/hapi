@@ -2202,6 +2202,21 @@ describe('codexRemoteLauncher', () => {
         expect(harness.steerTurnCalls).toHaveLength(0);
     });
 
+    it('does not steer isolated control commands (/clear) while steering mode is "steer"', async () => {
+        harness.suppressTurnCompletion = true;
+        const { session, resetThreadCalls } = createSessionStub(['first message', '/clear']);
+        session.setSteeringMode('steer');
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        // /clear must NOT be injected via turn/steer — it runs the clear path
+        // (interrupt the active turn + reset the thread), as in queue mode.
+        expect(harness.steerTurnCalls).toHaveLength(0);
+        expect(harness.interruptedTurns).toEqual([{ threadId: 'thread-1', turnId: 'turn-1' }]);
+        expect(resetThreadCalls).toEqual(['thread-1']);
+    });
+
     it('interrupts active child agent turns before clearing codex thread state', async () => {
         harness.suppressTurnCompletion = true;
         harness.emitRunningChildTurnBeforeSuppressedParent = true;

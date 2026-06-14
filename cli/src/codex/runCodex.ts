@@ -33,6 +33,7 @@ export async function runCodex(opts: {
     model?: string;
     modelReasoningEffort?: ReasoningEffort;
     collaborationMode?: EnhancedMode['collaborationMode'];
+    steeringMode?: SteeringMode;
     existingSessionId?: string;
     workingDirectory?: string;
 }): Promise<void> {
@@ -82,7 +83,7 @@ export async function runCodex(opts: {
     let currentModel = opts.model;
     let currentModelReasoningEffort: ReasoningEffort | undefined = opts.modelReasoningEffort;
     let currentCollaborationMode: EnhancedMode['collaborationMode'] = opts.collaborationMode ?? 'default';
-    let currentSteeringMode: SteeringMode = 'queue';
+    let currentSteeringMode: SteeringMode = opts.steeringMode ?? 'queue';
 
     const lifecycle = createRunnerLifecycle({
         session,
