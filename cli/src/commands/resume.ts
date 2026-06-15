@@ -9,8 +9,7 @@ import type {
     CursorPermissionMode,
     GeminiPermissionMode,
     KimiPermissionMode,
-    OpencodePermissionMode,
-    PiPermissionMode
+    OpencodePermissionMode
 } from '@hapi/protocol/types'
 import { ApiClient } from '@/api/api'
 import type { ReasoningEffort } from '@/codex/appServerTypes'
@@ -153,7 +152,6 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
             workingDirectory: base.workingDirectory,
             resumeSessionId: base.resumeSessionId,
             startedBy: base.startedBy,
-            permissionMode: base.permissionMode as PiPermissionMode | undefined,
             startingMode: 'local',
             model: target.model ?? undefined,
             effort: target.effort ?? undefined,

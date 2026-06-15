@@ -39,8 +39,6 @@ import { getPiThinkingLevelOptions, getHighestThinkingLevel, isThinkingLevelSupp
 import { groupModelsByProvider } from './piModelGroups'
 import { PiModelPanel } from './PiModelPanel'
 import { PiThinkingLevelPanel } from './PiThinkingLevelPanel'
-import { PiPermissionPanel } from './PiPermissionPanel'
-import type { PermissionModeOption } from './PiPermissionPanel'
 
 export interface TextInputState {
     text: string
@@ -725,24 +723,10 @@ export function HappyComposer(props: {
     }, [controlsDisabled, haptic])
 
     const overlays = useMemo(() => {
-        // Pi flavor: separate floating panels for permission, model, and thinking level
+        // Pi flavor: separate floating panels for model and thinking level.
+        // (Pi RPC mode has no runtime permission switching → no permission panel.)
         if (agentFlavor === 'pi') {
             const panels: React.ReactNode[] = []
-
-            // Permission panel (from gear button)
-            if (showSettings && showPermissionSettings) {
-                panels.push(
-                    <div key="perm" className="absolute bottom-[100%] mb-2 left-2 w-48">
-                        <PiPermissionPanel
-                            options={permissionModeOptions as PermissionModeOption[]}
-                            currentMode={permissionMode}
-                            controlsDisabled={controlsDisabled}
-                            onSelect={(mode) => handlePermissionChange(mode)}
-                            onClose={closeAllPanels}
-                        />
-                    </div>
-                )
-            }
 
             // Model selection panel
             if (showPiModelPanel && piModels && piModels.length > 0) {

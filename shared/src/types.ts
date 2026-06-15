@@ -37,7 +37,6 @@ export type {
     GeminiPermissionMode,
     KimiPermissionMode,
     OpencodePermissionMode,
-    PiPermissionMode,
     PermissionMode,
     PermissionModeOption,
     PermissionModeTone

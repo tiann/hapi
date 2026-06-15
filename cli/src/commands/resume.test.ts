@@ -274,7 +274,6 @@ describe('resumeCommand', () => {
             workingDirectory: '/tmp/project',
             resumeSessionId: 'pi-session-123',
             startedBy: 'terminal',
-            permissionMode: 'yolo',
             startingMode: 'local',
             model: 'deepseek-v3',
             effort: 'high'

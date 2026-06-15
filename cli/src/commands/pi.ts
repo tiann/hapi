@@ -3,7 +3,6 @@ import { authAndSetupMachineIfNeeded } from '@/ui/auth'
 import { initializeToken } from '@/ui/tokenInit'
 import { maybeAutoStartServer } from '@/utils/autoStartServer'
 import type { CommandDefinition } from './types'
-import { PI_PERMISSION_MODES } from '@hapi/protocol/modes'
 import { parseRemoteAgentCommandOptions } from './agentCommandOptions'
 
 export const piCommand: CommandDefinition = {
@@ -11,7 +10,10 @@ export const piCommand: CommandDefinition = {
     requiresRuntimeAssets: false,
     run: async ({ commandArgs }) => {
         try {
-            const options = parseRemoteAgentCommandOptions(commandArgs, PI_PERMISSION_MODES)
+            // Pi RPC mode has no runtime permission switching; pass an empty
+            // allow-list so --permission-mode is rejected and no permissionMode
+            // leaks into the session state.
+            const options = parseRemoteAgentCommandOptions(commandArgs, [])
 
             await initializeToken()
             await maybeAutoStartServer()

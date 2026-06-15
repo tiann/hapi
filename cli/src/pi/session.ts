@@ -1,6 +1,5 @@
 import type { ApiClient, ApiSessionClient } from '@/lib';
 import type { Metadata } from '@/api/types';
-import type { PiPermissionMode } from '@hapi/protocol/modes';
 import type { PiCommandSummary, PiThinkingLevel } from './types';
 import type { PiModelSummary } from '@hapi/protocol/apiTypes';
 import type { PiRpcResolver } from './loop';
@@ -21,7 +20,6 @@ export class PiSession {
     readonly startingMode: 'local' | 'remote';
 
     // Config state — synced to hub via keepAlive
-    currentPermissionMode: PiPermissionMode;
     currentModel: string | null;
     currentThinkingLevel: PiThinkingLevel | null;
     // Pi's set_model requires provider + modelId; learned from get_state
@@ -50,7 +48,6 @@ export class PiSession {
         logPath: string;
         startedBy: 'runner' | 'terminal';
         startingMode: 'local' | 'remote';
-        permissionMode?: PiPermissionMode;
         model?: string | null;
     }) {
         this.api = opts.api;
@@ -59,7 +56,6 @@ export class PiSession {
         this.logPath = opts.logPath;
         this.startedBy = opts.startedBy;
         this.startingMode = opts.startingMode;
-        this.currentPermissionMode = opts.permissionMode ?? 'default';
         this.currentModel = opts.model ?? null;
         this.initialModel = opts.model?.trim() || null;
         this.currentThinkingLevel = null;
@@ -79,7 +75,6 @@ export class PiSession {
 
     pushKeepAlive(): void {
         this.client.keepAlive(this.piIsStreaming, this.startingMode, {
-            permissionMode: this.currentPermissionMode,
             model: this.currentModel,
             effort: this.currentThinkingLevel,
         });
@@ -88,7 +83,6 @@ export class PiSession {
     updateThinkingState(thinking: boolean): void {
         this.piIsStreaming = thinking;
         this.client.keepAlive(thinking, this.startingMode, {
-            permissionMode: this.currentPermissionMode,
             model: this.currentModel,
             effort: this.currentThinkingLevel,
         });

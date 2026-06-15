@@ -3,7 +3,6 @@ import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFacto
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
 import { registerLocalHandoffHandler } from '@/agent/localHandoff';
 import { createRunnerLifecycle, createModeChangeHandler, setControlledByUser } from '@/agent/runnerLifecycle';
-import { resolveSessionConfigPermissionMode } from '@/agent/sessionConfigRpc';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import { PiTransport } from './piTransport';
@@ -12,14 +11,12 @@ import { parsePiModels, parsePiCommands, sendPiRpcAndWait, wireTransportEvents }
 import { PiThinkingLevelSchema, SetSessionConfigPayloadSchema } from './schemas';
 import type { PiThinkingLevel } from './types';
 import type { SlashCommandsResponse } from '@hapi/protocol/apiTypes';
-import type { PiPermissionMode } from '@hapi/protocol/modes';
 import type { ListPiModelsResponse } from '@hapi/protocol/apiTypes';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 
 export async function runPi(opts: {
     startedBy?: 'runner' | 'terminal';
     startingMode?: 'local' | 'remote';
-    permissionMode?: PiPermissionMode;
     model?: string;
     effort?: string;
     resumeSessionId?: string;
@@ -57,7 +54,6 @@ export async function runPi(opts: {
         logPath: logger.getLogPath(),
         startedBy,
         startingMode,
-        permissionMode: opts.permissionMode,
         model: opts.model,
     });
 
@@ -152,9 +148,6 @@ export async function runPi(opts: {
         const config = parsed.data;
         logger.debug(`[pi] SetSessionConfig received: ${JSON.stringify(config)}`);
 
-        if (config.permissionMode !== undefined) {
-            piSession.currentPermissionMode = resolveSessionConfigPermissionMode<PiPermissionMode>(config.permissionMode, 'pi');
-        }
         if (config.model !== undefined) {
             const modelValue = config.model;
             logger.debug(`[pi] SetSessionConfig model: ${JSON.stringify(modelValue)}`);
@@ -204,7 +197,6 @@ export async function runPi(opts: {
 
         return {
             applied: {
-                permissionMode: piSession.currentPermissionMode,
                 model: piSession.currentModel,
                 effort: piSession.currentThinkingLevel,
             },

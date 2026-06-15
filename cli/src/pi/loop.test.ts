@@ -45,7 +45,6 @@ function createMockSession(): PiSession {
         logPath: '/tmp/test.log',
         startedBy: 'terminal',
         startingMode: 'local',
-        permissionMode: 'default',
     });
 }
 
