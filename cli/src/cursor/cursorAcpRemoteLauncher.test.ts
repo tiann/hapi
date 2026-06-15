@@ -166,6 +166,7 @@ function makeClient() {
             registerHandler: vi.fn()
         },
         updateMetadata: vi.fn(),
+        flushMetadata: vi.fn(async () => true),
         sendSessionEvent: vi.fn(),
         sendAgentMessage: vi.fn(),
         keepAlive: vi.fn(),
@@ -297,11 +298,68 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(session.client.emitSessionReady).not.toHaveBeenCalled();
     });
 
+    // tiann/hapi#913: fresh ACP sessions previously persisted `cursorSessionId`
+    // via fire-and-forget `updateMetadata`. A SIGTERM within ~1s of the first
+    // turn (hub-restart cascade) could strand the session because the ACK
+    // never arrived. The fix awaits `client.flushMetadata()` between
+    // `onSessionFoundWithProtocol` and the main loop, gating turn processing
+    // on a durable persist.
+    it('awaits flushMetadata after registering a fresh cursorSessionId so SIGTERM cannot strand the session', async () => {
+        const session = makeSession(null);
+        const flushSpy = vi.fn(async () => true);
+        // Replace the mock fixture's flushMetadata so we can observe ordering.
+        (session.client as unknown as { flushMetadata: typeof flushSpy }).flushMetadata = flushSpy;
+
+        let flushCalled = false;
+        flushSpy.mockImplementation(async () => {
+            flushCalled = true;
+            return true;
+        });
+
+        const onSessionFoundSpy = session.onSessionFoundWithProtocol as ReturnType<typeof vi.fn>;
+        let onSessionFoundCalledBeforeFlush = false;
+        onSessionFoundSpy.mockImplementation(() => {
+            if (!flushCalled) {
+                onSessionFoundCalledBeforeFlush = true;
+            }
+        });
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(onSessionFoundCalledBeforeFlush).toBe(true);
+        expect(flushSpy).toHaveBeenCalled();
+    });
+
+    it('preserves the #834 resume-path pre-registration shape (registration before backend.loadSession)', async () => {
+        // PR #834 pre-registers `cursorSessionId` BEFORE `backend.loadSession`
+        // so a load-session failure on a legacy store does not strand the
+        // session. The #913 fix must not relocate or remove that
+        // pre-registration. We verify by observing call ordering on the spy.
+        const session = makeSession('resume-acp-session');
+        const onSessionFoundSpy = session.onSessionFoundWithProtocol as ReturnType<typeof vi.fn>;
+
+        let preRegisterCalledBeforeLoadSession = false;
+        let preRegisterArgs: unknown[] | null = null;
+        onSessionFoundSpy.mockImplementation((id: string, protocol: string) => {
+            if (!harness.loadSessionCalled) {
+                preRegisterCalledBeforeLoadSession = true;
+                preRegisterArgs = [id, protocol];
+            }
+        });
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(preRegisterCalledBeforeLoadSession).toBe(true);
+        expect(preRegisterArgs).toEqual(['resume-acp-session', 'acp']);
+        expect(harness.loadSessionCalled).toBe(true);
+    });
+
     it('applies debug mode immediately when setPermissionMode is called', async () => {
         const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
             keepAlive: vi.fn(),
@@ -347,6 +405,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
             keepAlive,
@@ -392,6 +451,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
             keepAlive,
@@ -440,6 +500,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
             keepAlive: vi.fn(),
@@ -485,6 +546,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
             keepAlive: vi.fn(),
@@ -542,6 +604,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
             keepAlive,
@@ -584,6 +647,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
             keepAlive: vi.fn(),
@@ -630,6 +694,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
             keepAlive: vi.fn(),
@@ -671,6 +736,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
             keepAlive: vi.fn(),

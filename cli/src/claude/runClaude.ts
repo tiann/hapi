@@ -145,7 +145,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     });
 
     lifecycle.registerProcessHandlers();
-    registerKillSessionHandler(session.rpcHandlerManager, lifecycle.cleanupAndExit);
+    registerKillSessionHandler(session.rpcHandlerManager, lifecycle);
     registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);
 
     // Set initial agent state

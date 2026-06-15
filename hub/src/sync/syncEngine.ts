@@ -23,6 +23,7 @@ import { MachineCache, type Machine } from './machineCache'
 import { MessageService } from './messageService'
 import {
     RpcGateway,
+    RpcTargetMissingError,
     type RpcCodexModel,
     type RpcCommandResponse,
     type RpcDeleteUploadResponse,
@@ -452,7 +453,24 @@ export class SyncEngine {
     }
 
     async archiveSession(sessionId: string): Promise<void> {
-        await this.rpcGateway.killSession(sessionId)
+        // tiann/hapi#916: when the CLI is already gone (e.g. after a
+        // hub-restart cascade SIGTERMed the runner but the in-memory
+        // `active` flag has not been reconciled yet) the kill-RPC throws
+        // and the route used to surface that as HTTP 500. Treat the
+        // missing target as a benign condition: still flip the session's
+        // lifecycleState to `archived` in the hub-side metadata so the
+        // UI does not see a half-cleaned zombie, and continue to mark
+        // it inactive in the cache. Real RPC errors (timeout, protocol
+        // failure) still propagate as 5xx.
+        try {
+            await this.rpcGateway.killSession(sessionId)
+        } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                this.sessionCache.markSessionArchivedFromHub(sessionId, 'Archived from hub (CLI unreachable)')
+            } else {
+                throw error
+            }
+        }
         this.handleSessionEnd({ sid: sessionId, time: Date.now() })
     }
 

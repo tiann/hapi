@@ -23,6 +23,23 @@ function createMockApiSession() {
     } as unknown as Parameters<typeof createRunnerLifecycle>[0]['session'];
 }
 
+function createMockApiSessionWithMetadataCapture() {
+    const metadataWrites: Array<Record<string, unknown>> = []
+    return {
+        updateMetadata: vi.fn((handler: (m: Record<string, unknown>) => Record<string, unknown>) => {
+            const next = handler({})
+            metadataWrites.push(next)
+            return next
+        }),
+        sendSessionDeath: vi.fn(),
+        flush: vi.fn(async () => {}),
+        close: vi.fn(async () => {}),
+        metadataWrites
+    } as unknown as Parameters<typeof createRunnerLifecycle>[0]['session'] & {
+        metadataWrites: Array<Record<string, unknown>>
+    }
+}
+
 describe('createRunnerLifecycle', () => {
     let lifecycle: RunnerLifecycle;
 
@@ -85,3 +102,58 @@ describe('createRunnerLifecycle', () => {
         });
     });
 });
+
+// tiann/hapi#914: the runnerLifecycle's default archiveReason is now
+// 'Hub restart' (was 'User terminated'). Out-of-band SIGTERM from the
+// hub-restart cascade keeps that default. Explicit user actions
+// (clicking Archive in the web UI, Ctrl-C in a local terminal,
+// uncaught exception) reassign the reason before archive metadata is
+// written.
+describe('createRunnerLifecycle archiveReason defaults (tiann/hapi#914)', () => {
+    it('uses Hub restart as the default archiveReason when no override is applied', async () => {
+        const session = createMockApiSessionWithMetadataCapture()
+        const lifecycle = createRunnerLifecycle({
+            session,
+            logTag: 'test'
+        })
+
+        await lifecycle.cleanup()
+
+        expect(session.metadataWrites).toHaveLength(1)
+        expect(session.metadataWrites[0]).toMatchObject({
+            lifecycleState: 'archived',
+            archivedBy: 'cli',
+            archiveReason: 'Hub restart'
+        })
+    })
+
+    it('writes the operator-supplied reason when setArchiveReason is called (e.g. KillSession RPC)', async () => {
+        const session = createMockApiSessionWithMetadataCapture()
+        const lifecycle = createRunnerLifecycle({
+            session,
+            logTag: 'test'
+        })
+
+        lifecycle.setArchiveReason('User terminated')
+        await lifecycle.cleanup()
+
+        expect(session.metadataWrites[0]).toMatchObject({
+            archiveReason: 'User terminated'
+        })
+    })
+
+    it('markCrash overrides the default reason to "Session crashed"', async () => {
+        const session = createMockApiSessionWithMetadataCapture()
+        const lifecycle = createRunnerLifecycle({
+            session,
+            logTag: 'test'
+        })
+
+        lifecycle.markCrash(new Error('boom'))
+        await lifecycle.cleanup()
+
+        expect(session.metadataWrites[0]).toMatchObject({
+            archiveReason: 'Session crashed'
+        })
+    })
+})

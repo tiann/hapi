@@ -98,7 +98,7 @@ export async function runCodex(opts: {
     });
 
     lifecycle.registerProcessHandlers();
-    registerKillSessionHandler(session.rpcHandlerManager, lifecycle.cleanupAndExit);
+    registerKillSessionHandler(session.rpcHandlerManager, lifecycle);
     registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);
 
     const applyCurrentConfigToSession = (options?: { syncModel?: boolean }) => {

@@ -2466,4 +2466,213 @@ describe('session model', () => {
             })).resolves.toBeUndefined()
         })
     })
+
+    // tiann/hapi#916: when the CLI is gone, the kill-RPC throws
+    // RpcTargetMissingError. markSessionArchivedFromHub writes the archive
+    // metadata directly so the row's lifecycleState still flips to 'archived'.
+    describe('markSessionArchivedFromHub (tiann/hapi#916)', () => {
+        it('flips lifecycleState to archived with archivedBy=hub and the supplied reason', () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+
+            const session = cache.getOrCreateSession(
+                'session-hub-archive',
+                { path: '/tmp/project', host: 'localhost', flavor: 'codex', codexSessionId: 'thread-1' },
+                null,
+                'default'
+            )
+
+            cache.markSessionArchivedFromHub(session.id, 'Archived from hub (CLI unreachable)')
+
+            const meta = cache.getSession(session.id)?.metadata as Record<string, unknown> | null | undefined
+            expect(meta?.lifecycleState).toBe('archived')
+            expect(meta?.archivedBy).toBe('hub')
+            expect(meta?.archiveReason).toBe('Archived from hub (CLI unreachable)')
+            expect(typeof meta?.lifecycleStateSince).toBe('number')
+        })
+
+        it('is idempotent for already-archived sessions (does not reset lifecycleStateSince)', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+
+            const initialSince = 1700000000000
+            const session = cache.getOrCreateSession(
+                'session-already-archived',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    flavor: 'codex',
+                    lifecycleState: 'archived',
+                    archivedBy: 'cli',
+                    archiveReason: 'User terminated',
+                    lifecycleStateSince: initialSince
+                },
+                null,
+                'default'
+            )
+
+            cache.markSessionArchivedFromHub(session.id, 'Should not overwrite')
+
+            const meta = cache.getSession(session.id)?.metadata as Record<string, unknown> | null | undefined
+            expect(meta?.lifecycleState).toBe('archived')
+            expect(meta?.archivedBy).toBe('cli')
+            expect(meta?.archiveReason).toBe('User terminated')
+            expect(meta?.lifecycleStateSince).toBe(initialSince)
+        })
+
+        it('self-heals on version-mismatch via refresh-and-retry', () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+
+            const session = cache.getOrCreateSession(
+                'session-hub-archive-stale',
+                { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+                null,
+                'default'
+            )
+
+            const dbSession = store.sessions.getSessionByNamespace(session.id, 'default')!
+            const oobWrite = store.sessions.updateSessionMetadata(
+                session.id,
+                { ...dbSession.metadata!, name: 'oob' },
+                dbSession.metadataVersion,
+                'default',
+                { touchUpdatedAt: false }
+            )
+            expect(oobWrite.result).toBe('success')
+
+            cache.markSessionArchivedFromHub(session.id, 'CLI unreachable')
+
+            const meta = cache.getSession(session.id)?.metadata as Record<string, unknown> | null | undefined
+            expect(meta?.lifecycleState).toBe('archived')
+            expect(meta?.archivedBy).toBe('hub')
+            expect(meta?.name).toBe('oob')
+        })
+    })
+
+    // tiann/hapi#919: the three metadata writers must self-heal on
+    // version-mismatch instead of one-shot-throwing. The bug was that a
+    // stale cache snapshot produced forever-409 on the corresponding HTTP
+    // endpoints — the cache never refreshed, so the same retry hit the
+    // same mismatch. Pattern mirrors mergeSessions (line ~780).
+    describe('version-mismatch self-heal (tiann/hapi#919)', () => {
+        it('renameSession recovers after a stale cache snapshot is detected', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+
+            const session = cache.getOrCreateSession(
+                'session-rename-stale',
+                { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+                null,
+                'default'
+            )
+
+            // Simulate a concurrent writer bumping the DB version under our feet:
+            // write a metadata patch out-of-band via the store, leaving the cache
+            // snapshot stale.
+            const dbSession = store.sessions.getSessionByNamespace(session.id, 'default')!
+            const oobWrite = store.sessions.updateSessionMetadata(
+                session.id,
+                { ...dbSession.metadata!, name: 'concurrent-rename' },
+                dbSession.metadataVersion,
+                'default',
+                { touchUpdatedAt: false }
+            )
+            expect(oobWrite.result).toBe('success')
+
+            // Cache still holds the pre-OOB snapshot. Pre-fix, this call threw
+            // 'Session was modified concurrently'. Post-fix, it refreshes and
+            // succeeds.
+            await expect(cache.renameSession(session.id, 'final-name')).resolves.toBeUndefined()
+
+            const meta = cache.getSession(session.id)?.metadata as Record<string, unknown> | null | undefined
+            expect(meta?.name).toBe('final-name')
+        })
+
+        it('clearSessionArchiveMetadata recovers after a stale cache snapshot', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+
+            const session = cache.getOrCreateSession(
+                'session-clear-stale',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    flavor: 'codex',
+                    codexSessionId: 'thread-stale',
+                    lifecycleState: 'archived',
+                    archivedBy: 'cli',
+                    archiveReason: 'User terminated'
+                },
+                null,
+                'default'
+            )
+
+            // Concurrent rename via the store bumps the DB version.
+            const dbSession = store.sessions.getSessionByNamespace(session.id, 'default')!
+            const oobWrite = store.sessions.updateSessionMetadata(
+                session.id,
+                { ...dbSession.metadata!, name: 'oob-name' },
+                dbSession.metadataVersion,
+                'default',
+                { touchUpdatedAt: false }
+            )
+            expect(oobWrite.result).toBe('success')
+
+            await expect(cache.clearSessionArchiveMetadata(session.id)).resolves.toBeDefined()
+
+            const meta = cache.getSession(session.id)?.metadata as Record<string, unknown> | null | undefined
+            expect(meta?.lifecycleState).toBeUndefined()
+            expect(meta?.archivedBy).toBeUndefined()
+            expect(meta?.name).toBe('oob-name')
+        })
+
+        it('restoreSessionArchiveMetadata recovers after a stale cache snapshot', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+
+            const session = cache.getOrCreateSession(
+                'session-restore-stale',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    flavor: 'codex',
+                    codexSessionId: 'thread-restore-stale'
+                    // Started without archive metadata - simulates the post-clear state.
+                },
+                null,
+                'default'
+            )
+
+            // Concurrent unrelated write bumps DB version.
+            const dbSession = store.sessions.getSessionByNamespace(session.id, 'default')!
+            const oobWrite = store.sessions.updateSessionMetadata(
+                session.id,
+                { ...dbSession.metadata!, name: 'parallel-rename' },
+                dbSession.metadataVersion,
+                'default',
+                { touchUpdatedAt: false }
+            )
+            expect(oobWrite.result).toBe('success')
+
+            await expect(cache.restoreSessionArchiveMetadata(session.id, {
+                lifecycleState: 'archived',
+                archivedBy: 'cli',
+                archiveReason: 'User terminated',
+                lifecycleStateSince: 1234
+            })).resolves.toBeUndefined()
+
+            const meta = cache.getSession(session.id)?.metadata as Record<string, unknown> | null | undefined
+            expect(meta?.lifecycleState).toBe('archived')
+            expect(meta?.archiveReason).toBe('User terminated')
+            expect(meta?.lifecycleStateSince).toBe(1234)
+            expect(meta?.name).toBe('parallel-rename')
+        })
+    })
 })

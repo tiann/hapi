@@ -24,7 +24,16 @@ export type RunnerLifecycle = {
 
 export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLifecycle {
     let exitCode = 0
-    let archiveReason = 'User terminated'
+    // tiann/hapi#914: default reason is 'Hub restart' (parent-driven SIGTERM
+    // is the most common non-user cause). Genuine user actions (clicking
+    // Archive in the web UI, or Ctrl-C in a local terminal) explicitly
+    // reassign this via `setArchiveReason` BEFORE `cleanupAndExit` runs:
+    //   - KillSession RPC handler  → 'User terminated' (see registerKillSessionHandler)
+    //   - SIGINT handler           → 'User terminated' (Ctrl-C in local terminal)
+    //   - uncaughtException/Reject → 'Session crashed' (via markCrash)
+    // Out-of-band SIGTERM (hub-restart cascade, `kill <pid>` from host) keeps
+    // the default and is correctly labelled 'Hub restart' on the audit trail.
+    let archiveReason = 'Hub restart'
     let sessionEndReason: SessionEndReason = 'terminated'
     let sessionEndReasonExplicit = false
     let cleanupStarted = false
@@ -110,11 +119,19 @@ export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLi
     }
 
     const registerProcessHandlers = () => {
+        // tiann/hapi#914: SIGTERM is treated as the default reason ('Hub restart')
+        // because the runner is restarted by systemd as part of hub restart in
+        // production. If a future code path needs to distinguish "operator
+        // killed the host process" from "hub restart", it can call
+        // setArchiveReason() before the runner exits.
         process.on('SIGTERM', () => {
             void cleanupAndExit()
         })
 
+        // Ctrl-C in a local terminal is genuine user intent — keep the
+        // pre-#914 label so the audit trail still shows it.
         process.on('SIGINT', () => {
+            archiveReason = 'User terminated'
             void cleanupAndExit()
         })
 

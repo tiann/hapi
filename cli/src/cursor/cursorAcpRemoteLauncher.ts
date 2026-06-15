@@ -132,6 +132,18 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
         if (acpSessionId !== resumeSessionId) {
             session.onSessionFoundWithProtocol(acpSessionId, 'acp');
+            // tiann/hapi#913: block until the metadata write that pins
+            // `cursorSessionId` reaches the hub DB before we drop into
+            // `runMainLoop`. If SIGTERM (hub-restart cascade) lands during
+            // the first turn without this gate, the only durable handle
+            // linking the session to its on-disk ACP store is lost and the
+            // session strands. The resume path at lines 98-100 already
+            // relies on the latency of `backend.loadSession()` to flush the
+            // same write; the fresh-session path has no such cover.
+            const flushed = await session.client.flushMetadata();
+            if (!flushed) {
+                logger.warn(`[cursor-acp] cursorSessionId metadata write did not ACK within 5s; session may be unrecoverable if killed before the lock drains (acpSessionId=${acpSessionId})`);
+            }
         }
 
         session.client.emitSessionReady();

@@ -62,6 +62,7 @@ function createApp(session: Session, opts?: {
     listSlashCommands?: SyncEngine['listSlashCommands']
     getSessionExport?: (sessionId: string, session: Session) => unknown
     sessionExists?: boolean
+    archiveSession?: (sessionId: string) => Promise<void>
 }) {
     const applySessionConfigCalls: Array<[string, Record<string, unknown>]> = []
     const applySessionConfig = async (sessionId: string, config: Record<string, unknown>) => {
@@ -104,6 +105,7 @@ function createApp(session: Session, opts?: {
         resumed: true
     }))
     const sessionExists = opts?.sessionExists !== false
+    const archiveSessionMock = opts?.archiveSession ?? (async () => {})
     const engine = {
         resolveSessionAccess: () => sessionExists
             ? { ok: true, sessionId: session.id, session }
@@ -115,6 +117,7 @@ function createApp(session: Session, opts?: {
         listOpencodeReasoningEffortOptionsForSession,
         resumeSession,
         reopenSession,
+        archiveSession: archiveSessionMock,
         getSessionExport: opts?.getSessionExport ?? (() => ({
             type: 'success',
             payload: {
@@ -1011,6 +1014,90 @@ describe('sessions routes', () => {
                 { name: 'clear', source: 'builtin' },
                 { name: 'project-only', source: 'project', content: 'Project prompt' }
             ]
+        })
+    })
+
+    // tiann/hapi#916: archive endpoint must be idempotent for already-archived
+    // rows and for split-brain rows whose CLI is gone but the in-memory `active`
+    // flag has not been reconciled to false yet.
+    describe('POST /sessions/:id/archive (tiann/hapi#916)', () => {
+        it('returns 2xx and calls archiveSession for an active session', async () => {
+            const calls: string[] = []
+            const session = createSession({ active: true })
+            const { app } = createApp(session, {
+                archiveSession: async (sessionId: string) => { calls.push(sessionId) }
+            })
+
+            const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
+
+            expect(response.status).toBe(200)
+            expect(await response.json()).toEqual({ ok: true })
+            expect(calls).toEqual(['session-1'])
+        })
+
+        it('returns 2xx and skips archiveSession when the row is already archived (idempotent)', async () => {
+            let called = false
+            const session = createSession({
+                active: false,
+                metadata: {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    flavor: 'codex',
+                    lifecycleState: 'archived',
+                    archivedBy: 'cli',
+                    archiveReason: 'User terminated'
+                }
+            })
+            const { app } = createApp(session, {
+                archiveSession: async () => { called = true }
+            })
+
+            const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
+
+            expect(response.status).toBe(200)
+            expect(await response.json()).toEqual({ ok: true, alreadyArchived: true })
+            expect(called).toBe(false)
+        })
+
+        it('returns 2xx when the active session\'s CLI is gone — engine.archiveSession swallows the missing-RPC error', async () => {
+            // Pre-fix this returned 500 because rpcGateway.killSession threw
+            // 'RPC handler not registered'. Post-fix the engine narrows on
+            // RpcTargetMissingError and still flips lifecycle to archived.
+            const session = createSession({ active: true })
+            const { app } = createApp(session, {
+                archiveSession: async () => {
+                    // Simulates the post-fix behavior: engine catches the
+                    // RpcTargetMissingError, calls markSessionArchivedFromHub,
+                    // and returns normally.
+                }
+            })
+
+            const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
+
+            expect(response.status).toBe(200)
+            expect(await response.json()).toEqual({ ok: true })
+        })
+
+        it('still surfaces a 5xx for non-RPC errors (e.g. DB write failure)', async () => {
+            const session = createSession({ active: true })
+            const { app } = createApp(session, {
+                archiveSession: async () => {
+                    throw new Error('DB write failed')
+                }
+            })
+
+            const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
+            expect(response.status).toBe(500)
+        })
+
+        it('returns 404 when the session id is unknown', async () => {
+            const session = createSession()
+            const { app } = createApp(session, { sessionExists: false })
+
+            const response = await app.request('/api/sessions/missing-id/archive', { method: 'POST' })
+
+            expect(response.status).toBe(404)
+            expect(await response.json()).toEqual({ error: 'Session not found' })
         })
     })
 
