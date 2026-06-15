@@ -179,3 +179,62 @@ export function deleteScratchlistEntry(
     ).run(sessionId, entryId)
     return result.changes > 0
 }
+
+/**
+ * Re-point all scratchlist rows from `fromSessionId` to `toSessionId`.
+ *
+ * Required by tiann/hapi#920: `mergeSessionData` in `sessionCache.ts`
+ * deletes the old session row at the end of every merge codepath, and
+ * `session_scratchlist.session_id` is FK'd with `ON DELETE CASCADE`.
+ * Without an explicit transfer step, scratchlist entries are silently
+ * destroyed every time the hub dedups two sessions or rotates the HAPI
+ * id during resume - both of which fire on the upstream
+ * hub-restart-cascade path documented in tiann/hapi#915.
+ *
+ * Strategy:
+ *   1. `UPDATE OR IGNORE` the session_id column. Rows that would
+ *      collide with an existing (toSessionId, entry_id) PK simply do
+ *      not move - the dedup target's copy wins, which matches the
+ *      operator's mental model that the consolidated session is the
+ *      authoritative one.
+ *   2. `DELETE` whatever didn't move. This is the collision-loser
+ *      cleanup; the cascade from `deleteSession` would do the same
+ *      thing, but doing it here makes the no-delete codepath
+ *      (`mergeSessionHistory`) symmetric and avoids leaving stale
+ *      duplicates on the old row when it stays alive.
+ *
+ * Wrapped in BEGIN/COMMIT so the move is atomic w.r.t. concurrent
+ * writers. Returns counts so the caller can decide whether to fire
+ * SSE patches.
+ */
+export function transferScratchlistEntries(
+    db: Database,
+    fromSessionId: string,
+    toSessionId: string
+): { moved: number; collided: number } {
+    if (fromSessionId === toSessionId) {
+        return { moved: 0, collided: 0 }
+    }
+
+    try {
+        db.exec('BEGIN')
+        const before = db.prepare(
+            'SELECT COUNT(*) AS n FROM session_scratchlist WHERE session_id = ?'
+        ).get(fromSessionId) as { n: number } | undefined
+        const total = before?.n ?? 0
+        const moved = db.prepare(
+            'UPDATE OR IGNORE session_scratchlist SET session_id = ? WHERE session_id = ?'
+        ).run(toSessionId, fromSessionId).changes
+        const collided = total - moved
+        if (collided > 0) {
+            db.prepare(
+                'DELETE FROM session_scratchlist WHERE session_id = ?'
+            ).run(fromSessionId)
+        }
+        db.exec('COMMIT')
+        return { moved, collided }
+    } catch (error) {
+        db.exec('ROLLBACK')
+        throw error
+    }
+}
