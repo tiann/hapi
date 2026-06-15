@@ -1127,10 +1127,14 @@ export function buildCliArgs(
   if (options.modelReasoningEffort && (agent === 'codex' || agent === 'opencode')) {
     args.push('--model-reasoning-effort', options.modelReasoningEffort);
   }
-  if (options.permissionMode && (PERMISSION_MODES as readonly string[]).includes(options.permissionMode)) {
-    args.push('--permission-mode', options.permissionMode);
-  } else if (yolo) {
-    args.push('--yolo');
+  // Pi RPC mode has no permission switching; never pass these flags to it
+  // (the Pi parser rejects --permission-mode and ignores --yolo).
+  if (agent !== 'pi') {
+    if (options.permissionMode && (PERMISSION_MODES as readonly string[]).includes(options.permissionMode)) {
+      args.push('--permission-mode', options.permissionMode);
+    } else if (yolo) {
+      args.push('--yolo');
+    }
   }
   return args;
 }
