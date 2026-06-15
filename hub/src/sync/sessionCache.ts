@@ -908,6 +908,29 @@ export class SessionCache {
             this.publisher.emit({ type: 'messages-invalidated', sessionId: newSessionId, namespace })
         }
 
+        // tiann/hapi#920: transfer scratchlist rows BEFORE the
+        // deleteSession() call below fires `ON DELETE CASCADE` on
+        // `session_scratchlist.session_id`. Without this step every
+        // dedup (#448 agent-id collision) and every resume-of-inactive
+        // path (`syncEngine.resumeSession` -> here) silently destroys
+        // the operator's per-session notes, contradicting the v2.0
+        // promise that scratchlist survives reloads.
+        const movedScratchlist = this.store.scratchlist.transfer(oldSessionId, newSessionId)
+        if (movedScratchlist.moved > 0) {
+            // Fire on the new id so any remote-control web client
+            // looking at the consolidated session re-fetches and shows
+            // the migrated rows. For the keep-old codepath
+            // (`mergeSessionHistory`) the old session also stays
+            // visible but is now empty of scratchlist - emit so its
+            // viewer's cache invalidates too. For the delete codepath
+            // we skip the old emit because `session-removed` is about
+            // to fire and the new id is where the operator lands.
+            this.emitScratchlistChanged(newSessionId)
+            if (!options.deleteOldSession) {
+                this.emitScratchlistChanged(oldSessionId)
+            }
+        }
+
         const mergedMetadata = this.mergeSessionMetadata(oldStored.metadata, newStored.metadata)
         if (mergedMetadata !== null && mergedMetadata !== newStored.metadata) {
             for (let attempt = 0; attempt < 2; attempt += 1) {
