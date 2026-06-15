@@ -51,6 +51,10 @@ export interface TextInputState {
  *   or null for an immediate send.  When non-null, the composer also
  *   restores the schedule via `onSchedule` so the operator can edit and
  *   retry without silently downgrading a scheduled send to immediate.
+ * - `action` is an optional recovery affordance rendered as a button next
+ *   to the message.  Used by the inactive-session branch (#918) to expose
+ *   a one-click Reopen.  Other failure modes (5xx, network, generic 4xx)
+ *   leave this null and only render the message.
  *
  * Owned by the route component (`router.tsx`); the composer is a pure
  * consumer that:
@@ -63,6 +67,11 @@ export type ComposerSendError = {
     text: string
     message: string
     scheduledAt: number | null
+    action?: {
+        label: string
+        onClick: () => void
+        pending?: boolean
+    } | null
 }
 
 const defaultSuggestionHandler = async (): Promise<Suggestion[]> => []
@@ -983,9 +992,20 @@ export function HappyComposer(props: {
                         <div
                             role="alert"
                             data-testid="composer-send-error"
-                            className="mb-2 rounded-md bg-[var(--app-subtle-bg)] px-3 py-2 text-sm text-red-600"
+                            className="mb-2 flex items-center justify-between gap-3 rounded-md bg-[var(--app-subtle-bg)] px-3 py-2 text-sm text-red-600"
                         >
-                            {sendError.message}
+                            <span className="flex-1">{sendError.message}</span>
+                            {sendError.action ? (
+                                <button
+                                    type="button"
+                                    data-testid="composer-send-error-action"
+                                    onClick={sendError.action.onClick}
+                                    disabled={sendError.action.pending}
+                                    className="shrink-0 rounded-md border border-red-300 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                    {sendError.action.label}
+                                </button>
+                            ) : null}
                         </div>
                     ) : null}
 

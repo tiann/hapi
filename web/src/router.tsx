@@ -32,6 +32,7 @@ import { useSlashCommands } from '@/hooks/queries/useSlashCommands'
 import { useSkills } from '@/hooks/queries/useSkills'
 import { useSendMessage, type SendErrorInfo } from '@/hooks/mutations/useSendMessage'
 import type { ComposerSendError } from '@/components/AssistantChat/HappyComposer'
+import { ApiError } from '@/api/client'
 import { queryKeys } from '@/lib/query-keys'
 import { useToast } from '@/lib/toast-context'
 import { useTranslation } from '@/lib/use-translation'
@@ -574,20 +575,27 @@ function SessionsIndexPage() {
 }
 
 /**
- * Extract a user-facing message from a thrown send error.
- * `request<T>` in the api client throws plain `Error` for !res.ok, with the
- * format `"HTTP <status> <statusText>: <body>"` -- we surface the message as
- * a single line and fall back to a localized default when nothing usable is
- * present (e.g. an aborted fetch that resolved with no message).
+ * Classify a thrown send error into a {message, code} pair the composer can
+ * render.  `code` lets the consumer attach a recovery affordance (Reopen on
+ * `session_inactive`) without re-inspecting the raw error.
+ *
+ * `request<T>` in the api client throws `ApiError` for !res.ok with `status`
+ * and `code` parsed from the JSON body.  Older / non-JSON failures arrive as
+ * plain `Error`; we surface those by their message verbatim, falling back to
+ * a localized default when nothing usable is present (e.g. an aborted fetch
+ * that resolved with no message).
  */
-function deriveSendErrorMessage(
+function classifySendError(
     error: unknown,
     t: (key: string) => string,
-): string {
-    if (error instanceof Error && error.message) {
-        return error.message
+): { message: string; code: string | null } {
+    if (error instanceof ApiError && error.status === 409 && error.code === 'session_inactive') {
+        return { message: t('chat.sendError.sessionInactive'), code: 'session_inactive' }
     }
-    return t('chat.sendError.fallback')
+    if (error instanceof Error && error.message) {
+        return { message: error.message, code: null }
+    }
+    return { message: t('chat.sendError.fallback'), code: null }
 }
 
 function SessionPage() {
@@ -629,9 +637,22 @@ function SessionPage() {
     // text into the OLD session's composer and the next render would clear
     // it.  The bumped `id` still lets the composer dedupe restorations of
     // identical text.
-    const [sendErrors, setSendErrors] = useState<Record<string, ComposerSendError>>({})
+    //
+    // We persist the classifier `code` (not the bound action) so the
+    // composer-visible action stays reactive to `reopeningSessionId` state
+    // changes -- the action is built fresh on each render from {raw error
+    // record} x {current reopen state}.  See classifySendError + the
+    // Reopen affordance below.
+    type RawSendError = {
+        id: number
+        text: string
+        message: string
+        code: string | null
+        scheduledAt: number | null
+    }
+    const [sendErrors, setSendErrors] = useState<Record<string, RawSendError>>({})
+    const [reopeningSessionId, setReopeningSessionId] = useState<string | null>(null)
     const sendErrorIdRef = useRef(0)
-    const sendError = sendErrors[sessionId] ?? null
     const clearSendError = useCallback(() => {
         setSendErrors((prev) => {
             if (!(sessionId in prev)) return prev
@@ -640,6 +661,67 @@ function SessionPage() {
             return next
         })
     }, [sessionId])
+
+    // Reopen recovery (#918): one-click affordance attached to the inline
+    // composer error when the rejected send was inactive-session.  Mirrors
+    // SessionList's Reopen UX -- POST /sessions/:id/reopen via
+    // api.reopenSession -- so the operator's mental model is consistent
+    // across surfaces.  We do NOT auto-replay the send: per #917 the reopen
+    // path has known fragility, so the operator re-clicks Send on the
+    // restored composer text once Reopen lands.
+    const reopenFromErrorAffordance = useCallback((errorSessionId: string) => {
+        if (!api) return
+        setReopeningSessionId((prev) => prev ?? errorSessionId)
+        void (async () => {
+            try {
+                const result = await api.reopenSession(errorSessionId)
+                // Clear the inline error -- the operator now has a live
+                // session to retry against.
+                setSendErrors((prev) => {
+                    if (!(errorSessionId in prev)) return prev
+                    const next = { ...prev }
+                    delete next[errorSessionId]
+                    return next
+                })
+                await queryClient.invalidateQueries({ queryKey: queryKeys.session(result.sessionId) })
+                await queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
+                if (result.sessionId && result.sessionId !== errorSessionId) {
+                    navigate({
+                        to: '/sessions/$sessionId',
+                        params: { sessionId: result.sessionId },
+                        replace: true
+                    })
+                }
+            } catch (err) {
+                const message = err instanceof Error ? err.message : t('dialog.error.default')
+                addToast({
+                    title: t('resume.failed.title'),
+                    body: message,
+                    sessionId: errorSessionId,
+                    url: ''
+                })
+            } finally {
+                setReopeningSessionId(null)
+            }
+        })()
+    }, [api, queryClient, navigate, addToast, t])
+
+    const rawSendError = sendErrors[sessionId] ?? null
+    const sendError: ComposerSendError | null = rawSendError
+        ? {
+            id: rawSendError.id,
+            text: rawSendError.text,
+            message: rawSendError.message,
+            scheduledAt: rawSendError.scheduledAt,
+            action: rawSendError.code === 'session_inactive'
+                ? {
+                    label: t('chat.sendError.sessionInactive.action'),
+                    onClick: () => reopenFromErrorAffordance(sessionId),
+                    pending: reopeningSessionId === sessionId
+                }
+                : null
+        }
+        : null
 
     const {
         sendMessage,
@@ -662,12 +744,14 @@ function SessionPage() {
         },
         onError: (info: SendErrorInfo) => {
             sendErrorIdRef.current += 1
+            const { message, code } = classifySendError(info.error, t)
             setSendErrors((prev) => ({
                 ...prev,
                 [info.sessionId]: {
                     id: sendErrorIdRef.current,
                     text: info.text,
-                    message: deriveSendErrorMessage(info.error, t),
+                    message,
+                    code,
                     scheduledAt: info.scheduledAt
                 }
             }))
@@ -677,7 +761,15 @@ function SessionPage() {
                 return currentSessionId
             }
             if (!inactiveSessionCanResume(session, messages.length)) {
-                throw new Error(t('resume.unavailable.noTarget'))
+                // #918: surface as a session_inactive ApiError so the
+                // onError consumer's classifier renders the Reopen
+                // affordance.  `status: 409` mirrors the hub guard for
+                // structural parity; no HTTP call was made.
+                throw new ApiError(
+                    t('chat.sendError.sessionInactive'),
+                    409,
+                    'session_inactive',
+                )
             }
             try {
                 return await api.resumeSession(currentSessionId, { permissionMode: session.permissionMode ?? undefined })
@@ -689,7 +781,14 @@ function SessionPage() {
                     sessionId: currentSessionId,
                     url: ''
                 })
-                throw error
+                // Rebrand as a session_inactive ApiError so the inline
+                // affordance offers Reopen (a separate code path from the
+                // failed Resume) and the operator has a recovery click.
+                throw new ApiError(
+                    t('chat.sendError.sessionInactive'),
+                    409,
+                    'session_inactive',
+                )
             }
         },
         onSessionResolved: (resolvedSessionId) => {

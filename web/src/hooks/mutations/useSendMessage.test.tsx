@@ -3,7 +3,7 @@ import { renderHook, act, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { useSendMessage } from './useSendMessage'
-import type { ApiClient } from '@/api/client'
+import { ApiError, type ApiClient } from '@/api/client'
 
 vi.mock('@/lib/message-window-store', () => ({
     appendOptimisticMessage: vi.fn(),
@@ -521,6 +521,114 @@ describe('useSendMessage', () => {
             acceptedPromise = result.current.sendMessage('hello')
         })
         await expect(acceptedPromise!).resolves.toBe(true)
+    })
+
+    // #918: the inactive-session 409 path
+    describe('inactive-session 409 (issue #918)', () => {
+        it('fires onError with the ApiError so the consumer can render a session_inactive affordance', async () => {
+            // Hub returns 409 with code: 'session_inactive' (guards.ts).
+            // The api client throws ApiError(status=409, code='session_inactive').
+            const onError = vi.fn()
+            const api = createMockApi(async () => {
+                throw new ApiError(
+                    'HTTP 409 Conflict: {"error":"Session is inactive","code":"session_inactive"}',
+                    409,
+                    'session_inactive',
+                    '{"error":"Session is inactive","code":"session_inactive"}'
+                )
+            })
+
+            const { result } = renderHook(
+                () => useSendMessage(api, 'session-A', { onError }),
+                { wrapper: createWrapper() },
+            )
+
+            act(() => {
+                result.current.sendMessage('hello inactive')
+            })
+
+            await waitFor(() => {
+                expect(onError).toHaveBeenCalledTimes(1)
+            })
+            const info = onError.mock.calls[0][0] as { text: string; error: unknown; sessionId: string }
+            expect(info.text).toBe('hello inactive')
+            expect(info.sessionId).toBe('session-A')
+            expect(info.error).toBeInstanceOf(ApiError)
+            const apiErr = info.error as ApiError
+            expect(apiErr.status).toBe(409)
+            expect(apiErr.code).toBe('session_inactive')
+        })
+
+        it('fires onError when resolveSessionId rejects (pre-mutation inactive-session failure)', async () => {
+            // Pre-mutation: the route's resolveSessionId throws when
+            // inactiveSessionCanResume returns false OR api.resumeSession
+            // fails.  Prior to #918 this dropped the typed text into the
+            // void with only a console.error; the operator saw nothing.
+            // The hook must surface this through onError too.
+            const onError = vi.fn()
+            const api = createMockApi()
+            const resumeError = new ApiError('Session is inactive', 409, 'session_inactive')
+
+            const { result } = renderHook(
+                () => useSendMessage(api, 'session-A', {
+                    onError,
+                    resolveSessionId: async () => { throw resumeError },
+                    onSessionResolved: vi.fn(),
+                }),
+                { wrapper: createWrapper() },
+            )
+
+            act(() => {
+                result.current.sendMessage('hello pre-mutation')
+            })
+
+            await waitFor(() => {
+                expect(onError).toHaveBeenCalledTimes(1)
+            })
+            const info = onError.mock.calls[0][0] as { text: string; error: unknown; sessionId: string }
+            expect(info.text).toBe('hello pre-mutation')
+            // Keyed by the ORIGINAL sessionId: pre-mutation never navigated.
+            expect(info.sessionId).toBe('session-A')
+            expect(info.error).toBe(resumeError)
+        })
+
+        it('5xx still uses the legacy text-restore path (#918 must not regress transient-failure UX)', async () => {
+            // Acceptance criterion: a real transient 500/network failure
+            // must keep the original behavior (remove optimistic row,
+            // onError fires with the plain message), not adopt the
+            // session_inactive affordance.
+            const onError = vi.fn()
+            const api = createMockApi(async () => {
+                throw new ApiError(
+                    'HTTP 500 Internal Server Error',
+                    500,
+                    undefined,
+                    undefined
+                )
+            })
+
+            const { removeOptimisticMessage } = await import('@/lib/message-window-store')
+            const removeMock = vi.mocked(removeOptimisticMessage)
+
+            const { result } = renderHook(
+                () => useSendMessage(api, 'session-A', { onError }),
+                { wrapper: createWrapper() },
+            )
+
+            act(() => {
+                result.current.sendMessage('hello transient')
+            })
+
+            await waitFor(() => {
+                expect(onError).toHaveBeenCalledTimes(1)
+            })
+            expect(removeMock).toHaveBeenCalledWith('session-A', 'local-id-1')
+            const info = onError.mock.calls[0][0] as { error: unknown }
+            // No session_inactive code -> consumer renders fallback
+            // message, no Reopen action attached.
+            expect((info.error as ApiError).code).toBeUndefined()
+            expect((info.error as ApiError).status).toBe(500)
+        })
     })
 
     it('preserves scheduledAt when retrying a failed scheduled message', async () => {
