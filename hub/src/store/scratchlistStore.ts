@@ -7,6 +7,7 @@ import {
     deleteScratchlistEntry,
     getScratchlistEntry,
     listScratchlistEntries,
+    transferScratchlistEntries,
     updateScratchlistEntry,
     type CreateScratchlistResult
 } from './scratchlist'
@@ -48,5 +49,16 @@ export class ScratchlistStore {
 
     delete(sessionId: string, entryId: string): boolean {
         return deleteScratchlistEntry(this.db, sessionId, entryId)
+    }
+
+    /**
+     * Re-point rows during a session merge. See
+     * `transferScratchlistEntries` for the contract; the wrapper just
+     * forwards through. Must be called BEFORE `deleteSession` so
+     * `ON DELETE CASCADE` on `session_scratchlist.session_id` doesn't
+     * race the migration. Required by tiann/hapi#920.
+     */
+    transfer(fromSessionId: string, toSessionId: string): { moved: number; collided: number } {
+        return transferScratchlistEntries(this.db, fromSessionId, toSessionId)
     }
 }
