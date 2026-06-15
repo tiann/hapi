@@ -17,7 +17,10 @@ export class PiSession {
     readonly path: string;
     readonly logPath: string;
     readonly startedBy: 'runner' | 'terminal';
-    readonly startingMode: 'local' | 'remote';
+    // Mutable mode — updated by setMode() when the hub switches control
+    // (local ↔ remote). keepAlive reads this so the reported mode does not
+    // revert to the constructor-time startingMode every 2s tick.
+    mode: 'local' | 'remote';
 
     // Config state — synced to hub via keepAlive
     currentModel: string | null;
@@ -55,7 +58,7 @@ export class PiSession {
         this.path = opts.path;
         this.logPath = opts.logPath;
         this.startedBy = opts.startedBy;
-        this.startingMode = opts.startingMode;
+        this.mode = opts.startingMode;
         this.currentModel = opts.model ?? null;
         this.initialModel = opts.model?.trim() || null;
         this.currentThinkingLevel = null;
@@ -74,7 +77,7 @@ export class PiSession {
     }
 
     pushKeepAlive(): void {
-        this.client.keepAlive(this.piIsStreaming, this.startingMode, {
+        this.client.keepAlive(this.piIsStreaming, this.mode, {
             model: this.currentModel,
             effort: this.currentThinkingLevel,
         });
@@ -82,10 +85,15 @@ export class PiSession {
 
     updateThinkingState(thinking: boolean): void {
         this.piIsStreaming = thinking;
-        this.client.keepAlive(thinking, this.startingMode, {
+        this.client.keepAlive(thinking, this.mode, {
             model: this.currentModel,
             effort: this.currentThinkingLevel,
         });
+    }
+
+    setMode(mode: 'local' | 'remote'): void {
+        this.mode = mode;
+        this.pushKeepAlive();
     }
 
     updateMetadata(updater: (meta: Metadata) => Metadata): void {

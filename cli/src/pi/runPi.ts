@@ -292,8 +292,8 @@ export async function runPi(opts: {
     const handleModeChange = createModeChangeHandler(apiSession);
     apiSession.rpcHandlerManager.registerHandler(RPC_METHODS.Switch, async (payload: { to?: 'local' | 'remote' } = {}) => {
         const mode = payload.to ?? 'remote';
+        piSession.setMode(mode);
         handleModeChange(mode);
-        piSession.pushKeepAlive();
         return { success: true };
     });
 
