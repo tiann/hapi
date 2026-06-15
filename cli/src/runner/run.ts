@@ -438,7 +438,16 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           stdio: ['ignore', 'pipe', 'pipe'],  // Capture stdout/stderr for debugging
           env: {
             ...process.env,
-            ...extraEnv
+            ...extraEnv,
+            // tiann/hapi#914 review: runner-spawned children get SIGTERMed
+            // by three runner paths (stopSession, webhook-timeout cleanup,
+            // orphan cleanup). All three are runner actions, not hub
+            // restarts and not user terminations. Override the lifecycle
+            // default so audit-trail archives accurately attribute to the
+            // runner. Genuine user actions (web Archive via KillSession
+            // RPC, terminal Ctrl-C via SIGINT) still override to
+            // 'User terminated' in runnerLifecycle.
+            HAPI_DEFAULT_ARCHIVE_REASON: 'Stopped by runner'
           }
         });
 

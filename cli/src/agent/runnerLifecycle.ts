@@ -24,16 +24,24 @@ export type RunnerLifecycle = {
 
 export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLifecycle {
     let exitCode = 0
-    // tiann/hapi#914: default reason is 'Hub restart' (parent-driven SIGTERM
-    // is the most common non-user cause). Genuine user actions (clicking
-    // Archive in the web UI, or Ctrl-C in a local terminal) explicitly
-    // reassign this via `setArchiveReason` BEFORE `cleanupAndExit` runs:
+    // tiann/hapi#914: default reason is parent-driven SIGTERM (the most
+    // common non-user cause). Genuine user actions (clicking Archive in the
+    // web UI, or Ctrl-C in a local terminal) explicitly reassign this via
+    // `setArchiveReason` BEFORE `cleanupAndExit` runs:
     //   - KillSession RPC handler  → 'User terminated' (see registerKillSessionHandler)
     //   - SIGINT handler           → 'User terminated' (Ctrl-C in local terminal)
     //   - uncaughtException/Reject → 'Session crashed' (via markCrash)
-    // Out-of-band SIGTERM (hub-restart cascade, `kill <pid>` from host) keeps
-    // the default and is correctly labelled 'Hub restart' on the audit trail.
-    let archiveReason = 'Hub restart'
+    //
+    // The default is parameterised via `HAPI_DEFAULT_ARCHIVE_REASON` so that
+    // the runner (cli/src/runner/run.ts) can label children it spawns with
+    // 'Stopped by runner' — runner-driven SIGTERMs (stop-session command,
+    // webhook-timeout cleanup, orphan cleanup) are NOT hub restarts, and
+    // hub-restart cascades for runner-spawned children also flow through
+    // the runner in production. Terminal-launched sessions (no runner
+    // parent) fall back to 'Hub restart' since the most plausible
+    // out-of-band SIGTERM source for those is the systemd hub-restart
+    // cascade documented at tiann/hapi#915.
+    let archiveReason = process.env.HAPI_DEFAULT_ARCHIVE_REASON || 'Hub restart'
     let sessionEndReason: SessionEndReason = 'terminated'
     let sessionEndReasonExplicit = false
     let cleanupStarted = false
