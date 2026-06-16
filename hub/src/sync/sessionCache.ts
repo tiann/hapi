@@ -222,7 +222,17 @@ export class SessionCache {
         if (patch.collaborationMode !== undefined) session.collaborationMode = patch.collaborationMode
         if (patch.backgroundTaskCount !== undefined) session.backgroundTaskCount = patch.backgroundTaskCount
         if (patch.todos !== undefined) session.todos = patch.todos
-        if (patch.teamState !== undefined) session.teamState = patch.teamState
+        // teamState uses `null` on the wire as the explicit clear signal
+        // (TeamDelete events); `undefined` means "field absent, don't
+        // touch". Use hasOwnProperty to discriminate, then map null →
+        // undefined to match the cached Session.teamState type
+        // (TeamState | undefined). Without this, a TeamDelete leaves the
+        // hub cache holding the stale pre-delete TeamState even though
+        // the DB row was cleared — sidebar / NotificationHub / dedup all
+        // serve stale data until the next full refresh.
+        if (Object.prototype.hasOwnProperty.call(patch, 'teamState')) {
+            session.teamState = patch.teamState ?? undefined
+        }
         if (patch.metadata !== undefined) {
             session.metadata = patch.metadata.value
             session.metadataVersion = patch.metadata.version
