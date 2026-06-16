@@ -66,6 +66,22 @@ function resolvePendingRpc(resolver: PiRpcResolver, response: PiResponseEvent): 
     resolver.resolveResponse(response);
 }
 
+// Mirror the web picker's provider-qualified selection into metadata so the hub
+// and web can disambiguate duplicate modelId values across providers. The web
+// /sessions/:id/model path already writes piSelectedModel via persistPiSelectedModel;
+// these runtime paths (get_state, startup set_model, successful set_model response)
+// previously only keepAlive'd the bare modelId, so a Pi session on Pi's default model
+// or started with --model could render/filter against the wrong provider.
+function persistSelectedPiModel(session: PiSession): void {
+    const modelId = session.currentModel;
+    const provider = session.currentProvider;
+    if (!modelId || !provider) return;
+    session.updateMetadata((meta) => ({
+        ...meta,
+        piSelectedModel: { provider, modelId },
+    }));
+}
+
 // --- Response handler ---
 
 function handleGetState(
@@ -93,6 +109,10 @@ function handleGetState(
         } else if (newModel) {
             logger.debug(`[pi] Initial model: ${newModel} (provider=${session.currentProvider ?? 'unknown'})`);
         }
+        // Pi reported its actual model+provider; persist the provider-qualified
+        // selection so the web can disambiguate (a startup --model overrides this
+        // once get_available_models confirms and applies it below).
+        persistSelectedPiModel(session);
     }
 
     if (data.sessionId) {
@@ -147,6 +167,7 @@ function handleResponse(
                 if (data.provider && data.provider.length > 0) {
                     session.currentProvider = data.provider;
                 }
+                persistSelectedPiModel(session);
                 logger.debug(`[pi] Model changed to: ${modelId ?? session.currentModel}`);
             }
             // set_model is awaited by SetSessionConfig (Fix #9); without this
@@ -190,6 +211,7 @@ function handleResponse(
                                 });
                                 session.currentModel = match.modelId;
                                 session.currentProvider = match.provider;
+                                persistSelectedPiModel(session);
                                 logger.debug(`[pi] Startup model applied: ${match.provider}/${match.modelId}`);
                             } catch (error) {
                                 logger.debug(`[pi] Startup model set_model rejected, keeping Pi default: ${error instanceof Error ? error.message : String(error)}`);
