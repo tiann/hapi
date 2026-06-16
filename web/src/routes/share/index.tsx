@@ -12,8 +12,6 @@ import {
 import { setSharePendingTransfer } from '@/lib/sharePendingState'
 import type { SessionSummary } from '@/types/api'
 
-const TOP_SESSIONS = 5
-
 type LoadState =
     | { state: 'loading' }
     | { state: 'missing'; reason: 'not-found' | 'ingest-error' | 'no-id' }
@@ -143,12 +141,24 @@ export default function SharePage() {
         return () => { cancelled = true }
     }, [transferId, ingestError])
 
-    const activeSessions = useMemo(() => {
-        return [...sessions]
-            .filter((s) => s.active)
-            .sort((a, b) => b.activeAt - a.activeAt)
-            .slice(0, TOP_SESSIONS)
-    }, [sessions])
+    // Snapshot the active session list once when sessions finish loading so
+    // the picker doesn't re-shuffle under the operator's finger as SSE
+    // updates roll in (activeAt heartbeats nudge the order every few
+    // seconds; even updatedAt-keyed sorts visually flicker on every
+    // metadata patch). The picker is a one-shot interaction — closing the
+    // share sheet and re-sharing produces a fresh snapshot. Sorted by
+    // updatedAt desc to match SessionList's canonical "most recent
+    // interaction first" order.
+    const [pickerSessions, setPickerSessions] = useState<SessionSummary[] | null>(null)
+    useEffect(() => {
+        if (pickerSessions !== null) return
+        if (sessionsLoading) return
+        setPickerSessions(
+            [...sessions]
+                .filter((s) => s.active)
+                .sort((a, b) => b.updatedAt - a.updatedAt)
+        )
+    }, [pickerSessions, sessions, sessionsLoading])
 
     const handlePickSession = useCallback((sessionId: string) => {
         if (!transferId) return
@@ -235,15 +245,15 @@ export default function SharePage() {
                         <div className="px-1 pb-1 text-xs font-semibold uppercase tracking-wide text-[var(--app-hint)]">
                             {t('share.recentSessions')}
                         </div>
-                        {sessionsLoading ? (
+                        {pickerSessions === null ? (
                             <LoadingState label={t('share.loading')} className="text-sm py-4" />
-                        ) : activeSessions.length === 0 ? (
+                        ) : pickerSessions.length === 0 ? (
                             <div className="rounded-md bg-[var(--app-secondary-bg)] p-3 text-xs text-[var(--app-hint)]">
                                 {t('share.noActiveSessions')}
                             </div>
                         ) : (
                             <ul className="overflow-hidden rounded-md bg-[var(--app-secondary-bg)]">
-                                {activeSessions.map((session) => (
+                                {pickerSessions.map((session) => (
                                     <li key={session.id}>
                                         <button
                                             type="button"
