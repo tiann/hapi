@@ -274,7 +274,8 @@ describe('resumeCommand', () => {
             workingDirectory: '/tmp/project',
             resumeSessionId: 'pi-session-123',
             startedBy: 'terminal',
-            startingMode: 'local',
+            // Pi has no local TUI input path, so resume defaults to remote control.
+            startingMode: 'remote',
             model: 'deepseek-v3',
             effort: 'high'
         })

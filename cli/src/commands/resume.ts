@@ -152,7 +152,10 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
             workingDirectory: base.workingDirectory,
             resumeSessionId: base.resumeSessionId,
             startedBy: base.startedBy,
-            startingMode: 'local',
+            // Pi runs as `pi --mode rpc` with piped stdio and no local TUI input
+            // path, so 'local' would advertise local-control that cannot be used
+            // and hide/reject remote-only controls until a web switch.
+            startingMode: 'remote',
             model: target.model ?? undefined,
             effort: target.effort ?? undefined,
         })
