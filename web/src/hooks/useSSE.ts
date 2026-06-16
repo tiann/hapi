@@ -40,6 +40,16 @@ export function isGlobalScopedMessageStreamEvent(scope: SSEScope, eventType: Syn
     return scope === 'global' && MESSAGE_STREAM_EVENT_TYPES.has(eventType)
 }
 
+// Version-monotonicity gate for structured patches carrying metadata or
+// agentState. SSE reconnects + per-query invalidation can leave the cache
+// holding state that's NEWER than a buffered older patch about to replay;
+// applying that older patch would regress resume / session-id / pending-
+// requests state. Mirrors the CLI room handler contract: strictly newer
+// only. Exported so the rule is unit-testable in isolation from the hook.
+export function isNewerVersionedPatch(patchVersion: number, currentVersion: number): boolean {
+    return patchVersion > currentVersion
+}
+
 type VisibilityState = 'visible' | 'hidden'
 
 type ToastEvent = Extract<SyncEvent, { type: 'toast' }>
@@ -358,15 +368,29 @@ export function useSSE(options: {
                 // Structured-patch fields (todos / agentState / metadata) feed
                 // the SessionSummary derivations. Recompute the touched fields
                 // so the session list stays consistent with the detail cache.
+                //
+                // Version-monotonicity gate, derived from the detail cache
+                // (the source of truth for metadata/agentState versions; the
+                // SessionSummary doesn't carry them). The callsite below runs
+                // `patchSessionDetail` BEFORE `patchSessionSummary`, so when
+                // detail accepts a newer patch the detail cache already
+                // reflects the new version — use `>=` so summary matches it.
+                // When detail rejects (stale), detail cache still holds the
+                // older-at-write-but-newer-than-patch version, and `>=` keeps
+                // summary aligned with detail's rejection. Missing detail
+                // cache => default to 0 (allow patch).
+                const detailForVersion = queryClient.getQueryData<SessionResponse>(queryKeys.session(sessionId))?.session
+                const detailMetadataVersion = detailForVersion?.metadataVersion ?? 0
+                const detailAgentStateVersion = detailForVersion?.agentStateVersion ?? 0
                 if (patch.todos !== undefined) {
                     nextSummary.todoProgress = computeTodoProgress(patch.todos)
                 }
-                if (patch.agentState !== undefined) {
+                if (patch.agentState !== undefined && patch.agentState.version >= detailAgentStateVersion) {
                     const requests = patch.agentState.value?.requests
                     nextSummary.pendingRequestsCount = requests ? Object.keys(requests).length : 0
                     nextSummary.pendingRequestKinds = computePendingRequestKinds(patch.agentState.value)
                 }
-                if (patch.metadata !== undefined) {
+                if (patch.metadata !== undefined && patch.metadata.version >= detailMetadataVersion) {
                     nextSummary.metadata = toSessionSummaryMetadata(patch.metadata.value)
                 }
 
@@ -408,11 +432,21 @@ export function useSSE(options: {
                 // the Session's flat metadata/metadataVersion pair (same for
                 // agentState). Spreading the patch wholesale would corrupt
                 // session.metadata with a { version, value } object.
-                if (patch.metadata !== undefined) {
+                //
+                // Version-monotonicity gate (PR #897 review, HAPI Bot
+                // 2026-06-16 Major): on SSE reconnect the per-query
+                // invalidation path can repopulate the detail cache via a
+                // fresh REST refetch BEFORE a buffered older patch replays.
+                // Applying the older patch would regress resume / session-id
+                // / pending-requests state. Mirror the CLI room handler's
+                // `incoming.version > currentVersion` guard so the cache
+                // only moves forward. `nextSession.metadataVersion` is the
+                // pre-patch value because it was just spread from `previous`.
+                if (patch.metadata !== undefined && isNewerVersionedPatch(patch.metadata.version, nextSession.metadataVersion)) {
                     nextSession.metadata = patch.metadata.value
                     nextSession.metadataVersion = patch.metadata.version
                 }
-                if (patch.agentState !== undefined) {
+                if (patch.agentState !== undefined && isNewerVersionedPatch(patch.agentState.version, nextSession.agentStateVersion)) {
                     nextSession.agentState = patch.agentState.value
                     nextSession.agentStateVersion = patch.agentState.version
                 }
