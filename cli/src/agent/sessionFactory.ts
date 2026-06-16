@@ -107,6 +107,8 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
     // Preserve cached Pi model list so the web can show models immediately
     // on inactive-session view without waiting for an RPC round-trip.
     if (metadata.piAvailableModels !== undefined) preserved.piAvailableModels = metadata.piAvailableModels
+    // Preserve provider-qualified Pi model selection (disambiguates duplicate modelIds).
+    if (metadata.piSelectedModel !== undefined) preserved.piSelectedModel = metadata.piSelectedModel
 
     return preserved
 }
