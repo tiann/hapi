@@ -100,14 +100,19 @@ async function handleSymlink(directory: string): Promise<ValidateWorkspaceDirect
             const targetDescription = linkTarget
                 ? `'${linkTarget}'`
                 : 'a target that no longer exists';
+            // Deliberately do NOT embed `directory` inside a copy-pasteable
+            // shell command (e.g. `rm '...'`): a path containing a single
+            // quote would break the quoting and turn this diagnostic into
+            // a shell-injection / accidental-delete vector. Describe the
+            // recovery action in prose instead. (Codex review on PR #892.)
             return {
                 type: 'error',
                 errorMessage:
                     `Workspace path '${directory}' is a symbolic link to ${targetDescription}, ` +
                     `which no longer exists. This usually means the target was deleted ` +
                     `(e.g. via \`git worktree remove\`) without removing the symlink. ` +
-                    `Recovery: recreate the directory at the target path, remove the dangling symlink ` +
-                    `(\`rm '${directory}'\`), or archive this session.`,
+                    `Recovery: recreate the directory at the target path, remove the dangling symlink at '${directory}', ` +
+                    `or archive this session.`,
             };
         }
         return {

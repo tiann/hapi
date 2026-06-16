@@ -86,6 +86,33 @@ describe('validateWorkspaceDirectory', () => {
             expect(result.errorMessage).toMatch(/no longer exists/i);
             expect(result.errorMessage).toMatch(/Recovery:/);
             expect(result.errorMessage).not.toMatch(/EEXIST/);
+            // Regression: must not embed the user-controlled path inside a
+            // copy-pasteable shell command (`rm '...'`) - a path with a
+            // single quote would break the quoting and create an injection
+            // / accidental-delete vector. (Codex review on PR #892.)
+            expect(result.errorMessage).not.toMatch(/`rm /);
+        }
+    });
+
+    it('does not produce a copy-pasteable rm command when the path contains a single quote', async () => {
+        // Regression for the PR #892 Codex review Major: paths with
+        // single quotes used to break out of the literal `rm '...'`
+        // recovery hint and turn the diagnostic into a shell-injection
+        // / accidental-delete vector.
+        const trickyDir = join(workRoot, "weird'name");
+        await mkdir(trickyDir);
+        const missingTarget = join(trickyDir, 'gone-target');
+        const link = join(trickyDir, 'dangling-symlink');
+        await symlink(missingTarget, link);
+
+        const result = await validateWorkspaceDirectory(link, {
+            approvedNewDirectoryCreation: true,
+        });
+        expect(result.type).toBe('error');
+        if (result.type === 'error') {
+            expect(result.errorMessage).toContain(link);
+            expect(result.errorMessage).toContain(missingTarget);
+            expect(result.errorMessage).not.toMatch(/`rm /);
         }
     });
 
