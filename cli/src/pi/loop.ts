@@ -146,6 +146,9 @@ function handleResponse(
                 }
                 logger.debug(`[pi] Model changed to: ${modelId ?? session.currentModel}`);
             }
+            // set_model is awaited by SetSessionConfig (Fix #9); without this
+            // the awaited RPC would time out and /sessions/:id/model return 409.
+            resolvePendingRpc(resolver, response);
             break;
         }
         case 'get_available_models': {
