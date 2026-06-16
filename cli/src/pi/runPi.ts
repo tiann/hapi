@@ -25,8 +25,13 @@ export async function runPi(opts: {
 } = {}): Promise<void> {
     const workingDirectory = opts.workingDirectory ?? getInvokedCwd();
     const startedBy = opts.startedBy ?? 'terminal';
-    const startingMode: 'local' | 'remote' = opts.startingMode
-        ?? (startedBy === 'runner' ? 'remote' : 'local');
+    // Pi only runs as `pi --mode rpc` with piped stdio — there is no local
+    // terminal/TUI input path (unlike Claude/Codex). Defaulting a terminal
+    // launch to 'local' would mark the session local-controlled while the user
+    // cannot drive it from the terminal, leaving it stuck until a web switch.
+    // Default to 'remote' so the session is immediately drivable from the web;
+    // an explicit opts.startingMode (e.g. runner) still takes precedence.
+    const startingMode: 'local' | 'remote' = opts.startingMode ?? 'remote';
 
     logger.debug(`[pi] Starting with options: startedBy=${startedBy}, startingMode=${startingMode}`);
 
