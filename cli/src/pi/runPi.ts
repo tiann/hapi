@@ -124,11 +124,17 @@ export async function runPi(opts: {
     });
 
     // --- Wire transport events to session ---
-    // Restore effort/thinkingLevel from session metadata (resume path)
+    // Capture the requested startup effort WITHOUT mutating currentThinkingLevel.
+    // It is applied (and committed) only after Pi confirms set_thinking_level,
+    // mirroring the startup-model contract; seeding it here would leak an
+    // unconfirmed/rejected value via the first keepAlive (pushKeepAlive persists
+    // effort) before the RPC runs. get_state's thinkingLevel is the authoritative
+    // source until set_thinking_level succeeds.
+    let startupThinkingLevel: PiThinkingLevel | null = null;
     if (opts.effort) {
         const result = PiThinkingLevelSchema.safeParse(opts.effort.trim().toLowerCase());
         if (result.success) {
-            piSession.currentThinkingLevel = result.data;
+            startupThinkingLevel = result.data;
         } else {
             logger.debug(`[pi] Ignoring invalid effort value on resume: ${opts.effort}`);
         }
@@ -343,12 +349,32 @@ export async function runPi(opts: {
     try {
         transport.start();
         transport.send({ type: 'new_session' });
-        if (piSession.currentThinkingLevel) {
-            transport.send({ type: 'set_thinking_level', level: piSession.currentThinkingLevel });
-        }
         transport.send({ type: 'get_state' });
         transport.send({ type: 'get_available_models' });
         transport.send({ type: 'get_commands' });
+
+        // Apply the requested startup effort only after Pi confirms
+        // set_thinking_level. Commit currentThinkingLevel on success and push a
+        // keepAlive so the hub sees the accepted value; on rejection keep Pi's
+        // default (already reported by get_state). Detached so the run loop is
+        // not blocked; sent after get_state so the authoritative baseline lands
+        // first and a late get_state response does not clobber the confirmed
+        // value (get_state runs on the wire before this await resolves).
+        if (startupThinkingLevel) {
+            void (async () => {
+                try {
+                    await sendPiRpcAndWait(piSession, transport, {
+                        type: 'set_thinking_level',
+                        level: startupThinkingLevel,
+                    });
+                    piSession.currentThinkingLevel = startupThinkingLevel;
+                    piSession.pushKeepAlive();
+                    logger.debug(`[pi] Startup effort applied: ${startupThinkingLevel}`);
+                } catch (error) {
+                    logger.debug(`[pi] Startup effort rejected, keeping Pi default: ${error instanceof Error ? error.message : String(error)}`);
+                }
+            })();
+        }
 
         // Block until cleanup is triggered by error/close handler
         await new Promise<void>((resolve) => {
