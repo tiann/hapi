@@ -157,4 +157,40 @@ describe('createRunnerLifecycle archiveReason defaults (tiann/hapi#914)', () => 
         })
     })
 
+    // tiann/hapi#914 review round 4: clean agent-loop completions
+    // (runClaude / runCodex / runCursor / runGemini / runKimi /
+    // runOpencode all call setSessionEndReason('completed') without
+    // touching archiveReason) must not be archived as 'Hub restart'.
+    // The setSessionEndReason setter flips the default when the runner
+    // transitions to 'completed'.
+    it('setSessionEndReason("completed") flips the default reason to "Session completed"', async () => {
+        const session = makeFakeSession()
+        const lifecycle = createRunnerLifecycle({
+            session: session as unknown as Parameters<typeof createRunnerLifecycle>[0]['session'],
+            logTag: 'test'
+        })
+
+        lifecycle.setSessionEndReason('completed')
+        await lifecycle.cleanup()
+
+        expect(session.metadataWrites[0]).toMatchObject({
+            archiveReason: 'Session completed'
+        })
+    })
+
+    it('an explicit setArchiveReason before setSessionEndReason("completed") still wins', async () => {
+        const session = makeFakeSession()
+        const lifecycle = createRunnerLifecycle({
+            session: session as unknown as Parameters<typeof createRunnerLifecycle>[0]['session'],
+            logTag: 'test'
+        })
+
+        lifecycle.setArchiveReason('User terminated')
+        lifecycle.setSessionEndReason('completed')
+        await lifecycle.cleanup()
+
+        expect(session.metadataWrites[0]).toMatchObject({
+            archiveReason: 'User terminated'
+        })
+    })
 })

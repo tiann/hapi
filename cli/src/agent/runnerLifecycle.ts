@@ -118,6 +118,18 @@ export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLi
     const setSessionEndReason = (reason: SessionEndReason) => {
         sessionEndReason = reason
         sessionEndReasonExplicit = true
+        // tiann/hapi#914 review round 4: every agent runner
+        // (runClaude / runCodex / runCursor / runGemini / runKimi /
+        // runOpencode) calls setSessionEndReason('completed') before
+        // cleanupAndExit() on the natural-exit path without setting an
+        // archive reason. With the SIGTERM-driven default of 'Hub restart',
+        // clean completions would otherwise be audit-trailed as restart
+        // cascades. Flip the default to 'Session completed' when the end
+        // reason transitions to 'completed' AND no caller has already
+        // overridden the archive reason.
+        if (reason === 'completed' && archiveReason === 'Hub restart') {
+            archiveReason = 'Session completed'
+        }
     }
 
     const hasExplicitSessionEndReason = () => sessionEndReasonExplicit
