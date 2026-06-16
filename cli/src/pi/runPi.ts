@@ -264,10 +264,14 @@ export async function runPi(opts: {
     // --- User message handler ---
     apiSession.onUserMessage((message, localId) => {
         const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
-        if (localId) pendingLocalIds.push(localId);
         if (piSession.piIsStreaming) {
+            // Steer does not start a new turn, so the localId would never be
+            // drained by turn_start. Mark it consumed immediately so it does
+            // not poison the FIFO for the next real prompt.
             transport.send({ type: 'steer', message: formattedText });
+            if (localId) piSession.emitMessagesConsumed([localId]);
         } else {
+            if (localId) pendingLocalIds.push(localId);
             transport.send({ type: 'prompt', message: formattedText });
         }
     });
