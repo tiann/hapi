@@ -17,23 +17,29 @@ export function isProcessAlive(pid: number): boolean {
 }
 
 // ponytail: ps -p is cheap and avoids PID-reuse false positives after OS upgrades/reboots
+function isRunnerCommand(commandLine: string): boolean {
+  return /(?:^|\s)runner(?:\s|$)/.test(commandLine) && /(?:^|\s)start-sync(?:\s|$)/.test(commandLine);
+}
+
 export function isHapiRunnerProcess(pid: number): boolean {
   if (!isProcessAlive(pid)) {
     return false;
   }
   if (isWindows()) {
-    try {
-      const result = spawn.sync('wmic', ['process', 'where', `ProcessId=${pid}`, 'get', 'CommandLine'], { stdio: 'pipe' });
-      return result.stdout?.toString().includes('hapi') ?? false;
-    } catch {
-      return true; // fall back to alive-only check
+    const result = spawn.sync('wmic', ['process', 'where', `ProcessId=${pid}`, 'get', 'CommandLine'], { stdio: 'pipe' });
+    if (result.error) {
+      return true;
     }
+    if (result.status !== 0) {
+      return isProcessAlive(pid);
+    }
+    return isRunnerCommand(result.stdout?.toString() ?? '');
   }
   try {
     const result = spawn.sync('ps', ['-p', String(pid), '-o', 'command='], { stdio: 'pipe' });
-    return result.stdout?.toString().includes('hapi') ?? false;
+    return isRunnerCommand(result.stdout?.toString() ?? '');
   } catch {
-    return true; // fall back to alive-only check
+    return true;
   }
 }
 
