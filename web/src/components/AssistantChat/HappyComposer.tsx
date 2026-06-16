@@ -739,9 +739,7 @@ export function HappyComposer(props: {
 
             // Model selection panel
             if (showPiModelPanel && piModels && piModels.length > 0) {
-                const currentPiModel = model
-                    ? piModels.find(m => m.modelId === model) ?? null
-                    : null
+                const currentPiModel = selectedPiModel ?? null
                 panels.push(
                     <div key="model" className="absolute bottom-[100%] mb-2 left-2 w-64">
                         <PiModelPanel
