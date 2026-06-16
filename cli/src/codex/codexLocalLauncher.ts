@@ -172,6 +172,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                 path: session.path,
                 sessionId: resumeSessionId,
                 modelReasoningEffort: (session.getModelReasoningEffort() ?? undefined) as ReasoningEffort | undefined,
+                serviceTier: session.getServiceTier() ?? undefined,
                 onSessionFound: handleSessionFound,
                 abort: abortSignal,
                 codexArgs,

@@ -5,6 +5,7 @@ const mockCodexSession = vi.hoisted(() => ({
     setPermissionMode: vi.fn(),
     setModel: vi.fn(),
     setModelReasoningEffort: vi.fn(),
+    setServiceTier: vi.fn(),
     setCollaborationMode: vi.fn(),
     stopKeepAlive: vi.fn()
 }))
@@ -109,6 +110,7 @@ describe('runCodex', () => {
         mockCodexSession.setPermissionMode.mockReset()
         mockCodexSession.setModel.mockReset()
         mockCodexSession.setModelReasoningEffort.mockReset()
+        mockCodexSession.setServiceTier.mockReset()
         mockCodexSession.setCollaborationMode.mockReset()
         lifecycleMock.registerProcessHandlers.mockClear()
         lifecycleMock.cleanupAndExit.mockClear()

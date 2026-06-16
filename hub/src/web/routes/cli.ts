@@ -101,7 +101,8 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
             namespace,
             parsed.data.model,
             parsed.data.effort,
-            parsed.data.modelReasoningEffort
+            parsed.data.modelReasoningEffort,
+            parsed.data.serviceTier
         )
         return c.json({ session })
     })

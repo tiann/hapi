@@ -362,9 +362,10 @@ export class SyncEngine {
         namespace: string,
         model?: string,
         effort?: string,
-        modelReasoningEffort?: string
+        modelReasoningEffort?: string,
+        serviceTier?: string
     ): Session {
-        return this.sessionCache.getOrCreateSession(tag, metadata, agentState, namespace, model, effort, modelReasoningEffort)
+        return this.sessionCache.getOrCreateSession(tag, metadata, agentState, namespace, model, effort, modelReasoningEffort, serviceTier)
     }
 
     getOrCreateMachine(id: string, metadata: unknown, runnerState: unknown, namespace: string): Machine {
@@ -620,6 +621,7 @@ export class SyncEngine {
             model?: string | null
             modelReasoningEffort?: string | null
             effort?: string | null
+            serviceTier?: string | null
             collaborationMode?: CodexCollaborationMode
         }
     ): Promise<void> {
@@ -643,6 +645,7 @@ export class SyncEngine {
                 model?: Session['model']
                 modelReasoningEffort?: Session['modelReasoningEffort']
                 effort?: Session['effort']
+                serviceTier?: Session['serviceTier']
                 collaborationMode?: Session['collaborationMode']
             }
         }
@@ -675,7 +678,8 @@ export class SyncEngine {
         worktreeName?: string,
         resumeSessionId?: string,
         effort?: string,
-        permissionMode?: PermissionMode
+        permissionMode?: PermissionMode,
+        serviceTier?: string
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
         return await this.rpcGateway.spawnSession(
             machineId,
@@ -688,7 +692,8 @@ export class SyncEngine {
             worktreeName,
             resumeSessionId,
             effort,
-            permissionMode
+            permissionMode,
+            serviceTier
         )
     }
 
@@ -752,6 +757,7 @@ export class SyncEngine {
                 agentSessionId,
                 model: session.model ?? null,
                 effort: session.effort ?? null,
+                serviceTier: session.serviceTier ?? null,
                 modelReasoningEffort: session.modelReasoningEffort ?? null,
                 permissionMode: session.permissionMode,
                 collaborationMode: session.collaborationMode
@@ -777,6 +783,7 @@ export class SyncEngine {
                     agentSessionId: target.agentSessionId,
                     model: target.model,
                     effort: target.effort,
+                    serviceTier: target.serviceTier,
                     modelReasoningEffort: target.modelReasoningEffort,
                     permissionMode: target.permissionMode,
                     collaborationMode: target.collaborationMode,
@@ -1141,7 +1148,8 @@ export class SyncEngine {
             undefined,
             resumeToken,
             session.effort ?? undefined,
-            preferredPermissionMode
+            preferredPermissionMode,
+            session.serviceTier ?? undefined
         )
 
         if (spawnResult.type !== 'success') {

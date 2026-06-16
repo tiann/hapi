@@ -80,6 +80,7 @@ describe('API extra headers integration', () => {
                     model: null,
                     modelReasoningEffort: null,
                     effort: null,
+                    serviceTier: null,
                     permissionMode: undefined,
                     collaborationMode: undefined
                 }
@@ -137,6 +138,7 @@ describe('API extra headers integration', () => {
             model: null,
             modelReasoningEffort: null,
             effort: null,
+            serviceTier: null,
             permissionMode: undefined,
             collaborationMode: undefined
         })

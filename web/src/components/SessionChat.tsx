@@ -8,7 +8,9 @@ import type {
     DecryptedMessage,
     PermissionMode,
     Session,
-    SlashCommand
+    SlashCommand,
+    CodexModelSummary,
+    CodexServiceTierSummary
 } from '@/types/api'
 import type { ChatBlock, NormalizedMessage } from '@/chat/types'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
@@ -229,6 +231,32 @@ function getOutlineTitle(session: Session): string {
     return session.id.slice(0, 8)
 }
 
+function getCodexFastServiceTier(
+    models: readonly CodexModelSummary[],
+    modelId: string | null
+): CodexServiceTierSummary | null {
+    const selectedModel = modelId ?? models.find((model) => model.isDefault)?.id ?? null
+    const modelSummary = models.find((codexModel) => codexModel.id === selectedModel)
+    const tiers = modelSummary?.serviceTiers ?? []
+    return tiers.find((tier) => tier.name.toLowerCase() === 'fast') ?? null
+}
+
+function isCodexServiceTierSupported(
+    models: readonly CodexModelSummary[],
+    modelId: string | null,
+    serviceTier: string | null | undefined
+): boolean {
+    if (!serviceTier) {
+        return true
+    }
+    const selectedModel = modelId ?? models.find((model) => model.isDefault)?.id ?? null
+    const modelSummary = models.find((codexModel) => codexModel.id === selectedModel)
+    if (!modelSummary) {
+        return true
+    }
+    return (modelSummary.serviceTiers ?? []).some((tier) => tier.id === serviceTier)
+}
+
 function hasAbortableAgentRun(blocks: readonly ChatBlock[]): boolean {
     for (const block of blocks) {
         if (block.kind === 'tool-call') {
@@ -408,6 +436,12 @@ function SessionChatInner(props: SessionChatProps) {
         }
         return options
     }, [agentFlavor, codexModelsState.models])
+    const codexFastServiceTier = useMemo(() => {
+        if (agentFlavor !== 'codex') {
+            return null
+        }
+        return getCodexFastServiceTier(codexModelsState.models, props.session.model)
+    }, [agentFlavor, props.session.model, codexModelsState.models])
     const opencodeModelsState = useOpencodeModels({
         api: props.api,
         sessionId: props.session.id,
@@ -559,6 +593,7 @@ function SessionChatInner(props: SessionChatProps) {
         setCollaborationMode,
         setModel,
         setModelReasoningEffort,
+        setServiceTier,
         setEffort
     } = useSessionActions(
         props.api,
@@ -793,13 +828,26 @@ function SessionChatInner(props: SessionChatProps) {
     const handleModelChange = useCallback(async (model: string | null) => {
         try {
             await setModel(model)
+            if (agentFlavor === 'codex'
+                && !isCodexServiceTierSupported(codexModelsState.models, model, props.session.serviceTier)
+            ) {
+                await setServiceTier(null)
+            }
             haptic.notification('success')
             props.onRefresh()
         } catch (e) {
             haptic.notification('error')
             console.error('Failed to set model:', e)
         }
-    }, [setModel, props.onRefresh, haptic])
+    }, [
+        agentFlavor,
+        codexModelsState.models,
+        props.session.serviceTier,
+        setModel,
+        setServiceTier,
+        props.onRefresh,
+        haptic
+    ])
 
     const handleCursorBaseModelChange = useCallback(async (baseKey: string | null) => {
         if (!cursorPicker) {
@@ -852,6 +900,17 @@ function SessionChatInner(props: SessionChatProps) {
             console.error('Failed to set model reasoning effort:', e)
         }
     }, [setModelReasoningEffort, props.onRefresh, haptic])
+
+    const handleServiceTierChange = useCallback(async (serviceTier: string | null) => {
+        try {
+            await setServiceTier(serviceTier)
+            haptic.notification('success')
+            props.onRefresh()
+        } catch (e) {
+            haptic.notification('error')
+            console.error('Failed to set service tier:', e)
+        }
+    }, [setServiceTier, props.onRefresh, haptic])
 
     const handleEffortChange = useCallback(async (effort: string | null) => {
         try {
@@ -1074,8 +1133,10 @@ function SessionChatInner(props: SessionChatProps) {
                         threadGoal={reduced.latestGoal}
                         model={props.session.model}
                         modelReasoningEffort={agentFlavor === 'codex' || agentFlavor === 'opencode' ? props.session.modelReasoningEffort : undefined}
+                        serviceTier={agentFlavor === 'codex' ? props.session.serviceTier : undefined}
                         effort={props.session.effort}
                         agentFlavor={agentFlavor}
+                        codexFastServiceTier={codexFastServiceTier}
                         availableModelOptions={
                             agentFlavor === 'codex'
                                 ? codexModelOptions
@@ -1159,6 +1220,11 @@ function SessionChatInner(props: SessionChatProps) {
                                 && !controlledByUser
                                 && (agentFlavor !== 'opencode' || opencodeReasoningEffortState.options.length > 0)
                                 ? handleModelReasoningEffortChange
+                                : undefined
+                        }
+                        onServiceTierChange={
+                            agentFlavor === 'codex' && props.session.active && !controlledByUser
+                                ? handleServiceTierChange
                                 : undefined
                         }
                         onEffortChange={handleEffortChange}

@@ -30,6 +30,33 @@ function normalizeSupportedReasoningEfforts(value: unknown): string[] | undefine
     return efforts.length > 0 ? efforts : undefined;
 }
 
+
+function normalizeServiceTiers(value: unknown): CodexModelSummary['serviceTiers'] | undefined {
+    if (!Array.isArray(value)) {
+        return undefined;
+    }
+
+    const tiers = value
+        .map((entry) => {
+            if (!entry || typeof entry !== 'object') {
+                return null;
+            }
+            const record = entry as Record<string, unknown>;
+            const id = asNonEmptyString(record.id);
+            if (!id) {
+                return null;
+            }
+            return {
+                id,
+                name: asNonEmptyString(record.name) ?? id,
+                description: asNonEmptyString(record.description) ?? null
+            };
+        })
+        .filter((entry): entry is { id: string; name: string; description: string | null } => entry !== null);
+
+    return tiers.length > 0 ? tiers : undefined;
+}
+
 function normalizeModel(entry: unknown): CodexModelSummary | null {
     if (!entry || typeof entry !== 'object') {
         return null;
@@ -46,7 +73,9 @@ function normalizeModel(entry: unknown): CodexModelSummary | null {
         displayName: asNonEmptyString(record.displayName) ?? id,
         isDefault: record.isDefault === true,
         defaultReasoningEffort: asNonEmptyString(record.defaultReasoningEffort),
-        supportedReasoningEfforts: normalizeSupportedReasoningEfforts(record.supportedReasoningEfforts)
+        supportedReasoningEfforts: normalizeSupportedReasoningEfforts(record.supportedReasoningEfforts),
+        serviceTiers: normalizeServiceTiers(record.serviceTiers),
+        defaultServiceTier: asNonEmptyString(record.defaultServiceTier)
     };
 }
 

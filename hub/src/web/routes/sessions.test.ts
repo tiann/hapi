@@ -31,6 +31,7 @@ function createSession(overrides?: Partial<Session>): Session {
         model: 'gpt-5.4',
         modelReasoningEffort: null,
         effort: null,
+        serviceTier: null,
         permissionMode: 'default',
         collaborationMode: 'default'
     }
@@ -338,6 +339,40 @@ describe('sessions routes', () => {
         expect(applySessionConfigCalls).toEqual([
             ['session-1', { modelReasoningEffort: 'xhigh' }]
         ])
+    })
+
+    it('applies service tier changes for remote Codex sessions', async () => {
+        const { app, applySessionConfigCalls } = createApp(createSession())
+
+        const response = await app.request('/api/sessions/session-1/service-tier', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ serviceTier: 'priority' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ ok: true })
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { serviceTier: 'priority' }]
+        ])
+    })
+
+    it('rejects service tier changes for local Codex sessions', async () => {
+        const { app, applySessionConfigCalls } = createApp(createSession({
+            agentState: { controlledByUser: true, requests: {}, completedRequests: {} }
+        }))
+
+        const response = await app.request('/api/sessions/session-1/service-tier', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ serviceTier: 'priority' })
+        })
+
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({
+            error: 'Service tier can only be changed for remote Codex sessions'
+        })
+        expect(applySessionConfigCalls).toEqual([])
     })
 
 

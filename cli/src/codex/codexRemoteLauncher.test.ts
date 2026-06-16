@@ -838,6 +838,7 @@ function createSessionStub(messages = ['hello from launcher test'], mode = creat
     const collaborationModes: Array<EnhancedMode['collaborationMode'] | undefined> = [];
     let currentPermissionMode: EnhancedMode['permissionMode'] = mode.permissionMode;
     let currentModel: string | null | undefined = mode.model;
+    let currentServiceTier: string | null | undefined = mode.serviceTier;
     let currentCollaborationMode: EnhancedMode['collaborationMode'] | undefined = mode.collaborationMode;
     let agentState: FakeAgentState = {
         requests: {},
@@ -883,6 +884,12 @@ function createSessionStub(messages = ['hello from launcher test'], mode = creat
         },
         getModel() {
             return currentModel;
+        },
+        setServiceTier(nextServiceTier: string | null) {
+            currentServiceTier = nextServiceTier;
+        },
+        getServiceTier() {
+            return currentServiceTier;
         },
         getCollaborationMode() {
             return currentCollaborationMode;

@@ -100,6 +100,7 @@ function createSessionStub(
             },
             getPermissionMode: () => permissionMode,
             getModelReasoningEffort: () => null,
+            getServiceTier: () => null,
             onSessionFound: (value: string) => {
                 sessionId = value;
             },

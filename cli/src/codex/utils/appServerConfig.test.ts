@@ -137,6 +137,23 @@ describe('appServerConfig', () => {
         });
     });
 
+    it('passes Codex service tier through thread and turn params', () => {
+        const threadParams = buildThreadStartParams({
+            cwd: '/workspace/project',
+            mode: { permissionMode: 'default', model: 'gpt-5.4', serviceTier: 'priority', collaborationMode: 'default' },
+            mcpServers
+        });
+        expect(threadParams.serviceTier).toBe('priority');
+
+        const turnParams = buildTurnStartParams({
+            threadId: 'thread-1',
+            message: 'hello',
+            cwd: '/workspace/project',
+            mode: { permissionMode: 'default', model: 'gpt-5.4', serviceTier: 'priority', collaborationMode: 'default' }
+        });
+        expect(turnParams.serviceTier).toBe('priority');
+    });
+
     it('builds turn params with mode defaults', () => {
         const params = buildTurnStartParams({
             threadId: 'thread-1',
