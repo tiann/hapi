@@ -195,9 +195,16 @@ export async function runPi(opts: {
         }
         piSession.pushKeepAlive();
 
+        // Return provider-qualified model so the hub persists piSelectedModel.
+        // A bare modelId string would make applySessionConfig clear the
+        // provider metadata (object check fails), defeating Fix #3.
+        const appliedModel = piSession.currentModel && piSession.currentProvider
+            ? { provider: piSession.currentProvider, modelId: piSession.currentModel }
+            : piSession.currentModel;
+
         return {
             applied: {
-                model: piSession.currentModel,
+                model: appliedModel,
                 effort: piSession.currentThinkingLevel,
             },
         };
