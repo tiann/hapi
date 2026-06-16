@@ -1,6 +1,6 @@
 import { act, renderHook } from '@testing-library/react'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { getThemeColor, initializeTheme, useAppearance } from '@/hooks/useTheme'
+import { getAppearanceOptions, getThemeColor, initializeTheme, useAppearance } from '@/hooks/useTheme'
 
 describe('useTheme', () => {
     beforeEach(() => {
@@ -42,5 +42,28 @@ describe('useTheme', () => {
 
         expect(document.documentElement).toHaveAttribute('data-theme', 'light')
         expect(document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.content).toBe(getThemeColor('light'))
+    })
+
+    it('exposes OLED Black as a selectable appearance option', () => {
+        expect(getAppearanceOptions().some((opt) => opt.value === 'oled')).toBe(true)
+    })
+
+    it('applies the OLED appearance with a pure-black browser theme color', () => {
+        localStorage.setItem('hapi-appearance', 'oled')
+
+        initializeTheme()
+
+        expect(document.documentElement).toHaveAttribute('data-theme', 'oled')
+        expect(getThemeColor('oled')).toBe('#000000')
+        expect(document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.content).toBe('#000000')
+    })
+
+    it('does not auto-select OLED for the system appearance', () => {
+        // No stored appearance => system; system must resolve to light/dark, never OLED.
+        initializeTheme()
+
+        const theme = document.documentElement.getAttribute('data-theme')
+        expect(theme === 'light' || theme === 'dark').toBe(true)
+        expect(theme).not.toBe('oled')
     })
 })
