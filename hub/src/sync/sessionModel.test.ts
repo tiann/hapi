@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test'
+import { describe, expect, it, spyOn } from 'bun:test'
 import { toSessionSummary } from '@hapi/protocol'
 import type { SyncEvent } from '@hapi/protocol/types'
 import { Store } from '../store'
@@ -2550,6 +2550,58 @@ describe('session model', () => {
             expect(meta?.lifecycleState).toBe('archived')
             expect(meta?.archivedBy).toBe('hub')
             expect(meta?.name).toBe('oob')
+        })
+
+        // tiann/hapi#916 review feedback: persistence failures must surface
+        // so the /archive route returns 5xx per the acceptance criteria
+        // "Non-RPC errors during archive still propagate as 5xx (DB write
+        // failure, etc.)" — silent return would let the route claim success
+        // while the row stays unarchived.
+        it('throws when the store reports a hard error on the metadata write', () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+
+            const session = cache.getOrCreateSession(
+                'session-hub-archive-error',
+                { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+                null,
+                'default'
+            )
+
+            const updateSpy = spyOn(store.sessions, 'updateSessionMetadata').mockReturnValue({
+                result: 'error',
+                error: new Error('simulated DB write failure')
+            } as ReturnType<typeof store.sessions.updateSessionMetadata>)
+
+            try {
+                expect(() => cache.markSessionArchivedFromHub(session.id, 'CLI unreachable')).toThrow(/Failed to archive session metadata from hub/)
+            } finally {
+                updateSpy.mockRestore()
+            }
+        })
+
+        it('throws when retries are exhausted by sustained version-mismatch contention', () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+
+            const session = cache.getOrCreateSession(
+                'session-hub-archive-exhausted',
+                { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+                null,
+                'default'
+            )
+
+            const updateSpy = spyOn(store.sessions, 'updateSessionMetadata').mockReturnValue({
+                result: 'version-mismatch'
+            } as ReturnType<typeof store.sessions.updateSessionMetadata>)
+
+            try {
+                expect(() => cache.markSessionArchivedFromHub(session.id, 'CLI unreachable')).toThrow(/Session was modified concurrently while archiving from hub/)
+            } finally {
+                updateSpy.mockRestore()
+            }
         })
     })
 

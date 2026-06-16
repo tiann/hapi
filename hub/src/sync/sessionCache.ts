@@ -568,7 +568,11 @@ export class SessionCache {
             )
 
             if (result.result === 'error') {
-                return
+                // tiann/hapi#916 review feedback: persistence failure must
+                // surface so the route returns 5xx. Silently returning here
+                // would let `/archive` claim success while the row stays
+                // unarchived in the DB.
+                throw new Error('Failed to archive session metadata from hub')
             }
 
             if (result.result === 'success') {
@@ -578,6 +582,12 @@ export class SessionCache {
 
             this.refreshSession(sessionId)
         }
+
+        // tiann/hapi#916 review feedback: exhausted retries means we never
+        // got a successful write. Match the renameSession / mergeSessions
+        // contract and surface this as an error so non-RPC failures stay
+        // 5xx per the issue's acceptance criteria.
+        throw new Error('Session was modified concurrently while archiving from hub')
     }
 
     async renameSession(sessionId: string, name: string): Promise<void> {
