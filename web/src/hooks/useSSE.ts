@@ -400,7 +400,13 @@ export function useSSE(options: {
                 if (patch.collaborationMode !== undefined) nextSession.collaborationMode = patch.collaborationMode
                 if (patch.backgroundTaskCount !== undefined) nextSession.backgroundTaskCount = patch.backgroundTaskCount
                 if (patch.todos !== undefined) nextSession.todos = patch.todos
-                if (patch.teamState !== undefined) nextSession.teamState = patch.teamState
+                // teamState uses `null` on the wire as the explicit clear
+                // signal (TeamDelete events). hasOwnProperty discriminates
+                // "field absent" vs "field is null"; null → undefined to
+                // match the cached Session.teamState shape.
+                if (Object.prototype.hasOwnProperty.call(patch, 'teamState')) {
+                    nextSession.teamState = patch.teamState ?? undefined
+                }
                 // Versioned fields arrive as { version, value } — unwrap into
                 // the Session's flat metadata/metadataVersion pair (same for
                 // agentState). Spreading the patch wholesale would corrupt

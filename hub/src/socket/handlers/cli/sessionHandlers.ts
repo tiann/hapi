@@ -136,10 +136,16 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             const newTeamState = applyTeamStateDelta(existingTeamState ?? null, teamDelta)
             const updated = store.sessions.setSessionTeamState(sid, newTeamState, msg.createdAt, session.namespace)
             if (updated) {
+                // Preserve null in the wire payload so TeamDelete events
+                // tell consumers "clear this" instead of collapsing to an
+                // empty patch on JSON serialization (`undefined` drops the
+                // key, leaving consumers to fall back to REST invalidation
+                // — the very storm path this PR closes). See SessionPatch
+                // schema comment for the `null` discriminator contract.
                 onWebappEvent?.({
                     type: 'session-updated',
                     sessionId: sid,
-                    data: { teamState: newTeamState ?? undefined }
+                    data: { teamState: newTeamState }
                 })
             }
         }

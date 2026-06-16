@@ -27,6 +27,19 @@ describe('SessionPatchSchema structured patches (closes #884 follow-up)', () => 
         expect(parsed.success).toBe(true);
     });
 
+    it('parses a teamState clear patch (null = TeamDelete clears the cached row)', () => {
+        // PR #897 review (HAPI Bot, 2026-06-13 Major): teamState must accept
+        // null on the wire so TeamDelete events propagate the clear instead
+        // of collapsing to an empty patch on JSON serialization. The hub
+        // emit-site sends { teamState: null }; the patch consumers
+        // hasOwnProperty-discriminate "absent" vs "null clear".
+        const parsed = SessionPatchSchema.safeParse({ teamState: null });
+        expect(parsed.success).toBe(true);
+        if (parsed.success) {
+            expect(parsed.data.teamState).toBeNull();
+        }
+    });
+
     it('parses a versioned metadata patch', () => {
         const parsed = SessionPatchSchema.safeParse({
             metadata: {

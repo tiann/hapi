@@ -265,7 +265,12 @@ export const SessionPatchSchema = z.object({
     metadata: VersionedMetadataPatchSchema.optional(),
     agentState: VersionedAgentStatePatchSchema.optional(),
     todos: TodosSchema.optional(),
-    teamState: TeamStateSchema.optional(),
+    // `null` is the clear signal (TeamDelete events drive
+    // applyTeamStateDelta to return null, which `setSessionTeamState`
+    // persists as a cleared row). The patch must distinguish "field
+    // absent" (don't touch teamState) from "field is null" (clear it);
+    // consumers use hasOwnProperty for the discriminator.
+    teamState: TeamStateSchema.nullable().optional(),
     model: z.string().nullable().optional(),
     modelReasoningEffort: z.string().nullable().optional(),
     effort: z.string().nullable().optional(),
