@@ -148,60 +148,75 @@ export async function runPi(opts: {
         const config = parsed.data;
         logger.debug(`[pi] SetSessionConfig received: ${JSON.stringify(config)}`);
 
+        // Resolve requested values WITHOUT mutating PiSession yet. Commit them
+        // only after Pi confirms via sendPiRpcAndWait, otherwise a rejected
+        // set_model/set_thinking_level would leave PiSession holding unconfirmed
+        // values that the 2s keepalive reports back to the hub, persisting a
+        // model/effort Pi never accepted.
+        let requestedModel: { modelId: string | null; provider: string | null } | undefined;
         if (config.model !== undefined) {
             const modelValue = config.model;
             logger.debug(`[pi] SetSessionConfig model: ${JSON.stringify(modelValue)}`);
 
             if (modelValue === null) {
-                piSession.currentModel = null;
-                piSession.currentProvider = null;
+                requestedModel = { modelId: null, provider: null };
             } else if (typeof modelValue === 'string') {
                 const trimmed = modelValue.trim();
                 if (!trimmed) throw new Error('Invalid model');
-                piSession.currentModel = trimmed;
                 // Fallback: search cached models for provider
                 const cached = piSession.cachedPiModels.find(m => m.modelId === trimmed);
-                if (cached) piSession.currentProvider = cached.provider;
+                requestedModel = { modelId: trimmed, provider: cached?.provider ?? null };
             } else {
                 // { provider, modelId } form
-                piSession.currentModel = modelValue.modelId;
-                piSession.currentProvider = modelValue.provider;
+                requestedModel = { modelId: modelValue.modelId, provider: modelValue.provider };
             }
-            logger.debug(`[pi] SetSessionConfig resolved: model=${piSession.currentModel}, provider=${piSession.currentProvider}`);
+            logger.debug(`[pi] SetSessionConfig resolved: model=${requestedModel.modelId}, provider=${requestedModel.provider}`);
         }
+        let requestedThinkingLevel: PiThinkingLevel | null | undefined;
         if (config.effort !== undefined) {
             if (config.effort === null) {
-                piSession.currentThinkingLevel = null;
+                requestedThinkingLevel = null;
             } else {
                 const result = PiThinkingLevelSchema.safeParse(
                     typeof config.effort === 'string' ? config.effort.trim().toLowerCase() : config.effort,
                 );
                 if (!result.success) throw new Error('Invalid effort');
-                piSession.currentThinkingLevel = result.data;
+                requestedThinkingLevel = result.data;
             }
         }
 
         // Forward changes to Pi process — wait for Pi to confirm before
-        // reporting applied, so the hub does not persist a model/effort that
-        // Pi rejected (e.g. invalid provider/model or thinking level).
-        if (config.model !== undefined && piSession.currentModel && piSession.currentProvider) {
-            await sendPiRpcAndWait(piSession, transport, {
-                type: 'set_model',
-                provider: piSession.currentProvider,
-                modelId: piSession.currentModel,
-            });
-        } else if (config.model !== undefined && piSession.currentModel && !piSession.currentProvider) {
-            // Provider is unknown until get_state/get_available_models resolve.
-            // If we reported `applied` now, the hub would persist piSelectedModel
-            // while Pi never received set_model — contradicting the "await Pi
-            // confirmation" contract above. Throw so the hub returns 409 and the
-            // web client can retry once the provider is known.
-            logger.debug('[pi] set_model suppressed: provider unknown until get_state');
-            throw new Error('Model cannot be applied yet: provider is not yet known');
+        // committing to PiSession or reporting applied, so the hub does not
+        // persist a model/effort that Pi rejected (e.g. invalid provider/model
+        // or thinking level) or that the RPC timed out on.
+        if (requestedModel) {
+            if (requestedModel.modelId && requestedModel.provider) {
+                await sendPiRpcAndWait(piSession, transport, {
+                    type: 'set_model',
+                    provider: requestedModel.provider,
+                    modelId: requestedModel.modelId,
+                });
+                piSession.currentModel = requestedModel.modelId;
+                piSession.currentProvider = requestedModel.provider;
+            } else if (requestedModel.modelId && !requestedModel.provider) {
+                // Provider is unknown until get_state/get_available_models resolve.
+                // Committing now would persist piSelectedModel while Pi never received
+                // set_model — contradicting the "await Pi confirmation" contract above.
+                // Throw so the hub returns 409 and the web client can retry once the
+                // provider is known.
+                logger.debug('[pi] set_model suppressed: provider unknown until get_state');
+                throw new Error('Model cannot be applied yet: provider is not yet known');
+            } else if (requestedModel.modelId === null) {
+                // Clearing the model needs no Pi RPC (nothing to confirm), so commit
+                // immediately. This path is not reachable from the web Pi picker today.
+                piSession.currentModel = null;
+                piSession.currentProvider = null;
+            }
         }
-        if (config.effort !== undefined) {
-            const level = piSession.currentThinkingLevel ?? 'off';
+        if (requestedThinkingLevel !== undefined) {
+            const level = requestedThinkingLevel ?? 'off';
             await sendPiRpcAndWait(piSession, transport, { type: 'set_thinking_level', level });
+            piSession.currentThinkingLevel = requestedThinkingLevel;
         }
         piSession.pushKeepAlive();
 
