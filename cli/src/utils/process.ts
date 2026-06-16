@@ -35,12 +35,11 @@ export function isHapiRunnerProcess(pid: number): boolean {
     }
     return isRunnerCommand(result.stdout?.toString() ?? '');
   }
-  try {
-    const result = spawn.sync('ps', ['-p', String(pid), '-o', 'command='], { stdio: 'pipe' });
-    return isRunnerCommand(result.stdout?.toString() ?? '');
-  } catch {
-    return true;
+  const result = spawn.sync('ps', ['-p', String(pid), '-o', 'command='], { stdio: 'pipe' });
+  if (result.error || result.status !== 0) {
+    return isProcessAlive(pid);
   }
+  return isRunnerCommand(result.stdout?.toString() ?? '');
 }
 
 function killProcessWindows(pid: number, force: boolean): boolean {
