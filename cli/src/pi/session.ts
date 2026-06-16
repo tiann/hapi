@@ -59,7 +59,12 @@ export class PiSession {
         this.logPath = opts.logPath;
         this.startedBy = opts.startedBy;
         this.mode = opts.startingMode;
-        this.currentModel = opts.model ?? null;
+        // currentModel starts null and is set only from Pi's confirmed state
+        // (get_state) or a successful set_model. Seeding it from opts.model here
+        // would leak the unconfirmed --model value via the first keepAlive before
+        // get_available_models/set_model confirm it; opts.model is captured as
+        // initialModel below and applied once Pi accepts it.
+        this.currentModel = null;
         this.initialModel = opts.model?.trim() || null;
         this.currentThinkingLevel = null;
     }

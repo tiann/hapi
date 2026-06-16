@@ -388,21 +388,122 @@ describe('wireTransportEvents', () => {
     });
 });
 
-// --- sendPiRpcAndWait ---
+// --- sendPiRpcAndWait (contract: await <-> resolve symmetry) ---
+//
+// SetSessionConfig awaits set_model and set_thinking_level. Fix #9 was caused
+// by a switch branch that updated state but never resolved the pending RPC -
+// the promise hit the 10s timeout and /sessions/:id/model returned 409 even
+// though Pi accepted the change. These tests pin the contract: every awaited
+// command must resolve before the timeout when Pi emits a success response.
 
 describe('sendPiRpcAndWait', () => {
-    it('throws when resolver not initialized', async () => {
-        // sendPiRpcAndWait requires wireTransportEvents to be called first.
-        // After previous test suite, currentResolver may still be set from a prior test,
-        // so we reset it by re-importing the module.
-        // Since we can't easily reset module state, we just verify the happy path works.
+    it('throws synchronously when resolver not initialized', () => {
+        // sendPiRpcAndWait is a sync wrapper (not async), so the guard at
+        // loop.ts throws before a promise is created — assert with toThrow,
+        // not rejects.
         const mockTransport = { send: vi.fn(), onEvent: vi.fn() } as unknown as PiTransport;
         const session = createMockSession();
-        wireTransportEvents(mockTransport, session, []);
-        // Now sendPiRpcAndWait should not throw (it will hang waiting for response,
-        // but the resolver is initialized)
-        const rpcPromise = sendPiRpcAndWait(session, mockTransport, { type: 'test' }, 100);
-        // It will timeout, but no 'not initialized' error
-        await expect(rpcPromise).rejects.toThrow('timed out');
+        // No wireTransportEvents -> resolver is null
+        expect(() => sendPiRpcAndWait(session, mockTransport, { type: 'test' }, 100))
+            .toThrow('Pi RPC resolver not initialized');
+    });
+
+    // Helper: a transport whose send() captures the outgoing id so the test can
+    // emit the matching response, simulating Pi's reply.
+    function recordingTransport(onEventHandlers: Map<string, (...args: unknown[]) => void>) {
+        const sent: Array<Record<string, unknown>> = [];
+        return {
+            transport: {
+                onEvent: vi.fn((handler) => { onEventHandlers.set('event', handler); }),
+                send: vi.fn((msg: Record<string, unknown>) => { sent.push(msg); }),
+            } as unknown as PiTransport,
+            sent,
+            // Emit the Pi response for the last sent command, echoing its id.
+            reply(response: { command: string; success: boolean; data?: unknown; error?: string }) {
+                const last = sent[sent.length - 1];
+                const handler = onEventHandlers.get('event');
+                expect(handler).toBeDefined();
+                handler!({ type: 'response', id: last.id, ...response });
+            },
+        };
+    }
+
+    it('set_model response resolves the awaited promise before timeout', async () => {
+        const handlers = new Map<string, (...args: unknown[]) => void>();
+        const { transport, reply } = recordingTransport(handlers);
+        const session = createMockSession();
+        wireTransportEvents(transport, session, []);
+
+        const promise = sendPiRpcAndWait(session, transport, {
+            type: 'set_model', provider: 'openai', modelId: 'gpt-4o',
+        }, 10_000);
+
+        // Simulate Pi confirming the model change.
+        reply({ command: 'set_model', success: true, data: { modelId: 'gpt-4o', provider: 'openai' } });
+
+        // Must resolve (not reject with 'timed out') - the contract Fix #9 restored.
+        await expect(promise).resolves.toEqual({ modelId: 'gpt-4o', provider: 'openai' });
+        expect(session.currentModel).toBe('gpt-4o');
+        expect(session.currentProvider).toBe('openai');
+    });
+
+    it('set_thinking_level response resolves the awaited promise before timeout', async () => {
+        // Fix #9 symmetry: set_thinking_level is awaited by SetSessionConfig.
+        // Without an explicit resolve it fell to the `default` branch; if anyone
+        // later adds business logic to a new case without resolving first, the
+        // effort switch would time out and /sessions/:id/effort would 409.
+        const handlers = new Map<string, (...args: unknown[]) => void>();
+        const { transport, reply } = recordingTransport(handlers);
+        const session = createMockSession();
+        wireTransportEvents(transport, session, []);
+
+        const promise = sendPiRpcAndWait(session, transport, {
+            type: 'set_thinking_level', level: 'high',
+        }, 10_000);
+
+        reply({ command: 'set_thinking_level', success: true });
+
+        await expect(promise).resolves.toBeUndefined();
+    });
+
+    it('get_available_models response resolves the awaited promise before timeout', async () => {
+        const handlers = new Map<string, (...args: unknown[]) => void>();
+        const { transport, reply } = recordingTransport(handlers);
+        const session = createMockSession();
+        wireTransportEvents(transport, session, []);
+
+        const promise = sendPiRpcAndWait(session, transport, { type: 'get_available_models' }, 10_000);
+
+        reply({ command: 'get_available_models', success: true, data: { models: [{ id: 'gpt-4o', provider: 'openai' }] } });
+
+        await expect(promise).resolves.toEqual({ models: [{ id: 'gpt-4o', provider: 'openai' }] });
+    });
+
+    it('Pi error response rejects the awaited promise', async () => {
+        // SetSessionConfig awaits so a rejected set_model bubbles up to the web
+        // request (409) instead of reporting success while Pi kept old state.
+        const handlers = new Map<string, (...args: unknown[]) => void>();
+        const { transport, reply } = recordingTransport(handlers);
+        const session = createMockSession();
+        wireTransportEvents(transport, session, []);
+
+        const promise = sendPiRpcAndWait(session, transport, {
+            type: 'set_model', provider: 'bad', modelId: 'nope',
+        }, 10_000);
+
+        reply({ command: 'set_model', success: false, error: 'Unknown provider: bad' });
+
+        await expect(promise).rejects.toThrow('Unknown provider: bad');
+    });
+
+    it('rejects with timeout when Pi never responds', async () => {
+        const handlers = new Map<string, (...args: unknown[]) => void>();
+        const { transport } = recordingTransport(handlers);
+        const session = createMockSession();
+        wireTransportEvents(transport, session, []);
+
+        // No reply emitted -> must time out (guards against hangs).
+        await expect(sendPiRpcAndWait(session, transport, { type: 'test' }, 100))
+            .rejects.toThrow('timed out');
     });
 });

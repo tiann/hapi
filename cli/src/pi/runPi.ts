@@ -41,7 +41,12 @@ export async function runPi(opts: {
             flavor: 'pi',
             startedBy,
             workingDirectory,
-            model: opts.model
+            // Do not seed the hub session model from opts.model: it is unconfirmed
+            // until get_available_models/set_model accept it. The hub's
+            // handleSessionAlive persists every non-undefined keepAlive model, so
+            // passing it here would store/show a model Pi may reject. PiSession
+            // carries opts.model as initialModel and applies it once confirmed.
+            model: undefined
         });
     const { session: apiSession } = bootstrap;
 
