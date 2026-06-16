@@ -422,10 +422,12 @@ export class SessionCache {
             this.markRuntimeConfigUpdated(sessionId, 'permissionMode', appliedAt)
         }
         if (config.model !== undefined) {
+            const modelValue = config.model
             // Normalize object form { provider, modelId } to plain string for DB storage
-            const normalizedModel = config.model !== null && typeof config.model === 'object'
-                ? config.model.modelId
-                : config.model
+            const piModelObject = modelValue !== null && typeof modelValue === 'object'
+                ? modelValue
+                : null
+            const normalizedModel: string | null = piModelObject ? piModelObject.modelId : modelValue as string | null
             if (normalizedModel !== session.model) {
                 const updated = this.store.sessions.setSessionModel(sessionId, normalizedModel, session.namespace, {
                     touchUpdatedAt: false
@@ -435,6 +437,12 @@ export class SessionCache {
                 }
             }
             session.model = normalizedModel
+            // Pi requires provider + modelId to uniquely identify a model.
+            // Persist the provider-qualified form in metadata so web can
+            // resolve the exact model even when two providers share a modelId.
+            if (session.metadata?.flavor === 'pi') {
+                this.persistPiSelectedModel(session, piModelObject)
+            }
             this.markRuntimeConfigUpdated(sessionId, 'model', appliedAt)
         }
         if (config.modelReasoningEffort !== undefined) {
@@ -871,6 +879,34 @@ export class SessionCache {
         }
 
         const nextMetadata = { ...currentMetadata, preferredPermissionMode: permissionMode }
+        const result = this.store.sessions.updateSessionMetadata(
+            session.id,
+            nextMetadata,
+            session.metadataVersion,
+            session.namespace,
+            { touchUpdatedAt: false }
+        )
+
+        if (result.result === 'error') {
+            return
+        }
+
+        const parsed = MetadataSchema.safeParse(result.value)
+        if (!parsed.success) {
+            return
+        }
+
+        session.metadata = parsed.data
+        session.metadataVersion = result.version
+    }
+
+    private persistPiSelectedModel(session: Session, piSelected: { provider: string; modelId: string } | null): void {
+        const currentMetadata = session.metadata
+        if (!currentMetadata || currentMetadata.piSelectedModel === piSelected) {
+            return
+        }
+
+        const nextMetadata = { ...currentMetadata, piSelectedModel: piSelected }
         const result = this.store.sessions.updateSessionMetadata(
             session.id,
             nextMetadata,

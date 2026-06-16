@@ -473,7 +473,11 @@ function SessionChatInner(props: SessionChatProps) {
         enabled: agentFlavor === 'pi' && props.session.active
     })
     // Fallback to cached models from metadata when session is inactive
-    const piCachedModels = (props.session.metadata as Record<string, unknown> | null)?.piAvailableModels as PiModelSummary[] | undefined ?? []
+    const piMetadata = props.session.metadata as Record<string, unknown> | null
+    const piCachedModels = piMetadata?.piAvailableModels as PiModelSummary[] | undefined ?? []
+    // Provider-qualified selected model — disambiguates when two providers
+    // share a modelId (hub persists this alongside the legacy modelId string).
+    const piSelectedModel = piMetadata?.piSelectedModel as { provider: string; modelId: string } | null | undefined
     const piModelOptions = useMemo(() => {
         if (agentFlavor !== 'pi') {
             return undefined
@@ -1119,6 +1123,7 @@ function SessionChatInner(props: SessionChatProps) {
                                             : undefined
                         }
                         piModels={agentFlavor === 'pi' ? (piModelsState.availableModels.length > 0 ? piModelsState.availableModels : piCachedModels) : undefined}
+                        piSelectedModel={agentFlavor === 'pi' ? piSelectedModel : undefined}
                         availableModelReasoningEffortOptions={
                             agentFlavor === 'opencode' && opencodeReasoningEffortState.options.length > 0
                                 ? opencodeReasoningEffortState.options

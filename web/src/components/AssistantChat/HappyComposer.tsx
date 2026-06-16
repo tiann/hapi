@@ -94,6 +94,9 @@ export function HappyComposer(props: {
     availableModelOptions?: Array<{ value: string | null; label: string }>
     /** Full Pi model data with thinkingLevelMap for provider grouping + thinking level filtering */
     piModels?: PiModelSummary[]
+    /** Pi: provider-qualified selected model from metadata (survives reload;
+     *  disambiguates when two providers share a modelId). */
+    piSelectedModel?: { provider: string; modelId: string } | null
     availableModelReasoningEffortOptions?: Array<{ value: string; name?: string }>
     /** Cursor: selected base model key (not wire id). */
     selectedModelBase?: string | null
@@ -156,6 +159,7 @@ export function HappyComposer(props: {
         agentFlavor,
         availableModelOptions,
         piModels,
+        piSelectedModel,
         availableModelReasoningEffortOptions,
         selectedModelBase,
         selectedModelVariant,
@@ -408,10 +412,15 @@ export function HappyComposer(props: {
         () => piModels && piModels.length > 0 ? groupModelsByProvider(piModels) : null,
         [piModels]
     )
-    // Pi: find the currently selected model's thinkingLevelMap for effort filtering
+    // Pi: find the currently selected model's thinkingLevelMap for effort filtering.
+    // Prefer provider-qualified match (metadata.piSelectedModel) when available —
+    // two providers may share a modelId, and a modelId-only match would pick the
+    // wrong one, sending the wrong provider on the next model/effort change.
     const selectedPiModel = useMemo(
-        () => piModels?.find((m) => m.modelId === model),
-        [piModels, model]
+        () => piSelectedModel
+            ? piModels?.find((m) => m.provider === piSelectedModel.provider && m.modelId === piSelectedModel.modelId)
+            : piModels?.find((m) => m.modelId === model),
+        [piModels, piSelectedModel, model]
     )
 
     // Pi: reset effort to highest supported level when model changes and current level is unsupported
