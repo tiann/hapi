@@ -478,19 +478,6 @@ function SessionChatInner(props: SessionChatProps) {
     // Provider-qualified selected model — disambiguates when two providers
     // share a modelId (hub persists this alongside the legacy modelId string).
     const piSelectedModel = piMetadata?.piSelectedModel as { provider: string; modelId: string } | null | undefined
-    const piModelOptions = useMemo(() => {
-        if (agentFlavor !== 'pi') {
-            return undefined
-        }
-
-        const models = piModelsState.availableModels.length > 0
-            ? piModelsState.availableModels
-            : piCachedModels
-        return models.map((piModel) => ({
-            value: piModel.modelId,
-            label: piModel.name ?? piModel.modelId
-        }))
-    }, [agentFlavor, piModelsState.availableModels, piCachedModels])
     const cursorCatalogReadinessArgs = useMemo(() => ({
         sessionLoading: cursorModelsState.isLoading,
         machineLoading: machineCursorModelsState.isLoading,
@@ -1118,9 +1105,13 @@ function SessionChatInner(props: SessionChatProps) {
                                     )
                                     : agentFlavor === 'opencode'
                                         ? opencodeModelOptions
-                                        : agentFlavor === 'pi'
-                                            ? piModelOptions
-                                            : undefined
+                                        // Pi uses its own provider-qualified picker (piModels prop).
+                                        // Feeding piModelOptions here would make the generic Ctrl/Cmd+M
+                                        // cycler (getNextModelForFlavor) post a bare modelId string,
+                                        // which loses the provider and can pick the wrong cached
+                                        // match or throw in runPi. undefined makes the shortcut a no-op
+                                        // so Pi model changes go through the dedicated picker only.
+                                        : undefined
                         }
                         piModels={agentFlavor === 'pi' ? (piModelsState.availableModels.length > 0 ? piModelsState.availableModels : piCachedModels) : undefined}
                         piSelectedModel={agentFlavor === 'pi' ? piSelectedModel : undefined}
