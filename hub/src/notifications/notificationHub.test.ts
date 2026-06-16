@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'bun:test'
 import type { Session, SyncEvent, SyncEventListener, SyncEngine } from '../sync/syncEngine'
 import type { SessionEndReason } from '@hapi/protocol'
-import type { NotificationChannel, TaskNotification } from './notificationTypes'
+import type {
+    ModelErrorNotification,
+    NotificationChannel,
+    TaskNotification
+} from './notificationTypes'
 import { NotificationHub } from './notificationHub'
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -35,6 +39,7 @@ class StubChannel implements NotificationChannel {
     readonly permissionSessions: Session[] = []
     readonly taskNotifications: Array<{ session: Session; notification: TaskNotification }> = []
     readonly sessionCompletions: Session[] = []
+    readonly modelErrors: Array<{ session: Session; notification: ModelErrorNotification }> = []
 
     async sendReady(session: Session): Promise<void> {
         this.readySessions.push(session)
@@ -50,6 +55,10 @@ class StubChannel implements NotificationChannel {
 
     async sendSessionCompletion(session: Session): Promise<void> {
         this.sessionCompletions.push(session)
+    }
+
+    async sendModelError(session: Session, notification: ModelErrorNotification): Promise<void> {
+        this.modelErrors.push({ session, notification })
     }
 }
 
@@ -243,6 +252,163 @@ describe('NotificationHub', () => {
         expect(channel.sessionCompletions).toHaveLength(1)
         expect(channel.sessionCompletions[0]?.id).toBe(completedSession.id)
 
+        hub.stop()
+    })
+
+    it('fires model-error notification when lastModelError.atTs advances', async () => {
+        const engine = new FakeSyncEngine()
+        const channel = new StubChannel()
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [channel])
+
+        const session = createSession({
+            metadata: {
+                lastModelError: {
+                    kind: 'quota_exhausted',
+                    transient: false,
+                    rawSnippet: 'Error: T: [resource_exhausted] capacity exceeded',
+                    atTs: 1000,
+                    priorAssistantClaimsDone: true
+                }
+            } as Session['metadata']
+        })
+
+        engine.setSession(session)
+        engine.emit({ type: 'session-updated', sessionId: session.id })
+        await sleep(5)
+
+        expect(channel.modelErrors).toHaveLength(1)
+        const fired = channel.modelErrors[0]?.notification
+        expect(fired?.kind).toBe('quota_exhausted')
+        expect(fired?.transient).toBe(false)
+        expect(fired?.priorAssistantClaimsDone).toBe(true)
+        expect(fired?.atTs).toBe(1000)
+
+        hub.stop()
+    })
+
+    it('dedupes model-error notifications across repeat session-updated events', async () => {
+        const engine = new FakeSyncEngine()
+        const channel = new StubChannel()
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [channel])
+
+        const session = createSession({
+            metadata: {
+                lastModelError: {
+                    kind: 'transport_closed',
+                    transient: true,
+                    rawSnippet: 'WritableIterable is closed',
+                    atTs: 2000,
+                    priorAssistantClaimsDone: false
+                }
+            } as Session['metadata']
+        })
+
+        engine.setSession(session)
+        engine.emit({ type: 'session-updated', sessionId: session.id })
+        engine.emit({ type: 'session-updated', sessionId: session.id })
+        engine.emit({ type: 'session-updated', sessionId: session.id })
+        await sleep(5)
+
+        expect(channel.modelErrors).toHaveLength(1)
+
+        hub.stop()
+    })
+
+    it('fires again when a NEW lastModelError replaces an older one', async () => {
+        const engine = new FakeSyncEngine()
+        const channel = new StubChannel()
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [channel])
+
+        const firstSession = createSession({
+            metadata: {
+                lastModelError: {
+                    kind: 'quota_exhausted',
+                    transient: false,
+                    rawSnippet: 'first',
+                    atTs: 1000,
+                    priorAssistantClaimsDone: false
+                }
+            } as Session['metadata']
+        })
+        engine.setSession(firstSession)
+        engine.emit({ type: 'session-updated', sessionId: firstSession.id })
+        await sleep(5)
+        expect(channel.modelErrors).toHaveLength(1)
+
+        const secondSession = createSession({
+            metadata: {
+                lastModelError: {
+                    kind: 'transport_closed',
+                    transient: true,
+                    rawSnippet: 'second',
+                    atTs: 2000,
+                    priorAssistantClaimsDone: false
+                }
+            } as Session['metadata']
+        })
+        engine.setSession(secondSession)
+        engine.emit({ type: 'session-updated', sessionId: secondSession.id })
+        await sleep(5)
+
+        expect(channel.modelErrors).toHaveLength(2)
+        expect(channel.modelErrors[1]?.notification.atTs).toBe(2000)
+
+        hub.stop()
+    })
+
+    it('does not fire model-error for already-acknowledged errors', async () => {
+        const engine = new FakeSyncEngine()
+        const channel = new StubChannel()
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [channel])
+
+        const session = createSession({
+            metadata: {
+                lastModelError: {
+                    kind: 'quota_exhausted',
+                    transient: false,
+                    rawSnippet: 'first',
+                    atTs: 1000,
+                    priorAssistantClaimsDone: false,
+                    acknowledgedAt: 1500
+                }
+            } as Session['metadata']
+        })
+        engine.setSession(session)
+        engine.emit({ type: 'session-updated', sessionId: session.id })
+        await sleep(5)
+
+        expect(channel.modelErrors).toHaveLength(0)
+
+        hub.stop()
+    })
+
+    it('skips model-error dispatch when no channels implement it', async () => {
+        const engine = new FakeSyncEngine()
+        // Channel WITHOUT sendModelError -- should silently skip, no throw.
+        const minimalChannel: NotificationChannel = {
+            async sendReady() {},
+            async sendPermissionRequest() {},
+            async sendTaskNotification() {}
+        }
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [minimalChannel])
+
+        const session = createSession({
+            metadata: {
+                lastModelError: {
+                    kind: 'quota_exhausted',
+                    transient: false,
+                    rawSnippet: 'no-channel',
+                    atTs: 3000,
+                    priorAssistantClaimsDone: false
+                }
+            } as Session['metadata']
+        })
+        engine.setSession(session)
+        engine.emit({ type: 'session-updated', sessionId: session.id })
+        await sleep(5)
+
+        // No assertions other than "didn't throw"; the channel has no
+        // recording surface. Test passes if hub.stop() returns cleanly.
         hub.stop()
     })
 })
