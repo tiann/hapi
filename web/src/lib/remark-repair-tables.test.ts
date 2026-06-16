@@ -90,6 +90,18 @@ describe('remarkRepairTables', () => {
         }
     })
 
+    it('does not corrupt a valid table with an escaped pipe in the header', () => {
+        // | A \| B | C |  is a 2-column header (the \| is a literal pipe, not a delimiter)
+        // separator has 2 cells — valid, must not be padded to 3
+        const md = '| A \\| B | C |\n|---|---|\n| x | y |\n'
+        const out = process(md)
+        // The separator row is the reliable column-count indicator — it contains only
+        // dashes/colons, no cell content that could contain literal pipes.
+        const sepRow = out.trim().split('\n').find(l => /^\|[\s|:|-]+\|$/.test(l.trim()))
+        expect(sepRow).toBeDefined()
+        expect(sepRow!.split('|').filter(c => c.trim()).length).toBe(2)
+    })
+
     it('does not modify a table where separator already matches', () => {
         const md = '| A | B |\n|---|---|\n| x | y |\n'
         const out = process(md)

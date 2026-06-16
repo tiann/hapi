@@ -27,13 +27,20 @@ import type { VFile } from 'vfile'
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Count pipe-delimited cells in one table row line of raw source. */
+/** Count pipe-delimited cells in one table row line of raw source.
+ *  Skips escaped pipes (\|) which are literal characters, not cell boundaries. */
 function countSourceCells(line: string): number {
     const trimmed = line.trim()
-    // Strip optional surrounding pipes before splitting
-    const inner = (trimmed.startsWith('|') ? trimmed.slice(1) : trimmed)
+    const inner = trimmed.startsWith('|') ? trimmed.slice(1) : trimmed
     const stripped = inner.endsWith('|') ? inner.slice(0, -1) : inner
-    return stripped.split('|').length
+    let cells = 1
+    let escaped = false
+    for (const ch of stripped) {
+        if (escaped) { escaped = false; continue }
+        if (ch === '\\') { escaped = true; continue }
+        if (ch === '|') cells++
+    }
+    return cells
 }
 
 /**
