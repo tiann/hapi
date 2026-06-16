@@ -19,9 +19,7 @@
  * mismatches in data rows) are left for the agent patch-request path.
  */
 
-import remarkGfm from 'remark-gfm'
-import remarkParse from 'remark-parse'
-import { unified } from 'unified'
+import type { Processor } from 'unified'
 import type { Root, Table, TableRow, TableCell } from 'mdast'
 import type { VFile } from 'vfile'
 
@@ -69,13 +67,11 @@ function padSeparatorLine(sepLine: string, targetCols: number): string | null {
     return (hasLeading ? '|' : '') + paddedInner + (hasTrailing ? '|' : '')
 }
 
-/** Re-parse a repaired raw table string and extract the first table node. */
-function parseTableBlock(source: string): Table | null {
-    const tree = unified().use(remarkParse).use(remarkGfm).parse(source) as Root
-    for (const node of tree.children) {
-        if (node.type === 'table') return node as Table
-    }
-    return null
+/** Re-parse a repaired raw table string using the main pipeline's processor
+ *  so inline extensions (math, footnotes, etc.) are preserved in cell nodes. */
+function parseTableBlock(processor: Processor, source: string): Table | null {
+    const tree = processor.parse(source) as Root
+    return tree.children.find((node): node is Table => node.type === 'table') ?? null
 }
 
 // ── Plugin ───────────────────────────────────────────────────────────────────
@@ -88,7 +84,8 @@ function visitTables(
     node: { type: string; children?: unknown[]; align?: unknown; position?: { start: { offset: number }; end: { offset: number } } },
     parent: MdastParent | null,
     index: number,
-    source: string
+    source: string,
+    processor: Processor
 ): void {
     if (node.type === 'table' && parent && node.position && Array.isArray(node.align)) {
         const tableSource = source.slice(node.position.start.offset, node.position.end.offset)
@@ -103,7 +100,7 @@ function visitTables(
                 if (repairedSep) {
                     const newLines = [...lines]
                     newLines[1] = repairedSep
-                    const repaired = parseTableBlock(newLines.join('\n'))
+                    const repaired = parseTableBlock(processor, newLines.join('\n'))
                     if (repaired) {
                         parent.children.splice(index, 1, repaired as unknown as Table)
                         return
@@ -119,15 +116,17 @@ function visitTables(
                 node.children[i] as typeof node,
                 node as unknown as MdastParent,
                 i,
-                source
+                source,
+                processor
             )
         }
     }
 }
 
-export default function remarkRepairTables() {
+export default function remarkRepairTables(this: Processor) {
+    const processor = this
     return (tree: Root, file: VFile) => {
         const source = String(file.value)
-        visitTables(tree as unknown as Parameters<typeof visitTables>[0], null, 0, source)
+        visitTables(tree as unknown as Parameters<typeof visitTables>[0], null, 0, source, processor)
     }
 }
