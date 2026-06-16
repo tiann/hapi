@@ -82,11 +82,14 @@ function handleGetState(
         if (data.model.provider && data.model.provider.length > 0) {
             session.currentProvider = data.model.provider;
         }
-        // When a startup model was specified, always use it instead of Pi's default.
-        // The provider will be resolved later when get_available_models returns.
-        session.currentModel = session.initialModel ?? newModel ?? null;
+        // Do NOT overwrite currentModel with the unconfirmed startup model here.
+        // The requested startup model is applied (and committed) only after
+        // get_available_models confirms it exists and Pi accepts set_model;
+        // reporting Pi's actual current model until then keeps the hub in sync
+        // if the requested model is unavailable or rejected.
+        session.currentModel = newModel ?? session.currentModel;
         if (session.initialModel) {
-            logger.debug(`[pi] Startup model preserved: ${session.initialModel} (provider from get_state=${session.currentProvider ?? 'unknown'})`);
+            logger.debug(`[pi] Startup model requested: ${session.initialModel} (will apply once available models arrive); Pi default model: ${newModel ?? 'unknown'}`);
         } else if (newModel) {
             logger.debug(`[pi] Initial model: ${newModel} (provider=${session.currentProvider ?? 'unknown'})`);
         }
@@ -169,15 +172,29 @@ function handleResponse(
                     piAvailableModels: models,
                 }));
 
-                // Apply startup model if set_model was not yet sent.
-                // At this point initialModel is in currentModel (set by handleGetState),
-                // but provider may still be unknown. Search cached models to resolve it.
+                // Apply the requested startup model only after confirming it exists
+                // in Pi's available models and Pi accepts set_model. Commit
+                // currentModel/currentProvider only on success so the hub does not
+                // persist a model Pi rejected or never had. Fire-and-forget the
+                // await so resolving the get_available_models RPC itself is not
+                // blocked (it may be awaited by ListPiModels).
                 if (session.initialModel && transport) {
                     const match = models.find((m) => m.modelId === session.initialModel);
                     if (match) {
-                        session.currentProvider = match.provider;
-                        transport.send({ type: 'set_model', provider: match.provider, modelId: match.modelId });
-                        logger.debug(`[pi] Startup model applied: ${match.provider}/${match.modelId}`);
+                        void (async () => {
+                            try {
+                                await sendPiRpcAndWait(session, transport, {
+                                    type: 'set_model',
+                                    provider: match.provider,
+                                    modelId: match.modelId,
+                                });
+                                session.currentModel = match.modelId;
+                                session.currentProvider = match.provider;
+                                logger.debug(`[pi] Startup model applied: ${match.provider}/${match.modelId}`);
+                            } catch (error) {
+                                logger.debug(`[pi] Startup model set_model rejected, keeping Pi default: ${error instanceof Error ? error.message : String(error)}`);
+                            }
+                        })();
                     } else {
                         logger.debug(`[pi] Startup model not found in available models: ${session.initialModel}`);
                     }
