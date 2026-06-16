@@ -22,6 +22,7 @@ import { createGitRoutes } from './routes/git'
 import { createCliRoutes } from './routes/cli'
 import { createCodexDesktopRoutes } from './routes/codexDesktop'
 import { createClaudeDesktopRoutes } from './routes/claudeDesktop'
+import { createCursorImportRoutes } from './routes/cursorImport'
 import { createPushRoutes } from './routes/push'
 import { createVoiceRoutes } from './routes/voice'
 import type { SSEManager } from '../sse/sseManager'
@@ -256,6 +257,11 @@ function createWebApp(options: {
     }))
     // 中文注释：与 Codex 对称，扫描本地 ~/.claude/projects transcript 以导入 Hapi（复用同一套导入引擎）。
     app.route('/api', createClaudeDesktopRoutes({
+        store: options.store,
+        getSyncEngine: options.getSyncEngine
+    }))
+    // Cursor flavor of the multi-agent session import surface (ACP verify-probe).
+    app.route('/api', createCursorImportRoutes({
         store: options.store,
         getSyncEngine: options.getSyncEngine
     }))
