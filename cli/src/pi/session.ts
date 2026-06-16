@@ -22,9 +22,13 @@ export class PiSession {
     // revert to the constructor-time startingMode every 2s tick.
     mode: 'local' | 'remote';
 
-    // Config state — synced to hub via keepAlive
-    currentModel: string | null;
-    currentThinkingLevel: PiThinkingLevel | null;
+    // Config state — synced to hub via keepAlive.
+    // `undefined` means "not yet known" and is OMITTED from keepAlive so the hub
+    // does not clear a persisted value; `null` is an explicit clear. A value is
+    // only assigned once Pi confirms it (get_state / successful set_model /
+    // successful set_thinking_level).
+    currentModel: string | null | undefined;
+    currentThinkingLevel: PiThinkingLevel | null | undefined;
     // Pi's set_model requires provider + modelId; learned from get_state
     currentProvider: string | null = null;
     // Startup model from opts.model — prevents get_state from overwriting it
@@ -59,14 +63,17 @@ export class PiSession {
         this.logPath = opts.logPath;
         this.startedBy = opts.startedBy;
         this.mode = opts.startingMode;
-        // currentModel starts null and is set only from Pi's confirmed state
-        // (get_state) or a successful set_model. Seeding it from opts.model here
-        // would leak the unconfirmed --model value via the first keepAlive before
-        // get_available_models/set_model confirm it; opts.model is captured as
-        // initialModel below and applied once Pi accepts it.
-        this.currentModel = null;
+        // currentModel/currentThinkingLevel start undefined ("not yet known")
+        // and are set only from Pi's confirmed state (get_state) or a successful
+        // set_model/set_thinking_level. Seeding from opts.model/opts.effort here
+        // would leak unconfirmed values via the first keepAlive; they are captured
+        // as initialModel/startupThinkingLevel and applied once Pi accepts them.
+        // undefined is distinct from null (explicit clear): keepAlive omits
+        // undefined fields so the hub does not wipe a persisted model/effort on
+        // resume before Pi reports its real state.
+        this.currentModel = undefined;
         this.initialModel = opts.model?.trim() || null;
-        this.currentThinkingLevel = null;
+        this.currentThinkingLevel = undefined;
     }
 
     startKeepAlive(): void {
@@ -81,19 +88,20 @@ export class PiSession {
         }
     }
 
+    private getKeepAliveRuntime(): Parameters<ApiSessionClient['keepAlive']>[2] {
+        const runtime: NonNullable<Parameters<ApiSessionClient['keepAlive']>[2]> = {};
+        if (this.currentModel !== undefined) runtime.model = this.currentModel;
+        if (this.currentThinkingLevel !== undefined) runtime.effort = this.currentThinkingLevel;
+        return Object.keys(runtime).length > 0 ? runtime : undefined;
+    }
+
     pushKeepAlive(): void {
-        this.client.keepAlive(this.piIsStreaming, this.mode, {
-            model: this.currentModel,
-            effort: this.currentThinkingLevel,
-        });
+        this.client.keepAlive(this.piIsStreaming, this.mode, this.getKeepAliveRuntime());
     }
 
     updateThinkingState(thinking: boolean): void {
         this.piIsStreaming = thinking;
-        this.client.keepAlive(thinking, this.mode, {
-            model: this.currentModel,
-            effort: this.currentThinkingLevel,
-        });
+        this.client.keepAlive(thinking, this.mode, this.getKeepAliveRuntime());
     }
 
     setMode(mode: 'local' | 'remote'): void {
