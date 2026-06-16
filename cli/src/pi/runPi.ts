@@ -181,17 +181,21 @@ export async function runPi(opts: {
             }
         }
 
-        // Forward changes to Pi process
-        if (piSession.currentModel && piSession.currentProvider) {
-            transport.send({ type: 'set_model', provider: piSession.currentProvider, modelId: piSession.currentModel });
-        } else if (piSession.currentModel && !piSession.currentProvider) {
+        // Forward changes to Pi process — wait for Pi to confirm before
+        // reporting applied, so the hub does not persist a model/effort that
+        // Pi rejected (e.g. invalid provider/model or thinking level).
+        if (config.model !== undefined && piSession.currentModel && piSession.currentProvider) {
+            await sendPiRpcAndWait(piSession, transport, {
+                type: 'set_model',
+                provider: piSession.currentProvider,
+                modelId: piSession.currentModel,
+            });
+        } else if (config.model !== undefined && piSession.currentModel && !piSession.currentProvider) {
             logger.debug('[pi] set_model suppressed: provider unknown until get_state');
         }
-        if (piSession.currentThinkingLevel) {
-            transport.send({ type: 'set_thinking_level', level: piSession.currentThinkingLevel });
-        } else if (config.effort !== undefined && config.effort === null) {
-            // Hub explicitly requested effort reset → turn off thinking
-            transport.send({ type: 'set_thinking_level', level: 'off' });
+        if (config.effort !== undefined) {
+            const level = piSession.currentThinkingLevel ?? 'off';
+            await sendPiRpcAndWait(piSession, transport, { type: 'set_thinking_level', level });
         }
         piSession.pushKeepAlive();
 
