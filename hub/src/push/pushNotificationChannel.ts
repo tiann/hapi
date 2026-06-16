@@ -1,6 +1,11 @@
 import type { Session } from '../sync/syncEngine'
-import type { NotificationChannel, TaskNotification } from '../notifications/notificationTypes'
+import type {
+    ModelErrorNotification,
+    NotificationChannel,
+    TaskNotification
+} from '../notifications/notificationTypes'
 import { getAgentName, getSessionName } from '../notifications/sessionInfo'
+import { formatModelErrorBody, formatModelErrorTitle } from '../notifications/modelErrorCopy'
 import type { SSEManager } from '../sse/sseManager'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
 import type { PushPayload, PushService } from './pushService'
@@ -131,6 +136,40 @@ export class PushNotificationChannel implements NotificationChannel {
             }
         }
 
+        await this.pushService.sendToNamespace(session.namespace, payload)
+    }
+
+    async sendModelError(session: Session, notification: ModelErrorNotification): Promise<void> {
+        if (!session.active) {
+            return
+        }
+
+        const agentName = getAgentName(session)
+        const sessionName = getSessionName(session)
+        const title = formatModelErrorTitle(notification.kind)
+        const body = formatModelErrorBody(notification, { agentName, sessionName })
+        const url = this.buildSessionPath(session.id)
+
+        const payload: PushPayload = {
+            title,
+            body,
+            // Distinct tag from `ready-${id}` so the model-error ping never
+            // collapses into the prior "all done" notification on the same
+            // session. Tag keyed by atTs so distinct errors in the same
+            // session DON'T overwrite each other on the lock screen.
+            tag: `model-error-${session.id}-${notification.atTs}`,
+            data: {
+                type: 'model-error',
+                sessionId: session.id,
+                url
+            }
+        }
+
+        // Skip the in-page toast shortcut for model errors. Toasts are
+        // ephemeral and easy to miss; an error of this severity should
+        // ALWAYS surface as a real push so a backgrounded operator gets
+        // a system-tray ping. The web banner + pulsing-dot already
+        // cover the foreground case.
         await this.pushService.sendToNamespace(session.namespace, payload)
     }
 
