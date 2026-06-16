@@ -544,6 +544,11 @@ export function HappyComposer(props: {
 
     useEffect(() => {
         const handleGlobalKeyDown = (e: globalThis.KeyboardEvent) => {
+            // Pi needs { provider, modelId } to disambiguate duplicate model IDs,
+            // but this generic cycler only emits a bare modelId (or null), which
+            // would lose the provider and can pick the wrong cached match or clear
+            // the model. Pi model changes go only through the dedicated PiModelPanel.
+            if (agentFlavor === 'pi') return
             if (e.key === 'm' && (e.metaKey || e.ctrlKey) && onModelChange && supportsModelChange(agentFlavor)) {
                 e.preventDefault()
                 onModelChange(getNextModelForFlavor(agentFlavor, model, availableModelOptions))
