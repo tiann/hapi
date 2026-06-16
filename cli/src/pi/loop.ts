@@ -151,6 +151,14 @@ function handleResponse(
             resolvePendingRpc(resolver, response);
             break;
         }
+        case 'set_thinking_level': {
+            // Awaited by SetSessionConfig (Fix #9 symmetry with set_model).
+            // currentThinkingLevel is maintained by the SetSessionConfig
+            // handler, so this branch only resolves the pending RPC — without
+            // it the awaited call times out and /sessions/:id/effort returns 409.
+            resolvePendingRpc(resolver, response);
+            break;
+        }
         case 'get_available_models': {
             const models = parsePiModels(response.data);
             if (models.length > 0) {
@@ -242,7 +250,15 @@ export function wireTransportEvents(
         }
 
         // Keep-alive + streaming state tracking
-        if (event.type === 'agent_start' || event.type === 'turn_start') {
+        //
+        // Pi emits agent_start and turn_start back-to-back for each prompt.
+        // Only turn_start marks "my prompt was accepted and a turn began", so
+        // the pending localId is drained there. Draining on both would pop the
+        // FIFO twice per prompt — once with the real id, then once with
+        // undefined — and ship a garbage localId to the hub.
+        if (event.type === 'agent_start') {
+            session.updateThinkingState(true);
+        } else if (event.type === 'turn_start') {
             session.updateThinkingState(true);
             if (pendingLocalIds.length > 0) {
                 const oldestLocalId = pendingLocalIds.shift()!;

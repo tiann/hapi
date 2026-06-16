@@ -258,15 +258,17 @@ describe('wireTransportEvents', () => {
         });
     });
 
-    it('handles agent_start — pops pending localId', () => {
+    it('handles agent_start — sets thinking state, does NOT drain pending localId', () => {
         const transport = createMockTransport();
         const pendingLocalIds = ['id-1', 'id-2'];
         wireTransportEvents(transport, session, pendingLocalIds);
 
         emitEvent({ type: 'agent_start' });
 
-        expect(pendingLocalIds).toEqual(['id-2']);
-        expect(session.client.emitMessagesConsumed).toHaveBeenCalledWith(['id-1'], undefined);
+        // agent_start precedes turn_start in a real Pi turn; draining here
+        // would double-pop the FIFO (see regression test below).
+        expect(pendingLocalIds).toEqual(['id-1', 'id-2']);
+        expect(session.client.emitMessagesConsumed).not.toHaveBeenCalled();
     });
 
     it('handles turn_start — pops pending localId', () => {
@@ -278,6 +280,22 @@ describe('wireTransportEvents', () => {
 
         expect(pendingLocalIds).toEqual([]);
         expect(session.client.emitMessagesConsumed).toHaveBeenCalledWith(['id-turn-1'], undefined);
+    });
+
+    it('regression: agent_start + turn_start in one turn drains exactly one localId', () => {
+        // Pi emits agent_start then turn_start back-to-back per prompt.
+        // Only turn_start should drain — agent_start must not.
+        const transport = createMockTransport();
+        const pendingLocalIds = ['prompt-1'];
+        wireTransportEvents(transport, session, pendingLocalIds);
+
+        emitEvent({ type: 'agent_start' });
+        emitEvent({ type: 'turn_start' });
+
+        expect(pendingLocalIds).toEqual([]);
+        // Exactly one drain call with a real id — never an undefined.
+        expect(session.client.emitMessagesConsumed).toHaveBeenCalledTimes(1);
+        expect(session.client.emitMessagesConsumed).toHaveBeenCalledWith(['prompt-1'], undefined);
     });
 
     it('handles turn_end — stops streaming', () => {

@@ -191,7 +191,13 @@ export async function runPi(opts: {
                 modelId: piSession.currentModel,
             });
         } else if (config.model !== undefined && piSession.currentModel && !piSession.currentProvider) {
+            // Provider is unknown until get_state/get_available_models resolve.
+            // If we reported `applied` now, the hub would persist piSelectedModel
+            // while Pi never received set_model — contradicting the "await Pi
+            // confirmation" contract above. Throw so the hub returns 409 and the
+            // web client can retry once the provider is known.
             logger.debug('[pi] set_model suppressed: provider unknown until get_state');
+            throw new Error('Model cannot be applied yet: provider is not yet known');
         }
         if (config.effort !== undefined) {
             const level = piSession.currentThinkingLevel ?? 'off';
