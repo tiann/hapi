@@ -426,7 +426,12 @@ export function HappyComposer(props: {
     // Pi: reset effort to highest supported level when model changes and current level is unsupported
     useEffect(() => {
         if (!effort || !selectedPiModel || !onEffortChange) return
-        if (selectedPiModel.reasoning === false) return
+        // Non-reasoning model: clear stale effort so the hub does not forward
+        // a set_thinking_level the user can no longer see or change.
+        if (selectedPiModel.reasoning === false) {
+            onEffortChange(null)
+            return
+        }
         if (!isThinkingLevelSupported(effort, selectedPiModel.thinkingLevelMap)) {
             onEffortChange(getHighestThinkingLevel(selectedPiModel.thinkingLevelMap))
         }
