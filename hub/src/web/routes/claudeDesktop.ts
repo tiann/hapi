@@ -6,6 +6,7 @@ import type { SyncEngine } from '../../sync/syncEngine'
 import type { Store } from '../../store'
 import type { WebAppEnv } from '../middleware/auth'
 import {
+    type ImportedMessage,
     type ImportedMessageContent,
     type ImporterAdapter,
     type LocalSessionSummary,
@@ -20,6 +21,7 @@ import {
     expandHomePath,
     getDirectImportRouteContext,
     importSelectedSessions,
+    parseImportedTimestamp,
     parseSyncSessionRequest,
     truncateText
 } from './transcriptImport'
@@ -316,7 +318,7 @@ function parseClaudeTranscriptImportData(summary: LocalSessionSummary): Transcri
     }
 
     const lines = content.split(/\r?\n/).filter(Boolean)
-    const messages: ImportedMessageContent[] = []
+    const messages: ImportedMessage[] = []
 
     for (const line of lines) {
         let parsed: unknown
@@ -327,8 +329,11 @@ function parseClaudeTranscriptImportData(summary: LocalSessionSummary): Transcri
         }
         const record = asRecord(parsed)
         if (!record) continue
-        for (const message of convertClaudeRecordToImportedMessage(record)) {
-            messages.push(message)
+        // 中文注释：Claude 记录在顶层 `timestamp` 带 ISO 时间串，解析出来随消息一起落库；
+        // 一行可拆出多块消息（text/tool_use/...），它们共用该行的时间戳。
+        const createdAt = parseImportedTimestamp(record.timestamp)
+        for (const content of convertClaudeRecordToImportedMessage(record)) {
+            messages.push({ content, createdAt })
         }
     }
 

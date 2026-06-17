@@ -59,6 +59,24 @@ function createRichTranscript(claudeHome: string, sessionId: string, encodedCwd 
     writeFileSync(transcriptPath, `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`, 'utf-8')
 }
 
+// 中文注释：写一条带逐行 `timestamp` 的最小 Claude transcript，用于断言导入后保留原始时间戳而不是被盖成 now。
+function createTimestampedTranscript(
+    claudeHome: string,
+    sessionId: string,
+    timestamps: { user: string; assistant: string },
+    encodedCwd = '-home-user-ts',
+    cwd: string | null = '/home/user/ts'
+): void {
+    const projectDir = join(claudeHome, 'projects', encodedCwd)
+    mkdirSync(projectDir, { recursive: true })
+    const transcriptPath = join(projectDir, `${sessionId}.jsonl`)
+    const lines: unknown[] = [
+        { type: 'user', sessionId, cwd, timestamp: timestamps.user, message: { role: 'user', content: 'hello from the past' } },
+        { type: 'assistant', sessionId, cwd, timestamp: timestamps.assistant, message: { role: 'assistant', content: [{ type: 'text', text: 'replying from the past' }] } }
+    ]
+    writeFileSync(transcriptPath, `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`, 'utf-8')
+}
+
 function createSidecarOnlyTranscript(claudeHome: string, sessionId: string, encodedCwd = '-home-user-empty'): void {
     const projectDir = join(claudeHome, 'projects', encodedCwd)
     mkdirSync(projectDir, { recursive: true })
@@ -194,6 +212,81 @@ describe('Claude Desktop import routes', () => {
             expect(sessionsAfterSecond[0].id).toBe(sessionsAfterFirst[0].id)
             const messagesAfterSecond = store.messages.getAllMessages(sessionsAfterSecond[0].id).length
             expect(messagesAfterSecond).toBe(messagesAfterFirst)
+        } finally {
+            store.close()
+            rmSync(claudeHome, { recursive: true, force: true })
+        }
+    })
+
+    it('preserves the original record timestamps as message createdAt/invokedAt and session updatedAt', async () => {
+        const claudeHome = mkdtempSync(join(tmpdir(), 'hapi-claude-home-ts-test-'))
+        const store = new Store(':memory:')
+        const sessionId = '55555555-5555-4555-8555-555555555555'
+        process.env.CLAUDE_CONFIG_DIR = claudeHome
+
+        const userTs = '2026-01-02T03:04:05.000Z'
+        const assistantTs = '2026-01-02T03:05:06.000Z'
+        const userMs = Date.parse(userTs)
+        const assistantMs = Date.parse(assistantTs)
+
+        try {
+            createTimestampedTranscript(claudeHome, sessionId, { user: userTs, assistant: assistantTs })
+
+            const before = Date.now()
+            const result = await importSelectedClaudeSessions({
+                claudeSessionIds: [sessionId],
+                store,
+                namespace: 'default',
+                getSyncEngine: () => null
+            })
+            expect(result.success).toBe(true)
+
+            const session = store.sessions.getSessionsByNamespace('default')[0]
+            const messages = store.messages.getAllMessages(session.id)
+            expect(messages).toHaveLength(2)
+
+            // 中文注释：核心断言——落库时间是 transcript 原始时间戳，而不是导入瞬间的 Date.now()。
+            expect(messages[0].createdAt).toBe(userMs)
+            expect(messages[0].invokedAt).toBe(userMs)
+            expect(messages[1].createdAt).toBe(assistantMs)
+            expect(messages[1].invokedAt).toBe(assistantMs)
+            expect(messages[0].createdAt).toBeLessThan(before)
+
+            // 中文注释：会话最后活跃时间应反映最后一条消息的原始时间，而不是“今天刚活跃”。
+            expect(session.updatedAt).toBe(assistantMs)
+        } finally {
+            store.close()
+            rmSync(claudeHome, { recursive: true, force: true })
+        }
+    })
+
+    it('falls back to the transcript file mtime when records carry no per-line timestamp', async () => {
+        const claudeHome = mkdtempSync(join(tmpdir(), 'hapi-claude-home-nots-test-'))
+        const store = new Store(':memory:')
+        const sessionId = '66666666-6666-4666-8666-666666666666'
+        process.env.CLAUDE_CONFIG_DIR = claudeHome
+
+        try {
+            // createRichTranscript 的记录没有逐行 timestamp，应回退到文件 mtime。
+            createRichTranscript(claudeHome, sessionId)
+            const summaries = listLocalClaudeSessions()
+            const summary = summaries.find((s) => s.id === sessionId)
+            expect(summary).toBeDefined()
+            const fileModifiedAt = summary!.modifiedAt
+
+            const result = await importSelectedClaudeSessions({
+                claudeSessionIds: [sessionId],
+                store,
+                namespace: 'default',
+                getSyncEngine: () => null
+            })
+            expect(result.success).toBe(true)
+
+            const session = store.sessions.getSessionsByNamespace('default')[0]
+            const messages = store.messages.getAllMessages(session.id)
+            for (const message of messages) {
+                expect(message.createdAt).toBe(fileModifiedAt)
+            }
         } finally {
             store.close()
             rmSync(claudeHome, { recursive: true, force: true })

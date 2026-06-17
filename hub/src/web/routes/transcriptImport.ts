@@ -33,6 +33,13 @@ export type ImportedMessageContent = {
     }
 }
 
+// 中文注释：导入消息在落库前包一层 createdAt，保留 transcript 记录里的原始时间戳。
+// content 仍是会被 JSON.stringify 持久化的 payload，createdAt 只参与排序/活跃时间，不写进 content。
+export type ImportedMessage = {
+    content: ImportedMessageContent
+    createdAt?: number
+}
+
 export type LocalSessionSummary = {
     id: string
     title: string
@@ -45,7 +52,7 @@ export type LocalSessionSummary = {
 }
 
 export type TranscriptImportData = LocalSessionSummary & {
-    messages: ImportedMessageContent[]
+    messages: ImportedMessage[]
 }
 
 export type ScriptLaunchResponse = {
@@ -148,6 +155,21 @@ export function asRecord(value: unknown): Record<string, unknown> | null {
 
 export function asString(value: unknown): string | null {
     return typeof value === 'string' && value.length > 0 ? value : null
+}
+
+// 中文注释：把 transcript 记录里的 ISO 时间戳（如 "2026-06-15T09:12:00.706Z"）解析成毫秒；
+// 缺失或非法时返回 undefined，让调用方回退到文件 mtime。Claude / Codex 共用此入口避免各写一份。
+export function parseImportedTimestamp(value: unknown): number | undefined {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return value
+    }
+    if (typeof value === 'string' && value.length > 0) {
+        const parsed = Date.parse(value)
+        if (Number.isFinite(parsed)) {
+            return parsed
+        }
+    }
+    return undefined
 }
 
 export function truncateText(value: string, maxLength: number): string {
@@ -749,7 +771,7 @@ export function importSingleSession(options: {
     }
 
     const importedComparableMessages = transcript.messages
-        .map((message) => normalizeComparableContent(message))
+        .map((message) => normalizeComparableContent(message.content))
         .filter((value): value is string => value !== null)
 
     try {
@@ -802,11 +824,33 @@ export function importSingleSession(options: {
 
         const comparablePrefixCount = sessionId ? target.comparablePrefixCount : 0
         const messagesToAppend = transcript.messages.slice(comparablePrefixCount)
-        const appendedMessages = messagesToAppend.map((message) => options.store.messages.addMessage(sessionId!, message))
+        // 中文注释：导入历史会话走 copyMessageToSession 落库，保留 transcript 记录里的原始时间戳；
+        // addMessage 会盖成 Date.now()，导致旧会话被排成“今天刚活跃”、消息时间线被压平。
+        // 单条记录缺少逐行时间戳时回退到 transcript.modifiedAt（文件 mtime）。localId 置 null 走已读路径，
+        // invokedAt 跟随 createdAt 让消息直接落入聊天区而非排队浮条。
+        const appendedMessages = messagesToAppend.map((message) => {
+            const createdAt = message.createdAt ?? transcript.modifiedAt
+            return options.store.messages.copyMessageToSession(sessionId!, {
+                content: message.content,
+                createdAt,
+                localId: null,
+                invokedAt: createdAt,
+                scheduledAt: null
+            })
+        })
 
         // 中文注释：更新 Hapi 会话的 updatedAt，并在已有会话追加时广播新增消息，让当前打开的聊天页立刻显示客户端新增内容。
-        const latestMessageCreatedAt = appendedMessages[appendedMessages.length - 1]?.createdAt ?? Date.now()
-        if (engine) {
+        // 取这批消息里最大的真实时间戳作为最后活跃时间，避免个别乱序记录把会话排到错误位置。
+        const latestMessageCreatedAt = appendedMessages.length > 0
+            ? appendedMessages.reduce((max, message) => Math.max(max, message.invokedAt ?? message.createdAt), 0)
+            : Date.now()
+        if (created) {
+            // 中文注释：新建的导入会话出生时间是 now（今天），而真实最后活动在历史里；recordSessionActivity /
+            // touchSessionUpdatedAt 只前进不后退，无法把 updated_at 调回过去，否则历史会话会一直排在列表顶端
+            // 显示成“今天刚活跃”。这里对刚建好的导入会话无条件回填真实最后活动时间，再刷新引擎缓存。
+            options.store.sessions.setImportedSessionActivity(sessionId, latestMessageCreatedAt, options.namespace)
+            engine?.handleRealtimeEvent({ type: 'session-updated', sessionId })
+        } else if (engine) {
             engine.recordSessionActivity(sessionId, latestMessageCreatedAt)
         } else {
             options.store.sessions.touchSessionUpdatedAt(sessionId, latestMessageCreatedAt, options.namespace)
