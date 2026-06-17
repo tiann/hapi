@@ -99,14 +99,17 @@ export function repairMarkdownTables(source: string): string {
     let fenceLength = 0
 
     for (let i = 0; i < lines.length; i++) {
-        const fenceMatch = lines[i].match(/^ {0,3}(`{3,}|~{3,})/)
+        // Capture marker + everything after so we can check the closing-fence rule:
+        // openers may have an info string (```ts), but closers must be whitespace-only.
+        const fenceMatch = lines[i].match(/^ {0,3}(`{3,}|~{3,})(.*)$/)
         if (fenceMatch) {
             const ch = fenceMatch[1][0] as '`' | '~'
             const len = fenceMatch[1].length
+            const rest = fenceMatch[2]
             if (fenceChar === null) {
                 fenceChar = ch
                 fenceLength = len
-            } else if (ch === fenceChar && len >= fenceLength) {
+            } else if (ch === fenceChar && len >= fenceLength && /^\s*$/.test(rest)) {
                 fenceChar = null
                 fenceLength = 0
             }

@@ -121,6 +121,21 @@ describe('repairMarkdownTables (string)', () => {
         expect(repairMarkdownTables(input)).toBe(input)
     })
 
+    it('does not close a fence on a same-marker line that has info text', () => {
+        // ```ts inside a ``` fence is not a valid closing marker — only whitespace may follow
+        const input = [
+            '```',
+            '```ts',
+            '| A | B | C |',
+            '|---|---|',
+            '| x | y | z |',
+            '```ts',
+            '```',
+            '',
+        ].join('\n')
+        expect(repairMarkdownTables(input)).toBe(input)
+    })
+
     it('repairs a broken table after a fenced code block closes', () => {
         const input = [
             '```',
