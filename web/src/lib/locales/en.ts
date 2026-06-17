@@ -111,6 +111,28 @@ export default {
   'codexSync.duplicates.merge.failed.title': 'Failed to merge duplicate sessions',
   'codexSync.duplicates.merge.failed.body': 'Failed to merge duplicate sessions.',
 
+  // Claude session import
+  'claudeSync.tooltip': 'Import sessions from Claude into Hapi',
+  'claudeSync.confirm.title': 'Import Claude sessions',
+  'claudeSync.confirm.description': 'Choose Claude sessions to import into Hapi',
+  'claudeSync.confirm.selectAll': 'Select all',
+  'claudeSync.confirm.clearAll': 'Clear all',
+  'claudeSync.confirm.selectedCount': '{n} sessions selected',
+  'claudeSync.confirm.empty': 'No local Claude sessions found',
+  'claudeSync.confirm.current': 'Linked',
+  'claudeSync.confirm.cwd': 'Working directory',
+  'claudeSync.confirm.cwdFilter': 'Work directory',
+  'claudeSync.confirm.cwdFilterAll': 'All work directories',
+  'claudeSync.confirm.emptyForWorkdir': 'No Claude sessions in this work directory',
+  'claudeSync.confirm.confirm': 'Import',
+  'claudeSync.confirm.confirming': 'Importing…',
+  'claudeSync.confirm.loading': 'Loading local Claude sessions…',
+  'claudeSync.success.title': 'Import complete',
+  'claudeSync.success.body': 'Imported {n} Claude session(s) into Hapi.',
+  'claudeSync.failed.title': 'Failed to import Claude sessions',
+  'claudeSync.failed.body': 'Failed to import Claude sessions.',
+  'claudeSync.failed.bodyWithReason': 'Import failed: {reason}',
+
   // Session list
   'session.item.path': 'path',
   'session.item.agent': 'agent',
