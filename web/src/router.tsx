@@ -880,12 +880,13 @@ function NewSessionPage() {
         // Forward the currently-selected machine so /browse opens scoped to
         // it rather than falling back to `hapi:lastMachineId`, which can
         // disagree if the user changed machines without yet creating a
-        // session.
-        navigate({
-            to: '/browse',
-            search: args.machineId ? { machineId: args.machineId } : {}
-        })
-    }, [navigate])
+        // session. Preserve shareTransferId so a share-target spawn that
+        // detours through /browse still seeds the composer after success.
+        const search: { machineId?: string; shareTransferId?: string } = {}
+        if (args.machineId) search.machineId = args.machineId
+        if (shareTransferId) search.shareTransferId = shareTransferId
+        navigate({ to: '/browse', search })
+    }, [navigate, shareTransferId])
 
     return (
         <div className="flex h-full min-h-0 flex-col">
@@ -933,14 +934,16 @@ function BrowsePage() {
     const goBack = useAppGoBack()
     const { machines, isLoading: machinesLoading } = useMachines(api, true)
     const { t } = useTranslation()
-    const { machineId: initialMachineId } = browseRoute.useSearch()
+    const { machineId: initialMachineId, shareTransferId } = browseRoute.useSearch()
 
     const handleStartSession = useCallback((machineId: string, directory: string) => {
         navigate({
             to: '/sessions/new',
-            search: { directory, machineId }
+            search: shareTransferId
+                ? { directory, machineId, shareTransferId }
+                : { directory, machineId }
         })
-    }, [navigate])
+    }, [navigate, shareTransferId])
 
     return (
         <div className="flex h-full min-h-0 flex-col">
@@ -1084,11 +1087,15 @@ const newSessionRoute = createRoute({
 const browseRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/browse',
-    validateSearch: (search: Record<string, unknown>): { machineId?: string } => {
+    validateSearch: (search: Record<string, unknown>): { machineId?: string; shareTransferId?: string } => {
+        const result: { machineId?: string; shareTransferId?: string } = {}
         if (typeof search.machineId === 'string' && search.machineId) {
-            return { machineId: search.machineId }
+            result.machineId = search.machineId
         }
-        return {}
+        if (typeof search.shareTransferId === 'string' && search.shareTransferId) {
+            result.shareTransferId = search.shareTransferId
+        }
+        return result
     },
     component: BrowsePage,
 })
