@@ -2,15 +2,14 @@
 /**
  * Post a local image inline to a HAPI session via the session CLI's display_image MCP tool.
  *
- * Calls the HTTP MCP server owned by the live session process (hostPid metadata) so
- * generated-image bytes stay in that CLI's memory for /generated-images/:id RPC.
+ * Uses session.metadata.hapiMcpUrl (published at MCP server start) so we hit the MCP
+ * endpoint, not the session hook server on another loopback port in the same process.
  *
  * Usage:
  *   bun scripts/tooling/hapi-display-image.mjs <session-id-prefix> <image-path> [title]
  */
 
 import { readFileSync, lstatSync } from 'node:fs'
-import { execSync } from 'node:child_process'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 
@@ -54,20 +53,13 @@ if (!session) {
     process.exit(4)
 }
 
-const hostPid = session.metadata?.hostPid
-if (!hostPid) {
-    console.error('session has no hostPid (inactive CLI?)')
+const mcpUrl = session.metadata?.hapiMcpUrl
+if (!mcpUrl) {
+    console.error('session has no hapiMcpUrl metadata (restart session CLI after MCP fix lands)')
     process.exit(5)
 }
 
-const ssOut = execSync(`ss -ltnp 2>/dev/null | rg 'pid=${hostPid},' || true`, { encoding: 'utf8' })
-const portMatch = ssOut.match(/127\.0\.0\.1:(\d+)/)
-if (!portMatch) {
-    console.error(`no localhost listen port for pid ${hostPid}`)
-    process.exit(6)
-}
-const mcpUrl = `http://127.0.0.1:${portMatch[1]}/`
-console.error(`hapi-display-image: session=${session.id} pid=${hostPid} mcp=${mcpUrl}`)
+console.error(`hapi-display-image: session=${session.id} mcp=${mcpUrl}`)
 
 const client = new Client({ name: 'hapi-display-image', version: '1.0.0' }, { capabilities: {} })
 const transport = new StreamableHTTPClientTransport(new URL(mcpUrl))
