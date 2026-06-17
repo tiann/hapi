@@ -17,6 +17,12 @@ import {
     type RemoteLauncherDisplayContext,
     type RemoteLauncherExitReason
 } from "@/modules/common/remote/RemoteLauncherBase";
+import { isUnrecoverableClaudeResumeError } from "./utils/claudeResumeError";
+
+// Bound on consecutive automatic relaunches after an unexpected claudeRemote
+// failure. Mirrors codex's SAME_THREAD_MAX_RETRIES. Prevents an unforeseen
+// persistent failure (e.g. a reject we did not classify) from spinning forever.
+const MAX_LAUNCH_RETRIES = 3;
 
 interface PermissionsField {
     date: number;
@@ -273,6 +279,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
             } | null = null;
 
             let previousSessionId: string | null = null;
+            let launchRetryCount = 0;
             while (!this.exitReason) {
                 logger.debug('[remote]: launch');
                 messageBuffer.addMessage('═'.repeat(40), 'status');
@@ -332,8 +339,8 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
 
                             return null;
                         },
-                        onSessionFound: (sessionId) => {
-                            session.onSessionFound(sessionId);
+                        onSessionFound: (sessionId, extras) => {
+                            session.onSessionFound(sessionId, extras);
                         },
                         onThinkingChange: session.onThinkingChange,
                         claudeEnvVars: session.claudeEnvVars,
@@ -364,6 +371,10 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
 
                     session.consumeOneTimeFlags();
 
+                    // Clean run (the session ended normally and we loop to await
+                    // the next message): forget any prior error-retry budget.
+                    launchRetryCount = 0;
+
                     if (!this.exitReason && controller.signal.aborted) {
                         session.client.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
                     }
@@ -371,6 +382,25 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     logger.debug('[remote]: launch error', e);
                     if (!this.exitReason) {
                         const detail = e instanceof Error ? e.message : String(e);
+
+                        // Unrecoverable failures (e.g. the resume target is held open
+                        // by a live agent) can never be fixed by re-running identical
+                        // args; the live-agent path normally forks instead, but this is
+                        // the second line of defense. A retry budget bounds any
+                        // unforeseen persistent failure so we never spin forever.
+                        const unrecoverable = isUnrecoverableClaudeResumeError(e);
+                        const budgetExhausted = launchRetryCount >= MAX_LAUNCH_RETRIES;
+                        if (unrecoverable || budgetExhausted) {
+                            const reason = unrecoverable
+                                ? `Cannot resume session: ${detail}`
+                                : `Session failed to start after ${MAX_LAUNCH_RETRIES} attempts: ${detail}`;
+                            logger.debug(`[remote]: launch unrecoverable (unrecoverable=${unrecoverable}, retries=${launchRetryCount}); stopping`);
+                            session.client.sendSessionEvent({ type: 'message', message: reason });
+                            this.exitReason = 'exit';
+                            break;
+                        }
+
+                        launchRetryCount += 1;
                         session.client.sendSessionEvent({ type: 'message', message: `Process exited unexpectedly: ${detail}` });
                         continue;
                     }

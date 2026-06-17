@@ -34,6 +34,10 @@ export const MetadataSchema = z.object({
     summary: MetadataSummarySchema.optional(),
     machineId: z.string().optional(),
     claudeSessionId: z.string().optional(),
+    // Source session ID when this session was created by forking a live one
+    // (`claude --resume <id> --fork-session`). Lets the web list mark the new
+    // session as a branch of `<id>` instead of an unrelated duplicate.
+    forkedFrom: z.string().optional(),
     codexSessionId: z.string().optional(),
     geminiSessionId: z.string().optional(),
     opencodeSessionId: z.string().optional(),
