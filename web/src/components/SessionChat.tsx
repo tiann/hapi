@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { AssistantRuntimeProvider, useAssistantApi } from '@assistant-ui/react'
+import { AssistantRuntimeProvider, useAssistantApi, useAssistantState } from '@assistant-ui/react'
 import type { ApiClient } from '@/api/client'
 import type {
     AttachmentMetadata,
@@ -30,6 +30,7 @@ import { useHappyRuntime } from '@/lib/assistant-runtime'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
 import { consumeSharePendingTransfer } from '@/lib/sharePendingState'
 import { deleteShareTransfer, getShareTransfer } from '@/lib/shareTransfer'
+import { getDraft } from '@/lib/composer-drafts'
 import { useTranslation } from '@/lib/use-translation'
 import { SessionHeader } from '@/components/SessionHeader'
 import { CursorMigrationBanner } from '@/components/CursorMigrationBanner'
@@ -179,11 +180,17 @@ function isUninvokedScheduledMessage(message: DecryptedMessage): boolean {
  *  - The IDB row is deleted after the seed completes so a back-button
  *    refresh of /sessions/:id doesn't re-attach the same payload.
  */
-function ShareSeedConsumer(props: { sessionActive: boolean }) {
+function ShareSeedConsumer(props: { sessionId: string; sessionActive: boolean }) {
     const assistantApi = useAssistantApi()
+    const composerText = useAssistantState(({ composer }) => composer.text)
+    const composerTextRef = useRef(composerText)
     const initRef = useRef(false)
     const transferIdRef = useRef<string | null>(null)
     const consumedRef = useRef(false)
+
+    useEffect(() => {
+        composerTextRef.current = composerText
+    }, [composerText])
 
     if (!initRef.current) {
         initRef.current = true
@@ -206,7 +213,15 @@ function ShareSeedConsumer(props: { sessionActive: boolean }) {
                     .join('\n')
                     .trim()
                 if (seedText.length > 0) {
-                    assistantApi.composer().setText(seedText)
+                    const existingText = composerTextRef.current.trim().length > 0
+                        ? composerTextRef.current
+                        : getDraft(props.sessionId)
+                    const nextText = [existingText.trim(), seedText]
+                        .filter((part) => part.length > 0)
+                        .join('\n\n')
+                    if (nextText.length > 0) {
+                        assistantApi.composer().setText(nextText)
+                    }
                 }
                 for (const file of payload.files) {
                     const reconstructed = new File([file.blob], file.name, { type: file.type })
@@ -221,7 +236,7 @@ function ShareSeedConsumer(props: { sessionActive: boolean }) {
                 console.error('share-seed pull failed', err)
             }
         })()
-    }, [props.sessionActive, assistantApi])
+    }, [props.sessionActive, props.sessionId, assistantApi])
 
     return null
 }
@@ -1073,7 +1088,7 @@ function SessionChatInner(props: SessionChatProps) {
             ) : null}
 
             <AssistantRuntimeProvider runtime={runtime}>
-                <ShareSeedConsumer sessionActive={props.session.active} />
+                <ShareSeedConsumer sessionId={props.session.id} sessionActive={props.session.active} />
                 <div className="relative flex min-h-0 flex-1 flex-col">
                     <HappyThread
                         key={props.session.id}
