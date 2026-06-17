@@ -76,7 +76,7 @@ describe('PushNotificationChannel', () => {
         expect(pushed[1].payload.tag).toBeUndefined()
     })
 
-    it('skips web-push fallback when a native companion is registered for the namespace', async () => {
+    it('skips web-push when native FCM delivered in the same dispatch', async () => {
         const pushed: Array<{ namespace: string; payload: PushPayload }> = []
         const channel = new PushNotificationChannel(
             {
@@ -90,27 +90,26 @@ describe('PushNotificationChannel', () => {
             {
                 hasVisibleConnection: () => false
             } as never,
-            '',
-            (namespace: string) => namespace === 'default'
+            ''
         )
+
+        const ctx = { nativeGate: { sent: true } }
 
         await channel.sendPermissionRequest(createSession({
             agentState: {
                 requests: { 'req-1': { tool: 'Bash', arguments: {} } }
             }
-        }))
-        await channel.sendReady(createSession())
+        }), ctx)
+        await channel.sendReady(createSession(), ctx)
         await channel.sendTaskNotification(createSession(), {
             status: 'completed',
             summary: 'Done'
-        })
+        }, ctx)
 
-        // Native companion handles all three; web-push must stay quiet to
-        // avoid double-notifying the operator on phone+watch+browser.
         expect(pushed).toHaveLength(0)
     })
 
-    it('still sends web-push when namespace has no native companion', async () => {
+    it('falls back to web-push when native gate is unset (FCM failed or absent)', async () => {
         const pushed: Array<{ namespace: string; payload: PushPayload }> = []
         const channel = new PushNotificationChannel(
             {
@@ -124,8 +123,29 @@ describe('PushNotificationChannel', () => {
             {
                 hasVisibleConnection: () => false
             } as never,
-            '',
-            () => false
+            ''
+        )
+
+        await channel.sendReady(createSession(), { nativeGate: { sent: false } })
+
+        expect(pushed).toHaveLength(1)
+    })
+
+    it('still sends web-push when no native gate is provided', async () => {
+        const pushed: Array<{ namespace: string; payload: PushPayload }> = []
+        const channel = new PushNotificationChannel(
+            {
+                sendToNamespace: async (namespace: string, payload: PushPayload) => {
+                    pushed.push({ namespace, payload })
+                }
+            } as never,
+            {
+                sendToast: async () => 0
+            } as never,
+            {
+                hasVisibleConnection: () => false
+            } as never,
+            ''
         )
 
         await channel.sendReady(createSession())
@@ -133,7 +153,7 @@ describe('PushNotificationChannel', () => {
         expect(pushed).toHaveLength(1)
     })
 
-    it('also skips SSE in-page toast when a native companion is registered (defer-to-native)', async () => {
+    it('also skips SSE in-page toast when native gate reports delivery', async () => {
         const pushed: Array<{ namespace: string; payload: PushPayload }> = []
         const toasts: unknown[] = []
         const channel = new PushNotificationChannel(
@@ -151,18 +171,19 @@ describe('PushNotificationChannel', () => {
             {
                 hasVisibleConnection: () => true
             } as never,
-            '',
-            (namespace: string) => namespace === 'default'
+            ''
         )
 
-        await channel.sendReady(createSession())
+        const ctx = { nativeGate: { sent: true } }
+
+        await channel.sendReady(createSession(), ctx)
         await channel.sendPermissionRequest(createSession({
             agentState: { requests: { 'r-1': { tool: 'Bash', arguments: {} } } }
-        }))
+        }), ctx)
         await channel.sendTaskNotification(createSession(), {
             status: 'completed',
             summary: 'Done'
-        })
+        }, ctx)
 
         // Even when the PWA is foreground/visible, the operator asked to mute
         // it - the in-page React toast and the OS web-push are both dropped

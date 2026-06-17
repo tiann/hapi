@@ -372,6 +372,36 @@ describe('FcmNotificationChannel', () => {
         expect(sent[0].data.severity).toBe('info')
     })
 
+    it('sets nativeGate.sent when FCM delivers at least one message', async () => {
+        const gate = { sent: false }
+        const channel = new FcmNotificationChannel(
+            {
+                sendToNamespace: async () => ({ sent: 1, failed: 0, invalidTokens: [] })
+            } as never,
+            { sendToast: async () => 0 } as never,
+            { hasVisibleConnection: () => false } as never
+        )
+
+        await channel.sendReady(createSession(), { nativeGate: gate })
+
+        expect(gate.sent).toBe(true)
+    })
+
+    it('leaves nativeGate.sent false when FCM sends zero messages', async () => {
+        const gate = { sent: false }
+        const channel = new FcmNotificationChannel(
+            {
+                sendToNamespace: async () => ({ sent: 0, failed: 1, invalidTokens: [] })
+            } as never,
+            { sendToast: async () => 0 } as never,
+            { hasVisibleConnection: () => false } as never
+        )
+
+        await channel.sendReady(createSession(), { nativeGate: gate })
+
+        expect(gate.sent).toBe(false)
+    })
+
     it('sets severity=warning on permission-request notifications', async () => {
         const sent: FcmSendPayload[] = []
         const channel = new FcmNotificationChannel(
