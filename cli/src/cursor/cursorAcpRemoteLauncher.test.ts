@@ -248,12 +248,19 @@ describe('cursorAcpRemoteLauncher', () => {
         const session = makeSession('old-stream-json-id');
 
         await expect(cursorAcpRemoteLauncher(session)).rejects.toThrow(
-            /Legacy stream-json sessions cannot be loaded via ACP/
+            /Failed to resume Cursor ACP session \(session not found\)/
         );
 
         expect(harness.loadSessionCalled).toBe(true);
         expect(harness.newSessionCalled).toBe(false);
         expect(legacyLauncher).not.toHaveBeenCalled();
+    });
+
+    it('sends ready after successful ACP bootstrap for hub resume handshake', async () => {
+        const session = makeSession('resume-thread-1');
+        await cursorAcpRemoteLauncher(session);
+
+        expect(session.client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
     });
 
     it('throws when resume id is set but session/load is unsupported', async () => {

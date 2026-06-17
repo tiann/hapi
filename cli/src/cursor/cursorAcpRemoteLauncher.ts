@@ -115,8 +115,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 });
             } catch (error) {
                 logger.warn('[cursor-acp] session/load failed', formatAcpLoadError(error));
+                const detail = error instanceof Error ? error.message : String(error);
                 throw new Error(
-                    'Failed to resume Cursor ACP session. Legacy stream-json sessions cannot be loaded via ACP.'
+                    `Failed to resume Cursor ACP session (${detail}). Legacy stream-json sessions cannot be loaded via ACP.`
                 );
             }
         } else if (resumeSessionId) {
@@ -178,6 +179,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         const sendReady = () => {
             session.sendSessionEvent({ type: 'ready' });
         };
+
+        // Hub reopen/resume waits for this before merging archived rows (#917).
+        sendReady();
 
         while (!this.shouldExit) {
             const waitSignal = this.abortController.signal;

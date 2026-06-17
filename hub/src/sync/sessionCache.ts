@@ -5,6 +5,7 @@ import { clampAliveTime } from './aliveTime'
 import { EventPublisher } from './eventPublisher'
 import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
 import { extractBackgroundTaskDelta } from './backgroundTasks'
+import { isSessionReadyMessage } from './sessionActivity'
 
 const QUEUED_MESSAGE_THINKING_GRACE_MS = 15_000
 // tiann/hapi#919: metadata writers (renameSession, clearSessionArchiveMetadata,
@@ -1165,6 +1166,13 @@ export class SessionCache {
                                 mergeAgentState: false
                             })
                         } else {
+                            const candidateMetadata = candidate?.metadata
+                            const isArchivedCursorAcp = candidateMetadata?.lifecycleState === 'archived'
+                                && candidateMetadata?.flavor === 'cursor'
+                                && (candidateMetadata?.cursorSessionProtocol ?? 'acp') === 'acp'
+                            if (isArchivedCursorAcp && !this.hasSessionReadyEvent(targetId)) {
+                                continue
+                            }
                             await this.mergeSessions(id, targetId, targetNamespace)
                         }
                     } catch {
@@ -1176,5 +1184,10 @@ export class SessionCache {
             this.deduplicateInProgress.delete(agentId.value)
             this.deduplicatePending.delete(agentId.value)
         }
+    }
+
+    private hasSessionReadyEvent(sessionId: string): boolean {
+        return this.store.messages.getMessages(sessionId, 100)
+            .some((message) => isSessionReadyMessage(message.content))
     }
 }
