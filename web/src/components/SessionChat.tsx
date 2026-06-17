@@ -161,11 +161,9 @@ function isUninvokedScheduledMessage(message: DecryptedMessage): boolean {
  * is mounted and the session is active enough to accept attachments.
  *
  * Lifecycle:
- *  - First render reads the transfer id out of sessionStorage *atomically*
- *    via consumeSharePendingTransfer() so a remount cannot replay the
- *    upload. The id is stashed in a ref because state-setting inside the
- *    seed effect would change deps mid-flight, fire the cleanup, and
- *    cancel the in-flight promise before composer.addAttachment lands.
+ *  - A mount effect reads the transfer id out of sessionStorage *once*
+ *    via consumeSharePendingTransfer() (not during render — StrictMode
+ *    would consume on the discarded pass). The id is stashed in a ref.
  *  - The actual seed (composer.setText + composer.addAttachment per file)
  *    runs once `props.sessionActive` is true. Inactive sessions disable
  *    the attachmentAdapter, so writing attachments while inactive would
@@ -187,17 +185,25 @@ function ShareSeedConsumer(props: { sessionId: string; sessionActive: boolean })
     const initRef = useRef(false)
     const transferIdRef = useRef<string | null>(null)
     const consumedRef = useRef(false)
+    const [transferReady, setTransferReady] = useState(false)
 
     useEffect(() => {
         composerTextRef.current = composerText
     }, [composerText])
 
-    if (!initRef.current) {
+    // Consume in an effect, not during render — React.StrictMode double-
+    // invokes render functions in dev; a render-time consume deletes the
+    // sessionStorage key on the discarded pass and the committed render
+    // then sees no transfer.
+    useEffect(() => {
+        if (initRef.current) return
         initRef.current = true
-        transferIdRef.current = typeof window !== 'undefined' ? consumeSharePendingTransfer() : null
-    }
+        transferIdRef.current = consumeSharePendingTransfer()
+        setTransferReady(true)
+    }, [])
 
     useEffect(() => {
+        if (!transferReady) return
         if (consumedRef.current) return
         const transferId = transferIdRef.current
         if (!transferId) return
@@ -236,7 +242,7 @@ function ShareSeedConsumer(props: { sessionId: string; sessionActive: boolean })
                 console.error('share-seed pull failed', err)
             }
         })()
-    }, [props.sessionActive, props.sessionId, assistantApi])
+    }, [transferReady, props.sessionActive, props.sessionId, assistantApi])
 
     return null
 }
