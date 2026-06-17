@@ -394,6 +394,7 @@ export default {
   'composer.abort': 'Abort',
   'composer.switchRemote': 'Switch to remote mode',
   'composer.attach': 'Attach file',
+  'composer.dropToAttach': 'Drop to attach',
   'composer.send': 'Send',
   'composer.stop': 'Stop',
   'composer.voice': 'Voice assistant',

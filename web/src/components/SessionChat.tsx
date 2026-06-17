@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { AssistantRuntimeProvider, useAssistantApi } from '@assistant-ui/react'
+import { DragDropZone } from '@/components/AssistantChat/DragDropZone'
 import type { ApiClient } from '@/api/client'
 import type {
     AttachmentMetadata,
@@ -1000,7 +1001,7 @@ function SessionChatInner(props: SessionChatProps) {
             ) : null}
 
             <AssistantRuntimeProvider runtime={runtime}>
-                <div className="relative flex min-h-0 flex-1 flex-col">
+                <DragDropZone disabled={sessionInactive || props.isSending}>
                     <HappyThread
                         key={props.session.id}
                         api={props.api}
@@ -1176,7 +1177,7 @@ function SessionChatInner(props: SessionChatProps) {
                         sendError={props.sendError ?? null}
                         onClearSendError={props.onClearSendError}
                     />
-                </div>
+                </DragDropZone>
             </AssistantRuntimeProvider>
 
             {/* Voice session component - renders nothing but initializes voice backend */}
