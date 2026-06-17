@@ -427,10 +427,14 @@ function AppInner() {
         )
     }
 
+    const pwaBannerTopClassName = isSyncing || (sseDisconnected && !isSyncing)
+        ? 'top-12'
+        : undefined
+
     return (
         <AppContextProvider value={{ api, token, baseUrl }}>
             <VoiceProvider>
-                <PwaUpdateBanner />
+                <PwaUpdateBanner topClassName={pwaBannerTopClassName} />
                 <SyncingBanner isSyncing={isSyncing} />
                 <ReconnectingBanner
                     isReconnecting={sseDisconnected && !isSyncing}

@@ -3,7 +3,7 @@ import { usePlatform } from '@/hooks/usePlatform'
 import { usePwaUpdateContext } from '@/lib/pwa-update-context'
 import { useTranslation } from '@/lib/use-translation'
 
-export function PwaUpdateBanner() {
+export function PwaUpdateBanner({ topClassName }: { topClassName?: string } = {}) {
     const { t } = useTranslation()
     const { needRefresh, reload } = usePwaUpdateContext()
     const isOnline = useOnlineStatus()
@@ -13,12 +13,12 @@ export function PwaUpdateBanner() {
         return null
     }
 
+    const topClass = topClassName ?? (isOnline ? 'top-2' : 'top-10')
+
     return (
         <div
             data-testid="pwa-update-banner"
-            className={`fixed left-4 right-4 bg-[var(--app-secondary-bg)] border border-[var(--app-border)] rounded-lg p-4 shadow-lg z-50 ${
-                isOnline ? 'top-2' : 'top-10'
-            }`}
+            className={`fixed left-4 right-4 bg-[var(--app-secondary-bg)] border border-[var(--app-border)] rounded-lg p-4 shadow-lg z-50 ${topClass}`}
         >
             <div className="flex items-center justify-between gap-3">
                 <div className="flex-1 min-w-0">

@@ -80,6 +80,21 @@ describe('PwaUpdateBanner', () => {
         expect(reload).toHaveBeenCalledTimes(1)
     })
 
+    it('honors a custom top offset when provided', () => {
+        usePwaUpdateMock.mockReturnValue({
+            needRefresh: true,
+            reload: vi.fn(),
+        })
+
+        render(
+            <I18nProvider>
+                <PwaUpdateBanner topClassName="top-12" />
+            </I18nProvider>,
+        )
+
+        expect(screen.getByTestId('pwa-update-banner')).toHaveClass('top-12')
+    })
+
     it('expands the rationale section when the disclosure is opened', () => {
         usePwaUpdateMock.mockReturnValue({
             needRefresh: true,
