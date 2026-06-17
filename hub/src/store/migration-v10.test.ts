@@ -5,22 +5,22 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { Store } from './index'
 
-describe('Store V9→V10 migration: fcm_devices', () => {
+describe('Store V10→V11 migration: fcm_devices', () => {
     it('fresh DB has fcm_devices table', () => {
         const store = new Store(':memory:')
         expect(tableExists(store, 'fcm_devices')).toBe(true)
     })
 
-    it('V9 DB migrates to V10: fcm_devices created', () => {
-        const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v10-test-'))
+    it('V10 DB migrates to V11: fcm_devices created', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v11-test-'))
         const dbPath = join(dir, 'test.db')
         let store: Store | undefined
         try {
             const db = new Database(dbPath, { create: true, readwrite: true, strict: true })
             db.exec('PRAGMA journal_mode = WAL')
             db.exec('PRAGMA foreign_keys = ON')
-            createV9Schema(db)
-            db.exec('PRAGMA user_version = 9')
+            createV10Schema(db)
+            db.exec('PRAGMA user_version = 10')
             db.close()
 
             store = new Store(dbPath)
@@ -57,7 +57,7 @@ function tableExists(store: Store, name: string): boolean {
     return row !== null
 }
 
-function createV9Schema(db: Database): void {
+function createV10Schema(db: Database): void {
     db.exec(`
         CREATE TABLE IF NOT EXISTS sessions (
             id TEXT PRIMARY KEY,
@@ -73,6 +73,7 @@ function createV9Schema(db: Database): void {
             model TEXT,
             model_reasoning_effort TEXT,
             effort TEXT,
+            service_tier TEXT,
             todos TEXT,
             todos_updated_at INTEGER,
             team_state TEXT,
