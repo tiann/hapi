@@ -2,6 +2,60 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { registerSW } from 'virtual:pwa-register'
 
 export const PWA_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000
+export const PWA_UPDATE_RELOAD_FALLBACK_MS = 2000
+
+export async function requestPwaUpdateReload(
+    updateSW: ((reloadPage?: boolean) => Promise<void>) | null | undefined,
+    options: {
+        reloadPage?: () => void
+        setTimeoutFn?: typeof setTimeout
+        clearTimeoutFn?: typeof clearTimeout
+    } = {},
+): Promise<void> {
+    const reloadPage = options.reloadPage ?? (() => window.location.reload())
+    const setTimeoutFn = options.setTimeoutFn ?? setTimeout
+    const clearTimeoutFn = options.clearTimeoutFn ?? clearTimeout
+
+    if (!updateSW) {
+        reloadPage()
+        return
+    }
+
+    let reloaded = false
+    const doReload = () => {
+        if (reloaded) {
+            return
+        }
+        reloaded = true
+        reloadPage()
+    }
+
+    const onControllerChange = () => {
+        navigator.serviceWorker.removeEventListener('controllerchange', onControllerChange)
+        doReload()
+    }
+
+    navigator.serviceWorker.addEventListener('controllerchange', onControllerChange)
+
+    let fallbackTimer: ReturnType<typeof setTimeout> | undefined
+
+    try {
+        await updateSW(true)
+    } catch (error) {
+        console.error('PWA update failed', error)
+        navigator.serviceWorker.removeEventListener('controllerchange', onControllerChange)
+        if (fallbackTimer !== undefined) {
+            clearTimeoutFn(fallbackTimer)
+        }
+        doReload()
+        return
+    }
+
+    fallbackTimer = setTimeoutFn(() => {
+        navigator.serviceWorker.removeEventListener('controllerchange', onControllerChange)
+        doReload()
+    }, PWA_UPDATE_RELOAD_FALLBACK_MS)
+}
 
 export function setupRegistrationUpdateChecks(
     registration: ServiceWorkerRegistration,
@@ -62,7 +116,7 @@ export function usePwaUpdate() {
     }, [])
 
     const reload = useCallback(() => {
-        void updateSWRef.current?.(true)
+        void requestPwaUpdateReload(updateSWRef.current)
     }, [])
 
     return { needRefresh, reload }

@@ -91,6 +91,16 @@ registerRoute(
     })
 )
 
+self.addEventListener('message', (event) => {
+    if (event.data?.type === 'SKIP_WAITING') {
+        self.skipWaiting()
+    }
+})
+
+self.addEventListener('activate', (event) => {
+    event.waitUntil(self.clients.claim())
+})
+
 self.addEventListener('push', (event) => {
     const payload = event.data?.json() as PushPayload | undefined
     if (!payload) {
