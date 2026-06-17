@@ -295,11 +295,12 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
     })
 
     app.post('/sessions/:id/archive', async (c) => {
-        // tiann/hapi#916: drop `requireActive: true` so the endpoint is
-        // idempotent for already-archived rows AND for live-in-cache /
-        // dead-on-cli split-brain rows that the operator wants to clean up
-        // after a hub-restart cascade. We still 404 on unknown ids via
-        // requireSessionFromParam, and 5xx on real RPC failures.
+        // tiann/hapi#916: relax the blanket `requireActive: true` guard so
+        // the endpoint is idempotent for already-archived rows AND can clean
+        // up split-brain rows after a hub-restart cascade (inactive in cache
+        // but metadata.lifecycleState still 'running'). Normal inactive rows
+        // that are not archived (completed stubs, UI Delete/Reopen targets)
+        // keep the old 409 contract.
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {
             return engine
@@ -310,8 +311,13 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return sessionResult
         }
 
-        if (sessionResult.session.metadata?.lifecycleState === 'archived') {
+        const lifecycleState = sessionResult.session.metadata?.lifecycleState
+        if (lifecycleState === 'archived') {
             return c.json({ ok: true, alreadyArchived: true })
+        }
+
+        if (!sessionResult.session.active && lifecycleState !== 'running') {
+            return c.json({ error: 'Session is inactive' }, 409)
         }
 
         await engine.archiveSession(sessionResult.sessionId)
