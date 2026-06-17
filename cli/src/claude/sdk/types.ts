@@ -186,6 +186,13 @@ export interface QueryOptions {
     permissionMode?: ClaudePermissionMode
     continue?: boolean
     resume?: string
+    /**
+     * When resuming (`resume`/`continue`), branch off a copy with a new session
+     * ID instead of taking over the existing one. Required when the target
+     * session is still held open by a running Claude agent, where a plain
+     * `--resume` is rejected with "currently running as a background agent".
+     */
+    forkSession?: boolean
     model?: string
     effort?: string
     fallbackModel?: string
