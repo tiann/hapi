@@ -57,6 +57,21 @@ describe('validateWorkspaceDirectory', () => {
         }
     });
 
+    it('preserves the ENOTDIR diagnostic when the parent path is a regular file', async () => {
+        const parentFile = join(workRoot, 'parent-file');
+        await writeFile(parentFile, 'hello');
+        const target = join(parentFile, 'child-dir');
+        const result = await validateWorkspaceDirectory(target, {
+            approvedNewDirectoryCreation: true,
+        });
+        expect(result.type).toBe('error');
+        if (result.type === 'error') {
+            expect(result.errorMessage).toContain(target);
+            expect(result.errorMessage).toMatch(/file already exists/i);
+            expect(result.errorMessage).not.toMatch(/Unable to inspect workspace path/);
+        }
+    });
+
     it('returns ok when path is a symlink to an existing directory', async () => {
         const realTarget = join(workRoot, 'real-target');
         await mkdir(realTarget);

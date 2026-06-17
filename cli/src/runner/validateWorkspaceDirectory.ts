@@ -46,7 +46,16 @@ export async function validateWorkspaceDirectory(
     try {
         lstat = await fs.lstat(directory);
     } catch (err: any) {
-        if (err?.code !== 'ENOENT') {
+        if (err?.code === 'ENOENT') {
+            // path does not exist - fall through to mkdir / approval flow
+        } else if (err?.code === 'ENOTDIR') {
+            // Parent path contains a regular file; preserve the historic
+            // mkdir ENOTDIR diagnostic instead of the generic inspect text.
+            return {
+                type: 'error',
+                errorMessage: describeMkdirError(directory, err),
+            };
+        } else {
             return {
                 type: 'error',
                 errorMessage:
