@@ -127,10 +127,10 @@ describe('requestPwaUpdateReload', () => {
 
         const pending = requestPwaUpdateReload(updateSW, {
             reloadPage,
-            setTimeoutFn: vi.fn((callback: () => void, delay?: number) => {
+            setTimeoutFn: vi.fn((callback, delay) => {
                 expect(delay).toBe(PWA_UPDATE_RELOAD_FALLBACK_MS)
                 return setTimeout(callback, delay)
-            }),
+            }) as typeof setTimeout,
         })
 
         await pending
