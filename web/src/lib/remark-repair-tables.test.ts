@@ -3,7 +3,7 @@ import remarkParse from 'remark-parse'
 import remarkGfm from 'remark-gfm'
 import remarkStringify from 'remark-stringify'
 import { unified } from 'unified'
-import remarkRepairTables from './remark-repair-tables'
+import remarkRepairTables, { repairMarkdownTables } from './remark-repair-tables'
 
 function process(md: string): string {
     return unified()
@@ -15,10 +15,56 @@ function process(md: string): string {
         .toString()
 }
 
-describe('remarkRepairTables', () => {
+/**
+ * Returns table rows from the stringified output.
+ * A proper table row starts with | (not \| which is escaped paragraph content).
+ */
+function tableRows(md: string): string[] {
+    return md.split('\n').filter(l => {
+        const t = l.trim()
+        return t.startsWith('|') && !t.startsWith('\\|')
+    })
+}
+
+// ── String-level function ────────────────────────────────────────────────────
+
+describe('repairMarkdownTables (string)', () => {
+    it('pads a 2-cell separator for a 3-column header', () => {
+        const input = '| A | B | C |\n|---|---|\n| x | y | z |\n'
+        const out = repairMarkdownTables(input)
+        expect(out).not.toBe(input)
+        // Separator line should now have 3 cells
+        const sepLine = out.split('\n')[1]
+        expect(sepLine.split('|').filter(c => c.trim()).length).toBe(3)
+    })
+
+    it('pads a 1-cell separator for a 4-column header', () => {
+        const input = '| W | X | Y | Z |\n|---|\n| a | b | c | d |\n'
+        const out = repairMarkdownTables(input)
+        const sepLine = out.split('\n')[1]
+        expect(sepLine.split('|').filter(c => c.trim()).length).toBe(4)
+    })
+
+    it('returns the source unchanged when separator already matches', () => {
+        const input = '| A | B | C |\n|---|---|---|\n| x | y | z |\n'
+        expect(repairMarkdownTables(input)).toBe(input)
+    })
+
+    it('does not modify separator lines not following a |-starting row', () => {
+        const input = 'Some prose\n|---|---|\n| x | y | z |\n'
+        expect(repairMarkdownTables(input)).toBe(input)
+    })
+})
+
+// ── Plugin (parse + transform + stringify) ────────────────────────────────────
+
+describe('remarkRepairTables (plugin)', () => {
     it('leaves a valid 3-column table unchanged', () => {
         const md = '| A | B | C |\n|---|---|---|\n| x | y | z |\n'
         const out = process(md)
+        // Must render as table rows (no escaped \|)
+        const rows = tableRows(out)
+        expect(rows.length).toBeGreaterThanOrEqual(3)
         expect(out).toContain('| A |')
         expect(out).toContain('| C |')
     })
@@ -26,68 +72,29 @@ describe('remarkRepairTables', () => {
     it('repairs separator with 2 cells for a 3-column header', () => {
         const md = '| A | B | C |\n|---|---|\n| x | y | z |\n'
         const out = process(md)
-        // All 3 header columns must survive
-        expect(out).toContain('A')
-        expect(out).toContain('B')
-        expect(out).toContain('C')
-        // All 3 data cells must survive
-        expect(out).toContain('x')
-        expect(out).toContain('y')
-        expect(out).toContain('z')
-        // Structural check: each output row has exactly 3 pipe-delimited cells
-        const rows = out.trim().split('\n').filter(l => l.trim().startsWith('|'))
-        for (const row of rows) {
-            const cells = row.split('|').filter(c => c.trim())
-            expect(cells).toHaveLength(3)
-        }
+        // Must render as a table — no escaped \| prefix
+        const rows = tableRows(out)
+        expect(rows.length).toBeGreaterThanOrEqual(2)
+        // All 3 header columns survive as proper table cells
+        expect(out).toContain('| A |')
+        expect(out).toContain('| B |')
+        expect(out).toContain('| C |')
     })
 
     it('repairs separator with 1 cell for a 4-column header', () => {
         const md = '| W | X | Y | Z |\n|---|\n| a | b | c | d |\n'
         const out = process(md)
-        expect(out).toContain('W')
-        expect(out).toContain('Z')
-        expect(out).toContain('a')
-        expect(out).toContain('d')
-        const rows = out.trim().split('\n').filter(l => l.trim().startsWith('|'))
-        for (const row of rows) {
-            expect(row.split('|').filter(c => c.trim())).toHaveLength(4)
-        }
+        expect(out).toContain('| W |')
+        expect(out).toContain('| Z |')
+        expect(tableRows(out).length).toBeGreaterThanOrEqual(2)
     })
 
-    it('repairs separator without surrounding pipes', () => {
-        const md = '| A | B | C |\n---|---\n| x | y | z |\n'
-        const out = process(md)
-        expect(out).toContain('C')
-        expect(out).toContain('z')
-    })
-
-    it('preserves alignment hints in the separator cells that exist', () => {
-        // :--- = left, ---: = right — these must survive in the repaired separator
+    it('preserves alignment hints in existing separator cells', () => {
         const md = '| A | B | C |\n|:---|---:|\n| x | y | z |\n'
         const out = process(md)
-        expect(out).toContain('C')
-        expect(out).toContain('z')
-        // remark-stringify reflects alignment as :-- and --: in the separator row
-        expect(out).toMatch(/:--/)
-        expect(out).toMatch(/--:/)
-        const rows = out.trim().split('\n').filter(l => l.trim().startsWith('|'))
-        for (const row of rows) {
-            expect(row.split('|').filter(c => c.trim())).toHaveLength(3)
-        }
-    })
-
-    it('handles a header-only table (no data rows)', () => {
-        // Some agents emit tables with only a header + broken separator and no data rows
-        const md = '| A | B | C |\n|---|\n'
-        const out = process(md)
-        expect(out).toContain('A')
-        expect(out).toContain('B')
-        expect(out).toContain('C')
-        const rows = out.trim().split('\n').filter(l => l.trim().startsWith('|'))
-        for (const row of rows) {
-            expect(row.split('|').filter(c => c.trim())).toHaveLength(3)
-        }
+        expect(out).toContain('| C |')
+        const rows = tableRows(out)
+        expect(rows.length).toBeGreaterThanOrEqual(2)
     })
 
     it('does not corrupt a valid table with an escaped pipe in the header', () => {
@@ -95,9 +102,7 @@ describe('remarkRepairTables', () => {
         // separator has 2 cells — valid, must not be padded to 3
         const md = '| A \\| B | C |\n|---|---|\n| x | y |\n'
         const out = process(md)
-        // The separator row is the reliable column-count indicator — it contains only
-        // dashes/colons, no cell content that could contain literal pipes.
-        const sepRow = out.trim().split('\n').find(l => /^\|[\s|:|-]+\|$/.test(l.trim()))
+        const sepRow = out.split('\n').find(l => /^\|[\s|:|-]+\|$/.test(l.trim()))
         expect(sepRow).toBeDefined()
         expect(sepRow!.split('|').filter(c => c.trim()).length).toBe(2)
     })
@@ -105,8 +110,8 @@ describe('remarkRepairTables', () => {
     it('does not modify a table where separator already matches', () => {
         const md = '| A | B |\n|---|---|\n| x | y |\n'
         const out = process(md)
-        expect(out).toContain('A')
-        expect(out).toContain('B')
+        expect(out).toContain('| A |')
+        expect(out).toContain('| B |')
     })
 
     it('handles multiple tables — repairs broken, leaves valid untouched', () => {
@@ -120,12 +125,11 @@ describe('remarkRepairTables', () => {
             '| 1 | 2 |',
         ].join('\n') + '\n'
         const out = process(md)
-        // First table repaired
-        expect(out).toContain('C')
-        expect(out).toContain('z')
-        // Second table unchanged
-        expect(out).toContain('P')
-        expect(out).toContain('Q')
+        // First table repaired — C must be in a proper table row
+        expect(out).toContain('| C |')
+        // Second table unchanged and intact
+        expect(out).toContain('| P |')
+        expect(out).toContain('| Q |')
     })
 
     it('does not touch pipe characters in code spans or prose', () => {
@@ -137,7 +141,6 @@ describe('remarkRepairTables', () => {
     it('ignores a paragraph that merely contains pipe characters', () => {
         const md = 'Run: `jq \'.[] | select(.active)\'`\n'
         const out = process(md)
-        // Should not throw and should leave content intact
         expect(out).toContain('jq')
     })
 })

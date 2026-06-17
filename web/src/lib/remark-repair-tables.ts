@@ -2,25 +2,17 @@
  * Remark plugin that repairs GFM tables where the separator row has fewer
  * columns than the header row.
  *
- * Background: remark-gfm follows the GFM spec — the delimiter row controls
- * the column count. If an agent emits:
- *
- *   | A | B | C |
- *   |---|---|        ← only 2 cells; column C is silently dropped
- *   | x | y | z |
- *
- * remark-gfm produces a 2-column table and discards C/z entirely. This plugin
- * runs after remark-gfm, detects the mismatch by comparing the original source
- * (available via `file.value`) against the parsed column count, pads the
- * separator, and re-parses just that table block so all columns are preserved.
- *
- * Only the dominant failure pattern is repaired (separator off-by-one or
- * off-by-N). Other failures (missing separator entirely, severe column
- * mismatches in data rows) are left for the agent patch-request path.
+ * Background: remark-gfm 4.x follows the GFM spec strictly — if the delimiter
+ * row has fewer cells than the header row, the entire block is degraded to a
+ * paragraph (no table node is produced at all). The previous approach of
+ * visiting `table` AST nodes could never trigger because remark-gfm never
+ * produced one. This version operates at the source level: it scans file.value
+ * for broken separator rows and pads them BEFORE remark-gfm parses, so the
+ * table is preserved with all columns intact.
  */
 
 import type { Processor } from 'unified'
-import type { Root, Table, TableRow, TableCell } from 'mdast'
+import type { Root } from 'mdast'
 import type { VFile } from 'vfile'
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -41,9 +33,29 @@ function countSourceCells(line: string): number {
     return cells
 }
 
+/** Returns true if every pipe-delimited cell in the line matches the GFM separator pattern. */
+function isSeparatorLine(line: string): boolean {
+    const trimmed = line.trim()
+    if (!trimmed.includes('-')) return false
+    const inner = trimmed.startsWith('|') ? trimmed.slice(1) : trimmed
+    const stripped = inner.endsWith('|') ? inner.slice(0, -1) : inner
+    const cells = stripped.split('|')
+    return cells.length > 0 && cells.every(c => /^\s*:?-+:?\s*$/.test(c))
+}
+
+/** Count cells in a separator line (returns null if line is not a separator). */
+function countSeparatorCells(line: string): number | null {
+    if (!isSeparatorLine(line)) return null
+    const trimmed = line.trim()
+    const inner = trimmed.startsWith('|') ? trimmed.slice(1) : trimmed
+    const stripped = inner.endsWith('|') ? inner.slice(0, -1) : inner
+    return stripped.split('|').length
+}
+
 /**
- * Pad `sepLine` to have `targetCols` cells.  Returns the repaired line, or
- * null if `sepLine` already has enough cells or doesn't look like a separator.
+ * Pad `sepLine` to have `targetCols` cells, preserving any existing alignment
+ * hints in the cells that are already there. Returns the repaired line, or
+ * null if the line already has enough cells or is not a valid separator.
  */
 function padSeparatorLine(sepLine: string, targetCols: number): string | null {
     const trimmed = sepLine.trim()
@@ -57,76 +69,58 @@ function padSeparatorLine(sepLine: string, targetCols: number): string | null {
     const cells = stripped.split('|')
 
     if (cells.length >= targetCols) return null
-
-    // Verify it's a separator row (cells should look like /^\s*:?-+:?\s*$/)
-    const isSep = cells.every(c => /^\s*:?-+:?\s*$/.test(c))
-    if (!isSep) return null
+    if (!cells.every(c => /^\s*:?-+:?\s*$/.test(c))) return null
 
     const extra = Array(targetCols - cells.length).fill(' --- ')
     const paddedInner = [...cells, ...extra].join('|')
     return (hasLeading ? '|' : '') + paddedInner + (hasTrailing ? '|' : '')
 }
 
-/** Re-parse a repaired raw table string using the main pipeline's processor
- *  so inline extensions (math, footnotes, etc.) are preserved in cell nodes. */
-function parseTableBlock(processor: Processor, source: string): Table | null {
-    const tree = processor.parse(source) as Root
-    return tree.children.find((node): node is Table => node.type === 'table') ?? null
+// ── String-level preprocessor ─────────────────────────────────────────────────
+
+/**
+ * Scan raw markdown for broken table separators and pad them in-place.
+ * This must run before any markdown parser sees the source, because
+ * remark-gfm 4.x degrades a mismatched-separator table block to a paragraph.
+ */
+export function repairMarkdownTables(source: string): string {
+    const lines = source.split('\n')
+    let changed = false
+
+    for (let i = 1; i < lines.length; i++) {
+        const sep = lines[i]
+        if (!isSeparatorLine(sep)) continue
+
+        const hdr = lines[i - 1]
+        // Only repair when the header row starts with | (the common LLM output form)
+        if (!hdr.trim().startsWith('|')) continue
+
+        const headerCols = countSourceCells(hdr)
+        const sepCols = countSeparatorCells(sep)
+        if (sepCols === null || sepCols >= headerCols) continue
+
+        const repaired = padSeparatorLine(sep, headerCols)
+        if (repaired !== null) {
+            lines[i] = repaired
+            changed = true
+        }
+    }
+
+    return changed ? lines.join('\n') : source
 }
 
 // ── Plugin ───────────────────────────────────────────────────────────────────
 
-interface MdastParent {
-    children: (Table | { type: string })[]
-}
-
-function visitTables(
-    node: { type: string; children?: unknown[]; align?: unknown; position?: { start: { offset: number }; end: { offset: number } } },
-    parent: MdastParent | null,
-    index: number,
-    source: string,
-    processor: Processor
-): void {
-    if (node.type === 'table' && parent && node.position && Array.isArray(node.align)) {
-        const tableSource = source.slice(node.position.start.offset, node.position.end.offset)
-        const lines = tableSource.split('\n')
-
-        if (lines.length >= 2) {
-            const headerCols = countSourceCells(lines[0])
-            const sepCols = (node.align as unknown[]).length
-
-            if (headerCols > sepCols && lines[1]) {
-                const repairedSep = padSeparatorLine(lines[1], headerCols)
-                if (repairedSep) {
-                    const newLines = [...lines]
-                    newLines[1] = repairedSep
-                    const repaired = parseTableBlock(processor, newLines.join('\n'))
-                    if (repaired) {
-                        parent.children.splice(index, 1, repaired as unknown as Table)
-                        return
-                    }
-                }
-            }
-        }
-    }
-
-    if (Array.isArray(node.children)) {
-        for (let i = 0; i < node.children.length; i++) {
-            visitTables(
-                node.children[i] as typeof node,
-                node as unknown as MdastParent,
-                i,
-                source,
-                processor
-            )
-        }
-    }
-}
-
 export default function remarkRepairTables(this: Processor) {
     const processor = this
     return (tree: Root, file: VFile) => {
-        const source = String(file.value)
-        visitTables(tree as unknown as Parameters<typeof visitTables>[0], null, 0, source, processor)
+        const original = String(file.value)
+        const repaired = repairMarkdownTables(original)
+        if (repaired === original) return
+
+        // Re-parse with the repaired source so remark-gfm produces table nodes
+        // processor.parse() runs only the parse phase, not transformers
+        const newTree = processor.parse(repaired) as Root
+        tree.children = newTree.children
     }
 }
