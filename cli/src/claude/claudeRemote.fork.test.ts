@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as claudeSdk from '@/claude/sdk';
 import type { SDKMessage } from '@/claude/sdk/types';
 import type { Metadata } from '@/api/types';
@@ -59,8 +59,27 @@ function initThenResult(sessionId: string): SDKMessage[] {
     ];
 }
 
+const ENV_KEYS_UNDER_TEST = ['CLAUDE_CONFIG_DIR', 'DISABLE_AUTOUPDATER'] as const;
+let savedEnv: Record<string, string | undefined>;
+
 beforeEach(() => {
     vi.clearAllMocks();
+    savedEnv = {};
+    for (const key of ENV_KEYS_UNDER_TEST) {
+        savedEnv[key] = process.env[key];
+    }
+});
+
+afterEach(() => {
+    // Restore any process.env keys we touched so cases don't leak into each other.
+    for (const key of ENV_KEYS_UNDER_TEST) {
+        const original = savedEnv[key];
+        if (original === undefined) {
+            delete process.env[key];
+        } else {
+            process.env[key] = original;
+        }
+    }
 });
 
 describe('claudeRemote fork-on-live-session decision', () => {
@@ -103,6 +122,54 @@ describe('claudeRemote fork-on-live-session decision', () => {
             expect(passedOptions.resume).toBe(RESUME_ID);
             expect(passedOptions.forkSession).toBe(true);
             expect(foundCalls).toEqual([{ id: FORKED_ID, extras: { forkedFrom: RESUME_ID } }]);
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+    }, 15_000);
+
+    it('applies claudeEnvVars to process.env BEFORE probing liveness (regression)', async () => {
+        // getLiveAgentKind execs `claude agents --json` off process.env, so the
+        // probe must see the injected claude env (e.g. CLAUDE_CONFIG_DIR) the real
+        // launch uses; otherwise it queries the default config and misses live
+        // sessions. Capture process.env at the moment the probe runs.
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        let configDirAtProbe: string | undefined = 'NOT_CALLED';
+        getLiveAgentKindMock.mockImplementation(() => {
+            configDirAtProbe = process.env.CLAUDE_CONFIG_DIR;
+            return null;
+        });
+        queryMock.mockReturnValueOnce(createAsyncStream(initThenResult(RESUME_ID)));
+
+        const { claudeRemote } = await import('./claudeRemote');
+
+        let nextCallCount = 0;
+        await claudeRemote({
+            sessionId: RESUME_ID,
+            path: process.cwd(),
+            mcpServers: {},
+            claudeEnvVars: { CLAUDE_CONFIG_DIR: '/tmp/x-cfg' },
+            claudeArgs: [],
+            allowedTools: [],
+            hookSettingsPath: '/tmp/hook.json',
+            canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+            nextMessage: async () => {
+                nextCallCount += 1;
+                if (nextCallCount === 1) {
+                    return { message: 'ping', mode: { permissionMode: 'default' } };
+                }
+                return null;
+            },
+            onReady: () => {},
+            isAborted: () => false,
+            onSessionFound: () => {},
+            onMessage: () => {}
+        });
+
+        try {
+            expect(getLiveAgentKindMock).toHaveBeenCalledWith(RESUME_ID);
+            // The injected env must already be live when the probe runs.
+            expect(configDirAtProbe).toBe('/tmp/x-cfg');
         } finally {
             queryMock.mockReset();
             querySpy.mockRestore();
