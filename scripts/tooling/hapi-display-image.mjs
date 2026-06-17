@@ -30,8 +30,11 @@ if (!lstatSync(imagePath).isFile()) {
     process.exit(2)
 }
 
-const settingsToken = JSON.parse(readFileSync(SETTINGS, 'utf8')).cliApiToken
-const token = process.env.CLI_API_TOKEN ?? settingsToken
+const token = process.env.CLI_API_TOKEN ?? JSON.parse(readFileSync(SETTINGS, 'utf8')).cliApiToken
+if (!token) {
+    console.error('missing CLI_API_TOKEN env and no cliApiToken in settings')
+    process.exit(2)
+}
 const authRes = await fetch(`${HAPI_HOST}/api/auth`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
