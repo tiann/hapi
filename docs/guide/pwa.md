@@ -56,11 +56,14 @@ An offline indicator appears when you lose connection.
 
 ### Auto-Update
 
-HAPI automatically checks for updates:
+HAPI checks for updates in the background and lets you choose when to reload:
 
-- Updates are checked hourly in the background
-- When a new version is available, you'll see a prompt
-- Click "Reload" to get the latest version
+- Updates are checked hourly and when you return to the tab
+- When a new version is available, a persistent in-app banner appears at the top
+- Tap **Reload** when you're ready to apply the update — the banner stays until you do
+- Expand **"Why can't I dismiss this?"** on the banner for the rationale
+
+HAPI uses a user-controlled reload instead of forcing an automatic refresh, so you choose when to reload. The banner cannot be dismissed without upgrading, so you won't forget you're on an old build.
 
 ### Background Sync
 

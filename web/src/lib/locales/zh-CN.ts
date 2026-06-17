@@ -468,6 +468,11 @@ export default {
   'reconnecting.reason.closed': '流连接已关闭',
   'reconnecting.reason.heartbeatTimeout': '心跳超时',
   'reconnecting.reason.visibilityRecovery': '后台恢复中',
+  'pwa.update.title': '新版本可用',
+  'pwa.update.body': '重新加载以获取最新版 HAPI',
+  'pwa.update.reload': '重新加载',
+  'pwa.update.whyToggle': '为什么不能关闭此提示？',
+  'pwa.update.whyBody': '当你可能有正在运行的智能体、待处理的权限请求或未发送的消息时，HAPI 不会自动重新加载标签页。旧版网页与当前服务器一起运行可能导致同步错误和操作失败。此横幅会一直保持显示，直到你重新加载，以免你在不知情的情况下停留在旧版本 — 但何时点击「重新加载」由你决定，可以先完成手头的工作。',
 
   // Send blocked
   'send.blocked.title': '无法发送消息',

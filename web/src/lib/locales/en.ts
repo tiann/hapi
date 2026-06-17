@@ -464,6 +464,11 @@ export default {
   'reconnecting.reason.closed': 'stream closed',
   'reconnecting.reason.heartbeatTimeout': 'heartbeat timeout',
   'reconnecting.reason.visibilityRecovery': 'resuming after background',
+  'pwa.update.title': 'New version available',
+  'pwa.update.body': 'Reload to get the latest HAPI',
+  'pwa.update.reload': 'Reload',
+  'pwa.update.whyToggle': "Why can't I dismiss this?",
+  'pwa.update.whyBody': 'HAPI will not reload your tab automatically while you may have an agent running, a permission waiting, or a message in progress. Running an old web build against the current server can cause sync bugs and failed actions. This banner stays visible until you reload so you are not stuck on a stale version by accident — but you choose when to tap Reload and finish what you are doing first.',
 
   // Send blocked
   'send.blocked.title': 'Cannot send message',

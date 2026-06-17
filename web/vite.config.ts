@@ -65,7 +65,8 @@ export default defineConfig({
     plugins: [
         react(),
         VitePWA({
-            registerType: 'autoUpdate',
+            // User-controlled reload avoids mid-session surprise reloads (autoUpdate reloads all tabs).
+            registerType: 'prompt',
             includeAssets: ['favicon.ico', 'apple-touch-icon-180x180.png', 'mask-icon.svg'],
             strategies: 'injectManifest',
             srcDir: 'src',
