@@ -1,3 +1,5 @@
+import { shareTargetPathname } from './sharePath'
+
 /**
  * Share-target transfer storage.
  *
@@ -178,5 +180,6 @@ export async function ingestShareRequest(
     const formData = await request.formData()
     const payload = await buildSharePayloadFromFormData(formData, now)
     const id = await deps.put(payload)
-    return { redirectTo: `/share?id=${encodeURIComponent(id)}` }
+    const sharePath = shareTargetPathname()
+    return { redirectTo: `${sharePath}?id=${encodeURIComponent(id)}` }
 }

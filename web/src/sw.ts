@@ -8,6 +8,9 @@ import {
     ingestShareRequest,
     putShareTransfer,
 } from './lib/shareTransfer'
+import { shareTargetPathname } from './lib/sharePath'
+
+const sharePath = shareTargetPathname()
 
 declare const self: ServiceWorkerGlobalScope & {
     __WB_MANIFEST: Array<string | { url: string; revision?: string }>
@@ -134,7 +137,7 @@ self.addEventListener('fetch', (event) => {
     const request = event.request
     if (request.method !== 'POST') return
     const url = new URL(request.url)
-    if (url.pathname !== '/share') return
+    if (url.pathname !== sharePath) return
 
     event.respondWith(handleShareTarget(request))
 })
@@ -151,7 +154,7 @@ async function handleShareTarget(request: Request): Promise<Response> {
         // Surface a minimal page if IDB write fails — don't 5xx silently or
         // the user gets a Chrome error sheet instead of useful UI.
         console.error('share-target ingest failed', error)
-        return Response.redirect(new URL('/share?error=ingest', origin).toString(), 303)
+        return Response.redirect(new URL(`${sharePath}?error=ingest`, origin).toString(), 303)
     }
 }
 

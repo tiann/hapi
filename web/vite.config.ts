@@ -3,8 +3,10 @@ import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { shareTargetPathnameFromBase } from './src/lib/sharePath'
 
 const base = process.env.VITE_BASE_URL || '/'
+const shareAction = shareTargetPathnameFromBase(base)
 const hubTarget = process.env.VITE_HUB_PROXY || 'http://127.0.0.1:3006'
 const appVersion = readAppVersion()
 
@@ -109,7 +111,7 @@ export default defineConfig({
                 // first because some Chrome versions only honor declared
                 // prefixes when surfacing in the share sheet.
                 share_target: {
-                    action: '/share',
+                    action: shareAction,
                     method: 'POST',
                     enctype: 'multipart/form-data',
                     params: {
