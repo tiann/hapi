@@ -171,8 +171,10 @@ export default function SharePage() {
 
     const handleNewSession = useCallback(() => {
         if (!transferId) return
-        setSharePendingTransfer(transferId)
-        navigate({ to: '/sessions/new' })
+        // Pass the transfer id via route search — do NOT arm sessionStorage here.
+        // Arming before the session exists leaves a stale id that the next
+        // unrelated SessionChat mount would consume (cancel/spawn-fail path).
+        navigate({ to: '/sessions/new', search: { shareTransferId: transferId } })
     }, [navigate, transferId])
 
     const handleDiscard = useCallback(() => {

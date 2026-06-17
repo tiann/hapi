@@ -46,6 +46,8 @@ import FilePage from '@/routes/sessions/file'
 import TerminalPage from '@/routes/sessions/terminal'
 import SettingsPage from '@/routes/settings'
 import SharePage from '@/routes/share'
+import { setSharePendingTransfer } from '@/lib/sharePendingState'
+import { deleteShareTransfer } from '@/lib/shareTransfer'
 
 function BackIcon(props: { className?: string }) {
     return (
@@ -849,13 +851,19 @@ function NewSessionPage() {
     const queryClient = useQueryClient()
     const { machines, isLoading: machinesLoading, error: machinesError } = useMachines(api, true)
     const { t } = useTranslation()
-    const { directory: initialDirectory, machineId: initialMachineId } = newSessionRoute.useSearch()
+    const { directory: initialDirectory, machineId: initialMachineId, shareTransferId } = newSessionRoute.useSearch()
 
     const handleCancel = useCallback(() => {
+        if (shareTransferId) {
+            void deleteShareTransfer(shareTransferId)
+        }
         navigate({ to: '/sessions' })
-    }, [navigate])
+    }, [navigate, shareTransferId])
 
     const handleSuccess = useCallback((sessionId: string) => {
+        if (shareTransferId) {
+            setSharePendingTransfer(shareTransferId)
+        }
         void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
         // Replace current page with /sessions to clear spawn flow from history
         navigate({ to: '/sessions', replace: true })
@@ -866,7 +874,7 @@ function NewSessionPage() {
                 params: { sessionId },
             })
         })
-    }, [navigate, queryClient])
+    }, [navigate, queryClient, shareTransferId])
 
     const handleChooseFolder = useCallback((args: { machineId: string | null; directory: string }) => {
         // Forward the currently-selected machine so /browse opens scoped to
@@ -1051,6 +1059,7 @@ const sessionFileRoute = createRoute({
 type NewSessionSearch = {
     directory?: string
     machineId?: string
+    shareTransferId?: string
 }
 
 const newSessionRoute = createRoute({
@@ -1063,6 +1072,9 @@ const newSessionRoute = createRoute({
         }
         if (typeof search.machineId === 'string' && search.machineId) {
             result.machineId = search.machineId
+        }
+        if (typeof search.shareTransferId === 'string' && search.shareTransferId) {
+            result.shareTransferId = search.shareTransferId
         }
         return result
     },
