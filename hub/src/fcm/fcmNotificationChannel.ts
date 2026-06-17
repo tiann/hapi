@@ -1,7 +1,9 @@
 import type { Session } from '../sync/syncEngine'
-import type { NotificationChannel, TaskNotification } from '../notifications/notificationTypes'
+import type { ModelErrorNotification, NotificationChannel, TaskNotification } from '../notifications/notificationTypes'
 import type { NotificationSendContext } from '../notifications/notificationSendContext'
 import { NATIVE_CONTRACT_VERSION, NativeNotificationComposer, type ComposedNativeNotification } from '../notifications/nativeNotificationComposer'
+import { formatModelErrorBody, formatModelErrorTitle } from '../notifications/modelErrorCopy'
+import { getAgentName, getSessionName } from '../notifications/sessionInfo'
 import type { Store } from '../store'
 import type { SSEManager } from '../sse/sseManager'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
@@ -41,6 +43,33 @@ export class FcmNotificationChannel implements NotificationChannel {
         }
 
         await this.deliver(session, this.toFcmPayload(this.composer.composeTask(session, notification)), ctx)
+    }
+
+    async sendModelError(session: Session, notification: ModelErrorNotification): Promise<void> {
+        if (!session.active) {
+            return
+        }
+
+        const agentName = getAgentName(session)
+        const sessionName = getSessionName(session)
+        const title = formatModelErrorTitle(notification.kind)
+        const body = formatModelErrorBody(notification, { agentName, sessionName })
+
+        await this.deliver(session, {
+            title,
+            body,
+            tag: `model-error-${session.id}-${notification.atTs}`,
+            data: {
+                type: 'model-error',
+                sessionId: session.id,
+                sessionName,
+                url: `/sessions/${session.id}`,
+                title,
+                body,
+                contractVersion: NATIVE_CONTRACT_VERSION,
+                severity: 'error'
+            }
+        })
     }
 
     private toFcmPayload(composed: ComposedNativeNotification): FcmSendPayload {
