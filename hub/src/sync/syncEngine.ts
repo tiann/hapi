@@ -1173,7 +1173,9 @@ export class SyncEngine {
         // permissionMode is passed to spawnSession above; do not call set-session-config here.
         // session-alive can arrive before the CLI registers that RPC handler, which caused resume_failed.
 
-        const needsReadyBeforeMerge = spawnResult.sessionId !== access.sessionId && flavor === 'cursor'
+        const needsReadyBeforeMerge = spawnResult.sessionId !== access.sessionId
+            && flavor === 'cursor'
+            && metadata.cursorSessionProtocol === 'acp'
         if (needsReadyBeforeMerge) {
             const readyResult = await this.waitForSessionReady(spawnResult.sessionId)
             if (readyResult !== 'ready') {
@@ -1431,6 +1433,9 @@ export class SyncEngine {
 
     private canRunCursorDedup(session: Session): boolean {
         if (session.metadata?.flavor !== 'cursor') {
+            return true
+        }
+        if (session.metadata?.cursorSessionProtocol !== 'acp') {
             return true
         }
         if (!session.active) {

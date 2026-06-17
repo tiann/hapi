@@ -1276,6 +1276,73 @@ describe('session model', () => {
         }
     })
 
+    it('does not wait for session-ready on cursor stream-json reopen', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const oldSession = engine.getOrCreateSession(
+                'cursor-legacy-reopen-old',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'cursor',
+                    cursorSessionId: 'legacy-csid',
+                    cursorSessionProtocol: 'stream-json'
+                },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'machine-1',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+            engine.handleSessionEnd({ sid: oldSession.id, time: Date.now() })
+
+            const spawnedSession = engine.getOrCreateSession(
+                'cursor-legacy-reopen-spawned',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'cursor',
+                    cursorSessionId: 'legacy-csid',
+                    cursorSessionProtocol: 'stream-json'
+                },
+                null,
+                'default'
+            )
+            const spawnedSessionId = spawnedSession.id
+
+            let waitForSessionReadyCalls = 0
+            ;(engine as any).waitForSessionReady = async () => {
+                waitForSessionReadyCalls += 1
+                return 'timeout'
+            }
+            ;(engine as any).rpcGateway.spawnSession = async () => {
+                engine.handleSessionAlive({ sid: spawnedSessionId, time: Date.now() })
+                return { type: 'success', sessionId: spawnedSessionId }
+            }
+            ;(engine as any).waitForSessionActive = async () => true
+
+            const result = await engine.resumeSession(oldSession.id, 'default')
+
+            expect(result).toEqual({ type: 'success', sessionId: spawnedSessionId })
+            expect(waitForSessionReadyCalls).toBe(0)
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('resolves a local resume target for a Codex session', () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(
