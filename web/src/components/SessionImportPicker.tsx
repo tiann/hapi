@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Button } from '@/components/ui/button'
 import { useTranslation } from '@/lib/use-translation'
 
@@ -50,7 +50,7 @@ function getSessionCwd(session: ImportSessionSummary): string | null {
 
 /**
  * Shared transcript-import session picker (checkbox list + workdir filter +
- * select/clear all). Codex and Claude import dialogs both render this so the
+ * select/clear all). Codex, Claude, and Cursor import dialogs render this so the
  * row/filter/selection logic lives in a single place (task R8).
  */
 export function SessionImportPicker(props: {
@@ -62,6 +62,10 @@ export function SessionImportPicker(props: {
     isPending: boolean
     isLoading: boolean
     labels: SessionImportPickerLabels
+    /** When set, matching rows are not selectable (e.g. already-imported cursor chats). */
+    isSessionDisabled?: (session: ImportSessionSummary) => boolean
+    renderSessionBadges?: (session: ImportSessionSummary) => ReactNode
+    renderSessionFooter?: (session: ImportSessionSummary) => ReactNode
 }) {
     const { t } = useTranslation()
     const {
@@ -72,7 +76,10 @@ export function SessionImportPicker(props: {
         onSelectionChange,
         isPending,
         isLoading,
-        labels
+        labels,
+        isSessionDisabled,
+        renderSessionBadges,
+        renderSessionFooter
     } = props
     const [hasInitializedSelection, setHasInitializedSelection] = useState(false)
     const [workdirFilter, setWorkdirFilter] = useState(ALL_WORKDIR_FILTER)
@@ -138,6 +145,8 @@ export function SessionImportPicker(props: {
 
     const toggleSession = (sessionId: string) => {
         if (isPending || isLoading) return
+        const session = sessions.find((entry) => entry.id === sessionId)
+        if (session && isSessionDisabled?.(session)) return
 
         // 中文注释：列表项支持多选导入；再次点击同一行则取消勾选，便于快速调整导入批次。
         onSelectionChange(selectedSessionIds.includes(sessionId)
@@ -145,8 +154,13 @@ export function SessionImportPicker(props: {
             : [...selectedSessionIds, sessionId])
     }
 
+    const selectableFilteredSessions = useMemo(() => {
+        if (!isSessionDisabled) return filteredSessions
+        return filteredSessions.filter((session) => !isSessionDisabled(session))
+    }, [filteredSessions, isSessionDisabled])
+
     const selectAll = () => {
-        onSelectionChange(filteredSessions.map((session) => session.id))
+        onSelectionChange(selectableFilteredSessions.map((session) => session.id))
     }
 
     const clearAll = () => {
@@ -175,7 +189,7 @@ export function SessionImportPicker(props: {
                         variant="secondary"
                         size="sm"
                         onClick={selectAll}
-                        disabled={isPending || isLoading || filteredSessions.length === 0}
+                        disabled={isPending || isLoading || selectableFilteredSessions.length === 0}
                     >
                         {t(labels.selectAll)}
                     </Button>
@@ -219,20 +233,25 @@ export function SessionImportPicker(props: {
                 ) : (
                     <div className="divide-y divide-[var(--app-border)]">
                         {filteredSessions.map((session) => {
-                            const checked = selectedSessionIdSet.has(session.id)
+                            const disabled = isSessionDisabled?.(session) ?? false
+                            const checked = !disabled && selectedSessionIdSet.has(session.id)
                             const time = formatSessionTime(session.modifiedAt)
                             const preview = getSessionPreview(session)
                             const cwd = getSessionCwd(session)
                             return (
                                 <label
                                     key={session.id}
-                                    className="flex cursor-pointer items-start gap-3 px-3 py-2 transition-colors hover:bg-[var(--app-subtle-bg)]"
+                                    className={`flex items-start gap-3 px-3 py-2 transition-colors ${
+                                        disabled
+                                            ? 'cursor-not-allowed opacity-60'
+                                            : 'cursor-pointer hover:bg-[var(--app-subtle-bg)]'
+                                    }`}
                                 >
                                     <input
                                         type="checkbox"
                                         className="mt-1 h-4 w-4 accent-[var(--app-link)]"
                                         checked={checked}
-                                        disabled={isPending || isLoading}
+                                        disabled={isPending || isLoading || disabled}
                                         onChange={() => toggleSession(session.id)}
                                     />
                                     <div className="min-w-0 flex-1">
@@ -245,6 +264,7 @@ export function SessionImportPicker(props: {
                                                     {t(labels.current)}
                                                 </span>
                                             ) : null}
+                                            {renderSessionBadges?.(session)}
                                         </div>
                                         {preview ? (
                                             <div className="mt-0.5 truncate text-xs text-[var(--app-hint)]">
@@ -262,6 +282,7 @@ export function SessionImportPicker(props: {
                                                 {time}
                                             </div>
                                         ) : null}
+                                        {renderSessionFooter?.(session)}
                                     </div>
                                 </label>
                             )

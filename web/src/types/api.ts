@@ -251,6 +251,71 @@ export type ClaudeStatusResponse = {
     claudeProjectsAvailable: boolean
 }
 
+export type AgentImportFlavor = 'codex' | 'cursor'
+
+export type CursorImportSourceFormat = 'legacy' | 'acp'
+
+export type CursorImportRefusalReason =
+    | 'verify_load_failed'
+    | 'missing_on_disk_store'
+    | 'target_already_exists'
+    | 'already_imported'
+    | 'agent_binary_not_found'
+    | 'verify_timeout'
+    | 'corrupted_store'
+    | 'ambiguous_legacy_store'
+    | 'internal_error'
+
+export type CursorImportableSessionSummary = {
+    id: string
+    title: string
+    firstUserMessage?: string | null
+    workspacePath?: string | null
+    storeDbPath: string
+    sourceFormat: CursorImportSourceFormat
+    modifiedAt: number
+    sizeBytes: number
+    alreadyImportedHapiSessionId?: string | null
+}
+
+export type CursorImportableSessionsResponse = {
+    success: true
+    sessions: CursorImportableSessionSummary[]
+} | {
+    success: false
+    error: string
+}
+
+export type CursorImportRowOutcome =
+    | {
+        ok: true
+        uuid: string
+        hapiSessionId: string
+        sourceFormat: CursorImportSourceFormat
+        durationMs: number
+    }
+    | {
+        ok: false
+        uuid: string
+        reason: CursorImportRefusalReason
+        message: string
+        durationMs: number
+    }
+
+export type CursorImportRequest = {
+    uuids: string[]
+    workspacePath?: string | null
+}
+
+export type CursorImportResponse = {
+    success: true
+    results: CursorImportRowOutcome[]
+    importedCount: number
+} | {
+    success: false
+    error: string
+}
+
 export type VisibilityPayload = {
     subscriptionId: string
     visibility: 'visible' | 'hidden'
