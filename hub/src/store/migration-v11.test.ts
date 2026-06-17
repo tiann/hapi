@@ -6,20 +6,14 @@ import { tmpdir } from 'node:os'
 import { Store } from './index'
 
 /**
- * Tests for V9→V10 schema migration: introduces the `session_scratchlist`
- * typed table for tiann/hapi#893 (scratchlist v2 hub sync). Mirrors the
- * pattern in `migration-v9.test.ts`.
+ * Tests for V10→V11 schema migration: introduces the `session_scratchlist`
+ * typed table for tiann/hapi#893 (scratchlist v2 hub sync).
  *
- * The new table is independent (no backfill from existing rows) so the
- * tests focus on:
- *   - presence on fresh DBs
- *   - presence on multi-hop legacy DBs (V6/V7/V8/V9 → V10)
- *   - idempotency on reopen
- *   - foreign-key cascade-delete from sessions(id)
- *   - the supporting (session_id, created_at) index
- *   - basic CRUD operations through the ScratchlistStore wrapper
+ * Upstream main landed V9→V10 as `service_tier` on sessions (#898/#904);
+ * scratchlist v2 takes V10→V11 for the new table. Mirrors the pattern in
+ * `migration-v9.test.ts`.
  */
-describe('Store V9→V10 migration: session_scratchlist table', () => {
+describe('Store V10→V11 migration: session_scratchlist table', () => {
     it('fresh DB has session_scratchlist table with expected columns', () => {
         const store = new Store(':memory:')
         const cols = getColumns(store, 'session_scratchlist')
@@ -39,16 +33,16 @@ describe('Store V9→V10 migration: session_scratchlist table', () => {
         expect(rows).toHaveLength(1)
     })
 
-    it('V9 DB migrates to V10 via Store: session_scratchlist created', () => {
-        const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v10-test-'))
+    it('V10 DB migrates to V11 via Store: session_scratchlist created', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v11-test-'))
         const dbPath = join(dir, 'test.db')
         let store: Store | undefined
         try {
             const db = new Database(dbPath, { create: true, readwrite: true, strict: true })
             db.exec('PRAGMA journal_mode = WAL')
             db.exec('PRAGMA foreign_keys = ON')
-            createV9Schema(db)
-            db.exec('PRAGMA user_version = 9')
+            createV10Schema(db)
+            db.exec('PRAGMA user_version = 10')
             db.exec(`INSERT INTO sessions (id, namespace, created_at, updated_at, seq)
                      VALUES ('s1', 'default', 1000, 1000, 0)`)
             db.close()
@@ -58,7 +52,6 @@ describe('Store V9→V10 migration: session_scratchlist table', () => {
             expect(cols).toContain('session_id')
             expect(cols).toContain('text')
 
-            // Existing session row remains intact through the migration.
             const sessions = (store as unknown as { db: Database }).db.prepare(
                 'SELECT id FROM sessions'
             ).all() as Array<{ id: string }>
@@ -69,22 +62,21 @@ describe('Store V9→V10 migration: session_scratchlist table', () => {
         }
     })
 
-    it('V8 DB migrates to V10 (multi-hop V8→V9→V10)', () => {
-        const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v8-to-v10-'))
+    it('V9 DB migrates to V11 (multi-hop V9→V10 service_tier + V10→V11 scratchlist)', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v9-to-v11-'))
         const dbPath = join(dir, 'test.db')
         let store: Store | undefined
         try {
             const db = new Database(dbPath, { create: true, readwrite: true, strict: true })
             db.exec('PRAGMA journal_mode = WAL')
             db.exec('PRAGMA foreign_keys = ON')
-            createV9Schema(db) // V9 is a superset of V8's tables for our purposes
-            db.exec('PRAGMA user_version = 8')
+            createV9Schema(db)
+            db.exec('PRAGMA user_version = 9')
             db.close()
 
             store = new Store(dbPath)
-            // After ladder runs, both v8→v9 (scheduled_at) AND v9→v10 (table) applied.
-            const messageCols = getColumns(store, 'messages')
-            expect(messageCols).toContain('scheduled_at')
+            const sessionCols = getColumns(store, 'sessions')
+            expect(sessionCols).toContain('service_tier')
             const scratchCols = getColumns(store, 'session_scratchlist')
             expect(scratchCols).toContain('entry_id')
         } finally {
@@ -93,8 +85,8 @@ describe('Store V9→V10 migration: session_scratchlist table', () => {
         }
     })
 
-    it('V10 DB reopen is idempotent: schema unchanged', () => {
-        const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v10-idempotent-'))
+    it('V11 DB reopen is idempotent: schema unchanged', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v11-idempotent-'))
         const dbPath = join(dir, 'test.db')
         let store1: Store | undefined
         let store2: Store | undefined
@@ -154,7 +146,6 @@ describe('ScratchlistStore: CRUD through the typed-table wrapper', () => {
         if (result.outcome !== 'created') throw new Error(`Expected created, got ${result.outcome}`)
         expect(result.entry.entryId).toBe('legacy-id-1')
         expect(result.entry.createdAt).toBe(12345)
-        // updatedAt is always Date.now() on insert; differs from createdAt when caller supplies an old timestamp.
         expect(result.entry.updatedAt).toBeGreaterThan(12345)
     })
 
@@ -239,10 +230,7 @@ function getColumns(store: Store, table: string): string[] {
     return rows.map((r) => r.name)
 }
 
-/**
- * V9 schema: full pre-V10 shape. Used to seed legacy DBs to verify the
- * V9→V10 step adds the new table without disturbing existing rows.
- */
+/** Pre-V10 shape (no service_tier, no session_scratchlist). */
 function createV9Schema(db: Database): void {
     db.exec(`
         CREATE TABLE IF NOT EXISTS sessions (
@@ -298,8 +286,6 @@ function createV9Schema(db: Database): void {
         );
         CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, seq);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_local_id ON messages(session_id, local_id) WHERE local_id IS NOT NULL;
-        CREATE INDEX IF NOT EXISTS idx_messages_session_position
-            ON messages(session_id, COALESCE(invoked_at, created_at) DESC, seq DESC);
         CREATE INDEX IF NOT EXISTS idx_messages_scheduled_pending
             ON messages(scheduled_at)
             WHERE scheduled_at IS NOT NULL AND invoked_at IS NULL;
@@ -312,8 +298,6 @@ function createV9Schema(db: Database): void {
             created_at INTEGER NOT NULL,
             UNIQUE(platform, platform_user_id)
         );
-        CREATE INDEX IF NOT EXISTS idx_users_platform ON users(platform);
-        CREATE INDEX IF NOT EXISTS idx_users_platform_namespace ON users(platform, namespace);
 
         CREATE TABLE IF NOT EXISTS push_subscriptions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -324,6 +308,11 @@ function createV9Schema(db: Database): void {
             created_at INTEGER NOT NULL,
             UNIQUE(namespace, endpoint)
         );
-        CREATE INDEX IF NOT EXISTS idx_push_subscriptions_namespace ON push_subscriptions(namespace);
     `)
+}
+
+/** Post-V9→V10 shape (service_tier present, no session_scratchlist yet). */
+function createV10Schema(db: Database): void {
+    createV9Schema(db)
+    db.exec('ALTER TABLE sessions ADD COLUMN service_tier TEXT')
 }
