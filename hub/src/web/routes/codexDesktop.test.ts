@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test'
 import { randomUUID } from 'node:crypto'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Hono } from 'hono'
@@ -41,6 +41,36 @@ function createTranscript(codexHome: string, sessionId: string, cwd = 'C:\\work\
                 role: 'assistant',
                 content: [{ type: 'output_text', text: 'normal assistant message' }]
             }
+        }
+    ]
+    writeFileSync(transcriptPath, `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`, 'utf-8')
+}
+
+// 中文注释：写一条带顶层 `timestamp` 的最小 Codex rollout，用于断言导入后保留原始时间戳而不是被盖成 now。
+function createTimestampedTranscript(
+    codexHome: string,
+    sessionId: string,
+    timestamps: { user: string; assistant: string },
+    cwd = '/home/user/ts'
+): void {
+    const sessionDir = join(codexHome, 'sessions', '2026', '06', '04')
+    mkdirSync(sessionDir, { recursive: true })
+    const transcriptPath = join(sessionDir, `rollout-${sessionId}.jsonl`)
+    const lines = [
+        {
+            timestamp: timestamps.user,
+            type: 'session_meta',
+            payload: { id: sessionId, cwd, originator: 'codex_cli_rs', cli_version: '0.0.0-test' }
+        },
+        {
+            timestamp: timestamps.user,
+            type: 'response_item',
+            payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello from the past' }] }
+        },
+        {
+            timestamp: timestamps.assistant,
+            type: 'response_item',
+            payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'replying from the past' }] }
         }
     ]
     writeFileSync(transcriptPath, `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`, 'utf-8')
@@ -157,6 +187,80 @@ describe('Codex Desktop import routes', () => {
                     sentFrom: 'cli'
                 }
             })
+        } finally {
+            store.close()
+            rmSync(codexHome, { recursive: true, force: true })
+        }
+    })
+
+    it('preserves the original record timestamps as message createdAt/invokedAt and session updatedAt', async () => {
+        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-ts-test-'))
+        const store = new Store(':memory:')
+        const codexSessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+        process.env.CODEX_HOME = codexHome
+
+        const userTs = '2026-01-02T03:04:05.000Z'
+        const assistantTs = '2026-01-02T03:05:06.000Z'
+        const userMs = Date.parse(userTs)
+        const assistantMs = Date.parse(assistantTs)
+
+        try {
+            createTimestampedTranscript(codexHome, codexSessionId, { user: userTs, assistant: assistantTs })
+
+            const before = Date.now()
+            const result = await importSelectedCodexSessions({
+                codexSessionIds: [codexSessionId],
+                store,
+                namespace: 'default',
+                getSyncEngine: () => null
+            })
+            expect(result.success).toBe(true)
+
+            const session = store.sessions.getSessionsByNamespace('default')[0]
+            const messages = store.messages.getAllMessages(session.id)
+            expect(messages).toHaveLength(2)
+
+            // 中文注释：核心断言——落库时间是 rollout 记录的原始时间戳，而不是导入瞬间的 Date.now()。
+            expect(messages[0].createdAt).toBe(userMs)
+            expect(messages[0].invokedAt).toBe(userMs)
+            expect(messages[1].createdAt).toBe(assistantMs)
+            expect(messages[1].invokedAt).toBe(assistantMs)
+            expect(messages[0].createdAt).toBeLessThan(before)
+
+            // 中文注释：会话最后活跃时间应反映最后一条消息的原始时间，而不是“今天刚活跃”。
+            expect(session.updatedAt).toBe(assistantMs)
+        } finally {
+            store.close()
+            rmSync(codexHome, { recursive: true, force: true })
+        }
+    })
+
+    it('falls back to the transcript file mtime when records carry no per-line timestamp', async () => {
+        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-nots-test-'))
+        const store = new Store(':memory:')
+        const codexSessionId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+        process.env.CODEX_HOME = codexHome
+
+        try {
+            // createTranscript 的记录没有顶层 timestamp，应回退到文件 mtime。
+            createTranscript(codexHome, codexSessionId)
+            const transcriptPath = join(codexHome, 'sessions', '2026', '06', '04', `rollout-${codexSessionId}.jsonl`)
+            const fileModifiedAt = statSync(transcriptPath).mtimeMs
+
+            const result = await importSelectedCodexSessions({
+                codexSessionIds: [codexSessionId],
+                store,
+                namespace: 'default',
+                getSyncEngine: () => null
+            })
+            expect(result.success).toBe(true)
+
+            const session = store.sessions.getSessionsByNamespace('default')[0]
+            const messages = store.messages.getAllMessages(session.id)
+            expect(messages.length).toBeGreaterThan(0)
+            for (const message of messages) {
+                expect(message.createdAt).toBe(fileModifiedAt)
+            }
         } finally {
             store.close()
             rmSync(codexHome, { recursive: true, force: true })

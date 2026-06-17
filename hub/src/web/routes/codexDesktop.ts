@@ -8,6 +8,7 @@ import type { SyncEngine } from '../../sync/syncEngine'
 import type { Store } from '../../store'
 import type { WebAppEnv } from '../middleware/auth'
 import {
+    type ImportedMessage,
     type ImportedMessageContent,
     type ImporterAdapter,
     type LocalSessionSummary,
@@ -24,6 +25,7 @@ import {
     importSelectedSessions,
     listDuplicateSessionGroups,
     mergeDuplicateSessionGroups,
+    parseImportedTimestamp,
     parseSyncSessionRequest,
     truncateText
 } from './transcriptImport'
@@ -537,7 +539,7 @@ function parseCodexTranscriptImportData(summary: LocalSessionSummary): Transcrip
     }
 
     const lines = content.split(/\r?\n/).filter(Boolean)
-    const messages: ImportedMessageContent[] = []
+    const messages: ImportedMessage[] = []
 
     for (const line of lines) {
         let parsed: unknown
@@ -549,9 +551,11 @@ function parseCodexTranscriptImportData(summary: LocalSessionSummary): Transcrip
 
         const record = asRecord(parsed)
         if (!record) continue
-        const message = convertCodexRecordToImportedMessage(record)
-        if (message) {
-            messages.push(message)
+        const content = convertCodexRecordToImportedMessage(record)
+        if (content) {
+            // 中文注释：Codex rollout 记录在顶层 `timestamp` 带 ISO 时间串（payload 内还有一份，取顶层即可），
+            // 随消息一起落库以保留原始时间线。
+            messages.push({ content, createdAt: parseImportedTimestamp(record.timestamp) })
         }
     }
 
