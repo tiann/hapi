@@ -80,6 +80,33 @@ describe('codexCommand', () => {
         })
     })
 
+    it('forwards a valid --service-tier to runCodex', async () => {
+        await codexCommand.run(createCommandContext(['--started-by', 'runner', '--service-tier', 'fast']))
+
+        expect(runCodexMock).toHaveBeenCalledWith({
+            startedBy: 'runner',
+            serviceTier: 'fast'
+        })
+    })
+
+    it('rejects an unsupported --service-tier value', async () => {
+        const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+        const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+            throw new Error(`process.exit:${code ?? 'undefined'}`)
+        }) as never)
+
+        try {
+            await expect(
+                codexCommand.run(createCommandContext(['--started-by', 'runner', '--service-tier', 'turbo']))
+            ).rejects.toThrow('process.exit:1')
+            expect(runCodexMock).not.toHaveBeenCalled()
+            expect(consoleErrorSpy).toHaveBeenCalledWith(expect.any(String), 'Invalid --service-tier value')
+        } finally {
+            consoleErrorSpy.mockRestore()
+            exitSpy.mockRestore()
+        }
+    })
+
     it('prints the upgrade error and exits when the local version check fails', async () => {
         const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
         const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {

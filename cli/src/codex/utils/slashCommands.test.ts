@@ -46,6 +46,45 @@ describe('resolveCodexSlashCommand', () => {
         });
     });
 
+    it('enables Codex fast mode', () => {
+        expect(resolveCodexSlashCommand('/fast', state)).toEqual({
+            kind: 'handled',
+            message: 'Codex Fast mode enabled',
+            updates: { serviceTier: 'fast' }
+        });
+        expect(resolveCodexSlashCommand('/fast on', state)).toEqual({
+            kind: 'handled',
+            message: 'Codex Fast mode enabled',
+            updates: { serviceTier: 'fast' }
+        });
+    });
+
+    it('disables Codex fast mode with an explicit standard tier', () => {
+        expect(resolveCodexSlashCommand('/fast off', { ...state, serviceTier: 'fast' })).toEqual({
+            kind: 'handled',
+            message: 'Codex Fast mode disabled',
+            updates: { serviceTier: 'standard' }
+        });
+    });
+
+    it('shows Codex fast mode status', () => {
+        expect(resolveCodexSlashCommand('/fast status', { ...state, serviceTier: 'fast' })).toEqual({
+            kind: 'handled',
+            message: 'Codex Fast mode: on'
+        });
+        expect(resolveCodexSlashCommand('/fast status', state)).toEqual({
+            kind: 'handled',
+            message: 'Codex Fast mode: off'
+        });
+    });
+
+    it('rejects unknown Codex fast mode arguments', () => {
+        expect(resolveCodexSlashCommand('/fast turbo', state)).toEqual({
+            kind: 'handled',
+            message: 'Usage: /fast [on|off|status]'
+        });
+    });
+
     it('resolves Codex goal commands for native handling', () => {
         expect(resolveCodexSlashCommand('/goal', state)).toEqual({
             kind: 'goal',

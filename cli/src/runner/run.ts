@@ -1127,6 +1127,9 @@ export function buildCliArgs(
   if (options.modelReasoningEffort && (agent === 'codex' || agent === 'opencode')) {
     args.push('--model-reasoning-effort', options.modelReasoningEffort);
   }
+  if (options.serviceTier && agent === 'codex') {
+    args.push('--service-tier', options.serviceTier);
+  }
   // Pi RPC mode has no permission switching; never pass these flags to it
   // (the Pi parser rejects --permission-mode and ignores --yolo).
   if (agent !== 'pi') {

@@ -22,6 +22,7 @@ type SessionAlivePayload = {
     model?: string | null
     modelReasoningEffort?: string | null
     effort?: string | null
+    serviceTier?: string | null
     collaborationMode?: CodexCollaborationMode
 }
 

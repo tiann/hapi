@@ -21,6 +21,7 @@ import { buildVisibleChatBlocks, isToolGroupBlock, type ToolGroupBlock } from '@
 import { isQueuedForInvocation, mergeMessages } from '@/lib/messages'
 import { inactiveSessionCanResume } from '@/lib/sessionResume'
 import { HappyComposer, type ComposerSendError } from '@/components/AssistantChat/HappyComposer'
+import { codexModelAdvertisesFastTier } from '@/components/AssistantChat/codexFastMode'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { resolvePendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
@@ -571,7 +572,8 @@ function SessionChatInner(props: SessionChatProps) {
         setCollaborationMode,
         setModel,
         setModelReasoningEffort,
-        setEffort
+        setEffort,
+        setServiceTier
     } = useSessionActions(
         props.api,
         props.session.id,
@@ -875,6 +877,17 @@ function SessionChatInner(props: SessionChatProps) {
             console.error('Failed to set effort:', e)
         }
     }, [setEffort, props.onRefresh, haptic])
+
+    const handleServiceTierChange = useCallback(async (serviceTier: string | null) => {
+        try {
+            await setServiceTier(serviceTier)
+            haptic.notification('success')
+            props.onRefresh()
+        } catch (e) {
+            haptic.notification('error')
+            console.error('Failed to set service tier:', e)
+        }
+    }, [setServiceTier, props.onRefresh, haptic])
 
     // Abort handler
     const handleAbort = useCallback(async () => {
@@ -1188,6 +1201,16 @@ function SessionChatInner(props: SessionChatProps) {
                                 : undefined
                         }
                         onEffortChange={handleEffortChange}
+                        serviceTier={agentFlavor === 'codex' ? props.session.serviceTier : undefined}
+                        onServiceTierChange={
+                            agentFlavor === 'codex'
+                                && props.session.active
+                                && !controlledByUser
+                                && !codexModelsState.error
+                                && codexModelAdvertisesFastTier(props.session.model, codexModelsState.models)
+                                ? handleServiceTierChange
+                                : undefined
+                        }
                         onSwitchToRemote={handleSwitchToRemote}
                         onTerminal={props.session.active && terminalSupported ? handleViewTerminal : undefined}
                         terminalUnsupported={props.session.active && !terminalSupported}

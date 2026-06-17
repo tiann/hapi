@@ -5,7 +5,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { homedir, hostname, platform } from 'node:os'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import { Hono } from 'hono'
-import type { SyncEngine } from '../../sync/syncEngine'
+import type { Machine, SyncEngine } from '../../sync/syncEngine'
 import type { Store, StoredMessage } from '../../store'
 import type { WebAppEnv } from '../middleware/auth'
 
@@ -672,15 +672,71 @@ function parseCodexTranscriptImportData(summary: CodexLocalSessionSummary): Code
     }
 }
 
+function normalizeComparablePath(pathValue: string, options?: { caseInsensitive?: boolean }): string {
+    let normalized = pathValue.trim().replace(/\\/g, '/').replace(/\/+/g, '/')
+    if (normalized.length > 1) {
+        normalized = normalized.replace(/\/+$/, '')
+    }
+    return options?.caseInsensitive ? normalized.toLowerCase() : normalized
+}
+
+function shouldCompareCaseInsensitive(...pathValues: string[]): boolean {
+    return pathValues.some((pathValue) => /^[a-z]:[\\/]/i.test(pathValue) || pathValue.includes('\\'))
+}
+
+function isPathInsideWorkspaceRoot(pathValue: string, rootValue: string): boolean {
+    if (!pathValue.trim() || !rootValue.trim()) {
+        return false
+    }
+
+    const caseInsensitive = shouldCompareCaseInsensitive(pathValue, rootValue)
+    const path = normalizeComparablePath(pathValue, { caseInsensitive })
+    const root = normalizeComparablePath(rootValue, { caseInsensitive })
+    if (!path || !root) {
+        return false
+    }
+    if (path === root) {
+        return true
+    }
+    if (root === '/') {
+        return path.startsWith('/')
+    }
+    return path.startsWith(`${root}/`)
+}
+
+function machineOwnsCodexCwd(machine: Machine, cwd: string): boolean {
+    const workspaceRoots = machine.metadata?.workspaceRoots ?? []
+    return workspaceRoots.some((workspaceRoot) => isPathInsideWorkspaceRoot(cwd, workspaceRoot))
+}
+
+function resolveImportMachineId(
+    cwd: string | null | undefined,
+    namespace: string,
+    engine: SyncEngine | null
+): string | undefined {
+    if (!cwd || !engine) {
+        return undefined
+    }
+
+    const matches = engine.getOnlineMachinesByNamespace(namespace)
+        .filter((machine) => machineOwnsCodexCwd(machine, cwd))
+    const machineIds = Array.from(new Set(matches.map((machine) => machine.id)))
+    return machineIds.length === 1 ? machineIds[0] : undefined
+}
+
 function buildImportedSessionMetadata(
     data: CodexTranscriptImportData,
-    existingMetadata?: Record<string, unknown> | null
+    existingMetadata?: Record<string, unknown> | null,
+    resolvedMachineId?: string
 ): Record<string, unknown> {
     const now = Date.now()
     const path = data.cwd ?? (typeof existingMetadata?.path === 'string' ? existingMetadata.path : dirname(data.file))
     const host = typeof existingMetadata?.host === 'string' ? existingMetadata.host : (process.env.HAPI_HOSTNAME || hostname())
     const osValue = typeof existingMetadata?.os === 'string' ? existingMetadata.os : platform()
     const summaryText = data.lastUserMessage ?? data.title
+    const machineId = typeof existingMetadata?.machineId === 'string'
+        ? existingMetadata.machineId
+        : resolvedMachineId
 
     return {
         ...(existingMetadata ?? {}),
@@ -696,6 +752,7 @@ function buildImportedSessionMetadata(
             : existingMetadata?.summary,
         flavor: 'codex',
         codexSessionId: data.id,
+        ...(machineId ? { machineId } : {}),
         lifecycleState: typeof existingMetadata?.lifecycleState === 'string'
             ? existingMetadata.lifecycleState
             : 'imported',
@@ -1484,7 +1541,11 @@ function importSingleCodexSession(options: {
         )
         const engine = options.getSyncEngine?.() ?? null
         const existingStored = target.sessionId ? options.store.sessions.getSessionByNamespace(target.sessionId, options.namespace) : null
-        const metadata = buildImportedSessionMetadata(transcript, asRecord(existingStored?.metadata))
+        const metadata = buildImportedSessionMetadata(
+            transcript,
+            asRecord(existingStored?.metadata),
+            resolveImportMachineId(transcript.cwd, options.namespace, engine)
+        )
 
         let sessionId = existingStored?.id ?? null
         let created = false

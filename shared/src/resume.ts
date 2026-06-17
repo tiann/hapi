@@ -15,6 +15,7 @@ export const LocalResumeTargetSchema = z.object({
     model: z.string().nullable().optional(),
     effort: z.string().nullable().optional(),
     modelReasoningEffort: z.string().nullable().optional(),
+    serviceTier: z.string().nullable().optional(),
     permissionMode: PermissionModeSchema.optional(),
     collaborationMode: CodexCollaborationModeSchema.optional()
 })

@@ -97,6 +97,31 @@ describe('session model', () => {
         expect(merged?.model).toBe('gpt-5.4')
     })
 
+    it('preserves service tier from old session when merging into resumed session', async () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const oldSession = cache.getOrCreateSession(
+            'session-tier-old',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+        // Fast was selected on the original session before it was resumed.
+        store.sessions.setSessionServiceTier(oldSession.id, 'fast', 'default')
+        const newSession = cache.getOrCreateSession(
+            'session-tier-new',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+
+        await cache.mergeSessions(oldSession.id, newSession.id, 'default')
+
+        expect(store.sessions.getSession(newSession.id)?.serviceTier).toBe('fast')
+    })
+
     it('persists applied session model updates, including clear-to-auto', () => {
         const store = new Store(':memory:')
         const events: SyncEvent[] = []

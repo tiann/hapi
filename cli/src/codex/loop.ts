@@ -16,6 +16,11 @@ export interface EnhancedMode {
     model?: string;
     collaborationMode: CodexCollaborationMode;
     modelReasoningEffort?: ReasoningEffort;
+    /**
+     * Service tier override. `undefined` leaves it untouched (account default),
+     * `'fast'` enables Fast mode, `null` selects the standard tier explicitly.
+     */
+    serviceTier?: string | null;
 }
 
 interface LoopOptions {
