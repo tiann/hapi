@@ -92,16 +92,24 @@ function padSeparatorLine(sepLine: string, targetCols: number): string | null {
 export function repairMarkdownTables(source: string): string {
     const lines = source.split('\n')
     let changed = false
-    // Track the fence character separately so ``` inside ~~~ (or vice versa)
-    // does not incorrectly flip the fence state.
+    // Track fence character AND opening length: a ```` fence must not be closed
+    // by ``` (GFM §4.5: closer must match the opening marker family AND be at
+    // least as long). Also ignore the opposite marker family (backtick vs tilde).
     let fenceChar: '`' | '~' | null = null
+    let fenceLength = 0
 
     for (let i = 0; i < lines.length; i++) {
-        const fenceMatch = lines[i].match(/^\s*(`{3,}|~{3,})/)
+        const fenceMatch = lines[i].match(/^ {0,3}(`{3,}|~{3,})/)
         if (fenceMatch) {
             const ch = fenceMatch[1][0] as '`' | '~'
-            if (fenceChar === null) { fenceChar = ch }
-            else if (ch === fenceChar) { fenceChar = null }
+            const len = fenceMatch[1].length
+            if (fenceChar === null) {
+                fenceChar = ch
+                fenceLength = len
+            } else if (ch === fenceChar && len >= fenceLength) {
+                fenceChar = null
+                fenceLength = 0
+            }
             continue
         }
         if (fenceChar !== null) continue

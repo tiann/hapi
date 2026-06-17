@@ -79,6 +79,34 @@ describe('repairMarkdownTables (string)', () => {
         expect(repairMarkdownTables(input)).toBe(input)
     })
 
+    it('does not close a ```` fence on a ``` line (closer must be >= opener length)', () => {
+        const input = [
+            '````',
+            '```',
+            '| A | B | C |',
+            '|---|---|',
+            '| x | y | z |',
+            '```',
+            '````',
+            '',
+        ].join('\n')
+        expect(repairMarkdownTables(input)).toBe(input)
+    })
+
+    it('does not close a ~~~~ fence on a ~~~ line (closer must be >= opener length)', () => {
+        const input = [
+            '~~~~',
+            '~~~',
+            '| A | B | C |',
+            '|---|---|',
+            '| x | y | z |',
+            '~~~',
+            '~~~~',
+            '',
+        ].join('\n')
+        expect(repairMarkdownTables(input)).toBe(input)
+    })
+
     it('does not flip fence state when ``` appears inside a ~~~ block', () => {
         const input = [
             '~~~',
