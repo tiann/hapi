@@ -1,9 +1,15 @@
 import { readFile } from 'node:fs/promises';
+import { isAbsolute, relative, resolve } from 'node:path';
 import type { ApiSessionClient } from '@/lib';
 import { findCodexSessionFile, findCodexSessionTitle, formatCodexSessionTitle } from '@/modules/common/codexSessions';
 import { logger } from '@/ui/logger';
 import { convertCodexEvent, type CodexSessionEvent } from './utils/codexEventConverter';
 import { normalizeCodexUsage } from './utils/codexUsage';
+
+function isSameOrChild(parent: string, child: string): boolean {
+    const rel = relative(resolve(parent), resolve(child));
+    return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
 
 type TitleSource = 'index' | 'user' | 'agent';
 type ImportSessionConfig = {
@@ -69,9 +75,9 @@ export async function importCodexSessionHistory(args: {
 
     if (args.expectedDirectory) {
         const sessionPath = extractSessionPath(content.split('\n'));
-        if (sessionPath && !sessionPath.startsWith(args.expectedDirectory)) {
+        if (!sessionPath || !isSameOrChild(args.expectedDirectory, sessionPath)) {
             logger.warn(
-                `[codex-history-import] Rejecting import: session path "${sessionPath}" is outside expected directory "${args.expectedDirectory}"`
+                `[codex-history-import] Rejecting import: session path "${sessionPath ?? '(missing)'}" is outside expected directory "${args.expectedDirectory}"`
             );
             return { imported: 0, filePath: null };
         }
