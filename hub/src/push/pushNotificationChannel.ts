@@ -1,38 +1,18 @@
 import type { Session } from '../sync/syncEngine'
 import type { NotificationChannel, TaskNotification } from '../notifications/notificationTypes'
+import type { NotificationSendContext } from '../notifications/notificationSendContext'
 import { getAgentName, getSessionName } from '../notifications/sessionInfo'
 import type { SSEManager } from '../sse/sseManager'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
 import type { PushPayload, PushService } from './pushService'
-
-/**
- * Probe that returns true when a native companion (Android FCM phone/wear)
- * device is registered for this namespace. When provided to
- * PushNotificationChannel, the channel suppresses its web-push fallback so
- * the operator stops getting double notifications: one on the native app,
- * one on the PWA service worker. The in-app SSE toast path is unaffected -
- * if the operator has the PWA actively in the foreground, they'll still see
- * the toast inside the page.
- */
-export type NativeFallbackProbe = (namespace: string) => boolean
 
 export class PushNotificationChannel implements NotificationChannel {
     constructor(
         private readonly pushService: PushService,
         private readonly sseManager: SSEManager,
         private readonly visibilityTracker: VisibilityTracker,
-        _appUrl: string,
-        private readonly nativeFallbackProbe?: NativeFallbackProbe
+        _appUrl: string
     ) {}
-
-    /**
-     * Returns true if web-push delivery should be skipped because a native
-     * companion will already cover this namespace. Centralised so all three
-     * send* methods stay in lock-step.
-     */
-    private shouldSkipWebPush(namespace: string): boolean {
-        return this.nativeFallbackProbe?.(namespace) ?? false
-    }
 
     /**
      * Debug observability: gated on `HAPI_NOTIFY_DEBUG=1`. Lets the operator
@@ -46,7 +26,7 @@ export class PushNotificationChannel implements NotificationChannel {
         console.log(`[Push.${method}] ns=${namespace} ${branch}${note}`)
     }
 
-    async sendPermissionRequest(session: Session): Promise<void> {
+    async sendPermissionRequest(session: Session, ctx?: NotificationSendContext): Promise<void> {
         if (!session.active) {
             return
         }
@@ -69,40 +49,10 @@ export class PushNotificationChannel implements NotificationChannel {
             }
         }
 
-        // Native-companion-first: when an FCM device is registered for this
-        // namespace the watch already covers this notification end-to-end.
-        // Skip the SSE in-page toast AND the web-push fallback - both are
-        // redundant surfaces that the operator explicitly asked us to mute.
-        if (this.shouldSkipWebPush(session.namespace)) {
-            this.logBranch('permission', session.namespace, 'defer-to-native', 'native-companion-registered')
-            return
-        }
-
-        const url = payload.data?.url ?? this.buildSessionPath(session.id)
-        if (this.visibilityTracker.hasVisibleConnection(session.namespace)) {
-            const delivered = await this.sseManager.sendToast(session.namespace, {
-                type: 'toast',
-                data: {
-                    title: payload.title,
-                    body: payload.body,
-                    sessionId: session.id,
-                    url
-                }
-            })
-            if (delivered > 0) {
-                this.logBranch('permission', session.namespace, 'sse-toast-delivered', `count=${delivered}`)
-                return
-            }
-            this.logBranch('permission', session.namespace, 'sse-toast-zero', 'visible but delivered=0')
-        } else {
-            this.logBranch('permission', session.namespace, 'not-visible')
-        }
-
-        this.logBranch('permission', session.namespace, 'web-push-fired')
-        await this.pushService.sendToNamespace(session.namespace, payload)
+        await this.deliverWebOrToast(session, payload, ctx, 'permission')
     }
 
-    async sendReady(session: Session): Promise<void> {
+    async sendReady(session: Session, ctx?: NotificationSendContext): Promise<void> {
         if (!session.active) {
             return
         }
@@ -121,36 +71,10 @@ export class PushNotificationChannel implements NotificationChannel {
             }
         }
 
-        if (this.shouldSkipWebPush(session.namespace)) {
-            this.logBranch('ready', session.namespace, 'defer-to-native', 'native-companion-registered')
-            return
-        }
-
-        const url = payload.data?.url ?? this.buildSessionPath(session.id)
-        if (this.visibilityTracker.hasVisibleConnection(session.namespace)) {
-            const delivered = await this.sseManager.sendToast(session.namespace, {
-                type: 'toast',
-                data: {
-                    title: payload.title,
-                    body: payload.body,
-                    sessionId: session.id,
-                    url
-                }
-            })
-            if (delivered > 0) {
-                this.logBranch('ready', session.namespace, 'sse-toast-delivered', `count=${delivered}`)
-                return
-            }
-            this.logBranch('ready', session.namespace, 'sse-toast-zero', 'visible but delivered=0')
-        } else {
-            this.logBranch('ready', session.namespace, 'not-visible')
-        }
-
-        this.logBranch('ready', session.namespace, 'web-push-fired')
-        await this.pushService.sendToNamespace(session.namespace, payload)
+        await this.deliverWebOrToast(session, payload, ctx, 'ready')
     }
 
-    async sendTaskNotification(session: Session, notification: TaskNotification): Promise<void> {
+    async sendTaskNotification(session: Session, notification: TaskNotification, ctx?: NotificationSendContext): Promise<void> {
         if (!session.active) {
             return
         }
@@ -173,8 +97,17 @@ export class PushNotificationChannel implements NotificationChannel {
             }
         }
 
-        if (this.shouldSkipWebPush(session.namespace)) {
-            this.logBranch('task', session.namespace, 'defer-to-native', 'native-companion-registered')
+        await this.deliverWebOrToast(session, payload, ctx, 'task')
+    }
+
+    private async deliverWebOrToast(
+        session: Session,
+        payload: PushPayload,
+        ctx: NotificationSendContext | undefined,
+        method: 'permission' | 'ready' | 'task'
+    ): Promise<void> {
+        if (ctx?.nativeGate?.sent) {
+            this.logBranch(method, session.namespace, 'defer-to-native', 'fcm-delivered-this-dispatch')
             return
         }
 
@@ -190,15 +123,15 @@ export class PushNotificationChannel implements NotificationChannel {
                 }
             })
             if (delivered > 0) {
-                this.logBranch('task', session.namespace, 'sse-toast-delivered', `count=${delivered}`)
+                this.logBranch(method, session.namespace, 'sse-toast-delivered', `count=${delivered}`)
                 return
             }
-            this.logBranch('task', session.namespace, 'sse-toast-zero', 'visible but delivered=0')
+            this.logBranch(method, session.namespace, 'sse-toast-zero', 'visible but delivered=0')
         } else {
-            this.logBranch('task', session.namespace, 'not-visible')
+            this.logBranch(method, session.namespace, 'not-visible')
         }
 
-        this.logBranch('task', session.namespace, 'web-push-fired')
+        this.logBranch(method, session.namespace, 'web-push-fired')
         await this.pushService.sendToNamespace(session.namespace, payload)
     }
 
