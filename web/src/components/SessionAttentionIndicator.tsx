@@ -2,7 +2,7 @@ import type { PendingRequest, SessionSummary } from '@/types/api'
 import type { SessionAttention } from '@/lib/sessionAttention'
 import { getSessionAttentionLabelKey } from '@/lib/sessionAttention'
 import { useTranslation } from '@/lib/use-translation'
-import { HoverTooltip } from '@/components/HoverTooltip'
+import { HoverTooltip, SESSION_ROW_TOOLTIP_FOCUS_CLASS } from '@/components/HoverTooltip'
 
 const ATTENTION_DOT_CLASS: Record<SessionAttention['kind'], string> = {
     permission: 'bg-amber-500 animate-pulse',
@@ -22,6 +22,7 @@ export function SessionAttentionIndicator(props: {
     attention: SessionAttention
     summary: SessionSummary
     label: string
+    tooltipId: string
 }) {
     const { t } = useTranslation()
     const dot = (
@@ -32,11 +33,12 @@ export function SessionAttentionIndicator(props: {
 
     return (
         <HoverTooltip
-            label={props.label}
+            id={props.tooltipId}
             target={dot}
             side="bottom"
             align="start"
             className="shrink-0"
+            revealOnParentFocusClass={SESSION_ROW_TOOLTIP_FOCUS_CLASS}
         >
             <AttentionTooltipBody
                 attention={props.attention}

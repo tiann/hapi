@@ -1,22 +1,30 @@
 import { useId, type ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 
+/** Tailwind classes that reveal the bubble when a named parent row has :focus-visible. */
+export const SESSION_ROW_TOOLTIP_FOCUS_CLASS =
+    'group-focus-visible/session-row:opacity-100 group-focus-visible/session-row:visible'
+
 /**
  * Lightweight CSS-driven tooltip used by the session list to surface "why is
  * this indicator showing?" copy on hover/focus. Pure CSS reveal (no portal,
  * no positioning JS) keeps the component cheap and avoids z-index surprises
  * inside the session-row `<button>`.
  *
- * Touch devices get the `aria-label` (announced) but no visible bubble — the
- * row is tap-to-open, so the dot deliberately does not capture touch events.
+ * Keyboard: the session-row `<button>` owns `aria-describedby` pointing at
+ * this tooltip's `id`. Pass `revealOnParentFocusClass` (see
+ * `SESSION_ROW_TOOLTIP_FOCUS_CLASS`) so the bubble is visible when the row
+ * receives keyboard focus — an inner non-focusable wrapper cannot use
+ * `:focus-within` for that.
  *
- * Layout: tooltip flips to top-anchored when `side='top'`, otherwise hangs
- * below. Content is wrapped to `max-w-[14rem]` so long tool names don't blow
- * out the sidebar.
+ * Mouse: local `group-hover` on this wrapper still reveals the bubble when
+ * the pointer is over the dot/icon.
+ *
+ * Touch: no visible bubble — the row is tap-to-open.
  */
 export function HoverTooltip(props: {
-    /** Plain-text label used for `aria-label` and screen readers. */
-    label: string
+    /** Stable id for `aria-describedby` on the session-row button. */
+    id: string
     /** Visible target element (the dot, the icon, etc.). */
     target: ReactNode
     /** Rich tooltip content. Plain text or a small fragment with headings/lists. */
@@ -24,8 +32,9 @@ export function HoverTooltip(props: {
     side?: 'top' | 'bottom'
     align?: 'start' | 'center' | 'end'
     className?: string
+    /** Parent-focus reveal classes (e.g. SESSION_ROW_TOOLTIP_FOCUS_CLASS). */
+    revealOnParentFocusClass?: string
 }) {
-    const id = useId()
     const side = props.side ?? 'bottom'
     const align = props.align ?? 'center'
 
@@ -36,16 +45,12 @@ export function HoverTooltip(props: {
 
     return (
         <span className={cn('relative inline-flex group', props.className)}>
-            <span
-                aria-describedby={id}
-                aria-label={props.label}
-                className="inline-flex"
-            >
+            <span className="inline-flex">
                 {props.target}
             </span>
             <span
                 role="tooltip"
-                id={id}
+                id={props.id}
                 className={cn(
                     'pointer-events-none absolute z-30 max-w-[14rem] whitespace-normal',
                     'rounded-md border border-[var(--app-border)] bg-[var(--app-secondary-bg)]',
@@ -54,7 +59,7 @@ export function HoverTooltip(props: {
                     alignClasses,
                     'opacity-0 invisible',
                     'group-hover:opacity-100 group-hover:visible',
-                    'group-focus-within:opacity-100 group-focus-within:visible',
+                    props.revealOnParentFocusClass,
                     'transition-opacity duration-100'
                 )}
             >
@@ -62,4 +67,13 @@ export function HoverTooltip(props: {
             </span>
         </span>
     )
+}
+
+/** Convenience hook: `${base}-attention` / `${base}-schedule` ids for a row. */
+export function useSessionRowTooltipIds(hasAttention: boolean, hasSchedule: boolean) {
+    const base = useId()
+    const attentionId = hasAttention ? `${base}-attention` : undefined
+    const scheduleId = hasSchedule ? `${base}-schedule` : undefined
+    const describedBy = [attentionId, scheduleId].filter(Boolean).join(' ') || undefined
+    return { attentionId, scheduleId, describedBy }
 }

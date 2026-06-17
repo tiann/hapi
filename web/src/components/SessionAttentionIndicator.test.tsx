@@ -54,6 +54,7 @@ describe('SessionAttentionIndicator tooltip', () => {
                 attention={attention}
                 summary={summary}
                 label="Permission required"
+                tooltipId="tooltip-permission"
             />
         )
 
@@ -84,6 +85,7 @@ describe('SessionAttentionIndicator tooltip', () => {
                 attention={{ kind: 'permission' }}
                 summary={summary}
                 label="Permission required"
+                tooltipId="tooltip-permission-overflow"
             />
         )
 
@@ -107,6 +109,7 @@ describe('SessionAttentionIndicator tooltip', () => {
                 attention={{ kind: 'input' }}
                 summary={summary}
                 label="Needs input"
+                tooltipId="tooltip-input"
             />
         )
 
@@ -138,6 +141,7 @@ describe('SessionAttentionIndicator tooltip', () => {
                 attention={{ kind: 'permission' }}
                 summary={summary}
                 label="Permission required"
+                tooltipId="tooltip-permission-mixed"
             />
         )
 
@@ -159,6 +163,7 @@ describe('SessionAttentionIndicator tooltip', () => {
                 attention={{ kind: 'background' }}
                 summary={summary}
                 label="Background tasks running"
+                tooltipId="tooltip-background"
             />
         )
 
@@ -179,6 +184,7 @@ describe('SessionAttentionIndicator tooltip', () => {
                 attention={{ kind: 'unread' }}
                 summary={summary}
                 label="New activity"
+                tooltipId="tooltip-unread"
             />
         )
 
@@ -188,7 +194,7 @@ describe('SessionAttentionIndicator tooltip', () => {
         expect(tooltip.textContent).not.toMatch(/Updated /)
     })
 
-    it('exposes aria-label on the dot for screen readers', () => {
+    it('exposes a stable tooltip id for row aria-describedby wiring', () => {
         const summary = makeSummary({ id: 's1' })
 
         renderWithI18n(
@@ -196,9 +202,10 @@ describe('SessionAttentionIndicator tooltip', () => {
                 attention={{ kind: 'unread' }}
                 summary={summary}
                 label="New activity"
+                tooltipId="row-tooltip-unread"
             />
         )
 
-        expect(screen.getByLabelText('New activity')).toBeTruthy()
+        expect(document.getElementById('row-tooltip-unread')).toBeTruthy()
     })
 })
