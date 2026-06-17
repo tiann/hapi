@@ -13,6 +13,9 @@ import type {
     ClaudeImportScriptResponse,
     ClaudeImportSyncRequest,
     ClaudeStatusResponse,
+    CursorImportableSessionsResponse,
+    CursorImportRequest,
+    CursorImportResponse,
     FileSearchResponse,
     MachinesResponse,
     MessagesResponse,
@@ -271,6 +274,17 @@ export class ApiClient {
 
     async getClaudeStatus(): Promise<ClaudeStatusResponse> {
         return await this.request<ClaudeStatusResponse>('/api/claude/status')
+    }
+
+    async getCursorImportableSessions(): Promise<CursorImportableSessionsResponse> {
+        return await this.request<CursorImportableSessionsResponse>('/api/cursor/importable-sessions')
+    }
+
+    async importCursorSessions(payload: CursorImportRequest): Promise<CursorImportResponse> {
+        return await this.request<CursorImportResponse>('/api/cursor/import', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        })
     }
 
     async unsubscribePushNotifications(payload: PushUnsubscribePayload): Promise<void> {
