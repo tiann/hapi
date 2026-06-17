@@ -30,11 +30,12 @@ if (!lstatSync(imagePath).isFile()) {
     process.exit(2)
 }
 
-const token = JSON.parse(readFileSync(SETTINGS, 'utf8')).cliApiToken
+const settingsToken = JSON.parse(readFileSync(SETTINGS, 'utf8')).cliApiToken
+const token = process.env.CLI_API_TOKEN ?? settingsToken
 const authRes = await fetch(`${HAPI_HOST}/api/auth`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ accessToken: `${token}:default` }),
+    body: JSON.stringify({ accessToken: token }),
 })
 if (!authRes.ok) {
     console.error('auth failed', authRes.status)
