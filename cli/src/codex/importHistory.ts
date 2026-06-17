@@ -35,9 +35,29 @@ function parseCodexSessionEvent(line: string): CodexSessionEvent | null {
     };
 }
 
+function extractSessionPath(lines: string[]): string | null {
+    for (const line of lines.slice(0, 100)) {
+        if (!line.trim()) continue;
+        let parsed: unknown;
+        try { parsed = JSON.parse(line); } catch { continue; }
+        if (!parsed || typeof parsed !== 'object') continue;
+        const record = parsed as Record<string, unknown>;
+        if (record.type === 'session_meta') {
+            const payload = record.payload && typeof record.payload === 'object'
+                ? record.payload as Record<string, unknown>
+                : null;
+            const path = (typeof payload?.cwd === 'string' && payload.cwd) ||
+                (typeof payload?.path === 'string' && payload.path) || null;
+            if (path) return path;
+        }
+    }
+    return null;
+}
+
 export async function importCodexSessionHistory(args: {
     session: ImportSessionClient;
     codexSessionId: string;
+    expectedDirectory?: string;
 }): Promise<{ imported: number; filePath: string | null; model?: string; modelReasoningEffort?: string }> {
     const filePath = await findCodexSessionFile(args.codexSessionId);
     if (!filePath) {
@@ -46,6 +66,16 @@ export async function importCodexSessionHistory(args: {
     }
 
     const content = await readFile(filePath, 'utf8');
+
+    if (args.expectedDirectory) {
+        const sessionPath = extractSessionPath(content.split('\n'));
+        if (sessionPath && !sessionPath.startsWith(args.expectedDirectory)) {
+            logger.warn(
+                `[codex-history-import] Rejecting import: session path "${sessionPath}" is outside expected directory "${args.expectedDirectory}"`
+            );
+            return { imported: 0, filePath: null };
+        }
+    }
     let imported = 0;
     let title = await findCodexSessionTitle(args.codexSessionId);
     let titleSource: TitleSource | null = title ? 'index' : null;

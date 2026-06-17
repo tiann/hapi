@@ -107,7 +107,8 @@ export async function runCodex(opts: {
         try {
             const importedHistory = await importCodexSessionHistory({
                 session,
-                codexSessionId: opts.resumeSessionId
+                codexSessionId: opts.resumeSessionId,
+                expectedDirectory: workingDirectory
             });
             if (!opts.model && importedHistory.model) {
                 currentModel = importedHistory.model;
