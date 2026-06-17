@@ -74,6 +74,20 @@ export async function claudeRemote(opts: {
         }
     }
 
+    // Set environment variables for Claude Code SDK.
+    // Apply these BEFORE the liveness probe below: `getLiveAgentKind` execs
+    // `claude agents --json` using `process.env` (e.g. CLAUDE_CONFIG_DIR,
+    // HAPI_CLAUDE_PATH), so the probe must see the same claude env the real
+    // launch will use. Otherwise it queries the default config/home, misses the
+    // live session, picks `forkSession=false`, and the resume hits the
+    // "currently running as a background agent" failure path.
+    if (opts.claudeEnvVars) {
+        Object.entries(opts.claudeEnvVars).forEach(([key, value]) => {
+            process.env[key] = value;
+        });
+    }
+    process.env.DISABLE_AUTOUPDATER = '1';
+
     // Decide how to resume. A claude session can still be held open by a running
     // agent (background/interactive); a plain `--resume` is then rejected with
     // "currently running as a background agent". When that's the case, branch off
@@ -89,14 +103,6 @@ export async function claudeRemote(opts: {
         }
     }
     const forkedFrom = forkSession ? startFrom : null;
-
-    // Set environment variables for Claude Code SDK
-    if (opts.claudeEnvVars) {
-        Object.entries(opts.claudeEnvVars).forEach(([key, value]) => {
-            process.env[key] = value;
-        });
-    }
-    process.env.DISABLE_AUTOUPDATER = '1';
 
     // Get initial message
     let initial;
