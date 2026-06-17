@@ -137,6 +137,82 @@ describe('appServerConfig', () => {
         });
     });
 
+    it('translates Fast to the advertised app-server tier (priority) in thread params', () => {
+        const params = buildThreadStartParams({
+            cwd: '/workspace/project',
+            mode: { permissionMode: 'default', collaborationMode: 'default', serviceTier: 'fast' },
+            mcpServers
+        });
+
+        expect(params.serviceTier).toBe('priority');
+    });
+
+    it('translates explicit Standard to app-server null in thread params', () => {
+        const params = buildThreadStartParams({
+            cwd: '/workspace/project',
+            mode: { permissionMode: 'default', collaborationMode: 'default', serviceTier: 'standard' },
+            mcpServers
+        });
+
+        expect(params.serviceTier).toBeNull();
+    });
+
+    it('omits service tier from thread params when untouched (undefined or null)', () => {
+        const undefinedParams = buildThreadStartParams({
+            cwd: '/workspace/project',
+            mode: { permissionMode: 'default', collaborationMode: 'default' },
+            mcpServers
+        });
+        expect('serviceTier' in undefinedParams).toBe(false);
+
+        const nullParams = buildThreadStartParams({
+            cwd: '/workspace/project',
+            mode: { permissionMode: 'default', collaborationMode: 'default', serviceTier: null },
+            mcpServers
+        });
+        expect('serviceTier' in nullParams).toBe(false);
+    });
+
+    it('translates Fast to the advertised app-server tier (priority) in turn params', () => {
+        const params = buildTurnStartParams({
+            threadId: 'thread-1',
+            message: 'hello',
+            cwd: '/workspace/project',
+            mode: { permissionMode: 'default', model: 'gpt-5.5', collaborationMode: 'default', serviceTier: 'fast' }
+        });
+
+        expect(params.serviceTier).toBe('priority');
+    });
+
+    it('translates explicit Standard to app-server null in turn params', () => {
+        const params = buildTurnStartParams({
+            threadId: 'thread-1',
+            message: 'hello',
+            cwd: '/workspace/project',
+            mode: { permissionMode: 'default', model: 'gpt-5.5', collaborationMode: 'default', serviceTier: 'standard' }
+        });
+
+        expect(params.serviceTier).toBeNull();
+    });
+
+    it('omits service tier from turn params when untouched (undefined or null)', () => {
+        const undefinedParams = buildTurnStartParams({
+            threadId: 'thread-1',
+            message: 'hello',
+            cwd: '/workspace/project',
+            mode: { permissionMode: 'default', model: 'gpt-5.5', collaborationMode: 'default' }
+        });
+        expect('serviceTier' in undefinedParams).toBe(false);
+
+        const nullParams = buildTurnStartParams({
+            threadId: 'thread-1',
+            message: 'hello',
+            cwd: '/workspace/project',
+            mode: { permissionMode: 'default', model: 'gpt-5.5', collaborationMode: 'default', serviceTier: null }
+        });
+        expect('serviceTier' in nullParams).toBe(false);
+    });
+
     it('builds turn params with mode defaults', () => {
         const params = buildTurnStartParams({
             threadId: 'thread-1',

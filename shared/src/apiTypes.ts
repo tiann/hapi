@@ -141,6 +141,16 @@ export const SessionEffortRequestSchema = z.object({
 
 export type SessionEffortRequest = z.infer<typeof SessionEffortRequestSchema>
 
+// Fast mode is an explicit two-way choice. `'standard'` (not `null`) is the
+// stored sentinel for an explicit Fast-off so it stays distinct from
+// "untouched" and survives restart/resume. Reject anything else so stray tier
+// strings are never forwarded to the Codex app-server.
+export const SessionServiceTierRequestSchema = z.object({
+    serviceTier: z.enum(['fast', 'standard'])
+})
+
+export type SessionServiceTierRequest = z.infer<typeof SessionServiceTierRequestSchema>
+
 export const RenameSessionRequestSchema = z.object({
     name: z.string().min(1).max(255)
 })
@@ -330,6 +340,8 @@ export type CodexModelSummary = {
     isDefault: boolean
     defaultReasoningEffort?: string | null
     supportedReasoningEfforts?: string[]
+    /** Service tier ids advertised for this model in the current auth/plan context (e.g. 'fast'). */
+    serviceTiers?: string[]
 }
 
 export type CodexModelsResponse = {

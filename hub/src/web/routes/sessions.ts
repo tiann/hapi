@@ -8,6 +8,7 @@ import {
     SessionCollaborationModeRequestSchema,
     SessionEffortRequestSchema,
     SessionModelReasoningEffortRequestSchema,
+    SessionServiceTierRequestSchema,
     SessionModelRequestSchema,
     SessionPermissionModeRequestSchema,
     supportsModelChange,
@@ -544,6 +545,42 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ ok: true })
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to apply effort'
+            return c.json({ error: message }, 409)
+        }
+    })
+
+    app.post('/sessions/:id/service-tier', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (flavor !== 'codex') {
+            return c.json({ error: 'Fast mode is only supported for Codex sessions' }, 400)
+        }
+        if (sessionResult.session.agentState?.controlledByUser === true) {
+            return c.json({ error: 'Fast mode can only be changed for remote sessions' }, 409)
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = SessionServiceTierRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body' }, 400)
+        }
+
+        try {
+            await engine.applySessionConfig(sessionResult.sessionId, {
+                serviceTier: parsed.data.serviceTier
+            })
+            return c.json({ ok: true })
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to apply service tier'
             return c.json({ error: message }, 409)
         }
     })

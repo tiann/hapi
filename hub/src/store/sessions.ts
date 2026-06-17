@@ -143,6 +143,7 @@ type DbSessionRow = {
     model: string | null
     model_reasoning_effort: string | null
     effort: string | null
+    service_tier: string | null
     todos: string | null
     todos_updated_at: number | null
     team_state: string | null
@@ -167,6 +168,7 @@ function toStoredSession(row: DbSessionRow): StoredSession {
         model: row.model,
         modelReasoningEffort: row.model_reasoning_effort,
         effort: row.effort,
+        serviceTier: row.service_tier,
         todos: safeJsonParse(row.todos),
         todosUpdatedAt: row.todos_updated_at,
         teamState: safeJsonParse(row.team_state),
@@ -436,6 +438,39 @@ export function setSessionModelReasoningEffort(
             id,
             namespace,
             model_reasoning_effort: modelReasoningEffort,
+            updated_at: now,
+            touch_updated_at: touchUpdatedAt ? 1 : 0
+        })
+
+        return result.changes === 1
+    } catch {
+        return false
+    }
+}
+
+export function setSessionServiceTier(
+    db: Database,
+    id: string,
+    serviceTier: string | null,
+    namespace: string,
+    options?: { touchUpdatedAt?: boolean }
+): boolean {
+    const now = Date.now()
+    const touchUpdatedAt = options?.touchUpdatedAt === true
+
+    try {
+        const result = db.prepare(`
+            UPDATE sessions
+            SET service_tier = @service_tier,
+                updated_at = CASE WHEN @touch_updated_at = 1 THEN @updated_at ELSE updated_at END,
+                seq = seq + 1
+            WHERE id = @id
+              AND namespace = @namespace
+              AND service_tier IS NOT @service_tier
+        `).run({
+            id,
+            namespace,
+            service_tier: serviceTier,
             updated_at: now,
             touch_updated_at: touchUpdatedAt ? 1 : 0
         })

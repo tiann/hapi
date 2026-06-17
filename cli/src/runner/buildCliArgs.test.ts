@@ -71,6 +71,23 @@ describe('buildCliArgs', () => {
         expect(args).toContain('high')
     })
 
+    it('passes --service-tier through for codex (resume preserves Fast/Standard)', () => {
+        const args = buildCliArgs('codex', {
+            directory: '/tmp',
+            serviceTier: 'fast',
+        })
+        expect(args).toContain('--service-tier')
+        expect(args).toContain('fast')
+    })
+
+    it('does not pass --service-tier for non-codex agents', () => {
+        const args = buildCliArgs('claude', {
+            directory: '/tmp',
+            serviceTier: 'fast',
+        })
+        expect(args).not.toContain('--service-tier')
+    })
+
     it('validates all known permission modes', () => {
         for (const mode of ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan', 'ask', 'read-only', 'safe-yolo', 'yolo']) {
             const args = buildCliArgs('claude', {

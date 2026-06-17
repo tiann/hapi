@@ -31,6 +31,7 @@ function createSession(overrides?: Partial<Session>): Session {
         model: 'gpt-5.4',
         modelReasoningEffort: null,
         effort: null,
+        serviceTier: null,
         permissionMode: 'default',
         collaborationMode: 'default'
     }
@@ -363,6 +364,71 @@ describe('sessions routes', () => {
         expect(applySessionConfigCalls).toEqual([
             ['session-1', { modelReasoningEffort: 'high' }]
         ])
+    })
+
+    it('applies fast service tier changes for remote Codex sessions', async () => {
+        const { app, applySessionConfigCalls } = createApp(createSession())
+
+        const response = await app.request('/api/sessions/session-1/service-tier', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ serviceTier: 'fast' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ ok: true })
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { serviceTier: 'fast' }]
+        ])
+    })
+
+    it('persists an explicit Standard service tier (distinct from untouched)', async () => {
+        const { app, applySessionConfigCalls } = createApp(createSession())
+
+        const response = await app.request('/api/sessions/session-1/service-tier', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ serviceTier: 'standard' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { serviceTier: 'standard' }]
+        ])
+    })
+
+    it('rejects unsupported service tier values', async () => {
+        const { app, applySessionConfigCalls } = createApp(createSession())
+
+        const response = await app.request('/api/sessions/session-1/service-tier', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ serviceTier: 'turbo' })
+        })
+
+        expect(response.status).toBe(400)
+        expect(applySessionConfigCalls).toEqual([])
+    })
+
+    it('rejects service tier changes for local Codex sessions', async () => {
+        const { app, applySessionConfigCalls } = createApp(
+            createSession({
+                agentState: {
+                    controlledByUser: true,
+                    requests: {},
+                    completedRequests: {}
+                }
+            })
+        )
+
+        const response = await app.request('/api/sessions/session-1/service-tier', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ serviceTier: 'fast' })
+        })
+
+        expect(response.status).toBe(409)
+        expect(applySessionConfigCalls).toEqual([])
     })
 
     it('applies model changes for remote Codex sessions', async () => {
