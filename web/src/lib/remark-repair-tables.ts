@@ -22,7 +22,7 @@ import type { VFile } from 'vfile'
  *  Skips escaped pipes (\|) which are literal characters, not cell boundaries. */
 function countSourceCells(line: string): number {
     // Replace code spans with a placeholder so any | inside them is invisible
-    const trimmed = line.trim().replace(/`[^`]*`/g, '\x00')
+    const trimmed = line.trim().replace(/`+[^`]*?`+/g, '\x00')
     const inner = trimmed.startsWith('|') ? trimmed.slice(1) : trimmed
     const stripped = inner.endsWith('|') ? inner.slice(0, -1) : inner
     let cells = 1
@@ -142,6 +142,6 @@ export default function remarkRepairTables(this: Processor) {
         // Re-parse with the repaired source so remark-gfm produces table nodes
         // processor.parse() runs only the parse phase, not transformers
         const newTree = processor.parse(repaired) as Root
-        tree.children = newTree.children
+        Object.assign(tree, newTree)
     }
 }
