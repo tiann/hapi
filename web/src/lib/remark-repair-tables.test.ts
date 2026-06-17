@@ -54,6 +54,42 @@ describe('repairMarkdownTables (string)', () => {
         const input = 'Some prose\n|---|---|\n| x | y | z |\n'
         expect(repairMarkdownTables(input)).toBe(input)
     })
+
+    it('does not modify table-like lines inside a fenced code block', () => {
+        const input = [
+            'Here is an example:',
+            '```',
+            '| A | B | C |',
+            '|---|---|',
+            '| x | y | z |',
+            '```',
+            '',
+        ].join('\n')
+        expect(repairMarkdownTables(input)).toBe(input)
+    })
+
+    it('does not modify table-like lines inside a ~~~ fenced code block', () => {
+        const input = '~~~\n| A | B | C |\n|---|---|\n| x | y | z |\n~~~\n'
+        expect(repairMarkdownTables(input)).toBe(input)
+    })
+
+    it('repairs a broken table after a fenced code block closes', () => {
+        const input = [
+            '```',
+            '| A | B | C |',
+            '|---|---|',
+            '```',
+            '| A | B | C |',
+            '|---|---|',
+            '| x | y | z |',
+        ].join('\n')
+        const out = repairMarkdownTables(input)
+        // Lines inside the fence should be unchanged
+        expect(out.split('\n')[2]).toBe('|---|---|')
+        // The real table after the fence should be repaired
+        const sepLine = out.split('\n')[5]
+        expect(sepLine.split('|').filter(c => c.trim()).length).toBe(3)
+    })
 })
 
 // ── Plugin (parse + transform + stringify) ────────────────────────────────────

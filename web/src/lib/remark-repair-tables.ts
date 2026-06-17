@@ -82,12 +82,25 @@ function padSeparatorLine(sepLine: string, targetCols: number): string | null {
  * Scan raw markdown for broken table separators and pad them in-place.
  * This must run before any markdown parser sees the source, because
  * remark-gfm 4.x degrades a mismatched-separator table block to a paragraph.
+ *
+ * Tracks fenced code blocks so table-like lines inside ``` or ~~~ fences are
+ * never modified. Also preserves leading whitespace when replacing the
+ * separator line so indented tables are not affected.
  */
 export function repairMarkdownTables(source: string): string {
     const lines = source.split('\n')
     let changed = false
+    let inFence = false
 
-    for (let i = 1; i < lines.length; i++) {
+    for (let i = 0; i < lines.length; i++) {
+        // Toggle fenced-code state on ``` / ~~~ opening/closing lines
+        if (/^\s*(```|~~~)/.test(lines[i])) {
+            inFence = !inFence
+            continue
+        }
+        if (inFence) continue
+        if (i === 0) continue
+
         const sep = lines[i]
         if (!isSeparatorLine(sep)) continue
 
@@ -101,7 +114,9 @@ export function repairMarkdownTables(source: string): string {
 
         const repaired = padSeparatorLine(sep, headerCols)
         if (repaired !== null) {
-            lines[i] = repaired
+            // Preserve original leading whitespace so indented tables are unchanged
+            const prefix = sep.match(/^\s*/)?.[0] ?? ''
+            lines[i] = prefix + repaired.trimStart()
             changed = true
         }
     }
