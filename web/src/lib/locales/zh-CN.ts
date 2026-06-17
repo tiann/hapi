@@ -97,6 +97,28 @@ export default {
   'codexSync.duplicates.merge.failed.title': '重复会话合并失败',
   'codexSync.duplicates.merge.failed.body': '重复会话合并失败。',
 
+  // Claude 会话导入
+  'claudeSync.tooltip': '从 Claude 导入会话到 Hapi',
+  'claudeSync.confirm.title': '导入 Claude 会话',
+  'claudeSync.confirm.description': '选择需要导入到 Hapi 的 Claude 会话',
+  'claudeSync.confirm.selectAll': '全选',
+  'claudeSync.confirm.clearAll': '全取消',
+  'claudeSync.confirm.selectedCount': '已选择 {n} 个会话',
+  'claudeSync.confirm.empty': '未找到本地 Claude 会话',
+  'claudeSync.confirm.current': '当前关联',
+  'claudeSync.confirm.cwd': '工作目录',
+  'claudeSync.confirm.cwdFilter': '工作目录',
+  'claudeSync.confirm.cwdFilterAll': '全部工作目录',
+  'claudeSync.confirm.emptyForWorkdir': '此工作目录下没有 Claude 会话',
+  'claudeSync.confirm.confirm': '导入',
+  'claudeSync.confirm.confirming': '导入中…',
+  'claudeSync.confirm.loading': '正在读取本地 Claude 会话…',
+  'claudeSync.success.title': '导入完成',
+  'claudeSync.success.body': '已导入 {n} 个 Claude 会话到 Hapi。',
+  'claudeSync.failed.title': '导入 Claude 会话失败',
+  'claudeSync.failed.body': '导入 Claude 会话失败。',
+  'claudeSync.failed.bodyWithReason': '导入失败：{reason}',
+
   // Session list
   'session.item.path': '路径',
   'session.item.agent': '代理',
