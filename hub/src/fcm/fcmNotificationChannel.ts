@@ -1,5 +1,6 @@
 import type { Session } from '../sync/syncEngine'
 import type { NotificationChannel, TaskNotification } from '../notifications/notificationTypes'
+import type { NotificationSendContext } from '../notifications/notificationSendContext'
 import { getAgentName, getSessionName } from '../notifications/sessionInfo'
 import { formatToolArgumentsCompact, formatToolArgumentsDetailed } from '../notifications/toolArgs'
 import { extractAssistantPlainText, extractNotifySummary, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
@@ -26,7 +27,7 @@ export class FcmNotificationChannel implements NotificationChannel {
         private readonly store?: Store
     ) {}
 
-    async sendPermissionRequest(session: Session): Promise<void> {
+    async sendPermissionRequest(session: Session, ctx?: NotificationSendContext): Promise<void> {
         if (!session.active) {
             return
         }
@@ -75,10 +76,10 @@ export class FcmNotificationChannel implements NotificationChannel {
             severity: 'warning'
         })
 
-        await this.deliver(session, payload)
+        await this.deliver(session, payload, ctx)
     }
 
-    async sendReady(session: Session): Promise<void> {
+    async sendReady(session: Session, ctx?: NotificationSendContext): Promise<void> {
         if (!session.active) {
             return
         }
@@ -104,7 +105,7 @@ export class FcmNotificationChannel implements NotificationChannel {
             payload.data.notifySummary = JSON.stringify(composed.notifySummary)
         }
 
-        await this.deliver(session, payload)
+        await this.deliver(session, payload, ctx)
     }
 
     /**
@@ -200,7 +201,7 @@ export class FcmNotificationChannel implements NotificationChannel {
         return null
     }
 
-    async sendTaskNotification(session: Session, notification: TaskNotification): Promise<void> {
+    async sendTaskNotification(session: Session, notification: TaskNotification, ctx?: NotificationSendContext): Promise<void> {
         if (!session.active) {
             return
         }
@@ -224,7 +225,7 @@ export class FcmNotificationChannel implements NotificationChannel {
             severity: isFailure ? 'error' : 'success'
         })
 
-        await this.deliver(session, payload)
+        await this.deliver(session, payload, ctx)
     }
 
     private buildPayload(input: {
@@ -256,7 +257,7 @@ export class FcmNotificationChannel implements NotificationChannel {
         }
     }
 
-    private async deliver(session: Session, payload: FcmSendPayload): Promise<void> {
+    private async deliver(session: Session, payload: FcmSendPayload, ctx?: NotificationSendContext): Promise<void> {
         // Native companion is the canonical surface: always fire FCM when the
         // hub asks us to. The previous SSE-toast shortcut here meant that
         // when the operator had the PWA open in foreground, the watch got
@@ -266,7 +267,10 @@ export class FcmNotificationChannel implements NotificationChannel {
         // progress. SSE in-page toasts are still emitted by the PWA's own
         // SyncEngine event stream for users who want them; this channel's
         // job is to reach the wrist, period.
-        await this.fcmService.sendToNamespace(session.namespace, payload)
+        const result = await this.fcmService.sendToNamespace(session.namespace, payload)
+        if ((result?.sent ?? 0) > 0 && ctx?.nativeGate) {
+            ctx.nativeGate.sent = true
+        }
     }
 
     private buildSessionPath(sessionId: string): string {

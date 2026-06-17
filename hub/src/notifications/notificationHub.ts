@@ -1,6 +1,7 @@
 import type { Session, SyncEngine, SyncEvent } from '../sync/syncEngine'
 import type { SessionEndReason } from '@hapi/protocol'
 import type { NotificationChannel, NotificationHubOptions, TaskNotification } from './notificationTypes'
+import type { NotificationSendContext } from './notificationSendContext'
 import { extractMessageEventType, extractTaskNotification } from './eventParsing'
 
 export class NotificationHub {
@@ -182,9 +183,10 @@ export class NotificationHub {
     }
 
     private async notifyReady(session: Session): Promise<void> {
+        const ctx: NotificationSendContext = { nativeGate: { sent: false } }
         for (const channel of this.channels) {
             try {
-                await channel.sendReady(session)
+                await channel.sendReady(session, ctx)
             } catch (error) {
                 console.error('[NotificationHub] Failed to send ready notification:', error)
             }
@@ -192,9 +194,10 @@ export class NotificationHub {
     }
 
     private async notifyPermission(session: Session): Promise<void> {
+        const ctx: NotificationSendContext = { nativeGate: { sent: false } }
         for (const channel of this.channels) {
             try {
-                await channel.sendPermissionRequest(session)
+                await channel.sendPermissionRequest(session, ctx)
             } catch (error) {
                 console.error('[NotificationHub] Failed to send permission notification:', error)
             }
@@ -202,9 +205,10 @@ export class NotificationHub {
     }
 
     private async notifyTask(session: Session, notification: TaskNotification): Promise<void> {
+        const ctx: NotificationSendContext = { nativeGate: { sent: false } }
         for (const channel of this.channels) {
             try {
-                await channel.sendTaskNotification(session, notification)
+                await channel.sendTaskNotification(session, notification, ctx)
             } catch (error) {
                 console.error('[NotificationHub] Failed to send task notification:', error)
             }
