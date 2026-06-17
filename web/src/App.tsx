@@ -23,7 +23,7 @@ import { getAppGlobalSseSubscription, getAppSessionSseSubscription } from '@/lib
 import { LoginPrompt } from '@/components/LoginPrompt'
 import { InstallPrompt } from '@/components/InstallPrompt'
 import { OfflineBanner } from '@/components/OfflineBanner'
-import { PwaUpdateBanner } from '@/components/PwaUpdateBanner'
+import { PwaUpdateBanner, PwaUpdateBannerWithStatusOffset } from '@/components/PwaUpdateBanner'
 import { SyncingBanner } from '@/components/SyncingBanner'
 import { ReconnectingBanner } from '@/components/ReconnectingBanner'
 import { VoiceErrorBanner } from '@/components/VoiceErrorBanner'
@@ -427,14 +427,13 @@ function AppInner() {
         )
     }
 
-    const pwaBannerTopClassName = isSyncing || (sseDisconnected && !isSyncing)
-        ? 'top-12'
-        : undefined
-
     return (
         <AppContextProvider value={{ api, token, baseUrl }}>
             <VoiceProvider>
-                <PwaUpdateBanner topClassName={pwaBannerTopClassName} />
+                <PwaUpdateBannerWithStatusOffset
+                    isSyncing={isSyncing}
+                    isReconnecting={sseDisconnected && !isSyncing}
+                />
                 <SyncingBanner isSyncing={isSyncing} />
                 <ReconnectingBanner
                     isReconnecting={sseDisconnected && !isSyncing}

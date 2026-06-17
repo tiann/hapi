@@ -1,12 +1,17 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/lib/i18n-context'
-import { PwaUpdateBanner } from '@/components/PwaUpdateBanner'
+import { PwaUpdateBanner, PwaUpdateBannerWithStatusOffset } from '@/components/PwaUpdateBanner'
 
 const usePwaUpdateMock = vi.fn()
+const useVoiceOptionalMock = vi.fn()
 
 vi.mock('@/lib/pwa-update-context', () => ({
     usePwaUpdateContext: () => usePwaUpdateMock(),
+}))
+
+vi.mock('@/lib/voice-context', () => ({
+    useVoiceOptional: () => useVoiceOptionalMock(),
 }))
 
 vi.mock('@/hooks/useOnlineStatus', () => ({
@@ -33,6 +38,7 @@ function renderBanner() {
 describe('PwaUpdateBanner', () => {
     beforeEach(() => {
         vi.clearAllMocks()
+        useVoiceOptionalMock.mockReturnValue(null)
         Object.defineProperty(window, 'localStorage', {
             value: {
                 getItem: vi.fn(() => 'en'),
@@ -89,6 +95,25 @@ describe('PwaUpdateBanner', () => {
         render(
             <I18nProvider>
                 <PwaUpdateBanner topClassName="top-12" />
+            </I18nProvider>,
+        )
+
+        expect(screen.getByTestId('pwa-update-banner')).toHaveClass('top-12')
+    })
+
+    it('offsets below voice error banners when shown inside the voice provider', () => {
+        usePwaUpdateMock.mockReturnValue({
+            needRefresh: true,
+            reload: vi.fn(),
+        })
+        useVoiceOptionalMock.mockReturnValue({
+            status: 'error',
+            errorMessage: 'Mic failed',
+        })
+
+        render(
+            <I18nProvider>
+                <PwaUpdateBannerWithStatusOffset isSyncing={false} isReconnecting={false} />
             </I18nProvider>,
         )
 

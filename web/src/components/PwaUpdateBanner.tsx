@@ -2,6 +2,7 @@ import { useOnlineStatus } from '@/hooks/useOnlineStatus'
 import { usePlatform } from '@/hooks/usePlatform'
 import { usePwaUpdateContext } from '@/lib/pwa-update-context'
 import { useTranslation } from '@/lib/use-translation'
+import { useVoiceOptional } from '@/lib/voice-context'
 
 export function PwaUpdateBanner({ topClassName }: { topClassName?: string } = {}) {
     const { t } = useTranslation()
@@ -50,5 +51,23 @@ export function PwaUpdateBanner({ topClassName }: { topClassName?: string } = {}
                 </p>
             </details>
         </div>
+    )
+}
+
+export function PwaUpdateBannerWithStatusOffset({
+    isSyncing,
+    isReconnecting,
+}: {
+    isSyncing: boolean
+    isReconnecting: boolean
+}) {
+    const voice = useVoiceOptional()
+    const hasTopStatusBanner =
+        isSyncing ||
+        isReconnecting ||
+        Boolean(voice && voice.status === 'error' && voice.errorMessage)
+
+    return (
+        <PwaUpdateBanner topClassName={hasTopStatusBanner ? 'top-12' : undefined} />
     )
 }
