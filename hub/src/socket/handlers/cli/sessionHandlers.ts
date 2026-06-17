@@ -32,6 +32,11 @@ type SessionEndPayload = {
     reason?: SessionEndReason
 }
 
+type SessionReadyPayload = {
+    sid: string
+    time: number
+}
+
 type ResolveSessionAccess = (sessionId: string) => AccessResult<StoredSession>
 
 type EmitAccessError = (scope: 'session' | 'machine', id: string, reason: AccessErrorReason) => void
@@ -62,6 +67,7 @@ export type SessionHandlersDeps = {
     resolveSessionAccess: ResolveSessionAccess
     emitAccessError: EmitAccessError
     onSessionAlive?: (payload: SessionAlivePayload) => void
+    onSessionReady?: (payload: SessionReadyPayload) => void
     onSessionEnd?: (payload: SessionEndPayload) => void
     onWebappEvent?: (event: SyncEvent) => void
     onBackgroundTaskDelta?: (sessionId: string, delta: { started: number; completed: number }) => void
@@ -74,7 +80,7 @@ export type SessionHandlersDeps = {
 }
 
 export function registerSessionHandlers(socket: CliSocketWithData, deps: SessionHandlersDeps): void {
-    const { store, resolveSessionAccess, emitAccessError, onSessionAlive, onSessionEnd, onWebappEvent, onBackgroundTaskDelta, onSessionActivity, onSweepImmediateQueued, onMessagesConsumed } = deps
+    const { store, resolveSessionAccess, emitAccessError, onSessionAlive, onSessionReady, onSessionEnd, onWebappEvent, onBackgroundTaskDelta, onSessionActivity, onSweepImmediateQueued, onMessagesConsumed } = deps
 
     socket.on('message', (data: unknown) => {
         const parsed = messageSchema.safeParse(data)
@@ -277,6 +283,18 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
         onSessionAlive?.(data)
+    })
+
+    socket.on('session-ready', (data: SessionReadyPayload) => {
+        if (!data || typeof data.sid !== 'string' || typeof data.time !== 'number') {
+            return
+        }
+        const sessionAccess = resolveSessionAccess(data.sid)
+        if (!sessionAccess.ok) {
+            emitAccessError('session', data.sid, sessionAccess.reason)
+            return
+        }
+        onSessionReady?.(data)
     })
 
     socket.on('messages-consumed', (data: { sid: string; localIds: string[]; clearQueuedThinkingGrace?: boolean }) => {

@@ -1128,6 +1128,154 @@ describe('session model', () => {
         }
     })
 
+    it('defers mergeSessions for cursor reopen until session-ready (load failure leaves old row)', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const oldSession = engine.getOrCreateSession(
+                'cursor-reopen-old',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'cursor',
+                    cursorSessionId: 'cursor-csid-load-fail',
+                    cursorSessionProtocol: 'acp'
+                },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'machine-1',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+            engine.handleSessionEnd({ sid: oldSession.id, time: Date.now() })
+
+            const spawnedSession = engine.getOrCreateSession(
+                'cursor-reopen-spawned',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'cursor',
+                    cursorSessionId: 'cursor-csid-load-fail',
+                    cursorSessionProtocol: 'acp'
+                },
+                null,
+                'default'
+            )
+            const spawnedSessionId = spawnedSession.id
+
+            let mergeCalls = 0
+            const sessionCache = (engine as any).sessionCache
+            const mergeSessions = sessionCache.mergeSessions.bind(sessionCache)
+            sessionCache.mergeSessions = async (oldSessionId: string, newSessionId: string, namespace: string) => {
+                mergeCalls += 1
+                return mergeSessions(oldSessionId, newSessionId, namespace)
+            }
+
+            ;(engine as any).rpcGateway.spawnSession = async () => {
+                engine.handleSessionAlive({ sid: spawnedSessionId, time: Date.now() })
+                return { type: 'success', sessionId: spawnedSessionId }
+            }
+            ;(engine as any).waitForSessionActive = async () => true
+            ;(engine as any).waitForSessionReady = async () => 'ended'
+
+            const result = await engine.resumeSession(oldSession.id, 'default')
+
+            expect(result).toEqual({
+                type: 'error',
+                message: 'Session ended before Cursor ACP load completed',
+                code: 'resume_failed'
+            })
+            expect(mergeCalls).toBe(0)
+            expect(store.sessions.getSession(oldSession.id)).not.toBeNull()
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('mergeSessions runs for cursor reopen after session-ready', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const oldSession = engine.getOrCreateSession(
+                'cursor-reopen-old-ready',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'cursor',
+                    cursorSessionId: 'cursor-csid-load-ok',
+                    cursorSessionProtocol: 'acp'
+                },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'machine-1',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+            engine.handleSessionEnd({ sid: oldSession.id, time: Date.now() })
+
+            const spawnedSession = engine.getOrCreateSession(
+                'cursor-reopen-spawned-ready',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'cursor',
+                    cursorSessionId: 'cursor-csid-load-ok',
+                    cursorSessionProtocol: 'acp'
+                },
+                null,
+                'default'
+            )
+            const spawnedSessionId = spawnedSession.id
+
+            let mergeCalls = 0
+            const sessionCache = (engine as any).sessionCache
+            const mergeSessions = sessionCache.mergeSessions.bind(sessionCache)
+            sessionCache.mergeSessions = async (oldSessionId: string, newSessionId: string, namespace: string) => {
+                mergeCalls += 1
+                return mergeSessions(oldSessionId, newSessionId, namespace)
+            }
+
+            ;(engine as any).rpcGateway.spawnSession = async () => {
+                engine.handleSessionAlive({ sid: spawnedSessionId, time: Date.now() })
+                engine.handleSessionReady({ sid: spawnedSessionId, time: Date.now() })
+                return { type: 'success', sessionId: spawnedSessionId }
+            }
+            ;(engine as any).waitForSessionActive = async () => true
+
+            const result = await engine.resumeSession(oldSession.id, 'default')
+
+            expect(result).toEqual({ type: 'success', sessionId: spawnedSessionId })
+            expect(mergeCalls).toBe(1)
+            expect(store.sessions.getSession(oldSession.id)).toBeNull()
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('resolves a local resume target for a Codex session', () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(

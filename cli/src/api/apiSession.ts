@@ -586,6 +586,14 @@ export class ApiSessionClient extends EventEmitter {
         })
     }
 
+    /** Hub waits for this before mergeSessions on Cursor ACP reopen (tiann/hapi#939). */
+    emitSessionReady(): void {
+        this.socket.emit('session-ready', {
+            sid: this.sessionId,
+            time: Date.now()
+        })
+    }
+
     emitMessagesConsumed(localIds: string[], options?: { clearQueuedThinkingGrace?: boolean }): void {
         if (localIds.length === 0) return
         // `clearQueuedThinkingGrace` is an opt-in signal for the hub to drop

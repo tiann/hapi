@@ -138,15 +138,7 @@ import { ApiSessionClient } from '@/api/apiSession';
 
 function makeSession(sessionId: string | null): CursorSession {
     const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
-    const client = {
-        rpcHandlerManager: {
-            registerHandler: vi.fn()
-        },
-        updateMetadata: vi.fn(),
-        sendSessionEvent: vi.fn(),
-        sendAgentMessage: vi.fn(),
-        keepAlive: vi.fn()
-    } as unknown as ApiSessionClient;
+    const client = makeClient();
 
     const session = new CursorSession({
         api: {} as never,
@@ -166,6 +158,19 @@ function makeSession(sessionId: string | null): CursorSession {
     queue.close();
 
     return session;
+}
+
+function makeClient() {
+    return {
+        rpcHandlerManager: {
+            registerHandler: vi.fn()
+        },
+        updateMetadata: vi.fn(),
+        sendSessionEvent: vi.fn(),
+        sendAgentMessage: vi.fn(),
+        keepAlive: vi.fn(),
+        emitSessionReady: vi.fn()
+    } as unknown as ApiSessionClient;
 }
 
 describe('cursorAcpRemoteLauncher', () => {
@@ -265,6 +270,26 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(harness.newSessionCalled).toBe(true);
         expect(harness.loadSessionCalled).toBe(false);
         expect(session.onSessionFoundWithProtocol).toHaveBeenCalledWith('new-acp-session', 'acp');
+        expect(session.client.emitSessionReady).toHaveBeenCalledTimes(1);
+    });
+
+    it('emits session-ready after session/load succeeds', async () => {
+        const session = makeSession('resume-thread-ready');
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.loadSessionCalled).toBe(true);
+        expect(session.client.emitSessionReady).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not emit session-ready when session/load fails', async () => {
+        harness.loadSessionError = new Error('session not found');
+        const session = makeSession('old-stream-json-id');
+
+        await expect(cursorAcpRemoteLauncher(session)).rejects.toThrow(
+            /Legacy stream-json sessions cannot be loaded via ACP/
+        );
+
+        expect(session.client.emitSessionReady).not.toHaveBeenCalled();
     });
 
     it('applies debug mode immediately when setPermissionMode is called', async () => {
@@ -274,7 +299,8 @@ describe('cursorAcpRemoteLauncher', () => {
             updateMetadata: vi.fn(),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
-            keepAlive: vi.fn()
+            keepAlive: vi.fn(),
+        emitSessionReady: vi.fn()
         } as unknown as ApiSessionClient;
 
         const session = new CursorSession({
@@ -318,7 +344,8 @@ describe('cursorAcpRemoteLauncher', () => {
             updateMetadata: vi.fn(),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
-            keepAlive
+            keepAlive,
+            emitSessionReady: vi.fn()
         } as unknown as ApiSessionClient;
 
         const session = new CursorSession({
@@ -362,7 +389,8 @@ describe('cursorAcpRemoteLauncher', () => {
             updateMetadata: vi.fn(),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
-            keepAlive
+            keepAlive,
+            emitSessionReady: vi.fn()
         } as unknown as ApiSessionClient;
 
         const session = new CursorSession({
@@ -409,7 +437,8 @@ describe('cursorAcpRemoteLauncher', () => {
             updateMetadata: vi.fn(),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
-            keepAlive: vi.fn()
+            keepAlive: vi.fn(),
+        emitSessionReady: vi.fn()
         } as unknown as ApiSessionClient;
 
         const session = new CursorSession({
@@ -453,7 +482,8 @@ describe('cursorAcpRemoteLauncher', () => {
             updateMetadata: vi.fn(),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
-            keepAlive: vi.fn()
+            keepAlive: vi.fn(),
+        emitSessionReady: vi.fn()
         } as unknown as ApiSessionClient;
 
         const session = new CursorSession({
@@ -509,7 +539,8 @@ describe('cursorAcpRemoteLauncher', () => {
             updateMetadata: vi.fn(),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
-            keepAlive
+            keepAlive,
+            emitSessionReady: vi.fn()
         } as unknown as ApiSessionClient;
 
         const session = new CursorSession({
@@ -550,7 +581,8 @@ describe('cursorAcpRemoteLauncher', () => {
             updateMetadata: vi.fn(),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
-            keepAlive: vi.fn()
+            keepAlive: vi.fn(),
+        emitSessionReady: vi.fn()
         } as unknown as ApiSessionClient;
 
         const session = new CursorSession({
@@ -595,7 +627,8 @@ describe('cursorAcpRemoteLauncher', () => {
             updateMetadata: vi.fn(),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
-            keepAlive: vi.fn()
+            keepAlive: vi.fn(),
+        emitSessionReady: vi.fn()
         } as unknown as ApiSessionClient;
 
         const session = new CursorSession({
@@ -636,6 +669,7 @@ describe('cursorAcpRemoteLauncher', () => {
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
             keepAlive: vi.fn(),
+        emitSessionReady: vi.fn(),
             emitMessagesConsumed: vi.fn()
         } as unknown as ApiSessionClient;
 

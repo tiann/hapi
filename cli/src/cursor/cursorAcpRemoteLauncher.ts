@@ -105,7 +105,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     mcpServers: mcpServerList
                 });
             } catch (error) {
-                logger.warn('[cursor-acp] session/load failed', error);
+                logger.warn('[cursor-acp] session/load failed', formatAcpLoadError(error));
                 throw new Error(
                     'Failed to resume Cursor ACP session. Legacy stream-json sessions cannot be loaded via ACP.'
                 );
@@ -124,6 +124,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         if (acpSessionId !== resumeSessionId) {
             session.onSessionFoundWithProtocol(acpSessionId, 'acp');
         }
+
+        session.client.emitSessionReady();
 
         syncCursorModelsFromAcp(backend, acpSessionId);
 
@@ -434,6 +436,34 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private async handleSwitchRequest(): Promise<void> {
         await this.requestExit('switch', () => this.handleAbort());
     }
+}
+
+function formatAcpLoadError(error: unknown): Record<string, unknown> {
+    if (error instanceof Error) {
+        const record: Record<string, unknown> = {
+            name: error.name,
+            message: error.message
+        };
+        const code = (error as Error & { code?: unknown }).code;
+        if (code !== undefined) {
+            record.code = code;
+        }
+        const data = (error as Error & { data?: unknown }).data;
+        if (data !== undefined) {
+            record.data = data;
+        }
+        const cause = error.cause;
+        if (cause !== undefined) {
+            record.cause = cause instanceof Error
+                ? { name: cause.name, message: cause.message }
+                : cause;
+        }
+        return record;
+    }
+    if (typeof error === 'object' && error !== null) {
+        return { ...(error as Record<string, unknown>) };
+    }
+    return { message: String(error) };
 }
 
 function isSpawnDefaultModel(modelId: string): boolean {

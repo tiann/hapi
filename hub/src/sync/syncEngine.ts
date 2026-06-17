@@ -133,6 +133,8 @@ export class SyncEngine {
     private readonly messageService: MessageService
     private readonly rpcGateway: RpcGateway
     private inactivityTimer: NodeJS.Timeout | null = null
+    /** Sessions that emitted `session-ready` (Cursor ACP load/newSession complete). */
+    private readonly sessionReadyIds = new Set<string>()
 
     constructor(
         private readonly store: Store,
@@ -269,6 +271,9 @@ export class SyncEngine {
             this.sessionCache.refreshSession(event.sessionId)
             const after = this.sessionCache.getSession(event.sessionId)
             if (after?.metadata && !this.hasSameAgentSessionIds(before?.metadata ?? null, after.metadata)) {
+                if (!this.canRunCursorDedup(after)) {
+                    return
+                }
                 void this.sessionCache.deduplicateByAgentSessionId(event.sessionId).catch(() => {
                     // best-effort: dedup failure is harmless, web-side safety net hides remaining duplicates
                 })
@@ -306,11 +311,17 @@ export class SyncEngine {
         this.triggerDedupIfNeeded(payload.sid)
     }
 
+    handleSessionReady(payload: { sid: string; time: number }): void {
+        this.sessionReadyIds.add(payload.sid)
+        this.triggerDedupIfNeeded(payload.sid)
+    }
+
     clearQueuedThinkingGrace(sessionId: string): void {
         this.sessionCache.clearQueuedThinkingGrace(sessionId)
     }
 
     handleSessionEnd(payload: { sid: string; time: number; reason?: 'completed' | 'terminated' | 'error' }): void {
+        this.sessionReadyIds.delete(payload.sid)
         this.sessionCache.handleSessionEnd(payload)
         this.eventPublisher.emit({
             type: 'session-ended',
@@ -1162,6 +1173,17 @@ export class SyncEngine {
         // permissionMode is passed to spawnSession above; do not call set-session-config here.
         // session-alive can arrive before the CLI registers that RPC handler, which caused resume_failed.
 
+        const needsReadyBeforeMerge = spawnResult.sessionId !== access.sessionId && flavor === 'cursor'
+        if (needsReadyBeforeMerge) {
+            const readyResult = await this.waitForSessionReady(spawnResult.sessionId)
+            if (readyResult !== 'ready') {
+                const message = readyResult === 'ended'
+                    ? 'Session ended before Cursor ACP load completed'
+                    : 'Session failed to become ready'
+                return { type: 'error', message, code: 'resume_failed' }
+            }
+        }
+
         if (spawnResult.sessionId !== access.sessionId) {
             // The old session may have already been merged by the automatic dedup path
             // (triggered when the spawned CLI sets its agent session ID in metadata).
@@ -1407,9 +1429,22 @@ export class SyncEngine {
             && (prev?.cursorSessionId ?? null) === (next.cursorSessionId ?? null)
     }
 
+    private canRunCursorDedup(session: Session): boolean {
+        if (session.metadata?.flavor !== 'cursor') {
+            return true
+        }
+        if (!session.active) {
+            return true
+        }
+        return this.sessionReadyIds.has(session.id)
+    }
+
     private triggerDedupIfNeeded(sessionId: string): void {
         const session = this.sessionCache.getSession(sessionId)
         if (session?.metadata) {
+            if (!this.canRunCursorDedup(session)) {
+                return
+            }
             void this.sessionCache.deduplicateByAgentSessionId(sessionId).catch(() => {
                 // best-effort: web-side safety net hides remaining duplicates
             })
@@ -1426,6 +1461,21 @@ export class SyncEngine {
             await new Promise((resolve) => setTimeout(resolve, 250))
         }
         return false
+    }
+
+    async waitForSessionReady(sessionId: string, timeoutMs: number = 60_000): Promise<'ready' | 'ended' | 'timeout'> {
+        const start = Date.now()
+        while (Date.now() - start < timeoutMs) {
+            if (this.sessionReadyIds.has(sessionId)) {
+                return 'ready'
+            }
+            const session = this.getSession(sessionId)
+            if (!session?.active) {
+                return 'ended'
+            }
+            await new Promise((resolve) => setTimeout(resolve, 250))
+        }
+        return 'timeout'
     }
 
     async waitForSessionInactive(sessionId: string, timeoutMs: number = 15_000): Promise<boolean> {

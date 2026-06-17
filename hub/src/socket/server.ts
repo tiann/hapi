@@ -37,6 +37,7 @@ export type SocketServerDeps = {
     getSession?: (sessionId: string) => { active: boolean; namespace: string } | null
     onWebappEvent?: (event: SyncEvent) => void
     onSessionAlive?: (payload: { sid: string; time: number; thinking?: boolean; mode?: 'local' | 'remote' }) => void
+    onSessionReady?: (payload: { sid: string; time: number }) => void
     onSessionEnd?: (payload: { sid: string; time: number }) => void
     onMachineAlive?: (payload: { machineId: string; time: number }) => void
     onBackgroundTaskDelta?: (sessionId: string, delta: { started: number; completed: number }) => void
@@ -116,6 +117,7 @@ export function createSocketServer(deps: SocketServerDeps): {
         rpcRegistry,
         terminalRegistry,
         onSessionAlive: deps.onSessionAlive,
+        onSessionReady: deps.onSessionReady,
         onSessionEnd: deps.onSessionEnd,
         onMachineAlive: deps.onMachineAlive,
         onWebappEvent: deps.onWebappEvent,
