@@ -73,6 +73,26 @@ describe('repairMarkdownTables (string)', () => {
         expect(repairMarkdownTables(input)).toBe(input)
     })
 
+    it('does not pad a valid table whose header contains a code span with a pipe', () => {
+        // | `a | b` | c |  is a 2-column header; separator has 2 cells — valid
+        const input = '| `a | b` | c |\n|---|---|\n| x | y |\n'
+        expect(repairMarkdownTables(input)).toBe(input)
+    })
+
+    it('does not flip fence state when ``` appears inside a ~~~ block', () => {
+        const input = [
+            '~~~',
+            '```',
+            '| A | B | C |',
+            '|---|---|',
+            '| x | y | z |',
+            '```',
+            '~~~',
+            '',
+        ].join('\n')
+        expect(repairMarkdownTables(input)).toBe(input)
+    })
+
     it('repairs a broken table after a fenced code block closes', () => {
         const input = [
             '```',

@@ -30,9 +30,8 @@ import type { MarkdownTextPrimitiveProps } from '@assistant-ui/react-markdown'
 
 // ── Plugin array ────────────────────────────────────────────────────────────
 // Order: remarkGfm → remarkRepairTables → remarkNonHttpsAutolink → remarkStripCjkAutolink → remarkMath → remarkDisableIndentedCode → remarkFilePathLinks
-// remarkRepairTables must run immediately after remarkGfm — it uses the parsed
-// table nodes plus file.value position data to detect and repair off-by-one
-// separator rows before other transforms run.
+// remarkRepairTables must run immediately after remarkGfm — it reads file.value
+// (raw source) to pad short separator rows before remark-gfm parses the table.
 // remarkNonHttpsAutolink must run BEFORE remarkStripCjkAutolink so that the
 // CJK strip plugin sees the new link nodes and can trim trailing CJK punctuation
 // from them. Both must come before remarkMath (to avoid treating TeX as URI).
