@@ -1,11 +1,11 @@
 import { useOnlineStatus } from '@/hooks/useOnlineStatus'
-import { usePwaUpdate } from '@/hooks/usePwaUpdate'
 import { usePlatform } from '@/hooks/usePlatform'
+import { usePwaUpdateContext } from '@/lib/pwa-update-context'
 import { useTranslation } from '@/lib/use-translation'
 
 export function PwaUpdateBanner() {
     const { t } = useTranslation()
-    const { needRefresh, reload } = usePwaUpdate()
+    const { needRefresh, reload } = usePwaUpdateContext()
     const isOnline = useOnlineStatus()
     const { haptic } = usePlatform()
 

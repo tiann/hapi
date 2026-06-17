@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Outlet, useLocation, useMatchRoute, useRouter } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { getTelegramWebApp, isTelegramApp } from '@/hooks/useTelegram'
@@ -29,6 +29,7 @@ import { ReconnectingBanner } from '@/components/ReconnectingBanner'
 import { VoiceErrorBanner } from '@/components/VoiceErrorBanner'
 import { LoadingState } from '@/components/LoadingState'
 import { ToastContainer } from '@/components/ToastContainer'
+import { PwaUpdateProvider } from '@/lib/pwa-update-context'
 import { ToastProvider, useToast } from '@/lib/toast-context'
 import type { SyncEvent } from '@/types/api'
 
@@ -36,10 +37,21 @@ type ToastEvent = Extract<SyncEvent, { type: 'toast' }>
 
 const REQUIRE_SERVER_URL = requireHubUrlForLogin()
 
+function withPwaBanner(content: ReactNode) {
+    return (
+        <>
+            <PwaUpdateBanner />
+            {content}
+        </>
+    )
+}
+
 export function App() {
     return (
         <ToastProvider>
-            <AppInner />
+            <PwaUpdateProvider>
+                <AppInner />
+            </PwaUpdateProvider>
         </ToastProvider>
     )
 }
@@ -339,16 +351,16 @@ function AppInner() {
 
     // Loading auth source
     if (isAuthSourceLoading) {
-        return (
+        return withPwaBanner(
             <div className="h-full flex items-center justify-center p-4">
                 <LoadingState label={t('loading')} className="text-sm" />
-            </div>
+            </div>,
         )
     }
 
     // No auth source (browser environment, not logged in)
     if (!authSource) {
-        return (
+        return withPwaBanner(
             <LoginPrompt
                 onLogin={setAccessToken}
                 baseUrl={baseUrl}
@@ -356,12 +368,12 @@ function AppInner() {
                 setServerUrl={setServerUrl}
                 clearServerUrl={clearServerUrl}
                 requireServerUrl={REQUIRE_SERVER_URL}
-            />
+            />,
         )
     }
 
     if (needsBinding) {
-        return (
+        return withPwaBanner(
             <LoginPrompt
                 mode="bind"
                 onBind={bind}
@@ -371,16 +383,16 @@ function AppInner() {
                 clearServerUrl={clearServerUrl}
                 requireServerUrl={REQUIRE_SERVER_URL}
                 error={authError ?? undefined}
-            />
+            />,
         )
     }
 
     // Authenticating (also covers the gap before useAuth effect starts)
     if (isAuthLoading || (authSource && !token && !authError)) {
-        return (
+        return withPwaBanner(
             <div className="h-full flex items-center justify-center p-4">
                 <LoadingState label={t('authorizing')} className="text-sm" />
-            </div>
+            </div>,
         )
     }
 
@@ -388,7 +400,7 @@ function AppInner() {
     if (authError || !token || !api) {
         // If using access token and auth failed, show login again
         if (authSource.type === 'accessToken') {
-            return (
+            return withPwaBanner(
                 <LoginPrompt
                     onLogin={setAccessToken}
                     baseUrl={baseUrl}
@@ -397,12 +409,12 @@ function AppInner() {
                     clearServerUrl={clearServerUrl}
                     requireServerUrl={REQUIRE_SERVER_URL}
                     error={authError ?? t('login.error.authFailed')}
-                />
+                />,
             )
         }
 
         // Telegram auth failed
-        return (
+        return withPwaBanner(
             <div className="p-4 space-y-3">
                 <div className="text-base font-semibold">{t('login.title')}</div>
                 <div className="text-sm text-red-600">
@@ -411,13 +423,14 @@ function AppInner() {
                 <div className="text-xs text-[var(--app-hint)]">
                     Open this page from Telegram using the bot's "Open App" button (not "Open in browser").
                 </div>
-            </div>
+            </div>,
         )
     }
 
     return (
         <AppContextProvider value={{ api, token, baseUrl }}>
             <VoiceProvider>
+                <PwaUpdateBanner />
                 <SyncingBanner isSyncing={isSyncing} />
                 <ReconnectingBanner
                     isReconnecting={sseDisconnected && !isSyncing}
@@ -425,7 +438,6 @@ function AppInner() {
                 />
                 <VoiceErrorBanner />
                 <OfflineBanner />
-                <PwaUpdateBanner />
                 <div className="h-full min-h-0 flex flex-col">
                     <Outlet />
                 </div>

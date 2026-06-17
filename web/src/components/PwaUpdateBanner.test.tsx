@@ -5,8 +5,8 @@ import { PwaUpdateBanner } from '@/components/PwaUpdateBanner'
 
 const usePwaUpdateMock = vi.fn()
 
-vi.mock('@/hooks/usePwaUpdate', () => ({
-    usePwaUpdate: () => usePwaUpdateMock(),
+vi.mock('@/lib/pwa-update-context', () => ({
+    usePwaUpdateContext: () => usePwaUpdateMock(),
 }))
 
 vi.mock('@/hooks/useOnlineStatus', () => ({
