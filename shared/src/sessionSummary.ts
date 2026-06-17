@@ -56,6 +56,8 @@ export type SessionSummary = {
     pendingRequests: PendingRequest[]
     backgroundTaskCount: number
     futureScheduledMessageCount: number
+    /** Epoch ms of the soonest uninvoked future scheduled message, or null. */
+    nextScheduledAt: number | null
     model: string | null
     effort: string | null
 }
@@ -141,6 +143,7 @@ export function toSessionSummary(session: Session): SessionSummary {
         pendingRequests: getPendingRequests(session),
         backgroundTaskCount: session.backgroundTaskCount ?? 0,
         futureScheduledMessageCount: 0,
+        nextScheduledAt: null,
         model: session.model,
         effort: session.effort
     }

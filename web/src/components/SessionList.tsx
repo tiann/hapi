@@ -18,6 +18,7 @@ import { getSessionLastSeenAt } from '@/lib/sessionLastSeen'
 import { getAttentionLabel, SessionAttentionIndicator } from '@/components/SessionAttentionIndicator'
 import { HoverTooltip } from '@/components/HoverTooltip'
 import { formatRelativeTime } from '@/lib/relativeTime'
+import { formatScheduledTooltipDetail } from '@/lib/scheduledTime'
 import { getCodexImportedAt, subscribeCodexImportedSessions } from '@/lib/codexImportedSessions'
 import { formatReopenError } from '@/lib/reopenError'
 
@@ -678,7 +679,7 @@ function SessionItem(props: {
                                 <span className="block">
                                     <span className="block font-medium">{scheduledLabel}</span>
                                     <span className="mt-1 block text-[var(--app-hint)]">
-                                        {t('session.tooltip.scheduled.body')}
+                                        {formatScheduledTooltipDetail(s, t)}
                                     </span>
                                 </span>
                             </HoverTooltip>
