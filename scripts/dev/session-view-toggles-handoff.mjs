@@ -42,13 +42,13 @@ page.on('console', (msg) => consoleMessages.push(`${msg.type()}: ${msg.text()}`)
 page.on('pageerror', (err) => consoleMessages.push(`pageerror: ${err.message}`))
 
 try {
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 90000 })
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 })
 
     const login = page.getByPlaceholder('Access token')
     if (await login.isVisible({ timeout: 3000 }).catch(() => false)) {
         await login.fill(cliToken)
         await page.getByRole('button', { name: /sign in|login|connect/i }).click()
-        await page.waitForLoadState('networkidle', { timeout: 60000 })
+        await page.waitForLoadState('domcontentloaded', { timeout: 60000 })
     }
 
     await page.getByRole('button', { name: 'Files' }).first().waitFor({ state: 'visible', timeout: 60000 })
