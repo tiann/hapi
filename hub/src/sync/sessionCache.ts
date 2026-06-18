@@ -218,6 +218,9 @@ export class SessionCache {
         if (patch.model !== undefined) session.model = patch.model
         if (patch.modelReasoningEffort !== undefined) session.modelReasoningEffort = patch.modelReasoningEffort
         if (patch.effort !== undefined) session.effort = patch.effort
+        if (Object.prototype.hasOwnProperty.call(patch, 'serviceTier')) {
+            session.serviceTier = patch.serviceTier ?? null
+        }
         if (patch.permissionMode !== undefined) session.permissionMode = patch.permissionMode
         if (patch.collaborationMode !== undefined) session.collaborationMode = patch.collaborationMode
         if (patch.backgroundTaskCount !== undefined) session.backgroundTaskCount = patch.backgroundTaskCount
