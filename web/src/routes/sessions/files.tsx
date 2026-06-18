@@ -372,8 +372,8 @@ export default function FilesPage() {
             />
 
             <div className="bg-[var(--app-bg)]">
-                <div className="mx-auto w-full max-w-content p-3 border-b border-[var(--app-border)]">
-                    <div className="flex items-center gap-2 rounded-md bg-[var(--app-subtle-bg)] px-3 py-2">
+                <div className="mx-auto flex w-full max-w-content items-center gap-2 border-b border-[var(--app-border)] p-3">
+                    <div className="flex min-w-0 flex-1 items-center gap-2 rounded-md bg-[var(--app-subtle-bg)] px-3 py-2">
                         <SearchIcon className="shrink-0 text-[var(--app-hint)]" />
                         <input
                             value={searchQuery}
@@ -383,16 +383,16 @@ export default function FilesPage() {
                             autoCapitalize="none"
                             autoCorrect="off"
                         />
-                        <button
-                            type="button"
-                            onClick={handleRefresh}
-                            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)]"
-                            title={t('files.page.refreshFilesystem')}
-                            aria-label={t('files.page.refreshFilesystem')}
-                        >
-                            <RefreshIcon />
-                        </button>
                     </div>
+                    <button
+                        type="button"
+                        onClick={handleRefresh}
+                        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]"
+                        title={t('files.page.refreshFilesystem')}
+                        aria-label={t('files.page.refreshFilesystem')}
+                    >
+                        <RefreshIcon />
+                    </button>
                 </div>
             </div>
 
