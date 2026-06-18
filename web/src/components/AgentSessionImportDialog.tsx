@@ -4,7 +4,8 @@ import type {
     CodexLocalSessionSummary,
     CursorImportableSessionSummary,
     CursorImportRefusalReason,
-    CursorImportRowOutcome
+    CursorImportRowOutcome,
+    ClaudeLocalSessionSummary
 } from '@/types/api'
 import {
     Dialog,
@@ -43,6 +44,19 @@ const CURSOR_IMPORT_PICKER_LABELS = {
     emptyForWorkdir: 'cursorSync.confirm.emptyForWorkdir'
 } as const
 
+const CLAUDE_IMPORT_PICKER_LABELS = {
+    selectedCount: 'claudeSync.confirm.selectedCount',
+    selectAll: 'claudeSync.confirm.selectAll',
+    clearAll: 'claudeSync.confirm.clearAll',
+    cwdFilter: 'claudeSync.confirm.cwdFilter',
+    cwdFilterAll: 'claudeSync.confirm.cwdFilterAll',
+    cwd: 'claudeSync.confirm.cwd',
+    current: 'claudeSync.confirm.current',
+    loading: 'claudeSync.confirm.loading',
+    empty: 'claudeSync.confirm.empty',
+    emptyForWorkdir: 'claudeSync.confirm.emptyForWorkdir'
+} as const
+
 function toCodexImportSession(session: CodexLocalSessionSummary): ImportSessionSummary {
     return {
         id: session.id,
@@ -62,6 +76,18 @@ function toCursorImportSession(session: CursorImportableSessionSummary): ImportS
         lastUserMessage: session.firstUserMessage,
         cwd: session.workspacePath,
         modifiedAt: session.modifiedAt
+    }
+}
+
+function toClaudeImportSession(session: ClaudeLocalSessionSummary): ImportSessionSummary {
+    return {
+        id: session.id,
+        title: session.title,
+        lastUserMessage: session.lastUserMessage,
+        cwd: session.cwd,
+        modifiedAt: session.modifiedAt,
+        originator: session.originator,
+        cliVersion: session.cliVersion
     }
 }
 
@@ -86,6 +112,11 @@ export function AgentSessionImportDialog(props: {
     isPendingCursor: boolean
     cursorLastOutcomes: CursorImportRowOutcome[] | null
     onConfirmCursor: (uuids: string[]) => Promise<void>
+    claudeSessions: ClaudeLocalSessionSummary[]
+    currentClaudeSessionId: string | null
+    isLoadingClaude: boolean
+    isPendingClaude: boolean
+    onConfirmClaude: (sessionIds: string[]) => Promise<void>
 }) {
     const { t } = useTranslation()
     const {
@@ -104,14 +135,28 @@ export function AgentSessionImportDialog(props: {
         isLoadingCursor,
         isPendingCursor,
         cursorLastOutcomes,
-        onConfirmCursor
+        onConfirmCursor,
+        claudeSessions,
+        currentClaudeSessionId,
+        isLoadingClaude,
+        isPendingClaude,
+        onConfirmClaude
     } = props
 
     const [selectedCodexIds, setSelectedCodexIds] = useState<string[]>([])
     const [selectedCursorIds, setSelectedCursorIds] = useState<string[]>([])
+    const [selectedClaudeIds, setSelectedClaudeIds] = useState<string[]>([])
 
-    const isPending = flavor === 'codex' ? isPendingCodex : isPendingCursor
-    const isLoading = flavor === 'codex' ? isLoadingCodex : isLoadingCursor
+    const isPending = flavor === 'codex'
+        ? isPendingCodex
+        : flavor === 'cursor'
+            ? isPendingCursor
+            : isPendingClaude
+    const isLoading = flavor === 'codex'
+        ? isLoadingCodex
+        : flavor === 'cursor'
+            ? isLoadingCursor
+            : isLoadingClaude
 
     const codexImportSessions = useMemo(
         () => codexSessions.map(toCodexImportSession),
@@ -120,6 +165,10 @@ export function AgentSessionImportDialog(props: {
     const cursorImportSessions = useMemo(
         () => cursorSessions.map(toCursorImportSession),
         [cursorSessions]
+    )
+    const claudeImportSessions = useMemo(
+        () => claudeSessions.map(toClaudeImportSession),
+        [claudeSessions]
     )
 
     const cursorSessionsById = useMemo(() => {
@@ -142,6 +191,7 @@ export function AgentSessionImportDialog(props: {
         if (!isOpen) {
             setSelectedCodexIds([])
             setSelectedCursorIds([])
+            setSelectedClaudeIds([])
         }
     }, [isOpen])
 
@@ -151,8 +201,13 @@ export function AgentSessionImportDialog(props: {
             await onConfirmCodex(selectedCodexIds)
             return
         }
-        if (selectedCursorIds.length === 0 || isPendingCursor || isLoadingCursor) return
-        await onConfirmCursor(selectedCursorIds)
+        if (flavor === 'cursor') {
+            if (selectedCursorIds.length === 0 || isPendingCursor || isLoadingCursor) return
+            await onConfirmCursor(selectedCursorIds)
+            return
+        }
+        if (selectedClaudeIds.length === 0 || isPendingClaude || isLoadingClaude) return
+        await onConfirmClaude(selectedClaudeIds)
     }
 
     return (
@@ -164,7 +219,9 @@ export function AgentSessionImportDialog(props: {
                         <DialogDescription className="mt-2">
                             {flavor === 'codex'
                                 ? t('codexSync.confirm.description')
-                                : t('cursorSync.confirm.description')}
+                                : flavor === 'cursor'
+                                    ? t('cursorSync.confirm.description')
+                                    : t('claudeSync.confirm.description')}
                         </DialogDescription>
                     </DialogHeader>
                     {flavor === 'codex' ? (
@@ -217,6 +274,20 @@ export function AgentSessionImportDialog(props: {
                     >
                         {t('agentImport.flavor.cursor')}
                     </button>
+                    <button
+                        type="button"
+                        role="tab"
+                        aria-selected={flavor === 'claude'}
+                        disabled={isPending || isLoading}
+                        onClick={() => onChangeFlavor('claude')}
+                        className={`flex-1 rounded-md px-3 py-1.5 text-xs transition-colors disabled:opacity-60 ${
+                            flavor === 'claude'
+                                ? 'bg-[var(--app-secondary-bg)] text-[var(--app-fg)] shadow-sm'
+                                : 'text-[var(--app-hint)] hover:text-[var(--app-fg)]'
+                        }`}
+                    >
+                        {t('agentImport.flavor.claude')}
+                    </button>
                 </div>
 
                 {flavor === 'codex' ? (
@@ -230,7 +301,7 @@ export function AgentSessionImportDialog(props: {
                         isLoading={isLoadingCodex}
                         labels={CODEX_IMPORT_PICKER_LABELS}
                     />
-                ) : (
+                ) : flavor === 'cursor' ? (
                     <>
                         <div className="mt-3 rounded-md border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-3 py-2 text-[11px] text-[var(--app-hint)]">
                             {t('cursorSync.confirm.acpStrictHint')}
@@ -288,6 +359,17 @@ export function AgentSessionImportDialog(props: {
                             }}
                         />
                     </>
+                ) : (
+                    <SessionImportPicker
+                        isOpen={isOpen}
+                        sessions={claudeImportSessions}
+                        currentSessionId={currentClaudeSessionId}
+                        selectedSessionIds={selectedClaudeIds}
+                        onSelectionChange={setSelectedClaudeIds}
+                        isPending={isPendingClaude}
+                        isLoading={isLoadingClaude}
+                        labels={CLAUDE_IMPORT_PICKER_LABELS}
+                    />
                 )}
 
                 <div className="mt-4 flex justify-end gap-2">
@@ -306,16 +388,24 @@ export function AgentSessionImportDialog(props: {
                         disabled={
                             isPending
                             || isLoading
-                            || (flavor === 'codex' ? selectedCodexIds.length === 0 : selectedCursorIds.length === 0)
+                            || (flavor === 'codex'
+                                ? selectedCodexIds.length === 0
+                                : flavor === 'cursor'
+                                    ? selectedCursorIds.length === 0
+                                    : selectedClaudeIds.length === 0)
                         }
                     >
                         {isPending
                             ? (flavor === 'codex'
                                 ? t('codexSync.confirm.confirming')
-                                : t('cursorSync.confirm.confirming'))
+                                : flavor === 'cursor'
+                                    ? t('cursorSync.confirm.confirming')
+                                    : t('claudeSync.confirm.confirming'))
                             : (flavor === 'codex'
                                 ? t('codexSync.confirm.confirm')
-                                : t('cursorSync.confirm.confirm'))}
+                                : flavor === 'cursor'
+                                    ? t('cursorSync.confirm.confirm')
+                                    : t('claudeSync.confirm.confirm'))}
                     </Button>
                 </div>
             </DialogContent>

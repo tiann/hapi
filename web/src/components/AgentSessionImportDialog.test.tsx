@@ -6,7 +6,8 @@ import type {
     AgentImportFlavor,
     CodexLocalSessionSummary,
     CursorImportableSessionSummary,
-    CursorImportRowOutcome
+    CursorImportRowOutcome,
+    ClaudeLocalSessionSummary
 } from '@/types/api'
 
 interface RenderOpts {
@@ -23,12 +24,18 @@ interface RenderOpts {
     isPendingCursor?: boolean
     cursorLastOutcomes?: CursorImportRowOutcome[] | null
     onConfirmCursor?: (uuids: string[]) => Promise<void>
+    claudeSessions?: ClaudeLocalSessionSummary[]
+    currentClaudeSessionId?: string | null
+    isLoadingClaude?: boolean
+    isPendingClaude?: boolean
+    onConfirmClaude?: (sessionIds: string[]) => Promise<void>
 }
 
 function renderDialog(opts: RenderOpts = {}) {
     const onChangeFlavor = opts.onChangeFlavor ?? vi.fn()
     const onConfirmCodex = opts.onConfirmCodex ?? vi.fn(async () => {})
     const onConfirmCursor = opts.onConfirmCursor ?? vi.fn(async () => {})
+    const onConfirmClaude = opts.onConfirmClaude ?? vi.fn(async () => {})
     const view = render(
         <I18nProvider>
             <AgentSessionImportDialog
@@ -48,10 +55,15 @@ function renderDialog(opts: RenderOpts = {}) {
                 isPendingCursor={opts.isPendingCursor ?? false}
                 cursorLastOutcomes={opts.cursorLastOutcomes ?? null}
                 onConfirmCursor={onConfirmCursor}
+                claudeSessions={opts.claudeSessions ?? []}
+                currentClaudeSessionId={opts.currentClaudeSessionId ?? null}
+                isLoadingClaude={opts.isLoadingClaude ?? false}
+                isPendingClaude={opts.isPendingClaude ?? false}
+                onConfirmClaude={onConfirmClaude}
             />
         </I18nProvider>
     )
-    return { ...view, onChangeFlavor, onConfirmCodex, onConfirmCursor }
+    return { ...view, onChangeFlavor, onConfirmCodex, onConfirmCursor, onConfirmClaude }
 }
 
 const codexSampleSession: CodexLocalSessionSummary = {
@@ -88,6 +100,17 @@ const cursorSampleLegacyAlreadyImported: CursorImportableSessionSummary = {
     alreadyImportedHapiSessionId: 'hapi-existing-id'
 }
 
+const claudeSampleSession: ClaudeLocalSessionSummary = {
+    id: 'claude-session-1',
+    title: 'Claude session title',
+    lastUserMessage: 'Claude prompt',
+    cwd: '/home/user/claude-project',
+    file: '/home/user/.claude/projects/session.jsonl',
+    modifiedAt: Date.UTC(2026, 0, 5, 3, 4, 5),
+    originator: 'claude_cli',
+    cliVersion: '1.0.0'
+}
+
 describe('AgentSessionImportDialog', () => {
     afterEach(() => {
         cleanup()
@@ -106,6 +129,26 @@ describe('AgentSessionImportDialog', () => {
         renderDialog({ flavor: 'codex', onChangeFlavor })
         fireEvent.click(screen.getByRole('tab', { name: 'Cursor' }))
         expect(onChangeFlavor).toHaveBeenCalledWith('cursor')
+    })
+
+    it('switches to the Claude panel when the flavor tab is clicked', () => {
+        const onChangeFlavor = vi.fn()
+        renderDialog({ flavor: 'codex', onChangeFlavor })
+        fireEvent.click(screen.getByRole('tab', { name: 'Claude' }))
+        expect(onChangeFlavor).toHaveBeenCalledWith('claude')
+    })
+
+    it('renders the Claude panel and confirms selection', async () => {
+        const onConfirmClaude = vi.fn(async () => {})
+        renderDialog({
+            flavor: 'claude',
+            claudeSessions: [claudeSampleSession],
+            onConfirmClaude
+        })
+        expect(screen.getByText('Claude session title')).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('checkbox'))
+        fireEvent.click(screen.getByText('Import'))
+        await waitFor(() => expect(onConfirmClaude).toHaveBeenCalledWith(['claude-session-1']))
     })
 
     it('renders the Cursor panel with ACP / legacy badges and the ACP-strict hint', () => {
