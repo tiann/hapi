@@ -321,7 +321,7 @@ export class SyncEngine {
     }
 
     handleSessionEnd(payload: { sid: string; time: number; reason?: 'completed' | 'terminated' | 'error' }): void {
-        this.sessionReadyIds.delete(payload.sid)
+        const wasReady = this.sessionReadyIds.has(payload.sid)
         this.sessionCache.handleSessionEnd(payload)
         this.eventPublisher.emit({
             type: 'session-ended',
@@ -329,8 +329,12 @@ export class SyncEngine {
             reason: payload.reason
         })
         // Retry dedup now that this session is inactive — a prior dedup may have
-        // skipped it because it was still active at the time.
-        this.triggerDedupIfNeeded(payload.sid)
+        // skipped it because it was still active at the time. For Cursor ACP,
+        // never dedup on end unless session/load completed (session-ready).
+        if (wasReady) {
+            this.triggerDedupIfNeeded(payload.sid)
+        }
+        this.sessionReadyIds.delete(payload.sid)
     }
 
     handleBackgroundTaskDelta(sessionId: string, delta: { started: number; completed: number }): void {
@@ -1436,9 +1440,6 @@ export class SyncEngine {
             return true
         }
         if (session.metadata?.cursorSessionProtocol !== 'acp') {
-            return true
-        }
-        if (!session.active) {
             return true
         }
         return this.sessionReadyIds.has(session.id)
