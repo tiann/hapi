@@ -164,6 +164,32 @@ describe('mergeSessionHistory (deleteOldSession=false) - scratchlist transfer', 
             .sort()
         expect(ids).toEqual([oldSession.id, newSession.id].sort())
     })
+
+    it('emits scratchlistUpdatedAt on the still-alive old session when every entry collides (moved=0)', async () => {
+        // HAPI Bot PR #896: all-collision transfer deletes old rows
+        // without moving any; the old session stays visible in the
+        // mergeSessionHistory path and must still get an invalidation.
+        const { store, events, cache } = setup()
+        const { oldSession, newSession } = makeSessions(cache)
+        store.scratchlist.create(oldSession.id, 'OLD copy', { entryId: 'shared-only', createdAt: 100 })
+        store.scratchlist.create(newSession.id, 'NEW copy', { entryId: 'shared-only', createdAt: 200 })
+        events.length = 0
+
+        await cache.mergeSessionHistory(oldSession.id, newSession.id, 'default', { mergeAgentState: false })
+
+        expect(store.scratchlist.list(oldSession.id)).toEqual([])
+        expect(store.scratchlist.list(newSession.id)).toHaveLength(1)
+
+        const scratchPatches = events.filter((e) => {
+            return e.type === 'session-updated'
+                && typeof e.data === 'object' && e.data !== null
+                && 'scratchlistUpdatedAt' in (e.data as Record<string, unknown>)
+        })
+        const ids = scratchPatches
+            .map((e) => e.type === 'session-updated' ? e.sessionId : '')
+        expect(ids).toContain(oldSession.id)
+        expect(ids).not.toContain(newSession.id)
+    })
 })
 
 describe('cascade-delete safety (regression)', () => {
