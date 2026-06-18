@@ -1,8 +1,9 @@
 import { z } from 'zod'
-import { CODEX_COLLABORATION_MODES, PERMISSION_MODES } from './modes'
+import { CODEX_COLLABORATION_MODES, PERMISSION_MODES, STEERING_MODES } from './modes'
 
 export const PermissionModeSchema = z.enum(PERMISSION_MODES)
 export const CodexCollaborationModeSchema = z.enum(CODEX_COLLABORATION_MODES)
+export const SteeringModeSchema = z.enum(STEERING_MODES)
 export const SessionEndReasonSchema = z.enum(['completed', 'terminated', 'error', 'handoff'])
 export type SessionEndReason = z.infer<typeof SessionEndReasonSchema>
 
@@ -199,7 +200,10 @@ export const DecryptedMessageSchema = z.object({
     content: z.unknown(),
     createdAt: z.number(),
     invokedAt: z.number().nullable().optional(),
-    scheduledAt: z.number().nullable().optional()
+    scheduledAt: z.number().nullable().optional(),
+    // Set on the client when a message was steered into an active turn (live
+    // signal via the messages-consumed event; not persisted by the hub).
+    steered: z.boolean().optional()
 })
 
 export type DecryptedMessage = z.infer<typeof DecryptedMessageSchema>
@@ -226,7 +230,8 @@ export const SessionSchema = z.object({
     effort: z.string().nullable().optional().default(null),
     serviceTier: z.string().nullable().optional().default(null),
     permissionMode: PermissionModeSchema.optional(),
-    collaborationMode: CodexCollaborationModeSchema.optional()
+    collaborationMode: CodexCollaborationModeSchema.optional(),
+    steeringMode: SteeringModeSchema.optional()
 })
 
 export type Session = z.infer<typeof SessionSchema>
@@ -242,6 +247,7 @@ export const SessionPatchSchema = z.object({
     serviceTier: z.string().nullable().optional(),
     permissionMode: PermissionModeSchema.optional(),
     collaborationMode: CodexCollaborationModeSchema.optional(),
+    steeringMode: SteeringModeSchema.optional(),
     backgroundTaskCount: z.number().optional()
 }).strict()
 
@@ -363,7 +369,10 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
     SessionChangedSchema.extend({
         type: z.literal('messages-consumed'),
         localIds: z.array(z.string()),
-        invokedAt: z.number()
+        invokedAt: z.number(),
+        // True when the messages were steered into an active turn (not a normal
+        // queue drain) so the web can mark them as steered.
+        steered: z.boolean().optional()
     }),
     SessionChangedSchema.extend({
         type: z.literal('message-cancelled'),

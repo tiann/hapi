@@ -40,7 +40,9 @@ export type {
     OpencodePermissionMode,
     PermissionMode,
     PermissionModeOption,
-    PermissionModeTone
+    PermissionModeTone,
+    SteeringMode,
+    SteeringModeOption
 } from './modes'
 
 export type { ClaudeModelPreset, GeminiModelPreset } from './models'

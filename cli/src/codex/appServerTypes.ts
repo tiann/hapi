@@ -202,6 +202,24 @@ export interface TurnInterruptResponse {
     [key: string]: unknown;
 }
 
+/**
+ * `turn/steer` injects additional user input into the currently active turn
+ * without interrupting it. `expectedTurnId` is a precondition: the request
+ * fails if it does not match the active turn (e.g. the turn just ended, or the
+ * turn kind is non-steerable such as review/compact).
+ */
+export interface TurnSteerParams {
+    threadId: string;
+    input: UserInput[];
+    expectedTurnId: string;
+    clientUserMessageId?: string | null;
+}
+
+export interface TurnSteerResponse {
+    turnId: string;
+    [key: string]: unknown;
+}
+
 export interface ThreadCompactStartParams {
     threadId: string;
 }

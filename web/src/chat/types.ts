@@ -129,6 +129,8 @@ export type NormalizedMessage = ({
     originalText?: string
     invokedAt?: number | null
     model?: string | null
+    /** True when a user message was steered into an active turn (mid-turn). */
+    steered?: boolean
 }
 
 export type ToolPermission = {
@@ -168,6 +170,8 @@ export type UserTextBlock = {
     status?: MessageStatus
     originalText?: string
     meta?: unknown
+    /** True when this message was steered into an active turn (mid-turn). */
+    steered?: boolean
 }
 
 export type AgentTextBlock = {

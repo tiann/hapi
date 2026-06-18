@@ -1,7 +1,7 @@
 import type { ClientToServerEvents } from '@hapi/protocol'
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
-import type { CodexCollaborationMode, PermissionMode } from '@hapi/protocol/types'
+import type { CodexCollaborationMode, PermissionMode, SteeringMode } from '@hapi/protocol/types'
 import { isRedundantGoalStatusEventContent } from '@hapi/protocol/messages'
 import type { Store, StoredSession } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
@@ -24,6 +24,7 @@ type SessionAlivePayload = {
     effort?: string | null
     serviceTier?: string | null
     collaborationMode?: CodexCollaborationMode
+    steeringMode?: SteeringMode
 }
 
 type SessionEndPayload = {
@@ -297,7 +298,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         onSessionReady?.(data)
     })
 
-    socket.on('messages-consumed', (data: { sid: string; localIds: string[]; clearQueuedThinkingGrace?: boolean }) => {
+    socket.on('messages-consumed', (data: { sid: string; localIds: string[]; clearQueuedThinkingGrace?: boolean; steered?: boolean }) => {
         if (!data || typeof data.sid !== 'string' || !Array.isArray(data.localIds)) {
             return
         }
@@ -326,7 +327,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             // failure would broadcast an `invokedAt` that was never persisted —
             // live clients would hide the queued rows while a refresh / secondary
             // client would see them as queued again, diverging the state.
-            onWebappEvent?.({ type: 'messages-consumed', sessionId: data.sid, localIds, invokedAt })
+            onWebappEvent?.({ type: 'messages-consumed', sessionId: data.sid, localIds, invokedAt, ...(data.steered ? { steered: true } : {}) })
         } catch (err) {
             console.error('markMessagesInvoked failed', err)
         }

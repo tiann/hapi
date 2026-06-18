@@ -1,7 +1,8 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
-import type { CodexCollaborationMode, PermissionMode } from '@/types/api'
+import type { CodexCollaborationMode, PermissionMode, SteeringMode } from '@/types/api'
+import { isSteeringSupportedForFlavor } from '@hapi/protocol'
 import type { ReopenSessionResponse } from '@hapi/protocol/apiTypes'
 import { queryKeys } from '@/lib/query-keys'
 import { clearMessageWindow } from '@/lib/message-window-store'
@@ -19,6 +20,7 @@ export function useSessionActions(
     switchSession: () => Promise<void>
     setPermissionMode: (mode: PermissionMode) => Promise<void>
     setCollaborationMode: (mode: CodexCollaborationMode) => Promise<void>
+    setSteeringMode: (mode: SteeringMode) => Promise<void>
     setModel: (model: { provider: string; modelId: string } | string | null) => Promise<void>
     setModelReasoningEffort: (modelReasoningEffort: string | null) => Promise<void>
     setEffort: (effort: string | null) => Promise<void>
@@ -106,6 +108,19 @@ export function useSessionActions(
                 throw new Error('Collaboration mode is only supported for remote Codex sessions')
             }
             await api.setCollaborationMode(sessionId, mode)
+        },
+        onSuccess: () => void invalidateSession(),
+    })
+
+    const steeringMutation = useMutation({
+        mutationFn: async (mode: SteeringMode) => {
+            if (!api || !sessionId) {
+                throw new Error('Session unavailable')
+            }
+            if (!isSteeringSupportedForFlavor(agentFlavor)) {
+                throw new Error('Steering mode is not supported for this agent')
+            }
+            await api.setSteeringMode(sessionId, mode)
         },
         onSuccess: () => void invalidateSession(),
     })
@@ -199,6 +214,7 @@ export function useSessionActions(
         switchSession: switchMutation.mutateAsync,
         setPermissionMode: permissionMutation.mutateAsync,
         setCollaborationMode: collaborationMutation.mutateAsync,
+        setSteeringMode: steeringMutation.mutateAsync,
         setModel: modelMutation.mutateAsync,
         setModelReasoningEffort: modelReasoningEffortMutation.mutateAsync,
         setEffort: effortMutation.mutateAsync,
@@ -211,6 +227,7 @@ export function useSessionActions(
             || switchMutation.isPending
             || permissionMutation.isPending
             || collaborationMutation.isPending
+            || steeringMutation.isPending
             || modelMutation.isPending
             || modelReasoningEffortMutation.isPending
             || effortMutation.isPending

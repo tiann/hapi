@@ -6,7 +6,8 @@ import type {
     SessionEffort,
     SessionModel,
     SessionModelReasoningEffort,
-    SessionPermissionMode
+    SessionPermissionMode,
+    SessionSteeringMode
 } from '@/api/types';
 import { logger } from '@/ui/logger';
 
@@ -28,6 +29,7 @@ export type AgentSessionBaseOptions<Mode> = {
     effort?: SessionEffort;
     serviceTier?: string | null;
     collaborationMode?: SessionCollaborationMode;
+    steeringMode?: SessionSteeringMode;
 };
 
 export class AgentSessionBase<Mode> {
@@ -53,6 +55,7 @@ export class AgentSessionBase<Mode> {
     protected effort?: SessionEffort;
     protected serviceTier?: string | null;
     protected collaborationMode?: SessionCollaborationMode;
+    protected steeringMode?: SessionSteeringMode;
 
     constructor(opts: AgentSessionBaseOptions<Mode>) {
         this.path = opts.path;
@@ -72,6 +75,7 @@ export class AgentSessionBase<Mode> {
         this.effort = opts.effort;
         this.serviceTier = opts.serviceTier;
         this.collaborationMode = opts.collaborationMode;
+        this.steeringMode = opts.steeringMode;
 
         this.queue.onBatchConsumed = (localIds) => this.client.emitMessagesConsumed(localIds);
 
@@ -142,6 +146,7 @@ export class AgentSessionBase<Mode> {
             effort?: SessionEffort
             serviceTier?: string | null
             collaborationMode?: SessionCollaborationMode
+            steeringMode?: SessionSteeringMode
         } | undefined {
         if (
             this.permissionMode === undefined
@@ -150,6 +155,7 @@ export class AgentSessionBase<Mode> {
             && this.effort === undefined
             && this.serviceTier === undefined
             && this.collaborationMode === undefined
+            && this.steeringMode === undefined
         ) {
             return undefined;
         }
@@ -159,7 +165,8 @@ export class AgentSessionBase<Mode> {
             modelReasoningEffort: this.modelReasoningEffort,
             effort: this.effort,
             serviceTier: this.serviceTier,
-            collaborationMode: this.collaborationMode
+            collaborationMode: this.collaborationMode,
+            steeringMode: this.steeringMode
         };
     }
 
@@ -189,5 +196,9 @@ export class AgentSessionBase<Mode> {
 
     getCollaborationMode(): SessionCollaborationMode | undefined {
         return this.collaborationMode;
+    }
+
+    getSteeringMode(): SessionSteeringMode | undefined {
+        return this.steeringMode;
     }
 }
