@@ -176,6 +176,7 @@ export default {
   'session.action.reopenCursorCheckFailed': 'Could not verify Cursor chat data on the recorded machine.',
   'session.action.delete': 'Delete',
   'session.action.copy': 'Copy',
+  'session.action.copyReference': 'Copy reference',
 
   // Dialogs
   'dialog.uri.title': 'Open this link?',

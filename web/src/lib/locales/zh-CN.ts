@@ -176,6 +176,7 @@ export default {
   'session.action.reopenCursorCheckFailed': '无法验证记录设备上的 Cursor 聊天数据。',
   'session.action.delete': '删除',
   'session.action.copy': '复制',
+  'session.action.copyReference': '复制引用',
 
   // Dialogs
   'dialog.uri.title': '打开此链接？',
