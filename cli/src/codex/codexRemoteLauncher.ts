@@ -23,7 +23,7 @@ import type { ThreadGoal, ThreadGoalStatus } from './appServerTypes';
 import { shouldIgnoreTerminalEvent } from './utils/terminalEventGuard';
 import { parseCodexSpecialCommand } from './codexSpecialCommands';
 import { extractErrorInfo } from '@/utils/errorUtils';
-import { listLocalCodexSessionSummaries } from '@/modules/common/codexSessions';
+import { findCodexSessionFile } from '@/modules/common/codexSessions';
 import {
     RemoteLauncherBase,
     type RemoteLauncherDisplayContext,
@@ -378,10 +378,9 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 return null;
             }
             try {
-                const match = listLocalCodexSessionSummaries(Number.MAX_SAFE_INTEGER)
-                    .find((session) => session.id === threadId);
-                if (match?.file) {
-                    return match.file;
+                const transcriptPath = findCodexSessionFile(threadId);
+                if (transcriptPath) {
+                    return transcriptPath;
                 }
             } catch (error) {
                 logger.debug(`[Codex] Failed to find transcript for remote thread ${threadId}:`, error);
