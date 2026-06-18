@@ -7,6 +7,7 @@
     "scripts": {
         "dev": "vite",
         "build": "vite build && cp dist/index.html dist/404.html",
+        "build:preview": "VITE_BASE_URL=/new/ vite build --outDir dist-new && cp dist-new/index.html dist-new/404.html",
         "typecheck": "tsc --noEmit",
         "preview": "vite preview",
         "test": "vitest run"

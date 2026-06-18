@@ -209,6 +209,7 @@ export default {
   'newSession.type.worktree.desc': '在仓库旁创建新工作树',
   'newSession.type.worktree.placeholder': 'feature-x (默认 1228-xxxx)',
   'newSession.agent': '代理',
+  'newSession.advanced': '高级',
   'newSession.model': '模型',
   'newSession.effort': '思考强度',
   'newSession.model.optional': '可选',
