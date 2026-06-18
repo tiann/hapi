@@ -422,6 +422,9 @@ export function useSSE(options: {
                 if (patch.model !== undefined) nextSession.model = patch.model
                 if (patch.modelReasoningEffort !== undefined) nextSession.modelReasoningEffort = patch.modelReasoningEffort
                 if (patch.effort !== undefined) nextSession.effort = patch.effort
+                if (Object.prototype.hasOwnProperty.call(patch, 'serviceTier')) {
+                    nextSession.serviceTier = patch.serviceTier ?? null
+                }
                 if (patch.permissionMode !== undefined) nextSession.permissionMode = patch.permissionMode
                 if (patch.collaborationMode !== undefined) nextSession.collaborationMode = patch.collaborationMode
                 if (patch.backgroundTaskCount !== undefined) nextSession.backgroundTaskCount = patch.backgroundTaskCount
