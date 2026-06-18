@@ -121,10 +121,11 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         if (todos) {
             const updated = store.sessions.setSessionTodos(sid, todos, msg.createdAt, session.namespace)
             if (updated) {
+                const stored = store.sessions.getSession(sid)
                 onWebappEvent?.({
                     type: 'session-updated',
                     sessionId: sid,
-                    data: { todos }
+                    data: { todos, updatedAt: stored?.updatedAt ?? msg.createdAt }
                 })
             }
         }
@@ -136,6 +137,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             const newTeamState = applyTeamStateDelta(existingTeamState ?? null, teamDelta)
             const updated = store.sessions.setSessionTeamState(sid, newTeamState, msg.createdAt, session.namespace)
             if (updated) {
+                const stored = store.sessions.getSession(sid)
                 // Preserve null in the wire payload so TeamDelete events
                 // tell consumers "clear this" instead of collapsing to an
                 // empty patch on JSON serialization (`undefined` drops the
@@ -145,7 +147,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
                 onWebappEvent?.({
                     type: 'session-updated',
                     sessionId: sid,
-                    data: { teamState: newTeamState }
+                    data: { teamState: newTeamState, updatedAt: stored?.updatedAt ?? msg.createdAt }
                 })
             }
         }
@@ -216,6 +218,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         }
 
         if (result.result === 'success') {
+            const stored = store.sessions.getSession(sid)
             const update = {
                 id: randomUUID(),
                 seq: Date.now(),
@@ -242,7 +245,10 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
                 // both ends. Keeping the broadcast shape identical to the socket.io
                 // `update-session` body (line ~213) lets the same patch travel
                 // through both fan-out channels without divergence.
-                data: { metadata: { version: result.version, value: result.value as Metadata | null } }
+                data: {
+                    metadata: { version: result.version, value: result.value as Metadata | null },
+                    updatedAt: stored?.updatedAt ?? Date.now()
+                }
             })
         }
     }
@@ -278,6 +284,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         }
 
         if (result.result === 'success') {
+            const stored = store.sessions.getSession(sid)
             const update = {
                 id: randomUUID(),
                 seq: Date.now(),
@@ -293,7 +300,10 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             onWebappEvent?.({
                 type: 'session-updated',
                 sessionId: sid,
-                data: { agentState: { version: result.version, value: agentState as AgentState | null } }
+                data: {
+                    agentState: { version: result.version, value: agentState as AgentState | null },
+                    updatedAt: stored?.updatedAt ?? Date.now()
+                }
             })
         }
     }

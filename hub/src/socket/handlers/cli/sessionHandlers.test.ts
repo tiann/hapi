@@ -118,6 +118,8 @@ describe('cli session handlers', () => {
                 { content: 'done thing', status: 'completed' }
             ]
         })
+        expect(typeof (sessionUpdated.data as { updatedAt?: number }).updatedAt).toBe('number')
+        expect((sessionUpdated.data as { updatedAt?: number }).updatedAt).toBeGreaterThan(0)
     })
 
     it('emits a structured metadata patch on update-metadata RPC (closes second half of #884)', () => {
@@ -155,7 +157,7 @@ describe('cli session handlers', () => {
         const sessionUpdated = webEvents.find((e) => e.type === 'session-updated')
         expect(sessionUpdated).toBeDefined()
         if (!sessionUpdated || sessionUpdated.type !== 'session-updated') return
-        const data = sessionUpdated.data as { metadata?: { version: number; value: Record<string, unknown> } } | undefined
+        const data = sessionUpdated.data as { metadata?: { version: number; value: Record<string, unknown> }; updatedAt?: number } | undefined
         expect(data?.metadata?.version).toBe(session.metadataVersion + 1)
         // Merged value: original path/host preserved + new lifecycleState applied.
         expect(data?.metadata?.value).toMatchObject({
@@ -163,6 +165,8 @@ describe('cli session handlers', () => {
             host: 'example',
             lifecycleState: 'archived'
         })
+        expect(typeof data?.updatedAt).toBe('number')
+        expect(data?.updatedAt).toBeGreaterThan(session.updatedAt)
     })
 
     it('emits a structured agentState patch on update-state RPC (closes second half of #884)', () => {
@@ -200,9 +204,14 @@ describe('cli session handlers', () => {
         const sessionUpdated = webEvents.find((e) => e.type === 'session-updated')
         expect(sessionUpdated).toBeDefined()
         if (!sessionUpdated || sessionUpdated.type !== 'session-updated') return
-        const data = sessionUpdated.data as { agentState?: { version: number; value: { controlledByUser?: boolean } } } | undefined
+        const data = sessionUpdated.data as {
+            agentState?: { version: number; value: { controlledByUser?: boolean } }
+            updatedAt?: number
+        } | undefined
         expect(data?.agentState?.version).toBe(session.agentStateVersion + 1)
         expect(data?.agentState?.value).toMatchObject({ controlledByUser: true })
+        expect(typeof data?.updatedAt).toBe('number')
+        expect(data?.updatedAt).toBeGreaterThan(session.updatedAt)
     })
 
     it('update-metadata broadcasts the merged value, not the pre-merge payload', () => {
