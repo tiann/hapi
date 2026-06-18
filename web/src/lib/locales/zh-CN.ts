@@ -157,6 +157,7 @@ export default {
   'session.action.reopen': '重新打开',
   'session.action.delete': '删除',
   'session.action.copy': '复制',
+  'session.action.copyReference': '复制引用',
 
   // Dialogs
   'dialog.uri.title': '打开此链接？',
