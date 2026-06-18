@@ -779,18 +779,17 @@ export class SessionCache {
         // promise that scratchlist survives reloads.
         const movedScratchlist = this.store.scratchlist.transfer(oldSessionId, newSessionId)
         if (movedScratchlist.moved > 0) {
-            // Fire on the new id so any remote-control web client
-            // looking at the consolidated session re-fetches and shows
-            // the migrated rows. For the keep-old codepath
-            // (`mergeSessionHistory`) the old session also stays
-            // visible but is now empty of scratchlist - emit so its
-            // viewer's cache invalidates too. For the delete codepath
-            // we skip the old emit because `session-removed` is about
-            // to fire and the new id is where the operator lands.
+            // Rows landed on the consolidated session - invalidate so
+            // any client on the new id refetches.
             this.emitScratchlistChanged(newSessionId)
-            if (!options.deleteOldSession) {
-                this.emitScratchlistChanged(oldSessionId)
-            }
+        }
+        if (!options.deleteOldSession && (movedScratchlist.moved > 0 || movedScratchlist.collided > 0)) {
+            // HAPI Bot PR #896: when every old entry collides (moved=0,
+            // collided>0) the transfer still deletes rows from the
+            // still-alive old session. Emit even when moved=0 so web
+            // clients viewing the old id drop stale cache entries that
+            // would 404 on edit/delete.
+            this.emitScratchlistChanged(oldSessionId)
         }
 
         const mergedMetadata = this.mergeSessionMetadata(oldStored.metadata, newStored.metadata)
