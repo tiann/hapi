@@ -164,9 +164,9 @@ describe('createRunnerLifecycle archiveReason defaults (tiann/hapi#914)', () => 
     // The setSessionEndReason setter flips the default when the runner
     // transitions to 'completed'.
     it('setSessionEndReason("completed") flips the default reason to "Session completed"', async () => {
-        const session = makeFakeSession()
+        const session = createMockApiSessionWithMetadataCapture()
         const lifecycle = createRunnerLifecycle({
-            session: session as unknown as Parameters<typeof createRunnerLifecycle>[0]['session'],
+            session,
             logTag: 'test'
         })
 
@@ -179,9 +179,9 @@ describe('createRunnerLifecycle archiveReason defaults (tiann/hapi#914)', () => 
     })
 
     it('an explicit setArchiveReason before setSessionEndReason("completed") still wins', async () => {
-        const session = makeFakeSession()
+        const session = createMockApiSessionWithMetadataCapture()
         const lifecycle = createRunnerLifecycle({
-            session: session as unknown as Parameters<typeof createRunnerLifecycle>[0]['session'],
+            session,
             logTag: 'test'
         })
 
