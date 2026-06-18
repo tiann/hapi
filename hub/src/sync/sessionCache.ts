@@ -1,4 +1,5 @@
 import { AgentStateSchema, MetadataSchema, TeamStateSchema } from '@hapi/protocol/schemas'
+import { resolveCursorRemoteProtocol } from '@hapi/protocol/cursorProtocol'
 import type { CodexCollaborationMode, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
 import type { Store } from '../store'
 import { clampAliveTime } from './aliveTime'
@@ -1169,7 +1170,7 @@ export class SessionCache {
                             const candidateMetadata = candidate?.metadata
                             const isArchivedCursorAcp = candidateMetadata?.lifecycleState === 'archived'
                                 && candidateMetadata?.flavor === 'cursor'
-                                && (candidateMetadata?.cursorSessionProtocol ?? 'acp') === 'acp'
+                                && resolveCursorRemoteProtocol(candidateMetadata) === 'acp'
                             if (isArchivedCursorAcp && !this.hasSessionReadyEvent(targetId)) {
                                 continue
                             }

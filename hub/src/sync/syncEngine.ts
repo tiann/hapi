@@ -8,6 +8,7 @@
  */
 
 import { isKnownFlavor, type LocalResumeTarget, type ResumableSession } from '@hapi/protocol'
+import { resolveCursorRemoteProtocol } from '@hapi/protocol/cursorProtocol'
 import type { CursorMigrateOutcome, CursorMigrateToAcpRequest, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, CodexCollaborationMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
@@ -1206,7 +1207,7 @@ export class SyncEngine {
 
         const needsReadyBeforeMerge = spawnResult.sessionId !== access.sessionId
             && flavor === 'cursor'
-            && metadata.cursorSessionProtocol === 'acp'
+            && resolveCursorRemoteProtocol(metadata) === 'acp'
         if (needsReadyBeforeMerge) {
             const readyResult = await this.waitForSessionReady(spawnResult.sessionId)
             if (readyResult !== 'ready') {
