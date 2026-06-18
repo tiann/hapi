@@ -432,6 +432,28 @@ describe('useHubScratchlist - localStorage migration', () => {
         expect(parsed[0]?.text).toBe('another')
     })
 
+    it('does not retry failed migration in a tight loop within the same mount (HAPI Bot, PR #896)', async () => {
+        const sid = makeSid()
+        seedV1Entries(sid)
+        const create = vi.fn(async () => {
+            throw new Error('HTTP 409: scratchlist_at_cap')
+        })
+        const api = createMockApi({
+            getScratchlist: async () => ({ entries: [] }),
+            createScratchlistEntry: create
+        })
+        const { result } = renderHook(() => useHubScratchlist(sid, api), { wrapper: createWrapper() })
+        await waitFor(() => expect(create).toHaveBeenCalledTimes(2))
+        await waitFor(() => expect(result.current.migrationStatus).toBe('idle'))
+        const callsAfterFailure = create.mock.calls.length
+
+        // Let any spurious effect churn settle - must not hammer the hub.
+        await act(async () => {
+            await new Promise((r) => setTimeout(r, 100))
+        })
+        expect(create).toHaveBeenCalledTimes(callsAfterFailure)
+    })
+
     it('does NOT mirror an empty hub fetch into localStorage before migration runs (HAPI Bot, PR #896)', async () => {
         // Pre-fix the offline-cache effect would clobber the v1
         // entries with `[]` the moment the initial fetch returned an
