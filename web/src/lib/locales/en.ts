@@ -103,6 +103,7 @@ export default {
   'agentImport.flavor.label': 'Choose source agent',
   'agentImport.flavor.codex': 'Codex',
   'agentImport.flavor.cursor': 'Cursor',
+  'agentImport.flavor.claude': 'Claude',
 
   'cursorSync.confirm.description': 'Choose Cursor chats to import into Hapi. Strict ACP-only: any chat that fails the ACP verify probe is unimportable.',
   'cursorSync.confirm.selectedCount': '{n} chats selected',

@@ -102,6 +102,7 @@ export default {
   'agentImport.flavor.label': '选择来源代理',
   'agentImport.flavor.codex': 'Codex',
   'agentImport.flavor.cursor': 'Cursor',
+  'agentImport.flavor.claude': 'Claude',
 
   'cursorSync.confirm.description': '选择要导入 Hapi 的 Cursor 聊天。严格 ACP 模式：任何无法通过 ACP 校验的会话都不可导入。',
   'cursorSync.confirm.selectedCount': '已选 {n} 个聊天',
