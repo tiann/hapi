@@ -374,6 +374,8 @@ type SessionChatProps = {
     // user dismisses or starts editing.
     sendError?: ComposerSendError | null
     onClearSendError?: () => void
+    initialOutlineOpen?: boolean
+    onInitialOutlineConsumed?: () => void
 }
 
 /**
@@ -407,7 +409,15 @@ function SessionChatInner(props: SessionChatProps) {
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
     const visibleGroupsRef = useRef<ToolGroupBlock[]>([])
     const [forceScrollToken, setForceScrollToken] = useState(0)
-    const [outlineOpen, setOutlineOpen] = useState(false)
+    const [outlineOpen, setOutlineOpen] = useState(props.initialOutlineOpen ?? false)
+    useEffect(() => {
+        if (!props.initialOutlineOpen) {
+            return
+        }
+        setOutlineOpen(true)
+        props.onInitialOutlineConsumed?.()
+    }, [props.initialOutlineOpen, props.onInitialOutlineConsumed])
+
     const [cursorSelectedBase, setCursorSelectedBase] = useState('auto')
     const lastSyncedCursorModelRef = useRef<string | null | undefined>(undefined)
     const scratchlist = useScratchlist(props.session.id)
@@ -995,12 +1005,17 @@ function SessionChatInner(props: SessionChatProps) {
         props.onRefresh()
     }, [switchSession, props.onRefresh])
 
-    const handleViewFiles = useCallback(() => {
+    const handleToggleFiles = useCallback(() => {
+        setOutlineOpen(false)
         navigate({
             to: '/sessions/$sessionId/files',
             params: { sessionId: props.session.id }
         })
     }, [navigate, props.session.id])
+
+    const handleToggleOutline = useCallback(() => {
+        setOutlineOpen((open) => !open)
+    }, [])
 
     const handleViewTerminal = useCallback(() => {
         navigate({
@@ -1089,8 +1104,10 @@ function SessionChatInner(props: SessionChatProps) {
             <SessionHeader
                 session={props.session}
                 onBack={props.onBack}
-                onViewFiles={props.session.metadata?.path ? handleViewFiles : undefined}
-                onOpenOutline={() => setOutlineOpen(true)}
+                onToggleFiles={props.session.metadata?.path ? handleToggleFiles : undefined}
+                filesActive={false}
+                onToggleOutline={handleToggleOutline}
+                outlineActive={outlineOpen}
                 api={props.api}
                 onSessionDeleted={props.onBack}
                 onSessionReopened={(newSessionId) => {

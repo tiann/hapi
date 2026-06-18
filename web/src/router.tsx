@@ -10,6 +10,7 @@ import {
     useMatchRoute,
     useNavigate,
     useParams,
+    useSearch,
 } from '@tanstack/react-router'
 import { getScrollRestorationKey } from '@/lib/scrollRestorationKey'
 import { App } from '@/App'
@@ -609,6 +610,7 @@ function SessionPage() {
     const queryClient = useQueryClient()
     const { addToast } = useToast()
     const { sessionId } = useParams({ from: '/sessions/$sessionId' })
+    const { outline } = useSearch({ from: '/sessions/$sessionId' })
     const {
         session,
         error: sessionError,
@@ -856,6 +858,14 @@ function SessionPage() {
         void refetchMessages()
     }, [refetchMessages, refetchSession])
 
+    const handleInitialOutlineConsumed = useCallback(() => {
+        navigate({
+            to: '/sessions/$sessionId',
+            params: { sessionId },
+            replace: true,
+        })
+    }, [navigate, sessionId])
+
     if (!session) {
         if (sessionError) {
             return (
@@ -912,6 +922,8 @@ function SessionPage() {
             availableSlashCommands={slashCommands}
             sendError={sendError}
             onClearSendError={clearSendError}
+            initialOutlineOpen={outline}
+            onInitialOutlineConsumed={handleInitialOutlineConsumed}
         />
     )
 }
@@ -1097,6 +1109,10 @@ const sessionsIndexRoute = createRoute({
 const sessionDetailRoute = createRoute({
     getParentRoute: () => sessionsRoute,
     path: '$sessionId',
+    validateSearch: (search: Record<string, unknown>): { outline?: boolean } => {
+        const outline = search.outline === true || search.outline === 'true'
+        return outline ? { outline: true } : {}
+    },
     component: SessionDetailRoute,
 })
 
