@@ -22,6 +22,7 @@ import {
     type ListOpencodeModelsForCwdRequest,
     type ListOpencodeModelsForCwdResponse
 } from '../modules/common/opencodeModels'
+import { findCodexSessionPath } from '../modules/common/codexSessions'
 import type { SpawnSessionOptions, SpawnSessionResult } from '../modules/common/rpcTypes'
 import { applyVersionedAck } from './versionedUpdate'
 import { buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
@@ -265,6 +266,17 @@ export class ApiMachineClient {
             const resolvedDirectory = await this.resolveForWorkspaceCheck(directory)
             if (!this.isWithinWorkspaceRoots(resolvedDirectory)) {
                 return { type: 'error', errorMessage: 'Directory is outside this machine\'s workspace roots' }
+            }
+
+            if (agent === 'codex' && resumeSessionId && this.normalizedWorkspaceRoots?.length) {
+                const codexSessionPath = await findCodexSessionPath(resumeSessionId)
+                if (!codexSessionPath) {
+                    return { type: 'error', errorMessage: 'Codex session path is unavailable or outside workspace roots' }
+                }
+                const resolvedCodexSessionPath = await this.resolveForWorkspaceCheck(codexSessionPath)
+                if (!this.isWithinWorkspaceRoots(resolvedCodexSessionPath)) {
+                    return { type: 'error', errorMessage: 'Codex session is outside this machine\'s workspace roots' }
+                }
             }
 
             const result = await spawnSession({

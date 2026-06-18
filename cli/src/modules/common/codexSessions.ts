@@ -368,6 +368,18 @@ export async function findCodexSessionFile(sessionId: string): Promise<string | 
     return null;
 }
 
+export async function findCodexSessionPath(sessionId: string): Promise<string | null> {
+    const filePath = await findCodexSessionFile(sessionId);
+    if (!filePath) return null;
+    const lines = await readJsonlLines(filePath);
+    if (!lines) return null;
+    for (const line of lines.slice(0, 100)) {
+        const parsed = parseSessionLine(line);
+        if (parsed?.path) return parsed.path;
+    }
+    return null;
+}
+
 export async function findCodexSessionTitle(sessionId: string): Promise<string | null> {
     if (!sessionId.trim()) {
         return null;
