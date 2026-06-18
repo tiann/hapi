@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
 import { queryKeys } from '@/lib/query-keys'
@@ -155,7 +155,11 @@ export function useHubScratchlist(
     dismissMigrationBanner: () => void
 } {
     const queryClient = useQueryClient()
-    const queryKey = queryKeys.scratchlist(sessionId)
+    // Stable identity: queryKeys.scratchlist() returns a fresh array
+    // each call; without useMemo the migration effect's queryKey dep
+    // changes every render and re-triggers after a failed POST clears
+    // migrationAttemptedRef (tight retry loop on persistent 409/offline).
+    const queryKey = useMemo(() => queryKeys.scratchlist(sessionId), [sessionId])
     const enabled = Boolean(api && sessionId)
     const migrationAttemptedRef = useRef(false)
     const [migrationStatus, setMigrationStatus] = useState<ScratchlistMigrationStatus>(() => {
