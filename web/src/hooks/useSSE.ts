@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
     computePendingRequestKinds,
+    computePendingRequests,
+    computePendingRequestsCount,
     computeTodoProgress,
     isObject,
     toSessionSummary,
@@ -386,9 +388,9 @@ export function useSSE(options: {
                     nextSummary.todoProgress = computeTodoProgress(patch.todos)
                 }
                 if (patch.agentState !== undefined && patch.agentState.version >= detailAgentStateVersion) {
-                    const requests = patch.agentState.value?.requests
-                    nextSummary.pendingRequestsCount = requests ? Object.keys(requests).length : 0
+                    nextSummary.pendingRequestsCount = computePendingRequestsCount(patch.agentState.value)
                     nextSummary.pendingRequestKinds = computePendingRequestKinds(patch.agentState.value)
+                    nextSummary.pendingRequests = computePendingRequests(patch.agentState.value, nextSummary.updatedAt)
                 }
                 if (patch.metadata !== undefined && patch.metadata.version >= detailMetadataVersion) {
                     nextSummary.metadata = toSessionSummaryMetadata(patch.metadata.value)
