@@ -343,13 +343,16 @@ export function useHubScratchlist(
             }
         },
         onSuccess: (data, _variables, context) => {
-            // Replace the optimistic entry with the hub-canonical row so
-            // subsequent updates target the real entryId. If the cache
-            // already invalidated (SSE round-trip beat the response),
-            // the canonical row will arrive via refetch anyway.
+            // Replace the optimistic entry with the hub-canonical row.
+            // If SSE invalidation/refetch landed the canonical row before
+            // POST resolved, also drop any existing row with the same
+            // entryId so we do not show duplicates client-side.
             queryClient.setQueryData<ScratchlistResponse>(queryKey, (prev) => {
                 if (!prev) return { entries: [data.entry] }
-                const without = prev.entries.filter((e) => e.entryId !== context?.optimisticEntryId)
+                const without = prev.entries.filter((e) =>
+                    e.entryId !== context?.optimisticEntryId
+                    && e.entryId !== data.entry.entryId
+                )
                 return { entries: [data.entry, ...without] }
             })
         }
