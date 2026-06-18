@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { logger } from '@/ui/logger';
+import { JsonLineParser } from '@/utils/jsonLineParser';
 import { killProcessByChildProcess } from '@/utils/process';
 import type {
     CollaborationModeListResponse,
@@ -71,10 +72,9 @@ function createAbortError(): Error {
     return error;
 }
 
-export class CodexAppServerClient {
+export class CodexAppServerClient extends JsonLineParser {
     private process: ChildProcessWithoutNullStreams | null = null;
     private connected = false;
-    private buffer = '';
     private nextId = 1;
     private readonly pending = new Map<number, PendingRequest>();
     private readonly requestHandlers = new Map<string, RequestHandler>();
@@ -105,7 +105,7 @@ export class CodexAppServerClient {
         });
 
         this.process.stdout.setEncoding('utf8');
-        this.process.stdout.on('data', (chunk) => this.handleStdout(chunk));
+        this.process.stdout.on('data', (chunk) => this.feed(chunk));
 
         this.process.stderr.setEncoding('utf8');
         this.process.stderr.on('data', (chunk) => {
@@ -364,23 +364,7 @@ export class CodexAppServerClient {
         this.writePayload(payload);
     }
 
-    private handleStdout(chunk: string): void {
-        this.buffer += chunk;
-        let newlineIndex = this.buffer.indexOf('\n');
-
-        while (newlineIndex >= 0) {
-            const line = this.buffer.slice(0, newlineIndex).trim();
-            this.buffer = this.buffer.slice(newlineIndex + 1);
-
-            if (line.length > 0) {
-                this.handleLine(line);
-            }
-
-            newlineIndex = this.buffer.indexOf('\n');
-        }
-    }
-
-    private handleLine(line: string): void {
+    protected handleLine(line: string): void {
         if (this.protocolError) {
             return;
         }
@@ -492,7 +476,7 @@ export class CodexAppServerClient {
     }
 
     private resetParserState(): void {
-        this.buffer = '';
+        this.reset();
         this.protocolError = null;
     }
 

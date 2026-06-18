@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ApiClient } from '@/api/client'
 import { FileIcon } from '@/components/FileIcon'
 import { useSessionDirectory } from '@/hooks/queries/useSessionDirectory'
@@ -171,13 +171,40 @@ function DirectoryNode(props: {
     )
 }
 
+const STORAGE_KEY_PREFIX = 'hapi-dir-expanded-'
+
+function readExpanded(sessionId: string): Set<string> {
+    try {
+        const raw = sessionStorage.getItem(STORAGE_KEY_PREFIX + sessionId)
+        if (raw) {
+            const parsed = JSON.parse(raw)
+            if (Array.isArray(parsed)) return new Set(parsed as string[])
+        }
+    } catch {
+        // ignore
+    }
+    return new Set([''])
+}
+
+function writeExpanded(sessionId: string, expanded: Set<string>) {
+    try {
+        sessionStorage.setItem(STORAGE_KEY_PREFIX + sessionId, JSON.stringify([...expanded]))
+    } catch {
+        // ignore
+    }
+}
+
 export function DirectoryTree(props: {
     api: ApiClient | null
     sessionId: string
     rootLabel: string
     onOpenFile: (path: string) => void
 }) {
-    const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['']))
+    const [expanded, setExpanded] = useState<Set<string>>(() => readExpanded(props.sessionId))
+
+    useEffect(() => {
+        writeExpanded(props.sessionId, expanded)
+    }, [props.sessionId, expanded])
 
     const handleToggle = useCallback((path: string) => {
         setExpanded((prev) => {

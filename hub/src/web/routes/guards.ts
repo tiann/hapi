@@ -27,7 +27,11 @@ export function requireSession(
         return c.json({ error }, status)
     }
     if (options?.requireActive && !access.session.active) {
-        return c.json({ error: 'Session is inactive' }, 409)
+        // `code` lets the web client discriminate the inactive-session 409 from
+        // other 4xx without string-matching the human message (which is i18n'd
+        // by the consumer and may change).  See web onError handler in
+        // router.tsx which surfaces a Reopen affordance on this code.
+        return c.json({ error: 'Session is inactive', code: 'session_inactive' }, 409)
     }
     return { sessionId: access.sessionId, session: access.session }
 }

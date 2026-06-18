@@ -91,9 +91,10 @@ function inferSkuParamHints(slug: string): Record<string, string> {
         hints.reasoning = 'none';
     }
 
-    if (lower.endsWith('-fast') || lower.includes('-fast')) {
-        hints.fast = 'true';
-    }
+    // Cursor CLI convention: `-fast` suffix means fast=true; absence means fast=false.
+    // Without an explicit hint, base-only SKUs (e.g. `composer-2.5`) would tie-break to the
+    // first wire and silently coerce to the fast variant.
+    hints.fast = lower.includes('-fast') ? 'true' : 'false';
 
     if (lower.includes('thinking')) {
         hints.thinking = 'true';

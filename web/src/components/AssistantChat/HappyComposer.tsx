@@ -12,7 +12,7 @@ import {
     useRef,
     useState
 } from 'react'
-import type { AgentState, CodexCollaborationMode, PermissionMode, SteeringMode, ThreadGoal } from '@/types/api'
+import type { AgentState, CodexCollaborationMode, PermissionMode, PiModelSummary, SteeringMode, ThreadGoal } from '@/types/api'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import type { ConversationStatus } from '@/realtime/types'
 import { useActiveWord } from '@/hooks/useActiveWord'
@@ -20,7 +20,8 @@ import { useActiveSuggestions } from '@/hooks/useActiveSuggestions'
 import { applySuggestion } from '@/utils/applySuggestion'
 import { usePlatform } from '@/hooks/usePlatform'
 import { usePWAInstall } from '@/hooks/usePWAInstall'
-import { supportsEffort, supportsModelChange } from '@hapi/protocol'
+import { supportsEffort, supportsModelChange, PI_THINKING_LEVEL_LABELS } from '@hapi/protocol'
+import type { PiThinkingLevel } from '@hapi/protocol'
 import { markSkillUsed } from '@/lib/recent-skills'
 import { useComposerDraft } from '@/hooks/useComposerDraft'
 import { useComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
@@ -34,6 +35,10 @@ import { useTranslation } from '@/lib/use-translation'
 import { getModelOptionsForFlavor, getNextModelForFlavor } from './modelOptions'
 import { getClaudeComposerEffortOptions } from './claudeEffortOptions'
 import { getCodexComposerReasoningEffortOptions } from './codexReasoningEffortOptions'
+import { getPiThinkingLevelOptions, getHighestThinkingLevel, isThinkingLevelSupported } from './piThinkingLevelOptions'
+import { groupModelsByProvider } from './piModelGroups'
+import { PiModelPanel } from './PiModelPanel'
+import { PiThinkingLevelPanel } from './PiThinkingLevelPanel'
 
 export interface TextInputState {
     text: string
@@ -51,6 +56,10 @@ export interface TextInputState {
  *   or null for an immediate send.  When non-null, the composer also
  *   restores the schedule via `onSchedule` so the operator can edit and
  *   retry without silently downgrading a scheduled send to immediate.
+ * - `action` is an optional recovery affordance rendered as a button next
+ *   to the message.  Used by the inactive-session branch (#918) to expose
+ *   a one-click Reopen.  Other failure modes (5xx, network, generic 4xx)
+ *   leave this null and only render the message.
  *
  * Owned by the route component (`router.tsx`); the composer is a pure
  * consumer that:
@@ -63,6 +72,11 @@ export type ComposerSendError = {
     text: string
     message: string
     scheduledAt: number | null
+    action?: {
+        label: string
+        onClick: () => void
+        pending?: boolean
+    } | null
 }
 
 const defaultSuggestionHandler = async (): Promise<Suggestion[]> => []
@@ -88,6 +102,11 @@ export function HappyComposer(props: {
     controlledByUser?: boolean
     agentFlavor?: string | null
     availableModelOptions?: Array<{ value: string | null; label: string }>
+    /** Full Pi model data with thinkingLevelMap for provider grouping + thinking level filtering */
+    piModels?: PiModelSummary[]
+    /** Pi: provider-qualified selected model from metadata (survives reload;
+     *  disambiguates when two providers share a modelId). */
+    piSelectedModel?: { provider: string; modelId: string } | null
     availableModelReasoningEffortOptions?: Array<{ value: string; name?: string }>
     /** Cursor: selected base model key (not wire id). */
     selectedModelBase?: string | null
@@ -98,11 +117,15 @@ export function HappyComposer(props: {
     onCollaborationModeChange?: (mode: CodexCollaborationMode) => void
     onSteeringModeChange?: (mode: SteeringMode) => void
     onPermissionModeChange?: (mode: PermissionMode) => void
-    onModelChange?: (model: string | null) => void
+    onModelChange?: (model: { provider: string; modelId: string } | string | null) => void
     /** Cursor: effort/variant wire id (separate from base model change). */
     onModelEffortChange?: (wireId: string | null) => void
     onModelReasoningEffortChange?: (modelReasoningEffort: string | null) => void
     onEffortChange?: (effort: string | null) => void
+    /** Codex Fast mode (service tier): current value ('fast' or null/standard). */
+    serviceTier?: string | null
+    /** When provided, a Fast-mode toggle renders (Codex GPT-5.5 / GPT-5.4 only). */
+    onServiceTierChange?: (serviceTier: string | null) => void
     onSwitchToRemote?: () => void
     onTerminal?: () => void
     terminalUnsupported?: boolean
@@ -151,6 +174,8 @@ export function HappyComposer(props: {
         controlledByUser = false,
         agentFlavor,
         availableModelOptions,
+        piModels,
+        piSelectedModel,
         availableModelReasoningEffortOptions,
         selectedModelBase,
         selectedModelVariant,
@@ -162,6 +187,8 @@ export function HappyComposer(props: {
         onModelEffortChange,
         onModelReasoningEffortChange,
         onEffortChange,
+        serviceTier: rawServiceTier,
+        onServiceTierChange,
         onSwitchToRemote,
         onTerminal,
         terminalUnsupported = false,
@@ -185,6 +212,7 @@ export function HappyComposer(props: {
     const model = rawModel ?? null
     const modelReasoningEffort = rawModelReasoningEffort ?? null
     const effort = rawEffort ?? null
+    const serviceTier = rawServiceTier ?? null
 
     const api = useAssistantApi()
     const { composerEnterBehavior } = useComposerEnterBehavior()
@@ -214,6 +242,8 @@ export function HappyComposer(props: {
         selection: { start: 0, end: 0 }
     })
     const [showSettings, setShowSettings] = useState(false)
+    const [showPiModelPanel, setShowPiModelPanel] = useState(false)
+    const [showPiThinkingPanel, setShowPiThinkingPanel] = useState(false)
     const [isAborting, setIsAborting] = useState(false)
     const [isSwitching, setIsSwitching] = useState(false)
     const [showContinueHint, setShowContinueHint] = useState(false)
@@ -402,9 +432,40 @@ export function HappyComposer(props: {
             : [],
         [agentFlavor, modelReasoningEffort, availableModelReasoningEffortOptions]
     )
+    // Pi: group models by provider for hierarchical display
+    const piModelGroups = useMemo(
+        () => piModels && piModels.length > 0 ? groupModelsByProvider(piModels) : null,
+        [piModels]
+    )
+    // Pi: find the currently selected model's thinkingLevelMap for effort filtering.
+    // Prefer provider-qualified match (metadata.piSelectedModel) when available —
+    // two providers may share a modelId, and a modelId-only match would pick the
+    // wrong one, sending the wrong provider on the next model/effort change.
+    const selectedPiModel = useMemo(
+        () => piSelectedModel
+            ? piModels?.find((m) => m.provider === piSelectedModel.provider && m.modelId === piSelectedModel.modelId)
+            : piModels?.find((m) => m.modelId === model),
+        [piModels, piSelectedModel, model]
+    )
+
+    // Pi: reset effort to highest supported level when model changes and current level is unsupported
+    useEffect(() => {
+        if (!effort || !selectedPiModel || !onEffortChange) return
+        // Non-reasoning model: clear stale effort so the hub does not forward
+        // a set_thinking_level the user can no longer see or change.
+        if (selectedPiModel.reasoning === false) {
+            onEffortChange(null)
+            return
+        }
+        if (!isThinkingLevelSupported(effort, selectedPiModel.thinkingLevelMap)) {
+            onEffortChange(getHighestThinkingLevel(selectedPiModel.thinkingLevelMap))
+        }
+    }, [selectedPiModel, effort, onEffortChange])
     const claudeEffortOptions = useMemo(
-        () => getClaudeComposerEffortOptions(effort),
-        [effort]
+        () => agentFlavor === 'pi'
+            ? getPiThinkingLevelOptions(effort, selectedPiModel?.thinkingLevelMap)
+            : getClaudeComposerEffortOptions(effort),
+        [agentFlavor, effort, selectedPiModel]
     )
     const permissionModes = useMemo(
         () => permissionModeOptions.map((option) => option.mode),
@@ -508,6 +569,11 @@ export function HappyComposer(props: {
 
     useEffect(() => {
         const handleGlobalKeyDown = (e: globalThis.KeyboardEvent) => {
+            // Pi needs { provider, modelId } to disambiguate duplicate model IDs,
+            // but this generic cycler only emits a bare modelId (or null), which
+            // would lose the provider and can pick the wrong cached match or clear
+            // the model. Pi model changes go only through the dedicated PiModelPanel.
+            if (agentFlavor === 'pi') return
             if (e.key === 'm' && (e.metaKey || e.ctrlKey) && onModelChange && supportsModelChange(agentFlavor)) {
                 e.preventDefault()
                 onModelChange(getNextModelForFlavor(agentFlavor, model, availableModelOptions))
@@ -602,7 +668,7 @@ export function HappyComposer(props: {
         haptic('light')
     }, [onSteeringModeChange, controlsDisabled, haptic])
 
-    const handleModelChange = useCallback((nextModel: string | null) => {
+    const handleModelChange = useCallback((nextModel: { provider: string; modelId: string } | string | null) => {
         if (!onModelChange || controlsDisabled) return
         onModelChange(nextModel)
         setShowSettings(false)
@@ -631,17 +697,34 @@ export function HappyComposer(props: {
         haptic('light')
     }, [onEffortChange, controlsDisabled, haptic])
 
+    const handleServiceTierChange = useCallback((nextServiceTier: string | null) => {
+        if (!onServiceTierChange || controlsDisabled) return
+        onServiceTierChange(nextServiceTier)
+        setShowSettings(false)
+        haptic('light')
+    }, [onServiceTierChange, controlsDisabled, haptic])
+
+    // 'standard' (not null) is the explicit Fast-off choice so it persists
+    // distinctly from an untouched/account-default session.
+    const fastModeOptions: Array<{ value: string; label: string }> = useMemo(() => [
+        { value: 'standard', label: t('misc.fastModeStandard') },
+        { value: 'fast', label: t('misc.fastModeFast') }
+    ], [t])
+
     const showCollaborationSettings = Boolean(onCollaborationModeChange && collaborationModeOptions.length > 0)
     const showSteeringSettings = Boolean(onSteeringModeChange && steeringModeOptions.length > 0)
     const showPermissionSettings = Boolean(onPermissionModeChange && permissionModeOptions.length > 0)
-    const showModelSettings = Boolean(onModelChange && supportsModelChange(agentFlavor) && modelOptions.length > 0)
+    const showModelSettings = Boolean(onModelChange && supportsModelChange(agentFlavor) && (piModels && piModels.length > 0 || modelOptions.length > 0))
     const showModelEffortSettings = Boolean(
         (onModelEffortChange ?? onModelChange)
         && modelEffortOptions
         && modelEffortOptions.length > 0
     )
     const showModelReasoningEffortSettings = Boolean(onModelReasoningEffortChange && codexReasoningEffortOptions.length > 0)
-    const showEffortSettings = Boolean(onEffortChange && supportsEffort(agentFlavor))
+    // For Pi: hide effort when selected model explicitly has reasoning: false
+    const piEffortHidden = piModels && selectedPiModel && selectedPiModel.reasoning === false
+    const showEffortSettings = Boolean(onEffortChange && supportsEffort(agentFlavor) && !piEffortHidden)
+    const showFastModeSettings = Boolean(onServiceTierChange)
     const showSettingsButton = Boolean(
         showCollaborationSettings
         || showPermissionSettings
@@ -649,6 +732,7 @@ export function HappyComposer(props: {
         || showModelEffortSettings
         || showModelReasoningEffortSettings
         || showEffortSettings
+        || showFastModeSettings
     )
     const showAbortButton = true
     const voiceEnabled = Boolean(onVoiceToggle)
@@ -667,8 +751,90 @@ export function HappyComposer(props: {
         // the error context while the new attempt is in flight.
     }, [api])
 
+    // Pi: selected model info for UI labels and thinking level filtering
+    const piModelLabel = agentFlavor === 'pi'
+        ? (selectedPiModel?.name ?? selectedPiModel?.modelId ?? 'Model')
+        : undefined
+    const piThinkingLabel = agentFlavor === 'pi'
+        ? (() => {
+            if (!selectedPiModel) return 'Thinking'
+            const effectiveLevel = effort && isThinkingLevelSupported(effort, selectedPiModel.thinkingLevelMap)
+                ? effort
+                : getHighestThinkingLevel(selectedPiModel.thinkingLevelMap)
+            return effectiveLevel
+                ? (PI_THINKING_LEVEL_LABELS[effectiveLevel as PiThinkingLevel] ?? effectiveLevel)
+                : 'Thinking'
+        })()
+        : undefined
+    const piHasModels = piModels && piModels.length > 0
+
+    const closeAllPanels = useCallback(() => {
+        setShowSettings(false)
+        setShowPiModelPanel(false)
+        setShowPiThinkingPanel(false)
+    }, [])
+
+    const handlePiModelToggle = useCallback(() => {
+        if (controlsDisabled) return
+        setShowPiModelPanel((v) => !v)
+        setShowSettings(false)
+        setShowPiThinkingPanel(false)
+        haptic('light')
+    }, [controlsDisabled, haptic])
+
+    const handlePiThinkingToggle = useCallback(() => {
+        if (controlsDisabled) return
+        setShowPiThinkingPanel((v) => !v)
+        setShowSettings(false)
+        setShowPiModelPanel(false)
+        haptic('light')
+    }, [controlsDisabled, haptic])
+
     const overlays = useMemo(() => {
-        if (showSettings && (showCollaborationSettings || showPermissionSettings || showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings || showEffortSettings)) {
+        // Pi flavor: separate floating panels for model and thinking level.
+        // (Pi RPC mode has no runtime permission switching → no permission panel.)
+        if (agentFlavor === 'pi') {
+            const panels: React.ReactNode[] = []
+
+            // Model selection panel
+            if (showPiModelPanel && piModels && piModels.length > 0) {
+                const currentPiModel = selectedPiModel ?? null
+                panels.push(
+                    <div key="model" className="absolute bottom-[100%] mb-2 left-2 w-64">
+                        <PiModelPanel
+                            models={piModels}
+                            currentModel={currentPiModel ? { provider: currentPiModel.provider, modelId: currentPiModel.modelId } : null}
+                            controlsDisabled={controlsDisabled}
+                            onSelect={(piModel) => {
+                                handleModelChange({ provider: piModel.provider, modelId: piModel.modelId })
+                            }}
+                            onClose={closeAllPanels}
+                        />
+                    </div>
+                )
+            }
+
+            // Thinking level panel
+            if (showPiThinkingPanel && selectedPiModel?.reasoning !== false) {
+                panels.push(
+                    <div key="thinking" className="absolute bottom-[100%] mb-2 left-2 w-48">
+                        <PiThinkingLevelPanel
+                            currentLevel={effort}
+                            reasoning={selectedPiModel?.reasoning}
+                            thinkingLevelMap={selectedPiModel?.thinkingLevelMap}
+                            controlsDisabled={controlsDisabled}
+                            onSelect={(level) => handleEffortChange(level)}
+                            onClose={closeAllPanels}
+                        />
+                    </div>
+                )
+            }
+
+            if (panels.length > 0) return <>{panels}</>
+        }
+
+        // Non-Pi flavors: original unified gear menu
+        if (showSettings && (showCollaborationSettings || showPermissionSettings || showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings || showEffortSettings || showFastModeSettings)) {
             return (
                 <div className="absolute bottom-[100%] mb-2 w-full">
                     <FloatingOverlay maxHeight={320}>
@@ -800,81 +966,79 @@ export function HappyComposer(props: {
                                 <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
                                     {t('misc.model')}
                                 </div>
-                                {modelOptions.map((option) => {
-                                    const isSelected = selectedModelBase !== undefined
-                                        ? selectedModelBase === option.value
-                                        : model === option.value
-                                    return (
-                                    <button
-                                        key={option.value ?? 'auto'}
-                                        type="button"
-                                        disabled={controlsDisabled}
-                                        className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
-                                            controlsDisabled
-                                                ? 'cursor-not-allowed opacity-50'
-                                                : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
-                                        }`}
-                                        onClick={() => handleModelChange(option.value)}
-                                        onMouseDown={(e) => e.preventDefault()}
-                                    >
-                                        <div
-                                            className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
-                                                isSelected
-                                                    ? 'border-[var(--app-link)]'
-                                                    : 'border-[var(--app-hint)]'
-                                            }`}
-                                        >
-                                            {isSelected && (
-                                                <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
-                                            )}
+                                {piModelGroups ? (
+                                    piModelGroups.map((group) => (
+                                        <div key={group.provider}>
+                                            <div className="px-3 pt-2 pb-0.5 text-xs font-medium text-[var(--app-hint)]">
+                                                {group.label}
+                                            </div>
+                                            {group.models.map((piModel) => (
+                                                <button
+                                                    key={piModel.modelId}
+                                                    type="button"
+                                                    disabled={controlsDisabled}
+                                                    className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                                                        controlsDisabled
+                                                            ? 'cursor-not-allowed opacity-50'
+                                                            : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
+                                                    }`}
+                                                    onClick={() => handleModelChange({ provider: piModel.provider, modelId: piModel.modelId })}
+                                                    onMouseDown={(e) => e.preventDefault()}
+                                                >
+                                                    <div
+                                                        className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
+                                                            model === piModel.modelId
+                                                                ? 'border-[var(--app-link)]'
+                                                                : 'border-[var(--app-hint)]'
+                                                    }`}
+                                                    >
+                                                        {model === piModel.modelId && (
+                                                            <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
+                                                        )}
+                                                    </div>
+                                                    <span className={model === piModel.modelId ? 'text-[var(--app-link)]' : ''}>
+                                                        {piModel.name ?? piModel.modelId}
+                                                    </span>
+                                                </button>
+                                            ))}
                                         </div>
-                                        <span className={isSelected ? 'text-[var(--app-link)]' : ''}>
-                                            {option.label}
-                                        </span>
-                                    </button>
-                                    )
-                                })}
-                            </div>
-                        ) : null}
-
-                        {showModelSettings && showModelEffortSettings ? (
-                            <div className="mx-3 h-px bg-[var(--app-divider)]" />
-                        ) : null}
-
-                        {showModelEffortSettings ? (
-                            <div className="py-2">
-                                <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
-                                    {agentFlavor === 'cursor' ? t('misc.variant') : t('misc.effort')}
-                                </div>
-                                {modelEffortOptions!.map((option) => (
-                                    <button
-                                        key={option.value}
-                                        type="button"
-                                        disabled={controlsDisabled}
-                                        className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
-                                            controlsDisabled
-                                                ? 'cursor-not-allowed opacity-50'
-                                                : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
-                                        }`}
-                                        onClick={() => handleModelEffortChange(option.value)}
-                                        onMouseDown={(e) => e.preventDefault()}
-                                    >
-                                        <div
-                                            className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
-                                                (selectedModelVariant ?? model) === option.value
-                                                    ? 'border-[var(--app-link)]'
-                                                    : 'border-[var(--app-hint)]'
+                                    ))
+                                ) : (
+                                    modelOptions.map((option) => {
+                                        const isSelected = selectedModelBase !== undefined
+                                            ? selectedModelBase === option.value
+                                            : model === option.value
+                                        return (
+                                        <button
+                                            key={option.value ?? 'auto'}
+                                            type="button"
+                                            disabled={controlsDisabled}
+                                            className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                                                controlsDisabled
+                                                    ? 'cursor-not-allowed opacity-50'
+                                                    : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
                                             }`}
+                                            onClick={() => handleModelChange(option.value)}
+                                            onMouseDown={(e) => e.preventDefault()}
                                         >
-                                            {(selectedModelVariant ?? model) === option.value && (
-                                                <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
-                                            )}
-                                        </div>
-                                        <span className={(selectedModelVariant ?? model) === option.value ? 'text-[var(--app-link)]' : ''}>
-                                            {option.label}
-                                        </span>
-                                    </button>
-                                ))}
+                                            <div
+                                                className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
+                                                    isSelected
+                                                        ? 'border-[var(--app-link)]'
+                                                        : 'border-[var(--app-hint)]'
+                                                }`}
+                                            >
+                                                {isSelected && (
+                                                    <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
+                                                )}
+                                            </div>
+                                            <span className={isSelected ? 'text-[var(--app-link)]' : ''}>
+                                                {option.label}
+                                            </span>
+                                        </button>
+                                        )
+                                    })
+                                )}
                             </div>
                         ) : null}
 
@@ -959,6 +1123,47 @@ export function HappyComposer(props: {
                                 ))}
                             </div>
                         ) : null}
+
+                        {(showModelReasoningEffortSettings || showEffortSettings) && showFastModeSettings ? (
+                            <div className="mx-3 h-px bg-[var(--app-divider)]" />
+                        ) : null}
+
+                        {showFastModeSettings ? (
+                            <div className="py-2">
+                                <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
+                                    {t('misc.fastMode')}
+                                </div>
+                                {fastModeOptions.map((option) => (
+                                    <button
+                                        key={option.value ?? 'standard'}
+                                        type="button"
+                                        disabled={controlsDisabled}
+                                        className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                                            controlsDisabled
+                                                ? 'cursor-not-allowed opacity-50'
+                                                : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
+                                        }`}
+                                        onClick={() => handleServiceTierChange(option.value)}
+                                        onMouseDown={(e) => e.preventDefault()}
+                                    >
+                                        <div
+                                            className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
+                                                serviceTier === option.value
+                                                    ? 'border-[var(--app-link)]'
+                                                    : 'border-[var(--app-hint)]'
+                                            }`}
+                                        >
+                                            {serviceTier === option.value && (
+                                                <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
+                                            )}
+                                        </div>
+                                        <span className={serviceTier === option.value ? 'text-[var(--app-link)]' : ''}>
+                                            {option.label}
+                                        </span>
+                                    </button>
+                                ))}
+                            </div>
+                        ) : null}
                     </FloatingOverlay>
                 </div>
             )
@@ -981,6 +1186,12 @@ export function HappyComposer(props: {
         return null
     }, [
         showSettings,
+        showPiModelPanel,
+        showPiThinkingPanel,
+        agentFlavor,
+        piModels,
+        selectedPiModel,
+        closeAllPanels,
         showCollaborationSettings,
         showPermissionSettings,
         showModelSettings,
@@ -990,9 +1201,11 @@ export function HappyComposer(props: {
         selectedModelVariant,
         showModelReasoningEffortSettings,
         showEffortSettings,
+        showFastModeSettings,
         modelOptions,
         codexReasoningEffortOptions,
         claudeEffortOptions,
+        fastModeOptions,
         suggestions,
         selectedIndex,
         controlsDisabled,
@@ -1002,6 +1215,7 @@ export function HappyComposer(props: {
         model,
         modelReasoningEffort,
         effort,
+        serviceTier,
         collaborationModeOptions,
         steeringModeOptions,
         showSteeringSettings,
@@ -1012,6 +1226,7 @@ export function HappyComposer(props: {
         handleModelChange,
         handleModelReasoningEffortChange,
         handleEffortChange,
+        handleServiceTierChange,
         handleSuggestionSelect,
         t
     ])
@@ -1033,6 +1248,7 @@ export function HappyComposer(props: {
                             contextWindow={contextWindow}
                             model={model}
                             modelReasoningEffort={modelReasoningEffort}
+                            serviceTier={serviceTier}
                             permissionMode={permissionMode}
                             collaborationMode={collaborationMode}
                             threadGoal={threadGoal}
@@ -1045,9 +1261,20 @@ export function HappyComposer(props: {
                         <div
                             role="alert"
                             data-testid="composer-send-error"
-                            className="mb-2 rounded-md bg-[var(--app-subtle-bg)] px-3 py-2 text-sm text-red-600"
+                            className="mb-2 flex items-center justify-between gap-3 rounded-md bg-[var(--app-subtle-bg)] px-3 py-2 text-sm text-red-600"
                         >
-                            {sendError.message}
+                            <span className="flex-1">{sendError.message}</span>
+                            {sendError.action ? (
+                                <button
+                                    type="button"
+                                    data-testid="composer-send-error-action"
+                                    onClick={sendError.action.onClick}
+                                    disabled={sendError.action.pending}
+                                    className="shrink-0 rounded-md border border-red-300 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                    {sendError.action.label}
+                                </button>
+                            ) : null}
                         </div>
                     ) : null}
 
@@ -1106,6 +1333,14 @@ export function HappyComposer(props: {
                             onSchedule={setPendingSchedule}
                             onClearSchedule={isControlled ? onClearScheduleProp : () => setPendingScheduleLocal(null)}
                             hasAttachments={hasAttachments}
+                            piModelLabel={piModelLabel}
+                            piModelDisabled={controlsDisabled || !piHasModels}
+                            piModelOpen={showPiModelPanel}
+                            onPiModelToggle={handlePiModelToggle}
+                            piThinkingLabel={piThinkingLabel}
+                            piThinkingDisabled={controlsDisabled || !piHasModels || !selectedPiModel || selectedPiModel.reasoning === false}
+                            piThinkingOpen={showPiThinkingPanel}
+                            onPiThinkingToggle={handlePiThinkingToggle}
                             scratchlistMode={props.scratchlistMode}
                             scratchlistCount={props.scratchlistCount}
                             onScratchlistToggle={props.onScratchlistToggle}

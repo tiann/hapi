@@ -141,6 +141,19 @@ describe('getModelOptionsForFlavor', () => {
             { value: 'ollama/exaone:4.5-33b-q8', label: 'Ollama EXAONE' }
         ])
     })
+
+    it('returns just the auto/default option for pi flavor (no Claude fallback)', () => {
+        const options = getModelOptionsForFlavor('pi')
+        expect(options).toEqual([{ value: null, label: 'Default' }])
+    })
+
+    it('keeps the current pi model in the options list when it is not auto', () => {
+        const options = getModelOptionsForFlavor('pi', 'claude-sonnet-4-5')
+        expect(options).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'claude-sonnet-4-5', label: 'claude-sonnet-4-5' }
+        ])
+    })
 })
 
 describe('getNextModelForFlavor', () => {
@@ -196,5 +209,83 @@ describe('getNextModelForFlavor', () => {
     it('keeps the current cursor model when the dynamic list has not loaded', () => {
         const next = getNextModelForFlavor('cursor', 'composer-2.5')
         expect(next).toBe('composer-2.5')
+    })
+
+    it('keeps the current pi model on cycle (no Claude fallback)', () => {
+        // Pi has no predefined model list — Ctrl/Cmd+M must not cycle
+        // through Claude presets, which would push sonnet/opus ids into
+        // a Pi session via set-session-config.
+        const next = getNextModelForFlavor('pi', 'claude-sonnet-4-5')
+        expect(next).toBe('claude-sonnet-4-5')
+    })
+
+    it('returns null for pi without a current model (no Claude fallback)', () => {
+        const next = getNextModelForFlavor('pi', null)
+        expect(next).toBeNull()
+    })
+
+    it('treats "auto" as null and returns null for pi (no Claude preset injection)', () => {
+        // normalizeCurrentModel maps 'auto' to null; a Pi session whose UI
+        // displays 'Auto' must not be switched to sonnet/opus by the
+        // cycler shortcut.
+        const next = getNextModelForFlavor('pi', 'auto')
+        expect(next).toBeNull()
+    })
+
+    it('treats "default" as null and returns null for pi', () => {
+        const next = getNextModelForFlavor('pi', 'default')
+        expect(next).toBeNull()
+    })
+
+    it('treats empty/whitespace strings as null for pi (no Claude preset injection)', () => {
+        expect(getNextModelForFlavor('pi', '')).toBeNull()
+        expect(getNextModelForFlavor('pi', '   ')).toBeNull()
+    })
+
+    it('trims surrounding whitespace from the current pi model', () => {
+        const next = getNextModelForFlavor('pi', '  claude-sonnet-4-5  ')
+        expect(next).toBe('claude-sonnet-4-5')
+    })
+
+    it('keeps a kimi current model on cycle (no Claude fallback)', () => {
+        expect(getNextModelForFlavor('kimi', 'kimi-k2-0711')).toBe('kimi-k2-0711')
+        expect(getNextModelForFlavor('kimi', null)).toBeNull()
+    })
+
+    it('keeps a cursor current model on cycle (no Claude fallback)', () => {
+        expect(getNextModelForFlavor('cursor', 'composer-2.5')).toBe('composer-2.5')
+        expect(getNextModelForFlavor('cursor', null)).toBeNull()
+    })
+
+    it('keeps an opencode current model on cycle (no Claude fallback)', () => {
+        expect(getNextModelForFlavor('opencode', 'ollama/legacy')).toBe('ollama/legacy')
+        expect(getNextModelForFlavor('opencode', null)).toBeNull()
+    })
+})
+
+describe('getModelOptionsForFlavor — pi normalize filter', () => {
+    it('drops "auto" and renders just the default option for pi', () => {
+        // 'auto' should be normalized to null, which equals the auto entry;
+        // we must not produce a duplicate { value: null, label: 'auto' } row.
+        const options = getModelOptionsForFlavor('pi', 'auto')
+        expect(options).toEqual([{ value: null, label: 'Default' }])
+    })
+
+    it('drops "default" and renders just the default option for pi', () => {
+        const options = getModelOptionsForFlavor('pi', 'default')
+        expect(options).toEqual([{ value: null, label: 'Default' }])
+    })
+
+    it('drops empty/whitespace currentModel for pi', () => {
+        expect(getModelOptionsForFlavor('pi', '')).toEqual([{ value: null, label: 'Default' }])
+        expect(getModelOptionsForFlavor('pi', '   ')).toEqual([{ value: null, label: 'Default' }])
+    })
+
+    it('trims whitespace from a real current pi model', () => {
+        const options = getModelOptionsForFlavor('pi', '  custom-model  ')
+        expect(options).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'custom-model', label: 'custom-model' }
+        ])
     })
 })

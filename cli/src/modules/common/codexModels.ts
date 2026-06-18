@@ -30,6 +30,34 @@ function normalizeSupportedReasoningEfforts(value: unknown): string[] | undefine
     return efforts.length > 0 ? efforts : undefined;
 }
 
+// The Codex model catalog advertises which service tiers are available for a
+// model in the *current* account/auth context — e.g. an API-key session or a
+// plan without Fast credits simply won't list a Fast tier. We surface the tier
+// id AND display name as lowercased search tokens so the web can gate the
+// Fast-mode toggle on real availability. The Fast tier's catalog id is
+// `'priority'` but its name is `'Fast'`, so capturing the name is what lets a
+// `/fast/i` match recognise it. (See OpenAI Codex speed docs: Fast maps to the
+// request value `priority`.)
+function normalizeServiceTiers(value: unknown): string[] | undefined {
+    if (!Array.isArray(value)) {
+        return undefined;
+    }
+
+    const tokens = new Set<string>();
+    for (const entry of value) {
+        if (!entry || typeof entry !== 'object') {
+            continue;
+        }
+        const record = entry as { id?: unknown; name?: unknown };
+        const id = asNonEmptyString(record.id);
+        const name = asNonEmptyString(record.name);
+        if (id) tokens.add(id.toLowerCase());
+        if (name) tokens.add(name.toLowerCase());
+    }
+
+    return tokens.size > 0 ? [...tokens] : undefined;
+}
+
 function normalizeModel(entry: unknown): CodexModelSummary | null {
     if (!entry || typeof entry !== 'object') {
         return null;
@@ -46,7 +74,8 @@ function normalizeModel(entry: unknown): CodexModelSummary | null {
         displayName: asNonEmptyString(record.displayName) ?? id,
         isDefault: record.isDefault === true,
         defaultReasoningEffort: asNonEmptyString(record.defaultReasoningEffort),
-        supportedReasoningEfforts: normalizeSupportedReasoningEfforts(record.supportedReasoningEfforts)
+        supportedReasoningEfforts: normalizeSupportedReasoningEfforts(record.supportedReasoningEfforts),
+        serviceTiers: normalizeServiceTiers(record.serviceTiers)
     };
 }
 

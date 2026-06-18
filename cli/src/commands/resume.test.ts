@@ -10,6 +10,7 @@ const {
     renderMock,
     runCodexMock,
     runClaudeMock,
+    runPiMock,
     assertCodexLocalSupportedMock,
     existsSyncMock
 } = vi.hoisted(() => ({
@@ -22,6 +23,7 @@ const {
     renderMock: vi.fn(),
     runCodexMock: vi.fn(async () => {}),
     runClaudeMock: vi.fn(async () => {}),
+    runPiMock: vi.fn(async () => {}),
     assertCodexLocalSupportedMock: vi.fn(),
     existsSyncMock: vi.fn(() => true)
 }))
@@ -44,6 +46,7 @@ vi.mock('@/ui/ink/ResumeSessionPicker', () => ({
 }))
 vi.mock('@/codex/runCodex', () => ({ runCodex: runCodexMock }))
 vi.mock('@/claude/runClaude', () => ({ runClaude: runClaudeMock }))
+vi.mock('@/pi/runPi', () => ({ runPi: runPiMock }))
 vi.mock('@/codex/utils/codexVersion', () => ({ assertCodexLocalSupported: assertCodexLocalSupportedMock }))
 vi.mock('node:fs', () => ({ existsSync: existsSyncMock }))
 
@@ -72,6 +75,7 @@ describe('resumeCommand', () => {
         })
         runCodexMock.mockClear()
         runClaudeMock.mockClear()
+        runPiMock.mockClear()
         assertCodexLocalSupportedMock.mockClear()
         existsSyncMock.mockReturnValue(true)
     })
@@ -245,6 +249,36 @@ describe('resumeCommand', () => {
                 value: originalIsTTY
             })
         }
+    })
+
+    it('resumes a Pi target with effort', async () => {
+        getLocalResumeTargetMock.mockResolvedValue({
+            sessionId: 'hapi-session-pi',
+            flavor: 'pi',
+            directory: '/tmp/project',
+            machineId: 'machine-1',
+            active: false,
+            thinking: false,
+            controlledByUser: false,
+            agentSessionId: 'pi-session-123',
+            model: 'deepseek-v3',
+            effort: 'high',
+            permissionMode: 'yolo'
+        })
+
+        await resumeCommand.run(createContext(['hapi-session-pi']))
+
+        expect(handoffSessionToLocalMock).not.toHaveBeenCalled()
+        expect(runPiMock).toHaveBeenCalledWith({
+            existingSessionId: 'hapi-session-pi',
+            workingDirectory: '/tmp/project',
+            resumeSessionId: 'pi-session-123',
+            startedBy: 'terminal',
+            // Pi has no local TUI input path, so resume defaults to remote control.
+            startingMode: 'remote',
+            model: 'deepseek-v3',
+            effort: 'high'
+        })
     })
 
     it('keeps the non-TTY fallback and asks for an explicit session id', async () => {

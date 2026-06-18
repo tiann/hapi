@@ -180,6 +180,15 @@ function normalizeTraceMessage(
         meta: source.meta
     }
 
+    if (data.type === 'error' && typeof data.message === 'string') {
+        return [{
+            ...base,
+            id: traceId,
+            role: 'event',
+            content: { type: 'error', message: data.message }
+        } as TracedMessage]
+    }
+
     if (data.type === 'message' && typeof data.message === 'string') {
         return [{
             ...base,

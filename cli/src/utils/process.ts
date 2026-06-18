@@ -16,6 +16,32 @@ export function isProcessAlive(pid: number): boolean {
   }
 }
 
+// ponytail: ps -p is cheap and avoids PID-reuse false positives after OS upgrades/reboots
+function isRunnerCommand(commandLine: string): boolean {
+  return /(?:^|\s)runner(?:\s|$)/.test(commandLine) && /(?:^|\s)start-sync(?:\s|$)/.test(commandLine);
+}
+
+export function isHapiRunnerProcess(pid: number): boolean {
+  if (!isProcessAlive(pid)) {
+    return false;
+  }
+  if (isWindows()) {
+    const result = spawn.sync('wmic', ['process', 'where', `ProcessId=${pid}`, 'get', 'CommandLine'], { stdio: 'pipe' });
+    if (result.error) {
+      return true;
+    }
+    if (result.status !== 0) {
+      return isProcessAlive(pid);
+    }
+    return isRunnerCommand(result.stdout?.toString() ?? '');
+  }
+  const result = spawn.sync('ps', ['-p', String(pid), '-o', 'command='], { stdio: 'pipe' });
+  if (result.error || result.status !== 0) {
+    return isProcessAlive(pid);
+  }
+  return isRunnerCommand(result.stdout?.toString() ?? '');
+}
+
 function killProcessWindows(pid: number, force: boolean): boolean {
   if (!isProcessAlive(pid)) {
     return true;

@@ -10,6 +10,7 @@ import type { AgentState, CodexCollaborationMode, PermissionMode } from '@/types
 import type { ConversationStatus } from '@/realtime/types'
 import type { ThreadGoal } from '@/types/api'
 import { getContextBudgetTokens } from '@/chat/modelConfig'
+import { isFastServiceTier } from './codexFastMode'
 import { useTranslation } from '@/lib/use-translation'
 
 // Vibing messages for thinking state
@@ -154,6 +155,7 @@ export function StatusBar(props: {
     contextWindow?: number | null
     model?: string | null
     modelReasoningEffort?: string | null
+    serviceTier?: string | null
     permissionMode?: PermissionMode
     collaborationMode?: CodexCollaborationMode
     threadGoal?: ThreadGoal | null
@@ -213,8 +215,12 @@ export function StatusBar(props: {
     const codexReasoningLabel = (props.agentFlavor === 'codex' || props.agentFlavor === 'opencode')
         ? formatCodexReasoningLabel(props.modelReasoningEffort)
         : null
+    // Prefer the explicit service tier (the real Fast-mode toggle) when set;
+    // fall back to the effort/model heuristic only when the tier is unknown.
     const codexFastMode = props.agentFlavor === 'codex'
-        ? isCodexFastMode(props.model, props.modelReasoningEffort)
+        ? (props.serviceTier != null
+            ? isFastServiceTier(props.serviceTier)
+            : isCodexFastMode(props.model, props.modelReasoningEffort))
         : false
     const goalLabel = props.agentFlavor === 'codex' && props.threadGoal
         ? props.threadGoal.status === 'active'

@@ -574,6 +574,7 @@ export class ApiSessionClient extends EventEmitter {
             model?: SessionModel
             modelReasoningEffort?: string | null
             effort?: string | null
+            serviceTier?: string | null
             collaborationMode?: SessionCollaborationMode
             steeringMode?: SessionSteeringMode
         }
@@ -584,6 +585,14 @@ export class ApiSessionClient extends EventEmitter {
             thinking,
             mode,
             ...(runtime ?? {})
+        })
+    }
+
+    /** Hub waits for this before mergeSessions on Cursor ACP reopen (tiann/hapi#939). */
+    emitSessionReady(): void {
+        this.socket.emit('session-ready', {
+            sid: this.sessionId,
+            time: Date.now()
         })
     }
 

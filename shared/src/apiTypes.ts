@@ -131,7 +131,13 @@ export const SessionSteeringModeRequestSchema = z.object({
 export type SessionSteeringModeRequest = z.infer<typeof SessionSteeringModeRequestSchema>
 
 export const SessionModelRequestSchema = z.object({
-    model: z.string().trim().min(1).nullable()
+    model: z.union([
+        z.string().trim().min(1),
+        z.object({
+            provider: z.string().trim().min(1),
+            modelId: z.string().trim().min(1),
+        }),
+    ]).nullable()
 })
 
 export type SessionModelRequest = z.infer<typeof SessionModelRequestSchema>
@@ -147,6 +153,16 @@ export const SessionEffortRequestSchema = z.object({
 })
 
 export type SessionEffortRequest = z.infer<typeof SessionEffortRequestSchema>
+
+// Fast mode is an explicit two-way choice. `'standard'` (not `null`) is the
+// stored sentinel for an explicit Fast-off so it stays distinct from
+// "untouched" and survives restart/resume. Reject anything else so stray tier
+// strings are never forwarded to the Codex app-server.
+export const SessionServiceTierRequestSchema = z.object({
+    serviceTier: z.enum(['fast', 'standard'])
+})
+
+export type SessionServiceTierRequest = z.infer<typeof SessionServiceTierRequestSchema>
 
 export const RenameSessionRequestSchema = z.object({
     name: z.string().min(1).max(255)
@@ -337,6 +353,8 @@ export type CodexModelSummary = {
     isDefault: boolean
     defaultReasoningEffort?: string | null
     supportedReasoningEfforts?: string[]
+    /** Service tier ids advertised for this model in the current auth/plan context (e.g. 'fast'). */
+    serviceTiers?: string[]
 }
 
 export type CodexModelsResponse = {
@@ -380,6 +398,41 @@ export type CursorModelSummary = OpencodeModelSummary
 export type CursorModelsResponse = OpencodeModelsResponse
 
 export type ListCursorModelsResponse = CursorModelsResponse
+
+/** Maps thinking levels to provider-specific values. null = unsupported. */
+export type PiThinkingLevelMap = Partial<Record<string, string | null>>
+
+export type PiModelSummary = {
+    provider: string
+    modelId: string
+    name?: string
+    contextWindow?: number
+    /** Whether the model supports reasoning/thinking */
+    reasoning?: boolean
+    /** Maps Pi thinking levels to provider values; null = unsupported level */
+    thinkingLevelMap?: PiThinkingLevelMap
+}
+
+export type PiModelsResponse = {
+    success: boolean
+    availableModels?: PiModelSummary[]
+    currentModelId?: string | null
+    error?: string
+}
+
+export type ListPiModelsResponse = PiModelsResponse
+
+export type PiCommandSummary = {
+    name: string
+    description?: string
+    source: 'extension' | 'prompt' | 'skill'
+}
+
+export type PiCommandsResponse = {
+    success: boolean
+    commands?: PiCommandSummary[]
+    error?: string
+}
 
 export type SlashCommand = {
     name: string

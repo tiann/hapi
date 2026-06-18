@@ -505,7 +505,7 @@ export class ApiClient {
         })
     }
 
-    async setModel(sessionId: string, model: string | null): Promise<void> {
+    async setModel(sessionId: string, model: { provider: string; modelId: string } | string | null): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/model`, {
             method: 'POST',
             body: JSON.stringify({ model })
@@ -523,6 +523,13 @@ export class ApiClient {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/effort`, {
             method: 'POST',
             body: JSON.stringify({ effort })
+        })
+    }
+
+    async setServiceTier(sessionId: string, serviceTier: string | null): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/service-tier`, {
+            method: 'POST',
+            body: JSON.stringify({ serviceTier })
         })
     }
 
@@ -632,6 +639,14 @@ export class ApiClient {
     async getSessionCursorModels(sessionId: string): Promise<CursorModelsResponse> {
         return await this.request<CursorModelsResponse>(
             `/api/sessions/${encodeURIComponent(sessionId)}/cursor-models`
+        )
+    }
+
+    /** Generic Pi session endpoint — replaces per-method wrappers. */
+    async callPiEndpoint<T = unknown>(sessionId: string, path: string, init?: RequestInit): Promise<T> {
+        return await this.request<T>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/pi-${path}`,
+            init
         )
     }
 

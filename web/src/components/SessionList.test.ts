@@ -3,6 +3,8 @@ import type { SessionSummary } from '@/types/api'
 import {
     deduplicateSessionsByAgentId,
     expandSelectedSessionCollapseOverrides,
+    filterActiveSessionsOnly,
+    getNextSessionVisibleCount,
     getSessionDedupKey,
     getVisibleSessionPreview,
     isSidebarEmptySessionStub,
@@ -22,8 +24,10 @@ function makeSession(overrides: Partial<SessionSummary> & { id: string }): Sessi
         todoProgress: null,
         pendingRequestsCount: 0,
         pendingRequestKinds: [],
+        pendingRequests: [],
         backgroundTaskCount: 0,
         futureScheduledMessageCount: 0,
+        nextScheduledAt: null,
         model: null,
         effort: null,
         ...overrides
@@ -295,6 +299,51 @@ describe('getVisibleSessionPreview', () => {
     })
 })
 
+
+describe('filterActiveSessionsOnly', () => {
+    it('keeps only active sessions when no selection', () => {
+        const sessions = [
+            makeSession({ id: 'live', active: true, metadata: { path: '/p' } }),
+            makeSession({ id: 'dead', metadata: { path: '/p' } })
+        ]
+        expect(filterActiveSessionsOnly(sessions).map(s => s.id)).toEqual(['live'])
+    })
+
+    it('keeps the selected inactive session visible', () => {
+        const sessions = [
+            makeSession({ id: 'live', active: true, metadata: { path: '/p' } }),
+            makeSession({ id: 'dead', metadata: { path: '/p' } }),
+            makeSession({ id: 'selected-dead', metadata: { path: '/p' } })
+        ]
+        expect(filterActiveSessionsOnly(sessions, 'selected-dead').map(s => s.id).sort())
+            .toEqual(['live', 'selected-dead'])
+    })
+
+    it('preserves input order', () => {
+        const sessions = [
+            makeSession({ id: 'a', active: true, metadata: { path: '/p' } }),
+            makeSession({ id: 'b', metadata: { path: '/p' } }),
+            makeSession({ id: 'c', active: true, metadata: { path: '/p' } })
+        ]
+        expect(filterActiveSessionsOnly(sessions).map(s => s.id)).toEqual(['a', 'c'])
+    })
+})
+
+describe('getNextSessionVisibleCount', () => {
+    it('reveals one batch of step size per call', () => {
+        expect(getNextSessionVisibleCount(8, 8, 20)).toBe(16)
+        expect(getNextSessionVisibleCount(16, 8, 20)).toBe(20)
+    })
+
+    it('never exceeds the total session count', () => {
+        expect(getNextSessionVisibleCount(18, 8, 20)).toBe(20)
+        expect(getNextSessionVisibleCount(20, 8, 20)).toBe(20)
+    })
+
+    it('always advances by at least one even with a zero step', () => {
+        expect(getNextSessionVisibleCount(5, 0, 20)).toBe(6)
+    })
+})
 
 describe('expandSelectedSessionCollapseOverrides', () => {
     it('expands collapsed project and machine, but preserves session preview folding', () => {

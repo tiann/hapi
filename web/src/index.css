@@ -155,6 +155,84 @@
     --app-badge-error-border: rgba(248, 113, 113, 0.35);
 }
 
+[data-theme="oled"] {
+    /*
+     * Pure-black canvas for OLED panels. Unlike Dark mode we never defer to
+     * --tg-theme-* here, otherwise Telegram's gray backgrounds would defeat the
+     * point of OLED black. Elevation comes from borders, not gray fills.
+     */
+    --app-bg: #000000;
+    --app-fg: #f5f5f7;
+    --app-hint: #8e8e93;
+    --app-link: #4ea1ff;
+    --app-button: #4ea1ff;
+    --app-button-text: #000000;
+    --app-banner-bg: #1a1a1c;
+    --app-banner-text: #f5f5f7;
+    --app-secondary-bg: #0a0a0b;
+
+    --app-dialog-bg: #0c0c0e;
+    --app-chat-user-bg: #141414;
+    --app-chat-user-surface-bg: var(--app-chat-user-bg);
+    --app-chat-user-fg: #f5f7fa;
+    --app-chat-user-chip-bg: rgba(78, 161, 255, 0.18);
+    --app-chat-user-chip-fg: #8fc4ff;
+    --app-tool-card-bg: #0e0e10;
+    --app-tool-group-bg: var(--app-tool-card-bg);
+    --app-tool-card-hover-bg: #161618;
+    --app-tool-card-accent: #b8c0cb;
+    --app-tool-card-muted-action-fg: #6b6f78;
+    --app-tool-card-subtitle: #9aa0aa;
+    --app-code-header-bg: #161618;
+    --app-code-header-fg: #c4cbd6;
+    --app-code-copy-hover-bg: rgba(255, 255, 255, 0.08);
+    --app-inline-code-border: transparent;
+    --app-inline-code-fg: #f5f7fa;
+    --app-md-quote-bg: #131316;
+    --app-md-quote-border: #3a3a40;
+    --app-md-quote-fg: #d7dde6;
+    --app-md-table-bg: #0e0e10;
+    --app-md-table-head-bg: #161618;
+    --app-reasoning-bg: #0e0e10;
+    --app-mermaid-node-fill: #16181d;
+    --app-mermaid-node-border: #4ea1ff;
+    --app-mermaid-cluster-fill: #101216;
+    --app-mermaid-text: #edf1f5;
+    --app-link-muted: rgba(255, 255, 255, 0.22);
+    --app-scrollbar-thumb: rgba(196, 203, 214, 0.24);
+    --app-scrollbar-thumb-hover: rgba(196, 203, 214, 0.4);
+
+    --app-border: rgba(255, 255, 255, 0.12);
+    --app-divider: rgba(255, 255, 255, 0.1);
+    --app-subtle-bg: rgba(255, 255, 255, 0.06);
+    --app-code-bg: #0e0e10;
+    --app-inline-code-bg: #1a1a1d;
+
+    /* Diff colors (oled) */
+    --app-diff-added-bg: #07251a;
+    --app-diff-added-text: #c9d1d9;
+    --app-diff-removed-bg: #2c1217;
+    --app-diff-removed-text: #c9d1d9;
+
+    /* Git status colors (reuse dark hues) */
+    --app-git-staged-color: #4ade80;
+    --app-git-unstaged-color: #f59e0b;
+    --app-git-deleted-color: #f87171;
+    --app-git-renamed-color: #60a5fa;
+    --app-git-untracked-color: #9ca3af;
+
+    /* Badge colors (reuse dark hues, lower bg opacity) */
+    --app-badge-warning-bg: rgba(251, 191, 36, 0.16);
+    --app-badge-warning-text: #fbbf24;
+    --app-badge-warning-border: rgba(251, 191, 36, 0.28);
+    --app-badge-success-bg: rgba(74, 222, 128, 0.16);
+    --app-badge-success-text: #4ade80;
+    --app-badge-success-border: rgba(74, 222, 128, 0.28);
+    --app-badge-error-bg: rgba(248, 113, 113, 0.16);
+    --app-badge-error-text: #fca5a5;
+    --app-badge-error-border: rgba(248, 113, 113, 0.3);
+}
+
 html {
     font-size: calc(100% * var(--app-font-scale, 1));
     color-scheme: light;
@@ -162,7 +240,8 @@ html {
     scrollbar-width: thin;
 }
 
-[data-theme="dark"] {
+[data-theme="dark"],
+[data-theme="oled"] {
     color-scheme: dark;
 }
 
@@ -436,7 +515,9 @@ body {
 }
 
 html[data-theme="dark"] .shiki,
-html[data-theme="dark"] .shiki span {
+html[data-theme="dark"] .shiki span,
+html[data-theme="oled"] .shiki,
+html[data-theme="oled"] .shiki span {
     color: var(--shiki-dark) !important;
     font-style: var(--shiki-dark-font-style) !important;
     font-weight: var(--shiki-dark-font-weight) !important;

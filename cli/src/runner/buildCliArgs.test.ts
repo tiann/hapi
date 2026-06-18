@@ -71,6 +71,23 @@ describe('buildCliArgs', () => {
         expect(args).toContain('high')
     })
 
+    it('passes --service-tier through for codex (resume preserves Fast/Standard)', () => {
+        const args = buildCliArgs('codex', {
+            directory: '/tmp',
+            serviceTier: 'fast',
+        })
+        expect(args).toContain('--service-tier')
+        expect(args).toContain('fast')
+    })
+
+    it('does not pass --service-tier for non-codex agents', () => {
+        const args = buildCliArgs('claude', {
+            directory: '/tmp',
+            serviceTier: 'fast',
+        })
+        expect(args).not.toContain('--service-tier')
+    })
+
     it('validates all known permission modes', () => {
         for (const mode of ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan', 'ask', 'read-only', 'safe-yolo', 'yolo']) {
             const args = buildCliArgs('claude', {
@@ -80,5 +97,45 @@ describe('buildCliArgs', () => {
             expect(args).toContain('--permission-mode')
             expect(args).toContain(mode)
         }
+    })
+
+    it('uses --session-id for pi resume (not --resume)', () => {
+        const args = buildCliArgs('pi', {
+            directory: '/tmp',
+            resumeSessionId: 'some-pi-session-id',
+        })
+        expect(args).not.toContain('--resume')
+        expect(args).toContain('--session-id')
+        expect(args).toContain('some-pi-session-id')
+        expect(args[0]).toBe('pi')
+    })
+
+    it('still passes --resume for claude when resumeSessionId is provided', () => {
+        // Guard against accidentally swallowing claude's --resume when
+        // the pi branch was added.
+        const args = buildCliArgs('claude', {
+            directory: '/tmp',
+            resumeSessionId: 'some-claude-session-id',
+        })
+        expect(args).toContain('--resume')
+        expect(args).toContain('some-claude-session-id')
+    })
+
+    it('passes --effort for pi agent', () => {
+        const args = buildCliArgs('pi', {
+            directory: '/tmp',
+            effort: 'high',
+        })
+        expect(args).toContain('--effort')
+        expect(args).toContain('high')
+    })
+
+    it('passes --effort for claude agent', () => {
+        const args = buildCliArgs('claude', {
+            directory: '/tmp',
+            effort: 'high',
+        })
+        expect(args).toContain('--effort')
+        expect(args).toContain('high')
     })
 })

@@ -12,7 +12,12 @@ vi.mock('@/ui/logger', () => ({
 }));
 
 vi.mock('@/agent/messageConverter', () => ({
-    convertAgentMessage: () => null
+    convertAgentMessage: (message: { type: string; message?: string }) => {
+        if (message.type === 'error' && typeof message.message === 'string') {
+            return { type: 'error', message: message.message };
+        }
+        return null;
+    }
 }));
 
 vi.mock('@/ui/ink/OpencodeDisplay', () => ({
@@ -145,9 +150,9 @@ describe('cursorLegacyRemoteLauncher', () => {
         await cursorLegacyRemoteLauncher(session);
 
         expect(spawnMock).toHaveBeenCalledTimes(2);
-        const messages = client.sendSessionEvent.mock.calls
+        const messages = client.sendAgentMessage.mock.calls
             .map((c) => c[0])
-            .filter((e: any) => e.type === 'message');
+            .filter((e: any) => e.type === 'error');
         expect(messages).toHaveLength(1);
         expect(messages[0].message).toContain('Cursor authentication expired');
         expect(messages[0].message).toContain("'agent login'");
@@ -184,9 +189,9 @@ describe('cursorLegacyRemoteLauncher', () => {
         const { cursorLegacyRemoteLauncher } = await import('./cursorLegacyRemoteLauncher');
         await cursorLegacyRemoteLauncher(session);
 
-        const messages = client.sendSessionEvent.mock.calls
+        const messages = client.sendAgentMessage.mock.calls
             .map((c) => c[0])
-            .filter((e: any) => e.type === 'message');
+            .filter((e: any) => e.type === 'error');
         expect(messages).toHaveLength(1);
         expect(messages[0].message).toContain('rate limit');
         expect(messages[0].message).toContain('queued and will retry');
@@ -209,9 +214,9 @@ describe('cursorLegacyRemoteLauncher', () => {
         await cursorLegacyRemoteLauncher(session);
 
         expect(spawnMock).toHaveBeenCalledTimes(1);
-        const messageEvents = client.sendSessionEvent.mock.calls
+        const messageEvents = client.sendAgentMessage.mock.calls
             .map((c) => c[0])
-            .filter((e: any) => e.type === 'message');
+            .filter((e: any) => e.type === 'error');
         expect(messageEvents).toHaveLength(1);
         expect(messageEvents[0].message).toContain('Agent exited (134)');
         expect(messageEvents[0].message).toContain('Segmentation fault');
@@ -242,9 +247,9 @@ describe('cursorLegacyRemoteLauncher', () => {
         await cursorLegacyRemoteLauncher(session);
 
         expect(spawnMock).toHaveBeenCalledTimes(1);
-        const messageEvents = client.sendSessionEvent.mock.calls
+        const messageEvents = client.sendAgentMessage.mock.calls
             .map((c) => c[0])
-            .filter((e: any) => e.type === 'message');
+            .filter((e: any) => e.type === 'error');
         expect(messageEvents).toHaveLength(1);
         expect(messageEvents[0].message).toContain('Agent exited (143)');
         expect(messageEvents[0].message).not.toContain('queued and will retry');
@@ -307,9 +312,9 @@ describe('cursorLegacyRemoteLauncher', () => {
 
         expect(spawnMock).toHaveBeenCalledTimes(5);
 
-        const messageEvents = client.sendSessionEvent.mock.calls
+        const messageEvents = client.sendAgentMessage.mock.calls
             .map((c) => c[0])
-            .filter((e: any) => e.type === 'message');
+            .filter((e: any) => e.type === 'error');
         // 4 transient retry banners + 1 drop banner = 5
         expect(messageEvents).toHaveLength(5);
         const banners = messageEvents.map((e: any) => e.message);

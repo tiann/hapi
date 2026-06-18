@@ -69,3 +69,111 @@ describe('parseRemoteAgentCommandOptions', () => {
         expect(() => parseRemoteAgentCommandOptions(['--model-reasoning-effort'], OPENCODE_PERMISSION_MODES)).toThrow('Missing --model-reasoning-effort value')
     })
 })
+
+describe('parseRemoteAgentCommandOptions — pi flavor', () => {
+    // Pi RPC mode has no permission switching, so the command passes an empty
+    // allow-list. These tests cover the non-permission flags using a non-empty
+    // allow-list purely as a parser fixture — the parser's behavior is
+    // independent of the modes' contents.
+    const ALLOWED = OPENCODE_PERMISSION_MODES
+
+    it('accepts --model and stores it on options', () => {
+        const result = parseRemoteAgentCommandOptions(
+            ['--model', 'claude-sonnet-4-5'],
+            ALLOWED
+        )
+        expect(result.model).toBe('claude-sonnet-4-5')
+    })
+
+    it('--session-id stores the value as resumeSessionId (Pi-specific flag)', () => {
+        // Pi uses --session-id for exact session resume (RPC mode), not the
+        // generic --resume that other flavors use.
+        const result = parseRemoteAgentCommandOptions(
+            ['--session-id', 'pi-sess-123'],
+            ALLOWED
+        )
+        expect(result.resumeSessionId).toBe('pi-sess-123')
+    })
+
+    it('--resume is also accepted as an alias for session resume', () => {
+        // Some flavor paths pass --resume; the parser should accept it
+        // uniformly so callers do not need to branch on flavor.
+        const result = parseRemoteAgentCommandOptions(
+            ['--resume', 'sess-id'],
+            ALLOWED
+        )
+        expect(result.resumeSessionId).toBe('sess-id')
+    })
+
+    it('a later --resume overrides a prior --session-id (last-write-wins)', () => {
+        const result = parseRemoteAgentCommandOptions(
+            ['--session-id', 'first', '--resume', 'second'],
+            ALLOWED
+        )
+        expect(result.resumeSessionId).toBe('second')
+    })
+
+    it('rejects --session-id with no value', () => {
+        expect(() => parseRemoteAgentCommandOptions(
+            ['--session-id'],
+            ALLOWED
+        )).toThrow('Missing --session-id value')
+    })
+
+    it('parses --started-by runner', () => {
+        const result = parseRemoteAgentCommandOptions(
+            ['--started-by', 'runner'],
+            ALLOWED
+        )
+        expect(result.startedBy).toBe('runner')
+    })
+
+    it('parses --started-by terminal', () => {
+        const result = parseRemoteAgentCommandOptions(
+            ['--started-by', 'terminal'],
+            ALLOWED
+        )
+        expect(result.startedBy).toBe('terminal')
+    })
+
+    it('parses --hapi-starting-mode remote', () => {
+        const result = parseRemoteAgentCommandOptions(
+            ['--hapi-starting-mode', 'remote'],
+            ALLOWED
+        )
+        expect(result.startingMode).toBe('remote')
+    })
+
+    it('parses --hapi-starting-mode local', () => {
+        const result = parseRemoteAgentCommandOptions(
+            ['--hapi-starting-mode', 'local'],
+            ALLOWED
+        )
+        expect(result.startingMode).toBe('local')
+    })
+
+    it('rejects invalid --hapi-starting-mode', () => {
+        expect(() => parseRemoteAgentCommandOptions(
+            ['--hapi-starting-mode', 'invalid'],
+            ALLOWED
+        )).toThrow('Invalid --hapi-starting-mode')
+    })
+
+    it('handles a full pi invocation end-to-end', () => {
+        const result = parseRemoteAgentCommandOptions(
+            [
+                '--started-by', 'runner',
+                '--hapi-starting-mode', 'remote',
+                '--model', 'claude-sonnet-4-5',
+                '--session-id', 'pi-sess-full',
+            ],
+            ALLOWED
+        )
+        expect(result).toEqual({
+            startedBy: 'runner',
+            startingMode: 'remote',
+            model: 'claude-sonnet-4-5',
+            resumeSessionId: 'pi-sess-full',
+        })
+    })
+})

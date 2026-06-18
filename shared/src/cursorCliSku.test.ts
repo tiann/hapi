@@ -34,8 +34,14 @@ describe('matchCliSkuToAcpWireId', () => {
         expect(matchCliSkuToAcpWireId('gpt-5.5-medium', available)).toBe('gpt-5.5[context=272k,reasoning=medium,fast=false]');
     });
 
-    it('picks the best wire when multiple ACP variants exist', () => {
-        expect(matchCliSkuToAcpWireId('composer-2.5', available)).toBe('composer-2.5[fast=true]');
+    it('maps base-only SKU to fast=false when fast variants exist (cursor CLI convention)', () => {
+        expect(matchCliSkuToAcpWireId('composer-2.5', available)).toBe('composer-2.5[fast=false]');
+    });
+
+    it('still maps base-only SKU when only one variant exists', () => {
+        expect(matchCliSkuToAcpWireId('composer-2.5', [{ modelId: 'composer-2.5[fast=true]' }])).toBe(
+            'composer-2.5[fast=true]'
+        );
     });
 });
 
@@ -48,6 +54,55 @@ describe('findBestCliSkuForAcpWire', () => {
             'gpt-5.5-low'
         ]);
         expect(best).toBe('gpt-5.5-medium');
+    });
+
+    it('prefers base-only sku for fast=false wire over -fast sku', () => {
+        const wire = 'composer-2.5[fast=false]';
+        const best = findBestCliSkuForAcpWire(wire, ['composer-2.5', 'composer-2.5-fast']);
+        expect(best).toBe('composer-2.5');
+    });
+
+    it('prefers -fast sku for fast=true wire over base-only sku', () => {
+        const wire = 'composer-2.5[fast=true]';
+        const best = findBestCliSkuForAcpWire(wire, ['composer-2.5', 'composer-2.5-fast']);
+        expect(best).toBe('composer-2.5-fast');
+    });
+});
+
+describe('round-trip (regression for #883: "selected but no response")', () => {
+    const acpWires = [
+        { modelId: 'composer-2.5[fast=true]' },
+        { modelId: 'composer-2.5[fast=false]' }
+    ];
+    const pickerSkus = ['composer-2.5', 'composer-2.5-fast'];
+
+    function simulateRoundTrip(clickedSku: string): { sessionModel: string; radioOn: string | null } {
+        // CLI side: applyCursorAcpModel → resolveCursorAcpWireId → matchCliSkuToAcpWireId
+        const sessionModel = matchCliSkuToAcpWireId(clickedSku, acpWires);
+        if (!sessionModel) {
+            throw new Error('CLI rejected sku');
+        }
+        // Web side after refetch: cursorVariantSelectValue uses findBestCliSkuForAcpWire
+        const radioOn = findBestCliSkuForAcpWire(sessionModel, pickerSkus);
+        return { sessionModel, radioOn };
+    }
+
+    it('clicking composer-2.5 (slow) lands on the slow radio, not the fast one', () => {
+        const result = simulateRoundTrip('composer-2.5');
+        expect(result.sessionModel).toBe('composer-2.5[fast=false]');
+        expect(result.radioOn).toBe('composer-2.5');
+    });
+
+    it('clicking composer-2.5-fast lands on the fast radio', () => {
+        const result = simulateRoundTrip('composer-2.5-fast');
+        expect(result.sessionModel).toBe('composer-2.5[fast=true]');
+        expect(result.radioOn).toBe('composer-2.5-fast');
+    });
+
+    it('clicking each picker option lands on a distinct session model (no collapse)', () => {
+        const slow = simulateRoundTrip('composer-2.5').sessionModel;
+        const fast = simulateRoundTrip('composer-2.5-fast').sessionModel;
+        expect(slow).not.toBe(fast);
     });
 });
 

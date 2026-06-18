@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import type { FileSearchItem, GitFileStatus } from '@/types/api'
 import { FileIcon } from '@/components/FileIcon'
@@ -236,6 +236,8 @@ function FileListSkeleton(props: { label: string; rows?: number }) {
     )
 }
 
+const SCROLL_KEY_PREFIX = 'hapi-dir-scroll-'
+
 export default function FilesPage() {
     const { api } = useAppContext()
     const { t } = useTranslation()
@@ -246,9 +248,30 @@ export default function FilesPage() {
     const search = useSearch({ from: '/sessions/$sessionId/files' })
     const { session } = useSession(api, sessionId)
     const [searchQuery, setSearchQuery] = useState('')
+    const scrollRef = useRef<HTMLDivElement>(null)
 
     const initialTab = search.tab === 'directories' ? 'directories' : 'changes'
     const [activeTab, setActiveTab] = useState<'changes' | 'directories'>(initialTab)
+
+    useEffect(() => {
+        const el = scrollRef.current
+        if (!el) return
+        const key = SCROLL_KEY_PREFIX + sessionId
+        try {
+            const saved = sessionStorage.getItem(key)
+            if (saved !== null) el.scrollTop = Number(saved)
+        } catch {
+            // ignore
+        }
+        return () => {
+            try {
+                sessionStorage.setItem(key, String(el.scrollTop))
+            } catch {
+                // ignore
+            }
+        }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [sessionId])
 
     const {
         status: gitStatus,
@@ -411,7 +434,7 @@ export default function FilesPage() {
                 </div>
             ) : null}
 
-            <div className="app-scroll-y flex-1 min-h-0">
+            <div ref={scrollRef} className="app-scroll-y flex-1 min-h-0">
                 <div className="mx-auto w-full max-w-content">
                     {showGitErrorBanner && activeTab === 'changes' ? (
                         <div className="border-b border-[var(--app-divider)] bg-amber-500/10 px-3 py-2 text-xs text-[var(--app-hint)]">
@@ -441,6 +464,7 @@ export default function FilesPage() {
                         )
                     ) : activeTab === 'directories' ? (
                         <DirectoryTree
+                            key={sessionId}
                             api={api}
                             sessionId={sessionId}
                             rootLabel={rootLabel}

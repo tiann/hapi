@@ -304,7 +304,8 @@ export function useSSE(options: {
                 const existing = existingIndex >= 0 ? previous.sessions[existingIndex] : undefined
                 const summary = {
                     ...toSessionSummary(session),
-                    futureScheduledMessageCount: existing?.futureScheduledMessageCount ?? 0
+                    futureScheduledMessageCount: existing?.futureScheduledMessageCount ?? 0,
+                    nextScheduledAt: existing?.nextScheduledAt ?? null
                 }
                 const nextSessions = previous.sessions.slice()
                 if (existingIndex >= 0) {

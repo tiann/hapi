@@ -21,9 +21,10 @@ export function useSessionActions(
     setPermissionMode: (mode: PermissionMode) => Promise<void>
     setCollaborationMode: (mode: CodexCollaborationMode) => Promise<void>
     setSteeringMode: (mode: SteeringMode) => Promise<void>
-    setModel: (model: string | null) => Promise<void>
+    setModel: (model: { provider: string; modelId: string } | string | null) => Promise<void>
     setModelReasoningEffort: (modelReasoningEffort: string | null) => Promise<void>
     setEffort: (effort: string | null) => Promise<void>
+    setServiceTier: (serviceTier: string | null) => Promise<void>
     renameSession: (name: string) => Promise<void>
     deleteSession: () => Promise<void>
     isPending: boolean
@@ -125,7 +126,7 @@ export function useSessionActions(
     })
 
     const modelMutation = useMutation({
-        mutationFn: async (model: string | null) => {
+        mutationFn: async (model: { provider: string; modelId: string } | string | null) => {
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')
             }
@@ -161,6 +162,22 @@ export function useSessionActions(
                 throw new Error('Session unavailable')
             }
             await api.setEffort(sessionId, effort)
+        },
+        onSuccess: () => void invalidateSession(),
+    })
+
+    const serviceTierMutation = useMutation({
+        mutationFn: async (serviceTier: string | null) => {
+            if (!api || !sessionId) {
+                throw new Error('Session unavailable')
+            }
+            if (agentFlavor !== 'codex') {
+                throw new Error('Fast mode is only supported for Codex sessions')
+            }
+            if (!codexCollaborationModeSupported) {
+                throw new Error('Fast mode is only supported for remote sessions')
+            }
+            await api.setServiceTier(sessionId, serviceTier)
         },
         onSuccess: () => void invalidateSession(),
     })
@@ -201,6 +218,7 @@ export function useSessionActions(
         setModel: modelMutation.mutateAsync,
         setModelReasoningEffort: modelReasoningEffortMutation.mutateAsync,
         setEffort: effortMutation.mutateAsync,
+        setServiceTier: serviceTierMutation.mutateAsync,
         renameSession: renameMutation.mutateAsync,
         deleteSession: deleteMutation.mutateAsync,
         isPending: abortMutation.isPending
@@ -213,6 +231,7 @@ export function useSessionActions(
             || modelMutation.isPending
             || modelReasoningEffortMutation.isPending
             || effortMutation.isPending
+            || serviceTierMutation.isPending
             || renameMutation.isPending
             || deleteMutation.isPending,
     }

@@ -79,6 +79,18 @@ export function dedupeAgentEvents(blocks: ChatBlock[]): ChatBlock[] {
             continue
         }
 
+        if (event.type === 'error' && typeof event.message === 'string') {
+            const message = event.message.trim()
+            const key = `error:${message}`
+            if (key === prevEventKey) {
+                continue
+            }
+            result.push(block)
+            prevEventKey = key
+            prevTitleChangedTo = null
+            continue
+        }
+
         let key: string
         try {
             key = `event:${JSON.stringify(event)}`

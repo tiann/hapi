@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 
-type ThemeMode = 'light' | 'dark'
+type ThemeMode = 'light' | 'dark' | 'oled'
 type SurfaceKey = 'tool-group' | 'user-message'
 
 export type ChatSurfaceColorPreset = 'default' | 'soft-blue' | 'soft-green' | 'soft-yellow'
@@ -28,6 +28,10 @@ const THEME_BASES: Record<ThemeMode, Record<SurfaceKey, string>> = {
     dark: {
         'tool-group': '#2b2f34',
         'user-message': '#2b2f34',
+    },
+    oled: {
+        'tool-group': '#0e0e10',
+        'user-message': '#141414',
     },
 }
 
@@ -90,7 +94,9 @@ function parseChatSurfaceColorPreference(raw: string | null): ChatSurfaceColorPr
 
 function getThemeMode(): ThemeMode {
     if (!isBrowser()) return 'light'
-    return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light'
+    const theme = document.documentElement.getAttribute('data-theme')
+    if (theme === 'dark' || theme === 'oled') return theme
+    return 'light'
 }
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -135,7 +141,8 @@ function resolveSurfaceColor(pref: ChatSurfaceColorPreference, theme: ThemeMode,
     if (!accent) return null
 
     const base = THEME_BASES[theme][surface]
-    const ratio = pref.startsWith('custom:') ? (theme === 'dark' ? 0.22 : 0.34) : (theme === 'dark' ? 0.2 : 0.3)
+    const isDarkBase = theme !== 'light'
+    const ratio = pref.startsWith('custom:') ? (isDarkBase ? 0.22 : 0.34) : (isDarkBase ? 0.2 : 0.3)
     return mixHex(base, accent, ratio)
 }
 

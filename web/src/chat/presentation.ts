@@ -182,6 +182,9 @@ export function getEventPresentation(event: AgentEvent): EventPresentation {
         const suffix = typeLabel ? ` (${typeLabel})` : ''
         return { icon: '⏳', text: endsAt ? `Usage limit reached${suffix} until ${formatUnixTimestamp(endsAt)}` : `Usage limit reached${suffix}` }
     }
+    if (event.type === 'error') {
+        return { icon: '⚠️', text: typeof event.message === 'string' ? event.message : 'Error' }
+    }
     if (event.type === 'message') {
         return { icon: null, text: typeof event.message === 'string' ? event.message : 'Message' }
     }

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, rmSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, mkdirSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -135,7 +135,9 @@ describe('ApiMachineClient listOpencodeModelsForCwd handler', () => {
                 availableModels: [{ modelId: 'x/y' }],
                 currentModelId: 'x/y'
             })
-            expect(listOpencodeModelsForCwdMock).toHaveBeenCalledWith(secondWorkspaceRoot)
+            // The handler realpaths the cwd (security: prevents symlink escape),
+            // so on macOS /var/folders/... resolves to /private/var/folders/...
+            expect(listOpencodeModelsForCwdMock).toHaveBeenCalledWith(realpathSync(secondWorkspaceRoot))
         } finally {
             rmSync(secondWorkspaceRoot, { recursive: true, force: true })
             client.shutdown()

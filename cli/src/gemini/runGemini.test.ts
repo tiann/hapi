@@ -54,7 +54,8 @@ const lifecycleMock = vi.hoisted(() => ({
     markCrash: vi.fn(),
     setExitCode: vi.fn(),
     setArchiveReason: vi.fn(),
-    setSessionEndReason: vi.fn()
+    setSessionEndReason: vi.fn(),
+    hasExplicitSessionEndReason: vi.fn(() => false)
 }));
 
 vi.mock('@/agent/runnerLifecycle', () => ({

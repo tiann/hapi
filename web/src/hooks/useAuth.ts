@@ -157,15 +157,21 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
         }
     }, [baseUrl])
 
+    // Keep the ApiClient referentially stable across token *refreshes*: the client always reads
+    // the live token via getToken (tokenRef), so it never needs rebuilding when the token value
+    // changes — only when auth presence toggles (login/logout). Rebuilding on every refresh churns
+    // `api`'s identity, which remounts everything keyed on it (VoiceBackendSession `[props.api]`,
+    // GeneratedImageCard `[ctx.api, ...]`) and drives the remount/refetch storm. Issue #927.
+    const hasToken = token !== null
     const api = useMemo(() => (
-        token
-            ? new ApiClient(token, {
+        hasToken
+            ? new ApiClient(tokenRef.current ?? '', {
                 baseUrl,
                 getToken: () => tokenRef.current,
                 onUnauthorized: () => refreshAuth({ force: true })
             })
             : null
-    ), [baseUrl, refreshAuth, token])
+    ), [baseUrl, refreshAuth, hasToken])
 
     useEffect(() => {
         let isCancelled = false

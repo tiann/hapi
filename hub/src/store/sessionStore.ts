@@ -11,6 +11,7 @@ import {
     setSessionEffort,
     setSessionModel,
     setSessionModelReasoningEffort,
+    setSessionServiceTier,
     setSessionTeamState,
     setSessionTodos,
     touchSessionUpdatedAt,
@@ -79,6 +80,10 @@ export class SessionStore {
 
     setSessionEffort(id: string, effort: string | null, namespace: string, options?: { touchUpdatedAt?: boolean }): boolean {
         return setSessionEffort(this.db, id, effort, namespace, options)
+    }
+
+    setSessionServiceTier(id: string, serviceTier: string | null, namespace: string, options?: { touchUpdatedAt?: boolean }): boolean {
+        return setSessionServiceTier(this.db, id, serviceTier, namespace, options)
     }
 
     touchSessionUpdatedAt(id: string, updatedAt: number, namespace: string): boolean {

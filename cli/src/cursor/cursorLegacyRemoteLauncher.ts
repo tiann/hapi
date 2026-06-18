@@ -220,15 +220,22 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                     this.consecutiveTransientFailures = 0;
                     const errMsg = `Agent exited (${exitCode}): ${truncateStderrForDisplay(stderr)}`;
                     logger.warn(`[cursor-remote] ${errMsg}`);
-                    session.sendSessionEvent({ type: 'message', message: errMsg });
+                    const converted = convertAgentMessage({ type: 'error', message: errMsg });
+                    if (converted) {
+                        session.sendAgentMessage(converted);
+                    }
                     messageBuffer.addMessage(errMsg, 'status');
                 }
             } catch (error) {
                 this.consecutiveTransientFailures = 0;
                 logger.warn('[cursor-remote] Agent run failed', error);
                 const errMsg = error instanceof Error ? error.message : String(error);
-                session.sendSessionEvent({ type: 'message', message: `Cursor Agent failed: ${errMsg}` });
-                messageBuffer.addMessage(`Cursor Agent failed: ${errMsg}`, 'status');
+                const message = `Cursor Agent failed: ${errMsg}`;
+                const converted = convertAgentMessage({ type: 'error', message });
+                if (converted) {
+                    session.sendAgentMessage(converted);
+                }
+                messageBuffer.addMessage(message, 'status');
             } finally {
                 session.onThinkingChange(false);
                 if (session.queue.size() === 0 && !this.shouldExit) {
@@ -317,7 +324,10 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                 `[cursor-remote] transient agent failures hit cap (${MAX_CONSECUTIVE_TRANSIENT_FAILURES}); dropping message`,
                 { exitCode, stderr: stderr.slice(0, STDERR_DISPLAY_LIMIT) }
             );
-            session.sendSessionEvent({ type: 'message', message: dropMsg });
+            const converted = convertAgentMessage({ type: 'error', message: dropMsg });
+            if (converted) {
+                session.sendAgentMessage(converted);
+            }
             messageBuffer.addMessage(dropMsg, 'status');
             this.consecutiveTransientFailures = 0;
             return;
@@ -343,7 +353,10 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             session.queue.unshift(message, mode);
         }
         const friendly = friendlyTransientMessage(exitCode, stderr);
-        session.sendSessionEvent({ type: 'message', message: friendly });
+        const converted = convertAgentMessage({ type: 'error', message: friendly });
+        if (converted) {
+            session.sendAgentMessage(converted);
+        }
         messageBuffer.addMessage(friendly, 'status');
         await this.transientBackoff(getTransientBackoffMs());
     }

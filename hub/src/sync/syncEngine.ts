@@ -133,6 +133,8 @@ export class SyncEngine {
     private readonly messageService: MessageService
     private readonly rpcGateway: RpcGateway
     private inactivityTimer: NodeJS.Timeout | null = null
+    /** Sessions that emitted `session-ready` (Cursor ACP load/newSession complete). */
+    private readonly sessionReadyIds = new Set<string>()
 
     constructor(
         private readonly store: Store,
@@ -188,6 +190,10 @@ export class SyncEngine {
 
     getFutureScheduledMessageCounts(sessionIds: string[], now: number = Date.now()): Map<string, number> {
         return this.store.messages.countFutureScheduledBySessionIds(sessionIds, now)
+    }
+
+    getNextScheduledAtBySessionIds(sessionIds: string[], now: number = Date.now()): Map<string, number> {
+        return this.store.messages.minFutureScheduledAtBySessionIds(sessionIds, now)
     }
 
     getSession(sessionId: string): Session | undefined {
@@ -269,6 +275,9 @@ export class SyncEngine {
             this.sessionCache.refreshSession(event.sessionId)
             const after = this.sessionCache.getSession(event.sessionId)
             if (after?.metadata && !this.hasSameAgentSessionIds(before?.metadata ?? null, after.metadata)) {
+                if (!this.canRunCursorDedup(after)) {
+                    return
+                }
                 void this.sessionCache.deduplicateByAgentSessionId(event.sessionId).catch(() => {
                     // best-effort: dedup failure is harmless, web-side safety net hides remaining duplicates
                 })
@@ -299,10 +308,16 @@ export class SyncEngine {
         model?: string | null
         modelReasoningEffort?: string | null
         effort?: string | null
+        serviceTier?: string | null
         collaborationMode?: CodexCollaborationMode
         steeringMode?: SteeringMode
     }): void {
         this.sessionCache.handleSessionAlive(payload)
+        this.triggerDedupIfNeeded(payload.sid)
+    }
+
+    handleSessionReady(payload: { sid: string; time: number }): void {
+        this.sessionReadyIds.add(payload.sid)
         this.triggerDedupIfNeeded(payload.sid)
     }
 
@@ -311,6 +326,11 @@ export class SyncEngine {
     }
 
     handleSessionEnd(payload: { sid: string; time: number; reason?: 'completed' | 'terminated' | 'error' }): void {
+        const before = this.sessionCache.getSession(payload.sid)
+        const isCursorAcp = before?.metadata?.flavor === 'cursor'
+            && before.metadata.cursorSessionProtocol === 'acp'
+        const shouldRetryDedup = !isCursorAcp || this.sessionReadyIds.has(payload.sid)
+
         this.sessionCache.handleSessionEnd(payload)
         this.eventPublisher.emit({
             type: 'session-ended',
@@ -318,8 +338,12 @@ export class SyncEngine {
             reason: payload.reason
         })
         // Retry dedup now that this session is inactive — a prior dedup may have
-        // skipped it because it was still active at the time.
-        this.triggerDedupIfNeeded(payload.sid)
+        // skipped it because it was still active at the time. Cursor ACP rows that
+        // never reached session-ready must not dedup-merge the original on failure.
+        if (shouldRetryDedup) {
+            this.triggerDedupIfNeeded(payload.sid)
+        }
+        this.sessionReadyIds.delete(payload.sid)
     }
 
     handleBackgroundTaskDelta(sessionId: string, delta: { started: number; completed: number }): void {
@@ -618,9 +642,10 @@ export class SyncEngine {
         sessionId: string,
         config: {
             permissionMode?: PermissionMode
-            model?: string | null
+            model?: { provider: string; modelId: string } | string | null
             modelReasoningEffort?: string | null
             effort?: string | null
+            serviceTier?: string | null
             collaborationMode?: CodexCollaborationMode
             steeringMode?: SteeringMode
         }
@@ -634,7 +659,7 @@ export class SyncEngine {
             return
         }
 
-        const result = await this.rpcGateway.requestSessionConfig(sessionId, config)
+        const result = await this.rpcGateway.requestSessionConfig(sessionId, config) as Record<string, unknown>
         if (!result || typeof result !== 'object') {
             throw new Error('Invalid response from session config RPC')
         }
@@ -645,6 +670,7 @@ export class SyncEngine {
                 model?: Session['model']
                 modelReasoningEffort?: Session['modelReasoningEffort']
                 effort?: Session['effort']
+                serviceTier?: Session['serviceTier']
                 collaborationMode?: Session['collaborationMode']
                 steeringMode?: Session['steeringMode']
             }
@@ -654,7 +680,7 @@ export class SyncEngine {
         }
         const applied = obj.applied
         if (!applied || typeof applied !== 'object') {
-            throw new Error('Missing applied session config')
+            throw new Error(`Missing applied session config, got: ${JSON.stringify(result)}`)
         }
 
         const requestedKeys = Object.keys(config) as Array<keyof typeof config>
@@ -678,7 +704,8 @@ export class SyncEngine {
         worktreeName?: string,
         resumeSessionId?: string,
         effort?: string,
-        permissionMode?: PermissionMode
+        permissionMode?: PermissionMode,
+        serviceTier?: string
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
         return await this.rpcGateway.spawnSession(
             machineId,
@@ -691,7 +718,8 @@ export class SyncEngine {
             worktreeName,
             resumeSessionId,
             effort,
-            permissionMode
+            permissionMode,
+            serviceTier
         )
     }
 
@@ -712,6 +740,7 @@ export class SyncEngine {
         if (flavor === 'opencode') return metadata.opencodeSessionId ?? null
         if (flavor === 'cursor') return metadata.cursorSessionId ?? null
         if (flavor === 'kimi') return metadata.kimiSessionId ?? null
+        if (flavor === 'pi') return metadata.piSessionId ?? null
 
         return metadata.claudeSessionId ?? this.recoverClaudeSessionIdFromMessages(session.id, namespace)
     }
@@ -1146,7 +1175,8 @@ export class SyncEngine {
             undefined,
             resumeToken,
             session.effort ?? undefined,
-            preferredPermissionMode
+            preferredPermissionMode,
+            session.serviceTier ?? undefined
         )
 
         if (spawnResult.type !== 'success') {
@@ -1160,6 +1190,19 @@ export class SyncEngine {
 
         // permissionMode is passed to spawnSession above; do not call set-session-config here.
         // session-alive can arrive before the CLI registers that RPC handler, which caused resume_failed.
+
+        const needsReadyBeforeMerge = spawnResult.sessionId !== access.sessionId
+            && flavor === 'cursor'
+            && metadata.cursorSessionProtocol === 'acp'
+        if (needsReadyBeforeMerge) {
+            const readyResult = await this.waitForSessionReady(spawnResult.sessionId)
+            if (readyResult !== 'ready') {
+                const message = readyResult === 'ended'
+                    ? 'Session ended before Cursor ACP load completed'
+                    : 'Session failed to become ready'
+                return { type: 'error', message, code: 'resume_failed' }
+            }
+        }
 
         if (spawnResult.sessionId !== access.sessionId) {
             // The old session may have already been merged by the automatic dedup path
@@ -1404,11 +1447,26 @@ export class SyncEngine {
             && (prev?.geminiSessionId ?? null) === (next.geminiSessionId ?? null)
             && (prev?.opencodeSessionId ?? null) === (next.opencodeSessionId ?? null)
             && (prev?.cursorSessionId ?? null) === (next.cursorSessionId ?? null)
+            && (prev?.piSessionId ?? null) === (next.piSessionId ?? null)
+            && (prev?.kimiSessionId ?? null) === (next.kimiSessionId ?? null)
+    }
+
+    private canRunCursorDedup(session: Session): boolean {
+        if (session.metadata?.flavor !== 'cursor') {
+            return true
+        }
+        if (session.metadata?.cursorSessionProtocol !== 'acp') {
+            return true
+        }
+        return this.sessionReadyIds.has(session.id)
     }
 
     private triggerDedupIfNeeded(sessionId: string): void {
         const session = this.sessionCache.getSession(sessionId)
         if (session?.metadata) {
+            if (!this.canRunCursorDedup(session)) {
+                return
+            }
             void this.sessionCache.deduplicateByAgentSessionId(sessionId).catch(() => {
                 // best-effort: web-side safety net hides remaining duplicates
             })
@@ -1425,6 +1483,21 @@ export class SyncEngine {
             await new Promise((resolve) => setTimeout(resolve, 250))
         }
         return false
+    }
+
+    async waitForSessionReady(sessionId: string, timeoutMs: number = 60_000): Promise<'ready' | 'ended' | 'timeout'> {
+        const start = Date.now()
+        while (Date.now() - start < timeoutMs) {
+            if (this.sessionReadyIds.has(sessionId)) {
+                return 'ready'
+            }
+            const session = this.getSession(sessionId)
+            if (!session?.active) {
+                return 'ended'
+            }
+            await new Promise((resolve) => setTimeout(resolve, 250))
+        }
+        return 'timeout'
     }
 
     async waitForSessionInactive(sessionId: string, timeoutMs: number = 15_000): Promise<boolean> {
@@ -1517,6 +1590,11 @@ export class SyncEngine {
 
     async listOpencodeModelsForCwd(machineId: string, cwd: string): Promise<RpcListOpencodeModelsResponse> {
         return await this.rpcGateway.listOpencodeModelsForCwd(machineId, cwd)
+    }
+
+    /** Generic Pi RPC — delegates to rpcGateway.callPiRpc. */
+    async callPiRpc<T = unknown>(sessionId: string, method: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<T> {
+        return await this.rpcGateway.callPiRpc<T>(sessionId, method, params, timeoutMs)
     }
 
     async listOpencodeReasoningEffortOptionsForSession(sessionId: string): Promise<RpcListOpencodeReasoningEffortOptionsResponse> {

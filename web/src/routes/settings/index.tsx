@@ -19,6 +19,7 @@ import { getTerminalFontSizeOptions, useTerminalFontSize, type TerminalFontSize 
 import { getComposerEnterBehaviorOptions, useComposerEnterBehavior, type ComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
 import { getTerminalToolDisplayModeOptions, useTerminalToolDisplayMode, type TerminalToolDisplayMode } from '@/hooks/useTerminalToolDisplayMode'
 import { getSessionListStatusModeOptions, useSessionListStatusMode, type SessionListStatusMode } from '@/hooks/useSessionListStatusMode'
+import { useShowActiveSessionsOnly } from '@/hooks/useShowActiveSessionsOnly'
 import {
     MAX_SESSION_PREVIEW_LIMIT,
     MIN_SESSION_PREVIEW_LIMIT,
@@ -35,6 +36,7 @@ import {
     type ChatSurfaceColorPreset,
 } from '@/hooks/useChatSurfaceColors'
 import { useAppearance, getAppearanceOptions, type AppearancePreference } from '@/hooks/useTheme'
+import { useThemeColors, type ThemeColorKeyId } from '@/hooks/useThemeColors'
 import { PROTOCOL_VERSION } from '@hapi/protocol'
 import { VoiceRespondsControls, VoiceSoundsControls, VoicePersonaControls, VoiceDiagnosticsControls } from '@/components/settings/VoiceAdvancedControls'
 
@@ -308,6 +310,65 @@ function ChatSurfaceColorControl(props: {
     )
 }
 
+function ThemeColorControl(props: { t: (key: string) => string }) {
+    const { keys, getPickerValue, isCustomized, hasAnyCustom, setColor, resetColor, resetAll } = useThemeColors()
+
+    return (
+        <div className="border-t border-[var(--app-divider)] px-3 py-3">
+            <div className="mb-1 flex items-center justify-between gap-3">
+                <span className="text-[var(--app-fg)]">{props.t('settings.display.themeColors.title')}</span>
+                {hasAnyCustom && (
+                    <button
+                        type="button"
+                        onClick={resetAll}
+                        className="text-sm text-[var(--app-link)] transition-colors hover:underline"
+                    >
+                        {props.t('settings.display.themeColors.resetAll')}
+                    </button>
+                )}
+            </div>
+            <div className="mb-3 text-sm text-[var(--app-hint)]">{props.t('settings.display.themeColors.description')}</div>
+            <div className="flex flex-col gap-2">
+                {keys.map((key) => {
+                    const value = getPickerValue(key.id)
+                    const customized = isCustomized(key.id)
+                    return (
+                        <div key={key.id} className="flex items-center justify-between gap-3">
+                            <span className="text-sm text-[var(--app-fg)]">{props.t(key.labelKey)}</span>
+                            <div className="flex items-center gap-2">
+                                {customized && (
+                                    <button
+                                        type="button"
+                                        onClick={() => resetColor(key.id as ThemeColorKeyId)}
+                                        className="text-xs text-[var(--app-hint)] transition-colors hover:text-[var(--app-link)]"
+                                    >
+                                        {props.t('settings.display.themeColors.reset')}
+                                    </button>
+                                )}
+                                <label
+                                    className={`inline-flex items-center rounded-xl border px-2 py-1 transition-colors ${
+                                        customized
+                                            ? 'border-[var(--app-link)] bg-[var(--app-subtle-bg)]'
+                                            : 'border-[var(--app-border)] bg-[var(--app-bg)]'
+                                    }`}
+                                >
+                                    <input
+                                        aria-label={props.t(key.labelKey)}
+                                        type="color"
+                                        value={value}
+                                        onChange={(event) => setColor(key.id as ThemeColorKeyId, event.target.value)}
+                                        className="h-8 w-11 cursor-pointer appearance-none border-0 bg-transparent p-0"
+                                    />
+                                </label>
+                            </div>
+                        </div>
+                    )
+                })}
+            </div>
+        </div>
+    )
+}
+
 export default function SettingsPage() {
     const { t, locale, setLocale } = useTranslation()
     const { api } = useAppContext()
@@ -338,6 +399,7 @@ export default function SettingsPage() {
     const { composerEnterBehavior, setComposerEnterBehavior } = useComposerEnterBehavior()
     const { terminalToolDisplayMode, setTerminalToolDisplayMode } = useTerminalToolDisplayMode()
     const { sessionListStatusMode, setSessionListStatusMode } = useSessionListStatusMode()
+    const { showActiveSessionsOnly, setShowActiveSessionsOnly } = useShowActiveSessionsOnly()
     const {
         toolGroupBackground,
         userMessageBackground,
@@ -733,6 +795,7 @@ export default function SettingsPage() {
                                 </div>
                             )}
                         </div>
+                        <ThemeColorControl t={t} />
                         <div ref={fontContainerRef} className="relative">
                             <button
                                 type="button"
@@ -836,6 +899,23 @@ export default function SettingsPage() {
                             decreaseLabel={t('settings.display.sessionPreviewLimit.decrease')}
                             increaseLabel={t('settings.display.sessionPreviewLimit.increase')}
                         />
+                        <div className="flex items-center justify-between gap-3 px-3 py-3">
+                            <div className="flex flex-col">
+                                <span className="text-[var(--app-fg)]">{t('settings.display.activeSessionsOnly')}</span>
+                                <span className="text-xs text-[var(--app-hint)]">{t('settings.display.activeSessionsOnly.desc')}</span>
+                            </div>
+                            <label className="relative inline-flex h-5 w-9 shrink-0 items-center">
+                                <input
+                                    type="checkbox"
+                                    checked={showActiveSessionsOnly}
+                                    onChange={(e) => setShowActiveSessionsOnly(e.target.checked)}
+                                    className="peer sr-only"
+                                    aria-label={t('settings.display.activeSessionsOnly')}
+                                />
+                                <span className="absolute inset-0 rounded-full bg-[var(--app-border)] transition-colors peer-checked:bg-[var(--app-link)]" />
+                                <span className="absolute left-0.5 h-4 w-4 rounded-full bg-[var(--app-bg)] transition-transform peer-checked:translate-x-4" />
+                            </label>
+                        </div>
                         <div ref={sessionListStatusContainerRef} className="relative">
                             <button
                                 type="button"
