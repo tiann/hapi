@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import type { ApiClient } from '@/api/client'
 import { useHubScratchlist } from './use-hub-scratchlist'
+import { queryKeys } from './query-keys'
 
 /**
  * Tests for the v2 hub-backed scratchlist hook (tiann/hapi#893).
@@ -117,6 +118,63 @@ describe('useHubScratchlist - add', () => {
         await waitFor(() => expect(result.current.entries.length).toBe(1))
         expect(result.current.entries[0]?.id).toBe('hub-id')
         expect(result.current.entries[0]?.text).toBe('new note')
+    })
+
+    it('dedupes when SSE refetch lands before POST resolves (HAPI Bot, PR #896)', async () => {
+        const queryClient = new QueryClient({
+            defaultOptions: {
+                queries: { retry: false, gcTime: Infinity },
+                mutations: { retry: false }
+            }
+        })
+        const sid = makeSid()
+        const canonical: HubEntry = { entryId: 'hub-id', text: 'new note', createdAt: 5000, updatedAt: 5000 }
+        let releaseCreate: (value: { entry: HubEntry }) => void = () => undefined
+        const createDeferred = new Promise<{ entry: HubEntry }>((resolve) => {
+            releaseCreate = resolve
+        })
+        const api = createMockApi({
+            getScratchlist: async () => ({ entries: [] }),
+            createScratchlistEntry: async () => createDeferred
+        })
+        const wrapper = ({ children }: { children: ReactNode }) => (
+            <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        )
+        const { result } = renderHook(() => useHubScratchlist(sid, api), { wrapper })
+        await waitFor(() => expect(result.current.isLoading).toBe(false))
+
+        let addPromise: Promise<boolean> | undefined
+        await act(async () => {
+            addPromise = result.current.add('new note')
+        })
+        await waitFor(() => expect(result.current.entries.length).toBe(1))
+        const optimisticId = result.current.entries[0]?.id
+        expect(optimisticId).not.toBe('hub-id')
+
+        // Simulate SSE invalidation/refetch beating the POST response.
+        await act(async () => {
+            queryClient.setQueryData(queryKeys.scratchlist(sid), {
+                entries: [
+                    canonical,
+                    {
+                        entryId: optimisticId!,
+                        text: 'new note',
+                        createdAt: 0,
+                        updatedAt: 0
+                    }
+                ]
+            })
+        })
+
+        await act(async () => {
+            releaseCreate({ entry: canonical })
+            await addPromise
+        })
+
+        await waitFor(() => {
+            expect(result.current.entries.filter((e) => e.id === 'hub-id')).toHaveLength(1)
+        })
+        expect(result.current.entries).toHaveLength(1)
     })
 
     it('rolls back when the hub rejects the create', async () => {
