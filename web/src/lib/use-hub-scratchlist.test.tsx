@@ -3,6 +3,7 @@ import { renderHook, act, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import type { ApiClient } from '@/api/client'
+import { ApiError } from '@/api/client'
 import { useHubScratchlist } from './use-hub-scratchlist'
 import { queryKeys } from './query-keys'
 
@@ -268,6 +269,48 @@ describe('useHubScratchlist - delete', () => {
         await waitFor(() => expect(result.current.entries.length).toBe(2))
         expect(result.current.entries.map((e) => e.id).sort()).toEqual(['a', 'b'])
     })
+
+    it('keeps entry removed when hub returns 404 (deleted elsewhere) (HAPI Bot, PR #896)', async () => {
+        const queryClient = new QueryClient({
+            defaultOptions: {
+                queries: { retry: false, gcTime: Infinity },
+                mutations: { retry: false }
+            }
+        })
+        const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+        const sid = makeSid()
+        let fetchCount = 0
+        const api = createMockApi({
+            getScratchlist: async () => {
+                fetchCount += 1
+                if (fetchCount === 1) {
+                    return {
+                        entries: [
+                            { entryId: 'a', text: 'A', createdAt: 1, updatedAt: 1 },
+                            { entryId: 'b', text: 'B', createdAt: 2, updatedAt: 2 }
+                        ]
+                    }
+                }
+                return {
+                    entries: [{ entryId: 'b', text: 'B', createdAt: 2, updatedAt: 2 }]
+                }
+            },
+            deleteScratchlistEntry: async () => {
+                throw new ApiError('Not found', 404)
+            }
+        })
+        const wrapper = ({ children }: { children: ReactNode }) => (
+            <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        )
+        const { result } = renderHook(() => useHubScratchlist(sid, api), { wrapper })
+        await waitFor(() => expect(result.current.entries.length).toBe(2))
+
+        await act(async () => {
+            await result.current.remove('a')
+        })
+        await waitFor(() => expect(result.current.entries.map((e) => e.id)).toEqual(['b']))
+        expect(invalidateSpy).toHaveBeenCalled()
+    })
 })
 
 describe('useHubScratchlist - update', () => {
@@ -288,6 +331,32 @@ describe('useHubScratchlist - update', () => {
             await result.current.update('a', 'after')
         })
         await waitFor(() => expect(result.current.entries[0]?.text).toBe('after'))
+    })
+
+    it('drops entry when update returns 404 (deleted elsewhere) (HAPI Bot, PR #896)', async () => {
+        const sid = makeSid()
+        let fetchCount = 0
+        const api = createMockApi({
+            getScratchlist: async () => {
+                fetchCount += 1
+                if (fetchCount === 1) {
+                    return {
+                        entries: [{ entryId: 'a', text: 'before', createdAt: 1, updatedAt: 1 }]
+                    }
+                }
+                return { entries: [] }
+            },
+            updateScratchlistEntry: async () => {
+                throw new ApiError('Not found', 404)
+            }
+        })
+        const { result } = renderHook(() => useHubScratchlist(sid, api), { wrapper: createWrapper() })
+        await waitFor(() => expect(result.current.entries.length).toBe(1))
+
+        await act(async () => {
+            await result.current.update('a', 'after')
+        })
+        await waitFor(() => expect(result.current.entries).toHaveLength(0))
     })
 })
 

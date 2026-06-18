@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
+import { ApiError } from '@/api/client'
 import { queryKeys } from '@/lib/query-keys'
 import {
     moveScratchlistEntry,
@@ -127,6 +128,10 @@ function toLocalEntry(hub: HubEntry): ScratchlistEntry {
         createdAt: hub.createdAt,
         updatedAt: hub.updatedAt
     }
+}
+
+function isScratchlistNotFound(error: unknown): boolean {
+    return error instanceof ApiError && error.status === 404
 }
 
 function makeOptimisticHubEntry(text: string, now: number): HubEntry {
@@ -382,7 +387,15 @@ export function useHubScratchlist(
             })
             return { previousData }
         },
-        onError: (_error, _variables, context) => {
+        onError: (error, _variables, context) => {
+            if (isScratchlistNotFound(error)) {
+                queryClient.setQueryData<ScratchlistResponse>(queryKey, (prev) => {
+                    if (!prev) return prev
+                    return { entries: prev.entries.filter((e) => e.entryId !== _variables.entryId) }
+                })
+                void queryClient.invalidateQueries({ queryKey })
+                return
+            }
             if (context?.previousData !== undefined) {
                 queryClient.setQueryData(queryKey, context.previousData)
             }
@@ -408,7 +421,15 @@ export function useHubScratchlist(
             })
             return { previousData }
         },
-        onError: (_error, _variables, context) => {
+        onError: (error, variables, context) => {
+            if (isScratchlistNotFound(error)) {
+                queryClient.setQueryData<ScratchlistResponse>(queryKey, (prev) => {
+                    if (!prev) return prev
+                    return { entries: prev.entries.filter((e) => e.entryId !== variables.entryId) }
+                })
+                void queryClient.invalidateQueries({ queryKey })
+                return
+            }
             if (context?.previousData !== undefined) {
                 queryClient.setQueryData(queryKey, context.previousData)
             }
