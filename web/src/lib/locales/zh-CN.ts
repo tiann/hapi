@@ -398,7 +398,7 @@ export default {
   'composer.abort': '中止',
   'composer.switchRemote': '切换到远程模式',
   'composer.attach': '添加文件',
-  'composer.dropToAttach': '放開以附加檔案',
+  'composer.dropToAttach': '松开以添加文件',
   'composer.send': '发送',
   'composer.stop': '停止',
   'composer.voice': '语音助手',
