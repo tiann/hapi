@@ -770,6 +770,8 @@ export default {
   'misc.fastModeStandard': 'Standard',
   'misc.fastModeFast': 'Fast',
   'misc.variant': 'Variant',
+  'misc.changeModel': 'Change model…',
+  'misc.backToModelList': '← Models',
   'misc.loading': 'Loading…',
   'misc.loadOlder': 'Load older',
   'misc.newMessage': '{n} new message{s}',

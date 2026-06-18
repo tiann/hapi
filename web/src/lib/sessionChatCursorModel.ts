@@ -1,5 +1,6 @@
 import { findBestCliSkuForAcpWire, matchCliSkuToAcpWireId } from '@hapi/protocol'
 import type { CursorModelCatalog } from '@/lib/cursorModelOptions'
+import { resolveCursorVariantOptions, resolveDefaultCursorVariantWire } from '@/lib/cursorModelOptions'
 import type { CursorModelSummary } from '@/types/api'
 import {
     buildCursorCatalogFromSources,
@@ -49,6 +50,16 @@ export function resolveSessionCursorModelChange(args: {
         if (value.includes('[')) {
             const base = resolveCursorBaseFromWire(value, picker.catalog)
             return { ok: true, wireId: value, nextSelectedBase: base, shouldApply: true }
+        }
+        const variants = resolveCursorVariantOptions(value, picker.catalog)
+        if (variants.length > 1) {
+            const defaultWire = resolveDefaultCursorVariantWire(value, picker.catalog)
+            return {
+                ok: true,
+                wireId: defaultWire,
+                nextSelectedBase: value,
+                shouldApply: defaultWire !== null
+            }
         }
         const wireId = resolveWireIdForBaseChange(value, picker.catalog, sessionModel)
         return {

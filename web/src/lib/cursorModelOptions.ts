@@ -1,4 +1,4 @@
-import { cursorCliSkuBaseId } from '@hapi/protocol'
+import { cursorCliSkuBaseId, findBestCliSkuForAcpWire } from '@hapi/protocol'
 import type { CursorModelSummary } from '@/types/api'
 
 export type CursorModelOption = { value: string | null; label: string }
@@ -125,6 +125,57 @@ export function buildCursorEffortPickerOptions(
         value: variant.wireId,
         label: variant.label.trim() || cursorVariantLabel(variant.wireId)
     }))
+}
+
+/**
+ * Default variant for a base: the first ACP wire row in catalog order, mapped to
+ * the best CLI sku when sku rows replace raw ACP wires in the picker.
+ */
+export function resolveDefaultCursorVariantWire(
+    baseKey: string,
+    catalog: CursorModelCatalog
+): string | null {
+    const pickerVariants = resolveCursorVariantOptions(baseKey, catalog)
+    if (pickerVariants.length === 0) {
+        return null
+    }
+    if (pickerVariants.length === 1) {
+        return pickerVariants[0].wireId
+    }
+
+    const catalogVariants = catalog.variantsByBase.get(baseKey) ?? []
+    const defaultAcp = catalogVariants.find((entry) => isCursorAcpWireModelId(entry.wireId))
+        ?? catalogVariants[0]
+    if (pickerVariants.some((entry) => entry.wireId === defaultAcp.wireId)) {
+        return defaultAcp.wireId
+    }
+
+    const bestSku = findBestCliSkuForAcpWire(
+        defaultAcp.wireId,
+        pickerVariants.map((entry) => entry.wireId)
+    )
+    return bestSku ?? pickerVariants[0].wireId
+}
+
+/** Variant rows with the base default first (for drill-down picker step). */
+export function buildCursorEffortPickerOptionsWithDefaultFirst(
+    baseKey: string,
+    catalog: CursorModelCatalog
+): Array<{ value: string; label: string }> {
+    const variants = resolveCursorVariantOptions(baseKey, catalog)
+    const options = buildCursorEffortPickerOptions(variants)
+    const defaultWire = resolveDefaultCursorVariantWire(baseKey, catalog)
+    if (!defaultWire) {
+        return options
+    }
+    const defaultOption = options.find((option) => option.value === defaultWire)
+    if (!defaultOption) {
+        return options
+    }
+    return [
+        defaultOption,
+        ...options.filter((option) => option.value !== defaultWire)
+    ]
 }
 
 /** Raw suffix for compatibility with older callers/tests. */
@@ -333,4 +384,26 @@ export function formatCursorModelPickerLabel(modelId: string, _name?: string | n
     const base = cursorModelDedupeKey(modelId)
     const variant = cursorModelVariantId(modelId)
     return variant ? `${base} · ${variant}` : base
+}
+
+/**
+ * iOS-style "configure my model" view: when a non-Default base is selected, hide
+ * every other base row so the user sees Default + selected + (optional Variant
+ * section below). Caller appends a "Change model…" toggle to re-expand.
+ *
+ * Default-row passthrough recognizes both `'auto'` (the in-picker token) and
+ * `null` (the underlying base option value) so callers don't need to normalize.
+ */
+export function filterCursorModelOptionsForCompactView(
+    modelOptions: readonly { value: string | null; label: string }[],
+    selectedModelBase: string | null | undefined
+): readonly { value: string | null; label: string }[] {
+    if (!selectedModelBase || selectedModelBase === 'auto') {
+        return modelOptions
+    }
+    return modelOptions.filter(
+        (option) => option.value === null
+            || option.value === 'auto'
+            || option.value === selectedModelBase
+    )
 }
