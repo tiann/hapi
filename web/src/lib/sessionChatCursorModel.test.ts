@@ -23,7 +23,7 @@ describe('resolveSessionCursorModelChange', () => {
         sessionCurrentModelId: 'composer-2.5[fast=true]'
     })
 
-    it('updates selected base without applying when the base has multiple variants', () => {
+    it('applies the default variant and keeps base selected when the base has multiple variants', () => {
         const plan = resolveSessionCursorModelChange({
             picker,
             sessionModel: 'composer-2.5[fast=true]',
@@ -33,9 +33,9 @@ describe('resolveSessionCursorModelChange', () => {
         })
         expect(plan).toEqual({
             ok: true,
-            wireId: null,
+            wireId: 'composer-2.5[fast=true]',
             nextSelectedBase: 'composer-2.5',
-            shouldApply: false
+            shouldApply: true
         })
     })
 

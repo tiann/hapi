@@ -12,6 +12,7 @@ import {
     cursorVariantDisambiguationSuffix,
     cursorVariantLabel,
     cursorVaryingWireParamKeys,
+    filterCursorModelOptionsForCompactView,
     formatCursorModelPickerLabel,
     parseCursorWireParams,
     resolveCursorBaseKey,
@@ -153,5 +154,46 @@ describe('picker labels and modes', () => {
         expect(cursorEffortPickerLabel('claude-opus-4-8[effort=high,fast=false]', [])).toBe('effort=high,fast=false')
         expect(cursorVariantDisambiguationSuffix('claude-opus-4-8[effort=high,fast=false]')).toBe('effort=high,fast=false')
         expect(formatCursorModelPickerLabel('composer-2.5[fast=true]', 'ignored')).toBe('composer-2.5 · fast=true')
+    })
+})
+
+describe('filterCursorModelOptionsForCompactView (iOS-style nested picker)', () => {
+    const options: { value: string | null; label: string }[] = [
+        { value: 'auto', label: 'Default' },
+        { value: 'claude-fable-5', label: 'claude-fable-5' },
+        { value: 'claude-opus-4-7', label: 'claude-opus-4-7' },
+        { value: 'composer-2.5', label: 'composer-2.5' },
+        { value: 'gpt-5.5', label: 'gpt-5.5' }
+    ]
+
+    it('passes the full list through when nothing or Default is selected', () => {
+        expect(filterCursorModelOptionsForCompactView(options, undefined)).toEqual(options)
+        expect(filterCursorModelOptionsForCompactView(options, null)).toEqual(options)
+        expect(filterCursorModelOptionsForCompactView(options, 'auto')).toEqual(options)
+    })
+
+    it('collapses to Default + the selected base when a non-Default base is picked', () => {
+        expect(filterCursorModelOptionsForCompactView(options, 'claude-fable-5')).toEqual([
+            { value: 'auto', label: 'Default' },
+            { value: 'claude-fable-5', label: 'claude-fable-5' }
+        ])
+    })
+
+    it('treats `null`-valued Default rows as the Default passthrough', () => {
+        const withNullDefault: { value: string | null; label: string }[] = [
+            { value: null, label: 'Default' },
+            { value: 'composer-2.5', label: 'composer-2.5' },
+            { value: 'gpt-5.5', label: 'gpt-5.5' }
+        ]
+        expect(filterCursorModelOptionsForCompactView(withNullDefault, 'gpt-5.5')).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'gpt-5.5', label: 'gpt-5.5' }
+        ])
+    })
+
+    it('returns just Default when the selected base is not in the option set (catalog drift)', () => {
+        expect(filterCursorModelOptionsForCompactView(options, 'phantom-model-9')).toEqual([
+            { value: 'auto', label: 'Default' }
+        ])
     })
 })
