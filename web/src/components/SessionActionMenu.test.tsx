@@ -109,6 +109,8 @@ describe('SessionActionMenu - Codex sync action', () => {
                 <SessionActionMenu
                     isOpen={true}
                     onClose={vi.fn()}
+                    sessionId="sess-123"
+                    sessionTitle="Test session"
                     sessionActive={false}
                     onRename={vi.fn()}
                     onExport={vi.fn()}
