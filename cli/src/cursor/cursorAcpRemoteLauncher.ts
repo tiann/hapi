@@ -20,6 +20,7 @@ import { applyCursorAcpMode, applyCursorAcpModel, wireIdForCursorSessionState } 
 import { buildCursorModelsSeedPayload, seedCursorModelsCache } from '@/modules/common/cursorModels';
 import { readSharedCursorModelsCache } from '@/modules/common/cursorModelsSharedCache';
 import type { AcpSdkBackend } from '@/agent/backends/acp';
+import { HAPI_MCP_BRIDGE_PROMPT } from '@/modules/common/hapiMcpBridgePrompt';
 
 class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CursorSession;
@@ -33,6 +34,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private defaultBackendModel: string | null = null;
     private unregisterModelApplyHandler: (() => void) | null = null;
     private modelApplySeq = 0;
+    private instructionsSent = false;
 
     constructor(session: CursorSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
@@ -211,9 +213,15 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             this.applyDisplayMode(batch.mode.permissionMode as PermissionMode);
             messageBuffer.addMessage(batch.message, 'user');
 
+            let messageText = batch.message;
+            if (!this.instructionsSent) {
+                messageText = `${HAPI_MCP_BRIDGE_PROMPT}\n\n${messageText}`;
+                this.instructionsSent = true;
+            }
+
             const promptContent: PromptContent[] = [{
                 type: 'text',
-                text: batch.message
+                text: messageText
             }];
 
             session.onThinkingChange(true);
@@ -295,6 +303,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 break;
             case 'error':
                 this.messageBuffer.addMessage(message.message, 'status');
+                break;
+            case 'generated_image':
+                this.messageBuffer.addMessage(`Generated image: ${message.fileName}`, 'assistant');
                 break;
             case 'turn_complete':
                 break;

@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import type { AgentMessage } from '@/agent/types';
 import { AcpMessageHandler } from './AcpMessageHandler';
 import { ACP_SESSION_UPDATE_TYPES } from './constants';
+import { clearGeneratedImages } from '@/modules/common/generatedImages';
 
 function getToolResult(messages: AgentMessage[], id: string): Extract<AgentMessage, { type: 'tool_result' }> {
     const result = messages.find((message): message is Extract<AgentMessage, { type: 'tool_result' }> =>
@@ -2092,5 +2093,33 @@ describe('AcpMessageHandler', () => {
                 new_string: expect.any(String)
             });
         });
+    });
+
+    it('emits generated_image agent messages from ACP image content blocks', async () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+        const pngHeader = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x00]);
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: {
+                type: 'image',
+                mimeType: 'image/png',
+                data: pngHeader.toString('base64')
+            }
+        });
+
+        await vi.waitFor(() => {
+            expect(messages.some((message) => message.type === 'generated_image')).toBe(true);
+        });
+
+        const imageMessage = messages.find(
+            (message): message is Extract<AgentMessage, { type: 'generated_image' }> =>
+                message.type === 'generated_image'
+        );
+        expect(imageMessage?.mimeType).toBe('image/png');
+        expect(imageMessage?.fileName).toBeTruthy();
+        expect(imageMessage?.imageId).toBeTruthy();
+        clearGeneratedImages();
     });
 });

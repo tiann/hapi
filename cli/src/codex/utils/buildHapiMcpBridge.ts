@@ -1,8 +1,8 @@
 /**
- * Unified MCP bridge setup for Codex local and remote modes.
+ * Unified MCP bridge setup for all flavors that wire HAPI tools through Codex-style MCP config.
  *
- * This module provides a single source of truth for starting the hapi MCP
- * bridge server and generating the MCP server configuration that Codex needs.
+ * Starts the hapi MCP bridge server and returns MCP server configuration for
+ * Gemini, Kimi, Cursor, OpenCode, and Codex launchers.
  */
 
 import { startHappyServer } from '@/claude/utils/startHappyServer';
@@ -48,10 +48,9 @@ export interface HapiMcpBridgeOptions {
 
 /**
  * Start the hapi MCP bridge server and return the configuration
- * needed to connect Codex to it.
+ * needed to connect agent flavors to it.
  *
- * This is the single source of truth for MCP bridge setup,
- * used by both local and remote launchers.
+ * Single source of truth for MCP bridge setup across local and remote launchers.
  */
 export async function buildHapiMcpBridge(
     client: ApiSessionClient,
@@ -73,6 +72,9 @@ export async function buildHapiMcpBridge(
                 args: bridgeCommand.args,
                 tools: {
                     change_title: {
+                        approval_mode: 'approve'
+                    },
+                    display_image: {
                         approval_mode: 'approve'
                     }
                 }
