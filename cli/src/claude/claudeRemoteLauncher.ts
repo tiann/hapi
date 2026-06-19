@@ -295,6 +295,9 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 this.abortFuture = new Future<void>();
                 let modeHash: string | null = null;
                 let mode: EnhancedMode | null = null;
+                // Track the last message consumed from the queue so we can
+                // restore it if claudeRemote throws before processing.
+                let consumedMessage: { message: string; mode: EnhancedMode } | null = null;
                 try {
                     await claudeRemote({
                         sessionId: session.sessionId,
@@ -338,6 +341,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 }
                                 modeHash = msg.hash;
                                 mode = msg.mode;
+                                consumedMessage = msg;
                                 permissionHandler.handleModeChange(mode.permissionMode);
                                 sdkToLogConverter.updateSelectedModel(mode.model ?? null);
                                 return {
@@ -364,6 +368,8 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             session.clearSessionId();
                         },
                         onReady: () => {
+                            // Message was successfully processed, stop tracking.
+                            consumedMessage = null;
                             logger.debug(
                                 `[claudeRemoteLauncher][async-debug] onReady callback ` +
                                 `(hasPending=${Boolean(pending)}, queueSize=${session.queue.size()})`
@@ -385,6 +391,23 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     }
                 } catch (e) {
                     logger.debug('[remote]: launch error', e);
+                    // `consumedMessage` is only assigned inside the nextMessage
+                    // callback, which TS can't trace from this catch (it narrows
+                    // the var to null), so restore through a typed local.
+                    const restore = consumedMessage as { message: string; mode: EnhancedMode } | null;
+                    if (restore) {
+                        logger.debug('[remote]: restoring lost message to queue');
+                        // Restore via the public queue API so the waiter is
+                        // notified and the mode hash is recomputed — don't poke
+                        // the private backing array. NOTE: collectBatch already
+                        // dropped the consumed messages' localIds (only the
+                        // combined string survives), so the restored item is
+                        // localId-less; a later cancel-by-localId can't target it.
+                        // Full id restoration would require collectBatch to surface
+                        // the consumed ids.
+                        session.queue.unshift(restore.message, restore.mode);
+                        consumedMessage = null;
+                    }
                     if (!this.exitReason) {
                         const detail = e instanceof Error ? e.message : String(e);
                         session.client.sendSessionEvent({ type: 'message', message: `Process exited unexpectedly: ${detail}` });

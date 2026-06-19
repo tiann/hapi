@@ -19,6 +19,8 @@ export async function claudeLocal(opts: {
     claudeArgs?: string[]
     allowedTools?: string[]
     hookSettingsPath: string
+    /** Called when the child process's stdin is ready for writing. */
+    onStdinReady?: (write: (data: string) => void) => void
 }) {
 
     // Ensure project directory exists
@@ -95,7 +97,8 @@ export async function claudeLocal(opts: {
     const claudeCommand = getDefaultClaudeCodePath();
     logger.debug(`[ClaudeLocal] Using claude executable: ${claudeCommand}`);
 
-    // Spawn the process
+    // Spawn the process with pipe stdin so chat messages can be forwarded
+    // to the running Claude process instead of triggering a mode switch.
     try {
         await spawnWithTerminalGuard({
             command: claudeCommand,
@@ -108,7 +111,9 @@ export async function claudeLocal(opts: {
             installHint: 'Claude CLI',
             includeCause: true,
             logExit: true,
-            shell: false  // Use absolute path, no shell needed
+            shell: false,  // Use absolute path, no shell needed
+            stdio: ['pipe', 'inherit', 'inherit'],
+            onSpawned: opts.onStdinReady
         });
     } finally {
         cleanupMcpConfig?.();

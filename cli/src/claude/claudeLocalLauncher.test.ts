@@ -54,7 +54,8 @@ function createSessionStub() {
             addSessionFoundCallback: () => {},
             removeSessionFoundCallback: () => {},
             consumeOneTimeFlags: () => {},
-            recordLocalLaunchFailure: () => {}
+            recordLocalLaunchFailure: () => {},
+            stdinMessageTexts: new Set<string>()
         },
         sentMessages
     }
@@ -132,5 +133,24 @@ describe('claudeLocalLauncher message filtering', () => {
         })
 
         expect(sentMessages).toHaveLength(0)
+    })
+
+    it('swallows exactly one stdin echo per forward, so a repeated identical message still surfaces', async () => {
+        const { session, sentMessages } = createSessionStub()
+        await claudeLocalLauncher(session as never)
+
+        // One "continue" was forwarded to claude via stdin (marked for dedup).
+        session.stdinMessageTexts.add('continue')
+        // Its JSONL echo is swallowed (already shown in chat via the web path)...
+        harness.scannerOnMessage!({ type: 'user', uuid: '1', message: { content: 'continue' } })
+        expect(sentMessages).toHaveLength(0)
+        // ...and the dedup entry is consumed on match, bounding the set.
+        expect(session.stdinMessageTexts.size).toBe(0)
+
+        // The user sends "continue" again; this echo has no pending forward to
+        // swallow it, so it must surface (regression: a value-keyed, never-cleared
+        // set would have silently dropped it).
+        harness.scannerOnMessage!({ type: 'user', uuid: '2', message: { content: 'continue' } })
+        expect(sentMessages).toHaveLength(1)
     })
 })
