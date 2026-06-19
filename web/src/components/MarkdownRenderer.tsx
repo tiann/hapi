@@ -1,7 +1,7 @@
 import type { MarkdownTextPrimitiveProps } from '@assistant-ui/react-markdown'
 import { MarkdownTextPrimitive } from '@assistant-ui/react-markdown'
 import { TextMessagePartProvider } from '@assistant-ui/react'
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { type Components } from 'react-markdown'
 import {
     MARKDOWN_PLUGINS,
     MARKDOWN_PLUGINS_WITH_BREAKS,
@@ -34,7 +34,7 @@ function StandaloneMarkdownContent(props: MarkdownRendererProps) {
                 <ReactMarkdown
                     remarkPlugins={props.preserveSingleLineBreaks ? MARKDOWN_PLUGINS_WITH_BREAKS : MARKDOWN_PLUGINS}
                     rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
-                    components={mergedComponents}
+                    components={mergedComponents as Components}
                     urlTransform={denyOnlyTransform}
                 >
                     {props.content}
