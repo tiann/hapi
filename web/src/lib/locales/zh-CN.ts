@@ -180,6 +180,8 @@ export default {
 
   'dialog.delete.title': '删除会话',
   'dialog.delete.description': '确定要删除 "{name}" 吗？此操作无法撤销。',
+  'dialog.delete.scratchlist.one': '这也将删除 1 条草稿清单条目。',
+  'dialog.delete.scratchlist.other': '这也将删除 {n} 条草稿清单条目。',
   'dialog.delete.confirm': '删除',
   'dialog.delete.confirming': '删除中…',
 
@@ -455,6 +457,11 @@ export default {
   'scratchlist.action.copy': '复制到剪贴板',
   'scratchlist.action.copied': '已复制！',
   'scratchlist.action.delete': '删除条目',
+  'scratchlist.entry.lastSaved': '保存于 {time}',
+  'scratchlist.entry.lastSavedAriaLabel': '条目保存于 {time}',
+  'scratchlist.migrationBanner.title': '草稿清单现已跨设备同步',
+  'scratchlist.migrationBanner.body': '您现有的笔记已复制到 hub - 没有丢失任何内容。从现在开始,在此会话中的编辑会在您使用的每台设备上显示。',
+  'scratchlist.migrationBanner.dismiss': '知道了',
   'fue.newFeatureDot': '新功能可用',
   'fue.gotIt': '知道了',
   'fue.closeAriaLabel': '关闭说明',

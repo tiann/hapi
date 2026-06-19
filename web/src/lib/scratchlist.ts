@@ -24,6 +24,13 @@ export type ScratchlistEntry = {
     id: string
     text: string
     createdAt: number
+    /**
+     * Last-saved timestamp surfaced by the entry-age indicator (clock
+     * icon + tooltip). Optional so v1-only callers (the standalone
+     * panel fixture, legacy localStorage rows that pre-date v2) keep
+     * working - readers fall back to `createdAt` when absent.
+     */
+    updatedAt?: number
 }
 
 function getStorageKey(sessionId: string): string {
@@ -44,13 +51,19 @@ function getLocalStorage(): Storage | null {
 function isEntry(value: unknown): value is ScratchlistEntry {
     if (!value || typeof value !== 'object') return false
     const entry = value as Record<string, unknown>
-    return (
-        typeof entry.id === 'string'
-        && entry.id.length > 0
-        && typeof entry.text === 'string'
-        && typeof entry.createdAt === 'number'
-        && Number.isFinite(entry.createdAt)
-    )
+    if (
+        typeof entry.id !== 'string'
+        || entry.id.length === 0
+        || typeof entry.text !== 'string'
+        || typeof entry.createdAt !== 'number'
+        || !Number.isFinite(entry.createdAt)
+    ) return false
+    if (entry.updatedAt !== undefined) {
+        if (typeof entry.updatedAt !== 'number' || !Number.isFinite(entry.updatedAt)) {
+            return false
+        }
+    }
+    return true
 }
 
 export function readScratchlist(sessionId: string): ScratchlistEntry[] {

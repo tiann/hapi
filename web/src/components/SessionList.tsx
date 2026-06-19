@@ -563,7 +563,6 @@ function MachineIcon(props: { className?: string }) {
     )
 }
 
-
 function formatCodexImportedRelativeTime(value: number, t: (key: string, params?: Record<string, string | number>) => string): string | null {
     const ms = value < 1_000_000_000_000 ? value * 1000 : value
     if (!Number.isFinite(ms)) return null

@@ -354,6 +354,113 @@ export class SyncEngine {
         this.sessionCache.recordSessionActivity(sessionId, updatedAt)
     }
 
+    /**
+     * tiann/hapi#893 (scratchlist v2). Read-side: list entries for a
+     * session. Auth / namespace check is the route layer's job (via
+     * `requireSessionFromParam`); by the time we get here the caller
+     * already proved access.
+     */
+    listScratchlistEntries(sessionId: string): Array<{
+        entryId: string
+        text: string
+        createdAt: number
+        updatedAt: number
+    }> {
+        return this.store.scratchlist.list(sessionId).map((row) => ({
+            entryId: row.entryId,
+            text: row.text,
+            createdAt: row.createdAt,
+            updatedAt: row.updatedAt
+        }))
+    }
+
+    countScratchlistEntries(sessionId: string): number {
+        return this.store.scratchlist.count(sessionId)
+    }
+
+    /**
+     * Read a single entry by id. The route layer uses this to short-
+     * circuit duplicate POSTs (migration retry) BEFORE running the
+     * server-side cap check; otherwise an idempotent retry against a
+     * session that has hit `SCRATCHLIST_MAX_ENTRIES` would 409 when it
+     * should 200 with the existing row.
+     */
+    getScratchlistEntry(
+        sessionId: string,
+        entryId: string
+    ): { entryId: string; text: string; createdAt: number; updatedAt: number } | null {
+        const row = this.store.scratchlist.get(sessionId, entryId)
+        if (!row) return null
+        return {
+            entryId: row.entryId,
+            text: row.text,
+            createdAt: row.createdAt,
+            updatedAt: row.updatedAt
+        }
+    }
+
+    /**
+     * Insert a scratchlist entry. Returns the canonical row on success
+     * (so the route layer can serialise it without a follow-up read).
+     * Emits a `session-updated` SSE patch carrying `scratchlistUpdatedAt`
+     * so other clients viewing the same session refetch.
+     *
+     * `outcome: 'duplicate'` covers the migration path's idempotency:
+     * the web client may retry pushing a localStorage entry after a
+     * partial failure; the second attempt should be a no-op rather than
+     * a hard error. Route layer maps duplicate → 200/conflict per its
+     * own contract; this layer just reports it.
+     */
+    createScratchlistEntry(
+        sessionId: string,
+        text: string,
+        options?: { entryId?: string; createdAt?: number }
+    ): {
+        outcome: 'created' | 'duplicate'
+        entry: { entryId: string; text: string; createdAt: number; updatedAt: number }
+    } | { outcome: 'session-not-found' } {
+        const result = this.store.scratchlist.create(sessionId, text, options)
+        if (result.outcome === 'session-not-found') {
+            return result
+        }
+        if (result.outcome === 'created') {
+            this.sessionCache.emitScratchlistChanged(sessionId, result.entry.updatedAt)
+        }
+        return {
+            outcome: result.outcome,
+            entry: {
+                entryId: result.entry.entryId,
+                text: result.entry.text,
+                createdAt: result.entry.createdAt,
+                updatedAt: result.entry.updatedAt
+            }
+        }
+    }
+
+    updateScratchlistEntry(
+        sessionId: string,
+        entryId: string,
+        text: string
+    ): { entryId: string; text: string; createdAt: number; updatedAt: number } | null {
+        const updated = this.store.scratchlist.update(sessionId, entryId, text)
+        if (!updated) return null
+        this.sessionCache.emitScratchlistChanged(sessionId, updated.updatedAt)
+        return {
+            entryId: updated.entryId,
+            text: updated.text,
+            createdAt: updated.createdAt,
+            updatedAt: updated.updatedAt
+        }
+    }
+
+    deleteScratchlistEntry(sessionId: string, entryId: string): boolean {
+        const removed = this.store.scratchlist.delete(sessionId, entryId)
+        if (removed) {
+            this.sessionCache.emitScratchlistChanged(sessionId, Date.now())
+        }
+        return removed
+    }
+
     handleMachineAlive(payload: { machineId: string; time: number }): void {
         this.machineCache.handleMachineAlive(payload)
     }

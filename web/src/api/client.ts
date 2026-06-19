@@ -679,6 +679,60 @@ export class ApiClient {
         })
     }
 
+    /*
+     * Scratchlist v2 (tiann/hapi#893).
+     *
+     * The hub is the durable store; localStorage is demoted to an
+     * offline cache. Mutations return the canonical entry so optimistic
+     * updates can reconcile with the hub-stamped `updatedAt`.
+     */
+
+    async getScratchlist(sessionId: string): Promise<{
+        entries: Array<{ entryId: string; text: string; createdAt: number; updatedAt: number }>
+    }> {
+        return await this.request(
+            `/api/sessions/${encodeURIComponent(sessionId)}/scratchlist`
+        )
+    }
+
+    async createScratchlistEntry(
+        sessionId: string,
+        body: { text: string; entryId?: string; createdAt?: number }
+    ): Promise<{
+        entry: { entryId: string; text: string; createdAt: number; updatedAt: number }
+    }> {
+        return await this.request(
+            `/api/sessions/${encodeURIComponent(sessionId)}/scratchlist`,
+            {
+                method: 'POST',
+                body: JSON.stringify(body)
+            }
+        )
+    }
+
+    async updateScratchlistEntry(
+        sessionId: string,
+        entryId: string,
+        text: string
+    ): Promise<{
+        entry: { entryId: string; text: string; createdAt: number; updatedAt: number }
+    }> {
+        return await this.request(
+            `/api/sessions/${encodeURIComponent(sessionId)}/scratchlist/${encodeURIComponent(entryId)}`,
+            {
+                method: 'PUT',
+                body: JSON.stringify({ text })
+            }
+        )
+    }
+
+    async deleteScratchlistEntry(sessionId: string, entryId: string): Promise<void> {
+        await this.request(
+            `/api/sessions/${encodeURIComponent(sessionId)}/scratchlist/${encodeURIComponent(entryId)}`,
+            { method: 'DELETE' }
+        )
+    }
+
     async fetchVoiceToken(options?: { customAgentId?: string; customApiKey?: string; voiceId?: string }): Promise<{
         allowed: boolean
         token?: string
