@@ -56,7 +56,7 @@ import {
     resolveSessionCursorModelChange,
     resolveSessionCursorVariantSelectValue
 } from '@/lib/sessionChatCursorModel'
-import { buildCursorEffortPickerOptions, resolveCursorVariantOptions } from '@/lib/cursorModelOptions'
+import { buildCursorEffortPickerOptionsWithDefaultFirst } from '@/lib/cursorModelOptions'
 import { useOpencodeModels } from '@/hooks/queries/useOpencodeModels'
 import { usePiModels } from '@/hooks/queries/usePiModels'
 import { useOpencodeReasoningEffortOptions } from '@/hooks/queries/useOpencodeReasoningEffortOptions'
@@ -647,10 +647,17 @@ function SessionChatInner(props: SessionChatProps) {
     }, [agentFlavor, props.session.model, cursorPicker])
 
     const cursorSelectedBaseValue = useMemo(() => (
-        agentFlavor === 'cursor' && cursorPicker?.mode === 'dual'
+        agentFlavor === 'cursor' && cursorPicker
             ? resolveSessionCursorBaseSelectValue(cursorPicker, cursorSelectedBase)
             : undefined
     ), [agentFlavor, cursorPicker, cursorSelectedBase])
+
+    const resolveCursorVariantsForBase = useCallback((baseKey: string) => {
+        if (!cursorPicker) {
+            return []
+        }
+        return buildCursorEffortPickerOptionsWithDefaultFirst(baseKey, cursorPicker.catalog)
+    }, [cursorPicker])
 
     const cursorModelEffortOptions = useMemo(() => {
         if (agentFlavor !== 'cursor' || !cursorPicker) {
@@ -662,7 +669,10 @@ function SessionChatInner(props: SessionChatProps) {
         const baseKey = cursorSelectedBaseValue && cursorSelectedBaseValue !== 'auto'
             ? cursorSelectedBaseValue
             : cursorPicker.baseKey
-        return buildCursorEffortPickerOptions(resolveCursorVariantOptions(baseKey ?? null, cursorPicker.catalog))
+        if (!baseKey || baseKey === 'auto') {
+            return undefined
+        }
+        return buildCursorEffortPickerOptionsWithDefaultFirst(baseKey, cursorPicker.catalog)
     }, [agentFlavor, cursorPicker, cursorSelectedBaseValue])
 
     const cursorVariantSelectValue = useMemo(() => (
@@ -1263,7 +1273,7 @@ function SessionChatInner(props: SessionChatProps) {
                         }
                         onPermissionModeChange={handlePermissionModeChange}
                         selectedModelBase={
-                            agentFlavor === 'cursor' && cursorPicker?.mode === 'dual'
+                            agentFlavor === 'cursor' && cursorPicker
                                 ? cursorSelectedBaseValue
                                 : undefined
                         }
@@ -1279,6 +1289,11 @@ function SessionChatInner(props: SessionChatProps) {
                                 && cursorModelEffortOptions
                                 && cursorModelEffortOptions.length > 1
                                 ? cursorModelEffortOptions
+                                : undefined
+                        }
+                        resolveModelVariantsForBase={
+                            agentFlavor === 'cursor' && cursorPicker?.mode === 'dual'
+                                ? resolveCursorVariantsForBase
                                 : undefined
                         }
                         onModelChange={
