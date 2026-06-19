@@ -34,7 +34,13 @@ export function parseClaudeStartOptions(args: string[]): { options: StartOptions
             showHelp = true
             unknownArgs.push(arg)
         } else if (arg === '--hapi-starting-mode') {
-            options.startingMode = z.enum(['local', 'remote', 'pty']).parse(args[++i])
+            const value = z.enum(['local', 'remote', 'pty']).parse(args[++i])
+            if (value === 'pty') {
+                // pty is the interactive-launch axis, not a control mode.
+                options.interactive = true
+            } else {
+                options.startingMode = value
+            }
         } else if (arg === '--permission-mode') {
             const mode = args[++i]
             if (!mode || !(CLAUDE_PERMISSION_MODES as readonly string[]).includes(mode)) {
