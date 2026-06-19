@@ -57,7 +57,20 @@ if (!session) {
     process.exit(4)
 }
 
-const mcpUrl = session.metadata?.hapiMcpUrl
+// List endpoint omits metadata; per-session GET includes hapiMcpUrl.
+let mcpUrl = session.metadata?.hapiMcpUrl
+if (!mcpUrl) {
+    const detailRes = await fetch(`${HAPI_HOST}/api/sessions/${encodeURIComponent(session.id)}`, {
+        headers: { Authorization: `Bearer ${jwt}` },
+    })
+    if (!detailRes.ok) {
+        console.error('session detail fetch failed', detailRes.status)
+        process.exit(5)
+    }
+    const detailBody = await detailRes.json()
+    const detail = detailBody.session ?? detailBody
+    mcpUrl = detail.metadata?.hapiMcpUrl
+}
 if (!mcpUrl) {
     console.error('session has no hapiMcpUrl metadata (restart session CLI after MCP fix lands)')
     process.exit(5)
