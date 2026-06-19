@@ -404,6 +404,21 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             return;
         }
 
+        // If in local mode with a live stdin pipe, forward the message
+        // directly to the running Claude process instead of pushing to
+        // the queue (which would trigger doSwitch and kill the process).
+        const sessionInstance = currentSessionRef.current;
+        if (sessionInstance?.writeStdin && sessionInstance.mode === 'local') {
+            logger.debug('[start] forwarding message to local process stdin');
+            sessionInstance.stdinMessageTexts.add(formattedText);
+            sessionInstance.writeStdin(formattedText + '\n');
+            if (localId) {
+                session.emitMessagesConsumed([localId]);
+            }
+            logger.debugLargeJson('User message forwarded to local stdin:', message)
+            return;
+        }
+
         // Push with resolved permission mode, model, system prompts, and tools
         const enhancedMode: EnhancedMode = {
             permissionMode: messagePermissionMode ?? 'default',

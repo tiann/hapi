@@ -55,7 +55,7 @@ const SYSTEM_INJECTION_PREFIXES = [
 // hub's scrollback ring). The tail always holds the latest full-screen redraw.
 const AGENT_TERMINAL_LOCAL_BUFFER_BYTES = 256 * 1024
 
-function extractRawUserTextContent(content: unknown): string | null {
+export function extractRawUserTextContent(content: unknown): string | null {
     if (typeof content === 'string') {
         return content
     }
