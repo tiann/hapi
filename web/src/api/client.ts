@@ -343,7 +343,10 @@ export class ApiClient {
             headers.set('authorization', `Bearer ${authToken}`)
         }
         const res = await fetch(this.buildUrl(`/api/sessions/${encodeURIComponent(sessionId)}/generated-images/${encodeURIComponent(imageId)}`), {
-            headers
+            headers,
+            // Hub answers with ETag + Cache-Control; browser 304 responses have no body and
+            // fail res.ok — use no-store so GeneratedImageCard always gets bytes (issue #927).
+            cache: 'no-store'
         })
         if (res.status === 401 && attempt === 0 && this.onUnauthorized) {
             const refreshed = await this.onUnauthorized()

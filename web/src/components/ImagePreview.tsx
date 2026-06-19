@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type PointerEvent, type ReactNode, type SyntheticEvent, type WheelEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent, type ReactNode, type SyntheticEvent, type WheelEvent } from 'react'
 import { CloseIcon } from '@/components/icons'
 
 const MIN_IMAGE_SCALE = 0.25
@@ -29,6 +29,7 @@ export function ImagePreview(props: {
     label: string
     buttonClassName?: string
     imageClassName?: string
+    imageStyle?: CSSProperties
     caption?: ReactNode
 }) {
     const [viewerOpen, setViewerOpen] = useState(false)
@@ -227,6 +228,7 @@ export function ImagePreview(props: {
                     src={props.src}
                     alt={props.label}
                     className={props.imageClassName ?? 'max-h-[calc(100vh-14rem)] max-w-full object-contain transition-transform group-hover:scale-[1.01]'}
+                    style={props.imageStyle}
                     draggable={false}
                 />
                 {props.caption}
