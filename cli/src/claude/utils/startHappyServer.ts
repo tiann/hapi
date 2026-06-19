@@ -12,7 +12,7 @@ import { z } from "zod";
 import { logger } from "@/ui/logger";
 import { ApiSessionClient } from "@/api/apiSession";
 import { randomUUID } from "node:crypto";
-import { detectImageMimeType, registerGeneratedImage } from "@/modules/common/generatedImages";
+import { detectImageMimeType, registerGeneratedImage, MAX_GENERATED_IMAGE_BYTES } from "@/modules/common/generatedImages";
 import { resolveSkill } from "@/modules/common/skills";
 
 type StartHappyServerOptions = {
@@ -111,7 +111,7 @@ function createHapiMcpServer(
                 throw new Error('Path is not a regular file');
             }
 
-            const maxImageBytes = 25 * 1024 * 1024;
+            const maxImageBytes = MAX_GENERATED_IMAGE_BYTES;
             if (info.size > maxImageBytes) {
                 throw new Error('Image is too large to display inline');
             }

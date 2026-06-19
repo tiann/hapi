@@ -106,4 +106,21 @@ describe('convertAgentMessage', () => {
             }
         });
     });
+
+    it('converts generated_image messages into generated-image wire payloads', () => {
+        const converted = convertAgentMessage({
+            type: 'generated_image',
+            imageId: 'img-1',
+            fileName: 'inline.png',
+            mimeType: 'image/png'
+        });
+
+        expect(converted).toMatchObject({
+            type: 'generated-image',
+            imageId: 'img-1',
+            fileName: 'inline.png',
+            mimeType: 'image/png'
+        });
+        expect(converted && 'id' in converted && typeof converted.id === 'string').toBe(true);
+    });
 });

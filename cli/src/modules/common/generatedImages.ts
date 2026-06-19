@@ -1,4 +1,8 @@
-import { basename } from 'path'
+import { basename } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { lstat, readFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { asString, isObject } from '@hapi/protocol'
 
 export type GeneratedImageMetadata = {
     id: string
@@ -8,7 +12,7 @@ export type GeneratedImageMetadata = {
     createdAt: number
 }
 
-const MAX_GENERATED_IMAGE_BYTES = 25 * 1024 * 1024
+export const MAX_GENERATED_IMAGE_BYTES = 25 * 1024 * 1024
 const MAX_GENERATED_IMAGE_TOTAL_BYTES = 100 * 1024 * 1024
 const MAX_GENERATED_IMAGE_COUNT = 100
 
@@ -104,4 +108,93 @@ export function getGeneratedImage(id: string): GeneratedImageMetadata | null {
 export function clearGeneratedImages(): void {
     generatedImages.clear()
     generatedImageBytes = 0
+}
+
+export async function registerGeneratedImageFromPath(args: {
+    id?: string
+    path: string
+    fileName?: string | null
+}): Promise<GeneratedImageMetadata | null> {
+    try {
+        const info = await lstat(args.path)
+        if (!info.isFile()) {
+            throw new Error('Path is not a regular file')
+        }
+        if (info.size > MAX_GENERATED_IMAGE_BYTES) {
+            throw new Error('Image is too large to display inline')
+        }
+        const bytes = await readFile(args.path)
+        const mimeType = detectImageMimeType(bytes)
+        if (!mimeType) {
+            throw new Error('Unsupported image content')
+        }
+        return registerGeneratedImage({
+            id: args.id ?? randomUUID(),
+            path: args.path,
+            fileName: args.fileName,
+            mimeType,
+            bytes
+        })
+    } catch {
+        return null
+    }
+}
+
+function parseAcpImageUri(uri: string): string | null {
+    if (uri.startsWith('file://')) {
+        try {
+            return fileURLToPath(uri)
+        } catch {
+            return null
+        }
+    }
+    if (/^https?:\/\//i.test(uri)) {
+        return null
+    }
+    return uri
+}
+
+export async function registerGeneratedImageFromAcpBlock(block: unknown): Promise<GeneratedImageMetadata | null> {
+    if (!isObject(block) || block.type !== 'image') {
+        return null
+    }
+
+    const data = asString(block.data)
+    const declaredMimeType = asString(block.mimeType ?? block.mime_type)
+    const uri = asString(block.uri ?? block.url)
+
+    if (data) {
+        const bytes = Buffer.from(data, 'base64')
+        if (bytes.byteLength > MAX_GENERATED_IMAGE_BYTES) {
+            return null
+        }
+        const sniffedMimeType = detectImageMimeType(bytes)
+        if (!sniffedMimeType) {
+            return null
+        }
+        if (declaredMimeType && declaredMimeType !== sniffedMimeType) {
+            return null
+        }
+        const path = uri ? parseAcpImageUri(uri) ?? uri : `${randomUUID()}.bin`
+        return registerGeneratedImage({
+            id: randomUUID(),
+            path,
+            fileName: basename(path),
+            mimeType: sniffedMimeType,
+            bytes
+        })
+    }
+
+    if (uri) {
+        const path = parseAcpImageUri(uri)
+        if (!path) {
+            return null
+        }
+        return registerGeneratedImageFromPath({
+            path,
+            fileName: basename(path)
+        })
+    }
+
+    return null
 }

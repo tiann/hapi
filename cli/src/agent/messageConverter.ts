@@ -34,7 +34,14 @@ export type CodexMessage =
         is_error?: boolean;
     }
     | { type: 'plan'; entries: PlanItem[] }
-    | { type: 'error'; message: string };
+    | { type: 'error'; message: string }
+    | {
+        type: 'generated-image';
+        imageId: string;
+        fileName: string;
+        mimeType: string;
+        id: string;
+    };
 
 export function convertAgentMessage(message: AgentMessage): CodexMessage | null {
     switch (message.type) {
@@ -81,6 +88,14 @@ export function convertAgentMessage(message: AgentMessage): CodexMessage | null 
             return {
                 type: 'plan',
                 entries: message.items
+            };
+        case 'generated_image':
+            return {
+                type: 'generated-image',
+                imageId: message.imageId,
+                fileName: message.fileName,
+                mimeType: message.mimeType,
+                id: randomUUID()
             };
         case 'error':
             return { type: 'error', message: message.message };

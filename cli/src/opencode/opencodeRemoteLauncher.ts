@@ -366,6 +366,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             case 'error':
                 this.messageBuffer.addMessage(message.message, 'status');
                 break;
+            case 'generated_image':
+                this.messageBuffer.addMessage(`Generated image: ${message.fileName}`, 'assistant');
+                break;
             case 'turn_complete':
                 this.messageBuffer.addMessage('Turn complete', 'status');
                 break;

@@ -52,6 +52,7 @@ export type AgentMessage =
         contextWindow?: number;
     }
     | { type: 'plan'; items: PlanItem[] }
+    | { type: 'generated_image'; imageId: string; fileName: string; mimeType: string }
     | { type: 'turn_complete'; stopReason: string }
     | { type: 'error'; message: string };
 
