@@ -1,5 +1,6 @@
 import { logger } from '@/ui/logger';
 import { loop } from '@/claude/loop';
+import type { SessionMode } from '@/agent/loopBase';
 import { AgentState, SessionEffort, SessionModel } from '@/api/types';
 import { EnhancedMode, PermissionMode } from './loop';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
@@ -27,7 +28,12 @@ export interface StartOptions {
     model?: string
     effort?: string
     permissionMode?: PermissionMode
+    // Control mode (who drives the session). pty is NOT a value here — it's the
+    // separate `interactive` launch axis below.
     startingMode?: 'local' | 'remote'
+    // Launch the agent as an interactive PTY terminal. Mapped to the runtime
+    // SessionMode 'pty' at the loop boundary; persistence/web still see 'pty'.
+    interactive?: boolean
     shouldStartRunner?: boolean
     claudeEnvVars?: Record<string, string>
     claudeArgs?: string[]
@@ -40,10 +46,13 @@ export interface StartOptions {
 export async function runClaude(options: StartOptions = {}): Promise<void> {
     const workingDirectory = options.workingDirectory ?? getInvokedCwd();
     const startedBy = options.startedBy ?? 'terminal';
+    // Launch axis: when set, claude runs in an interactive PTY (runtime mode
+    // 'pty'); otherwise the control axis (local/remote) applies.
+    const interactive = options.interactive ?? false;
 
     // Log environment info at startup
     logger.debugLargeJson('[START] HAPI process started', getEnvironmentInfo());
-    logger.debug(`[START] Options: startedBy=${startedBy}, startingMode=${options.startingMode}`);
+    logger.debug(`[START] Options: startedBy=${startedBy}, startingMode=${options.startingMode}, interactive=${interactive}`);
 
     // Validate runner spawn requirements
     if (startedBy === 'runner' && options.startingMode === 'local') {
@@ -67,6 +76,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             flavor: 'claude',
             startedBy,
             workingDirectory,
+            tag: interactive ? `__hapi_pty__claude-${randomUUID()}` : undefined,
             agentState: initialState,
             model: initialModel ?? undefined,
             effort: initialEffort ?? undefined
@@ -148,8 +158,13 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     registerKillSessionHandler(session.rpcHandlerManager, lifecycle);
     registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);
 
-    // Set initial agent state
-    const startingMode = options.startingMode ?? (startedBy === 'runner' ? 'remote' : 'local');
+    // Set initial agent state. Collapse the launch axis into the runtime
+    // SessionMode here: interactive → 'pty'; otherwise the control axis. From
+    // this point on the runtime/persistence layers keep using 'pty' (the agent
+    // terminal toggle and resume both key on the persisted startingMode).
+    const startingMode: SessionMode = interactive
+        ? 'pty'
+        : (options.startingMode ?? (startedBy === 'runner' ? 'remote' : 'local'));
     setControlledByUser(session, startingMode);
 
     // Import MessageQueue2 and create message queue
