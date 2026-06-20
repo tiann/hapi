@@ -1060,7 +1060,7 @@ export function SessionList(props: {
                             <button
                                 type="button"
                                 onClick={() => toggleMachine(mg)}
-                                className="flex w-full items-center gap-2 px-1 py-1.5 text-left rounded-lg transition-colors hover:bg-[var(--app-subtle-bg)] select-none"
+                                className="relative flex w-full items-center gap-2 px-1 py-1.5 text-left rounded-lg transition-colors hover:bg-[var(--app-subtle-bg)] select-none"
                             >
                                 <ChevronIcon className="h-4 w-4 text-[var(--app-hint)] shrink-0" collapsed={machineCollapsed} />
                                 <MachineIcon className="h-4 w-4 text-[var(--app-hint)] shrink-0" />

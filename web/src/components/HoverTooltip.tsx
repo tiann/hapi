@@ -30,7 +30,7 @@ export function HoverTooltip(props: {
     /** Rich tooltip content. Plain text or a small fragment with headings/lists. */
     children: ReactNode
     side?: 'top' | 'bottom'
-    align?: 'start' | 'center' | 'end'
+    align?: 'start' | 'center' | 'end' | 'row'
     className?: string
     /** Parent-focus reveal classes (e.g. SESSION_ROW_TOOLTIP_FOCUS_CLASS). */
     revealOnParentFocusClass?: string
@@ -39,14 +39,16 @@ export function HoverTooltip(props: {
 }) {
     const side = props.side ?? 'bottom'
     const align = props.align ?? 'center'
+    const spansRow = align === 'row'
 
-    const alignClasses =
-        align === 'start' ? 'left-0'
+    const alignClasses = spansRow
+        ? 'left-1 right-1 w-auto'
+        : align === 'start' ? 'left-0'
         : align === 'end' ? 'right-0'
         : 'left-1/2 -translate-x-1/2'
 
     return (
-        <span className={cn('relative inline-flex group', props.className)}>
+        <span className={cn(spansRow ? 'static' : 'relative', 'inline-flex group', props.className)}>
             <span className="inline-flex">
                 {props.target}
             </span>
@@ -54,7 +56,8 @@ export function HoverTooltip(props: {
                 role="tooltip"
                 id={props.id}
                 className={cn(
-                    'pointer-events-none absolute z-30 max-w-[14rem] whitespace-normal',
+                    'pointer-events-none absolute z-30 whitespace-normal',
+                    spansRow ? 'max-w-none' : 'max-w-[14rem]',
                     'rounded-md border border-[var(--app-border)] bg-[var(--app-secondary-bg)]',
                     'px-2 py-1 text-xs leading-snug text-[var(--app-fg)] shadow-lg',
                     side === 'top' ? 'bottom-full mb-1' : 'top-full mt-1',

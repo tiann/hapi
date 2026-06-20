@@ -136,9 +136,9 @@ export function MachineHealthIndicator(props: {
             id={tooltipId}
             target={chip}
             side="bottom"
-            align="end"
+            align="row"
             className="shrink-0"
-            tooltipClassName="max-w-none min-w-[20rem] w-max sm:min-w-[22rem] px-3 py-2"
+            tooltipClassName="px-3 py-2"
         >
             <MachineHealthTooltipBody presentation={presentation} />
         </HoverTooltip>
