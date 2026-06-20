@@ -253,6 +253,43 @@ describe('FcmNotificationChannel', () => {
         expect(parsed.action.length).toBeLessThanOrEqual(280)
     })
 
+    it('sendReady caps auxiliary notifySummary fields for FCM data limits', async () => {
+        const sent: FcmSendPayload[] = []
+        const longAgent = 'G'.repeat(200)
+        const longProject = 'P'.repeat(200)
+        const store = makeStoreWithMessages([
+            {
+                content: {
+                    role: 'agent',
+                    content: {
+                        type: 'codex',
+                        data: {
+                            type: 'message',
+                            message: `Done.\n\nAGENT_NOTIFY_SUMMARY {"version":1,"summary":"ok","action":"go","status":"${'x'.repeat(80)}","agent":"${longAgent}","project":"${longProject}"}`
+                        }
+                    }
+                }
+            }
+        ])
+        const channel = new FcmNotificationChannel(
+            {
+                sendToNamespace: async (_namespace: string, payload: FcmSendPayload) => {
+                    sent.push(payload)
+                }
+            } as never,
+            { sendToast: async () => 0 } as never,
+            { hasVisibleConnection: () => false } as never,
+            store
+        )
+
+        await channel.sendReady(createSession())
+
+        const parsed = JSON.parse(sent[0].data.notifySummary as string)
+        expect(parsed.status.length).toBeLessThanOrEqual(32)
+        expect(parsed.agent.length).toBeLessThanOrEqual(80)
+        expect(parsed.project.length).toBeLessThanOrEqual(80)
+    })
+
     it('sendReady truncates last assistant text when no summary is present', async () => {
         const sent: FcmSendPayload[] = []
         const longText = 'A'.repeat(500)
@@ -477,5 +514,20 @@ describe('FcmNotificationChannel', () => {
             await channel.sendTaskNotification(createSession(), { status, summary: 'oh no' })
             expect(sent[0].data.severity).toBe('error')
         }
+    })
+
+    it('sendTaskNotification caps long task summaries for FCM data limits', async () => {
+        const sent: FcmSendPayload[] = []
+        const channel = new FcmNotificationChannel(
+            { sendToNamespace: async (_n: string, p: FcmSendPayload) => { sent.push(p) } } as never,
+            { sendToast: async () => 0 } as never,
+            { hasVisibleConnection: () => false } as never
+        )
+        await channel.sendTaskNotification(createSession(), {
+            status: 'completed',
+            summary: 'T'.repeat(500)
+        })
+        expect(sent[0].body).toContain('...')
+        expect(sent[0].body.length).toBeLessThan(350)
     })
 })
