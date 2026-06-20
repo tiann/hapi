@@ -281,6 +281,40 @@ describe('FcmNotificationChannel', () => {
         expect(parsed.action.length).toBeLessThanOrEqual(280)
     })
 
+    it('sendReady respects tiny action budget when summary fills the glance limit', async () => {
+        const sent: FcmSendPayload[] = []
+        const summary278 = 'S'.repeat(278)
+        const store = makeStoreWithMessages([
+            {
+                content: {
+                    role: 'agent',
+                    content: {
+                        type: 'codex',
+                        data: {
+                            type: 'message',
+                            message: `Done.\n\nAGENT_NOTIFY_SUMMARY {"version":1,"summary":"${summary278}","action":"ACTION","status":"done"}`
+                        }
+                    }
+                }
+            }
+        ])
+        const channel = new FcmNotificationChannel(
+            {
+                sendToNamespace: async (_namespace: string, payload: FcmSendPayload) => {
+                    sent.push(payload)
+                }
+            } as never,
+            { sendToast: async () => 0 } as never,
+            { hasVisibleConnection: () => false } as never,
+            store
+        )
+
+        await channel.sendReady(createSession())
+
+        expect(sent[0].body.length).toBeLessThanOrEqual(280)
+        expect(sent[0].body).not.toContain('ACTION')
+    })
+
     it('sendReady caps auxiliary notifySummary fields for FCM data limits', async () => {
         const sent: FcmSendPayload[] = []
         const longAgent = 'G'.repeat(200)

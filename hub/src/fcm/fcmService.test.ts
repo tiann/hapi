@@ -77,6 +77,44 @@ describe('FcmService.sendToNamespace', () => {
         expect(store.fcm.removeDeviceByToken).toHaveBeenCalledWith('default', 'rotated-token')
     })
 
+    it('keeps the device row on generic 404 NOT_FOUND (bad project/resource config)', async () => {
+        const store = makeStore([
+            { namespace: 'default', token: 'live-token', platform: 'phone', deviceId: 'p1' }
+        ])
+        globalThis.fetch = mock(async () =>
+            new Response('{"error":{"status":"NOT_FOUND","message":"Requested entity was not found."}}', { status: 404 })
+        ) as unknown as typeof fetch
+
+        const svc = new FcmService('proj-id', { client_email: 'x', private_key: 'y' }, store as never)
+        const result = await svc.sendToNamespace('default', makePayload())
+
+        expect(result.failed).toBe(1)
+        expect(result.invalidTokens).toEqual([])
+        expect(store.fcm.removeDeviceByToken).not.toHaveBeenCalled()
+    })
+
+    it('keeps the device row on 400 INVALID_ARGUMENT without token field violation', async () => {
+        const store = makeStore([
+            { namespace: 'default', token: 'live-token', platform: 'phone', deviceId: 'p1' }
+        ])
+        globalThis.fetch = mock(async () =>
+            new Response(JSON.stringify({
+                error: {
+                    status: 'INVALID_ARGUMENT',
+                    details: [{
+                        fieldViolations: [{ field: 'message.data.body', description: 'too long' }]
+                    }]
+                }
+            }), { status: 400 })
+        ) as unknown as typeof fetch
+
+        const svc = new FcmService('proj-id', { client_email: 'x', private_key: 'y' }, store as never)
+        const result = await svc.sendToNamespace('default', makePayload())
+
+        expect(result.failed).toBe(1)
+        expect(store.fcm.removeDeviceByToken).not.toHaveBeenCalled()
+    })
+
     it('keeps the device row on transient 429 (rate limit) - regression for HAPI Bot finding', async () => {
         const store = makeStore([
             { namespace: 'default', token: 'rate-limited-token', platform: 'phone', deviceId: 'p1' }
