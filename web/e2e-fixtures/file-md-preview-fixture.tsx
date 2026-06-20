@@ -23,6 +23,10 @@ const SAMPLE_MARKDOWN = `# Teams and channels
 | general | Day-to-day coordination |
 | incidents | Outage response |
 
+\`\`\`ts
+export const ok = true
+\`\`\`
+
 > Preview uses the same markdown pipeline as chat.
 `
 

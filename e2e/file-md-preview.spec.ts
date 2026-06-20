@@ -19,6 +19,7 @@ test.describe('file markdown preview e2e', () => {
 
         await expect(page.getByRole('heading', { name: 'Teams and channels' })).toBeVisible()
         await expect(page.getByRole('cell', { name: 'general' })).toBeVisible()
+        await expect(page.locator('.aui-md-codeblock')).toBeVisible()
 
         await page.getByTestId('markdown-mode-source').click()
         await expect(page.getByTestId('markdown-source-view')).toContainText('# Teams and channels')
