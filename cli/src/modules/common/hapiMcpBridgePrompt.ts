@@ -1,8 +1,8 @@
 import { trimIdent } from '@/utils/trimIdent';
-import { DISPLAY_IMAGE_PROMPT_HAPI_MCP } from './displayImagePrompt';
+import { DISPLAY_IMAGE_PROMPT_HAPI_MCP, DISPLAY_VIDEO_PROMPT_HAPI_MCP } from './displayImagePrompt';
 
 /**
- * Title + display_image instructions for ACP flavors wired through buildHapiMcpBridge
+ * Title + display_image / display_video instructions for ACP flavors wired through buildHapiMcpBridge
  * (Gemini, Kimi, Cursor, OpenCode). Prepended on the first user prompt.
  */
 export const HAPI_MCP_TITLE_INSTRUCTION = trimIdent(`
@@ -12,4 +12,5 @@ export const HAPI_MCP_TITLE_INSTRUCTION = trimIdent(`
 export const HAPI_MCP_BRIDGE_PROMPT = trimIdent(`
     ${HAPI_MCP_TITLE_INSTRUCTION}
     ${DISPLAY_IMAGE_PROMPT_HAPI_MCP}
+    ${DISPLAY_VIDEO_PROMPT_HAPI_MCP}
 `);

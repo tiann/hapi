@@ -1,8 +1,8 @@
 /**
- * OpenCode-specific system prompt for hapi MCP tools (change_title, display_image).
+ * OpenCode-specific system prompt for hapi MCP tools (change_title, display_image, display_video).
  *
  * OpenCode exposes MCP tools with the naming pattern: <server-name>_<tool-name>
- * The hapi MCP server exposes `change_title` and `display_image`.
+ * The hapi MCP server exposes `change_title`, `display_image`, and `display_video`.
  */
 
 import { trimIdent } from '@/utils/trimIdent';
