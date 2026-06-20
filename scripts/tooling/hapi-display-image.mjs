@@ -1,17 +1,25 @@
 #!/usr/bin/env bun
 /**
- * Post a local image inline to a HAPI session via the session CLI's display_image MCP tool.
+ * Post a local image or video inline to a HAPI session via display_image / display_video MCP.
  *
  * Uses session.metadata.hapiMcpUrl (published at MCP server start) so we hit the MCP
  * endpoint, not the session hook server on another loopback port in the same process.
  *
  * Usage:
- *   bun scripts/tooling/hapi-display-image.mjs <session-id-prefix> <image-path> [title]
+ *   bun scripts/tooling/hapi-display-image.mjs <session-id-prefix> <media-path> [title]
+ *
+ * Picks display_video for mp4/webm (ftyp / webm magic), else display_image.
  */
 
 import { readFileSync, lstatSync } from 'node:fs'
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
+
+// MCP SDK is a cli workspace dep; Bun resolves imports from this script's dir, not cli/.
+const cliRoot = join(dirname(fileURLToPath(import.meta.url)), '../../cli')
+const sdkRoot = join(cliRoot, 'node_modules/@modelcontextprotocol/sdk/dist/esm')
+const { Client } = await import(join(sdkRoot, 'client/index.js'))
+const { StreamableHTTPClientTransport } = await import(join(sdkRoot, 'client/streamableHttp.js'))
 
 const HAPI_HOST = process.env.HAPI_HOST ?? 'http://localhost:3006'
 const SETTINGS = process.env.HAPI_SETTINGS ?? `${process.env.HOME}/.hapi/settings.json`
@@ -21,8 +29,19 @@ const imagePath = process.argv[3]
 const title = process.argv[4]
 
 if (!sessionArg || !imagePath) {
-    console.error('usage: hapi-display-image.mjs <session-id-prefix> <image-path> [title]')
+    console.error('usage: hapi-display-image.mjs <session-id-prefix> <media-path> [title]')
     process.exit(2)
+}
+
+function detectMediaTool(path) {
+    const head = readFileSync(path).subarray(0, 16)
+    if (head.length >= 12 && head.subarray(4, 8).toString('ascii') === 'ftyp') {
+        return 'display_video'
+    }
+    if (head.length >= 4 && head[0] === 0x1a && head[1] === 0x45 && head[2] === 0xdf && head[3] === 0xa3) {
+        return 'display_video'
+    }
+    return 'display_image'
 }
 
 if (!lstatSync(imagePath).isFile()) {
@@ -57,7 +76,7 @@ if (!session) {
     process.exit(4)
 }
 
-// List endpoint omits metadata; per-session GET includes hapiMcpUrl.
+// List endpoint omits metadata; per-session GET includes hapiMcpUrl (#956 / PR #958).
 let mcpUrl = session.metadata?.hapiMcpUrl
 if (!mcpUrl) {
     const detailRes = await fetch(`${HAPI_HOST}/api/sessions/${encodeURIComponent(session.id)}`, {
@@ -72,17 +91,18 @@ if (!mcpUrl) {
     mcpUrl = detail.metadata?.hapiMcpUrl
 }
 if (!mcpUrl) {
-    console.error('session has no hapiMcpUrl metadata (restart session CLI after MCP fix lands)')
+    console.error('session has no hapiMcpUrl metadata (happy MCP not running in that session CLI — check GET /api/sessions/:id)')
     process.exit(5)
 }
 
 console.error(`hapi-display-image: session=${session.id} mcp=${mcpUrl}`)
 
+const mediaTool = detectMediaTool(imagePath)
 const client = new Client({ name: 'hapi-display-image', version: '1.0.0' }, { capabilities: {} })
 const transport = new StreamableHTTPClientTransport(new URL(mcpUrl))
 await client.connect(transport)
 const result = await client.callTool({
-    name: 'display_image',
+    name: mediaTool,
     arguments: { path: imagePath, title: title ?? undefined },
 })
 await client.close()

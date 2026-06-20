@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { clearGeneratedImages, detectImageMimeType, getGeneratedImage, registerGeneratedImage, registerGeneratedImageFromAcpBlock, registerGeneratedImageFromPath } from './generatedImages'
+import { clearGeneratedImages, detectImageMimeType, detectVideoMimeType, getGeneratedImage, registerGeneratedImage, registerGeneratedImageFromAcpBlock, registerGeneratedImageFromPath } from './generatedImages'
 
 describe('generatedImages', () => {
     it('detects supported image MIME types from file bytes', () => {
@@ -11,6 +11,12 @@ describe('generatedImages', () => {
         expect(detectImageMimeType(Buffer.from('GIF89a'))).toBe('image/gif')
         expect(detectImageMimeType(Buffer.from('RIFFxxxxWEBP'))).toBe('image/webp')
         expect(detectImageMimeType(Buffer.from([0x00, 0x00, 0x00, 0x1c, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66]))).toBe('image/avif')
+    })
+
+    it('detects supported video MIME types from file bytes', () => {
+        expect(detectVideoMimeType(Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]))).toBe('video/mp4')
+        expect(detectVideoMimeType(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]))).toBe('video/webm')
+        expect(detectVideoMimeType(Buffer.from([0x00, 0x00, 0x00, 0x1c, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66]))).toBeNull()
     })
 
     it('rejects non-image bytes even if the path has an image extension', () => {
@@ -50,7 +56,7 @@ describe('generatedImages', () => {
             path: '/tmp/large.png',
             mimeType: 'image/png',
             bytes: new Uint8Array(25 * 1024 * 1024 + 1)
-        })).toThrow('Image is too large to display inline')
+        })).toThrow('File is too large to display inline')
         clearGeneratedImages()
     })
 
