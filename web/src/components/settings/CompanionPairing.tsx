@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import QRCode from 'qrcode'
 import { Button } from '@/components/ui/button'
+import { useTranslation } from '@/lib/use-translation'
 
 type CompanionPairingProps = {
     baseUrl: string
@@ -24,6 +25,7 @@ function buildDeeplink(hub: string, code: string): string {
 }
 
 export function CompanionPairing({ baseUrl }: CompanionPairingProps) {
+    const { t } = useTranslation()
     const [revealed, setRevealed] = useState(false)
     const [copied, setCopied] = useState(false)
     const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -71,9 +73,7 @@ export function CompanionPairing({ baseUrl }: CompanionPairingProps) {
     if (!deeplink) {
         return (
             <p className="text-sm text-[var(--app-hint)]">
-                Pairing requires the original access token (CLI_API_TOKEN). It looks like
-                you signed in via Telegram or another flow that did not store one - paste
-                the token manually in the companion app instead.
+                {t('settings.companion.noToken')}
             </p>
         )
     }
@@ -81,8 +81,7 @@ export function CompanionPairing({ baseUrl }: CompanionPairingProps) {
     return (
         <div className="flex flex-col gap-3">
             <p className="text-sm text-[var(--app-hint)]">
-                Scan from the HAPI companion app on Android (phone or Wear OS) to bind it to this hub.
-                The pairing code is your access token - treat it like a password.
+                {t('settings.companion.description')}
             </p>
 
             {!revealed ? (
@@ -92,14 +91,14 @@ export function CompanionPairing({ baseUrl }: CompanionPairingProps) {
                     onClick={() => setRevealed(true)}
                     className="self-start"
                 >
-                    Show pairing QR
+                    {t('settings.companion.showQr')}
                 </Button>
             ) : (
                 <div className="flex flex-col items-center gap-3">
                     <canvas
                         ref={canvasRef}
                         className="rounded bg-white p-2"
-                        aria-label="Companion pairing QR code"
+                        aria-label={t('settings.companion.qrAriaLabel')}
                     />
                     <div className="flex flex-wrap gap-2">
                         <Button
@@ -107,14 +106,14 @@ export function CompanionPairing({ baseUrl }: CompanionPairingProps) {
                             variant="outline"
                             onClick={handleCopy}
                         >
-                            {copied ? 'Copied!' : 'Copy link'}
+                            {copied ? t('settings.companion.copied') : t('settings.companion.copyLink')}
                         </Button>
                         <Button
                             type="button"
                             variant="outline"
                             onClick={() => setRevealed(false)}
                         >
-                            Hide
+                            {t('settings.companion.hide')}
                         </Button>
                     </div>
                     <p className="text-xs text-[var(--app-hint)] break-all text-center">
