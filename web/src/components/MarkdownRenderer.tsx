@@ -1,7 +1,7 @@
 import type { MarkdownTextPrimitiveProps } from '@assistant-ui/react-markdown'
 import { MarkdownTextPrimitive } from '@assistant-ui/react-markdown'
 import { TextMessagePartProvider } from '@assistant-ui/react'
-import { useMemo, type ComponentPropsWithoutRef, type ComponentType } from 'react'
+import { Children, isValidElement, useMemo, type ComponentPropsWithoutRef, type ComponentType } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import {
     MARKDOWN_PLUGINS,
@@ -26,35 +26,32 @@ interface MarkdownRendererProps {
     standalone?: boolean
 }
 
-type StandaloneCodeProps = ComponentPropsWithoutRef<'code'> & {
-    inline?: boolean
+function StandaloneCode(props: ComponentPropsWithoutRef<'code'>) {
+    const Code = defaultComponents.code!
+    return <Code {...props} />
 }
 
-function StandaloneCode(props: StandaloneCodeProps) {
-    const Code = defaultComponents.code!
-
-    if (props.inline) {
-        return <Code {...props} />
+function StandalonePre(props: ComponentPropsWithoutRef<'pre'>) {
+    const child = Children.toArray(props.children)[0]
+    if (!isValidElement<ComponentPropsWithoutRef<'code'>>(child)) {
+        const Pre = defaultComponents.pre!
+        return <Pre {...props} />
     }
 
-    const language = /language-(\w+)/.exec(props.className || '')?.[1] ?? ''
-    const code = typeof props.children === 'string' ? props.children : String(props.children ?? '')
+    const className = String(child.props.className ?? '')
+    const language = /language-(\w+)/.exec(className)?.[1] ?? 'unknown'
+    const code = String(child.props.children ?? '').replace(/\n$/, '')
     const Highlighter: ComponentType<SyntaxHighlighterProps> =
         MARKDOWN_COMPONENTS_BY_LANGUAGE[language as keyof typeof MARKDOWN_COMPONENTS_BY_LANGUAGE]?.SyntaxHighlighter
         ?? SyntaxHighlighter
     const CodeHeader = defaultComponents.CodeHeader as ComponentType<CodeHeaderProps>
-
     const Pre = defaultComponents.pre!
-    const InlineCode = defaultComponents.code!
+    const Code = defaultComponents.code!
 
     return (
         <>
-            <CodeHeader language={language || 'unknown'} code={code} />
-            <Highlighter
-                language={language || 'unknown'}
-                code={code}
-                components={{ Pre, Code: InlineCode }}
-            />
+            <CodeHeader language={language} code={code} />
+            <Highlighter language={language} code={code} components={{ Pre, Code }} />
         </>
     )
 }
@@ -65,7 +62,7 @@ function StandaloneMarkdownContent(props: MarkdownRendererProps) {
         : defaultComponents
 
     const {
-        pre,
+        pre: _pre,
         code: _code,
         SyntaxHighlighter: _sh,
         CodeHeader: _header,
@@ -74,9 +71,9 @@ function StandaloneMarkdownContent(props: MarkdownRendererProps) {
 
     const components = useMemo<Components>(() => ({
         ...(componentsRest as Components),
-        pre: pre ?? defaultComponents.pre,
+        pre: StandalonePre,
         code: StandaloneCode,
-    }), [componentsRest, pre])
+    }), [componentsRest])
 
     return (
         <UriConfirmProvider>
