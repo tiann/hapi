@@ -2215,6 +2215,35 @@ describe('session model', () => {
             expect(meta?.cursorSessionProtocol).toBe('stream-json')
         })
 
+        it('stamps stream-json without clearing archive metadata for legacy rows', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+
+            const session = cache.getOrCreateSession(
+                'session-cursor-legacy-prestamp',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    flavor: 'cursor',
+                    cursorSessionId: 'legacy-prestamp-id',
+                    lifecycleState: 'archived',
+                    archivedBy: 'cli',
+                    archiveReason: 'Hub restart'
+                },
+                null,
+                'default'
+            )
+
+            const result = await cache.stampLegacyCursorSessionProtocol(session.id)
+
+            expect(result.cursorSessionProtocol).toBe('stream-json')
+            const meta = cache.getSession(session.id)?.metadata as Record<string, unknown> | null | undefined
+            expect(meta?.cursorSessionProtocol).toBe('stream-json')
+            expect(meta?.lifecycleState).toBe('archived')
+            expect(meta?.archiveReason).toBe('Hub restart')
+        })
+
         it('keeps an existing acp protocol intact when clearing archive metadata', async () => {
             const store = new Store(':memory:')
             const events: SyncEvent[] = []
@@ -2866,6 +2895,64 @@ describe('session model', () => {
 
                 expect(handshakeCalls).toBe(0)
                 expect(result.type).toBe('success')
+            } finally {
+                if (priorAutoMigrate === undefined) {
+                    delete process.env.HAPI_CURSOR_LEGACY_AUTO_MIGRATE
+                } else {
+                    process.env.HAPI_CURSOR_LEGACY_AUTO_MIGRATE = priorAutoMigrate
+                }
+                engine.stop()
+            }
+        })
+
+        it('pre-stamps legacy protocol before spawn while keeping the row archived', async () => {
+            const priorAutoMigrate = process.env.HAPI_CURSOR_LEGACY_AUTO_MIGRATE
+            process.env.HAPI_CURSOR_LEGACY_AUTO_MIGRATE = '0'
+            const store = new Store(':memory:')
+            const engine = new SyncEngine(
+                store,
+                {} as never,
+                new RpcRegistry(),
+                { broadcast() {} } as never
+            )
+
+            try {
+                const session = engine.getOrCreateSession(
+                    'session-cursor-legacy-reopen-prestamp',
+                    {
+                        path: '/tmp/project',
+                        host: 'localhost',
+                        machineId: 'machine-1',
+                        flavor: 'cursor',
+                        cursorSessionId: 'legacy-reopen-prestamp',
+                        lifecycleState: 'archived',
+                        archivedBy: 'cli',
+                        archiveReason: 'Hub restart'
+                    },
+                    null,
+                    'default'
+                )
+                engine.getOrCreateMachine(
+                    'machine-1',
+                    { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                    null,
+                    'default'
+                )
+                engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+
+                let metadataAtSpawn: Record<string, unknown> | null | undefined
+                ;(engine as any).rpcGateway.spawnSession = async () => {
+                    metadataAtSpawn = engine.getSessionByNamespace(session.id, 'default')?.metadata as Record<string, unknown> | null | undefined
+                    engine.handleSessionAlive({ sid: session.id, time: Date.now() })
+                    return { type: 'success', sessionId: session.id }
+                }
+                ;(engine as any).waitForSessionActive = async () => true
+
+                const result = await engine.reopenSession(session.id, 'default')
+
+                expect(result.type).toBe('success')
+                expect(metadataAtSpawn?.cursorSessionProtocol).toBe('stream-json')
+                expect(metadataAtSpawn?.lifecycleState).toBe('archived')
             } finally {
                 if (priorAutoMigrate === undefined) {
                     delete process.env.HAPI_CURSOR_LEGACY_AUTO_MIGRATE

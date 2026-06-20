@@ -699,6 +699,61 @@ export class SessionCache {
     }
 
     /**
+     * Stamp `cursorSessionProtocol: 'stream-json'` on pre-#799 Cursor rows without
+     * clearing archive metadata. Used during archived reopen (#917): we defer
+     * `clearSessionArchiveMetadata` until resume succeeds, but the spawned CLI
+     * reads protocol from the existing row when bootstrapping a `--resume` spawn.
+     */
+    async stampLegacyCursorSessionProtocol(sessionId: string): Promise<{ cursorSessionProtocol: 'stream-json' }> {
+        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
+            const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+            if (!session) {
+                throw new Error('Session not found')
+            }
+
+            const currentMetadata = session.metadata
+            if (!currentMetadata) {
+                throw new Error('Session metadata missing')
+            }
+
+            if (
+                currentMetadata.flavor !== 'cursor'
+                || typeof currentMetadata.cursorSessionId !== 'string'
+                || currentMetadata.cursorSessionId.length === 0
+                || currentMetadata.cursorSessionProtocol !== undefined
+            ) {
+                throw new Error('Session is not a legacy Cursor row needing protocol stamp')
+            }
+
+            const next: Record<string, unknown> = {
+                ...currentMetadata,
+                cursorSessionProtocol: 'stream-json'
+            }
+
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                next,
+                session.metadataVersion,
+                session.namespace,
+                { touchUpdatedAt: false }
+            )
+
+            if (result.result === 'error') {
+                throw new Error('Failed to update session metadata')
+            }
+
+            if (result.result === 'success') {
+                this.refreshSession(sessionId)
+                return { cursorSessionProtocol: 'stream-json' }
+            }
+
+            this.refreshSession(sessionId)
+        }
+
+        throw new Error('Session was modified concurrently. Please try again.')
+    }
+
+    /**
      * Restore archive-related metadata fields that were captured before a reopen attempt.
      * Used when `resumeSession` fails after `clearSessionArchiveMetadata` already ran so the
      * session does not drift into a "not archived, not active" zombie state.

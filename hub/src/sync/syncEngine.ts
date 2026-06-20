@@ -8,7 +8,7 @@
  */
 
 import { isKnownFlavor, type LocalResumeTarget, type ResumableSession } from '@hapi/protocol'
-import { resolveCursorRemoteProtocol } from '@hapi/protocol/cursorProtocol'
+import { isLegacyCursorSession, resolveCursorRemoteProtocol } from '@hapi/protocol/cursorProtocol'
 import type { CursorMigrateOutcome, CursorMigrateToAcpRequest, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, CodexCollaborationMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
@@ -1288,6 +1288,16 @@ export class SyncEngine {
                 }
             }
 
+            let preapplied: { cursorSessionProtocol?: 'acp' | 'stream-json' } | undefined
+            if (isLegacyCursorSession(metadata)) {
+                try {
+                    preapplied = await this.sessionCache.stampLegacyCursorSessionProtocol(access.sessionId)
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : 'Failed to stamp legacy Cursor protocol'
+                    return { type: 'error', message, code: 'metadata_conflict' }
+                }
+            }
+
             const resumeResult = await this.resumeSession(access.sessionId, namespace)
             if (resumeResult.type === 'error') {
                 // Old row stays archived — we defer clearSessionArchiveMetadata until success
@@ -1318,7 +1328,9 @@ export class SyncEngine {
                 type: 'success',
                 sessionId: resumeResult.sessionId,
                 resumed: true,
-                ...(applied?.cursorSessionProtocol ? { cursorSessionProtocol: applied.cursorSessionProtocol } : {})
+                ...((applied?.cursorSessionProtocol ?? preapplied?.cursorSessionProtocol)
+                    ? { cursorSessionProtocol: applied?.cursorSessionProtocol ?? preapplied?.cursorSessionProtocol }
+                    : {})
             }
         }
 
