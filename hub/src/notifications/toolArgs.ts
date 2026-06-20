@@ -77,7 +77,7 @@ export function formatToolArgumentsDetailed(
             case 'Glob': {
                 const pattern = (a.pattern as string | undefined) ?? ''
                 const path = (a.path as string | undefined) ?? ''
-                let result = `Pattern: ${pattern}`
+                let result = `Pattern: ${truncate(pattern, maxLen)}`
                 if (path) result += `\nPath: ${truncate(path, 80)}`
                 return result
             }
