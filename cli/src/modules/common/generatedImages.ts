@@ -59,6 +59,30 @@ export function detectImageMimeType(bytes: Uint8Array): string | null {
     return null
 }
 
+export function detectVideoMimeType(bytes: Uint8Array): string | null {
+    if (bytes.length >= 12 && ascii(bytes, 4, 8) === 'ftyp') {
+        const brand = ascii(bytes, 8, 12)
+        if (brand === 'avif' || brand === 'avis') {
+            return null
+        }
+        return 'video/mp4'
+    }
+
+    if (bytes.length >= 4
+        && bytes[0] === 0x1a
+        && bytes[1] === 0x45
+        && bytes[2] === 0xdf
+        && bytes[3] === 0xa3) {
+        return 'video/webm'
+    }
+
+    return null
+}
+
+export function isInlineMediaMimeType(mimeType: string): boolean {
+    return mimeType.startsWith('image/') || mimeType.startsWith('video/')
+}
+
 function ascii(bytes: Uint8Array, start: number, end: number): string {
     return String.fromCharCode(...bytes.subarray(start, end))
 }
@@ -66,7 +90,11 @@ function ascii(bytes: Uint8Array, start: number, end: number): string {
 export function registerGeneratedImage(args: { id: string; path: string; mimeType: string; bytes: Uint8Array; fileName?: string | null }): GeneratedImageMetadata {
     const content = Buffer.from(args.bytes)
     if (content.byteLength > MAX_GENERATED_IMAGE_BYTES) {
-        throw new Error('Image is too large to display inline')
+        throw new Error('File is too large to display inline')
+    }
+
+    if (!isInlineMediaMimeType(args.mimeType)) {
+        throw new Error('Unsupported inline media MIME type')
     }
 
     const previous = generatedImages.get(args.id)

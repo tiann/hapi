@@ -12,7 +12,7 @@ import { z } from "zod";
 import { logger } from "@/ui/logger";
 import { ApiSessionClient } from "@/api/apiSession";
 import { randomUUID } from "node:crypto";
-import { detectImageMimeType, registerGeneratedImage, MAX_GENERATED_IMAGE_BYTES } from "@/modules/common/generatedImages";
+import { detectImageMimeType, detectVideoMimeType, registerGeneratedImage } from "@/modules/common/generatedImages";
 import { resolveSkill } from "@/modules/common/skills";
 
 type StartHappyServerOptions = {
@@ -65,6 +65,50 @@ function createHapiMcpServer(
         name: z.string().trim().min(1).max(128).describe('Exact skill name shown by HAPI skill autocomplete'),
     });
 
+    const displayVideoInputSchema: z.ZodTypeAny = z.object({
+        path: z.string().describe('Local filesystem path of the video to display inline (mp4 or webm)'),
+        title: z.string().optional().describe('Optional display title or filename for the video'),
+    });
+
+    const maxInlineMediaBytes = 25 * 1024 * 1024;
+
+    async function displayInlineMedia(args: { path: string; title?: string }, mediaKind: 'image' | 'video') {
+        const info = await lstat(args.path);
+        if (!info.isFile()) {
+            throw new Error('Path is not a regular file');
+        }
+
+        if (info.size > maxInlineMediaBytes) {
+            throw new Error('File is too large to display inline');
+        }
+
+        const bytes = await readFile(args.path);
+        const mimeType = mediaKind === 'video'
+            ? detectVideoMimeType(bytes)
+            : detectImageMimeType(bytes);
+        if (!mimeType) {
+            throw new Error(mediaKind === 'video' ? 'Unsupported video content' : 'Unsupported image content');
+        }
+
+        const media = registerGeneratedImage({
+            id: randomUUID(),
+            path: args.path,
+            fileName: args.title,
+            mimeType,
+            bytes
+        });
+
+        client.sendAgentMessage({
+            type: 'generated-image',
+            imageId: media.id,
+            fileName: media.fileName,
+            mimeType: media.mimeType,
+            id: randomUUID()
+        });
+
+        return media;
+    }
+
     if (enableChangeTitle) {
         mcp.registerTool<any, any>('change_title', {
             description: 'Change the title of the current chat session',
@@ -106,37 +150,7 @@ function createHapiMcpServer(
         logger.debug('[hapiMCP] Display image:', args.path);
 
         try {
-            const info = await lstat(args.path);
-            if (!info.isFile()) {
-                throw new Error('Path is not a regular file');
-            }
-
-            const maxImageBytes = MAX_GENERATED_IMAGE_BYTES;
-            if (info.size > maxImageBytes) {
-                throw new Error('Image is too large to display inline');
-            }
-
-            const bytes = await readFile(args.path);
-            const mimeType = detectImageMimeType(bytes);
-            if (!mimeType) {
-                throw new Error('Unsupported image content');
-            }
-
-            const image = registerGeneratedImage({
-                id: randomUUID(),
-                path: args.path,
-                fileName: args.title,
-                mimeType,
-                bytes
-            });
-
-            client.sendAgentMessage({
-                type: 'generated-image',
-                imageId: image.id,
-                fileName: image.fileName,
-                mimeType: image.mimeType,
-                id: randomUUID()
-            });
+            const image = await displayInlineMedia(args, 'image');
 
             return {
                 content: [
@@ -155,6 +169,40 @@ function createHapiMcpServer(
                     {
                         type: 'text' as const,
                         text: `Failed to display image: ${message}`,
+                    },
+                ],
+                isError: true,
+            };
+        }
+    });
+
+    mcp.registerTool<any, any>('display_video', {
+        description: 'Display a local mp4 or webm file inline in the current HAPI chat session',
+        title: 'Display Video',
+        inputSchema: displayVideoInputSchema,
+    }, async (args: { path: string; title?: string }) => {
+        logger.debug('[hapiMCP] Display video:', args.path);
+
+        try {
+            const video = await displayInlineMedia(args, 'video');
+
+            return {
+                content: [
+                    {
+                        type: 'text' as const,
+                        text: `Displayed video: ${video.fileName}`,
+                    },
+                ],
+                isError: false,
+            };
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.debug('[hapiMCP] Failed to display video:', message);
+            return {
+                content: [
+                    {
+                        type: 'text' as const,
+                        text: `Failed to display video: ${message}`,
                     },
                 ],
                 isError: true,
@@ -281,7 +329,9 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
         hapiMcpUrl: mcpUrl,
     }));
 
-    const toolNames = enableChangeTitle ? ['change_title', 'display_image'] : ['display_image'];
+    const toolNames = enableChangeTitle
+        ? ['change_title', 'display_image', 'display_video']
+        : ['display_image', 'display_video'];
     if (options.skillLookup) {
         toolNames.push('skill_lookup');
     }

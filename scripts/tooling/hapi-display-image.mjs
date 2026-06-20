@@ -1,20 +1,21 @@
 #!/usr/bin/env bun
 /**
- * Post a local image inline to a HAPI session via the session CLI's display_image MCP tool.
+ * Post a local image or video inline to a HAPI session via display_image / display_video MCP.
  *
  * Uses session.metadata.hapiMcpUrl (published at MCP server start) so we hit the MCP
  * endpoint, not the session hook server on another loopback port in the same process.
  *
  * Usage:
  *   # inside a wrapped session (self-targets via $HAPI_SESSION_ID — no list):
- *   bun scripts/tooling/hapi-display-image.mjs <image-path> [title]
+ *   bun scripts/tooling/hapi-display-image.mjs <media-path> [title]
  *   # explicit self:
- *   bun scripts/tooling/hapi-display-image.mjs self <image-path> [title]
+ *   bun scripts/tooling/hapi-display-image.mjs self <media-path> [title]
  *   # explicit other session:
- *   bun scripts/tooling/hapi-display-image.mjs <session-id-prefix> <image-path> [title]
+ *   bun scripts/tooling/hapi-display-image.mjs <session-id-prefix> <media-path> [title]
  *
  * Self-resolution (tiann/hapi#1119): $HAPI_SESSION_ID → GET /api/sessions/:id directly.
- * Prefer the MCP display_image tool when available; this script is the shell fallback.
+ * Picks display_video for mp4/webm (ftyp / webm magic), else display_image.
+ * Prefer the MCP tools when available; this script is the shell fallback.
  */
 
 import { readFileSync, lstatSync } from 'node:fs'
@@ -34,10 +35,21 @@ function isFile(p) {
     }
 }
 
+function detectMediaTool(path) {
+    const head = readFileSync(path).subarray(0, 16)
+    if (head.length >= 12 && head.subarray(4, 8).toString('ascii') === 'ftyp') {
+        return 'display_video'
+    }
+    if (head.length >= 4 && head[0] === 0x1a && head[1] === 0x45 && head[2] === 0xdf && head[3] === 0xa3) {
+        return 'display_video'
+    }
+    return 'display_image'
+}
+
 // Arg shapes (backward compatible):
-//   <image> [title]                     → self-target current session
-//   <self-token> <image> [title]        → self-target, explicit
-//   <session-id-prefix> <image> [title] → explicit session
+//   <media> [title]                     → self-target current session
+//   <self-token> <media> [title]        → self-target, explicit
+//   <session-id-prefix> <media> [title] → explicit session
 const args = process.argv.slice(2)
 let sessionArg
 let imagePath
@@ -53,8 +65,8 @@ if (args.length > 0 && isFile(args[0]) && !SELF_TOKENS.has(args[0])) {
 }
 
 if (!imagePath) {
-    console.error('usage: hapi-display-image.mjs [<session-id-prefix>|self] <image-path> [title]')
-    console.error('  or: HAPI_SESSION_ID=<uuid> hapi-display-image.mjs <image-path> [title]')
+    console.error('usage: hapi-display-image.mjs [<session-id-prefix>|self] <media-path> [title]')
+    console.error('  or: HAPI_SESSION_ID=<uuid> hapi-display-image.mjs <media-path> [title]')
     process.exit(2)
 }
 
@@ -135,20 +147,7 @@ if (wantsSelf) {
     }
 }
 
-// List endpoint omits metadata; per-session GET includes hapiMcpUrl.
-let mcpUrl = session.metadata?.hapiMcpUrl
-if (!mcpUrl) {
-    const detailRes = await fetch(`${HAPI_HOST}/api/sessions/${encodeURIComponent(session.id)}`, {
-        headers: { Authorization: `Bearer ${jwt}` },
-    })
-    if (!detailRes.ok) {
-        console.error('session detail fetch failed', detailRes.status)
-        process.exit(5)
-    }
-    const detailBody = await detailRes.json()
-    const detail = detailBody.session ?? detailBody
-    mcpUrl = detail.metadata?.hapiMcpUrl
-}
+const mcpUrl = session.metadata?.hapiMcpUrl
 if (!mcpUrl) {
     console.error('session has no hapiMcpUrl metadata (restart session CLI after MCP server start)')
     process.exit(5)
@@ -156,11 +155,12 @@ if (!mcpUrl) {
 
 console.error(`hapi-display-image: session=${session.id} mcp=${mcpUrl}`)
 
+const mediaTool = detectMediaTool(imagePath)
 const client = new Client({ name: 'hapi-display-image', version: '1.0.0' }, { capabilities: {} })
 const transport = new StreamableHTTPClientTransport(new URL(mcpUrl))
 await client.connect(transport)
 const result = await client.callTool({
-    name: 'display_image',
+    name: mediaTool,
     arguments: { path: imagePath, title: title ?? undefined },
 })
 await client.close()

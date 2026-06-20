@@ -162,6 +162,34 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       );
     }
 
+    const displayVideoInputSchema: z.ZodTypeAny = z.object({
+      path: z.string().describe('Local filesystem path of the video to display inline (mp4 or webm)'),
+      title: z.string().optional().describe('Optional display title or filename for the video'),
+    });
+
+    server.registerTool<any, any>(
+      'display_video',
+      {
+        description: 'Display a local mp4 or webm file inline in the current HAPI chat session',
+        title: 'Display Video',
+        inputSchema: displayVideoInputSchema,
+      },
+      async (args: Record<string, unknown>) => {
+        try {
+          const client = await ensureHttpClient();
+          const response = await client.callTool({ name: 'display_video', arguments: args });
+          return response as any;
+        } catch (error) {
+          return {
+            content: [
+              { type: 'text' as const, text: `Failed to display video: ${error instanceof Error ? error.message : String(error)}` },
+            ],
+            isError: true,
+          };
+        }
+      }
+    );
+
     // Start STDIO transport
     const stdio = new StdioServerTransport();
     await server.connect(stdio);
