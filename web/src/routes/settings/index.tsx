@@ -1261,7 +1261,7 @@ export default function SettingsPage() {
                     {/* Companion section */}
                     <div className="border-b border-[var(--app-divider)]">
                         <div className="px-3 py-2 text-xs font-semibold text-[var(--app-hint)] uppercase tracking-wide">
-                            Companion
+                            {t('settings.companion.title')}
                         </div>
                         <div className="px-3 py-3">
                             <CompanionPairing baseUrl={baseUrl} />
