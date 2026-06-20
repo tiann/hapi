@@ -190,6 +190,13 @@ function SessionsPage() {
         }
         return labels
     }, [machines])
+    const machinesById = useMemo(() => {
+        const byId: Record<string, typeof machines[number]> = {}
+        for (const machine of machines) {
+            byId[machine.id] = machine
+        }
+        return byId
+    }, [machines])
     const sessionMatch = matchRoute({ to: '/sessions/$sessionId', fuzzy: true })
     const selectedSessionId = sessionMatch && sessionMatch.sessionId !== 'new' ? sessionMatch.sessionId : null
     const selectedSession = useMemo(
@@ -531,6 +538,7 @@ function SessionsPage() {
                         renderHeader={false}
                         api={api}
                         machineLabelsById={machineLabelsById}
+                        machinesById={machinesById}
                     />
                 </div>
             </div>

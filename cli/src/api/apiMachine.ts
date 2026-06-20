@@ -25,6 +25,7 @@ import {
 import type { SpawnSessionOptions, SpawnSessionResult } from '../modules/common/rpcTypes'
 import { applyVersionedAck } from './versionedUpdate'
 import { buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
+import { collectMachineHealth } from '@/utils/machineHealth'
 
 type MachineRpcHandlers = {
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>
@@ -489,12 +490,15 @@ export class ApiMachineClient {
 
     private startKeepAlive(): void {
         this.stopKeepAlive()
-        this.keepAliveInterval = setInterval(() => {
+        const emitAlive = () => {
             this.socket.emit('machine-alive', {
                 machineId: this.machine.id,
-                time: Date.now()
+                time: Date.now(),
+                health: collectMachineHealth()
             })
-        }, 20_000)
+        }
+        emitAlive()
+        this.keepAliveInterval = setInterval(emitAlive, 20_000)
     }
 
     private stopKeepAlive(): void {

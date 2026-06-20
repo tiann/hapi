@@ -278,6 +278,16 @@ export const RunnerStateSchema = z.object({
 
 export type RunnerState = z.infer<typeof RunnerStateSchema>
 
+export const MachineHealthSchema = z.object({
+    collectedAt: z.number(),
+    cpuCount: z.number().int().positive().optional(),
+    load1m: z.number().nonnegative().optional(),
+    cpuPercent: z.number().min(0).max(100).optional(),
+    memoryPercent: z.number().min(0).max(100).optional()
+}).strict()
+
+export type MachineHealth = z.infer<typeof MachineHealthSchema>
+
 export const MachineSchema = z.object({
     id: z.string(),
     namespace: z.string(),
@@ -289,7 +299,8 @@ export const MachineSchema = z.object({
     metadata: MachineMetadataSchema.nullable(),
     metadataVersion: z.number(),
     runnerState: RunnerStateSchema.nullable(),
-    runnerStateVersion: z.number()
+    runnerStateVersion: z.number(),
+    health: MachineHealthSchema.nullable().optional()
 })
 
 export type Machine = z.infer<typeof MachineSchema>

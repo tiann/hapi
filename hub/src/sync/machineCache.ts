@@ -1,8 +1,36 @@
 import type { Machine, MachinePatch } from '@hapi/protocol/types'
-import { MachineMetadataSchema, RunnerStateSchema } from '@hapi/protocol/schemas'
+import { MachineHealthSchema, MachineMetadataSchema, RunnerStateSchema } from '@hapi/protocol/schemas'
 import type { Store } from '../store'
 import { clampAliveTime } from './aliveTime'
 import { EventPublisher } from './eventPublisher'
+
+type MachineAlivePayload = {
+    machineId: string
+    time: number
+    health?: unknown
+}
+
+function parseMachineHealth(value: unknown): Machine['health'] {
+    const parsed = MachineHealthSchema.safeParse(value)
+    return parsed.success ? parsed.data : null
+}
+
+function healthDisplayChanged(
+    before: Machine['health'] | undefined,
+    after: Machine['health'] | null | undefined
+): boolean {
+    if (!before && !after) {
+        return false
+    }
+    if (!before || !after) {
+        return true
+    }
+
+    return before.load1m !== after.load1m
+        || before.cpuPercent !== after.cpuPercent
+        || before.memoryPercent !== after.memoryPercent
+        || before.cpuCount !== after.cpuCount
+}
 
 export class MachineCache {
     private readonly machines: Map<string, Machine> = new Map()
@@ -93,7 +121,8 @@ export class MachineCache {
             metadata,
             metadataVersion: stored.metadataVersion,
             runnerState,
-            runnerStateVersion: stored.runnerStateVersion
+            runnerStateVersion: stored.runnerStateVersion,
+            health: existing?.health ?? null
         }
 
         this.machines.set(machineId, machine)
@@ -108,7 +137,7 @@ export class MachineCache {
         }
     }
 
-    handleMachineAlive(payload: { machineId: string; time: number }): void {
+    handleMachineAlive(payload: MachineAlivePayload): void {
         const t = clampAliveTime(payload.time)
         if (!t) return
 
@@ -116,12 +145,21 @@ export class MachineCache {
         if (!machine) return
 
         const wasActive = machine.active
+        const previousHealth = machine.health ?? null
         machine.active = true
         machine.activeAt = Math.max(machine.activeAt, t)
 
+        if (payload.health !== undefined) {
+            machine.health = parseMachineHealth(payload.health)
+        }
+
         const now = Date.now()
         const lastBroadcastAt = this.lastBroadcastAtByMachineId.get(machine.id) ?? 0
-        const shouldBroadcast = (!wasActive && machine.active) || (now - lastBroadcastAt > 10_000)
+        const healthChanged = payload.health !== undefined
+            && healthDisplayChanged(previousHealth, machine.health)
+        const shouldBroadcast = (!wasActive && machine.active)
+            || healthChanged
+            || (now - lastBroadcastAt > 10_000)
         if (shouldBroadcast) {
             this.lastBroadcastAtByMachineId.set(machine.id, now)
             this.publisher.emit({ type: 'machine-updated', machineId: machine.id, data: machine })

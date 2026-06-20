@@ -22,6 +22,8 @@ import { formatRelativeTime } from '@/lib/relativeTime'
 import { formatScheduledTooltipDetail } from '@/lib/scheduledTime'
 import { getCodexImportedAt, subscribeCodexImportedSessions } from '@/lib/codexImportedSessions'
 import { formatReopenError } from '@/lib/reopenError'
+import type { Machine } from '@/types/api'
+import { getMachinePlatform, MACHINE_HEALTH_TONE_CLASS, presentMachineHealth } from '@/lib/machineHealth'
 
 type SessionGroup = {
     key: string
@@ -802,10 +804,11 @@ export function SessionList(props: {
     renderHeader?: boolean
     api: ApiClient | null
     machineLabelsById?: Record<string, string>
+    machinesById?: Record<string, Machine>
     selectedSessionId?: string | null
 }) {
     const { t } = useTranslation()
-    const { renderHeader = true, api, selectedSessionId, machineLabelsById = {}, onNewSessionInDirectory } = props
+    const { renderHeader = true, api, selectedSessionId, machineLabelsById = {}, machinesById = {}, onNewSessionInDirectory } = props
     const { sessionPreviewLimit } = useSessionPreviewLimit()
     const { sessionListStatusMode } = useSessionListStatusMode()
     const { showActiveSessionsOnly } = useShowActiveSessionsOnly()
@@ -1045,6 +1048,11 @@ export function SessionList(props: {
             <div className="flex flex-col gap-3 px-2 pt-1 pb-2">
                 {machineGroups.map((mg) => {
                     const machineCollapsed = isMachineCollapsed(mg)
+                    const machine = mg.machineId ? machinesById[mg.machineId] : undefined
+                    const healthPresentation = presentMachineHealth(
+                        machine?.health,
+                        getMachinePlatform(machine)
+                    )
                     return (
                         <div key={mg.machineId ?? UNKNOWN_MACHINE_ID}>
                             {/* Level 1: Machine */}
@@ -1055,8 +1063,19 @@ export function SessionList(props: {
                             >
                                 <ChevronIcon className="h-4 w-4 text-[var(--app-hint)] shrink-0" collapsed={machineCollapsed} />
                                 <MachineIcon className="h-4 w-4 text-[var(--app-hint)] shrink-0" />
-                                <span className="text-sm font-semibold truncate flex-1">{mg.label}</span>
-                                <span className="text-[11px] tabular-nums text-[var(--app-hint)] shrink-0">({mg.totalSessions})</span>
+                                <span className="text-sm font-semibold truncate min-w-0">{mg.label}</span>
+                                {healthPresentation ? (
+                                    <span
+                                        className={cn(
+                                            'text-[11px] tabular-nums shrink-0',
+                                            MACHINE_HEALTH_TONE_CLASS[healthPresentation.tone]
+                                        )}
+                                        title={healthPresentation.title}
+                                    >
+                                        {healthPresentation.label}
+                                    </span>
+                                ) : null}
+                                <span className="text-[11px] tabular-nums text-[var(--app-hint)] shrink-0 ml-auto">({mg.totalSessions})</span>
                             </button>
 
                             {/* Level 2: Projects */}
