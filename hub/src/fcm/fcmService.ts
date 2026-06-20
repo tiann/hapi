@@ -230,17 +230,23 @@ export class FcmService {
      * INVALID_ARGUMENT qualifies.
      */
     private isInvalidFcmTokenResponse(status: number, body: string): boolean {
+        type FcmErrorDetail = {
+            '@type'?: string
+            errorCode?: string
+            fieldViolations?: Array<{ field?: string }>
+        }
+
         const parsedError = ((): {
             error?: {
                 status?: string
-                details?: Array<{ fieldViolations?: Array<{ field?: string }> }>
+                details?: FcmErrorDetail[]
             }
         } | null => {
             try {
                 return JSON.parse(body) as {
                     error?: {
                         status?: string
-                        details?: Array<{ fieldViolations?: Array<{ field?: string }> }>
+                        details?: FcmErrorDetail[]
                     }
                 }
             } catch {
@@ -249,16 +255,22 @@ export class FcmService {
         })()
 
         const errorStatus = parsedError?.error?.status ?? ''
-        const tokenFieldViolation = parsedError?.error?.details?.some((detail) =>
+        const details = parsedError?.error?.details ?? []
+        const fcmErrorCode = details.find((detail) =>
+            detail['@type'] === 'type.googleapis.com/google.firebase.fcm.v1.FcmError'
+        )?.errorCode ?? ''
+        const tokenFieldViolation = details.some((detail) =>
             detail.fieldViolations?.some((violation) =>
                 /message\.token|token/i.test(violation.field ?? '')
             )
-        ) ?? false
+        )
 
-        const isUnregistered = status === 404 && errorStatus === 'UNREGISTERED'
+        const isUnregistered = status === 404 && (
+            fcmErrorCode === 'UNREGISTERED' || errorStatus === 'UNREGISTERED'
+        )
         const isMalformedToken = status === 400
             && errorStatus === 'INVALID_ARGUMENT'
-            && tokenFieldViolation
+            && (fcmErrorCode === 'INVALID_ARGUMENT' || tokenFieldViolation)
 
         return isUnregistered || isMalformedToken
     }

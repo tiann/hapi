@@ -93,6 +93,29 @@ describe('FcmService.sendToNamespace', () => {
         expect(store.fcm.removeDeviceByToken).not.toHaveBeenCalled()
     })
 
+    it('removes the device row on canonical 404 NOT_FOUND + FcmError UNREGISTERED', async () => {
+        const store = makeStore([
+            { namespace: 'default', token: 'dead-token', platform: 'phone', deviceId: 'p1' }
+        ])
+        globalThis.fetch = mock(async () =>
+            new Response(JSON.stringify({
+                error: {
+                    status: 'NOT_FOUND',
+                    details: [{
+                        '@type': 'type.googleapis.com/google.firebase.fcm.v1.FcmError',
+                        errorCode: 'UNREGISTERED'
+                    }]
+                }
+            }), { status: 404 })
+        ) as unknown as typeof fetch
+
+        const svc = new FcmService('proj-id', { client_email: 'x', private_key: 'y' }, store as never)
+        const result = await svc.sendToNamespace('default', makePayload())
+
+        expect(result.invalidTokens).toEqual(['dead-token'])
+        expect(store.fcm.removeDeviceByToken).toHaveBeenCalledWith('default', 'dead-token')
+    })
+
     it('keeps the device row on 400 INVALID_ARGUMENT without token field violation', async () => {
         const store = makeStore([
             { namespace: 'default', token: 'live-token', platform: 'phone', deviceId: 'p1' }
