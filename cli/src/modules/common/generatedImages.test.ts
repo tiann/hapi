@@ -101,4 +101,16 @@ describe('generatedImages', () => {
         clearGeneratedImages()
     })
 
+    it('registers mp4 from local file paths after MIME sniffing', async () => {
+        const dir = join(tmpdir(), `hapi-inline-mp4-${Date.now()}`)
+        mkdirSync(dir, { recursive: true })
+        const path = join(dir, 'inline.mp4')
+        const bytes = Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d])
+        writeFileSync(path, bytes)
+
+        const video = await registerGeneratedImageFromPath({ path })
+        expect(video?.mimeType).toBe('video/mp4')
+        clearGeneratedImages()
+    })
+
 })

@@ -152,9 +152,9 @@ export async function registerGeneratedImageFromPath(args: {
             throw new Error('Image is too large to display inline')
         }
         const bytes = await readFile(args.path)
-        const mimeType = detectImageMimeType(bytes)
+        const mimeType = detectImageMimeType(bytes) ?? detectVideoMimeType(bytes)
         if (!mimeType) {
-            throw new Error('Unsupported image content')
+            throw new Error('Unsupported inline media content')
         }
         return registerGeneratedImage({
             id: args.id ?? randomUUID(),
