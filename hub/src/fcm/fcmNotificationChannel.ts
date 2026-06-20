@@ -151,16 +151,20 @@ export class FcmNotificationChannel implements NotificationChannel {
                 )
                 : ''
             const body = [summaryLine, actionLine].filter(Boolean).join('\n')
+            const notifySummary = {
+                ...(typeof summary.version === 'number' ? { version: summary.version } : {}),
+                summary: summaryLine,
+                ...(summary.action
+                    ? { action: this.truncateReadyText(summary.action, READY_BODY_GLANCE_LIMIT) }
+                    : {}),
+                ...(summary.status ? { status: this.truncateReadyText(summary.status, 32) } : {}),
+                ...(summary.agent ? { agent: this.truncateReadyText(summary.agent, 80) } : {}),
+                ...(summary.project ? { project: this.truncateReadyText(summary.project, 80) } : {})
+            }
             return {
                 title: headerTitle,
                 body,
-                notifySummary: {
-                    ...summary,
-                    summary: summaryLine,
-                    ...(summary.action
-                        ? { action: this.truncateReadyText(summary.action, READY_BODY_GLANCE_LIMIT) }
-                        : {})
-                }
+                notifySummary
             }
         }
 
@@ -235,10 +239,11 @@ export class FcmNotificationChannel implements NotificationChannel {
             || normalizedStatus === 'killed'
             || normalizedStatus === 'aborted'
         const path = this.buildSessionPath(session.id)
+        const taskSummary = this.truncateReadyText(notification.summary, READY_BODY_GLANCE_LIMIT)
 
         const payload = this.buildPayload({
             title: isFailure ? 'Task failed' : 'Task completed',
-            body: `${agentName} · ${name} · ${notification.summary}`,
+            body: `${agentName} · ${name} · ${taskSummary}`,
             type: 'task-notification',
             sessionId: session.id,
             sessionName: name,
