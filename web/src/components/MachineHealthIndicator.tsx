@@ -3,6 +3,7 @@ import { HoverTooltip } from '@/components/HoverTooltip'
 import {
     MACHINE_HEALTH_BAR_FILL_CLASS,
     MACHINE_HEALTH_CHIP_CLASS,
+    type MachineHealthMetricPresentation,
     type MachineHealthPresentation
 } from '@/lib/machineHealth'
 import { cn } from '@/lib/utils'
@@ -31,6 +32,34 @@ function HealthMeterBar(props: {
     )
 }
 
+function TooltipMetricStat(props: {
+    metric: MachineHealthMetricPresentation
+    label: string
+}) {
+    return (
+        <span className="inline-flex min-w-[7.5rem] items-center gap-2 whitespace-nowrap">
+            <span className="text-[var(--app-hint)]">{props.label}</span>
+            <span
+                className={cn(
+                    'font-semibold tabular-nums',
+                    props.metric.tone !== 'ok' ? 'text-[var(--app-fg)]' : 'text-[var(--app-fg)]/90'
+                )}
+            >
+                {props.metric.percent}%
+            </span>
+            <span
+                className="relative h-1.5 w-14 overflow-hidden rounded-full bg-[var(--app-border)]/80"
+                aria-hidden="true"
+            >
+                <span
+                    className={cn('block h-full rounded-full', MACHINE_HEALTH_BAR_FILL_CLASS[props.metric.tone])}
+                    style={{ width: `${Math.max(4, Math.min(100, props.metric.percent))}%` }}
+                />
+            </span>
+        </span>
+    )
+}
+
 function MachineHealthTooltipBody(props: {
     presentation: MachineHealthPresentation
 }) {
@@ -40,22 +69,30 @@ function MachineHealthTooltipBody(props: {
 
     return (
         <span className="block space-y-1.5">
-            <span className="block font-medium">{t('machine.health.tooltip.title')}</span>
-            <span className="block text-[var(--app-fg)]">{t(statusKey)}</span>
-            {presentation.metrics.map((metric) => (
-                <span key={metric.id} className="flex items-center justify-between gap-3 text-[var(--app-hint)]">
-                    <span>{t(`machine.health.metric.${metric.id}`, { n: metric.percent })}</span>
-                    <span className={cn('font-medium tabular-nums', metric.tone !== 'ok' && 'text-[var(--app-fg)]')}>
-                        {metric.percent}%
+            <span className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5">
+                <span className="font-medium">{t('machine.health.tooltip.title')}</span>
+                <span className="text-[var(--app-fg)]">{t(statusKey)}</span>
+            </span>
+            <span className="flex flex-wrap items-center gap-x-5 gap-y-1">
+                {presentation.metrics.map((metric) => (
+                    <TooltipMetricStat
+                        key={metric.id}
+                        metric={metric}
+                        label={t(`machine.health.metric.${metric.id}`, { n: metric.percent })}
+                    />
+                ))}
+                {presentation.loadDetail ? (
+                    <span className="inline-flex min-w-[7.5rem] items-center gap-2 whitespace-nowrap text-[var(--app-hint)]">
+                        <span>{t('machine.health.tooltip.loadShort')}</span>
+                        <span className="font-semibold tabular-nums text-[var(--app-fg)]">
+                            {presentation.loadDetail}
+                        </span>
                     </span>
-                </span>
-            ))}
-            {presentation.loadDetail ? (
-                <span className="block text-[var(--app-hint)]">
-                    {t('machine.health.tooltip.load', { value: presentation.loadDetail })}
-                </span>
-            ) : null}
-            <span className="block text-[var(--app-hint)]">{t('machine.health.tooltip.hint')}</span>
+                ) : null}
+            </span>
+            <span className="block text-[11px] leading-snug text-[var(--app-hint)]">
+                {t('machine.health.tooltip.hint')}
+            </span>
         </span>
     )
 }
@@ -101,6 +138,7 @@ export function MachineHealthIndicator(props: {
             side="bottom"
             align="end"
             className="shrink-0"
+            tooltipClassName="max-w-none min-w-[20rem] w-max sm:min-w-[22rem] px-3 py-2"
         >
             <MachineHealthTooltipBody presentation={presentation} />
         </HoverTooltip>

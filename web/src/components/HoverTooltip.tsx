@@ -34,6 +34,8 @@ export function HoverTooltip(props: {
     className?: string
     /** Parent-focus reveal classes (e.g. SESSION_ROW_TOOLTIP_FOCUS_CLASS). */
     revealOnParentFocusClass?: string
+    /** Optional classes for the tooltip panel (e.g. wider popover). */
+    tooltipClassName?: string
 }) {
     const side = props.side ?? 'bottom'
     const align = props.align ?? 'center'
@@ -60,6 +62,7 @@ export function HoverTooltip(props: {
                     'opacity-0 invisible',
                     'group-hover:opacity-100 group-hover:visible',
                     props.revealOnParentFocusClass,
+                    props.tooltipClassName,
                     'transition-opacity duration-100'
                 )}
             >

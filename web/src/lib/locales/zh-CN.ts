@@ -257,6 +257,7 @@ export default {
   'machine.health.metric.cpu': '全部核心的 CPU',
   'machine.health.metric.ram': '内存占用',
   'machine.health.tooltip.load': '运行队列 (1 分钟): {value}',
+  'machine.health.tooltip.loadShort': '负载 (1 分钟)',
   'machine.health.tooltip.hint': '约每 20 秒由该机器上的 runner 更新。',
   'machine.health.aria.cpu': 'CPU {n}%',
   'machine.health.aria.ram': '内存 {n}%',
