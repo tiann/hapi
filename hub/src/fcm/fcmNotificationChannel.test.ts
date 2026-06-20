@@ -215,6 +215,44 @@ describe('FcmNotificationChannel', () => {
         expect(parsed.action).toBe('Upload preview')
     })
 
+    it('sendReady caps long AGENT_NOTIFY_SUMMARY text for FCM data limits', async () => {
+        const sent: FcmSendPayload[] = []
+        const longSummary = 'S'.repeat(400)
+        const longAction = 'A'.repeat(400)
+        const store = makeStoreWithMessages([
+            {
+                content: {
+                    role: 'agent',
+                    content: {
+                        type: 'codex',
+                        data: {
+                            type: 'message',
+                            message: `Done.\n\nAGENT_NOTIFY_SUMMARY {"version":1,"summary":"${longSummary}","action":"${longAction}","status":"done"}`
+                        }
+                    }
+                }
+            }
+        ])
+        const channel = new FcmNotificationChannel(
+            {
+                sendToNamespace: async (_namespace: string, payload: FcmSendPayload) => {
+                    sent.push(payload)
+                }
+            } as never,
+            { sendToast: async () => 0 } as never,
+            { hasVisibleConnection: () => false } as never,
+            store
+        )
+
+        await channel.sendReady(createSession())
+
+        expect(sent).toHaveLength(1)
+        expect(sent[0].body.length).toBeLessThanOrEqual(280)
+        const parsed = JSON.parse(sent[0].data.notifySummary as string)
+        expect(parsed.summary.length).toBeLessThanOrEqual(280)
+        expect(parsed.action.length).toBeLessThanOrEqual(280)
+    })
+
     it('sendReady truncates last assistant text when no summary is present', async () => {
         const sent: FcmSendPayload[] = []
         const longText = 'A'.repeat(500)
