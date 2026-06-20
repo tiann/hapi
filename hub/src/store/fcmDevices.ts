@@ -30,24 +30,37 @@ export function upsertFcmDevice(
     device: { token: string; platform: 'phone' | 'wear'; deviceId: string }
 ): void {
     const now = Date.now()
-    db.prepare(`
-        INSERT INTO fcm_devices (
-            namespace, token, platform, device_id, created_at, updated_at
-        ) VALUES (
-            @namespace, @token, @platform, @device_id, @created_at, @updated_at
-        )
-        ON CONFLICT(namespace, device_id, platform)
-        DO UPDATE SET
-            token = excluded.token,
-            updated_at = excluded.updated_at
-    `).run({
+    const params = {
         namespace,
         token: device.token,
         platform: device.platform,
         device_id: device.deviceId,
         created_at: now,
         updated_at: now
-    })
+    }
+
+    db.transaction(() => {
+        // One FCM token must not deliver across namespaces. Re-pairing the
+        // same native install under a new namespace drops stale rows that
+        // still reference this token elsewhere.
+        db.prepare(`
+            DELETE FROM fcm_devices
+            WHERE token = @token
+              AND (namespace != @namespace OR device_id != @device_id OR platform != @platform)
+        `).run(params)
+
+        db.prepare(`
+            INSERT INTO fcm_devices (
+                namespace, token, platform, device_id, created_at, updated_at
+            ) VALUES (
+                @namespace, @token, @platform, @device_id, @created_at, @updated_at
+            )
+            ON CONFLICT(namespace, device_id, platform)
+            DO UPDATE SET
+                token = excluded.token,
+                updated_at = excluded.updated_at
+        `).run(params)
+    })()
 }
 
 export function removeFcmDeviceByToken(db: Database, namespace: string, token: string): void {
