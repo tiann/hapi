@@ -216,24 +216,50 @@ export class FcmService {
         }
 
         const body = await response.text().catch(() => '')
-        // Per FCM v1 docs, only these signal a permanently-dead token:
-        //   - HTTP 404 with UNREGISTERED      (app uninstalled / token rotated)
-        //   - HTTP 404 with NOT_FOUND         (legacy alias)
-        //   - HTTP 400 with INVALID_ARGUMENT against the `token` field
-        //     (malformed; we conservatively only treat this as invalid when the
-        //      body explicitly references the token field, otherwise we may be
-        //      sending a malformed payload and would mis-blame the device).
-        // Everything else - 401 auth, 403 permission, 429 quota, 5xx server -
-        // is transient and devices stay registered.
-        const isUnregistered = response.status === 404
-            && (body.includes('UNREGISTERED') || body.includes('NOT_FOUND'))
-        const isMalformedToken = response.status === 400
-            && body.includes('INVALID_ARGUMENT')
-            && /token/i.test(body)
-        const invalid = isUnregistered || isMalformedToken
+        const invalid = this.isInvalidFcmTokenResponse(response.status, body)
         if (!invalid) {
             console.error('[FcmService] Send failed (transient):', response.status, body.slice(0, 200))
         }
         return invalid ? 'invalid' : 'failed'
+    }
+
+    /**
+     * Parse FCM v1 error JSON and decide whether the token itself is dead.
+     * Generic 404/NOT_FOUND (bad project id, missing resource) must not
+     * unregister live devices — only explicit UNREGISTERED or token-field
+     * INVALID_ARGUMENT qualifies.
+     */
+    private isInvalidFcmTokenResponse(status: number, body: string): boolean {
+        const parsedError = ((): {
+            error?: {
+                status?: string
+                details?: Array<{ fieldViolations?: Array<{ field?: string }> }>
+            }
+        } | null => {
+            try {
+                return JSON.parse(body) as {
+                    error?: {
+                        status?: string
+                        details?: Array<{ fieldViolations?: Array<{ field?: string }> }>
+                    }
+                }
+            } catch {
+                return null
+            }
+        })()
+
+        const errorStatus = parsedError?.error?.status ?? ''
+        const tokenFieldViolation = parsedError?.error?.details?.some((detail) =>
+            detail.fieldViolations?.some((violation) =>
+                /message\.token|token/i.test(violation.field ?? '')
+            )
+        ) ?? false
+
+        const isUnregistered = status === 404 && errorStatus === 'UNREGISTERED'
+        const isMalformedToken = status === 400
+            && errorStatus === 'INVALID_ARGUMENT'
+            && tokenFieldViolation
+
+        return isUnregistered || isMalformedToken
     }
 }

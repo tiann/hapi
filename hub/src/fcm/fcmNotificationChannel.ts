@@ -188,6 +188,9 @@ export class FcmNotificationChannel implements NotificationChannel {
         if (trimmed.length <= limit) {
             return trimmed
         }
+        if (limit <= 3) {
+            return '.'.repeat(limit)
+        }
         return trimmed.slice(0, limit - 3).trimEnd() + '...'
     }
 
