@@ -497,8 +497,12 @@ export class ApiMachineClient {
                 health: collectMachineHealth()
             })
         }
-        emitAlive()
-        this.keepAliveInterval = setInterval(emitAlive, 20_000)
+        // Prime CPU sampling so the first heartbeat already includes CPU %.
+        collectMachineHealth()
+        setTimeout(() => {
+            emitAlive()
+            this.keepAliveInterval = setInterval(emitAlive, 20_000)
+        }, 50)
     }
 
     private stopKeepAlive(): void {

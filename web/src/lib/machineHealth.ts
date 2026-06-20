@@ -27,18 +27,36 @@ function percentTone(value: number): MachineHealthPresentation['tone'] {
     return 'ok'
 }
 
+function worstTone(...tones: MachineHealthPresentation['tone'][]): MachineHealthPresentation['tone'] {
+    if (tones.includes('critical')) return 'critical'
+    if (tones.includes('warn')) return 'warn'
+    if (tones.includes('unknown')) return 'unknown'
+    return 'ok'
+}
+
 function buildTitle(health: MachineHealth, platform?: string | null): string {
     const parts: string[] = []
-    if (health.load1m !== undefined && platform !== 'win32') {
-        parts.push(`Load (1m): ${formatLoad(health.load1m, health.cpuCount)}`)
-    }
     if (health.cpuPercent !== undefined) {
         parts.push(`CPU: ${health.cpuPercent}%`)
     }
     if (health.memoryPercent !== undefined) {
-        parts.push(`Memory: ${health.memoryPercent}%`)
+        parts.push(`RAM: ${health.memoryPercent}%`)
+    }
+    if (health.load1m !== undefined && platform !== 'win32') {
+        parts.push(`Load (1m): ${formatLoad(health.load1m, health.cpuCount)}`)
     }
     return parts.length > 0 ? parts.join(' · ') : 'Health unavailable'
+}
+
+function buildInlineLabel(health: MachineHealth): string | null {
+    const parts: string[] = []
+    if (health.cpuPercent !== undefined) {
+        parts.push(`${health.cpuPercent}% CPU`)
+    }
+    if (health.memoryPercent !== undefined) {
+        parts.push(`${health.memoryPercent}% RAM`)
+    }
+    return parts.length > 0 ? parts.join(' · ') : null
 }
 
 export function presentMachineHealth(
@@ -50,28 +68,30 @@ export function presentMachineHealth(
     }
 
     const title = buildTitle(health, platform)
+    const label = buildInlineLabel(health)
+    if (label) {
+        const tones: MachineHealthPresentation['tone'][] = []
+        if (health.cpuPercent !== undefined) {
+            tones.push(percentTone(health.cpuPercent))
+        }
+        if (health.memoryPercent !== undefined) {
+            tones.push(percentTone(health.memoryPercent))
+        }
+        if (health.load1m !== undefined && platform !== 'win32') {
+            tones.push(loadTone(health.load1m, health.cpuCount))
+        }
+        return {
+            label,
+            title,
+            tone: worstTone(...tones)
+        }
+    }
 
     if (health.load1m !== undefined && platform !== 'win32') {
         return {
-            label: formatLoad(health.load1m, health.cpuCount),
+            label: `load ${formatLoad(health.load1m, health.cpuCount)}`,
             title,
             tone: loadTone(health.load1m, health.cpuCount)
-        }
-    }
-
-    if (health.cpuPercent !== undefined) {
-        return {
-            label: `${health.cpuPercent}% CPU`,
-            title,
-            tone: percentTone(health.cpuPercent)
-        }
-    }
-
-    if (health.memoryPercent !== undefined) {
-        return {
-            label: `${health.memoryPercent}% mem`,
-            title,
-            tone: percentTone(health.memoryPercent)
         }
     }
 
