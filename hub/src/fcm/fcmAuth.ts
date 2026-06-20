@@ -8,6 +8,7 @@ export type ServiceAccount = {
 }
 
 const FCM_SCOPE = 'https://www.googleapis.com/auth/firebase.messaging'
+export const FCM_REQUEST_TIMEOUT_MS = 10_000
 
 let cachedToken: { accessToken: string; expiresAtMs: number } | null = null
 
@@ -43,7 +44,8 @@ export async function getFcmAccessToken(serviceAccount: ServiceAccount): Promise
         body: new URLSearchParams({
             grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
             assertion
-        })
+        }),
+        signal: AbortSignal.timeout(FCM_REQUEST_TIMEOUT_MS)
     })
 
     if (!response.ok) {

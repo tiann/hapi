@@ -141,6 +141,22 @@ describe('FcmService.sendToNamespace', () => {
         expect(store.fcm.removeDeviceByToken).not.toHaveBeenCalled()
     })
 
+    it('treats timed-out FCM send as transient failure', async () => {
+        const store = makeStore([
+            { namespace: 'default', token: 'live-token', platform: 'phone', deviceId: 'p1' }
+        ])
+        globalThis.fetch = mock(async (_url, init) => {
+            expect(init?.signal).toBeDefined()
+            throw new DOMException('The operation was aborted.', 'AbortError')
+        }) as unknown as typeof fetch
+
+        const svc = new FcmService('proj-id', { client_email: 'x', private_key: 'y' }, store as never)
+        const result = await svc.sendToNamespace('default', makePayload())
+
+        expect(result.failed).toBe(1)
+        expect(store.fcm.removeDeviceByToken).not.toHaveBeenCalled()
+    })
+
     it('counts a 200 response as sent', async () => {
         const store = makeStore([
             { namespace: 'default', token: 'live-token', platform: 'phone', deviceId: 'p1' }

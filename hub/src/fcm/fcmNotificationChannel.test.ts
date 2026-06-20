@@ -123,6 +123,34 @@ describe('FcmNotificationChannel', () => {
         expect(dataBody).toBe(body)
     })
 
+    it('truncates long Grep permission patterns for FCM data limits', async () => {
+        const sent: FcmSendPayload[] = []
+        const channel = new FcmNotificationChannel(
+            {
+                sendToNamespace: async (_namespace: string, payload: FcmSendPayload) => {
+                    sent.push(payload)
+                }
+            } as never,
+            { sendToast: async () => 0 } as never,
+            { hasVisibleConnection: () => false } as never
+        )
+
+        await channel.sendPermissionRequest(createSession({
+            agentState: {
+                requests: {
+                    'req-grep': {
+                        tool: 'Grep',
+                        arguments: { pattern: 'P'.repeat(500), path: '/tmp' }
+                    }
+                }
+            }
+        }))
+
+        expect(sent[0].body).toContain('Pattern:')
+        expect(sent[0].body).toContain('...')
+        expect(sent[0].data.body.length).toBeLessThan(600)
+    })
+
     it('falls back gracefully when no tool args are present', async () => {
         const sent: FcmSendPayload[] = []
         const channel = new FcmNotificationChannel(

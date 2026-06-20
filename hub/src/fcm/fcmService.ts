@@ -1,5 +1,5 @@
 import type { Store } from '../store'
-import { getFcmAccessToken, type ServiceAccount } from './fcmAuth'
+import { getFcmAccessToken, FCM_REQUEST_TIMEOUT_MS, type ServiceAccount } from './fcmAuth'
 
 export type FcmDataPayload = {
     type: string
@@ -202,7 +202,8 @@ export class FcmService {
                     authorization: `Bearer ${accessToken}`,
                     'content-type': 'application/json'
                 },
-                body: JSON.stringify({ message })
+                body: JSON.stringify({ message }),
+                signal: AbortSignal.timeout(FCM_REQUEST_TIMEOUT_MS)
             })
         } catch (e) {
             // Network error (DNS, TCP, TLS) - transient, never a token-death signal.
