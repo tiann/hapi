@@ -143,14 +143,24 @@ export class FcmNotificationChannel implements NotificationChannel {
         const headerTitle = `${agentName} - ${sessionName}`
 
         if (summary?.summary) {
-            const lines: string[] = [summary.summary]
-            if (summary.action && summary.action !== summary.summary) {
-                lines.push(`-> ${summary.action}`)
-            }
+            const summaryLine = this.truncateReadyText(summary.summary, READY_BODY_GLANCE_LIMIT)
+            const actionLine = summary.action && summary.action !== summary.summary
+                ? this.truncateReadyText(
+                    `-> ${summary.action}`,
+                    Math.max(0, READY_BODY_GLANCE_LIMIT - summaryLine.length - 1)
+                )
+                : ''
+            const body = [summaryLine, actionLine].filter(Boolean).join('\n')
             return {
                 title: headerTitle,
-                body: lines.join('\n'),
-                notifySummary: { ...summary }
+                body,
+                notifySummary: {
+                    ...summary,
+                    summary: summaryLine,
+                    ...(summary.action
+                        ? { action: this.truncateReadyText(summary.action, READY_BODY_GLANCE_LIMIT) }
+                        : {})
+                }
             }
         }
 
@@ -164,6 +174,17 @@ export class FcmNotificationChannel implements NotificationChannel {
             : trimmed
 
         return { title: headerTitle, body }
+    }
+
+    private truncateReadyText(text: string, limit: number): string {
+        const trimmed = text.trim()
+        if (limit <= 0 || trimmed.length === 0) {
+            return ''
+        }
+        if (trimmed.length <= limit) {
+            return trimmed
+        }
+        return trimmed.slice(0, limit - 3).trimEnd() + '...'
     }
 
     /**
