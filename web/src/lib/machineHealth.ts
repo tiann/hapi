@@ -1,9 +1,19 @@
 import type { Machine, MachineHealth } from '@/types/api'
 
+export type MachineHealthTone = 'ok' | 'warn' | 'critical' | 'unknown'
+
+export type MachineHealthMetricPresentation = {
+    id: 'cpu' | 'ram'
+    shortLabel: 'CPU' | 'RAM'
+    percent: number
+    tone: MachineHealthTone
+}
+
 export type MachineHealthPresentation = {
-    label: string
-    title: string
-    tone: 'ok' | 'warn' | 'critical' | 'unknown'
+    metrics: MachineHealthMetricPresentation[]
+    overallTone: MachineHealthTone
+    loadDetail?: string
+    status: 'healthy' | 'elevated' | 'high' | 'unknown'
 }
 
 function formatLoad(load1m: number, cpuCount?: number): string {
@@ -13,7 +23,7 @@ function formatLoad(load1m: number, cpuCount?: number): string {
     return load1m.toFixed(1)
 }
 
-function loadTone(load1m: number, cpuCount?: number): MachineHealthPresentation['tone'] {
+function loadTone(load1m: number, cpuCount?: number): MachineHealthTone {
     const cores = cpuCount && cpuCount > 0 ? cpuCount : 1
     const ratio = load1m / cores
     if (ratio >= 1.5) return 'critical'
@@ -21,42 +31,24 @@ function loadTone(load1m: number, cpuCount?: number): MachineHealthPresentation[
     return 'ok'
 }
 
-function percentTone(value: number): MachineHealthPresentation['tone'] {
+function percentTone(value: number): MachineHealthTone {
     if (value >= 90) return 'critical'
     if (value >= 75) return 'warn'
     return 'ok'
 }
 
-function worstTone(...tones: MachineHealthPresentation['tone'][]): MachineHealthPresentation['tone'] {
+function worstTone(...tones: MachineHealthTone[]): MachineHealthTone {
     if (tones.includes('critical')) return 'critical'
     if (tones.includes('warn')) return 'warn'
     if (tones.includes('unknown')) return 'unknown'
     return 'ok'
 }
 
-function buildTitle(health: MachineHealth, platform?: string | null): string {
-    const parts: string[] = []
-    if (health.cpuPercent !== undefined) {
-        parts.push(`CPU: ${health.cpuPercent}%`)
-    }
-    if (health.memoryPercent !== undefined) {
-        parts.push(`RAM: ${health.memoryPercent}%`)
-    }
-    if (health.load1m !== undefined && platform !== 'win32') {
-        parts.push(`Load (1m): ${formatLoad(health.load1m, health.cpuCount)}`)
-    }
-    return parts.length > 0 ? parts.join(' · ') : 'Health unavailable'
-}
-
-function buildInlineLabel(health: MachineHealth): string | null {
-    const parts: string[] = []
-    if (health.cpuPercent !== undefined) {
-        parts.push(`${health.cpuPercent}% CPU`)
-    }
-    if (health.memoryPercent !== undefined) {
-        parts.push(`${health.memoryPercent}% RAM`)
-    }
-    return parts.length > 0 ? parts.join(' · ') : null
+function statusFromTone(tone: MachineHealthTone): MachineHealthPresentation['status'] {
+    if (tone === 'critical') return 'high'
+    if (tone === 'warn') return 'elevated'
+    if (tone === 'ok') return 'healthy'
+    return 'unknown'
 }
 
 export function presentMachineHealth(
@@ -67,38 +59,54 @@ export function presentMachineHealth(
         return null
     }
 
-    const title = buildTitle(health, platform)
-    const label = buildInlineLabel(health)
-    if (label) {
-        const tones: MachineHealthPresentation['tone'][] = []
-        if (health.cpuPercent !== undefined) {
-            tones.push(percentTone(health.cpuPercent))
-        }
-        if (health.memoryPercent !== undefined) {
-            tones.push(percentTone(health.memoryPercent))
-        }
-        if (health.load1m !== undefined && platform !== 'win32') {
-            tones.push(loadTone(health.load1m, health.cpuCount))
-        }
+    const metrics: MachineHealthMetricPresentation[] = []
+    const tones: MachineHealthTone[] = []
+
+    if (health.cpuPercent !== undefined) {
+        const tone = percentTone(health.cpuPercent)
+        metrics.push({
+            id: 'cpu',
+            shortLabel: 'CPU',
+            percent: health.cpuPercent,
+            tone
+        })
+        tones.push(tone)
+    }
+
+    if (health.memoryPercent !== undefined) {
+        const tone = percentTone(health.memoryPercent)
+        metrics.push({
+            id: 'ram',
+            shortLabel: 'RAM',
+            percent: health.memoryPercent,
+            tone
+        })
+        tones.push(tone)
+    }
+
+    const loadDetail = health.load1m !== undefined && platform !== 'win32'
+        ? formatLoad(health.load1m, health.cpuCount)
+        : undefined
+
+    if (loadDetail !== undefined) {
+        tones.push(loadTone(health.load1m!, health.cpuCount))
+    }
+
+    if (metrics.length === 0 && loadDetail === undefined) {
         return {
-            label,
-            title,
-            tone: worstTone(...tones)
+            metrics: [],
+            overallTone: 'unknown',
+            status: 'unknown'
         }
     }
 
-    if (health.load1m !== undefined && platform !== 'win32') {
-        return {
-            label: `load ${formatLoad(health.load1m, health.cpuCount)}`,
-            title,
-            tone: loadTone(health.load1m, health.cpuCount)
-        }
-    }
+    const overallTone = metrics.length > 0 ? worstTone(...tones) : loadTone(health.load1m!, health.cpuCount)
 
     return {
-        label: '—',
-        title,
-        tone: 'unknown'
+        metrics,
+        overallTone,
+        loadDetail,
+        status: statusFromTone(overallTone)
     }
 }
 
@@ -106,9 +114,16 @@ export function getMachinePlatform(machine: Machine | null | undefined): string 
     return machine?.metadata?.platform ?? null
 }
 
-export const MACHINE_HEALTH_TONE_CLASS: Record<MachineHealthPresentation['tone'], string> = {
-    ok: 'text-[var(--app-hint)]',
-    warn: 'text-[var(--app-badge-warning-text)]',
-    critical: 'text-[var(--app-badge-error-text)]',
-    unknown: 'text-[var(--app-hint)] opacity-70'
+export const MACHINE_HEALTH_BAR_FILL_CLASS: Record<MachineHealthTone, string> = {
+    ok: 'bg-[var(--app-link)]/70',
+    warn: 'bg-[var(--app-badge-warning-text)]',
+    critical: 'bg-[var(--app-badge-error-text)]',
+    unknown: 'bg-[var(--app-hint)]/50'
+}
+
+export const MACHINE_HEALTH_CHIP_CLASS: Record<MachineHealthTone, string> = {
+    ok: 'border-[var(--app-border)] bg-[var(--app-subtle-bg)]/80',
+    warn: 'border-[var(--app-badge-warning-border)] bg-[var(--app-badge-warning-bg)]/40',
+    critical: 'border-[var(--app-badge-error-border)] bg-[var(--app-badge-error-bg)]/40',
+    unknown: 'border-[var(--app-border)] bg-[var(--app-subtle-bg)]/60 opacity-70'
 }

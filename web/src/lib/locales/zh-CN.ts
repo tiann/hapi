@@ -249,6 +249,18 @@ export default {
 
   // Machine
   'machine.unknown': '未知平台',
+  'machine.health.tooltip.title': '机器负载',
+  'machine.health.status.healthy': '健康 — 还可运行更多代理',
+  'machine.health.status.elevated': '偏高 — 新代理可能变慢',
+  'machine.health.status.high': '高压 — 避免在此继续启动',
+  'machine.health.status.unknown': '指标不可用',
+  'machine.health.metric.cpu': '全部核心的 CPU',
+  'machine.health.metric.ram': '内存占用',
+  'machine.health.tooltip.load': '运行队列 (1 分钟): {value}',
+  'machine.health.tooltip.hint': '约每 20 秒由该机器上的 runner 更新。',
+  'machine.health.aria.cpu': 'CPU {n}%',
+  'machine.health.aria.ram': '内存 {n}%',
+  'machine.health.aria.unknown': '机器健康数据不可用',
 
   // Chat
   'chat.placeholder': '输入消息…',

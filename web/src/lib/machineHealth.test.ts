@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { presentMachineHealth } from './machineHealth'
 
 describe('presentMachineHealth', () => {
-    it('shows cpu and ram together on unix-like platforms', () => {
+    it('builds cpu and ram metrics for visual meters', () => {
         const result = presentMachineHealth({
             collectedAt: Date.now(),
             load1m: 2.4,
@@ -11,35 +11,24 @@ describe('presentMachineHealth', () => {
             memoryPercent: 81
         }, 'linux')
 
-        expect(result?.label).toBe('72% CPU · 81% RAM')
-        expect(result?.tone).toBe('warn')
-        expect(result?.title).toContain('CPU: 72%')
-        expect(result?.title).toContain('RAM: 81%')
-        expect(result?.title).toContain('Load (1m): 2.4/8')
+        expect(result?.metrics).toEqual([
+            { id: 'cpu', shortLabel: 'CPU', percent: 72, tone: 'ok' },
+            { id: 'ram', shortLabel: 'RAM', percent: 81, tone: 'warn' }
+        ])
+        expect(result?.overallTone).toBe('warn')
+        expect(result?.status).toBe('elevated')
+        expect(result?.loadDetail).toBe('2.4/8')
     })
 
-    it('uses the worst tone when cpu or ram is overloaded', () => {
+    it('marks high pressure when ram is critical', () => {
         const result = presentMachineHealth({
             collectedAt: Date.now(),
             cpuPercent: 42,
             memoryPercent: 93
         }, 'linux')
 
-        expect(result?.label).toBe('42% CPU · 93% RAM')
-        expect(result?.tone).toBe('critical')
-    })
-
-    it('shows cpu and ram on windows when load is absent', () => {
-        const result = presentMachineHealth({
-            collectedAt: Date.now(),
-            cpuPercent: 88,
-            memoryPercent: 70,
-            cpuCount: 12
-        }, 'win32')
-
-        expect(result?.label).toBe('88% CPU · 70% RAM')
-        expect(result?.tone).toBe('warn')
-        expect(result?.title).not.toContain('Load')
+        expect(result?.overallTone).toBe('critical')
+        expect(result?.status).toBe('high')
     })
 
     it('returns null when health is missing', () => {

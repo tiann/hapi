@@ -23,7 +23,8 @@ import { formatScheduledTooltipDetail } from '@/lib/scheduledTime'
 import { getCodexImportedAt, subscribeCodexImportedSessions } from '@/lib/codexImportedSessions'
 import { formatReopenError } from '@/lib/reopenError'
 import type { Machine } from '@/types/api'
-import { getMachinePlatform, MACHINE_HEALTH_TONE_CLASS, presentMachineHealth } from '@/lib/machineHealth'
+import { getMachinePlatform, presentMachineHealth } from '@/lib/machineHealth'
+import { MachineHealthIndicator } from '@/components/MachineHealthIndicator'
 
 type SessionGroup = {
     key: string
@@ -1064,16 +1065,8 @@ export function SessionList(props: {
                                 <ChevronIcon className="h-4 w-4 text-[var(--app-hint)] shrink-0" collapsed={machineCollapsed} />
                                 <MachineIcon className="h-4 w-4 text-[var(--app-hint)] shrink-0" />
                                 <span className="text-sm font-semibold truncate min-w-0">{mg.label}</span>
-                                {healthPresentation ? (
-                                    <span
-                                        className={cn(
-                                            'text-[11px] tabular-nums shrink-0',
-                                            MACHINE_HEALTH_TONE_CLASS[healthPresentation.tone]
-                                        )}
-                                        title={healthPresentation.title}
-                                    >
-                                        {healthPresentation.label}
-                                    </span>
+                                {healthPresentation && healthPresentation.metrics.length > 0 ? (
+                                    <MachineHealthIndicator presentation={healthPresentation} />
                                 ) : null}
                                 <span className="text-[11px] tabular-nums text-[var(--app-hint)] shrink-0 ml-auto">({mg.totalSessions})</span>
                             </button>
