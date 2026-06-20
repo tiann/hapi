@@ -12,14 +12,8 @@
  */
 
 import { readFileSync, lstatSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
-
-// MCP SDK is a cli workspace dep; Bun resolves imports from this script's dir, not cli/.
-const cliRoot = join(dirname(fileURLToPath(import.meta.url)), '../../cli')
-const sdkRoot = join(cliRoot, 'node_modules/@modelcontextprotocol/sdk/dist/esm')
-const { Client } = await import(join(sdkRoot, 'client/index.js'))
-const { StreamableHTTPClientTransport } = await import(join(sdkRoot, 'client/streamableHttp.js'))
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 
 const HAPI_HOST = process.env.HAPI_HOST ?? 'http://localhost:3006'
 const SETTINGS = process.env.HAPI_SETTINGS ?? `${process.env.HOME}/.hapi/settings.json`
