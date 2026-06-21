@@ -249,6 +249,11 @@ export default {
 
   // Machine
   'machine.unknown': '未知平台',
+  'machine.os.windows': 'Windows',
+  'machine.os.linux': 'Linux',
+  'machine.os.macos': 'macOS',
+  'machine.os.unknown': '未知系统',
+  'machine.header.sessionCount': '{n} 个会话',
   'machine.health.tooltip.title': '机器负载',
   'machine.health.status.healthy': '健康 — 还可运行更多代理',
   'machine.health.status.elevated': '偏高 — 新代理可能变慢',

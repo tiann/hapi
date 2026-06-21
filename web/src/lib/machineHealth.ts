@@ -114,6 +114,35 @@ export function getMachinePlatform(machine: Machine | null | undefined): string 
     return machine?.metadata?.platform ?? null
 }
 
+export function getMachineHost(machine: Machine | null | undefined): string | null {
+    return machine?.metadata?.host ?? null
+}
+
+export type MachineOsLabel =
+    | { kind: 'i18n'; key: 'machine.os.windows' | 'machine.os.linux' | 'machine.os.macos' | 'machine.os.unknown' }
+    | { kind: 'raw'; value: string }
+
+export function resolveMachineOsLabel(platform: string | null | undefined): MachineOsLabel {
+    switch (platform) {
+        case 'win32':
+            return { kind: 'i18n', key: 'machine.os.windows' }
+        case 'linux':
+            return { kind: 'i18n', key: 'machine.os.linux' }
+        case 'darwin':
+            return { kind: 'i18n', key: 'machine.os.macos' }
+        default:
+            if (platform?.trim()) {
+                return { kind: 'raw', value: platform.trim() }
+            }
+            return { kind: 'i18n', key: 'machine.os.unknown' }
+    }
+}
+
+export function shouldShowMachineHostSubtitle(label: string, host: string | null | undefined): boolean {
+    if (!host?.trim()) return false
+    return host.trim().toLowerCase() !== label.trim().toLowerCase()
+}
+
 export const MACHINE_HEALTH_BAR_FILL_CLASS: Record<MachineHealthTone, string> = {
     ok: 'bg-[var(--app-link)]/70',
     warn: 'bg-[var(--app-badge-warning-text)]',

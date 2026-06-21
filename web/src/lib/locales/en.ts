@@ -245,6 +245,11 @@ export default {
 
   // Machine
   'machine.unknown': 'Unknown platform',
+  'machine.os.windows': 'Windows',
+  'machine.os.linux': 'Linux',
+  'machine.os.macos': 'macOS',
+  'machine.os.unknown': 'Unknown OS',
+  'machine.header.sessionCount': '{n} sessions',
   'machine.health.tooltip.title': 'Machine capacity',
   'machine.health.status.healthy': 'Healthy — room for more agents',
   'machine.health.status.elevated': 'Elevated — new agents may run slower',

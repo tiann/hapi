@@ -25,4 +25,24 @@ describe('MachineHealthIndicator', () => {
         expect(screen.getByText('RAM')).toBeTruthy()
         expect(screen.getByLabelText(/CPU 72/i)).toBeTruthy()
     })
+
+    it('renders inline percent labels', () => {
+        render(
+            <I18nProvider>
+                <MachineHealthIndicator
+                    layout="inline"
+                    presentation={{
+                        metrics: [
+                            { id: 'cpu', shortLabel: 'CPU', percent: 34, tone: 'ok' },
+                            { id: 'ram', shortLabel: 'RAM', percent: 56, tone: 'warn' }
+                        ],
+                        overallTone: 'warn',
+                        status: 'elevated',
+                    }}
+                />
+            </I18nProvider>
+        )
+
+        expect(screen.getByLabelText(/CPU 34 percent; RAM 56 percent/i)).toBeTruthy()
+    })
 })

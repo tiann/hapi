@@ -24,7 +24,7 @@ import { getCodexImportedAt, subscribeCodexImportedSessions } from '@/lib/codexI
 import { formatReopenError } from '@/lib/reopenError'
 import type { Machine } from '@/types/api'
 import { getMachinePlatform, presentMachineHealth } from '@/lib/machineHealth'
-import { MachineHealthIndicator } from '@/components/MachineHealthIndicator'
+import { MachineGroupHeader } from '@/components/MachineGroupHeader'
 
 type SessionGroup = {
     key: string
@@ -545,28 +545,6 @@ function SessionListSearch(props: {
     )
 }
 
-function MachineIcon(props: { className?: string }) {
-    return (
-        <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className={props.className}
-        >
-            <rect x="2" y="3" width="20" height="14" rx="2" />
-            <line x1="8" y1="21" x2="16" y2="21" />
-            <line x1="12" y1="17" x2="12" y2="21" />
-        </svg>
-    )
-}
-
-
 function formatCodexImportedRelativeTime(value: number, t: (key: string, params?: Record<string, string | number>) => string): string | null {
     const ms = value < 1_000_000_000_000 ? value * 1000 : value
     if (!Number.isFinite(ms)) return null
@@ -1055,26 +1033,20 @@ export function SessionList(props: {
                         getMachinePlatform(machine)
                     )
                     return (
-                        <div key={mg.machineId ?? UNKNOWN_MACHINE_ID}>
-                            {/* Level 1: Machine */}
-                            <button
-                                type="button"
-                                onClick={() => toggleMachine(mg)}
-                                className="relative flex w-full items-center gap-2 px-1 py-1.5 text-left rounded-lg transition-colors hover:bg-[var(--app-subtle-bg)] select-none"
-                            >
-                                <ChevronIcon className="h-4 w-4 text-[var(--app-hint)] shrink-0" collapsed={machineCollapsed} />
-                                <MachineIcon className="h-4 w-4 text-[var(--app-hint)] shrink-0" />
-                                <span className="text-sm font-semibold truncate min-w-0">{mg.label}</span>
-                                {healthPresentation && healthPresentation.metrics.length > 0 ? (
-                                    <MachineHealthIndicator presentation={healthPresentation} />
-                                ) : null}
-                                <span className="text-[11px] tabular-nums text-[var(--app-hint)] shrink-0 ml-auto">({mg.totalSessions})</span>
-                            </button>
+                        <div key={mg.machineId ?? UNKNOWN_MACHINE_ID} className="flex flex-col gap-1">
+                            <MachineGroupHeader
+                                label={mg.label}
+                                sessionCount={mg.totalSessions}
+                                collapsed={machineCollapsed}
+                                onToggle={() => toggleMachine(mg)}
+                                machine={machine}
+                                healthPresentation={healthPresentation}
+                            />
 
                             {/* Level 2: Projects */}
                             <div className="collapsible-panel" data-open={!machineCollapsed || undefined}>
                                 <div className="collapsible-inner">
-                                <div className="flex flex-col ml-3.5 pl-1 mt-0.5">
+                                <div className="flex flex-col ml-2 pl-2 border-l border-[var(--app-border)]/70">
                                     {mg.projectGroups.map((group) => {
                                         const isCollapsed = isGroupCollapsed(group)
                                         const visibleGroupSessions = getVisibleGroupSessions(group)

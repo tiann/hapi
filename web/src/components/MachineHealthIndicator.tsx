@@ -13,14 +13,20 @@ function HealthMeterBar(props: {
     label: string
     percent: number
     tone: MachineHealthPresentation['overallTone']
+    layout: 'stack' | 'inline'
 }) {
+    const barWidthClass = props.layout === 'inline' ? 'w-14' : 'w-11'
+
     return (
         <div className="flex items-center gap-1 min-w-0">
             <span className="w-6 shrink-0 text-[9px] font-semibold uppercase tracking-wide text-[var(--app-hint)]">
                 {props.label}
             </span>
             <div
-                className="relative h-1.5 w-11 shrink-0 overflow-hidden rounded-full bg-[var(--app-border)]/80"
+                className={cn(
+                    'relative h-1.5 shrink-0 overflow-hidden rounded-full bg-[var(--app-border)]/80',
+                    barWidthClass
+                )}
                 aria-hidden="true"
             >
                 <div
@@ -28,6 +34,11 @@ function HealthMeterBar(props: {
                     style={{ width: `${Math.max(4, Math.min(100, props.percent))}%` }}
                 />
             </div>
+            {props.layout === 'inline' ? (
+                <span className="w-7 shrink-0 text-[10px] tabular-nums text-[var(--app-fg)]/80">
+                    {props.percent}%
+                </span>
+            ) : null}
         </div>
     )
 }
@@ -100,10 +111,11 @@ function MachineHealthTooltipBody(props: {
 export function MachineHealthIndicator(props: {
     presentation: MachineHealthPresentation
     className?: string
+    layout?: 'stack' | 'inline'
 }) {
     const { t } = useTranslation()
     const tooltipId = useId()
-    const { presentation } = props
+    const { presentation, layout = 'stack' } = props
 
     const ariaLabel = presentation.metrics.length > 0
         ? presentation.metrics
@@ -114,7 +126,8 @@ export function MachineHealthIndicator(props: {
     const chip = (
         <span
             className={cn(
-                'inline-flex flex-col gap-0.5 rounded-md border px-1.5 py-1',
+                'inline-flex rounded-md border px-1.5 py-1',
+                layout === 'inline' ? 'flex-row flex-wrap items-center gap-x-3 gap-y-1' : 'flex-col gap-0.5',
                 MACHINE_HEALTH_CHIP_CLASS[presentation.overallTone],
                 props.className
             )}
@@ -126,6 +139,7 @@ export function MachineHealthIndicator(props: {
                     label={metric.shortLabel}
                     percent={metric.percent}
                     tone={metric.tone}
+                    layout={layout}
                 />
             ))}
         </span>

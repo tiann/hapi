@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { presentMachineHealth } from './machineHealth'
+import {
+    presentMachineHealth,
+    resolveMachineOsLabel,
+    shouldShowMachineHostSubtitle,
+} from './machineHealth'
 
 describe('presentMachineHealth', () => {
     it('builds cpu and ram metrics for visual meters', () => {
@@ -33,5 +37,27 @@ describe('presentMachineHealth', () => {
 
     it('returns null when health is missing', () => {
         expect(presentMachineHealth(null, 'linux')).toBeNull()
+    })
+})
+
+describe('resolveMachineOsLabel', () => {
+    it('maps known platforms to i18n keys', () => {
+        expect(resolveMachineOsLabel('win32')).toEqual({ kind: 'i18n', key: 'machine.os.windows' })
+        expect(resolveMachineOsLabel('linux')).toEqual({ kind: 'i18n', key: 'machine.os.linux' })
+        expect(resolveMachineOsLabel('darwin')).toEqual({ kind: 'i18n', key: 'machine.os.macos' })
+    })
+
+    it('falls back to raw platform string when unknown', () => {
+        expect(resolveMachineOsLabel('freebsd')).toEqual({ kind: 'raw', value: 'freebsd' })
+    })
+})
+
+describe('shouldShowMachineHostSubtitle', () => {
+    it('hides host when it matches the display label', () => {
+        expect(shouldShowMachineHostSubtitle('Teemo', 'Teemo')).toBe(false)
+    })
+
+    it('shows host when it differs from the display label', () => {
+        expect(shouldShowMachineHostSubtitle('f9bb3c9e', 'proxmox')).toBe(true)
     })
 })
