@@ -28,6 +28,18 @@ describe('useTheme', () => {
 
 
 
+
+
+    it('clears the boot-time inline html background when runtime theme initializes', () => {
+        document.documentElement.style.backgroundColor = '#fbfbff'
+        localStorage.setItem('hapi-color-theme', 'one')
+
+        initializeTheme()
+
+        expect(document.documentElement.style.backgroundColor).toBe('')
+        expect(document.documentElement.style.getPropertyValue('--app-bg')).toBe('#fbfbff')
+    })
+
     it('updates browser theme color after a cross-tab color theme change', () => {
         localStorage.setItem('hapi-color-theme', 'one')
         initializeTheme()
