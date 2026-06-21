@@ -14,12 +14,14 @@ function HealthMeterBar(props: {
     percent: number
     tone: MachineHealthPresentation['overallTone']
     layout: 'stack' | 'inline'
+    compact?: boolean
 }) {
-    const barWidthClass = props.layout === 'inline' ? 'w-14' : 'w-11'
+    const barWidthClass = props.compact ? 'w-8' : props.layout === 'inline' ? 'w-14' : 'w-11'
+    const labelWidthClass = props.compact ? 'w-5 text-[8px]' : 'w-6 text-[9px]'
 
     return (
-        <div className="flex items-center gap-1 min-w-0">
-            <span className="w-6 shrink-0 text-[9px] font-semibold uppercase tracking-wide text-[var(--app-hint)]">
+        <div className="flex items-center gap-0.5 min-w-0">
+            <span className={cn('shrink-0 font-semibold uppercase tracking-wide text-[var(--app-hint)]', labelWidthClass)}>
                 {props.label}
             </span>
             <div
@@ -34,7 +36,7 @@ function HealthMeterBar(props: {
                     style={{ width: `${Math.max(4, Math.min(100, props.percent))}%` }}
                 />
             </div>
-            {props.layout === 'inline' ? (
+            {props.layout === 'inline' && !props.compact ? (
                 <span className="w-7 shrink-0 text-[10px] tabular-nums text-[var(--app-fg)]/80">
                     {props.percent}%
                 </span>
@@ -112,10 +114,11 @@ export function MachineHealthIndicator(props: {
     presentation: MachineHealthPresentation
     className?: string
     layout?: 'stack' | 'inline'
+    compact?: boolean
 }) {
     const { t } = useTranslation()
     const tooltipId = useId()
-    const { presentation, layout = 'stack' } = props
+    const { presentation, layout = 'stack', compact = false } = props
 
     const ariaLabel = presentation.metrics.length > 0
         ? presentation.metrics
@@ -126,8 +129,10 @@ export function MachineHealthIndicator(props: {
     const chip = (
         <span
             className={cn(
-                'inline-flex rounded-md border px-1.5 py-1',
-                layout === 'inline' ? 'flex-row flex-wrap items-center gap-x-3 gap-y-1' : 'flex-col gap-0.5',
+                'inline-flex rounded-md border',
+                compact ? 'flex-row flex-nowrap items-center gap-x-1.5 px-1 py-0.5' : layout === 'inline'
+                    ? 'flex-row flex-wrap items-center gap-x-3 gap-y-1 px-1.5 py-1'
+                    : 'flex-col gap-0.5 px-1.5 py-1',
                 MACHINE_HEALTH_CHIP_CLASS[presentation.overallTone],
                 props.className
             )}
@@ -140,6 +145,7 @@ export function MachineHealthIndicator(props: {
                     percent={metric.percent}
                     tone={metric.tone}
                     layout={layout}
+                    compact={compact}
                 />
             ))}
         </span>

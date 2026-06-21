@@ -1033,7 +1033,7 @@ export function SessionList(props: {
                         getMachinePlatform(machine)
                     )
                     return (
-                        <div key={mg.machineId ?? UNKNOWN_MACHINE_ID} className="flex flex-col gap-1">
+                        <div key={mg.machineId ?? UNKNOWN_MACHINE_ID}>
                             <MachineGroupHeader
                                 label={mg.label}
                                 sessionCount={mg.totalSessions}
@@ -1046,7 +1046,7 @@ export function SessionList(props: {
                             {/* Level 2: Projects */}
                             <div className="collapsible-panel" data-open={!machineCollapsed || undefined}>
                                 <div className="collapsible-inner">
-                                <div className="flex flex-col ml-2 pl-2 border-l border-[var(--app-border)]/70">
+                                <div className="flex flex-col ml-3.5 pl-1 mt-0.5">
                                     {mg.projectGroups.map((group) => {
                                         const isCollapsed = isGroupCollapsed(group)
                                         const visibleGroupSessions = getVisibleGroupSessions(group)

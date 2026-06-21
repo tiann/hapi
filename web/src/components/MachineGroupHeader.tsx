@@ -78,6 +78,7 @@ export function MachineGroupHeader(props: {
     const osLabel = resolveMachineOsLabel(platform)
     const osText = formatOsLabel(osLabel, t)
     const showHost = shouldShowMachineHostSubtitle(props.label, host)
+    const machineMeta = showHost && host ? `${osText} · ${host}` : osText
     const hasHealth = props.healthPresentation && props.healthPresentation.metrics.length > 0
 
     return (
@@ -85,46 +86,31 @@ export function MachineGroupHeader(props: {
             type="button"
             onClick={props.onToggle}
             className={cn(
-                'relative w-full rounded-lg border text-left transition-colors select-none',
-                'border-[var(--app-border)] bg-[var(--app-subtle-bg)]/70',
-                'hover:bg-[var(--app-subtle-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]'
+                'relative flex w-full items-center gap-2 px-1 py-1.5 text-left rounded-lg select-none',
+                'border border-[var(--app-border)] bg-[var(--app-subtle-bg)]/70',
+                'transition-colors hover:bg-[var(--app-subtle-bg)]',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]'
             )}
         >
-            <div className="flex items-start gap-2 px-2.5 py-2">
-                <ChevronIcon
-                    className="mt-0.5 h-4 w-4 shrink-0 text-[var(--app-hint)]"
-                    collapsed={props.collapsed}
+            <ChevronIcon className="h-4 w-4 shrink-0 text-[var(--app-hint)]" collapsed={props.collapsed} />
+            <MachineIcon className="h-4 w-4 shrink-0 text-[var(--app-link)]/80" />
+            <span className="min-w-0 truncate text-sm font-semibold text-[var(--app-fg)]">
+                {props.label}
+            </span>
+            <span className="shrink-0 text-[11px] text-[var(--app-hint)]">
+                {machineMeta}
+            </span>
+            {hasHealth ? (
+                <MachineHealthIndicator
+                    presentation={props.healthPresentation!}
+                    layout="inline"
+                    compact
+                    className="shrink-0"
                 />
-                <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 min-w-0">
-                        <MachineIcon className="h-4 w-4 shrink-0 text-[var(--app-link)]/80" />
-                        <span className="truncate text-sm font-semibold text-[var(--app-fg)]">
-                            {props.label}
-                        </span>
-                        <span className="ml-auto shrink-0 text-[11px] tabular-nums text-[var(--app-hint)]">
-                            {t('machine.header.sessionCount', { n: props.sessionCount })}
-                        </span>
-                    </div>
-                    <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 pl-6">
-                        <span className="inline-flex min-w-0 items-center gap-1.5 text-xs text-[var(--app-hint)]">
-                            <span className="font-medium text-[var(--app-fg)]/85">{osText}</span>
-                            {showHost && host ? (
-                                <>
-                                    <span aria-hidden="true">·</span>
-                                    <span className="truncate">{host}</span>
-                                </>
-                            ) : null}
-                        </span>
-                        {hasHealth ? (
-                            <MachineHealthIndicator
-                                presentation={props.healthPresentation!}
-                                layout="inline"
-                                className="ml-auto"
-                            />
-                        ) : null}
-                    </div>
-                </div>
-            </div>
+            ) : null}
+            <span className="ml-auto shrink-0 text-[11px] tabular-nums text-[var(--app-hint)]">
+                ({props.sessionCount})
+            </span>
         </button>
     )
 }

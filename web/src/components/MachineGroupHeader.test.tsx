@@ -23,7 +23,7 @@ const machine: Machine = {
 }
 
 describe('MachineGroupHeader', () => {
-    it('renders a bordered machine card with os label and inline health', () => {
+    it('renders a single-row machine tile with os label and compact health', () => {
         render(
             <I18nProvider>
                 <MachineGroupHeader
@@ -46,7 +46,7 @@ describe('MachineGroupHeader', () => {
 
         expect(screen.getByRole('button', { name: /Teemo/i })).toBeTruthy()
         expect(screen.getByText('Windows')).toBeTruthy()
-        expect(screen.getByText('4 sessions')).toBeTruthy()
+        expect(screen.getByText('(4)')).toBeTruthy()
         expect(screen.getByLabelText(/CPU 12 percent; RAM 88 percent/i)).toBeTruthy()
     })
 })
