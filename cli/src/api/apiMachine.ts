@@ -74,6 +74,7 @@ function formatWorkspaceRoots(paths?: string[]): string {
 export class ApiMachineClient {
     private socket!: Socket<ServerToClientEvents, ClientToServerEvents>
     private keepAliveInterval: NodeJS.Timeout | null = null
+    private keepAliveStartTimeout: ReturnType<typeof setTimeout> | null = null
     private rpcHandlerManager: RpcHandlerManager
 
     private readonly normalizedWorkspaceRoots: string[] | undefined
@@ -499,13 +500,18 @@ export class ApiMachineClient {
         }
         // Prime CPU sampling so the first heartbeat already includes CPU %.
         collectMachineHealth()
-        setTimeout(() => {
+        this.keepAliveStartTimeout = setTimeout(() => {
+            this.keepAliveStartTimeout = null
             emitAlive()
             this.keepAliveInterval = setInterval(emitAlive, 20_000)
         }, 50)
     }
 
     private stopKeepAlive(): void {
+        if (this.keepAliveStartTimeout) {
+            clearTimeout(this.keepAliveStartTimeout)
+            this.keepAliveStartTimeout = null
+        }
         if (this.keepAliveInterval) {
             clearInterval(this.keepAliveInterval)
             this.keepAliveInterval = null

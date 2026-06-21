@@ -144,3 +144,62 @@ describe('ApiMachineClient listOpencodeModelsForCwd handler', () => {
         }
     })
 })
+
+describe('ApiMachineClient keepAlive lifecycle', () => {
+    beforeEach(() => {
+        vi.useFakeTimers()
+    })
+
+    afterEach(() => {
+        vi.useRealTimers()
+    })
+
+    it('clears priming timeout on shutdown before first machine-alive emit', () => {
+        const machine = makeMachine('machine-keepalive')
+        const client = new ApiMachineClient('cli-token', machine)
+        const emit = vi.fn()
+        ;(client as unknown as { socket: { emit: typeof emit; close: () => void } }).socket = {
+            emit,
+            close: vi.fn(),
+        } as never
+
+        const priv = client as unknown as {
+            startKeepAlive: () => void
+            keepAliveInterval: NodeJS.Timeout | null
+            keepAliveStartTimeout: ReturnType<typeof setTimeout> | null
+        }
+
+        priv.startKeepAlive()
+        client.shutdown()
+        vi.advanceTimersByTime(100)
+
+        expect(emit).not.toHaveBeenCalled()
+        expect(priv.keepAliveInterval).toBeNull()
+        expect(priv.keepAliveStartTimeout).toBeNull()
+    })
+
+    it('clears running keepAlive interval on shutdown', () => {
+        const machine = makeMachine('machine-keepalive-2')
+        const client = new ApiMachineClient('cli-token', machine)
+        const emit = vi.fn()
+        ;(client as unknown as { socket: { emit: typeof emit; close: () => void } }).socket = {
+            emit,
+            close: vi.fn(),
+        } as never
+
+        const priv = client as unknown as {
+            startKeepAlive: () => void
+            keepAliveInterval: NodeJS.Timeout | null
+        }
+
+        priv.startKeepAlive()
+        vi.advanceTimersByTime(50)
+        expect(emit).toHaveBeenCalledTimes(1)
+
+        client.shutdown()
+        vi.advanceTimersByTime(20_000)
+
+        expect(emit).toHaveBeenCalledTimes(1)
+        expect(priv.keepAliveInterval).toBeNull()
+    })
+})
