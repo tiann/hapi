@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { applyColorTheme, getStoredColorTheme, type ColorScheme } from './useColorTheme'
 
 /**
  * Per-appearance "key color" customization.
@@ -243,24 +244,24 @@ export function applyThemeColors(): void {
     if (!isBrowser()) return
 
     const scheme = getThemeScheme()
+    applyColorTheme(getStoredColorTheme(), scheme as ColorScheme)
+
     const overrides = getStoredThemeColors()[scheme] ?? {}
     const rootStyle = document.documentElement.style
 
     for (const key of THEME_COLOR_KEYS) {
         const override = overrides[key.id]
         const hex = override && isHexColor(override) ? override : null
+        if (!hex) continue
 
         for (const cssVar of key.targets) {
-            if (hex) rootStyle.setProperty(cssVar, hex)
-            else rootStyle.removeProperty(cssVar)
+            rootStyle.setProperty(cssVar, hex)
         }
 
-        if (key.derivedTargets) {
-            const derived = hex && key.derive ? key.derive(hex, scheme) : {}
+        if (key.derivedTargets && key.derive) {
+            const derived = key.derive(hex, scheme)
             for (const cssVar of key.derivedTargets) {
-                const value = derived[cssVar]
-                if (value) rootStyle.setProperty(cssVar, value)
-                else rootStyle.removeProperty(cssVar)
+                rootStyle.setProperty(cssVar, derived[cssVar]!)
             }
         }
     }
