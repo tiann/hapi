@@ -26,6 +26,21 @@ describe('useTheme', () => {
         expect(meta?.hasAttribute('media')).toBe(false)
     })
 
+
+
+    it('updates browser theme color after a cross-tab color theme change', () => {
+        localStorage.setItem('hapi-color-theme', 'one')
+        initializeTheme()
+        expect(document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.content).toBe('#fbfbff')
+
+        localStorage.setItem('hapi-color-theme', 'notion')
+        act(() => {
+            window.dispatchEvent(new StorageEvent('storage', { key: 'hapi-color-theme', newValue: 'notion' }))
+        })
+
+        expect(document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.content).toBe('#fafafa')
+    })
+
     it('updates the browser theme color when appearance changes', () => {
         const { result } = renderHook(() => useAppearance())
 

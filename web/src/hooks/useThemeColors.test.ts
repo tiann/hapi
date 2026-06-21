@@ -101,6 +101,21 @@ describe('useThemeColors', () => {
         expect(document.documentElement.style.getPropertyValue('--app-link').trim()).toBe('#526fff')
     })
 
+
+
+    it('reapplies color theme preset changes from cross-tab storage events without Settings mounted', () => {
+        localStorage.setItem('hapi-color-theme', 'one')
+        setScheme('light')
+        initializeThemeColors()
+        expect(document.documentElement.style.getPropertyValue('--app-bg').trim()).toBe('#fbfbff')
+
+        localStorage.setItem('hapi-color-theme', 'notion')
+        window.dispatchEvent(new StorageEvent('storage', { key: 'hapi-color-theme', newValue: 'notion' }))
+
+        expect(document.documentElement.style.getPropertyValue('--app-bg').trim()).toBe('#fafafa')
+        expect(document.documentElement.style.getPropertyValue('--app-link').trim()).toBe('#3183d8')
+    })
+
     it('reapplies stored colors for the active appearance during initialization', () => {
         localStorage.setItem('hapi-theme-colors', JSON.stringify({ oled: { background: '#0b0b0b' } }))
         setScheme('oled')

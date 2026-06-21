@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { applyColorTheme, getStoredColorTheme, type ColorScheme } from './useColorTheme'
+import { applyColorTheme, getColorThemeStorageKey, getStoredColorTheme, type ColorScheme } from './useColorTheme'
 
 /**
  * Per-appearance "key color" customization.
@@ -281,7 +281,7 @@ export function initializeThemeColors(): void {
     initialized = true
 
     window.addEventListener('storage', (event: StorageEvent) => {
-        if (event.key === STORAGE_KEY) applyThemeColors()
+        if (event.key === STORAGE_KEY || event.key === getColorThemeStorageKey()) applyThemeColors()
     })
     window.addEventListener('hapi-color-theme-change', applyThemeColors)
 
@@ -325,7 +325,7 @@ export function useThemeColors(): {
         })
 
         const onStorage = (event: StorageEvent) => {
-            if (event.key === STORAGE_KEY) refresh()
+            if (event.key === STORAGE_KEY || event.key === getColorThemeStorageKey()) refresh()
         }
         const onColorThemeChange = () => refresh()
         window.addEventListener('storage', onStorage)
