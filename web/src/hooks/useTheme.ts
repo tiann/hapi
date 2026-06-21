@@ -101,6 +101,7 @@ export function getThemeColor(scheme: ColorScheme): string {
 }
 
 function applyTheme(scheme: ColorScheme): void {
+    document.documentElement.style.removeProperty('background-color')
     document.documentElement.setAttribute('data-theme', scheme)
     applyColorTheme(getStoredColorTheme(), scheme)
     applyBrowserThemeColor(scheme)
