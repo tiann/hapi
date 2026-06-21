@@ -3,6 +3,7 @@ import { HoverTooltip } from '@/components/HoverTooltip'
 import {
     MACHINE_HEALTH_BAR_FILL_CLASS,
     MACHINE_HEALTH_CHIP_CLASS,
+    getCpuMetricTooltipLabel,
     type MachineHealthMetricPresentation,
     type MachineHealthPresentation
 } from '@/lib/machineHealth'
@@ -91,7 +92,9 @@ function MachineHealthTooltipBody(props: {
                     <TooltipMetricStat
                         key={metric.id}
                         metric={metric}
-                        label={t(`machine.health.metric.${metric.id}`, { n: metric.percent })}
+                        label={metric.id === 'cpu'
+                            ? getCpuMetricTooltipLabel(presentation.cpuCount, t)
+                            : t(`machine.health.metric.${metric.id}`, { n: metric.percent })}
                     />
                 ))}
                 {presentation.loadDetail ? (

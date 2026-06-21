@@ -15,7 +15,8 @@ describe('MachineHealthIndicator', () => {
                         ],
                         overallTone: 'warn',
                         status: 'elevated',
-                        loadDetail: '2.4/8'
+                        loadDetail: '2.4/8',
+                        cpuCount: 6,
                     }}
                 />
             </I18nProvider>
@@ -23,6 +24,7 @@ describe('MachineHealthIndicator', () => {
 
         expect(screen.getByText('CPU')).toBeTruthy()
         expect(screen.getByText('RAM')).toBeTruthy()
+        expect(screen.getByText('CPU across all 6 cores')).toBeTruthy()
         expect(screen.getByLabelText(/CPU 72/i)).toBeTruthy()
     })
 

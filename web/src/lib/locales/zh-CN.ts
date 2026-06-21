@@ -260,6 +260,7 @@ export default {
   'machine.health.status.high': '高压 — 避免在此继续启动',
   'machine.health.status.unknown': '指标不可用',
   'machine.health.metric.cpu': '全部核心的 CPU',
+  'machine.health.metric.cpuWithCount': '全部 {n} 个核心的 CPU',
   'machine.health.metric.ram': '内存占用',
   'machine.health.tooltip.load': '运行队列 (1 分钟): {value}',
   'machine.health.tooltip.loadShort': '负载 (1 分钟)',

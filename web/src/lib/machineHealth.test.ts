@@ -3,6 +3,7 @@ import {
     presentMachineHealth,
     resolveMachineOsLabel,
     shouldShowMachineHostSubtitle,
+    getCpuMetricTooltipLabel,
 } from './machineHealth'
 
 describe('presentMachineHealth', () => {
@@ -22,6 +23,7 @@ describe('presentMachineHealth', () => {
         expect(result?.overallTone).toBe('warn')
         expect(result?.status).toBe('elevated')
         expect(result?.loadDetail).toBe('2.4/8')
+        expect(result?.cpuCount).toBe(8)
     })
 
     it('marks high pressure when ram is critical', () => {
@@ -52,6 +54,22 @@ describe('resolveMachineOsLabel', () => {
     })
 })
 
+describe('getCpuMetricTooltipLabel', () => {
+    const t = (key: string, params?: Record<string, string | number>) => {
+        if (key === 'machine.health.metric.cpuWithCount') {
+            return `CPU across all ${params?.n} cores`
+        }
+        return 'CPU across all cores'
+    }
+
+    it('includes core count when known', () => {
+        expect(getCpuMetricTooltipLabel(6, t)).toBe('CPU across all 6 cores')
+    })
+
+    it('falls back when core count is missing', () => {
+        expect(getCpuMetricTooltipLabel(undefined, t)).toBe('CPU across all cores')
+    })
+})
 describe('shouldShowMachineHostSubtitle', () => {
     it('hides host when it matches the display label', () => {
         expect(shouldShowMachineHostSubtitle('Teemo', 'Teemo')).toBe(false)

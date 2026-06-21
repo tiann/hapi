@@ -256,6 +256,7 @@ export default {
   'machine.health.status.high': 'High pressure — avoid spawning more here',
   'machine.health.status.unknown': 'Metrics unavailable',
   'machine.health.metric.cpu': 'CPU across all cores',
+  'machine.health.metric.cpuWithCount': 'CPU across all {n} cores',
   'machine.health.metric.ram': 'RAM in use',
   'machine.health.tooltip.load': 'Run queue (1 min): {value}',
   'machine.health.tooltip.loadShort': 'Load (1m)',
