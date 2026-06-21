@@ -191,6 +191,20 @@ Canonical example: scratchlist toggle in `web/src/components/AssistantChat/Compo
 2. Unsure: read more code; if still stuck, ask w/ short options.
 3. Conflicts: call out; pick safer path.
 4. Unrecognized changes: assume other agent; keep going; focus your changes. If it causes issues, stop + ask user.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs are tracked as local markdown files under `.scratch/<feature-slug>/`; external PRs are not a triage surface. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The canonical triage labels are `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, and `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This is a single-context repo: read `CONTEXT.md` when present, then `docs/adr/index.md` when present before opening individual ADRs. See `docs/agents/domain.md`.
 <!-- TRELLIS:START -->
 # Trellis Instructions
 
