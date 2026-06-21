@@ -36,6 +36,7 @@ import {
     type ChatSurfaceColorPreset,
 } from '@/hooks/useChatSurfaceColors'
 import { useAppearance, getAppearanceOptions, type AppearancePreference } from '@/hooks/useTheme'
+import { getColorThemeOptions, getColorThemePreview, useColorTheme, type ColorThemePreset } from '@/hooks/useColorTheme'
 import { useThemeColors, type ThemeColorKeyId } from '@/hooks/useThemeColors'
 import { PROTOCOL_VERSION } from '@hapi/protocol'
 import { VoiceRespondsControls, VoiceSoundsControls, VoicePersonaControls, VoiceDiagnosticsControls } from '@/components/settings/VoiceAdvancedControls'
@@ -253,6 +254,20 @@ function SessionPreviewLimitControl(props: {
     )
 }
 
+function ColorThemeSwatch(props: { theme: ColorThemePreset; selected?: boolean }) {
+    const preview = getColorThemePreview(props.theme)
+    return (
+        <span
+            className={`relative inline-flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-lg border ${props.selected ? 'border-[var(--app-link)]' : 'border-[var(--app-border)]'}`}
+            aria-hidden="true"
+            style={{ backgroundColor: preview.light }}
+        >
+            <span className="absolute inset-y-0 right-0 w-1/2" style={{ backgroundColor: preview.dark }} />
+            <span className="relative text-sm font-bold" style={{ color: preview.accent }}>Aa</span>
+        </span>
+    )
+}
+
 function ChatSurfaceColorControl(props: {
     label: string
     preference: ChatSurfaceColorPreference
@@ -375,6 +390,7 @@ export default function SettingsPage() {
     const goBack = useAppGoBack()
     const [isOpen, setIsOpen] = useState(false)
     const [isAppearanceOpen, setIsAppearanceOpen] = useState(false)
+    const [isColorThemeOpen, setIsColorThemeOpen] = useState(false)
     const [isFontOpen, setIsFontOpen] = useState(false)
     const [isTerminalFontOpen, setIsTerminalFontOpen] = useState(false)
     const [isChatOpen, setIsChatOpen] = useState(false)
@@ -385,6 +401,7 @@ export default function SettingsPage() {
     const [isVoicePickerOpen, setIsVoicePickerOpen] = useState(false)
     const containerRef = useRef<HTMLDivElement>(null)
     const appearanceContainerRef = useRef<HTMLDivElement>(null)
+    const colorThemeContainerRef = useRef<HTMLDivElement>(null)
     const fontContainerRef = useRef<HTMLDivElement>(null)
     const terminalFontContainerRef = useRef<HTMLDivElement>(null)
     const chatContainerRef = useRef<HTMLDivElement>(null)
@@ -407,6 +424,7 @@ export default function SettingsPage() {
         setUserMessageBackground,
     } = useChatSurfaceColors()
     const { appearance, setAppearance } = useAppearance()
+    const { colorTheme, setColorTheme } = useColorTheme()
 
     // Voice language state - read from localStorage
     const [voiceLanguage, setVoiceLanguage] = useState<string | null>(() => {
@@ -444,8 +462,10 @@ export default function SettingsPage() {
     const terminalToolDisplayModeOptions = getTerminalToolDisplayModeOptions()
     const sessionListStatusModeOptions = getSessionListStatusModeOptions()
     const appearanceOptions = getAppearanceOptions()
+    const colorThemeOptions = getColorThemeOptions()
     const currentLocale = locales.find((loc) => loc.value === locale)
     const currentAppearanceLabel = appearanceOptions.find((opt) => opt.value === appearance)?.labelKey ?? 'settings.display.appearance.system'
+    const currentColorThemeLabel = colorThemeOptions.find((opt) => opt.value === colorTheme)?.label ?? 'Default'
     const currentFontScaleLabel = fontScaleOptions.find((opt) => opt.value === fontScale)?.label ?? '100%'
     const currentTerminalFontSizeLabel = terminalFontSizeOptions.find((opt) => opt.value === terminalFontSize)?.label ?? '13px'
     const currentComposerEnterBehaviorLabel = composerEnterBehaviorOptions.find((opt) => opt.value === composerEnterBehavior)?.labelKey ?? 'settings.chat.enterBehavior.send'
@@ -495,6 +515,11 @@ export default function SettingsPage() {
     const handleAppearanceChange = (pref: AppearancePreference) => {
         setAppearance(pref)
         setIsAppearanceOpen(false)
+    }
+
+    const handleColorThemeChange = (theme: ColorThemePreset) => {
+        setColorTheme(theme)
+        setIsColorThemeOpen(false)
     }
 
     const handleFontScaleChange = (newScale: FontScale) => {
@@ -608,7 +633,7 @@ export default function SettingsPage() {
 
     // Close dropdown when clicking outside
     useEffect(() => {
-        if (!isOpen && !isAppearanceOpen && !isFontOpen && !isTerminalFontOpen && !isChatOpen && !isTerminalToolDisplayOpen && !isSessionListStatusOpen && !isVoiceOpen && !isVoiceBackendOpen && !isVoicePickerOpen) return
+        if (!isOpen && !isAppearanceOpen && !isColorThemeOpen && !isFontOpen && !isTerminalFontOpen && !isChatOpen && !isTerminalToolDisplayOpen && !isSessionListStatusOpen && !isVoiceOpen && !isVoiceBackendOpen && !isVoicePickerOpen) return
 
         const handleClickOutside = (event: MouseEvent) => {
             if (isOpen && containerRef.current && !containerRef.current.contains(event.target as Node)) {
@@ -616,6 +641,9 @@ export default function SettingsPage() {
             }
             if (isAppearanceOpen && appearanceContainerRef.current && !appearanceContainerRef.current.contains(event.target as Node)) {
                 setIsAppearanceOpen(false)
+            }
+            if (isColorThemeOpen && colorThemeContainerRef.current && !colorThemeContainerRef.current.contains(event.target as Node)) {
+                setIsColorThemeOpen(false)
             }
             if (isFontOpen && fontContainerRef.current && !fontContainerRef.current.contains(event.target as Node)) {
                 setIsFontOpen(false)
@@ -645,16 +673,17 @@ export default function SettingsPage() {
 
         document.addEventListener('mousedown', handleClickOutside)
         return () => document.removeEventListener('mousedown', handleClickOutside)
-    }, [isOpen, isAppearanceOpen, isFontOpen, isTerminalFontOpen, isChatOpen, isTerminalToolDisplayOpen, isSessionListStatusOpen, isVoiceOpen, isVoiceBackendOpen, isVoicePickerOpen])
+    }, [isOpen, isAppearanceOpen, isColorThemeOpen, isFontOpen, isTerminalFontOpen, isChatOpen, isTerminalToolDisplayOpen, isSessionListStatusOpen, isVoiceOpen, isVoiceBackendOpen, isVoicePickerOpen])
 
     // Close on escape key
     useEffect(() => {
-        if (!isOpen && !isAppearanceOpen && !isFontOpen && !isTerminalFontOpen && !isChatOpen && !isTerminalToolDisplayOpen && !isSessionListStatusOpen && !isVoiceOpen && !isVoiceBackendOpen && !isVoicePickerOpen) return
+        if (!isOpen && !isAppearanceOpen && !isColorThemeOpen && !isFontOpen && !isTerminalFontOpen && !isChatOpen && !isTerminalToolDisplayOpen && !isSessionListStatusOpen && !isVoiceOpen && !isVoiceBackendOpen && !isVoicePickerOpen) return
 
         const handleEscape = (event: KeyboardEvent) => {
             if (event.key === 'Escape') {
                 setIsOpen(false)
                 setIsAppearanceOpen(false)
+                setIsColorThemeOpen(false)
                 setIsFontOpen(false)
                 setIsTerminalFontOpen(false)
                 setIsChatOpen(false)
@@ -668,7 +697,7 @@ export default function SettingsPage() {
 
         document.addEventListener('keydown', handleEscape)
         return () => document.removeEventListener('keydown', handleEscape)
-    }, [isOpen, isAppearanceOpen, isFontOpen, isTerminalFontOpen, isChatOpen, isTerminalToolDisplayOpen, isSessionListStatusOpen, isVoiceOpen, isVoiceBackendOpen, isVoicePickerOpen])
+    }, [isOpen, isAppearanceOpen, isColorThemeOpen, isFontOpen, isTerminalFontOpen, isChatOpen, isTerminalToolDisplayOpen, isSessionListStatusOpen, isVoiceOpen, isVoiceBackendOpen, isVoicePickerOpen])
 
     return (
         <div className="flex h-full min-h-0 flex-col">
@@ -796,6 +825,58 @@ export default function SettingsPage() {
                             )}
                         </div>
                         <ThemeColorControl t={t} />
+                        <div ref={colorThemeContainerRef} className="relative">
+                            <button
+                                type="button"
+                                onClick={() => setIsColorThemeOpen(!isColorThemeOpen)}
+                                className="flex w-full items-center justify-between px-3 py-3 text-left transition-colors hover:bg-[var(--app-subtle-bg)]"
+                                aria-expanded={isColorThemeOpen}
+                                aria-haspopup="listbox"
+                            >
+                                <span className="text-[var(--app-fg)]">{t('settings.display.colorTheme')}</span>
+                                <span className="flex items-center gap-2 text-[var(--app-hint)]">
+                                    <ColorThemeSwatch theme={colorTheme} selected />
+                                    <span>{currentColorThemeLabel}</span>
+                                    <ChevronDownIcon className={`transition-transform ${isColorThemeOpen ? 'rotate-180' : ''}`} />
+                                </span>
+                            </button>
+
+                            {isColorThemeOpen && (
+                                <div
+                                    className="absolute right-3 top-full mt-1 max-h-[min(420px,70dvh)] min-w-[240px] overflow-y-auto rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg)] p-1 shadow-2xl z-50"
+                                    role="listbox"
+                                    aria-label={t('settings.display.colorTheme')}
+                                >
+                                    {colorThemeOptions.map((opt) => {
+                                        const isSelected = colorTheme === opt.value
+                                        return (
+                                            <button
+                                                key={opt.value}
+                                                type="button"
+                                                role="option"
+                                                aria-selected={isSelected}
+                                                onClick={() => handleColorThemeChange(opt.value)}
+                                                className={`flex min-h-12 w-full items-center justify-between gap-3 rounded-xl px-3 py-2 text-base text-left transition-colors ${
+                                                    isSelected
+                                                        ? 'text-[var(--app-link)] bg-[var(--app-subtle-bg)]'
+                                                        : 'text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)]'
+                                                }`}
+                                            >
+                                                <span className="flex items-center gap-3">
+                                                    <ColorThemeSwatch theme={opt.value} selected={isSelected} />
+                                                    <span>{opt.label}</span>
+                                                </span>
+                                                {isSelected && (
+                                                    <span className="ml-2 text-[var(--app-link)]">
+                                                        <CheckIcon />
+                                                    </span>
+                                                )}
+                                            </button>
+                                        )
+                                    })}
+                                </div>
+                            )}
+                        </div>
                         <div ref={fontContainerRef} className="relative">
                             <button
                                 type="button"

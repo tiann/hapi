@@ -519,6 +519,7 @@ export default {
   'settings.display.appearance.dark': 'Dark',
   'settings.display.appearance.oled': 'OLED Black',
   'settings.display.appearance.light': 'Light',
+  'settings.display.colorTheme': 'Color theme',
   'settings.display.themeColors.title': 'Custom colors',
   'settings.display.themeColors.description': 'Applies to the current appearance. Switch appearance to customize each one separately.',
   'settings.display.themeColors.reset': 'Reset',

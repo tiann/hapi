@@ -94,6 +94,20 @@ vi.mock('@/hooks/useTheme', () => ({
     ],
 }))
 
+vi.mock('@/hooks/useColorTheme', () => ({
+    useColorTheme: () => ({ colorTheme: 'notion', setColorTheme: vi.fn() }),
+    getColorThemeOptions: () => [
+        { value: 'default', label: 'Default', preview: { light: '#ffffff', dark: '#1c1c1e', accent: '#111827' } },
+        { value: 'notion', label: 'Notion', preview: { light: '#fafafa', dark: '#191919', accent: '#3183d8' } },
+        { value: 'one', label: 'One', preview: { light: '#fbfbff', dark: '#1f2433', accent: '#526fff' } },
+    ],
+    getColorThemePreview: (theme: string) => ({
+        light: theme === 'notion' ? '#fafafa' : '#ffffff',
+        dark: theme === 'notion' ? '#191919' : '#1c1c1e',
+        accent: theme === 'one' ? '#526fff' : '#3183d8',
+    }),
+}))
+
 // Mock languages
 vi.mock('@/lib/languages', () => ({
     getElevenLabsSupportedLanguages: () => [
@@ -227,11 +241,18 @@ describe('SettingsPage', () => {
         const calledKeys = spyT.mock.calls.map((call) => call[0])
         expect(calledKeys).toContain('settings.display.appearance')
         expect(calledKeys).toContain('settings.display.appearance.system')
+        expect(calledKeys).toContain('settings.display.colorTheme')
         expect(calledKeys).toContain('settings.display.sessionPreviewLimit')
         expect(calledKeys).toContain('settings.display.sessionPreviewLimit.decrease')
         expect(calledKeys).toContain('settings.display.sessionPreviewLimit.increase')
         expect(calledKeys).toContain('settings.display.sessionListStatus')
         expect(calledKeys).toContain('settings.display.sessionListStatus.standard')
+    })
+
+    it('renders the Color theme setting', () => {
+        renderWithProviders(<SettingsPage />)
+        expect(screen.getAllByText('Color theme').length).toBeGreaterThanOrEqual(1)
+        expect(screen.getAllByText('Notion').length).toBeGreaterThanOrEqual(1)
     })
 
     it('renders the Terminal Font Size setting', () => {

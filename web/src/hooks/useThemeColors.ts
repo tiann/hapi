@@ -282,6 +282,7 @@ export function initializeThemeColors(): void {
     window.addEventListener('storage', (event: StorageEvent) => {
         if (event.key === STORAGE_KEY) applyThemeColors()
     })
+    window.addEventListener('hapi-color-theme-change', applyThemeColors)
 
     const themeObserver = new MutationObserver(() => {
         applyThemeColors()
@@ -325,11 +326,14 @@ export function useThemeColors(): {
         const onStorage = (event: StorageEvent) => {
             if (event.key === STORAGE_KEY) refresh()
         }
+        const onColorThemeChange = () => refresh()
         window.addEventListener('storage', onStorage)
+        window.addEventListener('hapi-color-theme-change', onColorThemeChange)
 
         return () => {
             themeObserver.disconnect()
             window.removeEventListener('storage', onStorage)
+            window.removeEventListener('hapi-color-theme-change', onColorThemeChange)
         }
     }, [])
 
