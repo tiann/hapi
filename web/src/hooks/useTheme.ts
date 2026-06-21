@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
 import { getTelegramWebApp } from './useTelegram'
-import { applyColorTheme, getColorThemeBackground, getStoredColorTheme, type ColorScheme } from './useColorTheme'
+import { applyColorTheme, getColorThemeBackground, getColorThemeStorageKey, getStoredColorTheme, type ColorScheme } from './useColorTheme'
 
 export type AppearancePreference = 'system' | 'dark' | 'light' | 'oled'
 
@@ -201,6 +201,7 @@ export function initializeTheme(): void {
         if (typeof window !== 'undefined') {
             window.addEventListener('storage', (event: StorageEvent) => {
                 if (event.key === APPEARANCE_KEY) updateScheme()
+                if (event.key === getColorThemeStorageKey()) updateScheme(true)
             })
             window.addEventListener('hapi-color-theme-change', () => updateScheme(true))
         }
