@@ -2,6 +2,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { I18nProvider } from '@/lib/i18n-context'
 import type { ScratchlistEntry } from '@/lib/scratchlist'
+import type { ApiClient } from '@/api/client'
+
+const mockApi = {
+    fetchScratchlistAttachmentBlob: vi.fn(),
+    uploadFile: vi.fn(),
+} as unknown as ApiClient
+const mockSessionId = 'sess-test'
 
 /**
  * Regression test for upstream review on PR #798 (HAPI Bot follow-up
@@ -50,6 +57,8 @@ describe('ScratchlistDrawerHost.onPromoteToComposer', () => {
         render(
             <I18nProvider>
                 <ScratchlistDrawerHost
+                    sessionId={mockSessionId}
+                    api={mockApi}
                     entries={[makeEntry({ id: 'e1', text: 'queued thought' })]}
                     onMove={onMove}
                     onDelete={onDelete}
@@ -80,6 +89,8 @@ describe('ScratchlistDrawerHost.onPromoteToComposer', () => {
         render(
             <I18nProvider>
                 <ScratchlistDrawerHost
+                    sessionId={mockSessionId}
+                    api={mockApi}
                     entries={[makeEntry({ id: 'e1', text: 'send-to-queue text' })]}
                     onMove={onMove}
                     onDelete={onDelete}
@@ -93,7 +104,7 @@ describe('ScratchlistDrawerHost.onPromoteToComposer', () => {
         expect(queueButtons.length).toBeGreaterThan(0)
         fireEvent.click(queueButtons[0]!)
 
-        await waitFor(() => expect(onSend).toHaveBeenCalledWith('send-to-queue text'))
+        await waitFor(() => expect(onSend).toHaveBeenCalledWith('send-to-queue text', undefined))
         expect(onExitScratchlistMode).toHaveBeenCalledTimes(1)
         expect(setText).not.toHaveBeenCalled()
     })
@@ -107,6 +118,8 @@ describe('ScratchlistDrawerHost.onPromoteToComposer', () => {
         render(
             <I18nProvider>
                 <ScratchlistDrawerHost
+                    sessionId={mockSessionId}
+                    api={mockApi}
                     entries={[makeEntry({ id: 'e1', text: 'send-to-queue text' })]}
                     onMove={onMove}
                     onDelete={onDelete}
@@ -119,7 +132,7 @@ describe('ScratchlistDrawerHost.onPromoteToComposer', () => {
         const queueButtons = screen.getAllByRole('button', { name: /queue|send/i })
         fireEvent.click(queueButtons[0]!)
 
-        await waitFor(() => expect(onSend).toHaveBeenCalledWith('send-to-queue text'))
+        await waitFor(() => expect(onSend).toHaveBeenCalledWith('send-to-queue text', undefined))
         expect(onExitScratchlistMode).not.toHaveBeenCalled()
         expect(setText).not.toHaveBeenCalled()
     })
@@ -143,6 +156,8 @@ describe('ScratchlistDrawer copy-to-clipboard action', () => {
         render(
             <I18nProvider>
                 <ScratchlistDrawerHost
+                    sessionId={mockSessionId}
+                    api={mockApi}
                     entries={[makeEntry({ id: 'e1', text: 'copy this' })]}
                     onMove={onMove}
                     onDelete={onDelete}

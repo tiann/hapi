@@ -163,9 +163,9 @@ describe('shouldRouteToScratchlist', () => {
         expect(shouldRouteToScratchlist(true, [], null)).toBe(true)
     })
 
-    it('returns false when scratchlist mode is on but attachments are present', () => {
-        expect(shouldRouteToScratchlist(true, [attachment()], null)).toBe(false)
-        expect(shouldRouteToScratchlist(true, [attachment(), attachment()], null)).toBe(false)
+    it('returns true when scratchlist mode is on with attachments (no schedule)', () => {
+        expect(shouldRouteToScratchlist(true, [attachment()], null)).toBe(true)
+        expect(shouldRouteToScratchlist(true, [attachment(), attachment()], null)).toBe(true)
     })
 
     it('returns false when scratchlist mode is on but a scheduled-send is set', () => {

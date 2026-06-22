@@ -531,6 +531,7 @@ export default {
   'scratchlist.empty': 'empty',
   'scratchlist.count.one': '1 item',
   'scratchlist.count.other': '{n} items',
+  'scratchlist.attachmentOnly': '(attachment)',
   'scratchlist.emptyHint': 'Park notes, drafts, or ideas here. Nothing is sent until you promote it.',
   'scratchlist.drawerHint': 'Type below — Send adds the next message to the scratchlist instead of the chat. Click the note icon again to leave.',
   'scratchlist.toggleAriaLabel': 'Scratchlist drawer',

@@ -535,6 +535,7 @@ export default {
   'scratchlist.empty': '空',
   'scratchlist.count.one': '1 条',
   'scratchlist.count.other': '{n} 条',
+  'scratchlist.attachmentOnly': '（附件）',
   'scratchlist.emptyHint': '在此暂存笔记、草稿或想法。需点击发送或编辑后才会真正发出。',
   'scratchlist.drawerHint': '在下方输入 — 发送会把内容存入此暂存清单，而不是发到对话。再次点击便签图标可退出。',
   'scratchlist.toggleAriaLabel': '暂存清单抽屉',

@@ -20,6 +20,8 @@ export const SCRATCHLIST_MAX_ENTRIES = 200
 /** Per-entry text cap: matches what a long composer paste can produce. */
 export const SCRATCHLIST_MAX_TEXT_LENGTH = 10_000
 
+import type { ScratchlistAttachmentMetadata } from '@hapi/protocol'
+
 export type ScratchlistEntry = {
     id: string
     text: string
@@ -31,6 +33,7 @@ export type ScratchlistEntry = {
      * working - readers fall back to `createdAt` when absent.
      */
     updatedAt?: number
+    attachments?: ScratchlistAttachmentMetadata[]
 }
 
 function getStorageKey(sessionId: string): string {

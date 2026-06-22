@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import type { ScratchlistAttachmentMetadata } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
 import { ApiError } from '@/api/client'
 import { queryKeys } from '@/lib/query-keys'
+import { extractScratchlistAttachmentMetadata } from '@/lib/scratchlistAttachmentAdapter'
 import {
     moveScratchlistEntry,
     persistScratchlist,
@@ -71,6 +73,7 @@ type HubEntry = {
     text: string
     createdAt: number
     updatedAt: number
+    attachments: ScratchlistAttachmentMetadata[]
 }
 
 type ScratchlistResponse = { entries: HubEntry[] }
@@ -126,7 +129,8 @@ function toLocalEntry(hub: HubEntry): ScratchlistEntry {
         id: hub.entryId,
         text: hub.text,
         createdAt: hub.createdAt,
-        updatedAt: hub.updatedAt
+        updatedAt: hub.updatedAt,
+        attachments: hub.attachments ?? []
     }
 }
 
@@ -142,7 +146,8 @@ function makeOptimisticHubEntry(text: string, now: number): HubEntry {
         entryId: fallbackId,
         text,
         createdAt: now,
-        updatedAt: now
+        updatedAt: now,
+        attachments: []
     }
 }
 
@@ -152,7 +157,7 @@ export function useHubScratchlist(
 ): {
     entries: ScratchlistEntry[]
     isLoading: boolean
-    add: (text: string) => Promise<boolean>
+    add: (text: string, attachments?: import('@/types/api').AttachmentMetadata[]) => Promise<boolean>
     remove: (id: string) => Promise<void>
     update: (id: string, text: string) => Promise<void>
     move: (id: string, direction: 'up' | 'down') => void
@@ -325,17 +330,18 @@ export function useHubScratchlist(
     const addMutation = useMutation<
         { entry: HubEntry },
         Error,
-        { text: string },
+        { text: string; attachments: ScratchlistAttachmentMetadata[] },
         { previousData: ScratchlistResponse | undefined; optimisticEntryId: string }
     >({
-        mutationFn: async ({ text }) => {
+        mutationFn: async ({ text, attachments }) => {
             if (!api || !sessionId) throw new Error('Scratchlist unavailable')
-            return await api.createScratchlistEntry(sessionId, { text })
+            return await api.createScratchlistEntry(sessionId, { text, attachments })
         },
-        onMutate: async ({ text }) => {
+        onMutate: async ({ text, attachments }) => {
             await queryClient.cancelQueries({ queryKey })
             const previousData = queryClient.getQueryData<ScratchlistResponse>(queryKey)
             const optimistic = makeOptimisticHubEntry(text, Date.now())
+            optimistic.attachments = attachments
             queryClient.setQueryData<ScratchlistResponse>(queryKey, (prev) => {
                 const prior = prev?.entries ?? []
                 return { entries: [optimistic, ...prior] }
@@ -445,9 +451,13 @@ export function useHubScratchlist(
         }
     })
 
-    const add = useCallback(async (rawText: string): Promise<boolean> => {
+    const add = useCallback(async (
+        rawText: string,
+        composerAttachments?: import('@/types/api').AttachmentMetadata[]
+    ): Promise<boolean> => {
         const text = rawText.trim()
-        if (text.length === 0) return false
+        const attachments = extractScratchlistAttachmentMetadata(composerAttachments)
+        if (text.length === 0 && attachments.length === 0) return false
         const truncated = text.length > SCRATCHLIST_MAX_TEXT_LENGTH
             ? text.slice(0, SCRATCHLIST_MAX_TEXT_LENGTH)
             : text
@@ -456,7 +466,7 @@ export function useHubScratchlist(
             return false
         }
         try {
-            await addMutation.mutateAsync({ text: truncated })
+            await addMutation.mutateAsync({ text: truncated, attachments })
             return true
         } catch {
             return false
