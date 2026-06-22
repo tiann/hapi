@@ -101,7 +101,12 @@ export class AcpSdkBackend implements AgentBackend {
     private static readonly LATE_FLUSH_QUIET_PERIOD_MS = 250;
     private static readonly LATE_FLUSH_WINDOW_MS = 6000;
 
-    constructor(private readonly options: { command: string; args?: string[]; env?: Record<string, string> }) {}
+    constructor(private readonly options: {
+        command: string;
+        args?: string[];
+        env?: Record<string, string>;
+        flavor?: AgentFlavor;
+    }) {}
 
     async initialize(): Promise<void> {
         if (this.transport) return;
@@ -401,7 +406,7 @@ export class AcpSdkBackend implements AgentBackend {
             AcpSdkBackend.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS
         );
         this.messageHandler?.drainBuffers();
-        this.messageHandler = new AcpMessageHandler(onUpdate);
+        this.messageHandler = new AcpMessageHandler(onUpdate, { flavor: this.options.flavor });
         this.isProcessingMessage = true;
         this.lastSessionUpdateAt = Date.now();
         this.latestUsageUpdate = null;

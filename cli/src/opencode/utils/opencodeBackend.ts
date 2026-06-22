@@ -21,6 +21,7 @@ export function createOpencodeBackend(opts: {
     return new AcpSdkBackend({
         command: 'opencode',
         args,
-        env: filterEnv(env)
+        env: filterEnv(env),
+        flavor: 'opencode',
     });
 }

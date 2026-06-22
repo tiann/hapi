@@ -13,6 +13,7 @@ import { logger } from "@/ui/logger";
 import { ApiSessionClient } from "@/api/apiSession";
 import { randomUUID } from "node:crypto";
 import { detectImageMimeType, detectVideoMimeType, registerGeneratedImage } from "@/modules/common/generatedImages";
+import type { InlineMediaSource } from "@/modules/common/inlineMediaSource";
 
 type StartHappyServerOptions = {
     emitTitleSummary?: boolean;
@@ -57,7 +58,11 @@ function createHapiMcpServer(client: ApiSessionClient, emitTitleSummary: boolean
 
     const maxInlineMediaBytes = 25 * 1024 * 1024;
 
-    async function displayInlineMedia(args: { path: string; title?: string }, mediaKind: 'image' | 'video') {
+    async function displayInlineMedia(
+        args: { path: string; title?: string },
+        mediaKind: 'image' | 'video',
+        toolName: 'display_image' | 'display_video'
+    ) {
         const info = await lstat(args.path);
         if (!info.isFile()) {
             throw new Error('Path is not a regular file');
@@ -83,12 +88,18 @@ function createHapiMcpServer(client: ApiSessionClient, emitTitleSummary: boolean
             bytes
         });
 
+        const source: InlineMediaSource = {
+            ingress: 'mcp',
+            toolName,
+        };
+
         client.sendAgentMessage({
             type: 'generated-image',
             imageId: media.id,
             fileName: media.fileName,
             mimeType: media.mimeType,
-            id: randomUUID()
+            id: randomUUID(),
+            source,
         });
 
         return media;
@@ -133,7 +144,7 @@ function createHapiMcpServer(client: ApiSessionClient, emitTitleSummary: boolean
         logger.debug('[hapiMCP] Display image:', args.path);
 
         try {
-            const image = await displayInlineMedia(args, 'image');
+            const image = await displayInlineMedia(args, 'image', 'display_image');
 
             return {
                 content: [
@@ -167,7 +178,7 @@ function createHapiMcpServer(client: ApiSessionClient, emitTitleSummary: boolean
         logger.debug('[hapiMCP] Display video:', args.path);
 
         try {
-            const video = await displayInlineMedia(args, 'video');
+            const video = await displayInlineMedia(args, 'video', 'display_video');
 
             return {
                 content: [

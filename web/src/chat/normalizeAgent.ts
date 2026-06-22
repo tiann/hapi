@@ -1,4 +1,5 @@
 import type { AgentEvent, CodexReview, CodexReviewFinding, NormalizedAgentContent, NormalizedMessage, ToolResultPermission } from '@/chat/types'
+import { inlineMediaSourceFromWire } from '@/chat/inlineMediaSource'
 import { AGENT_MESSAGE_PAYLOAD_TYPE, asNumber, asString, isObject } from '@hapi/protocol'
 import { isClaudeChatVisibleMessage } from '@hapi/protocol/messages'
 
@@ -559,6 +560,7 @@ export function normalizeAgentRecord(
             const imageId = asString(data.imageId ?? data.image_id)
             if (!imageId) return null
             const uuid = asString(data.id) ?? messageId
+            const source = inlineMediaSourceFromWire(data.source)
             return {
                 id: messageId,
                 localId,
@@ -571,7 +573,8 @@ export function normalizeAgentRecord(
                     fileName: asString(data.fileName ?? data.file_name) ?? 'generated-image',
                     mimeType: asString(data.mimeType ?? data.mime_type),
                     uuid,
-                    parentUUID: null
+                    parentUUID: null,
+                    source,
                 }],
                 meta
             }

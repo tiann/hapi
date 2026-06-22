@@ -25,7 +25,8 @@ export function createCursorAcpBackend(opts: { cwd: string; model?: string | nul
     return new AcpSdkBackend({
         command: 'agent',
         args,
-        env: filterEnv(process.env)
+        env: filterEnv(process.env),
+        flavor: 'cursor',
     });
 }
 
