@@ -50,6 +50,10 @@ Copy and fill this block (do not spawn a peer with only "implement X"):
 
 One feature → one worktree → one peer. Do not share worktrees across agents.
 
+### 0-closure — salvage audit (reverse handoff)
+
+When mirror `main` is tidied and a **backup branch** exists (see [`mirror-main-layout.md`](./mirror-main-layout.md)), the orchestrator runs **salvage closure** before deleting it: bucket backup commits, resume originating peers with the four-section template, verify dispositions, record in `docs/plans/*-salvage-audit.md`. Full process: [`salvage-closure.md`](./salvage-closure.md). This is the mirror of §0 above — **backward accountability**, not spawn.
+
 ---
 
 ## Where agents read instructions (not the daily driver)

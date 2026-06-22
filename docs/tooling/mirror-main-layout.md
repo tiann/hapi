@@ -19,22 +19,24 @@ Before `main` was reset to `origin/main` (2026-06-22), the full local history wa
 
 ```bash
 git branch -a | grep mirror/pre-tidy
-# mirror/pre-tidy-20260622  — 45 commits of fork integration + product work that had never pushed
+# mirror/pre-tidy-20260622  — 41 commits of fork integration + product work that had never pushed
 ```
 
-Recover a file from that branch:
+**Do not merge the backup into `main`.** Close it with salvage closure: [`salvage-closure.md`](./salvage-closure.md) and audit [`docs/plans/2026-06-22-mirror-pre-tidy-salvage-audit.md`](../plans/2026-06-22-mirror-pre-tidy-salvage-audit.md). Responsible peers opine via briefings in `docs/plans/peer-briefings/*salvage-closure*`.
+
+Recover a single file from backup (after peer signs disposition):
 
 ```bash
 git show mirror/pre-tidy-20260622:path/to/file > path/to/file
 ```
 
+Delete backup only when every cluster in the audit has a verified disposition (see audit checklist).
+
 ## Day-to-day
 
-| Task | Where |
-|------|-------|
-| Edit workflow docs | `main` → push `origin/main` |
-| Edit plans / briefings | `main` local commit (override) or untracked; never push plans |
-| Product feature | `~/coding/hapi/worktrees/<name>` |
-| Soup / driver | manifest + `driver/` worktree (rebuild only) |
+- **Workflow docs:** `main` → push `origin/main`
+- **Plans / briefings:** local commit with override, or untracked; never push plans to origin
+- **Product feature:** `~/coding/hapi/worktrees/<name>`
+- **Soup / driver:** manifest + `driver/` worktree (rebuild only)
 
 See [`commit-hooks.md`](./commit-hooks.md) and [`feature-work-lifecycle.md`](./feature-work-lifecycle.md).
