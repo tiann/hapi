@@ -1,5 +1,6 @@
 import type { AttachmentMetadata, MessageStatus } from '@/types/api'
 import type { ThreadGoal } from '@/types/api'
+import type { InlineMediaSource } from '@/chat/inlineMediaSource'
 
 export type UsageData = {
     input_tokens: number
@@ -68,6 +69,7 @@ export type GeneratedImageContent = {
     mimeType: string | null
     uuid: string
     parentUUID: string | null
+    source?: InlineMediaSource
 }
 
 export type CodexReviewFinding = {
@@ -258,6 +260,7 @@ export type GeneratedImageBlock = {
     imageId: string
     fileName: string
     mimeType: string | null
+    source?: InlineMediaSource
     meta?: unknown
 }
 

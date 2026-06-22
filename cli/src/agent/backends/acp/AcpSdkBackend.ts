@@ -118,6 +118,7 @@ export class AcpSdkBackend implements AgentBackend {
         args?: string[];
         env?: Record<string, string>;
         textChunkMode?: AcpTextChunkMode;
+        flavor?: AgentFlavor;
     }) {}
 
     async initialize(): Promise<void> {
@@ -491,7 +492,10 @@ export class AcpSdkBackend implements AgentBackend {
             AcpSdkBackend.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS
         );
         this.messageHandler?.drainBuffers();
-        this.messageHandler = new AcpMessageHandler(onUpdate, { textChunkMode: this.options.textChunkMode });
+        this.messageHandler = new AcpMessageHandler(onUpdate, {
+            textChunkMode: this.options.textChunkMode,
+            flavor: this.options.flavor,
+        });
         this.isProcessingMessage = true;
         this.lastSessionUpdateAt = Date.now();
         this.latestUsageUpdate = null;

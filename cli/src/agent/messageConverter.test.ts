@@ -112,14 +112,16 @@ describe('convertAgentMessage', () => {
             type: 'generated_image',
             imageId: 'img-1',
             fileName: 'inline.png',
-            mimeType: 'image/png'
+            mimeType: 'image/png',
+            source: { ingress: 'mcp', toolName: 'display_image' },
         });
 
         expect(converted).toMatchObject({
             type: 'generated-image',
             imageId: 'img-1',
             fileName: 'inline.png',
-            mimeType: 'image/png'
+            mimeType: 'image/png',
+            source: { ingress: 'mcp', toolName: 'display_image' },
         });
         expect(converted && 'id' in converted && typeof converted.id === 'string').toBe(true);
     });

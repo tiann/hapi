@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentMessage, PlanItem } from './types';
+import type { InlineMediaSource } from '@/modules/common/inlineMediaSource';
 
 export type CodexMessage =
     | { type: 'message'; message: string }
@@ -41,6 +42,7 @@ export type CodexMessage =
         fileName: string;
         mimeType: string;
         id: string;
+        source?: InlineMediaSource;
     };
 
 export function convertAgentMessage(message: AgentMessage): CodexMessage | null {
@@ -95,7 +97,8 @@ export function convertAgentMessage(message: AgentMessage): CodexMessage | null 
                 imageId: message.imageId,
                 fileName: message.fileName,
                 mimeType: message.mimeType,
-                id: randomUUID()
+                id: randomUUID(),
+                source: message.source,
             };
         case 'error':
             return { type: 'error', message: message.message };

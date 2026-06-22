@@ -21,6 +21,7 @@ export function createKimiBackend(): AcpSdkBackend {
     return new AcpSdkBackend({
         command: 'kimi',
         args: ['acp'],
-        env: filterEnv(process.env)
+        env: filterEnv(process.env),
+        flavor: 'kimi',
     });
 }
