@@ -586,6 +586,14 @@ export class ApiSessionClient extends EventEmitter {
         })
     }
 
+    /** Hub waits for this before mergeSessions on Cursor ACP reopen (tiann/hapi#939). */
+    emitSessionReady(): void {
+        this.socket.emit('session-ready', {
+            sid: this.sessionId,
+            time: Date.now()
+        })
+    }
+
     emitMessagesConsumed(localIds: string[], options?: { clearQueuedThinkingGrace?: boolean }): void {
         if (localIds.length === 0) return
         // `clearQueuedThinkingGrace` is an opt-in signal for the hub to drop
@@ -738,6 +746,21 @@ export class ApiSessionClient extends EventEmitter {
                 .then(() => finish(true))
                 .catch(() => finish(false))
         })
+    }
+
+    /**
+     * tiann/hapi#913: wait until any pending `update-metadata` writes have
+     * been acked by the hub (or the timeout elapses). `updateMetadata` is
+     * fire-and-forget at the call site because it's invoked on the hot path
+     * for every turn; this helper lets the few callers who actually need
+     * durability — fresh ACP session-id pre-registration is the canonical
+     * case — synchronously gate on persistence without changing every
+     * caller's signature.
+     *
+     * Returns true when the lock drained, false when the timeout fired.
+     */
+    async flushMetadata(timeoutMs: number = 5_000): Promise<boolean> {
+        return await this.drainLock(this.metadataLock, timeoutMs)
     }
 
     async flush(options?: { timeoutMs?: number }): Promise<void> {

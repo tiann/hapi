@@ -50,6 +50,18 @@ describe('convertAgentMessage', () => {
         });
     });
 
+    it('converts agent errors into error wire payloads', () => {
+        const converted = convertAgentMessage({
+            type: 'error',
+            message: 'Cursor Agent failed: authentication required'
+        });
+
+        expect(converted).toEqual({
+            type: 'error',
+            message: 'Cursor Agent failed: authentication required'
+        });
+    });
+
     it('converts usage messages into token_count payloads', () => {
         const converted = convertAgentMessage({
             type: 'usage',

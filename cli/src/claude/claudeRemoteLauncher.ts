@@ -306,6 +306,14 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             return permissionHandler.isAborted(toolCallId);
                         },
                         nextMessage: async () => {
+                            // Flush any pending outgoing messages before consuming the next user
+                            // turn. Without this, scheduleProcessing()'s setTimeout(fn,0) fires
+                            // after the microtask that sends messages-consumed, causing the hub
+                            // to stamp invokedAt on the next user message before it stores the
+                            // current turn's queued agent messages — making them sort permanently
+                            // below the next user message.
+                            await messageQueue.flush();
+
                             if (pending) {
                                 let p = pending;
                                 pending = null;

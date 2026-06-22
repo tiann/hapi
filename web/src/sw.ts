@@ -3,6 +3,14 @@ import { precacheAndRoute } from 'workbox-precaching'
 import { registerRoute } from 'workbox-routing'
 import { CacheFirst, NetworkFirst } from 'workbox-strategies'
 import { ExpirationPlugin } from 'workbox-expiration'
+import {
+    cleanupExpiredShareTransfers,
+    ingestShareRequest,
+    putShareTransfer,
+} from './lib/shareTransfer'
+import { shareTargetPathname } from './lib/sharePath'
+
+const sharePath = shareTargetPathname()
 
 declare const self: ServiceWorkerGlobalScope & {
     __WB_MANIFEST: Array<string | { url: string; revision?: string }>
@@ -91,6 +99,16 @@ registerRoute(
     })
 )
 
+self.addEventListener('message', (event) => {
+    if (event.data?.type === 'SKIP_WAITING') {
+        self.skipWaiting()
+    }
+})
+
+self.addEventListener('activate', (event) => {
+    event.waitUntil(self.clients.claim())
+})
+
 self.addEventListener('push', (event) => {
     const payload = event.data?.json() as PushPayload | undefined
     if (!payload) {
@@ -120,4 +138,42 @@ self.addEventListener('notificationclick', (event) => {
     const data = event.notification.data as { url?: string } | undefined
     const url = data?.url ?? '/'
     event.waitUntil(self.clients.openWindow(url))
+})
+
+// Web Share Target — manifest declares POST /share, Android Chrome posts a
+// multipart form with title/text/url/files. Stash in IDB so the SPA route
+// can read it after the 303 redirect (which converts POST -> GET).
+self.addEventListener('fetch', (event) => {
+    const request = event.request
+    if (request.method !== 'POST') return
+    const url = new URL(request.url)
+    if (url.pathname !== sharePath) return
+
+    event.respondWith(handleShareTarget(request))
+})
+
+async function handleShareTarget(request: Request): Promise<Response> {
+    // Resolve to absolute URLs because Response.redirect throws on relative
+    // input per the Fetch spec; Chrome currently tolerates relative paths
+    // but the SW spec is explicit and the cost of resolving is one line.
+    const origin = self.location.origin
+    try {
+        const { redirectTo } = await ingestShareRequest(request, { put: putShareTransfer })
+        return Response.redirect(new URL(redirectTo, origin).toString(), 303)
+    } catch (error) {
+        // Surface a minimal page if IDB write fails — don't 5xx silently or
+        // the user gets a Chrome error sheet instead of useful UI.
+        console.error('share-target ingest failed', error)
+        return Response.redirect(new URL(`${sharePath}?error=ingest`, origin).toString(), 303)
+    }
+}
+
+// Best-effort GC for stale share transfers (TTL-only — never blocks
+// anything else). 1h TTL is set in shareTransfer.ts.
+self.addEventListener('activate', (event) => {
+    event.waitUntil(
+        cleanupExpiredShareTransfers().catch((error) => {
+            console.warn('share-transfer cleanup failed', error)
+        })
+    )
 })

@@ -12,11 +12,13 @@ import {
     SessionModelRequestSchema,
     SessionPermissionModeRequestSchema,
     supportsModelChange,
+    supportsEffort,
     toSessionSummary,
     UploadFileRequestSchema
 } from '@hapi/protocol'
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import type { SlashCommand } from '@hapi/protocol/apiTypes'
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import type { SyncEngine, Session } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
@@ -82,11 +84,13 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                 return b.updatedAt - a.updatedAt
             })
         const scheduledCounts = engine.getFutureScheduledMessageCounts(sessionRecords.map((session) => session.id))
+        const nextScheduledAt = engine.getNextScheduledAtBySessionIds(sessionRecords.map((session) => session.id))
         const sessions = sessionRecords.map((session) => {
             const summary = toSessionSummary(session)
             return {
                 ...summary,
-                futureScheduledMessageCount: scheduledCounts.get(session.id) ?? 0
+                futureScheduledMessageCount: scheduledCounts.get(session.id) ?? 0,
+                nextScheduledAt: nextScheduledAt.get(session.id) ?? null
             }
         })
 
@@ -291,14 +295,29 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
     })
 
     app.post('/sessions/:id/archive', async (c) => {
+        // tiann/hapi#916: relax the blanket `requireActive: true` guard so
+        // the endpoint is idempotent for already-archived rows AND can clean
+        // up split-brain rows after a hub-restart cascade (inactive in cache
+        // but metadata.lifecycleState still 'running'). Normal inactive rows
+        // that are not archived (completed stubs, UI Delete/Reopen targets)
+        // keep the old 409 contract.
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {
             return engine
         }
 
-        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        const sessionResult = requireSessionFromParam(c, engine)
         if (sessionResult instanceof Response) {
             return sessionResult
+        }
+
+        const lifecycleState = sessionResult.session.metadata?.lifecycleState
+        if (lifecycleState === 'archived') {
+            return c.json({ ok: true, alreadyArchived: true })
+        }
+
+        if (!sessionResult.session.active && lifecycleState !== 'running') {
+            return c.json({ error: 'Session is inactive' }, 409)
         }
 
         await engine.archiveSession(sessionResult.sessionId)
@@ -536,8 +555,8 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'claude') {
-            return c.json({ error: 'Effort selection is only supported for Claude sessions' }, 400)
+        if (!supportsEffort(flavor)) {
+            return c.json({ error: 'Effort selection is not supported for this session type' }, 400)
         }
 
         try {
@@ -833,6 +852,39 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             }, 500)
         }
     })
+
+    // Helper: guard + flavor check + error handling for Pi session endpoints
+    async function withPiSession(
+        c: Context<WebAppEnv>,
+        handler: (ctx: { sessionId: string; engine: SyncEngine }) => Promise<Response>
+    ): Promise<Response> {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) return sessionResult
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (flavor !== 'pi') {
+            return c.json({ success: false, error: 'Not a Pi session' }, 400)
+        }
+
+        try {
+            return await handler({ sessionId: sessionResult.sessionId, engine })
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Internal error'
+            }, 500)
+        }
+    }
+
+    // --- Pi models ---
+    app.get('/sessions/:id/pi-models', (c) =>
+        withPiSession(c, async ({ sessionId, engine }) =>
+            c.json(await engine.callPiRpc(sessionId, RPC_METHODS.ListPiModels, {}, 120_000))
+        )
+    )
 
     return app
 }

@@ -21,6 +21,7 @@ import { isRetryableConnectionError } from '@/utils/errorUtils';
 import { cleanupRunnerState, getInstalledCliMtimeMs, isRunnerRunningCurrentlyInstalledHappyVersion, stopRunner, waitForRunnerHandoff } from './controlClient';
 import { startRunnerControlServer } from './controlServer';
 import { createWorktree, removeWorktree, type WorktreeInfo } from './worktree';
+import { validateWorkspaceDirectory } from './validateWorkspaceDirectory';
 import { join } from 'path';
 import { buildMachineMetadata } from '@/agent/sessionFactory';
 import { resolveWorkspaceRoots } from '@/utils/workspaceRoot';
@@ -295,47 +296,28 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       let happyProcess: ReturnType<typeof spawnHappyCLI> | null = null;
 
       if (sessionType === 'simple') {
-        try {
-          await fs.access(directory);
+        const validation = await validateWorkspaceDirectory(directory, {
+          approvedNewDirectoryCreation
+        });
+        if (validation.type === 'requestApproval') {
+          logger.debug(`[RUNNER RUN] Directory creation not approved for: ${directory}`);
+          return {
+            type: 'requestToApproveDirectoryCreation',
+            directory
+          };
+        }
+        if (validation.type === 'error') {
+          logger.debug(`[RUNNER RUN] Workspace directory validation failed: ${validation.errorMessage}`);
+          return {
+            type: 'error',
+            errorMessage: validation.errorMessage
+          };
+        }
+        directoryCreated = validation.created;
+        if (validation.created) {
+          logger.debug(`[RUNNER RUN] Successfully created directory: ${directory}`);
+        } else {
           logger.debug(`[RUNNER RUN] Directory exists: ${directory}`);
-        } catch (error) {
-          logger.debug(`[RUNNER RUN] Directory doesn't exist, creating: ${directory}`);
-
-          // Check if directory creation is approved
-          if (!approvedNewDirectoryCreation) {
-            logger.debug(`[RUNNER RUN] Directory creation not approved for: ${directory}`);
-            return {
-              type: 'requestToApproveDirectoryCreation',
-              directory
-            };
-          }
-
-          try {
-            await fs.mkdir(directory, { recursive: true });
-            logger.debug(`[RUNNER RUN] Successfully created directory: ${directory}`);
-            directoryCreated = true;
-          } catch (mkdirError: any) {
-            let errorMessage = `Unable to create directory at '${directory}'. `;
-
-            // Provide more helpful error messages based on the error code
-            if (mkdirError.code === 'EACCES') {
-              errorMessage += `Permission denied. You don't have write access to create a folder at this location. Try using a different path or check your permissions.`;
-            } else if (mkdirError.code === 'ENOTDIR') {
-              errorMessage += `A file already exists at this path or in the parent path. Cannot create a directory here. Please choose a different location.`;
-            } else if (mkdirError.code === 'ENOSPC') {
-              errorMessage += `No space left on device. Your disk is full. Please free up some space and try again.`;
-            } else if (mkdirError.code === 'EROFS') {
-              errorMessage += `The file system is read-only. Cannot create directories here. Please choose a writable location.`;
-            } else {
-              errorMessage += `System error: ${mkdirError.message || mkdirError}. Please verify the path is valid and you have the necessary permissions.`;
-            }
-
-            logger.debug(`[RUNNER RUN] Directory creation failed: ${errorMessage}`);
-            return {
-              type: 'error',
-              errorMessage
-            };
-          }
         }
       } else {
         try {
@@ -1101,13 +1083,18 @@ export function buildCliArgs(
           ? 'kimi'
           : agent === 'opencode'
             ? 'opencode'
-            : 'claude';
+            : agent === 'pi'
+              ? 'pi'
+              : 'claude';
   const args = [agentCommand];
   if (options.resumeSessionId) {
     if (agent === 'codex') {
       args.push('resume', options.resumeSessionId);
     } else if (agent === 'cursor') {
       args.push('--resume', options.resumeSessionId);
+    } else if (agent === 'pi') {
+      // Pi uses --session-id for exact session resume (RPC mode)
+      args.push('--session-id', options.resumeSessionId);
     } else {
       args.push('--resume', options.resumeSessionId);
     }
@@ -1116,7 +1103,7 @@ export function buildCliArgs(
   if (options.model) {
     args.push('--model', options.model);
   }
-  if (options.effort && agent === 'claude') {
+  if (options.effort && (agent === 'claude' || agent === 'pi')) {
     args.push('--effort', options.effort);
   }
   if (options.modelReasoningEffort && (agent === 'codex' || agent === 'opencode')) {
@@ -1125,10 +1112,14 @@ export function buildCliArgs(
   if (options.serviceTier && agent === 'codex') {
     args.push('--service-tier', options.serviceTier);
   }
-  if (options.permissionMode && (PERMISSION_MODES as readonly string[]).includes(options.permissionMode)) {
-    args.push('--permission-mode', options.permissionMode);
-  } else if (yolo) {
-    args.push('--yolo');
+  // Pi RPC mode has no permission switching; never pass these flags to it
+  // (the Pi parser rejects --permission-mode and ignores --yolo).
+  if (agent !== 'pi') {
+    if (options.permissionMode && (PERMISSION_MODES as readonly string[]).includes(options.permissionMode)) {
+      args.push('--permission-mode', options.permissionMode);
+    } else if (yolo) {
+      args.push('--yolo');
+    }
   }
   return args;
 }

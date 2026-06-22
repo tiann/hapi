@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { AssistantRuntimeProvider, useAssistantApi } from '@assistant-ui/react'
+import { AssistantRuntimeProvider, useAssistantApi, useAssistantState } from '@assistant-ui/react'
+import { DragDropZone } from '@/components/AssistantChat/DragDropZone'
 import type { ApiClient } from '@/api/client'
 import type {
     AttachmentMetadata,
@@ -8,6 +9,7 @@ import type {
     DecryptedMessage,
     PermissionMode,
     Session,
+    PiModelSummary,
     SlashCommand
 } from '@/types/api'
 import type { ChatBlock, NormalizedMessage } from '@/chat/types'
@@ -29,6 +31,9 @@ import { ScratchlistDrawer } from '@/components/AssistantChat/ScratchlistPanel'
 import { useScratchlist } from '@/lib/use-scratchlist'
 import { useHappyRuntime } from '@/lib/assistant-runtime'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
+import { consumeSharePendingTransfer } from '@/lib/sharePendingState'
+import { deleteShareTransfer, getShareTransfer } from '@/lib/shareTransfer'
+import { getDraft } from '@/lib/composer-drafts'
 import { useTranslation } from '@/lib/use-translation'
 import { SessionHeader } from '@/components/SessionHeader'
 import { CursorMigrationBanner } from '@/components/CursorMigrationBanner'
@@ -53,6 +58,7 @@ import {
 } from '@/lib/sessionChatCursorModel'
 import { buildCursorEffortPickerOptions, resolveCursorVariantOptions } from '@/lib/cursorModelOptions'
 import { useOpencodeModels } from '@/hooks/queries/useOpencodeModels'
+import { usePiModels } from '@/hooks/queries/usePiModels'
 import { useOpencodeReasoningEffortOptions } from '@/hooks/queries/useOpencodeReasoningEffortOptions'
 import { useVoiceOptional } from '@/lib/voice-context'
 import { VoiceBackendSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
@@ -152,6 +158,97 @@ export function shouldRouteToScratchlist(
 
 function isUninvokedScheduledMessage(message: DecryptedMessage): boolean {
     return message.invokedAt == null && message.scheduledAt != null
+}
+
+/**
+ * Consumes a pending Web Share Target transfer once the assistant runtime
+ * is mounted and the session is active enough to accept attachments.
+ *
+ * Lifecycle:
+ *  - A mount effect reads the transfer id out of sessionStorage *once*
+ *    via consumeSharePendingTransfer() (not during render — StrictMode
+ *    would consume on the discarded pass). The id is stashed in a ref.
+ *  - The actual seed (composer.setText + composer.addAttachment per file)
+ *    runs once `props.sessionActive` is true. Inactive sessions disable
+ *    the attachmentAdapter, so writing attachments while inactive would
+ *    no-op and leak Blobs in IDB. The seed waits in a re-renderable
+ *    effect for the active flip.
+ *  - `consumedRef` gates the effect to a single seed per component
+ *    instance — refs survive a StrictMode mount/cleanup/remount pair, so
+ *    the second invoke early-returns and the first invoke's async chain
+ *    completes naturally (we deliberately don't cancel on cleanup; the
+ *    upload is idempotent and the only side effects on the composer are
+ *    no-ops once the runtime is unmounted).
+ *  - The IDB row is deleted after the seed completes so a back-button
+ *    refresh of /sessions/:id doesn't re-attach the same payload.
+ */
+function ShareSeedConsumer(props: { sessionId: string; sessionActive: boolean }) {
+    const assistantApi = useAssistantApi()
+    const composerText = useAssistantState(({ composer }) => composer.text)
+    const composerTextRef = useRef(composerText)
+    const initRef = useRef(false)
+    const transferIdRef = useRef<string | null>(null)
+    const consumedRef = useRef(false)
+    const [transferReady, setTransferReady] = useState(false)
+
+    useEffect(() => {
+        composerTextRef.current = composerText
+    }, [composerText])
+
+    // Consume in an effect, not during render — React.StrictMode double-
+    // invokes render functions in dev; a render-time consume deletes the
+    // sessionStorage key on the discarded pass and the committed render
+    // then sees no transfer.
+    useEffect(() => {
+        if (initRef.current) return
+        initRef.current = true
+        transferIdRef.current = consumeSharePendingTransfer()
+        setTransferReady(true)
+    }, [])
+
+    useEffect(() => {
+        if (!transferReady) return
+        if (consumedRef.current) return
+        const transferId = transferIdRef.current
+        if (!transferId) return
+        if (!props.sessionActive) return
+        consumedRef.current = true
+
+        void (async () => {
+            try {
+                const payload = await getShareTransfer(transferId)
+                if (!payload) return
+                const seedText = [payload.title, payload.text, payload.url]
+                    .filter((part) => typeof part === 'string' && part.length > 0)
+                    .join('\n')
+                    .trim()
+                if (seedText.length > 0) {
+                    const existingText = composerTextRef.current.trim().length > 0
+                        ? composerTextRef.current
+                        : getDraft(props.sessionId)
+                    const nextText = [existingText.trim(), seedText]
+                        .filter((part) => part.length > 0)
+                        .join('\n\n')
+                    if (nextText.length > 0) {
+                        assistantApi.composer().setText(nextText)
+                    }
+                }
+                for (const file of payload.files) {
+                    const reconstructed = new File([file.blob], file.name, { type: file.type })
+                    try {
+                        await assistantApi.composer().addAttachment(reconstructed)
+                    } catch (err) {
+                        console.error('share-seed addAttachment failed', err)
+                    }
+                }
+                await deleteShareTransfer(transferId).catch(() => {})
+            } catch (err) {
+                console.error('share-seed pull failed', err)
+            }
+        })()
+    }, [transferReady, props.sessionActive, props.sessionId, assistantApi])
+
+    return null
 }
 
 /**
@@ -278,6 +375,8 @@ type SessionChatProps = {
     // user dismisses or starts editing.
     sendError?: ComposerSendError | null
     onClearSendError?: () => void
+    initialOutlineOpen?: boolean
+    onInitialOutlineConsumed?: () => void
 }
 
 /**
@@ -311,7 +410,15 @@ function SessionChatInner(props: SessionChatProps) {
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
     const visibleGroupsRef = useRef<ToolGroupBlock[]>([])
     const [forceScrollToken, setForceScrollToken] = useState(0)
-    const [outlineOpen, setOutlineOpen] = useState(false)
+    const [outlineOpen, setOutlineOpen] = useState(props.initialOutlineOpen ?? false)
+    useEffect(() => {
+        if (!props.initialOutlineOpen) {
+            return
+        }
+        setOutlineOpen(true)
+        props.onInitialOutlineConsumed?.()
+    }, [props.initialOutlineOpen, props.onInitialOutlineConsumed])
+
     const [cursorSelectedBase, setCursorSelectedBase] = useState('auto')
     const lastSyncedCursorModelRef = useRef<string | null | undefined>(undefined)
     const scratchlist = useScratchlist(props.session.id)
@@ -466,6 +573,17 @@ function SessionChatInner(props: SessionChatProps) {
         sessionCliModelSkus,
         props.session.model
     ])
+    const piModelsState = usePiModels({
+        api: props.api,
+        sessionId: props.session.id,
+        enabled: agentFlavor === 'pi' && props.session.active
+    })
+    // Fallback to cached models from metadata when session is inactive
+    const piMetadata = props.session.metadata as Record<string, unknown> | null
+    const piCachedModels = piMetadata?.piAvailableModels as PiModelSummary[] | undefined ?? []
+    // Provider-qualified selected model — disambiguates when two providers
+    // share a modelId (hub persists this alongside the legacy modelId string).
+    const piSelectedModel = piMetadata?.piSelectedModel as { provider: string; modelId: string } | null | undefined
     const cursorCatalogReadinessArgs = useMemo(() => ({
         sessionLoading: cursorModelsState.isLoading,
         machineLoading: machineCursorModelsState.isLoading,
@@ -552,7 +670,6 @@ function SessionChatInner(props: SessionChatProps) {
             ? resolveSessionCursorVariantSelectValue(props.session.model, cursorModelEffortOptions)
             : null
     ), [agentFlavor, cursorModelEffortOptions, props.session.model])
-
     const {
         abortSession,
         switchSession,
@@ -792,7 +909,7 @@ function SessionChatInner(props: SessionChatProps) {
     }, [setCollaborationMode, props.onRefresh, haptic])
 
     // Model mode change handler
-    const handleModelChange = useCallback(async (model: string | null) => {
+    const handleModelChange = useCallback(async (model: { provider: string; modelId: string } | string | null) => {
         try {
             await setModel(model)
             haptic.notification('success')
@@ -889,12 +1006,17 @@ function SessionChatInner(props: SessionChatProps) {
         props.onRefresh()
     }, [switchSession, props.onRefresh])
 
-    const handleViewFiles = useCallback(() => {
+    const handleToggleFiles = useCallback(() => {
+        setOutlineOpen(false)
         navigate({
             to: '/sessions/$sessionId/files',
             params: { sessionId: props.session.id }
         })
     }, [navigate, props.session.id])
+
+    const handleToggleOutline = useCallback(() => {
+        setOutlineOpen((open) => !open)
+    }, [])
 
     const handleViewTerminal = useCallback(() => {
         navigate({
@@ -983,8 +1105,10 @@ function SessionChatInner(props: SessionChatProps) {
             <SessionHeader
                 session={props.session}
                 onBack={props.onBack}
-                onViewFiles={props.session.metadata?.path ? handleViewFiles : undefined}
-                onOpenOutline={() => setOutlineOpen(true)}
+                onToggleFiles={props.session.metadata?.path ? handleToggleFiles : undefined}
+                filesActive={false}
+                onToggleOutline={handleToggleOutline}
+                outlineActive={outlineOpen}
                 api={props.api}
                 onSessionDeleted={props.onBack}
                 onSessionReopened={(newSessionId) => {
@@ -1013,9 +1137,15 @@ function SessionChatInner(props: SessionChatProps) {
             ) : null}
 
             <AssistantRuntimeProvider runtime={runtime}>
-                <div className="relative flex min-h-0 flex-1 flex-col">
+                <ShareSeedConsumer sessionId={props.session.id} sessionActive={props.session.active} />
+                <DragDropZone disabled={sessionInactive || props.isSending || pendingSchedule != null}>
+
                     <HappyThread
-                        key={props.session.id}
+                        // Key with prefix: different components under the same session
+                        // (thread, scratchlist, composer) must have distinct keys to avoid
+                        // React reconciliation issues when switching sessions rapidly.
+                        // Without prefixes, React may reuse the wrong component's DOM/localStorage.
+                        key={`thread-${props.session.id}`}
                         api={props.api}
                         sessionId={props.session.id}
                         metadata={props.session.metadata}
@@ -1076,7 +1206,7 @@ function SessionChatInner(props: SessionChatProps) {
                     </div>
 
                     <HappyComposer
-                        key={props.session.id}
+                        key={`composer-${props.session.id}`}
                         sessionId={props.session.id}
                         disabled={props.isSending}
                         pendingSchedule={pendingSchedule}
@@ -1102,8 +1232,16 @@ function SessionChatInner(props: SessionChatProps) {
                                     )
                                     : agentFlavor === 'opencode'
                                         ? opencodeModelOptions
+                                        // Pi uses its own provider-qualified picker (piModels prop).
+                                        // Feeding piModelOptions here would make the generic Ctrl/Cmd+M
+                                        // cycler (getNextModelForFlavor) post a bare modelId string,
+                                        // which loses the provider and can pick the wrong cached
+                                        // match or throw in runPi. undefined makes the shortcut a no-op
+                                        // so Pi model changes go through the dedicated picker only.
                                         : undefined
                         }
+                        piModels={agentFlavor === 'pi' ? (piModelsState.availableModels.length > 0 ? piModelsState.availableModels : piCachedModels) : undefined}
+                        piSelectedModel={agentFlavor === 'pi' ? piSelectedModel : undefined}
                         availableModelReasoningEffortOptions={
                             agentFlavor === 'opencode' && opencodeReasoningEffortState.options.length > 0
                                 ? opencodeReasoningEffortState.options
@@ -1153,9 +1291,11 @@ function SessionChatInner(props: SessionChatProps) {
                                         && !cursorModelsState.error
                                         && cursorPicker
                                         && cursorPicker.modelOptions.length > 0
-                                        ? handleCursorBaseModelChange
+                                        ? ((model) => handleCursorBaseModelChange(typeof model === 'string' ? model : model?.modelId ?? null))
                                         : undefined)
-                                    : handleModelChange
+                                    : agentFlavor === 'pi'
+                                        ? (props.session.active && !piModelsState.error ? handleModelChange : undefined)
+                                        : handleModelChange
                         }
                         onModelEffortChange={
                             agentFlavor === 'cursor'
@@ -1199,7 +1339,7 @@ function SessionChatInner(props: SessionChatProps) {
                         sendError={props.sendError ?? null}
                         onClearSendError={props.onClearSendError}
                     />
-                </div>
+                </DragDropZone>
             </AssistantRuntimeProvider>
 
             {/* Voice session component - renders nothing but initializes voice backend */}

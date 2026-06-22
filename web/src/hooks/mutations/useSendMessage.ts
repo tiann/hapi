@@ -235,6 +235,22 @@ export function useSendMessage(
             } catch (error) {
                 haptic.notification('error')
                 console.error('Failed to resolve session before send:', error)
+                // #918: surface the failure via onError so the route can render
+                // an inline affordance instead of silently swallowing the
+                // typed text.  This covers the "no resume target" branch
+                // (inactiveSessionCanResume === false) and also any failure
+                // from api.resumeSession itself.  The mutation never started
+                // (no optimistic row to clean up); onError is the only
+                // visibility hook the consumer has for this pre-mutation
+                // path.  Key by the ORIGINAL sessionId because navigation
+                // hasn't happened yet -- the operator is still on the
+                // archived session's route.
+                options?.onError?.({
+                    sessionId,
+                    text,
+                    error,
+                    scheduledAt: scheduledAt ?? null
+                })
                 return false
             } finally {
                 resolveGuardRef.current = false

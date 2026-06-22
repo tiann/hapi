@@ -124,7 +124,13 @@ export const SessionCollaborationModeRequestSchema = z.object({
 export type SessionCollaborationModeRequest = z.infer<typeof SessionCollaborationModeRequestSchema>
 
 export const SessionModelRequestSchema = z.object({
-    model: z.string().trim().min(1).nullable()
+    model: z.union([
+        z.string().trim().min(1),
+        z.object({
+            provider: z.string().trim().min(1),
+            modelId: z.string().trim().min(1),
+        }),
+    ]).nullable()
 })
 
 export type SessionModelRequest = z.infer<typeof SessionModelRequestSchema>
@@ -385,6 +391,41 @@ export type CursorModelSummary = OpencodeModelSummary
 export type CursorModelsResponse = OpencodeModelsResponse
 
 export type ListCursorModelsResponse = CursorModelsResponse
+
+/** Maps thinking levels to provider-specific values. null = unsupported. */
+export type PiThinkingLevelMap = Partial<Record<string, string | null>>
+
+export type PiModelSummary = {
+    provider: string
+    modelId: string
+    name?: string
+    contextWindow?: number
+    /** Whether the model supports reasoning/thinking */
+    reasoning?: boolean
+    /** Maps Pi thinking levels to provider values; null = unsupported level */
+    thinkingLevelMap?: PiThinkingLevelMap
+}
+
+export type PiModelsResponse = {
+    success: boolean
+    availableModels?: PiModelSummary[]
+    currentModelId?: string | null
+    error?: string
+}
+
+export type ListPiModelsResponse = PiModelsResponse
+
+export type PiCommandSummary = {
+    name: string
+    description?: string
+    source: 'extension' | 'prompt' | 'skill'
+}
+
+export type PiCommandsResponse = {
+    success: boolean
+    commands?: PiCommandSummary[]
+    error?: string
+}
 
 export type SlashCommand = {
     name: string

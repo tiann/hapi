@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { DecryptedMessage } from '@/types/api'
-import { computeCanCancel, computeEditPendingSchedule, formatScheduledTime, getQueuedMessageEditText, getQueuedMessagePreview, sortQueuedMessages } from './QueuedMessagesBar'
+import { computeCanCancel, computeEditPendingSchedule, getQueuedMessageEditText, getQueuedMessagePreview, sortQueuedMessages } from './QueuedMessagesBar'
+import { formatScheduledTime } from '@/lib/scheduledTime'
 
 /**
  * Unit tests for computeCanCancel — the race guard that prevents sending

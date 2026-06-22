@@ -15,6 +15,7 @@ export type RunnerLifecycle = {
     setExitCode: (code: number) => void
     setArchiveReason: (reason: string) => void
     setSessionEndReason: (reason: SessionEndReason) => void
+    hasExplicitSessionEndReason: () => boolean
     markCrash: (error: unknown) => void
     cleanup: () => Promise<void>
     cleanupAndExit: (codeOverride?: number) => Promise<void>
@@ -23,8 +24,29 @@ export type RunnerLifecycle = {
 
 export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLifecycle {
     let exitCode = 0
-    let archiveReason = 'User terminated'
+    // tiann/hapi#914: default reason is 'Hub restart' (parent-driven SIGTERM
+    // is the most common non-user cause). Genuine user actions (clicking
+    // Archive in the web UI, or Ctrl-C in a local terminal) explicitly
+    // reassign this via `setArchiveReason` BEFORE `cleanupAndExit` runs:
+    //   - KillSession RPC handler  → 'User terminated' (see registerKillSessionHandler)
+    //   - SIGINT handler           → 'User terminated' (Ctrl-C in local terminal)
+    //   - uncaughtException/Reject → 'Session crashed' (via markCrash)
+    //
+    // Out-of-band SIGTERM (hub-restart cascade, systemd cgroup kill on
+    // hapi-runner.service stop, `kill <pid>` from the operator) keeps the
+    // default and is correctly labelled 'Hub restart' on the audit trail.
+    //
+    // Runner-internal stop paths (`hapi runner stop-session`, webhook-timeout
+    // cleanup at run.ts:587, orphan cleanup at run.ts:267) also currently
+    // hit this default - that is technically inaccurate but follows the
+    // friction-mode "smallest defensible change" rule for this PR. Finer
+    // attribution would require an IPC channel (stdio: 'ipc' on spawn) so
+    // the runner can stamp `setArchiveReason` before SIGTERMing; tracked as
+    // a follow-up to keep this PR focussed on the user-action lie that
+    // motivated #914.
+    let archiveReason = 'Hub restart'
     let sessionEndReason: SessionEndReason = 'terminated'
+    let sessionEndReasonExplicit = false
     let cleanupStarted = false
     let cleanupPromise: Promise<void> | null = null
 
@@ -95,7 +117,22 @@ export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLi
 
     const setSessionEndReason = (reason: SessionEndReason) => {
         sessionEndReason = reason
+        sessionEndReasonExplicit = true
+        // tiann/hapi#914 review round 4: every agent runner
+        // (runClaude / runCodex / runCursor / runGemini / runKimi /
+        // runOpencode) calls setSessionEndReason('completed') before
+        // cleanupAndExit() on the natural-exit path without setting an
+        // archive reason. With the SIGTERM-driven default of 'Hub restart',
+        // clean completions would otherwise be audit-trailed as restart
+        // cascades. Flip the default to 'Session completed' when the end
+        // reason transitions to 'completed' AND no caller has already
+        // overridden the archive reason.
+        if (reason === 'completed' && archiveReason === 'Hub restart') {
+            archiveReason = 'Session completed'
+        }
     }
+
+    const hasExplicitSessionEndReason = () => sessionEndReasonExplicit
 
     const markCrash = (error: unknown) => {
         logger.debug(`${logPrefix} Unhandled error:`, error)
@@ -105,11 +142,19 @@ export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLi
     }
 
     const registerProcessHandlers = () => {
+        // tiann/hapi#914: SIGTERM is treated as the default reason ('Hub restart')
+        // because the runner is restarted by systemd as part of hub restart in
+        // production. If a future code path needs to distinguish "operator
+        // killed the host process" from "hub restart", it can call
+        // setArchiveReason() before the runner exits.
         process.on('SIGTERM', () => {
             void cleanupAndExit()
         })
 
+        // Ctrl-C in a local terminal is genuine user intent — keep the
+        // pre-#914 label so the audit trail still shows it.
         process.on('SIGINT', () => {
+            archiveReason = 'User terminated'
             void cleanupAndExit()
         })
 
@@ -128,6 +173,7 @@ export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLi
         setExitCode,
         setArchiveReason,
         setSessionEndReason,
+        hasExplicitSessionEndReason,
         markCrash,
         cleanup,
         cleanupAndExit,

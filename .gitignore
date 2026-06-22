@@ -68,3 +68,6 @@ e2e-output/
 
 # Compiled output of scripts/hapi-sessions-plot.c (operator tool; rebuild via build-hapi-sessions-plot.sh)
 scripts/hapi-sessions-plot
+.xyz-harness
+.agents/
+.pi/

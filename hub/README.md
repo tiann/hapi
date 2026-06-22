@@ -152,6 +152,7 @@ Namespace: `/cli`
 - `update-metadata` - Update session metadata.
 - `update-state` - Update agent state.
 - `session-alive` - Keep session active.
+- `session-ready` - Cursor ACP `session/load` (or `newSession`) succeeded; hub defers merge/dedup until this arrives on reopen.
 - `session-end` - Mark session ended.
 - `machine-alive` - Keep machine online.
 - `rpc-register` - Register RPC handler.

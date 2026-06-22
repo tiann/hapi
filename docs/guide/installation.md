@@ -536,6 +536,7 @@ After=network.target hapi-hub.service
 
 [Service]
 Type=simple
+KillMode=process
 ExecStart=/usr/local/bin/hapi runner start-sync
 Restart=always
 RestartSec=5
@@ -543,6 +544,8 @@ RestartSec=5
 [Install]
 WantedBy=default.target
 ```
+
+> **Why `KillMode=process`?** The runner spawns each agent session as a detached child process (`detached: true` in `cli/src/runner/run.ts`) so that sessions stay alive when the runner exits. Without `KillMode=process`, systemd's default `KillMode=control-group` sends SIGTERM to every PID in the runner's cgroup when the unit stops, defeating the detach and forcibly archiving every running session. `KillMode=process` preserves the contract: stopping or restarting the runner only signals the runner itself; agent sessions stay alive, and a fresh runner re-establishes control via the existing socket.io reconnect path. This applies to runner upgrades, manual restarts, and any reboot in which the runner unit is stopped before agents have finished.
 
 Enable and start:
 

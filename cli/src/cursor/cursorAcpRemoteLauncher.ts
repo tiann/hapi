@@ -64,7 +64,10 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
         backend.onStderrError((error) => {
             logger.debug('[cursor-acp] stderr error', error);
-            session.sendSessionEvent({ type: 'message', message: error.message });
+            const converted = convertAgentMessage({ type: 'error', message: error.message });
+            if (converted) {
+                session.sendAgentMessage(converted);
+            }
             messageBuffer.addMessage(error.message, 'status');
         });
 
@@ -72,7 +75,13 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             await backend.initialize();
         } catch (error) {
             const errMsg = error instanceof Error ? error.message : String(error);
-            throw new Error(`${CURSOR_ACP_REQUIRED_MESSAGE} (${errMsg})`);
+            const fullMsg = `${CURSOR_ACP_REQUIRED_MESSAGE} (${errMsg})`;
+            const converted = convertAgentMessage({ type: 'error', message: fullMsg });
+            if (converted) {
+                session.sendAgentMessage(converted);
+            }
+            messageBuffer.addMessage(fullMsg, 'status');
+            throw new Error(fullMsg);
         }
 
         await backend.authenticateIfAvailable('cursor_login');
@@ -105,7 +114,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     mcpServers: mcpServerList
                 });
             } catch (error) {
-                logger.warn('[cursor-acp] session/load failed', error);
+                logger.warn('[cursor-acp] session/load failed', formatAcpLoadError(error));
                 throw new Error(
                     'Failed to resume Cursor ACP session. Legacy stream-json sessions cannot be loaded via ACP.'
                 );
@@ -123,7 +132,21 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
         if (acpSessionId !== resumeSessionId) {
             session.onSessionFoundWithProtocol(acpSessionId, 'acp');
+            // tiann/hapi#913: block until the metadata write that pins
+            // `cursorSessionId` reaches the hub DB before we drop into
+            // `runMainLoop`. If SIGTERM (hub-restart cascade) lands during
+            // the first turn without this gate, the only durable handle
+            // linking the session to its on-disk ACP store is lost and the
+            // session strands. The resume path at lines 98-100 already
+            // relies on the latency of `backend.loadSession()` to flush the
+            // same write; the fresh-session path has no such cover.
+            const flushed = await session.client.flushMetadata();
+            if (!flushed) {
+                logger.warn(`[cursor-acp] cursorSessionId metadata write did not ACK within 5s; session may be unrecoverable if killed before the lock drains (acpSessionId=${acpSessionId})`);
+            }
         }
+
+        session.client.emitSessionReady();
 
         syncCursorModelsFromAcp(backend, acpSessionId);
 
@@ -202,11 +225,12 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             } catch (error) {
                 logger.warn('[cursor-acp] prompt failed', error);
                 const errMsg = error instanceof Error ? error.message : String(error);
-                session.sendSessionEvent({
-                    type: 'message',
-                    message: `Cursor Agent failed: ${errMsg}`
-                });
-                messageBuffer.addMessage(`Cursor Agent failed: ${errMsg}`, 'status');
+                const message = `Cursor Agent failed: ${errMsg}`;
+                const converted = convertAgentMessage({ type: 'error', message });
+                if (converted) {
+                    session.sendAgentMessage(converted);
+                }
+                messageBuffer.addMessage(message, 'status');
             } finally {
                 session.onThinkingChange(false);
                 await this.permissionAdapter?.cancelAll('Prompt finished');
@@ -268,6 +292,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 break;
             case 'plan':
                 this.messageBuffer.addMessage('Plan updated', 'status');
+                break;
+            case 'error':
+                this.messageBuffer.addMessage(message.message, 'status');
                 break;
             case 'turn_complete':
                 break;
@@ -434,6 +461,34 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private async handleSwitchRequest(): Promise<void> {
         await this.requestExit('switch', () => this.handleAbort());
     }
+}
+
+function formatAcpLoadError(error: unknown): Record<string, unknown> {
+    if (error instanceof Error) {
+        const record: Record<string, unknown> = {
+            name: error.name,
+            message: error.message
+        };
+        const code = (error as Error & { code?: unknown }).code;
+        if (code !== undefined) {
+            record.code = code;
+        }
+        const data = (error as Error & { data?: unknown }).data;
+        if (data !== undefined) {
+            record.data = data;
+        }
+        const cause = error.cause;
+        if (cause !== undefined) {
+            record.cause = cause instanceof Error
+                ? { name: cause.name, message: cause.message }
+                : cause;
+        }
+        return record;
+    }
+    if (typeof error === 'object' && error !== null) {
+        return { ...(error as Record<string, unknown>) };
+    }
+    return { message: String(error) };
 }
 
 function isSpawnDefaultModel(modelId: string): boolean {

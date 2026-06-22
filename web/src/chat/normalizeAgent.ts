@@ -577,6 +577,21 @@ export function normalizeAgentRecord(
             }
         }
 
+        if (data.type === 'error' && typeof data.message === 'string') {
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'event',
+                content: {
+                    type: 'error',
+                    message: data.message
+                },
+                isSidechain: false,
+                meta
+            }
+        }
+
         if (data.type === 'message' && typeof data.message === 'string') {
             const review = parseCodexReviewMessage(data.message)
             if (review) {

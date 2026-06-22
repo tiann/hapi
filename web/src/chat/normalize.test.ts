@@ -178,6 +178,27 @@ describe('normalizeDecryptedMessage', () => {
         })
     })
 
+    it('normalizes agent error payloads as error events', () => {
+        const normalized = normalizeDecryptedMessage(makeMessage({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'error',
+                    message: 'Cursor Agent failed: authentication required'
+                }
+            }
+        }))
+
+        expect(normalized).toMatchObject({
+            role: 'event',
+            content: {
+                type: 'error',
+                message: 'Cursor Agent failed: authentication required'
+            }
+        })
+    })
+
     it('treats non-sidechain string user output as sidechain', () => {
         const message = makeMessage({
             role: 'agent',

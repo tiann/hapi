@@ -217,3 +217,27 @@ describe('POST /api/sessions/:id/messages — scheduledAt + attachments rejected
         expect(sentMessages).toHaveLength(1)
     })
 })
+
+// ---------------------------------------------------------------------------
+// #918: inactive session 409 carries a machine-readable code
+// ---------------------------------------------------------------------------
+
+describe('POST /api/sessions/:id/messages — inactive session response shape', () => {
+    it('returns 409 with code "session_inactive" when sending to an inactive session', async () => {
+        const { app, sentMessages } = createApp({ active: false })
+
+        const response = await app.request('/api/sessions/session-1/messages', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ text: 'hello', localId: 'local-inactive' })
+        })
+
+        expect(response.status).toBe(409)
+        const body = await response.json() as { error: string; code: string }
+        expect(body.error).toBe('Session is inactive')
+        // Web client discriminates this branch via `code` without string-matching
+        // the human message; see useSendMessage onError consumer in router.tsx.
+        expect(body.code).toBe('session_inactive')
+        expect(sentMessages).toHaveLength(0)
+    })
+})

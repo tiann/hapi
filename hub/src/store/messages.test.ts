@@ -342,5 +342,9 @@ describe('countFutureScheduledLocalMessages', () => {
         const counts = store.messages.countFutureScheduledBySessionIds([sessionA.id, sessionB.id], now)
         expect(counts.get(sessionA.id)).toBe(2)
         expect(counts.get(sessionB.id)).toBeUndefined()
+
+        const nextAt = store.messages.minFutureScheduledAtBySessionIds([sessionA.id, sessionB.id], now)
+        expect(nextAt.get(sessionA.id)).toBe(now + 60_000)
+        expect(nextAt.get(sessionB.id)).toBeUndefined()
     })
 })

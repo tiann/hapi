@@ -1,0 +1,123 @@
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { logger } from '@/ui/logger';
+import { JsonLineParser } from '@/utils/jsonLineParser';
+import { PiAgentEventSchema } from './schemas';
+import type { PiAgentEvent, PiRpcCommand } from './types';
+
+export interface PiTransportOptions {
+    command: string;
+    args: string[];
+    cwd: string;
+}
+
+export class PiTransport extends JsonLineParser {
+    private process: ChildProcessWithoutNullStreams | null = null;
+    private eventHandler: ((event: PiAgentEvent) => void) | null = null;
+    private closeHandler: ((code: number | null, signal: string | null) => void) | null = null;
+    private errorHandler: ((error: Error) => void) | null = null;
+    private killed = false;
+    private started = false;
+    private exited = false;
+    private readonly options: PiTransportOptions;
+
+    constructor(options: PiTransportOptions) {
+        super();
+        this.options = options;
+    }
+
+    start(): void {
+        if (this.started) {
+            logger.warn('[pi] PiTransport.start() called twice — ignoring');
+            return;
+        }
+        this.started = true;
+
+        logger.debug(`[pi] Starting Pi process: ${this.options.command} ${this.options.args.join(' ')}`);
+
+        this.process = spawn(this.options.command, this.options.args, {
+            cwd: this.options.cwd,
+            stdio: ['pipe', 'pipe', 'pipe']
+        }) as ChildProcessWithoutNullStreams;
+
+        this.process.stdout.setEncoding('utf8');
+        this.process.stdout.on('data', (chunk: string) => this.feed(chunk));
+        this.process.stdout.on('end', () => {
+            if (!this.exited && !this.killed) {
+                logger.debug('[pi] stdout ended before process close — treating as exit');
+                this.exited = true;
+                this.closeHandler?.(null, null);
+            }
+        });
+
+        this.process.stderr.setEncoding('utf8');
+        this.process.stderr.on('data', (chunk: string) => {
+            logger.debug(`[pi][stderr] ${chunk.toString().trim()}`);
+        });
+
+        this.process.on('close', (code, signal) => {
+            logger.debug(`[pi] Process exited (code=${code}, signal=${signal})`);
+            this.exited = true;
+            this.closeHandler?.(code, signal);
+        });
+
+        this.process.on('error', (err) => {
+            const nodeErr = err as NodeJS.ErrnoException;
+            if (nodeErr.code === 'ENOENT') {
+                this.errorHandler?.(new Error(
+                    `Pi was not found on PATH. Please install Pi and retry.`
+                ));
+            } else {
+                this.errorHandler?.(new Error(
+                    `Failed to start Pi: ${nodeErr.message}`
+                ));
+            }
+        });
+    }
+
+    send(message: PiRpcCommand): void {
+        if (!this.process || this.killed) {
+            logger.debug('[pi] Dropping message: transport not running');
+            return;
+        }
+        try {
+            this.process.stdin.write(JSON.stringify(message) + '\n');
+        } catch (err) {
+            const nodeErr = err as NodeJS.ErrnoException;
+            if (nodeErr.code === 'EPIPE') {
+                logger.debug('[pi] EPIPE on write — process likely exited');
+            } else {
+                throw err;
+            }
+        }
+    }
+
+    onEvent(handler: (event: PiAgentEvent) => void): void {
+        this.eventHandler = handler;
+    }
+
+    onClose(handler: (code: number | null, signal: string | null) => void): void {
+        this.closeHandler = handler;
+    }
+
+    onError(handler: (error: Error) => void): void {
+        this.errorHandler = handler;
+    }
+
+    kill(): void {
+        if (!this.process || this.killed) return;
+        this.killed = true;
+        this.process.kill('SIGTERM');
+    }
+
+    protected handleLine(line: string): void {
+        try {
+            const parsed = JSON.parse(line);
+            const result = PiAgentEventSchema.safeParse(parsed);
+            if (result.success) {
+                this.eventHandler?.(result.data as PiAgentEvent);
+            }
+        } catch {
+            logger.debug(`[pi] Skipping malformed JSON: ${line.slice(0, 100)}`);
+        }
+    }
+}

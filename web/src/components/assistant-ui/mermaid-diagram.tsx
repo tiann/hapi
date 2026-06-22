@@ -14,7 +14,8 @@ async function getMermaid() {
 
 function resolveTheme() {
     if (typeof document === 'undefined') return 'light' as const
-    return document.documentElement.dataset.theme === 'dark' ? 'dark' as const : 'light' as const
+    const theme = document.documentElement.dataset.theme
+    return theme === 'dark' || theme === 'oled' ? 'dark' as const : 'light' as const
 }
 
 async function ensureMermaid(theme: 'light' | 'dark') {

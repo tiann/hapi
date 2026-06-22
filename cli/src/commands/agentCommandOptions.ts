@@ -5,6 +5,7 @@ export type RemoteAgentCommandOptions<TPermissionMode extends PermissionMode> = 
     startingMode?: 'local' | 'remote'
     permissionMode?: TPermissionMode
     model?: string
+    effort?: string
     modelReasoningEffort?: string
     resumeSessionId?: string
 }
@@ -42,12 +43,25 @@ export function parseRemoteAgentCommandOptions<TPermissionMode extends Permissio
                 throw new Error('Missing --resume value')
             }
             options.resumeSessionId = sessionId
+        } else if (arg === '--session-id') {
+            // Pi uses --session-id for exact session resume (RPC mode)
+            const sessionId = args[++i]
+            if (!sessionId) {
+                throw new Error('Missing --session-id value')
+            }
+            options.resumeSessionId = sessionId
         } else if (arg === '--model') {
             const model = args[++i]
             if (!model) {
                 throw new Error('Missing --model value')
             }
             options.model = model
+        } else if (arg === '--effort') {
+            const effort = args[++i]
+            if (!effort) {
+                throw new Error('Missing --effort value')
+            }
+            options.effort = effort
         } else if (arg === '--model-reasoning-effort') {
             const modelReasoningEffort = args[++i]
             if (!modelReasoningEffort) {

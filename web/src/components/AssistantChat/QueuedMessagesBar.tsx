@@ -10,6 +10,7 @@ import { useCancelQueuedMessage } from '@/hooks/mutations/useCancelQueuedMessage
 import { useTranslation } from '@/lib/use-translation'
 import { useToast } from '@/lib/toast-context'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
+import { formatScheduledTime } from '@/lib/scheduledTime'
 
 function ClockIcon() {
     return (
@@ -147,22 +148,6 @@ export function computeCanCancel({
  * Edit = client-side cancel + prefill composer with message text (Codex dialect).
  * Cancel = DELETE /sessions/:id/messages/:messageId with optimistic removal.
  */
-/** @internal Exported for unit testing. */
-export function formatScheduledTime(scheduledAt: number): string {
-    const date = new Date(scheduledAt)
-    const now = new Date()
-    const opts: Intl.DateTimeFormatOptions = {
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-    }
-    if (date.getFullYear() !== now.getFullYear()) {
-        opts.year = 'numeric'
-    }
-    return date.toLocaleString(undefined, opts)
-}
-
 export function QueuedMessagesBar({
     sessionId,
     api,

@@ -35,6 +35,21 @@ async function runRpc<T>(fn: () => Promise<T>): Promise<T | { success: false; er
     }
 }
 
+// Generated-image bytes for a given id never change, so they are cached for a year as immutable.
+const GENERATED_IMAGE_CACHE_CONTROL = 'private, max-age=31536000, immutable'
+
+// Weak comparison of an If-None-Match header against our ETag (handles lists, `*`, and W/ prefixes).
+function ifNoneMatchMatches(header: string | undefined, etag: string): boolean {
+    if (!header) {
+        return false
+    }
+    const normalized = etag.replace(/^W\//, '')
+    return header.split(',').some((candidate) => {
+        const trimmed = candidate.trim()
+        return trimmed === '*' || trimmed.replace(/^W\//, '') === normalized
+    })
+}
+
 export function createGitRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
 
@@ -150,16 +165,31 @@ export function createGitRoutes(getSyncEngine: () => SyncEngine | null): Hono<We
             return c.json({ error: 'Invalid generated image id' }, 400)
         }
 
+        // The id is an immutable content fingerprint, so it doubles as the ETag. If the client
+        // already holds it, answer 304 *before* the RPC so revalidation skips the CLI round-trip
+        // entirely (and still works even if the image was evicted from CLI memory). Issue #927.
+        const etag = `"${parsed.data.imageId}"`
+        if (ifNoneMatchMatches(c.req.header('if-none-match'), etag)) {
+            return c.body(null, 304, {
+                'Cache-Control': GENERATED_IMAGE_CACHE_CONTROL,
+                ETag: etag
+            })
+        }
+
         const result = await runRpc(() => engine.readGeneratedImage(sessionResult.sessionId, parsed.data.imageId))
         if (!result.success || !result.content) {
             return c.json({ success: false, error: result.error ?? 'Generated image not found' }, 404)
         }
 
         const bytes = Uint8Array.from(Buffer.from(result.content, 'base64'))
+        // Generated images are content-addressed by an immutable random id, so the bytes for a
+        // given id never change. Cache aggressively so remounts/scroll/session reopen don't
+        // re-run the full HTTP -> socket.io RPC -> base64 round-trip every time (issue #927).
         return c.body(bytes, 200, {
             'Content-Type': result.mimeType ?? 'application/octet-stream',
             'Content-Disposition': `inline; filename="${encodeURIComponent(result.fileName ?? 'generated-image')}"`,
-            'Cache-Control': 'no-store'
+            'Cache-Control': GENERATED_IMAGE_CACHE_CONTROL,
+            ETag: etag
         })
     })
 

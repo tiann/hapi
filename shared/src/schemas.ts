@@ -47,6 +47,7 @@ export const MetadataSchema = z.object({
     // tiann/hapi#873.
     cursorMigrationState: z.enum(['in_progress', 'ambiguous']).optional(),
     kimiSessionId: z.string().optional(),
+    piSessionId: z.string().optional(),
     tools: z.array(z.string()).optional(),
     slashCommands: z.array(z.string()).optional(),
     homeDir: z.string().optional(),
@@ -55,6 +56,7 @@ export const MetadataSchema = z.object({
     happyToolsDir: z.string().optional(),
     startedFromRunner: z.boolean().optional(),
     hostPid: z.number().optional(),
+    hapiMcpUrl: z.string().url().optional(),
     startedBy: z.enum(['runner', 'terminal']).optional(),
     lifecycleState: z.string().optional(),
     lifecycleStateSince: z.number().optional(),
@@ -63,7 +65,15 @@ export const MetadataSchema = z.object({
     preferredPermissionMode: PermissionModeSchema.optional(),
     flavor: z.string().nullish(),
     capabilities: SessionCapabilitiesSchema.optional(),
-    worktree: WorktreeMetadataSchema.optional()
+    worktree: WorktreeMetadataSchema.optional(),
+    // Cached Pi model list — written by CLI, read by web (inactive session fallback).
+    // Minimal shape: each entry must have modelId; other fields (provider, name, etc.) pass through.
+    piAvailableModels: z.array(z.object({ modelId: z.string() }).passthrough()).optional(),
+    // Pi-selected model with provider identity. The legacy `session.model`
+    // field stores only modelId (shared across all flavors); this preserves
+    // the provider so web can resolve the exact model when two providers
+    // share a modelId.
+    piSelectedModel: z.object({ provider: z.string(), modelId: z.string() }).nullable().optional()
 })
 
 export type Metadata = z.infer<typeof MetadataSchema>
