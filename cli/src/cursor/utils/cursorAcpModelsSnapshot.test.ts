@@ -47,4 +47,54 @@ describe('buildCursorModelsSnapshotFromAcp', () => {
 
         expect(snapshot?.availableModels).toHaveLength(2);
     });
+
+    it('synthesizes Composer fast variants from parameterized model + fast config options', () => {
+        const backend = {
+            getSessionModelsMetadata: () => ({
+                availableModels: [{ modelId: 'composer-2.5', name: 'Composer 2.5' }],
+                currentModelId: 'composer-2.5'
+            }),
+            getConfigOptionByCategory: (_sessionId: string, category: string) => {
+                if (category === 'model') {
+                    return {
+                        id: 'model',
+                        category: 'model',
+                        currentValue: 'composer-2.5',
+                        options: [{ value: 'composer-2.5', name: 'Composer 2.5' }]
+                    };
+                }
+                if (category === 'fast') {
+                    return {
+                        id: 'fast',
+                        category: 'fast',
+                        currentValue: 'false',
+                        options: [{ value: 'false', name: 'Off' }, { value: 'true', name: 'Fast' }]
+                    };
+                }
+                return undefined;
+            },
+            getSessionConfigOptions: () => [
+                {
+                    id: 'model',
+                    category: 'model',
+                    currentValue: 'composer-2.5',
+                    options: [{ value: 'composer-2.5', name: 'Composer 2.5' }]
+                },
+                {
+                    id: 'fast',
+                    category: 'fast',
+                    currentValue: 'false',
+                    options: [{ value: 'false', name: 'Off' }, { value: 'true', name: 'Fast' }]
+                }
+            ]
+        };
+
+        const snapshot = buildCursorModelsSnapshotFromAcp(backend, 's1');
+
+        expect(snapshot?.availableModels.map((entry) => entry.modelId).sort()).toEqual([
+            'composer-2.5[fast=false]',
+            'composer-2.5[fast=true]'
+        ]);
+        expect(snapshot?.currentModelId).toBe('composer-2.5[fast=false]');
+    });
 });

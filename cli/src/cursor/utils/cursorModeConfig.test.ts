@@ -194,6 +194,73 @@ describe('applyCursorAcpModel', () => {
         expect(setConfigOption).toHaveBeenCalledWith('s1', 'model-opt', 'composer-2.5[fast=false]');
     });
 
+    it('applies parameterized Cursor Composer fast=false for base CLI sku requests', async () => {
+        const setConfigOption = vi.fn(async () => {});
+        const backend = mockModelBackend({
+            setConfigOption,
+            getSessionModelsMetadata: vi.fn(() => ({
+                availableModels: [{ modelId: 'composer-2.5', name: 'Composer 2.5' }],
+                currentModelId: 'composer-2.5'
+            })),
+            getConfigOptionByCategory: vi.fn((_sessionId: string, category: string) => {
+                if (category === 'model') {
+                    return {
+                        id: 'model',
+                        category: 'model',
+                        currentValue: 'composer-2.5',
+                        options: [{ value: 'composer-2.5', name: 'Composer 2.5' }]
+                    };
+                }
+                if (category === 'fast') {
+                    return {
+                        id: 'fast',
+                        category: 'fast',
+                        currentValue: 'true',
+                        options: [{ value: 'false', name: 'Off' }, { value: 'true', name: 'Fast' }]
+                    };
+                }
+                return undefined;
+            })
+        });
+
+        await expect(applyCursorAcpModel(backend, 's1', 'composer-2.5')).resolves.toEqual({
+            applied: true,
+            resolvedWireId: 'composer-2.5[fast=false]',
+            requestedWireId: 'composer-2.5'
+        });
+        expect(setConfigOption).toHaveBeenNthCalledWith(1, 's1', 'model', 'composer-2.5');
+        expect(setConfigOption).toHaveBeenNthCalledWith(2, 's1', 'fast', 'false');
+        expect(backend.pinSessionModelWireId).toHaveBeenCalledWith('s1', 'composer-2.5[fast=false]');
+    });
+
+    it('applies parameterized Cursor Composer fast=true for -fast CLI sku requests', async () => {
+        const setConfigOption = vi.fn(async () => {});
+        const backend = mockModelBackend({
+            setConfigOption,
+            getSessionModelsMetadata: vi.fn(() => ({
+                availableModels: [{ modelId: 'composer-2.5', name: 'Composer 2.5' }],
+                currentModelId: 'composer-2.5'
+            })),
+            getConfigOptionByCategory: vi.fn((_sessionId: string, category: string) => {
+                if (category === 'model') {
+                    return { id: 'model', category: 'model', options: [{ value: 'composer-2.5' }] };
+                }
+                if (category === 'fast') {
+                    return { id: 'fast', category: 'fast', options: [{ value: 'false' }, { value: 'true' }] };
+                }
+                return undefined;
+            })
+        });
+
+        await expect(applyCursorAcpModel(backend, 's1', 'composer-2.5-fast')).resolves.toMatchObject({
+            applied: true,
+            resolvedWireId: 'composer-2.5[fast=true]',
+            requestedWireId: 'composer-2.5-fast'
+        });
+        expect(setConfigOption).toHaveBeenNthCalledWith(1, 's1', 'model', 'composer-2.5');
+        expect(setConfigOption).toHaveBeenNthCalledWith(2, 's1', 'fast', 'true');
+    });
+
     it('retries set_config_option once before failing apply', async () => {
         const setConfigOption = vi.fn()
             .mockRejectedValueOnce(new Error('transient'))
