@@ -83,6 +83,7 @@ function createApp(session: Session, overrides: EngineOverrides = {}) {
         },
         listScratchlistEntries: overrides.listScratchlistEntries ?? (() => []),
         countScratchlistEntries: overrides.countScratchlistEntries ?? (() => 0),
+        sumScratchlistAttachmentBytes: () => 0,
         getScratchlistEntry: overrides.getScratchlistEntry ?? (() => null),
         createScratchlistEntry: overrides.createScratchlistEntry
             ?? ((sessionId: string, text: string) => ({
@@ -91,15 +92,17 @@ function createApp(session: Session, overrides: EngineOverrides = {}) {
                     entryId: `auto-${Date.now()}`,
                     text,
                     createdAt: 1000,
-                    updatedAt: 1000
+                    updatedAt: 1000,
+                    attachments: [],
                 }
             })),
         updateScratchlistEntry: overrides.updateScratchlistEntry
-            ?? ((sessionId: string, entryId: string, text: string) => ({
+            ?? ((sessionId: string, entryId: string, patch: { text?: string }) => ({
                 entryId,
-                text,
+                text: patch.text ?? '',
                 createdAt: 1000,
-                updatedAt: 2000
+                updatedAt: 2000,
+                attachments: [],
             })),
         deleteScratchlistEntry: overrides.deleteScratchlistEntry ?? (() => true)
     } as unknown as SyncEngine
@@ -118,8 +121,8 @@ describe('GET /api/sessions/:id/scratchlist', () => {
         const session = createSession()
         const app = createApp(session, {
             listScratchlistEntries: () => [
-                { entryId: 'a', text: 'note A', createdAt: 1000, updatedAt: 1000 },
-                { entryId: 'b', text: 'note B', createdAt: 2000, updatedAt: 2500 }
+                { entryId: 'a', text: 'note A', createdAt: 1000, updatedAt: 1000, attachments: [] },
+                { entryId: 'b', text: 'note B', createdAt: 2000, updatedAt: 2500, attachments: [] }
             ]
         })
         const res = await app.request('/api/sessions/session-1/scratchlist')
@@ -156,7 +159,8 @@ describe('POST /api/sessions/:id/scratchlist', () => {
                         entryId: options?.entryId ?? 'fresh-id',
                         text,
                         createdAt: options?.createdAt ?? 1000,
-                        updatedAt: 1000
+                        updatedAt: 1000,
+                        attachments: options?.attachments ?? [],
                     }
                 }
             }
@@ -178,7 +182,7 @@ describe('POST /api/sessions/:id/scratchlist', () => {
         const app = createApp(session, {
             createScratchlistEntry: () => ({
                 outcome: 'duplicate' as const,
-                entry: { entryId: 'dup', text: 'pre-existing', createdAt: 100, updatedAt: 100 }
+                entry: { entryId: 'dup', text: 'pre-existing', createdAt: 100, updatedAt: 100, attachments: [] }
             })
         })
         const res = await app.request('/api/sessions/session-1/scratchlist', {
@@ -244,7 +248,8 @@ describe('POST /api/sessions/:id/scratchlist', () => {
                         entryId: 'pre-existing',
                         text: 'already there',
                         createdAt: 100,
-                        updatedAt: 100
+                        updatedAt: 100,
+                        attachments: [],
                     }
                 }
                 return null
@@ -253,7 +258,7 @@ describe('POST /api/sessions/:id/scratchlist', () => {
                 createCalls.push(1)
                 return {
                     outcome: 'created' as const,
-                    entry: { entryId: 'should-not-fire', text: 'noop', createdAt: 0, updatedAt: 0 }
+                    entry: { entryId: 'should-not-fire', text: 'noop', createdAt: 0, updatedAt: 0, attachments: [] }
                 }
             }
         })
@@ -335,11 +340,19 @@ describe('PUT /api/sessions/:id/scratchlist/:entryId', () => {
     it('returns the updated entry on success', async () => {
         const session = createSession()
         const app = createApp(session, {
-            updateScratchlistEntry: (_sessionId, entryId, text) => ({
-                entryId,
-                text,
+            getScratchlistEntry: () => ({
+                entryId: 'entry-1',
+                text: 'before',
                 createdAt: 1000,
-                updatedAt: 5000
+                updatedAt: 1000,
+                attachments: [],
+            }),
+            updateScratchlistEntry: (_sessionId, entryId, patch) => ({
+                entryId,
+                text: patch.text ?? 'before',
+                createdAt: 1000,
+                updatedAt: 5000,
+                attachments: patch.attachments ?? [],
             })
         })
         const res = await app.request('/api/sessions/session-1/scratchlist/entry-1', {
@@ -356,6 +369,7 @@ describe('PUT /api/sessions/:id/scratchlist/:entryId', () => {
     it('returns 404 when the entry does not exist', async () => {
         const session = createSession()
         const app = createApp(session, {
+            getScratchlistEntry: () => null,
             updateScratchlistEntry: () => null
         })
         const res = await app.request('/api/sessions/session-1/scratchlist/missing-id', {

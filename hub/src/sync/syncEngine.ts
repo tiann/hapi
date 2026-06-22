@@ -443,17 +443,23 @@ export class SyncEngine {
         text: string
         createdAt: number
         updatedAt: number
+        attachments: import('@hapi/protocol').ScratchlistAttachmentMetadata[]
     }> {
         return this.store.scratchlist.list(sessionId).map((row) => ({
             entryId: row.entryId,
             text: row.text,
             createdAt: row.createdAt,
-            updatedAt: row.updatedAt
+            updatedAt: row.updatedAt,
+            attachments: row.attachments,
         }))
     }
 
     countScratchlistEntries(sessionId: string): number {
         return this.store.scratchlist.count(sessionId)
+    }
+
+    sumScratchlistAttachmentBytes(sessionId: string): number {
+        return this.store.scratchlist.sumAttachmentBytes(sessionId)
     }
 
     /**
@@ -466,14 +472,21 @@ export class SyncEngine {
     getScratchlistEntry(
         sessionId: string,
         entryId: string
-    ): { entryId: string; text: string; createdAt: number; updatedAt: number } | null {
+    ): {
+        entryId: string
+        text: string
+        createdAt: number
+        updatedAt: number
+        attachments: import('@hapi/protocol').ScratchlistAttachmentMetadata[]
+    } | null {
         const row = this.store.scratchlist.get(sessionId, entryId)
         if (!row) return null
         return {
             entryId: row.entryId,
             text: row.text,
             createdAt: row.createdAt,
-            updatedAt: row.updatedAt
+            updatedAt: row.updatedAt,
+            attachments: row.attachments,
         }
     }
 
@@ -492,10 +505,20 @@ export class SyncEngine {
     createScratchlistEntry(
         sessionId: string,
         text: string,
-        options?: { entryId?: string; createdAt?: number }
+        options?: {
+            entryId?: string
+            createdAt?: number
+            attachments?: import('@hapi/protocol').ScratchlistAttachmentMetadata[]
+        }
     ): {
         outcome: 'created' | 'duplicate'
-        entry: { entryId: string; text: string; createdAt: number; updatedAt: number }
+        entry: {
+            entryId: string
+            text: string
+            createdAt: number
+            updatedAt: number
+            attachments: import('@hapi/protocol').ScratchlistAttachmentMetadata[]
+        }
     } | { outcome: 'session-not-found' } {
         const result = this.store.scratchlist.create(sessionId, text, options)
         if (result.outcome === 'session-not-found') {
@@ -510,7 +533,8 @@ export class SyncEngine {
                 entryId: result.entry.entryId,
                 text: result.entry.text,
                 createdAt: result.entry.createdAt,
-                updatedAt: result.entry.updatedAt
+                updatedAt: result.entry.updatedAt,
+                attachments: result.entry.attachments,
             }
         }
     }
@@ -518,25 +542,93 @@ export class SyncEngine {
     updateScratchlistEntry(
         sessionId: string,
         entryId: string,
+        patch: {
+            text?: string
+            attachments?: import('@hapi/protocol').ScratchlistAttachmentMetadata[]
+        }
+    ): {
+        entryId: string
         text: string
-    ): { entryId: string; text: string; createdAt: number; updatedAt: number } | null {
-        const updated = this.store.scratchlist.update(sessionId, entryId, text)
+        createdAt: number
+        updatedAt: number
+        attachments: import('@hapi/protocol').ScratchlistAttachmentMetadata[]
+    } | null {
+        const updated = this.store.scratchlist.update(sessionId, entryId, patch)
         if (!updated) return null
         this.sessionCache.emitScratchlistChanged(sessionId, updated.updatedAt)
         return {
             entryId: updated.entryId,
             text: updated.text,
             createdAt: updated.createdAt,
-            updatedAt: updated.updatedAt
+            updatedAt: updated.updatedAt,
+            attachments: updated.attachments,
         }
     }
 
     deleteScratchlistEntry(sessionId: string, entryId: string): boolean {
+        const existing = this.store.scratchlist.get(sessionId, entryId)
         const removed = this.store.scratchlist.delete(sessionId, entryId)
-        if (removed) {
+        if (removed && existing) {
+            void import('../scratchlistAttachments/storage').then(({ deleteScratchlistAttachmentFiles, getHapiHomeDir }) =>
+                deleteScratchlistAttachmentFiles(getHapiHomeDir(), existing.attachments)
+            )
             this.sessionCache.emitScratchlistChanged(sessionId, Date.now())
         }
         return removed
+    }
+
+async uploadScratchlistAttachment(
+        sessionId: string,
+        namespace: string,
+        filename: string,
+        contentBase64: string,
+        mimeType: string
+    ): Promise<{ success: true; attachment: import('@hapi/protocol').ScratchlistAttachmentMetadata } | { success: false; error: string; code?: string }> {
+        const { loadScratchlistAttachmentLimitsFromEnv, isAllowedScratchlistMime } = await import('../config/scratchlistAttachmentLimits')
+        const { estimateBase64Bytes, writeScratchlistAttachmentFile, getHapiHomeDir } = await import('../scratchlistAttachments/storage')
+        const { validateScratchlistAttachmentsForWrite } = await import('../scratchlistAttachments/validate')
+
+        const limits = loadScratchlistAttachmentLimitsFromEnv()
+        const estimated = estimateBase64Bytes(contentBase64)
+        if (estimated > limits.maxBytesPerFile) {
+            return { success: false, error: 'File too large', code: 'scratchlist_attachment_too_large' }
+        }
+        if (!isAllowedScratchlistMime(mimeType, limits)) {
+            return { success: false, error: 'Mime type not allowed', code: 'scratchlist_attachment_mime' }
+        }
+
+        const sessionBytes = this.store.scratchlist.sumAttachmentBytes(sessionId)
+        const buffer = Buffer.from(contentBase64, 'base64')
+        const provisional = {
+            id: 'pending',
+            filename,
+            mimeType,
+            size: buffer.length,
+            path: 'pending',
+        }
+        const validation = validateScratchlistAttachmentsForWrite([provisional], limits, sessionBytes)
+        if (!validation.ok) {
+            return { success: false, error: validation.error, code: validation.code }
+        }
+
+        const attachment = await writeScratchlistAttachmentFile(
+            getHapiHomeDir(),
+            namespace,
+            sessionId,
+            filename,
+            mimeType,
+            buffer
+        )
+        return { success: true, attachment }
+    }
+
+    async readScratchlistAttachment(
+        hubPath: string
+    ): Promise<{ buffer: Buffer; mimeType: string; filename: string } | null> {
+        const { readScratchlistAttachmentFile, getHapiHomeDir } = await import('../scratchlistAttachments/storage')
+        const read = await readScratchlistAttachmentFile(getHapiHomeDir(), hubPath)
+        if (!read) return null
+        return { buffer: read.buffer, mimeType: 'application/octet-stream', filename: 'attachment' }
     }
 
     handleMachineAlive(payload: { machineId: string; time: number; health?: unknown }): void {

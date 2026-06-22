@@ -24,6 +24,8 @@ import type { SlashCommand } from '@hapi/protocol/apiTypes'
 import { Hono, type Context } from 'hono'
 import type { SyncEngine, Session } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
+import { loadScratchlistAttachmentLimitsFromEnv } from '../../config/scratchlistAttachmentLimits'
+import { validateScratchlistAttachmentsForWrite } from '../../scratchlistAttachments/validate'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
@@ -712,6 +714,83 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
      * client uses that as a cache-invalidation token to refetch GET.
      */
 
+    app.get('/sessions/:id/scratchlist/limits', (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        return c.json({ limits: loadScratchlistAttachmentLimitsFromEnv() })
+    })
+
+    app.post('/sessions/:id/scratchlist/upload', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = UploadFileRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body' }, 400)
+        }
+
+        const namespace = c.get('namespace')
+        const result = await engine.uploadScratchlistAttachment(
+            sessionResult.sessionId,
+            namespace,
+            parsed.data.filename,
+            parsed.data.content,
+            parsed.data.mimeType
+        )
+        if (!result.success) {
+            const status = result.code === 'scratchlist_attachment_too_large' ? 413 : 400
+            return c.json({ success: false, error: result.error, code: result.code }, status)
+        }
+        return c.json({ success: true, attachment: result.attachment })
+    })
+
+    app.get('/sessions/:id/scratchlist/attachments/:attachmentId', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        const attachmentId = c.req.param('attachmentId')
+        if (!attachmentId) {
+            return c.json({ error: 'Missing attachmentId' }, 400)
+        }
+
+        const entries = engine.listScratchlistEntries(sessionResult.sessionId)
+        const match = entries
+            .flatMap((entry) => entry.attachments)
+            .find((att) => att.id === attachmentId)
+        if (!match) {
+            return c.json({ error: 'Attachment not found' }, 404)
+        }
+
+        const file = await engine.readScratchlistAttachment(match.path)
+        if (!file) {
+            return c.json({ error: 'Attachment file missing' }, 404)
+        }
+        return new Response(file.buffer, {
+            headers: {
+                'Content-Type': match.mimeType,
+                'Content-Disposition': `inline; filename="${match.filename}"`,
+            },
+        })
+    })
+
     app.get('/sessions/:id/scratchlist', (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {
@@ -771,12 +850,24 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             }, 409)
         }
 
+        const limits = loadScratchlistAttachmentLimitsFromEnv()
+        const sessionBytes = engine.sumScratchlistAttachmentBytes(sessionResult.sessionId)
+        const attachmentValidation = validateScratchlistAttachmentsForWrite(
+            parsed.data.attachments,
+            limits,
+            sessionBytes
+        )
+        if (!attachmentValidation.ok) {
+            return c.json({ error: attachmentValidation.error, code: attachmentValidation.code }, 400)
+        }
+
         const result = engine.createScratchlistEntry(
             sessionResult.sessionId,
-            parsed.data.text,
+            parsed.data.text.trim(),
             {
                 entryId: parsed.data.entryId,
-                createdAt: parsed.data.createdAt
+                createdAt: parsed.data.createdAt,
+                attachments: parsed.data.attachments,
             }
         )
         if (result.outcome === 'session-not-found') {
@@ -809,10 +900,32 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ error: 'Invalid body', issues: parsed.error.issues }, 400)
         }
 
+        const existing = engine.getScratchlistEntry(sessionResult.sessionId, entryId)
+        if (!existing) {
+            return c.json({ error: 'Scratchlist entry not found' }, 404)
+        }
+
+        const nextText = parsed.data.text !== undefined ? parsed.data.text.trim() : existing.text
+        const nextAttachments = parsed.data.attachments ?? existing.attachments
+        const limits = loadScratchlistAttachmentLimitsFromEnv()
+        const sessionBytes = engine.sumScratchlistAttachmentBytes(sessionResult.sessionId)
+            - existing.attachments.reduce((sum, att) => sum + att.size, 0)
+        const attachmentValidation = validateScratchlistAttachmentsForWrite(
+            nextAttachments,
+            limits,
+            sessionBytes
+        )
+        if (!attachmentValidation.ok) {
+            return c.json({ error: attachmentValidation.error, code: attachmentValidation.code }, 400)
+        }
+
         const updated = engine.updateScratchlistEntry(
             sessionResult.sessionId,
             entryId,
-            parsed.data.text
+            {
+                text: nextText,
+                attachments: nextAttachments,
+            }
         )
         if (!updated) {
             return c.json({ error: 'Scratchlist entry not found' }, 404)

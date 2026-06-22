@@ -1,6 +1,12 @@
 import type { Database } from 'bun:sqlite'
 import { randomUUID } from 'node:crypto'
 
+import {
+    parseScratchlistAttachmentsJson,
+    serializeScratchlistAttachments,
+    type ScratchlistAttachmentMetadata,
+} from '@hapi/protocol'
+
 import type { StoredScratchlistEntry } from './types'
 
 /**
@@ -34,6 +40,7 @@ type DbScratchlistRow = {
     text: string
     created_at: number
     updated_at: number
+    attachments: string | null
 }
 
 function toStoredEntry(row: DbScratchlistRow): StoredScratchlistEntry {
@@ -42,16 +49,19 @@ function toStoredEntry(row: DbScratchlistRow): StoredScratchlistEntry {
         entryId: row.entry_id,
         text: row.text,
         createdAt: row.created_at,
-        updatedAt: row.updated_at
+        updatedAt: row.updated_at,
+        attachments: parseScratchlistAttachmentsJson(row.attachments),
     }
 }
+
+const SCRATCHLIST_ENTRY_COLUMNS = `session_id, entry_id, text, created_at, updated_at, attachments`
 
 export function listScratchlistEntries(
     db: Database,
     sessionId: string
 ): StoredScratchlistEntry[] {
     const rows = db.prepare(
-        `SELECT session_id, entry_id, text, created_at, updated_at
+        `SELECT ${SCRATCHLIST_ENTRY_COLUMNS}
          FROM session_scratchlist
          WHERE session_id = ?
          ORDER BY created_at DESC, entry_id DESC`
@@ -72,7 +82,7 @@ export function getScratchlistEntry(
     entryId: string
 ): StoredScratchlistEntry | null {
     const row = db.prepare(
-        `SELECT session_id, entry_id, text, created_at, updated_at
+        `SELECT ${SCRATCHLIST_ENTRY_COLUMNS}
          FROM session_scratchlist
          WHERE session_id = ? AND entry_id = ?`
     ).get(sessionId, entryId) as DbScratchlistRow | undefined
@@ -92,11 +102,28 @@ export type CreateScratchlistResult =
     | { outcome: 'duplicate'; entry: StoredScratchlistEntry }
     | { outcome: 'session-not-found' }
 
+export function sumScratchlistAttachmentBytesForSession(db: Database, sessionId: string): number {
+    const rows = db.prepare(
+        `SELECT attachments FROM session_scratchlist WHERE session_id = ?`
+    ).all(sessionId) as Array<{ attachments: string | null }>
+    let total = 0
+    for (const row of rows) {
+        for (const att of parseScratchlistAttachmentsJson(row.attachments)) {
+            total += att.size
+        }
+    }
+    return total
+}
+
 export function createScratchlistEntry(
     db: Database,
     sessionId: string,
     text: string,
-    options?: { entryId?: string; createdAt?: number }
+    options?: {
+        entryId?: string
+        createdAt?: number
+        attachments?: ScratchlistAttachmentMetadata[]
+    }
 ): CreateScratchlistResult {
     const now = Date.now()
     const entryId = options?.entryId ?? randomUUID()
@@ -118,16 +145,19 @@ export function createScratchlistEntry(
         return { outcome: 'duplicate', entry: existing }
     }
 
+    const attachmentsJson = serializeScratchlistAttachments(options?.attachments ?? [])
+
     db.prepare(
         `INSERT INTO session_scratchlist
-            (session_id, entry_id, text, created_at, updated_at)
-         VALUES (@session_id, @entry_id, @text, @created_at, @updated_at)`
+            (session_id, entry_id, text, created_at, updated_at, attachments)
+         VALUES (@session_id, @entry_id, @text, @created_at, @updated_at, @attachments)`
     ).run({
         session_id: sessionId,
         entry_id: entryId,
         text,
         created_at: createdAt,
-        updated_at: updatedAt
+        updated_at: updatedAt,
+        attachments: attachmentsJson,
     })
 
     const created = getScratchlistEntry(db, sessionId, entryId)
@@ -147,20 +177,29 @@ export function updateScratchlistEntry(
     db: Database,
     sessionId: string,
     entryId: string,
-    text: string
+    patch: { text?: string; attachments?: ScratchlistAttachmentMetadata[] }
 ): StoredScratchlistEntry | null {
+    const existing = getScratchlistEntry(db, sessionId, entryId)
+    if (!existing) return null
+
     const now = Date.now()
+    const text = patch.text ?? existing.text
+    const attachments = patch.attachments ?? existing.attachments
+    const attachmentsJson = serializeScratchlistAttachments(attachments)
+
     const result = db.prepare(
         `UPDATE session_scratchlist
             SET text = @text,
-                updated_at = @updated_at
+                updated_at = @updated_at,
+                attachments = @attachments
           WHERE session_id = @session_id
             AND entry_id = @entry_id`
     ).run({
         session_id: sessionId,
         entry_id: entryId,
         text,
-        updated_at: now
+        updated_at: now,
+        attachments: attachmentsJson,
     })
     if (result.changes === 0) {
         return null

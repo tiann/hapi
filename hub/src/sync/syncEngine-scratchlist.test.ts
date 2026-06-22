@@ -125,7 +125,7 @@ describe('SyncEngine scratchlist mutations emit session-updated patches', () => 
         engine.createScratchlistEntry(session.id, 'before', { entryId: 'e1' })
         engineEvents.length = 0
 
-        const updated = engine.updateScratchlistEntry(session.id, 'e1', 'after')
+        const updated = engine.updateScratchlistEntry(session.id, 'e1', { text: 'after' })
         expect(updated).not.toBeNull()
         const matching = engineEvents.filter(
             (e) => e.type === 'session-updated' && (e.data as Record<string, unknown>).scratchlistUpdatedAt !== undefined
@@ -144,7 +144,7 @@ describe('SyncEngine scratchlist mutations emit session-updated patches', () => 
             'default'
         )
         engineEvents.length = 0
-        const updated = engine.updateScratchlistEntry(session.id, 'never-existed', 'whatever')
+        const updated = engine.updateScratchlistEntry(session.id, 'never-existed', { text: 'whatever' })
         expect(updated).toBeNull()
         const matching = engineEvents.filter(
             (e) => e.type === 'session-updated' && (e.data as Record<string, unknown>).scratchlistUpdatedAt !== undefined

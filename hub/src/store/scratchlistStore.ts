@@ -7,6 +7,7 @@ import {
     deleteScratchlistEntry,
     getScratchlistEntry,
     listScratchlistEntries,
+    sumScratchlistAttachmentBytesForSession,
     transferScratchlistEntries,
     updateScratchlistEntry,
     type CreateScratchlistResult
@@ -34,7 +35,11 @@ export class ScratchlistStore {
     create(
         sessionId: string,
         text: string,
-        options?: { entryId?: string; createdAt?: number }
+        options?: {
+            entryId?: string
+            createdAt?: number
+            attachments?: import('@hapi/protocol').ScratchlistAttachmentMetadata[]
+        }
     ): CreateScratchlistResult {
         return createScratchlistEntry(this.db, sessionId, text, options)
     }
@@ -42,9 +47,16 @@ export class ScratchlistStore {
     update(
         sessionId: string,
         entryId: string,
-        text: string
+        patch: {
+            text?: string
+            attachments?: import('@hapi/protocol').ScratchlistAttachmentMetadata[]
+        }
     ): StoredScratchlistEntry | null {
-        return updateScratchlistEntry(this.db, sessionId, entryId, text)
+        return updateScratchlistEntry(this.db, sessionId, entryId, patch)
+    }
+
+    sumAttachmentBytes(sessionId: string): number {
+        return sumScratchlistAttachmentBytesForSession(this.db, sessionId)
     }
 
     delete(sessionId: string, entryId: string): boolean {

@@ -268,7 +268,14 @@ export const ScratchlistEntrySchema = z.object({
     entryId: z.string().min(1),
     text: z.string(),
     createdAt: z.number(),
-    updatedAt: z.number()
+    updatedAt: z.number(),
+    attachments: z.array(z.object({
+        id: z.string(),
+        filename: z.string(),
+        mimeType: z.string(),
+        size: z.number(),
+        path: z.string(),
+    })).optional().default([])
 })
 
 export type ScratchlistEntry = z.infer<typeof ScratchlistEntrySchema>
