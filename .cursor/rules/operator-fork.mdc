@@ -9,32 +9,19 @@ This repo is a **fork** of `tiann/hapi`. Root **`AGENTS.md` is byte-identical to
 
 **Read `docs/operator/AGENTS.md`** - single canonical guide (HAPI baseline + fork intent + upstream PR discipline).
 
-- **New functionality requests:** also read `docs/tooling/new-feature-intake.md`. Orchestrator spawns feature peers with explicit **done vs owned** intake steps (§0 handoff block).
-- **Workspace** = `~/coding/hapi` (mirror). **`hapi-driver`** = runtime on `:3006` via `hapi-active` — not the default instruction root.
+- **Master workflow (sole source):** [`docs/tooling/feature-work-lifecycle.md`](../../docs/tooling/feature-work-lifecycle.md)
+- **New functionality requests:** [`docs/tooling/new-feature-intake.md`](../../docs/tooling/new-feature-intake.md) — §0 handoff only; workflow is lifecycle
+- **Workspace** = `~/coding/hapi` (mirror). **`~/coding/hapi/driver`** = runtime on `:3006` via `hapi-active` — not the default instruction root.
 
 ## Stack-switch tooling: operator-only
 
-**Agents MUST NOT run `hapi-use-worktree`, `hapi-use-driver`, or `hapi-driver-rebuild --activate`.** These swing the live stack on `:3006` and restart hub + runner, which kills every running agent session — including the one running the command. Two outages on 2026-06-10 02:14 and 2026-06-11 14:00 BST were caused by agents doing this to test their own dev worktrees.
+**Do not restate the workflow here.** Read [`feature-work-lifecycle.md`](../../docs/tooling/feature-work-lifecycle.md) — mermaid, soup tree, agent matrix, ship/done.
 
-**`HAPI_STACK_SWITCH_YES=1` is for operator scripts** (cron, CI, `hapi-watch-activate-driver`) — never for agent tool-calls. The script now refuses with `REFUSE: caller PWD is at or under the target worktree` if you try this from inside your own worktree (commit 2026-06-11). It also refuses if `HAPI_AGENT_CONTEXT=1` is set in the env.
+**Agents MUST NOT run** `hapi-use-worktree`, `hapi-use-driver`, `hapi-driver-rebuild --activate`, or `hapi-watch-activate-driver` from tool shells.
 
-**To get your feature branch onto live `:3006`:**
+**`HAPI_STACK_SWITCH_YES=1`** is for operator scripts (cron, CI, watch-activate) — never agent tool-calls. Refuses from inside target worktree or when `HAPI_AGENT_CONTEXT=1`.
 
-```yaml
-# Operator (or you, with explicit operator approval) edits:
-# ~/.config/hapi/driver-manifest.yaml
-layers:
-  - branch: your/branch-name
-```
-
-```bash
-hapi-driver-rebuild --build-web --verify    # merges into driver/integration, builds, tests; NO hub touch
-# Then ask the operator: "ready for hapi-use-driver?"
-```
-
-**Other rules:**
-
-- **Before any `hapi-driver-rebuild` or `hapi-use-worktree`:** run `hapi-driver-status --quiet` (exit 0 idle, 75 busy, 2 stale). Operator-side check; agents must not be running these in the first place. See `docs/tooling/driver-soup.md#coordination-avoid-stack-switch-contention`.
+**Before `hapi-driver-rebuild`:** `hapi-driver-status --quiet` (exit 0 idle, 75 busy). Agents may rebuild; agents must not stack-switch. Coordination: [`driver-soup.md`](../../docs/tooling/driver-soup.md#coordination-avoid-stack-switch-contention).
 
 ## sudo systemctl on hapi services: blocked at three layers (cross-agent)
 

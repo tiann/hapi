@@ -4,7 +4,7 @@ Work style: telegraph; noun-phrases ok; drop grammar;
 
 **Canonical agent guide for `heavygee/hapi`.** Upstream `tiann/hapi` ships root `AGENTS.md` - **this fork deletes that file** and keeps everything here. Never PR this path or a root `AGENTS.md` change to upstream.
 
-Prefer progressive loading: this file → root `README.md` → package READMEs → `docs/plans/` for voice/integration depth.
+Prefer progressive loading: **[feature-work-lifecycle.md](../tooling/feature-work-lifecycle.md)** (sole workflow doc) → this file (fork identity, upstream PR) → root `README.md` → package READMEs.
 
 ---
 
@@ -84,34 +84,13 @@ ElevenLabs ConvAI today: handoff OK, readback weak, payment, no mode machine. Ta
 
 ## Stack-switch tooling: agents do NOT touch live `:3006`
 
-**Forbidden agent tool-calls** — these swing `hapi-active` and restart hub + runner, killing every running agent session including yours:
+**Full workflow, mermaid, and agent permission matrix:** [`feature-work-lifecycle.md`](../tooling/feature-work-lifecycle.md) — **only place that defines this.**
 
-- `hapi-use-worktree <path>` — operator-only stack switch.
-- `hapi-use-driver` — operator-only swing back to driver.
-- `hapi-driver-rebuild --activate` — same effect (calls hapi-use-worktree internally).
-- `sudo systemctl stop|restart|kill|disable|mask hapi-{hub,runner,runner-watchdog}.service` — naked, no patient drain. **Blocked at three layers, all agent-agnostic** — applies to Cursor, Claude Code, Codex, Gemini, ad-hoc operator shells, anything. (1) `/usr/local/sbin/systemctl` wrapper on sudo's `secure_path` catches every `sudo systemctl ...` invocation including `sudo bash -c 'systemctl ...'` shell-wraps. (2) `/etc/sudoers.d/hapi-protect` `!`-rule catches absolute-path bypass `sudo /bin/systemctl ...`. (3) Cursor preToolUse hook preempts the agent's tool call before sudo runs. Allowed: `start`, `status`, `is-active`, watchdog's `restart hapi-runner.service` — recovery and read-only ops. **Bypass `HAPI_OPERATOR_SYSTEMCTL_OVERRIDE=1` is TTY-gated since 2026-06-13** after an agent set the env var and stopped the hub, killing 10 sessions including itself. The wrapper now reads `/proc/$PPID/stat` and refuses the bypass when the caller's parent has no controlling terminal (`tty_nr=0`). Agent tool-call shells always have `tty_nr=0`; operator interactive shells (SSH/tmux/console) have a real `tty_nr`. The bypass works for the operator at a real terminal; setting the env var from an agent shell now produces `BLOCKED (operator override IGNORED - no controlling tty)`.
-- `HAPI_STACK_SWITCH_YES=1` — that flag exists for operator cron/CI scripts, **never** for agent tool-calls. The script as of 2026-06-11 refuses `HAPI_STACK_SWITCH_YES=1` from inside the target worktree (the agent self-deletion pattern) and refuses entirely when `HAPI_AGENT_CONTEXT=1` is set in env.
+**Forbidden agent tool-calls** (stack path change — kills sessions): `hapi-use-worktree`, `hapi-use-driver`, `hapi-driver-rebuild --activate`, `hapi-watch-activate-driver` from tool shells.
 
-**Allowed: get your branch onto live `:3006` the supported way.**
+**Allowed for soup dogfood when already on driver:** see lifecycle § Agent permission matrix — summary: `hapi-driver-rebuild --build-web [--verify]`, `hapi-verify-web-dist`, **`hapi-restart-hub`** (hub/cli). Not `hapi-use-driver`.
 
-Edit (or ask the operator to edit) `~/.config/hapi/driver-manifest.yaml`:
-
-```yaml
-layers:
-  - branch: your/branch-name
-```
-
-Then **operator runs**:
-
-```bash
-hapi-driver-rebuild --build-web --verify    # merges into driver/integration; builds; tests
-hapi-driver-status --quiet                  # exit 0 idle = OK to swing
-hapi-use-driver                              # operator-only, prompts before swing
-```
-
-`--build-web --verify` does NOT touch the live hub. It builds into `web/dist.next/` and atomic-renames; runner + hub keep serving the old code. Web bundle gets swapped in atomically; hub/runner code requires the explicit `hapi-use-driver` step.
-
-**Live evidence on the violation pattern:** outage 2026-06-10 02:14 BST (operator: `inline-model-error-detect` worktree) and 2026-06-11 14:00 BST (agent in session `a2fdb3b2`, same worktree) both ran `hapi-use-worktree ~/coding/hapi/worktrees/inline-model-error-detect` from inside that worktree, killed their own session, and (in the second case) followed up with a naked `sudo systemctl stop hapi-hub.service` an hour later that left the hub down for 14 minutes. Don't be the third entry on this list.
+**Raw `sudo systemctl restart hapi-hub`:** forbidden — use `hapi-restart-hub`. Three-layer block + TTY-gated bypass: `.cursor/rules/operator-fork.mdc` § sudo systemctl. Outage pattern: agents running `hapi-use-worktree` from inside their worktree (2026-06-10, 2026-06-11) — don't be the third.
 
 ---
 
@@ -384,7 +363,7 @@ When the operator asks for **new product behavior**, follow [`docs/tooling/new-f
 
 **Orchestrator** completes steps 1-3 (and usually 4-5), then spawns a **feature peer** with the mandatory handoff block in that doc (completed steps vs peer-owned steps).
 
-**Feature peer** implements in **`~/coding/hapi/worktrees/<name>`** (created via `hapi-worktree-create <name> --branch <branch>`) — not in `~/coding/hapi/driver` by hand. Pass §6 (tests, cold review, Playwright) **before** asking the operator to browser-test. Upstream PR only after operator dogfood approval (§8). Use **`hapi-pr-create`** to open the PR — it enforces the closes-keyword + leak scan.
+**Feature peer** implements in **`~/coding/hapi/worktrees/<name>`** (created via `hapi-worktree-create <name> --branch <branch>`) — not in `~/coding/hapi/driver` by hand. For pre-operator web gates, use **`hapi-peer-stack up`** (isolated hub on `3100–3199`, registry `~/.hapi-peer/`) — not soup on `:3006`. Pass §6 (tests, cold review, Playwright on peer stack) **before** asking the operator to browser-test. Upstream PR only after operator dogfood approval (§8). Use **`hapi-pr-create`** to open the PR — it enforces the closes-keyword + leak scan.
 
 **Instruction roots:** agents read **this file** and tooling docs from the **`~/coding/hapi` workspace**, plus `~/coding/AGENTS.local.md`. The **daily driver** (`~/coding/hapi/driver`) is what **`hapi-active` runs** — not where IDE rules come from unless that tree is the opened workspace.
 

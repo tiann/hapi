@@ -33,6 +33,7 @@ if [[ -n "${HAPI_OPERATOR_LEAK_PATTERNS_FILE:-}" && -f "${HAPI_OPERATOR_LEAK_PAT
 fi
 
 PRODUCT_SCAN_PATHS=(hub web cli shared package.json)
+PUBLIC_DOC_SCAN_PATHS=(docs/operator docs/tooling .cursor/rules)
 
 FAIL=0
 
@@ -75,6 +76,26 @@ scan_git_staged() {
     done
 }
 
+scan_git_staged_docs() {
+    local diff added
+    diff="$(git diff --cached -- "${PUBLIC_DOC_SCAN_PATHS[@]}" 2>/dev/null || true)"
+    [[ -z "$diff" ]] && return 0
+    added="$(printf '%s' "$diff" | grep -E '^\+' | grep -v '^\+\+\+' || true)"
+    [[ -z "$added" ]] && return 0
+    scan_text_blob 'git-staged-docs' "$added"
+}
+
+scan_git_range_docs() {
+    local from="$1"
+    local to="$2"
+    local diff added
+    diff="$(git diff "$from" "$to" -- "${PUBLIC_DOC_SCAN_PATHS[@]}" 2>/dev/null || true)"
+    [[ -z "$diff" ]] && return 0
+    added="$(printf '%s' "$diff" | grep -E '^\+' | grep -v '^\+\+\+' || true)"
+    [[ -z "$added" ]] && return 0
+    scan_text_blob "git-range-docs:$from..$to" "$added"
+}
+
 scan_git_range() {
     local from="$1"
     local to="$2"
@@ -107,9 +128,16 @@ case "$1" in
     --git-staged)
         scan_git_staged
         ;;
+    --git-staged-docs)
+        scan_git_staged_docs
+        ;;
     --git-range)
         [[ $# -eq 3 ]] || usage
         scan_git_range "$2" "$3"
+        ;;
+    --git-range-docs)
+        [[ $# -eq 3 ]] || usage
+        scan_git_range_docs "$2" "$3"
         ;;
     -h|--help)
         usage

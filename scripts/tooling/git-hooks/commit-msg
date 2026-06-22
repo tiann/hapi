@@ -12,7 +12,7 @@ if [[ "${HAPI_SKIP_COMMIT_HOOKS:-}" == "1" ]]; then
 fi
 
 if printf '%s' "$MSG" | grep -qiE \
-    'jessica-mood|jessica_mood|SOUL\.md|SOUL_SESSION|AGENTS\.local|docs/operator/|docs/plans/|localdocs/|co-authored-by:[[:space:]]*cursor'; then
+    'jessica-mood|jessica_mood|SOUL\.md|SOUL_SESSION|AGENTS\.local|docs/plans/|localdocs/|co-authored-by:[[:space:]]*cursor'; then
     echo "commit-msg: forbidden reference in message (persona / fork-private)" >&2
     exit 1
 fi

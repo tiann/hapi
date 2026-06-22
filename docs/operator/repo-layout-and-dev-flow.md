@@ -59,8 +59,9 @@ graph TD
 | `driver/` | Worktree on `driver/integration`. The composed soup of multiple in-flight PR branches the operator daily-drives. | tracked (gitignored target) |
 | `upstream/` | Worktree on `upstream-main-test`. Clean upstream baseline for A/B comparisons. | tracked (gitignored target) |
 | `worktrees/<name>/` | One subdir per active PR branch. Each branched off `upstream/main`. Each has its own working tree, dirty state, dev server port. | tracked (gitignored target) |
-| `.cursor/`, `AGENTS.md` (stub), `PLAN.md` | Fork-only config: redirect stubs, cursor rules, integration plan pointer. Pushed to `origin/main` (fork), never to `upstream`. | yes (fork-private) |
-| `docs/operator/`, `docs/plans/` | Fork-private docs: this file, agent canon, plans, ADRs. Pushed to `origin/main`, never to `upstream`. | yes (fork-private) |
+| `.cursor/`, `AGENTS.md` (stub), `PLAN.md` | Fork-only config: cursor rules, integration plan pointer. **`origin/main`** for non-operator rules; operator-fork rule included. Never to `upstream`. | yes (fork-private upstream) |
+| `docs/operator/`, `docs/tooling/` | Fork operator canon + tooling docs. **`origin/main`** on GitHub. Never to `upstream`. | yes (fork-private upstream) |
+| `docs/plans/` | Peer briefings, integration depth, postmortems. **Mirror only** — pre-push blocks new/changed plans to public `origin`. | yes (local-first) |
 | `localdocs/`, `AGENTS.local.md`, `.claude/`, `.codex/` | Operator-private artifacts (HAR captures, Playwright runs, machine-specific rules). Untracked. | no — gitignored |
 
 **Sibling repos at `~/coding/` (NOT under `hapi/`):**
@@ -358,7 +359,7 @@ For folks evaluating this pattern for their own forks.
 | Fork-only docs in same repo, on the fork's `main` | Uncommon but legitimate; maintainer trees often have CHANGES/NOTES files unique to the fork | yes (`docs/operator/`, `docs/plans/`) | Linux `linux-next` includes integration-tree notes; Mozilla `mozilla-inbound` has tree-specific docs |
 | `git worktree` per active PR (one workspace per context) | Uncommon in git world; growing with `jj` and Sapling | yes | Phabricator/Sapling's stack-per-workspace model; Meta's internal monorepo |
 | Integration tree composed of in-flight branches (the "soup") | Rare in small projects; standard in large open-source | yes (`driver/integration` via `driver-manifest.yaml`) | Linux `linux-next` is the textbook example; Mozilla `inbound`; FreeBSD `current` |
-| Pre-push hook enforcing fork-private vs upstream-bound diff separation | Rare in public OSS; common in corporate forks | yes (`scripts/tooling/git-hooks/pre-push`) | Google's `monorepo` pre-submit checks; Webkit's EWS sanity bots |
+| Pre-push hook (tiered by remote + branch) | `origin/main`: tooling + operator OK; `docs/plans/` blocked. `upstream`: all fork paths blocked. Feature branches on `origin`: no operator canon. | yes (`scripts/tooling/lib/fork-path-policy.sh`) | Google's `monorepo` pre-submit checks; Webkit's EWS sanity bots |
 | One branch per tracked issue/PR/discussion | Increasingly standard via "GitHub Flow" / "Trunk-based dev" | yes (audited by `hapi-branch-audit`) | GitHub Flow; Atlassian guidance |
 | Never stash; WIP commits or new worktree | Uncommon discipline in git; built-in to `jj` and Sapling | yes (`docs/tooling/git-stash-policy.md`) | `jj` model; Sapling's `sl` workflow |
 | PR-create wrapper enforcing leak scan + closes-keyword | Rare | yes (`hapi-pr-create`) | Corporate forks often do this internally; rare to publish |
@@ -414,6 +415,7 @@ We contribute back to git-only upstream. Layering `jj`/Sapling on top adds compl
 
 ## 10. See also
 
+- [`docs/tooling/feature-work-lifecycle.md`](../tooling/feature-work-lifecycle.md) — **master workflow map** (mermaid: intake, peer stack, soup, proof, PR)
 - [`docs/operator/AGENTS.md`](AGENTS.md) — fork agent canon (read this first if you're a peer agent)
 - [`docs/tooling/new-feature-intake.md`](../tooling/new-feature-intake.md) — peer spawn workflow + mandatory handoff template
 - [`docs/tooling/driver-soup.md`](../tooling/driver-soup.md) — driver manifest, soup rebuild, DB jiu-jitsu

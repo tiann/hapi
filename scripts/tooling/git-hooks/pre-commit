@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Fork commit gate — no harvestable operator/persona material in git.
+# Fork commit gate — tiered: operator/tooling OK; plans local-first; never-tracked blocked.
 # Install: scripts/tooling/install-git-hooks.sh
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 LEAK_CHECK="$ROOT/scripts/tooling/check-operator-leaks.sh"
+POLICY="$ROOT/scripts/tooling/lib/fork-path-policy.sh"
+# shellcheck source=/dev/null
+source "$POLICY"
 
 if [[ "${HAPI_SKIP_COMMIT_HOOKS:-}" == "1" ]]; then
     exit 0
@@ -23,26 +26,12 @@ report() {
     FAIL=1
 }
 
-# --- forbidden paths: never enter git (any branch) ---
-FORBIDDEN_PREFIXES=(
-    'docs/operator/'
-    'docs/plans/'
-    'localdocs/'
-    'web/public/xr-poc/'
-    '.cursor/rules/operator'
-)
-
 while IFS= read -r path; do
     [[ -z "$path" ]] && continue
-    for prefix in "${FORBIDDEN_PREFIXES[@]}"; do
-        if [[ "$path" == "$prefix"* ]]; then
-            if [[ "${HAPI_ALLOW_OPERATOR_COMMIT:-}" == "1" ]]; then
-                echo "pre-commit: WARN allowing fork-private path (HAPI_ALLOW_OPERATOR_COMMIT=1): $path" >&2
-            else
-                report "fork-private path blocked: $path (override: HAPI_ALLOW_OPERATOR_COMMIT=1)"
-            fi
-        fi
-    done
+    if ! fork_pre_commit_path_ok "$path"; then
+        reason="$(fork_pre_commit_block_reason "$path")"
+        report "$reason"
+    fi
     case "$path" in
         .env|.env.*|hub/.env|hub/.env.*|*/.env|*/.env.*|hub/.env~|*/hub/.env~)
             report "env file blocked: $path"
@@ -59,7 +48,7 @@ while IFS= read -r path; do
     esac
 done <<< "$STAGED"
 
-# --- forbidden content in staged diff (any path) ---
+# Forbidden content in staged product diff (not docs paths)
 CONTENT_PATTERNS=(
     'jessica-mood'
     'jessica_mood'
@@ -68,8 +57,6 @@ CONTENT_PATTERNS=(
     '~/coding/SOUL'
     'AGENTS\.local'
     'localdocs/'
-    'docs/operator/'
-    'docs/plans/'
 )
 
 SCAN_PATHS=(hub web cli shared package.json)
@@ -85,7 +72,6 @@ for pattern in "${CONTENT_PATTERNS[@]}"; do
     git diff --cached -G"$pattern" --name-only -- "${SCAN_PATHS[@]}" 2>/dev/null | sed 's/^/    /' >&2 || true
 done
 
-# ElevenLabs voice label "Jessica" in product files is OK; block only in hub route files.
 while IFS= read -r path; do
     [[ -z "$path" ]] && continue
     case "$path" in
@@ -118,12 +104,16 @@ if [[ -x "$LEAK_CHECK" ]]; then
     if ! "$LEAK_CHECK" --git-staged; then
         FAIL=1
     fi
+    # Staged docs going to GitHub must not add new tailnet hostnames
+    if ! "$LEAK_CHECK" --git-staged-docs; then
+        FAIL=1
+    fi
 fi
 
 if [[ "$FAIL" -ne 0 ]]; then
     echo "" >&2
-    echo "Fork-private material must not land in git (harvest risk on push)." >&2
-    echo "Emergency: HAPI_SKIP_COMMIT_HOOKS=1  |  operator docs only: HAPI_ALLOW_OPERATOR_COMMIT=1" >&2
+    fork_policy_github_safe_paths >&2
+    echo "Emergency: HAPI_SKIP_COMMIT_HOOKS=1  |  docs/plans only: HAPI_ALLOW_OPERATOR_COMMIT=1" >&2
     exit 1
 fi
 

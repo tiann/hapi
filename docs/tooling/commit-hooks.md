@@ -8,26 +8,57 @@ Install once per clone:
 
 Sets `core.hooksPath` → `scripts/tooling/git-hooks/` (pre-commit, commit-msg, **pre-push**).
 
-## Harvest resistance
+Policy source: `scripts/tooling/lib/fork-path-policy.sh`
 
-Fork branches on `origin` must not carry **operator canon**, **plans**, **localdocs**, **XR POC**, or **persona routes** — even on `main`. Hooks block **staging** and **push** of that material so clones/remotes are not a harvest target.
+## Tiered policy (2026-06-23)
+
+**Goal:** as many **safe** files as possible on public `heavygee/hapi`; keep **`docs/plans/`** local-first; never leak fork canon to **`upstream`**.
+
+### GitHub-safe on `origin/main` (push allowed)
+
+- **`docs/tooling/`** — workflow SSOT, intake, driver-soup mechanics, peer-stack
+- **`docs/operator/`** — fork agent canon, layout, operator stubs
+- **`.cursor/rules/`** — worktree layout, product-code guard, operator-fork rule
+- **`CLAUDE.md`**, **`scripts/tooling/`** — when content-clean (no tailnet hostnames in diff)
+
+### Local-first (mirror only — pre-push blocks `origin`)
+
+- **`docs/plans/`** — peer briefings, integration depth, postmortems  
+  - Commit locally: `HAPI_ALLOW_OPERATOR_COMMIT=1`  
+  - Will **not** push to `origin` (any branch)
+
+### Never tracked
+
+- **`localdocs/`**, **`web/public/xr-poc/`**, **`AGENTS.local.md`**
+
+### Upstream + `origin` PR-bound branches (`feat/*`, `fix/*`, `soup/*`)
+
+- No **`docs/operator/`**, **`docs/plans/`**, **`.cursor/rules/operator*`** in outgoing push
+
+**Infra branches** on `origin` (`main`, `tooling/*`, `docs/*`, `driver/*`, `garden/*`) may carry operator + tooling docs.
+
+### Content scans (all pushes)
+
+- Product code: no `jessica-mood` routes, SOUL references
+- **Tailnet hostnames** (operator MagicDNS — see `check-operator-leaks.sh` patterns) — blocked in product diffs; also scanned in **`docs/operator`**, **`docs/tooling`**, **`.cursor/rules`** when pushing to `origin`
+
+## Hook summary
 
 | Layer | Blocks |
 |-------|--------|
-| **pre-commit** | Staging `docs/operator/`, `docs/plans/`, `localdocs/`, `xr-poc`, `.cursor/rules/operator*`, env files, `jessica-mood` paths/content, `SOUL_*` / `SOUL.md`, secrets, **operator tailnet hostnames** (`*.tail9944ee.ts.net`) |
-| **pre-push** | Any **outgoing** commit range that touches those paths or adds `jessica-mood` / SOUL / tailnet URL content |
-| **commit-msg** | Same tokens in message body + tailnet URLs |
-
-**Allowed in product code:** ElevenLabs voice name `Jessica` in `web/src/lib/voices.ts` (upstream). **Not allowed:** `hub/.../jessica-mood`, interior-note persona wiring, `docs/operator/*`.
+| **pre-commit** | `docs/plans/` without override; never-tracked paths; secrets; persona routes in product; tailnet URLs in staged docs |
+| **pre-push** | Tiered by **`$1` remote** + branch — see `fork-path-policy.sh` |
+| **commit-msg** | `docs/plans/`, SOUL, persona tokens; tailnet URLs |
 
 ## Overrides
 
 | Variable | Use |
 |----------|-----|
-| `HAPI_ALLOW_OPERATOR_COMMIT=1` | One-off commit that must touch `docs/operator/` or `docs/plans/` (still review before push) |
-| `HAPI_SKIP_COMMIT_HOOKS=1` | Emergency only — disables all three hooks |
+| `HAPI_ALLOW_OPERATOR_COMMIT=1` | Stage/commit `docs/plans/` locally (still blocked on push to origin) |
+| `HAPI_ALLOW_OPERATOR_LEAK=1` | Emergency — skip tailnet hostname scan |
+| `HAPI_SKIP_COMMIT_HOOKS=1` | Emergency — disables all three hooks |
 
-**Note:** `docs/operator/` already in historical `main` — hooks stop **new** leaks. To strip from remote history use a separate git history rewrite (not automated here).
+**Grandfathered:** older `docs/plans/` blobs already on public `origin/main` stay until history rewrite; **new or changed** plans do not push.
 
 ## Public GitHub text (issues / PRs)
 
@@ -38,8 +69,8 @@ scripts/tooling/gh-public-body-check.sh /tmp/issue-body.md
 gh issue create --body-file /tmp/issue-body.md ...
 ```
 
-Blocks operator MagicDNS hostnames (e.g. `hapi.tail9944ee.ts.net`). Use generic wording: "operator tailnet hub".
+Use generic wording: "operator tailnet hub" — not MagicDNS hostnames.
 
 ## Upstream PR branches
 
-Product PRs to `tiann/hapi` must not include fork paths regardless — `git diff --name-only upstream/main...HEAD` should never list `docs/operator/` or `docs/plans/`.
+Product PRs to `tiann/hapi` must not include fork paths — `git diff --name-only upstream/main...HEAD` should never list `docs/operator/` or `docs/plans/`.
