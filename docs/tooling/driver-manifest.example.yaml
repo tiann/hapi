@@ -1,7 +1,7 @@
 # Daily driver manifest — operator-local copy lives at ~/.config/hapi/driver-manifest.yaml
 # Rebuild: hapi-driver-rebuild [--build-web] [--verify] [--activate]
 #
-# ~/coding/hapi-driver is READ-ONLY between rebuilds — only hapi-driver-rebuild may change it.
+# ~/coding/hapi/driver is READ-ONLY between rebuilds — only hapi-driver-rebuild may change it.
 # Layer order matters. Each layer merges into driver/integration on top of base.
 #
 # DB schema:

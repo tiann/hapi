@@ -12,7 +12,7 @@ Feature agents should **read the relevant doc below at session start**; meta bot
 
 | Layer | What | Meta bot owns |
 |-------|------|----------------|
-| **HAPI API / hub** | `~/coding/hapi` (upstream/main mirror), `~/coding/hapi-driver` (daily soup), `~/coding/hapi-*` PR worktrees, `hapi-active` symlink | Driver manifest rebuild, worktree hygiene, live swing |
+| **HAPI API / hub** | `~/coding/hapi` (upstream/main mirror), `~/coding/hapi/driver` (daily soup), `~/coding/hapi/worktrees/*` PR worktrees, `hapi-active` symlink | Driver manifest rebuild, worktree hygiene, live swing |
 | **Adjacent HAPI repos** | e.g. `hapi-garden`, `hapi-session-attention`, any `~/coding/hapi-*` worktree with an open branch | Same rules; confirm which tree is active before debugging "prod" |
 | **Machine helpers** | `~/.local/bin/hapi-use-worktree`, `hapi-use-main`, `gh` wrapper, `pr-post-push-check*`, `~/.local/bin/hapi-sessions-health.sh` → `server-setup/scripts/hapi/` | Installed, executable, match docs |
 | **Agent hooks** | `~/.claude/settings.json`, `~/.cursor/hooks.json`, `~/coding/AGENTS.local.md` | Policy text matches docs; note IDE vs CLI hook parity gaps |
@@ -26,16 +26,33 @@ Feature agents should **read the relevant doc below at session start**; meta bot
 
 | Doc | Purpose |
 |-----|---------|
-| [new-feature-intake.md](./new-feature-intake.md) | **Operator requests new behavior** — discovery, playback, soup vs clean demo, gates before dogfood, PR after approval |
+| [`feature-work-lifecycle.md`](./feature-work-lifecycle.md) | **Sole workflow doc** — one flow: intake, peer stack, soup, proof, PRs (mermaid lives here only) |
+| [../operator/feature-work-lifecycle.md](../operator/feature-work-lifecycle.md) | Stub pointer for agents reading `docs/operator/` |
+| [new-feature-intake.md](./new-feature-intake.md) | **Operator requests new behavior** — discovery, playback, peer stack / soup / clean demo, gates before dogfood, PR after approval |
+| [peer-stack.md](./peer-stack.md) | **Isolated peer hub** — `hapi-peer-stack up` for Playwright on real session UI without `:3006` |
 | `scripts/tooling/hapi-sync-fork-main.sh` | Keep `~/coding/hapi` `main` = upstream + fork docs |
 | [commit-hooks.md](./commit-hooks.md) | `install-git-hooks.sh` — secrets + operator path gates |
 | [git-stash-policy.md](./git-stash-policy.md) | **Multi-agent repo** - do not stash other agents' work; commit instead |
 | [worktree-testing.md](./worktree-testing.md) | `hapi-active` symlink, `hapi-use-worktree`, service swing |
 | [driver-soup.md](./driver-soup.md) | Daily driver manifest, merge-train PR worktrees, garden vs soup |
 | [watch-activate-driver.md](./watch-activate-driver.md) | `hapi-watch-activate-driver` - external-only watch; ouroboros guard + excludes |
+| `~/coding/server-setup/config/logrotate/hapi-logs` | **Machine:** rotate `~/.hapi/logs/*.log` (CLI/runner/agent nohup hubs). Prod hub → `journalctl -u hapi-hub`. Install: `sudo cp …/hapi-logs /etc/logrotate.d/hapi-logs` |
 | [pr-review-loop.md](./pr-review-loop.md) | Pre-PR verification + cold review; pre-push open-PR gate; post-push PR comment poll |
 | [pr-reply.md](./pr-reply.md) | `hapi-pr-reply` — atomic reply + `resolveReviewThread` for PR review comments. Mandatory for bot/reviewer thread responses (never `gh pr comment` for that) |
 | [cold-pr-review-rubric.md](./cold-pr-review-rubric.md) | Open-PR cold review bar (match upstream HAPI Bot severity) |
+| `scripts/tooling/hapi-pr-emoji-batch.sh` | Classify upstream PRs → ✅/🔁/⚠️ (parallel gh; `--table` for humans) |
+| `scripts/tooling/hapi-pr-session-emoji.sh` | Meta PR watcher sweep: rename HAPI session titles from batch classify (`--sweep`) |
+| `scripts/tooling/hapi-remote-agent-budget.sh` | Pre-flight before bulk remote agent spawns (count + mem/swap gates) |
+
+**Operator tooling lives on fork `main` at `~/coding/hapi/scripts/tooling/`** — commit changes there. Do **not** hand-edit `~/coding/hapi/driver` (read-only soup tree; `hapi-driver-rebuild` resets it). Run sweeps from the mirror:
+
+```bash
+cd ~/coding/hapi && ./scripts/tooling/hapi-pr-session-emoji.sh --sweep
+```
+
+**Scope:** `tiann/hapi` upstream PRs only. Non-HAPI sessions (YAACC, other repos) are excluded from sweeps.
+
+Emoji contract: **✅** open green · **🔁** CI in flight · **⚠️** fix/rebase · **📝** pre-PR (not filed yet) · **🔧** merged (archive/spare). See `docs/operator/AGENTS.md` § Meta PR watcher.
 
 ---
 
@@ -43,16 +60,11 @@ Feature agents should **read the relevant doc below at session start**; meta bot
 
 ### 1. Worktree and live hub discipline
 
-- `~/coding/hapi` primary checkout tracks **upstream/main** (mirror) — not the daily driver.
-- `~/coding/hapi-driver` is the **bleeding-edge soup** on `:3006` via `hapi-active` (see [driver-soup.md](./driver-soup.md)).
-- **`hapi-driver` is read-only between rebuilds** — only `hapi-driver-rebuild` may change it; no hand-edits or `cp` patches.
-- One agent → one PR worktree; never two agents in the same tree.
-- Before any live test: `readlink -f ~/coding/hapi-active` matches the intended worktree.
-- Every worktree: `hub/.env` → `~/.hapi/hub.env`.
-- Frontend changes: `bun run build` in that worktree's `web/` before `hapi-use-worktree`.
-- After testing: `hapi-use-driver` (legacy alias: `hapi-use-main`) unless operator wants the feature left live.
+**Workflow:** [feature-work-lifecycle.md](./feature-work-lifecycle.md) only. This section: layout reminders for meta bot.
 
-See [worktree-testing.md](./worktree-testing.md).
+- Mirror `~/coding/hapi` ≠ daily driver `~/coding/hapi/driver`
+- One agent → one worktree under `~/coding/hapi/worktrees/<name>`
+- Manifest / rebuild mechanics: [driver-soup.md](./driver-soup.md)
 
 ### 2. PR and review hygiene
 
@@ -159,7 +171,7 @@ Then read both tooling docs if anything changed since last session.
 1. Read [`docs/operator/AGENTS.md`](../operator/AGENTS.md) (fork canon). For new behavior, read [new-feature-intake.md](./new-feature-intake.md) (orchestrator handoff §0).
 2. Read repo `AGENTS.local.md` (or `~/coding/AGENTS.local.md`).
 3. Confirm `git branch --show-current` and `pwd` — worktree, not main checkout.
-4. Skim [new-feature-intake.md](./new-feature-intake.md) for soup vs clean demo and §6 gates (tests, cold review, Playwright **before** operator browser test).
+4. Skim [new-feature-intake.md](./new-feature-intake.md) for soup vs clean demo and §6 gates (tests, cold review, Playwright + visual evidence — PNG for existence, GIF/MP4 for interaction — **before** operator browser test; same media in upstream PR).
 5. Skim [worktree-testing.md](./worktree-testing.md) if touching hub or systemd.
 6. Skim [pr-review-loop.md](./pr-review-loop.md) before push/PR (after operator dogfood approval).
 

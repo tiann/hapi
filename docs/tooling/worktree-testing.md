@@ -1,4 +1,6 @@
-# Worktree Testing — Feature Branches Without Polluting Main
+# Worktree Testing — Symlink Mechanics
+
+**Workflow (when to peer-stack vs soup vs stack swing):** [`feature-work-lifecycle.md`](./feature-work-lifecycle.md) **only.** This file explains `hapi-active`, systemd paths, and script install locations.
 
 ## Problem
 
@@ -19,9 +21,10 @@ hapi-hub.service
     ↓ WorkingDirectory
 ~/coding/hapi-active   ←── symlink, swappable
     ↓ currently points to
-~/coding/hapi-driver     (daily driver soup — target default)
+~/coding/hapi/driver     (daily driver soup — target default)
     or
-~/coding/hapi-<feature>  (worktree, under test)
+~/coding/hapi/worktrees/<name>  (canonical PR worktree, under test)
+    or legacy ~/coding/hapi-<feature>
 ```
 
 The service units always point at `~/coding/hapi-active`. Swapping what that symlink
@@ -53,7 +56,7 @@ RestartSec=5
 ### 2. `hapi-active` symlink created
 
 ```bash
-ln -sfn ~/coding/hapi-driver ~/coding/hapi-active   # daily driver default
+ln -sfn ~/coding/hapi/driver ~/coding/hapi-active   # daily driver default
 ```
 
 ### 3. Hub env is canonical at `~/.hapi/hub.env`
@@ -73,34 +76,38 @@ Symlinks to `scripts/tooling/` in this repo: `hapi-use-worktree`, `hapi-use-driv
 
 ## Daily Workflow
 
+**What to run when:** [feature-work-lifecycle.md](./feature-work-lifecycle.md) — not here.
+
 ### Create a new feature worktree
 
 ```bash
-# Preferred — prints hapi-use-worktree command when done
+# Preferred — canonical path under worktrees/
 hapi-worktree-create <feature-name> --branch feat/<feature-name>
+# → ~/coding/hapi/worktrees/<feature-name>
 
-# Manual — always branch from upstream/main
-git worktree add ~/coding/hapi-<feature-name> -b feat/<feature-name> upstream/main
-ln -s ~/.hapi/hub.env ~/coding/hapi-<feature-name>/hub/.env
+# Legacy manual (avoid for new work)
+git worktree add ~/coding/hapi/worktrees/<feature-name> -b feat/<feature-name> upstream/main
+ln -s ~/.hapi/hub.env ~/coding/hapi/worktrees/<feature-name>/hub/.env
 ```
 
-**Naming convention:** flat under `~/coding/` — `~/coding/hapi-<feature-name>`, never
-a subdirectory.
+**Naming convention:** canonical `~/coding/hapi/worktrees/<feature-name>`. Legacy flat `~/coding/hapi-<feature-name>` may still exist — do not create new ones.
 
 ### Develop in the worktree
 
 ```bash
-cd ~/coding/hapi-<feature-name>
+cd ~/coding/hapi/worktrees/<feature-name>
 # edit, commit — all normal git operations work
 # PRs must be created from here, not from ~/coding/hapi
 git branch --show-current   # confirm you're on the right branch before staging
 ```
 
-### Test live against the running service
+### Test live by swinging stack (operator-only)
 
 ```bash
-hapi-use-worktree ~/coding/hapi-<feature-name>
+hapi-use-worktree ~/coding/hapi/worktrees/<feature-name>
 ```
+
+**Prefer peer stack** for agent demos. Stack swing restarts hub + runner and kills live sessions.
 
 This script:
 1. Validates `hub/` exists in the target path
@@ -109,14 +116,14 @@ This script:
 4. Swings `~/coding/hapi-active` to the worktree (`ln -sfn`)
 5. Restarts **`hapi-hub.service` and `hapi-runner.service`** (prompts first)
 
-### Restore to daily driver
+### Restore to daily driver (operator-only stack swing)
 
 ```bash
 hapi-use-driver
 # legacy alias: hapi-use-main
 ```
 
-Swings `hapi-active` back to `~/coding/hapi-driver` and restarts **hub + runner** (same prompt as any stack switch).
+Swings `hapi-active` back to `~/coding/hapi/driver` and restarts **hub + runner**. **Operator-only.** Workflow context: [feature-work-lifecycle.md § Stack path swing](./feature-work-lifecycle.md#stack-path-swing-vs-in-place-restart).
 
 ### Verify after switch
 
@@ -174,11 +181,7 @@ git worktree remove --force ~/coding/hapi-<feature-name>
 The mechanism is shell + symlinks — fully agent-agnostic. Read **`AGENTS.local.md`** and [driver-soup.md](./driver-soup.md) at session start.
 
 What agents need to know:
-1. **`~/coding/hapi-driver` is read-only between rebuilds** — only `hapi-driver-rebuild` may change it (no edits, no `cp`, no local commits). Update `~/.config/hapi/driver-manifest.yaml` then rebuild.
-2. **Never formulate upstream PRs in `~/coding/hapi-driver`** — use `~/coding/hapi-<name>` worktrees
-3. **`~/coding/hapi` primary checkout** should track `upstream/main` (mirror) — see [driver-soup.md](./driver-soup.md)
-4. **Create PR worktrees** with `hapi-worktree-create` (prints the `hapi-use-worktree` line) or `git worktree add`
-5. **Rebuild daily driver** with `hapi-driver-rebuild` — edit `~/.config/hapi/driver-manifest.yaml` first
-6. **Swing live stack** with `hapi-use-worktree` / `hapi-use-driver` — **restarts hub + runner, kills sessions**; **operator must confirm** at `Proceed? [y/N]` (do not auto-answer unless explicitly told)
-7. **`git branch --show-current` before every commit and `gh pr create`**
-8. After "ready to demo", confirm `readlink -f ~/coding/hapi-active` matches the worktree — editing alone does not change `:3006`
+1. **Workflow:** [feature-work-lifecycle.md](./feature-work-lifecycle.md) — sole source
+2. **`~/coding/hapi/driver` is read-only** between rebuilds — manifest + `hapi-driver-rebuild` only
+3. **PR worktrees:** `~/coding/hapi/worktrees/<name>` — see [driver-soup.md](./driver-soup.md)
+4. **`hapi-use-worktree` / `hapi-use-driver`:** operator-only stack swing — this file documents what they do mechanically, not when to run them
