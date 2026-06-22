@@ -81,6 +81,7 @@ export class AcpSdkBackend implements AgentBackend {
     private usageUpdateListener: ((msg: AgentMessage) => void) | null = null;
     private sessionInfoUpdateListener: ((update: AcpSessionInfoUpdate) => void) | null = null;
     private lastForwardedUsageUpdate: AcpUsageUpdate | null = null;
+    private sessionUpdateQueue: Promise<void> = Promise.resolve();
 
     /** Retry configuration for ACP initialization */
     private static readonly INIT_RETRY_OPTIONS = {
@@ -491,6 +492,7 @@ export class AcpSdkBackend implements AgentBackend {
             AcpSdkBackend.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS,
             AcpSdkBackend.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS
         );
+        await this.sessionUpdateQueue;
         this.messageHandler?.drainBuffers();
         this.messageHandler = new AcpMessageHandler(onUpdate, {
             textChunkMode: this.options.textChunkMode,
@@ -519,6 +521,7 @@ export class AcpSdkBackend implements AgentBackend {
                 AcpSdkBackend.UPDATE_QUIET_PERIOD_MS,
                 AcpSdkBackend.UPDATE_DRAIN_TIMEOUT_MS
             );
+            await this.sessionUpdateQueue;
             this.messageHandler?.drainBuffers();
             // Block here until the model truly stops streaming straggler
             // chunks (or LATE_FLUSH_WINDOW_MS elapses), so turn_complete and
@@ -637,10 +640,14 @@ export class AcpSdkBackend implements AgentBackend {
 
     async disconnect(): Promise<void> {
         if (!this.transport) return;
+<<<<<<< HEAD
         for (const timer of this.sessionInfoRefreshTimers.values()) {
             clearTimeout(timer);
         }
         this.sessionInfoRefreshTimers.clear();
+=======
+        await this.sessionUpdateQueue;
+>>>>>>> d0753d496 (fix(cli+web): address PR #958 review Majors on media order and stale blobs)
         this.messageHandler?.drainBuffers();
         this.messageHandler = null;
         this.activeSessionId = null;
@@ -662,12 +669,26 @@ export class AcpSdkBackend implements AgentBackend {
         }
         this.lastSessionUpdateAt = Date.now();
         const update = params.update;
+<<<<<<< HEAD
         if (sessionId) {
             this.captureAvailableCommands(sessionId, update);
         }
         this.forwardSessionInfoUpdate(sessionId, update);
         this.captureUsageUpdate(update);
         this.messageHandler?.handleUpdate(update);
+=======
+        this.sessionUpdateQueue = this.sessionUpdateQueue
+            .then(async () => {
+                this.captureUsageUpdate(update);
+                await this.messageHandler?.handleUpdate(update);
+            })
+            .catch((error) => {
+                logger.debug(
+                    '[AcpSdkBackend] session update failed:',
+                    error instanceof Error ? error.message : String(error)
+                );
+            });
+>>>>>>> 92a9ffa37 (fix(cli+web): address PR #958 review Majors on media order and stale blobs)
     }
 
     private forwardSessionInfoUpdate(sessionId: string | null, update: unknown): void {
