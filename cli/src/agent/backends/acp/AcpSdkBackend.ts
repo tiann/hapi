@@ -644,14 +644,11 @@ export class AcpSdkBackend implements AgentBackend {
 
     async disconnect(): Promise<void> {
         if (!this.transport) return;
-<<<<<<< HEAD
         for (const timer of this.sessionInfoRefreshTimers.values()) {
             clearTimeout(timer);
         }
         this.sessionInfoRefreshTimers.clear();
-=======
         await this.sessionUpdateQueue;
->>>>>>> d0753d496 (fix(cli+web): address PR #958 review Majors on media order and stale blobs)
         this.messageHandler?.drainBuffers();
         this.messageHandler = null;
         this.activeSessionId = null;
@@ -673,16 +670,12 @@ export class AcpSdkBackend implements AgentBackend {
         }
         this.lastSessionUpdateAt = Date.now();
         const update = params.update;
-<<<<<<< HEAD
-        if (sessionId) {
-            this.captureAvailableCommands(sessionId, update);
-        }
-        this.forwardSessionInfoUpdate(sessionId, update);
-        this.captureUsageUpdate(update);
-        this.messageHandler?.handleUpdate(update);
-=======
         this.sessionUpdateQueue = this.sessionUpdateQueue
             .then(async () => {
+                if (sessionId) {
+                    this.captureAvailableCommands(sessionId, update);
+                }
+                this.forwardSessionInfoUpdate(sessionId, update);
                 this.captureUsageUpdate(update);
                 await this.messageHandler?.handleUpdate(update);
             })
@@ -692,7 +685,6 @@ export class AcpSdkBackend implements AgentBackend {
                     error instanceof Error ? error.message : String(error)
                 );
             });
->>>>>>> 92a9ffa37 (fix(cli+web): address PR #958 review Majors on media order and stale blobs)
     }
 
     private forwardSessionInfoUpdate(sessionId: string | null, update: unknown): void {
