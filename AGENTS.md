@@ -1,3 +1,12 @@
+@/home/ubuntu/.codex/INSTRUCTION.md
+@/home/ubuntu/.codex/HUMANIZER_ZH.md
+
+## 引用说明
+
+- 执行本仓库任务前，先读取本文件顶部所有 `@...` 指令引用，并把引用文件中的内容视为有效指令。
+- 如果引用文件里还有其他 `@...` 引用，也要继续读取后再执行命令或修改文件。
+- 如果任何引用文件无法读取，停止操作并报告缺失路径，不要凭假设继续。
+
 # AGENTS.md
 
 Work style: telegraph; noun-phrases ok; drop grammar;
