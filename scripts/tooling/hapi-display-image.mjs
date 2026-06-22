@@ -30,7 +30,8 @@ if (!sessionArg || !imagePath) {
 function detectMediaTool(path) {
     const head = readFileSync(path).subarray(0, 16)
     if (head.length >= 12 && head.subarray(4, 8).toString('ascii') === 'ftyp') {
-        return 'display_video'
+        const brand = head.subarray(8, 12).toString('ascii')
+        return brand === 'avif' || brand === 'avis' ? 'display_image' : 'display_video'
     }
     if (head.length >= 4 && head[0] === 0x1a && head[1] === 0x45 && head[2] === 0xdf && head[3] === 0xa3) {
         return 'display_video'
