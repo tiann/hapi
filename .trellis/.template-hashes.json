@@ -6,8 +6,8 @@
     ".claude/agents/trellis-research.md": "add4aa4259ded425b04ec992802c646490352bb4eb3730a7ab450beea87d4faa",
     ".claude/settings.json": "d13cd05659281a287d7f50c7e25eb6a89c2a6597773511bd6885538acced2855",
     ".claude/hooks/inject-subagent-context.py": "c8ea04062990530dffb26c4d1efa3e6887e042d3086da2f2325b491c9d544931",
-    ".claude/hooks/inject-workflow-state.py": "f7fa9389ed7aa264597fff5de6277bec186e89a3ef539192997c6d026d88d5ec",
-    ".claude/hooks/session-start.py": "2cd87a08dec8cecc5f1acb665d6bd7241bc580f6ae39d571b99a0118be89c46b",
+    ".claude/hooks/inject-workflow-state.py": "dee631498b35f8b107a7278c147f68320c3216c0a2e6ec21e66daa962b7202c2",
+    ".claude/hooks/session-start.py": "6878cd4f6395ad39ba82be247573f215f17a01fe061a1a266f734c1fbd098bf4",
     ".claude/commands/trellis/continue.md": "6c34c41824f8eff4b2df792e032e0c36787b59f8a8879b0338347073f76ad52c",
     ".claude/commands/trellis/finish-work.md": "d6aa570ab684f57e4845de2d84a1ff6d9f0908e04c5a56e14fd70ae739c369fc",
     ".claude/skills/trellis-before-dev/SKILL.md": "859894f2e8258cbfa142d710363433761c54984c69f7ed7bd44512fb4eb165cd",
@@ -103,7 +103,7 @@
     ".codex/agents/trellis-implement.toml": "87dc719802b355c61607c85ae0ab3e42b2a374a578a9fde349c3ae412638f8b4",
     ".codex/agents/trellis-research.toml": "5492f7f6ab8bdea975b0e853bf171b050f7ddf6c2079ac770ed912c48d815eae",
     ".codex/hooks/session-start.py": "1c951ff35f490c5fbf576b4764ec190895df7c2a48e279fb20625209f51c321a",
-    ".codex/hooks/inject-workflow-state.py": "f7fa9389ed7aa264597fff5de6277bec186e89a3ef539192997c6d026d88d5ec",
+    ".codex/hooks/inject-workflow-state.py": "dee631498b35f8b107a7278c147f68320c3216c0a2e6ec21e66daa962b7202c2",
     ".codex/hooks.json": "522ba3c488c100027783e52ecff84c0bd799852dd77ad3f1936e86db105f01d6",
     ".codex/config.toml": "4224eb7df6802a623cb1bee522aed0a23ba6be862b90f1b597a313fc16864b06",
     ".trellis/agents/check.md": "edb4f57361407249a53bf5998ebf91c40d2b969e826a2c5e1b4e813a08bcb175",
@@ -137,7 +137,7 @@
     ".trellis/scripts/hooks/linear_sync.py": "e09cc4ce4699aada908808718698f33f705a3edf55c4dcf8f777ad892f80ca79",
     ".trellis/scripts/init_developer.py": "f9e6c0d882406e81c8cd6b1c5abb204b0befc0069ff89cf650cd536a80f8c60e",
     ".trellis/scripts/task.py": "6c65801a1f56648fd4765a1d216493d3094827c1db4761e55fdaa548c1801798",
-    ".trellis/workflow.md": "f44acd1c08d1601fdc4377671ef932eb3e09f0e87b7872a6d0ee4baeada29fcb",
+    ".trellis/workflow.md": "f2d97f01f6f2ee34de7a389dc9d0a5969c1f2713fda92a3a852f6a91d556d507",
     "AGENTS.md": "3e9c409e9e6e6a8a5775d2dae776dc9d10aadc61b18ec5434d826e8e50dd2dc5"
   }
 }

@@ -813,6 +813,14 @@ Context loaded. Follow <task-status>. Load workflow/spec/task details only when 
 </ready>""")
 
     context_text = output.getvalue()
+
+    # Kiro (CLI trellis agent agentSpawn) adds a hook's stdout directly to the
+    # conversation context — no JSON envelope. Emit the bare overview text.
+    # Conditionally isolated: all other platforms keep the JSON path below.
+    if _detect_platform(hook_input) == "kiro":
+        print(context_text, flush=True)
+        return
+
     result = {
         # Claude Code / Qoder / CodeBuddy / Droid / Gemini / Copilot format
         "hookSpecificOutput": {

@@ -18,9 +18,11 @@ missing or a tag is absent, the breadcrumb degrades to a generic
 the broken state instead of the hook silently masking it.
 
 Shared across all hook-capable platforms (Claude, Cursor, Codex, Qoder,
-CodeBuddy, Droid, Gemini, Copilot). Kiro is not wired (no per-turn
-hook entry point). Written to each platform's hooks directory via
-writeSharedHooks() at init time.
+CodeBuddy, Droid, Gemini, Copilot, Kiro). Kiro wires this via the CLI
+custom agent's ``hooks.userPromptSubmit`` and the IDE ``.kiro.hook``
+``promptSubmit`` event; its output branch emits a plain-text breadcrumb
+(Kiro adds hook stdout directly to the conversation context). Written to
+each platform's hooks directory via writeSharedHooks() at init time.
 
 Silent exit 0 cases (no output):
   - No .trellis/ directory found (not a Trellis project)
@@ -341,6 +343,14 @@ def main() -> int:
         parts.append(_codex_mode_banner(config))
         parts.append(breadcrumb)
         breadcrumb = "\n\n".join(parts)
+
+    # Kiro (CLI userPromptSubmit / IDE promptSubmit) adds a hook's stdout
+    # directly to the conversation context — no JSON envelope. Emit the bare
+    # breadcrumb text. Conditionally isolated: all other platforms keep the
+    # hookSpecificOutput JSON path below unchanged.
+    if platform == "kiro":
+        print(breadcrumb)
+        return 0
 
     # Gemini CLI 0.40.x rejects "UserPromptSubmit" — its per-turn event is
     # named "BeforeAgent". Other platforms (Claude/Cursor/Qoder/CodeBuddy/
