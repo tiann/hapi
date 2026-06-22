@@ -1,5 +1,4 @@
 @/home/ubuntu/.codex/INSTRUCTION.md
-@/home/ubuntu/.codex/HUMANIZER_ZH.md
 
 ## 引用说明
 
