@@ -81,7 +81,14 @@ function GeneratedImageCard(props: { block: GeneratedImageBlock }) {
     useEffect(() => {
         let disposed = false
 
+        if (objectUrlRef.current) {
+            URL.revokeObjectURL(objectUrlRef.current)
+            objectUrlRef.current = null
+        }
+        setObjectUrl(null)
+        setImageStyle(undefined)
         setError(null)
+
         void ctx.api.getGeneratedImageBlob(ctx.sessionId, props.block.imageId)
             .then((blob) => {
                 if (disposed) return

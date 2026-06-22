@@ -2124,16 +2124,44 @@ describe('AcpMessageHandler', () => {
         clearGeneratedImages();
     });
 
+    it('emits generated_image before later tool_call when image registration is async', async () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+        const pngHeader = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x00]);
+
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: {
+                type: 'image',
+                mimeType: 'image/png',
+                data: pngHeader.toString('base64'),
+            },
+        });
+        await handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+            toolCallId: 'call-after-image',
+            title: 'Read',
+            kind: 'read',
+            status: 'in_progress',
+        });
+
+        const imageIndex = messages.findIndex((message) => message.type === 'generated_image');
+        const toolIndex = messages.findIndex((message) => message.type === 'tool_call');
+        expect(imageIndex).toBeGreaterThanOrEqual(0);
+        expect(toolIndex).toBeGreaterThan(imageIndex);
+        clearGeneratedImages();
+    });
+
     it('emits buffered text before generated_image when text precedes an ACP image block', async () => {
         const messages: AgentMessage[] = [];
         const handler = new AcpMessageHandler((message) => messages.push(message), { flavor: 'cursor' });
         const pngHeader = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x00]);
 
-        handler.handleUpdate({
+        await handler.handleUpdate({
             sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
             content: { type: 'text', text: 'Here is the screenshot:' }
         });
-        handler.handleUpdate({
+        await handler.handleUpdate({
             sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
             content: {
                 type: 'image',

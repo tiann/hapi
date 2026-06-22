@@ -534,7 +534,7 @@ export class AcpMessageHandler {
         this.reasoningSnapshotEmitted = false;
     }
 
-    handleUpdate(update: unknown): void {
+    async handleUpdate(update: unknown): Promise<void> {
         if (!isObject(update)) return;
         const updateType = asString(update.sessionUpdate);
         if (!updateType) return;
@@ -563,7 +563,7 @@ export class AcpMessageHandler {
             if (isObject(content) && content.type === 'image') {
                 this.flushReasoning();
                 this.flushText();
-                void this.emitGeneratedImageFromAcpContent(content);
+                await this.emitGeneratedImageFromAcpContent(content);
                 return;
             }
             const text = extractTextContent(content);
