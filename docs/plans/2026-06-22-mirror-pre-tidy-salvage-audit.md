@@ -127,7 +127,7 @@ test ! -f scripts/tooling/hapi-peer-stack.sh && echo "not on mirror disk — use
 
 **Peer sign-off (2026-06-22):** Session peer-stack salvage review — **`MIGRATED`**. Backup tooling slice byte-identical to `origin/feat/hapi-peer-stack` on all nine paths; no cherry-pick from backup needed for peer-stack core. Split recommendation: merge `peer-stack*` only in peer-stack PR; emoji/budget/DB-prep are orthogonal (see emoji closure briefing).
 
-**Emoji sub-slice:** Meta PR watcher closure — backup **`MIGRATED`**; fork `main` had **`SALVAGE` gap** (docs reference scripts missing on `main`). Action: branch `tooling/pr-emoji-sweep` with commits `d1166acf`, `b989b64b`, `253553a3`, `2202e9f0`.
+**Emoji sub-slice:** Meta PR watcher closure — backup **`MIGRATED`**; fork `main` had **`SALVAGE` gap** (docs reference scripts missing on `main`). **Done:** branch `tooling/pr-emoji-sweep` @ `e7eaccb0` restores scripts from backup tip (no doc conflicts). PR to `origin/main` when operator-ready.
 
 ---
 
@@ -157,5 +157,6 @@ git branch -d mirror/pre-tidy-20260622
 ## Next actions
 
 1. **`hapi-sync-fork-main`** — close cluster A (25 upstream commits).
-2. **Resume peer-stack peer** with [`2026-06-22-salvage-closure-peer-stack-tooling.md`](./peer-briefings/2026-06-22-salvage-closure-peer-stack-tooling.md).
-3. **Optional:** PR `feat/hapi-peer-stack` → `main` or keep fork-only until upstream extraction phase.
+2. **PR `tooling/pr-emoji-sweep`** → `origin/main` — emoji scripts restored @ `e7eaccb0`.
+3. **PR `feat/hapi-peer-stack`** — peer-stack core; split orthogonal tooling per peer sign-off.
+4. **Delete backup** when checklist in this file is complete.
