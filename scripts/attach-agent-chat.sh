@@ -3,4 +3,4 @@
 # resumeagent-tui auto mode invokes this when present under the resolved hapi repo root.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-exec bun run "$ROOT/scripts/attach-agent-chat.ts" "$@"
+exec bun run "$ROOT/scripts/tooling/attach-agent-chat.ts" "$@"

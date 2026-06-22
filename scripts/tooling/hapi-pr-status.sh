@@ -131,7 +131,7 @@ else
         # Upstream: openai/codex-action GHA posts formal reviews as github-actions[bot]
         LATEST_BOT=$(gh api "repos/${REPO}/pulls/${PR}/reviews" --paginate \
             --jq '[.[] | select(.user.login == "github-actions[bot]")] | sort_by(.submitted_at) | reverse | .[0]' 2>/dev/null || echo "null")
-        CLEAN_REGEX="No findings|No high-confidence|No issues found|No actionable"
+        CLEAN_REGEX="No findings|No high-confidence|No issues found|No actionable|\*\*Findings\*\*\\n- None|- None\\."
         BOT_DESC="github-actions[bot] review"
         TIMESTAMP_FIELD=".submitted_at"
     fi

@@ -29,6 +29,7 @@
 #               (introduced by feat/android-wear-companion; data loss = fcm_devices
 #                rows; restore from backup if needed; Android companion re-registers
 #                on next launch)
+#   v11 -> v10: DROP events/event_links/FTS5 (feat/overseer-events-substrate #22)
 #
 # Usage:
 #   hapi-driver-db-prep.sh <target-worktree-path>
@@ -125,6 +126,26 @@ DROP INDEX IF EXISTS idx_fcm_devices_token;
 DROP INDEX IF EXISTS idx_fcm_devices_namespace;
 DROP TABLE IF EXISTS fcm_devices;
 PRAGMA user_version = 9;
+COMMIT;
+SQL
+            ;;
+        11_to_10)
+            echo "  applying v11 -> v10 downgrade: DROP events substrate + FTS5"
+            sqlite3 "$DB_PATH" <<'SQL'
+BEGIN IMMEDIATE;
+DROP TRIGGER IF EXISTS events_fts_delete;
+DROP TRIGGER IF EXISTS events_fts_update;
+DROP TRIGGER IF EXISTS events_fts_insert;
+DROP TABLE IF EXISTS events_fts;
+DROP INDEX IF EXISTS idx_events_idempotency_key;
+DROP INDEX IF EXISTS idx_event_links_to;
+DROP INDEX IF EXISTS idx_event_links_from;
+DROP TABLE IF EXISTS event_links;
+DROP INDEX IF EXISTS idx_events_dedupe_key;
+DROP INDEX IF EXISTS idx_events_type_ts;
+DROP INDEX IF EXISTS idx_events_session_ts;
+DROP TABLE IF EXISTS events;
+PRAGMA user_version = 10;
 COMMIT;
 SQL
             ;;
