@@ -13,6 +13,7 @@
 | Intake step execution | [`new-feature-intake.md`](./new-feature-intake.md) — §0 handoff + steps 1–8 how-to only |
 | Manifest, DB jiu-jitsu, `stack.lock`, atomic swap mechanics | [`driver-soup.md`](./driver-soup.md) |
 | Git push policy (GitHub-safe vs local-first paths) | [`commit-hooks.md`](./commit-hooks.md) |
+| Pre-tidy backup / salvage closure | [`salvage-closure.md`](./salvage-closure.md), [`mirror-main-layout.md`](./mirror-main-layout.md) |
 | Peer stack / Playwright evidence | [`peer-stack.md`](./peer-stack.md) |
 | Symlink + systemd paths | [`worktree-testing.md`](./worktree-testing.md) |
 | `hapi-watch-activate-driver` script | [`watch-activate-driver.md`](./watch-activate-driver.md) |
