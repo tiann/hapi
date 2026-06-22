@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { availableParallelism, cpus, freemem, loadavg, platform, totalmem } from 'node:os'
 import type { MachineHealth } from '@hapi/protocol/types'
 import { MachineHealthSchema } from '@hapi/protocol/schemas'
@@ -37,7 +38,52 @@ function computeCpuPercent(current: CpuTimesSnapshot, previous: CpuTimesSnapshot
     return Math.max(0, Math.min(100, Math.round(usage * 100)))
 }
 
+function parseMeminfoKbValue(meminfo: string, key: string): number | undefined {
+    for (const line of meminfo.split('\n')) {
+        if (!line.startsWith(`${key}:`)) {
+            continue
+        }
+        const kb = Number(line.split(/\s+/)[1])
+        return Number.isFinite(kb) ? kb * 1024 : undefined
+    }
+    return undefined
+}
+
+/** Linux pressure percent: (MemTotal - MemAvailable) / MemTotal. Testable without /proc. */
+export function readLinuxMemoryUsedPercent(meminfo: string): number | undefined {
+    const total = parseMeminfoKbValue(meminfo, 'MemTotal')
+    if (!total || total <= 0) {
+        return undefined
+    }
+
+    const available = parseMeminfoKbValue(meminfo, 'MemAvailable')
+    if (available !== undefined) {
+        return Math.max(0, Math.min(100, Math.round(((total - available) / total) * 100)))
+    }
+
+    // Pre-3.14 kernels: approximate available as free + reclaimable cache.
+    const free = parseMeminfoKbValue(meminfo, 'MemFree')
+    if (free === undefined) {
+        return undefined
+    }
+    const buffers = parseMeminfoKbValue(meminfo, 'Buffers') ?? 0
+    const cached = parseMeminfoKbValue(meminfo, 'Cached') ?? 0
+    const approxAvailable = free + buffers + cached
+    return Math.max(0, Math.min(100, Math.round(((total - approxAvailable) / total) * 100)))
+}
+
 function computeMemoryPercent(): number | undefined {
+    if (platform() === 'linux') {
+        try {
+            const fromProc = readLinuxMemoryUsedPercent(readFileSync('/proc/meminfo', 'utf8'))
+            if (fromProc !== undefined) {
+                return fromProc
+            }
+        } catch {
+            // fall through to os.freemem()
+        }
+    }
+
     const total = totalmem()
     if (total <= 0) {
         return undefined

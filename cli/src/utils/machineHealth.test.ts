@@ -1,5 +1,19 @@
 import { describe, expect, it } from 'vitest'
-import { collectMachineHealth, resetMachineHealthSamplerForTests } from './machineHealth'
+import { collectMachineHealth, readLinuxMemoryUsedPercent, resetMachineHealthSamplerForTests } from './machineHealth'
+
+describe('readLinuxMemoryUsedPercent', () => {
+    it('uses MemAvailable, not MemFree, so page cache does not read as pressure', () => {
+        const meminfo = `
+MemTotal:       32793696 kB
+MemFree:          578248 kB
+MemAvailable:   18312444 kB
+Buffers:         1196580 kB
+Cached:          9758076 kB
+`.trim()
+
+        expect(readLinuxMemoryUsedPercent(meminfo)).toBe(44)
+    })
+})
 
 describe('collectMachineHealth', () => {
     it('returns schema-valid health with memory and cpu count', () => {
