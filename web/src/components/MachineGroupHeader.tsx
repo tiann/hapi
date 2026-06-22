@@ -1,4 +1,6 @@
+import { useId } from 'react'
 import type { Machine } from '@/types/api'
+import { MACHINE_ROW_TOOLTIP_FOCUS_CLASS } from '@/components/HoverTooltip'
 import { MachineHealthIndicator } from '@/components/MachineHealthIndicator'
 import {
     getMachineHost,
@@ -73,6 +75,7 @@ export function MachineGroupHeader(props: {
     healthPresentation: MachineHealthPresentation | null
 }) {
     const { t } = useTranslation()
+    const healthTooltipId = useId()
     const platform = getMachinePlatform(props.machine)
     const host = getMachineHost(props.machine)
     const osLabel = resolveMachineOsLabel(platform)
@@ -85,8 +88,9 @@ export function MachineGroupHeader(props: {
         <button
             type="button"
             onClick={props.onToggle}
+            aria-describedby={hasHealth ? healthTooltipId : undefined}
             className={cn(
-                'relative flex w-full min-w-0 items-center gap-2 px-1 py-1.5 text-left rounded-lg select-none',
+                'group/machine-row relative flex w-full min-w-0 items-center gap-2 px-1 py-1.5 text-left rounded-lg select-none',
                 'border border-[var(--app-border)] bg-[var(--app-subtle-bg)]/70',
                 'transition-colors hover:bg-[var(--app-subtle-bg)]',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]'
@@ -109,6 +113,8 @@ export function MachineGroupHeader(props: {
                     layout="inline"
                     compact
                     className="shrink-0"
+                    tooltipId={healthTooltipId}
+                    revealOnParentFocusClass={MACHINE_ROW_TOOLTIP_FOCUS_CLASS}
                 />
             ) : null}
             <span className="ml-auto shrink-0 text-[11px] tabular-nums text-[var(--app-hint)]">

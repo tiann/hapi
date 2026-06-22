@@ -5,6 +5,9 @@ import { cn } from '@/lib/utils'
 export const SESSION_ROW_TOOLTIP_FOCUS_CLASS =
     'group-focus-visible/session-row:opacity-100 group-focus-visible/session-row:visible'
 
+export const MACHINE_ROW_TOOLTIP_FOCUS_CLASS =
+    'group-focus-visible/machine-row:opacity-100 group-focus-visible/machine-row:visible'
+
 /**
  * Lightweight CSS-driven tooltip used by the session list to surface "why is
  * this indicator showing?" copy on hover/focus. Pure CSS reveal (no portal,

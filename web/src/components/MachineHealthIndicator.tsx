@@ -118,9 +118,12 @@ export function MachineHealthIndicator(props: {
     className?: string
     layout?: 'stack' | 'inline'
     compact?: boolean
+    tooltipId?: string
+    revealOnParentFocusClass?: string
 }) {
     const { t } = useTranslation()
-    const tooltipId = useId()
+    const generatedTooltipId = useId()
+    const tooltipId = props.tooltipId ?? generatedTooltipId
     const { presentation, layout = 'stack', compact = false } = props
 
     const ariaLabel = presentation.metrics.length > 0
@@ -162,6 +165,7 @@ export function MachineHealthIndicator(props: {
             align="row"
             className="shrink-0"
             tooltipClassName="px-3 py-2"
+            revealOnParentFocusClass={props.revealOnParentFocusClass}
         >
             <MachineHealthTooltipBody presentation={presentation} />
         </HoverTooltip>
