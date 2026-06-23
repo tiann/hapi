@@ -335,8 +335,15 @@ class ClaudePtyLauncher extends RemoteLauncherBase {
             this.ptyControls.sendKeys(ClaudePtyLauncher.PTY_CLEAR_LINE)
             // Drop pending queued messages — they were enqueued AFTER the
             // message that is now being aborted and should not be auto-delivered
-            // to the fresh prompt.
+            // to the fresh prompt. Ack them as consumed first: reset() alone
+            // clears the queue without firing onBatchConsumed, so the hub would
+            // keep them invoked_at=null (stuck "queued" in the web, and re-sent
+            // to the fresh prompt by seq-backfill on reconnect) — defeating abort.
+            const droppedLocalIds = this.session.queue.pendingLocalIds()
             this.session.queue.reset()
+            if (droppedLocalIds.length > 0) {
+                this.session.client.emitMessagesConsumed(droppedLocalIds)
+            }
             // Signal the web composer to restore the exact prompt that was in
             // flight. Skip the signal entirely when nothing was being processed
             // so an old prompt is never replayed into an empty composer.
