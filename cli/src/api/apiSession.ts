@@ -876,6 +876,10 @@ export class ApiSessionClient extends EventEmitter {
         mode: SessionPermissionMode
     } | {
         type: 'ready'
+    } | {
+        // Emitted on abort so the web composer can restore the aborted prompt.
+        // The web side reads the last user message text from normalizedMessages.
+        type: 'abort-restore'
     }, id?: string): void {
         const content = {
             role: 'agent',

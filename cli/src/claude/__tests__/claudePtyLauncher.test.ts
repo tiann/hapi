@@ -142,6 +142,7 @@ describe('lastUserPromptText', () => {
 
 function createSessionStub() {
     const sentMessages: Array<Record<string, unknown>> = []
+    const sentSessionEvents: Array<Record<string, unknown>> = []
     return {
         session: {
             sessionId: 'pty-session',
@@ -159,17 +160,20 @@ function createSessionStub() {
             addSessionFoundCallback: (cb: (sessionId: string) => void) => { harness.foundCallbacks.push(cb) },
             removeSessionFoundCallback: () => {},
             queue: {
-                waitForMessagesAndGetAsString: vi.fn().mockResolvedValue(null)
+                waitForMessagesAndGetAsString: vi.fn().mockResolvedValue(null),
+                reset: vi.fn(),
             },
             client: {
                 sendClaudeSessionMessage: (msg: Record<string, unknown>) => { sentMessages.push(msg) },
-                sendSessionEvent: () => {},
+                sendSessionEvent: vi.fn((event: Record<string, unknown>) => { sentSessionEvents.push(event) }),
                 emitAgentTerminalOutput: () => {},
                 setAgentTerminalControls: () => {},
+                resetAgentTerminal: () => {},
                 rpcHandlerManager: { registerHandler: () => {} },
             },
         },
         sentMessages,
+        sentSessionEvents,
     }
 }
 
@@ -291,6 +295,89 @@ describe('claudePtyLauncher turn-interrupt', () => {
         await launcherPromise
     })
 
+    it('sends clear-line key after Esc and resets the queue on abort', async () => {
+        harness.exitReason = null
+
+        const { session } = createSessionStub()
+        const msgPromise = deferred<any>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+
+        const launcherPromise = claudePtyLauncher(session as never)
+
+        await tick(50)
+
+        expect(mockAbortHandlers).toBeTruthy()
+
+        // Trigger turn interrupt
+        await mockAbortHandlers.onAbort()
+
+        // Should send clear-line key after Esc
+        const calls = lastSendKeysSpy.mock.calls.map((c: unknown[]) => c[0])
+        expect(calls[0]).toBe('\x1b')
+        expect(calls[1]).toBe('\x15')
+
+        // Should reset the queue so pending messages don't get appended
+        expect(session.queue.reset).toHaveBeenCalledTimes(1)
+
+        // Should NOT abort the PTY spawn signal
+        expect(ptyOptsCaptured.signal.aborted).toBe(false)
+
+        harness.exitReason = 'exit'
+        msgPromise.resolve(null)
+        await launcherPromise
+    })
+
+    it('emits abort-restore event on abort (regardless of whether a message was submitted)', async () => {
+        harness.exitReason = null
+
+        const { session, sentSessionEvents } = createSessionStub()
+        const msgPromise = deferred<any>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+
+        const launcherPromise = claudePtyLauncher(session as never)
+
+        await tick(50)
+
+        // Simulate a message being submitted via onMessageSubmitted callback
+        ptyOptsCaptured.onMessageSubmitted?.('hello world')
+
+        // Trigger abort after message was submitted
+        await mockAbortHandlers.onAbort()
+
+        // Should emit abort-restore (text is read by the web from normalizedMessages)
+        const restoreEvent = sentSessionEvents.find((e) => e.type === 'abort-restore')
+        expect(restoreEvent).toBeDefined()
+        // abort-restore carries no text field — the web reads the last user message
+        expect((restoreEvent as any)?.text).toBeUndefined()
+
+        harness.exitReason = 'exit'
+        msgPromise.resolve(null)
+        await launcherPromise
+    })
+
+    it('emits abort-restore even when no message was submitted before abort', async () => {
+        harness.exitReason = null
+
+        const { session, sentSessionEvents } = createSessionStub()
+        const msgPromise = deferred<any>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+
+        const launcherPromise = claudePtyLauncher(session as never)
+
+        await tick(50)
+
+        // Abort without any message submitted first
+        await mockAbortHandlers.onAbort()
+
+        // Should still emit abort-restore (the web will find no user message to restore)
+        const restoreEvent = sentSessionEvents.find((e) => e.type === 'abort-restore')
+        expect(restoreEvent).toBeDefined()
+
+        harness.exitReason = 'exit'
+        msgPromise.resolve(null)
+        await launcherPromise
+    })
+
     it('kills the PTY session (aborts the controller) when aborted and PTY controls are NOT active', async () => {
         harness.exitReason = null
 
@@ -317,6 +404,50 @@ describe('claudePtyLauncher turn-interrupt', () => {
         // No controls registered, should fallback to aborting the controller
         expect(ptyOptsCaptured.signal.aborted).toBe(true)
 
+        harness.exitReason = 'exit'
+        msgPromise.resolve(null)
+        await launcherPromise
+    })
+
+    it('delays Ctrl-U until after the Esc interrupt has settled (~150 ms)', async () => {
+        // Esc causes claude TUI to asynchronously restore the previous prompt.
+        // Ctrl-U must arrive AFTER that restore, so we verify that Ctrl-U is NOT
+        // sent synchronously with Esc but only after ~150 ms have elapsed.
+        vi.useFakeTimers()
+        harness.exitReason = null
+
+        const { session } = createSessionStub()
+        const msgPromise = deferred<any>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+
+        const launcherPromise = claudePtyLauncher(session as never)
+
+        // Advance fake timers to let the claudePty mock's async setup resolve
+        // (the mock calls onReady synchronously and then awaits nextMessage which
+        // hangs until msgPromise resolves, but the setup tick needs to drain).
+        await vi.advanceTimersByTimeAsync(50)
+
+        expect(mockAbortHandlers).toBeTruthy()
+
+        // Kick off the abort — do NOT await yet; we want to inspect mid-flight.
+        const abortPromise = mockAbortHandlers.onAbort()
+
+        // Drain synchronous microtasks: Esc should have been sent already
+        // (it is sent before the sleep), but Ctrl-U is gated behind sleep(150).
+        await Promise.resolve()
+        const callsAfterEsc = lastSendKeysSpy.mock.calls.map((c: unknown[]) => c[0])
+        expect(callsAfterEsc).toContain('\x1b')
+        // Ctrl-U must NOT have arrived yet — the sleep is still pending.
+        expect(callsAfterEsc).not.toContain('\x15')
+
+        // Advance past the sleep delay; Ctrl-U should now be sent.
+        await vi.advanceTimersByTimeAsync(200)
+        const callsAfterDelay = lastSendKeysSpy.mock.calls.map((c: unknown[]) => c[0])
+        expect(callsAfterDelay).toContain('\x15')
+
+        await abortPromise
+
+        vi.useRealTimers()
         harness.exitReason = 'exit'
         msgPromise.resolve(null)
         await launcherPromise
