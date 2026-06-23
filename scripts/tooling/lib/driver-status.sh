@@ -235,3 +235,52 @@ _driver_status_jq_update() {
         return 1
     fi
 }
+
+# driver_stack_wait_idle [timeout_seconds]
+# Poll until rebuild + switch are idle (hapi-driver-status --quiet).
+# Exit: 0 idle | 75 timeout still busy | 2 stale status | same as status cmd on hard errors
+driver_stack_wait_idle() {
+    local timeout="${1:-${HAPI_DRIVER_STACK_WAIT_SECONDS:-1800}}"
+    local poll="${HAPI_DRIVER_STACK_WAIT_POLL:-5}"
+    local status_cmd="${HAPI_DRIVER_STATUS:-}"
+    local elapsed=0 rc=0
+
+    if [[ -z "$status_cmd" ]]; then
+        if command -v hapi-driver-status >/dev/null 2>&1; then
+            status_cmd="hapi-driver-status"
+        elif [[ -f "$(dirname "${BASH_SOURCE[0]}")/../hapi-driver-status.sh" ]]; then
+            status_cmd="$(dirname "${BASH_SOURCE[0]}")/../hapi-driver-status.sh"
+        else
+            echo "driver_stack_wait_idle: no hapi-driver-status; assuming idle" >&2
+            return 0
+        fi
+    fi
+
+    while (( elapsed < timeout )); do
+        rc=0
+        "$status_cmd" --quiet >/dev/null 2>&1 || rc=$?
+        case "$rc" in
+            0) return 0 ;;
+            1)
+                # Status file not created yet — no rebuild/switch in flight.
+                return 0
+                ;;
+            75)
+                echo "driver_stack_wait_idle: stack busy; waiting (${elapsed}s/${timeout}s)..." >&2
+                sleep "$poll"
+                elapsed=$((elapsed + poll))
+                ;;
+            2)
+                echo "ERROR: driver stack status stale (dead pid). Inspect: hapi-driver-status" >&2
+                return 2
+                ;;
+            *)
+                echo "WARN: hapi-driver-status --quiet returned $rc; proceeding" >&2
+                return 0
+                ;;
+        esac
+    done
+
+    echo "ERROR: driver stack still busy after ${timeout}s (hapi-driver-status --quiet=75)" >&2
+    return 75
+}

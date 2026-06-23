@@ -8,7 +8,7 @@ Install once per clone:
 
 Sets `core.hooksPath` → `scripts/tooling/git-hooks/` (pre-commit, commit-msg, **pre-push**).
 
-Policy source: `scripts/tooling/lib/fork-path-policy.sh`
+Policy source: `scripts/tooling/lib/fork-path-policy.sh` (resolved from **`HAPI_PRIMARY`** mirror when absent in a feature worktree).
 
 ## Tiered policy (2026-06-23)
 

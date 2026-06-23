@@ -8,8 +8,14 @@ fi
 
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
-LEAK_CHECK="$ROOT/scripts/tooling/check-operator-leaks.sh"
-POLICY="$ROOT/scripts/tooling/lib/fork-path-policy.sh"
+PRIMARY="${HAPI_PRIMARY:-$HOME/coding/hapi}"
+LEAK_CHECK="$PRIMARY/scripts/tooling/check-operator-leaks.sh"
+[[ -x "$LEAK_CHECK" ]] || LEAK_CHECK="$ROOT/scripts/tooling/check-operator-leaks.sh"
+POLICY="$PRIMARY/scripts/tooling/lib/fork-path-policy.sh"
+[[ -f "$POLICY" ]] || POLICY="$ROOT/scripts/tooling/lib/fork-path-policy.sh"
+if [[ ! -f "$POLICY" ]]; then
+    exit 0
+fi
 # shellcheck source=/dev/null
 source "$POLICY"
 
@@ -101,12 +107,14 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   fi
 done
 
-ADVISORY="$ROOT/scripts/tooling/check-stash-advisory.sh"
+ADVISORY="$PRIMARY/scripts/tooling/check-stash-advisory.sh"
+[[ -x "$ADVISORY" ]] || ADVISORY="$ROOT/scripts/tooling/check-stash-advisory.sh"
 if [[ -x "$ADVISORY" ]]; then
     "$ADVISORY" --quiet || true
 fi
 
-WT_AUDIT="$ROOT/scripts/tooling/check-worktree-layout.sh"
+WT_AUDIT="$PRIMARY/scripts/tooling/check-worktree-layout.sh"
+[[ -x "$WT_AUDIT" ]] || WT_AUDIT="$ROOT/scripts/tooling/check-worktree-layout.sh"
 if [[ -x "$WT_AUDIT" ]]; then
     "$WT_AUDIT" --quiet || true
 fi

@@ -5,8 +5,14 @@ set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
-LEAK_CHECK="$ROOT/scripts/tooling/check-operator-leaks.sh"
-POLICY="$ROOT/scripts/tooling/lib/fork-path-policy.sh"
+PRIMARY="${HAPI_PRIMARY:-$HOME/coding/hapi}"
+LEAK_CHECK="$PRIMARY/scripts/tooling/check-operator-leaks.sh"
+[[ -x "$LEAK_CHECK" ]] || LEAK_CHECK="$ROOT/scripts/tooling/check-operator-leaks.sh"
+POLICY="$PRIMARY/scripts/tooling/lib/fork-path-policy.sh"
+[[ -f "$POLICY" ]] || POLICY="$ROOT/scripts/tooling/lib/fork-path-policy.sh"
+if [[ ! -f "$POLICY" ]]; then
+    exit 0
+fi
 # shellcheck source=/dev/null
 source "$POLICY"
 
