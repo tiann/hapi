@@ -362,4 +362,40 @@ describe('runAgentPty', () => {
         expect(harness.m.write).not.toHaveBeenCalledWith('should not send')
         expect(harness.m.kill).toHaveBeenCalled()
     })
+
+    it('holds a queued message until a fresh prompt marker (not a mid-turn gap)', async () => {
+        const msg1 = deferred<{ message: string } | null>()
+        const msg2 = deferred<{ message: string } | null>()
+        const nextMessage = vi.fn()
+            .mockImplementationOnce(() => msg1.promise)
+            .mockImplementationOnce(() => msg2.promise)
+            .mockImplementation(() => Promise.resolve(null))
+        const promise = runAgentPty(makeOpts({
+            nextMessage,
+            promptMarkers: ['for shortcuts'],
+            busyMarkers: ['esc to interrupt'],
+            idleMarkers: ['for shortcuts'],
+            idleReadyMs: 20,
+        }))
+
+        // Reach the first usable prompt, then let the first message submit.
+        harness.triggerData('? for shortcuts')
+        await tick(120)
+        msg1.resolve({ message: 'first' })
+        await tick(120)
+        expect(harness.m.write).toHaveBeenCalledWith('first')
+
+        // Turn is running: busy marker, then a quiet gap with NO idle marker.
+        harness.triggerData('working hard… esc to interrupt')
+        msg2.resolve({ message: 'second' })
+        await tick(200) // exceeds idleReadyMs of silence, but the prompt has not returned
+        expect(harness.m.write).not.toHaveBeenCalledWith('second')
+
+        // The prompt returns (idle marker) → the queued message may now be sent.
+        harness.triggerData('? for shortcuts')
+        await tick(150)
+        expect(harness.m.write).toHaveBeenCalledWith('second')
+
+        await promise.catch(() => {})
+    })
 })
