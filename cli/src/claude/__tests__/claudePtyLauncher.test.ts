@@ -163,11 +163,13 @@ function createSessionStub() {
             queue: {
                 waitForMessagesAndGetAsString: vi.fn().mockResolvedValue(null),
                 reset: vi.fn(),
+                pendingLocalIds: vi.fn(() => [] as string[]),
             },
             client: {
                 sendClaudeSessionMessage: (msg: Record<string, unknown>) => { sentMessages.push(msg) },
                 sendSessionEvent: vi.fn((event: Record<string, unknown>) => { sentSessionEvents.push(event) }),
                 emitSessionReady: vi.fn(),
+                emitMessagesConsumed: vi.fn(),
                 emitAgentTerminalOutput: () => {},
                 setAgentTerminalControls: () => {},
                 resetAgentTerminal: () => {},
@@ -432,6 +434,29 @@ describe('claudePtyLauncher turn-interrupt', () => {
 
         // No controls registered, should fallback to aborting the controller
         expect(ptyOptsCaptured.signal.aborted).toBe(true)
+
+        harness.exitReason = 'exit'
+        msgPromise.resolve(null)
+        await launcherPromise
+    })
+
+    it('acks dropped queued messages on abort (no stuck-queued / re-delivery)', async () => {
+        harness.exitReason = null
+
+        const { session } = createSessionStub()
+        session.queue.pendingLocalIds = vi.fn(() => ['l1', 'l2'])
+        const msgPromise = deferred<any>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+
+        const launcherPromise = claudePtyLauncher(session as never)
+        await tick(50)
+
+        await mockAbortHandlers.onAbort()
+
+        // The queued (un-consumed) messages must be acked as consumed so the hub
+        // clears them instead of keeping them invoked_at=null (stuck / re-delivered).
+        expect(session.client.emitMessagesConsumed).toHaveBeenCalledWith(['l1', 'l2'])
+        expect(session.queue.reset).toHaveBeenCalled()
 
         harness.exitReason = 'exit'
         msgPromise.resolve(null)
