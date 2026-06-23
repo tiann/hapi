@@ -398,4 +398,44 @@ describe('runAgentPty', () => {
 
         await promise.catch(() => {})
     })
+
+    it('does not submit a queued message while a long turn keeps emitting busy output', async () => {
+        const msg1 = deferred<{ message: string } | null>()
+        const msg2 = deferred<{ message: string } | null>()
+        const nextMessage = vi.fn()
+            .mockImplementationOnce(() => msg1.promise)
+            .mockImplementationOnce(() => msg2.promise)
+            .mockImplementation(() => Promise.resolve(null))
+        const promise = runAgentPty(makeOpts({
+            nextMessage,
+            promptMarkers: ['for shortcuts'],
+            busyMarkers: ['esc to interrupt'],
+            idleMarkers: ['for shortcuts'],
+            idleReadyMs: 20,
+        }))
+
+        harness.triggerData('? for shortcuts')
+        await tick(120)
+        msg1.resolve({ message: 'first' })
+        await tick(120)
+        expect(harness.m.write).toHaveBeenCalledWith('first')
+
+        // A long turn: keep emitting busy output well past idleReadyMs. There is
+        // no fixed readiness timeout, so the queued message must keep waiting and
+        // never be typed into the busy TUI.
+        harness.triggerData('thinking… esc to interrupt')
+        msg2.resolve({ message: 'second' })
+        for (let i = 0; i < 8; i++) {
+            await tick(50)
+            harness.triggerData('still working… esc to interrupt')
+        }
+        expect(harness.m.write).not.toHaveBeenCalledWith('second')
+
+        // Turn ends (idle marker) → the queued message is finally submitted.
+        harness.triggerData('? for shortcuts')
+        await tick(150)
+        expect(harness.m.write).toHaveBeenCalledWith('second')
+
+        await promise.catch(() => {})
+    })
 })
