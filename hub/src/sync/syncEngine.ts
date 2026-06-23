@@ -765,6 +765,20 @@ export class SyncEngine {
             if (!becameActive) {
                 return { type: 'error', message: 'Session spawned but failed to become active' }
             }
+            // `active` only means the runner registered the session — session-alive
+            // fires at AgentSessionBase construction, before the PTY launcher has
+            // spawned claude or reached a usable prompt. Wait for session-ready
+            // (emitted from the launcher's onReady) so a missing-claude / auth /
+            // early-exit failure surfaces as a spawn error, not an empty terminal.
+            const readyResult = await this.waitForSessionReady(result.sessionId)
+            if (readyResult !== 'ready') {
+                return {
+                    type: 'error',
+                    message: readyResult === 'ended'
+                        ? 'Session ended before the Claude PTY became ready'
+                        : 'Session spawned but failed to become ready'
+                }
+            }
         }
         return result
     }

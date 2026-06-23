@@ -167,6 +167,7 @@ function createSessionStub() {
             client: {
                 sendClaudeSessionMessage: (msg: Record<string, unknown>) => { sentMessages.push(msg) },
                 sendSessionEvent: vi.fn((event: Record<string, unknown>) => { sentSessionEvents.push(event) }),
+                emitSessionReady: vi.fn(),
                 emitAgentTerminalOutput: () => {},
                 setAgentTerminalControls: () => {},
                 resetAgentTerminal: () => {},
@@ -431,6 +432,25 @@ describe('claudePtyLauncher turn-interrupt', () => {
 
         // No controls registered, should fallback to aborting the controller
         expect(ptyOptsCaptured.signal.aborted).toBe(true)
+
+        harness.exitReason = 'exit'
+        msgPromise.resolve(null)
+        await launcherPromise
+    })
+
+    it('emits session-ready to the hub when the PTY prompt becomes usable', async () => {
+        harness.exitReason = null
+
+        const { session } = createSessionStub()
+        const msgPromise = deferred<any>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+
+        const launcherPromise = claudePtyLauncher(session as never)
+        await tick(50)
+
+        // onReady (fired by the default claudePty mock) must signal hub readiness,
+        // so the spawn flow can distinguish a usable prompt from a mere session-alive.
+        expect(session.client.emitSessionReady).toHaveBeenCalled()
 
         harness.exitReason = 'exit'
         msgPromise.resolve(null)

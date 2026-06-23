@@ -411,6 +411,11 @@ class ClaudePtyLauncher extends RemoteLauncherBase {
                 onReady: () => {
                     reachedReady = true
                     logger.debug('[pty]: claude PTY ready')
+                    // Hub-level readiness: the spawn flow waits for this so a
+                    // failed/auth-blocked/early-exit PTY launch surfaces as a
+                    // spawn error instead of an empty terminal. session-alive
+                    // (emitted at construction) is too early to mean "usable".
+                    this.session.client.emitSessionReady()
                     this.session.client.sendSessionEvent({ type: 'ready' })
                 },
                 onMessage: (data: string) => {
