@@ -79,6 +79,15 @@ export function transcriptConfirmsDelivery(transcript: string, text: string): bo
 }
 
 class ClaudePtyLauncher extends RemoteLauncherBase {
+    // Ctrl-U (line-kill): clears the PTY input line from the cursor to the
+    // beginning of the line. Used after an Esc interrupt so the aborted
+    // prompt text does not bleed into the next submission.
+    // Verified in bash PTY (readline-compatible); claude TUI (ink/React
+    // input) is unverified on real hardware — confirm at Validation Gate 1.
+    // Isolated as a constant so it can be swapped without a grep if a
+    // future claude version requires a different sequence.
+    private static readonly PTY_CLEAR_LINE = '\x15'
+
     private readonly session: Session
     private scanner: Awaited<SessionScanner> | null = null
     // Claude's own session UUID (discovered via the SessionStart hook). Used to
@@ -303,6 +312,24 @@ class ClaudePtyLauncher extends RemoteLauncherBase {
         if (this.ptyControls) {
             logger.debug('[pty]: Sending interrupt key (Esc) to PTY')
             this.ptyControls.sendKeys('\x1b')
+            // Wait briefly before clearing the line: claude TUI (ink) restores
+            // the previous prompt to the input line asynchronously after an Esc
+            // interrupt. Sending Ctrl-U immediately could race against that
+            // restore and leave stale text behind. ~150 ms is enough for the
+            // TUI's event loop to complete the restore in practice.
+            await this.sleep(150)
+            // Clear any lingering input the claude TUI restored to the prompt
+            // after the Esc interrupt, so the next submitted message is not
+            // prefixed by the aborted text.
+            logger.debug('[pty]: Sending line-clear key (Ctrl-U) to PTY')
+            this.ptyControls.sendKeys(ClaudePtyLauncher.PTY_CLEAR_LINE)
+            // Drop pending queued messages — they were enqueued AFTER the
+            // message that is now being aborted and should not be auto-delivered
+            // to the fresh prompt.
+            this.session.queue.reset()
+            // Signal the web composer to restore the aborted prompt text.
+            // The web side reads the last user message from normalizedMessages.
+            this.session.client.sendSessionEvent({ type: 'abort-restore' })
         } else {
             logger.debug('[pty]: No PTY controls active, falling back to aborting the controller')
             await this.abort()
