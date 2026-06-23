@@ -1269,6 +1269,23 @@ export class SyncEngine {
             return { type: 'error', message: 'Session failed to become active', code: 'resume_failed' }
         }
 
+        // PTY resume: like the spawn path, `active` (session-alive) only means the
+        // runner registered the session, not that the claude PTY reached a usable
+        // prompt. Wait for session-ready so a failed/auth-blocked PTY resume
+        // surfaces as resume_failed instead of a black terminal.
+        if (resumedStartingMode === 'pty') {
+            const readyResult = await this.waitForSessionReady(spawnResult.sessionId)
+            if (readyResult !== 'ready') {
+                return {
+                    type: 'error',
+                    message: readyResult === 'ended'
+                        ? 'Session ended before the Claude PTY became ready'
+                        : 'Session failed to become ready',
+                    code: 'resume_failed'
+                }
+            }
+        }
+
         // permissionMode is passed to spawnSession above; do not call set-session-config here.
         // session-alive can arrive before the CLI registers that RPC handler, which caused resume_failed.
 
