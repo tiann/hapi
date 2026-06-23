@@ -449,6 +449,11 @@ export function reduceTimeline(
             if (msg.content.type === 'token-count') {
                 continue
             }
+            // abort-restore is a side-effect signal for the web composer,
+            // not a visible chat event. Skip it in the timeline.
+            if (msg.content.type === 'abort-restore') {
+                continue
+            }
             if (msg.content.type === 'turn-duration') {
                 const targetId = msg.content.targetMessageId
                 const durationMs = msg.content.durationMs as number
