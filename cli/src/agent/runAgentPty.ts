@@ -120,6 +120,11 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
     let sawOutput = false
     // For marker-based agents (claude): true once the input prompt rendered.
     let promptSeen = false
+    // Re-armable readiness: true only while the agent is actually sitting at an
+    // input prompt. Set by a prompt/idle marker (or the idle watchdog) and
+    // cleared on a busy marker and on every submit, so a queued message waits for
+    // a fresh prompt rather than any mid-turn output gap.
+    let inputReady = false
     // Whether the first-run trust/safety prompt has been auto-approved.
     let trustHandled = false
 
@@ -151,6 +156,9 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
             if (thinking) {
                 logger.debug(`${debugPrefix} idle watchdog: ${IDLE_SILENCE_MS}ms of silence; forcing idle`)
                 thinking = false
+                // The turn really ended even though no idle marker arrived, so the
+                // prompt is usable again — let the next queued message proceed.
+                inputReady = true
                 opts.onThinkingChange?.(false)
             }
         }, IDLE_SILENCE_MS)
@@ -177,11 +185,14 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
             if (signal?.aborted || !manager.isRunning) return
             const idle = Date.now() - lastOutputAt
             if (hasMarkers) {
-                if (promptSeen && idle >= idleReadyMs) return
+                // Require the prompt to be live (inputReady), not just a silence
+                // gap — a long response can go quiet mid-turn. The idle watchdog
+                // re-arms inputReady if an idle marker is missed, and the outer
+                // timeout is the final fallback.
+                if (inputReady && idle >= idleReadyMs) return
             } else if (sawOutput && idle >= idleReadyMs) {
                 return
             }
-            if (sawOutput && idle >= 3000) return
             await sleep(80)
         }
     }
@@ -246,14 +257,17 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
                     manager.write('\r')
                 } else if (hasMarkers && !promptSeen && markers.some((m) => data.includes(m))) {
                     promptSeen = true
+                    inputReady = true
                 }
                 // Track the working/idle state from the live footer. The busy
                 // marker (spinner/"esc to interrupt") wins when both appear in a
                 // chunk; chunks with neither leave the state unchanged.
                 if (busyMarkers.length > 0 && busyMarkers.some((m) => data.includes(m))) {
                     setThinking(true)
+                    inputReady = false
                 } else if (idleMarkers.length > 0 && idleMarkers.some((m) => data.includes(m))) {
                     setThinking(false)
+                    inputReady = true
                 } else if (thinking) {
                     // Still producing output (e.g. streaming response text with no
                     // footer marker in this chunk) — keep the silence watchdog at bay.
@@ -347,6 +361,9 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
             }
 
             if (process.env.DEBUG_PTY) logger.debug(`${debugPrefix} write(loop): ${next.message}`)
+            // The prompt is now consumed; the next queued message must wait for a
+            // fresh prompt/idle marker rather than this same just-cleared one.
+            inputReady = false
             await submitMessage(next.message)
             // The message has now been written to the PTY; let a caller verify it
             // actually landed (and repair it) without racing this submit path.
