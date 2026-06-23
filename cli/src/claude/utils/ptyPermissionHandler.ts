@@ -96,6 +96,11 @@ export class PtyPermissionHandler extends BasePermissionHandler<PermissionRespon
 
         // 1. Already allowed for the session via a prior approval.
         if (toolName === 'Bash') {
+            // A name-level "Bash" allow covers every command; otherwise fall back
+            // to the per-command literal/prefix allows.
+            if (this.sessionAllowedTools.has('Bash')) {
+                return Promise.resolve({ permissionDecision: 'allow' });
+            }
             const command = (input as { command?: string } | null)?.command;
             if (command && this.isBashCommandAllowed(command)) {
                 return Promise.resolve({ permissionDecision: 'allow' });

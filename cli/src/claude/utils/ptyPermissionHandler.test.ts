@@ -197,6 +197,22 @@ describe('PtyPermissionHandler', () => {
         expect(Object.keys(state.requests).length).toBe(before);
     });
 
+    it('honors a plain "Bash" name-level session-allow for any later command', async () => {
+        const { client, state, respond } = createFakeClient();
+        const handler = new PtyPermissionHandler(client, { getPermissionMode: () => 'default' });
+
+        const first = handler.requestDecision('b-1', 'Bash', { command: 'echo hi' });
+        // web's "Allow all Bash for session" sends the bare tool name
+        await respond({ id: 'b-1', approved: true, allowTools: ['Bash'] });
+        expect((await first).permissionDecision).toBe('allow');
+
+        // a DIFFERENT command is now covered by the name-level allow → no new request
+        const before = Object.keys(state.requests).length;
+        const second = await handler.requestDecision('b-2', 'Bash', { command: 'rm -rf /tmp/x' });
+        expect(second.permissionDecision).toBe('allow');
+        expect(Object.keys(state.requests).length).toBe(before);
+    });
+
     it('still prompts for a different Bash command after a literal session-allow', async () => {
         const { client, state, respond } = createFakeClient();
         const handler = new PtyPermissionHandler(client, { getPermissionMode: () => 'default' });
