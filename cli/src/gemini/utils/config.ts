@@ -119,25 +119,7 @@ export function buildGeminiEnv(opts: {
     hookSettingsPath?: string;
     cwd?: string;
 }): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = {
+    return {
         ...process.env
     };
-
-    if (opts.model) {
-        env[GEMINI_MODEL_ENV] = opts.model;
-    }
-
-    if (opts.token && !env[GEMINI_API_KEY_ENV] && !env[GOOGLE_API_KEY_ENV]) {
-        env[GEMINI_API_KEY_ENV] = opts.token;
-    }
-
-    if (opts.hookSettingsPath) {
-        env.GEMINI_CLI_SYSTEM_SETTINGS_PATH = opts.hookSettingsPath;
-    }
-
-    if (opts.cwd) {
-        env.GEMINI_PROJECT_DIR = opts.cwd;
-    }
-
-    return env;
 }
