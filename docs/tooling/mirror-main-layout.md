@@ -4,7 +4,7 @@
 
 ## What `~/coding/hapi` `main` is
 
-- **Tracks `origin/main` exactly** — safe to `git pull` / `git push` for GitHub-visible docs and tooling.
+- **Tracks `origin/main` exactly** — safe to `git pull` after PR merges; **changes land via PR**, not direct push.
 - **Not** the integration branch for unmerged product features (those live in worktrees + `feat/*` branches).
 
 ## Local-first (mirror disk, not on public `origin`)
@@ -34,7 +34,7 @@ Delete backup only when every cluster in the audit has a verified disposition (s
 
 ## Day-to-day
 
-- **Workflow docs:** `main` → push `origin/main`
+- **Workflow docs / tooling on `main`:** branch → PR → merge → `git pull` on mirror. **Do not push directly to `origin/main`** — even when pre-push allows it, fork hygiene is PR-only (see [`commit-hooks.md`](./commit-hooks.md)).
 - **Plans / briefings:** local commit with override, or untracked; never push plans to origin
 - **Product feature:** `~/coding/hapi/worktrees/<name>`
 - **Soup / driver:** manifest + `driver/` worktree (rebuild only)

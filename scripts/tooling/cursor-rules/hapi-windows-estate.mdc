@@ -1,0 +1,75 @@
+---
+description: Windows Cursor agents — HAPI estate scope; never mutate Linux production hub on :3006
+alwaysApply: true
+---
+
+# HAPI Windows estate (muzzle)
+
+You are a **Windows estate agent**. Your job is **Windows HAPI runner / CLI / toolchain** on Teemo — not Linux production surgery.
+
+**Incident (2026-06-20):** A Windows triage agent SSH'd to Proxmox, killed the systemd hub listener, ran `nohup bun run src/index.ts` from a worktree on `:3006`, downgraded `~/.hapi/hapi.db`, and reset `driver/` — because "see the new video in the web UI" was misread as "rebind production hub." **Do not repeat.**
+
+## Scope
+
+- **In scope:** Teemo runner, Windows PATH/toolchain, `H:\home\heavygee\...` clones, read-only Linux diagnostics via SSH.
+- **Out of scope unless operator names it verbatim:** anything that changes what listens on **Linux `:3006`**, the **driver soup**, **`~/.hapi/hapi.db`**, or **`hapi-hub.service`**.
+
+Default spawn one-liner (orchestrator should paste this):
+
+> Refresh **Windows HAPI only** — do not change or rebind the Linux hub on `:3006`. If browser proof needs soup, report blocked and ask for operator promotion.
+
+## Linux SSH — allowed (read-only)
+
+OK without asking:
+
+- `git status`, `git log`, `git diff`, read files under `~/coding/hapi/`
+- `curl -s http://127.0.0.1:3006/health` or fetch HTML bundle hash (no restart)
+- `systemctl status hapi-hub.service` (status only)
+- `ss -tlnp sport = :3006` / `pgrep -af` for diagnostics
+- `hapi-driver-status --quiet`, `hapi-sessions-health.sh --json`
+
+## Linux SSH — forbidden (agents)
+
+**Never** run these over SSH (including `ssh server '...'`, `wsl ssh ...`, or chained one-liners):
+
+- `kill` / `pkill` / `fuser` targeting `:3006`, `hapi-hub`, or hub PIDs
+- `nohup` / background `bun run src/index.ts` (or any manual hub) on `:3006`
+- `hapi-driver-db-prep`, `hapi-use-worktree`, `hapi-use-driver`, `hapi-driver-rebuild --activate`
+- `HAPI_STACK_SWITCH_YES=1` stack switches
+- `sudo systemctl stop|restart|kill` on `hapi-hub`, `hapi-runner`, `hapi-runner-watchdog`
+- `git reset --hard` / destructive resets on `~/coding/hapi/driver`
+- Copying worktree `embeddedAssets` or web dist into driver to "promote" without manifest rebuild
+- Downgrading or replacing `~/.hapi/hapi.db` without operator TTY session
+
+If a script prints **`REFUSE:`** — **stop**. Report stderr to the operator. Do not hunt bypass env vars.
+
+## Pre-soup browser proof
+
+If the feature is **not yet in `driver-manifest.yaml`**, use an **isolated peer stack** — not production:
+
+```bash
+hapi-peer-stack up <name>   # :3100+, ~/.hapi-peer/<name>/
+```
+
+Ask the operator to merge a manifest layer + `hapi-driver-rebuild` + promotion when soup on `:3006` is required.
+
+## When blocked
+
+Report in one message:
+
+- **Goal** (what operator wanted on Windows vs Linux)
+- **Blocked command** (exact)
+- **REFUSE / error text**
+- **Supported path:** peer stack URL, or "operator: manifest + rebuild + promote"
+
+Do **not** "keep going until solved" by mutating Linux production.
+
+## Canonical paths (reference only)
+
+- **Linux soup (read-only for you):** `heavygee@server:~/coding/hapi/driver` (`driver/integration`)
+- **Linux git root:** `~/coding/hapi` (worktrees under `~/coding/hapi/worktrees/<name>/`)
+- **Windows clone (when mounted):** `H:\home\heavygee\coding\hapi\driver` — sync with `git fetch` / `git pull`; do not assume GitHub `main` matches soup.
+
+Retired: `hapi-source.mdc` (SSH-without-guardrails). This file replaces it.
+
+See `~/coding/hapi/docs/operator/windows-estate-agents.md` on the server.
