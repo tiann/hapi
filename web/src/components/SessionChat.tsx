@@ -286,6 +286,56 @@ function ShareSeedConsumer(props: { sessionId: string; sessionActive: boolean })
 }
 
 /**
+ * Watches for incoming `abort-restore` events (emitted by the PTY launcher
+ * when the user aborts a running turn) and surfaces the last user message
+ * text via the existing sendError path (onAbortRestore prop) — but only when
+ * no user message has been sent after the abort-restore event, so we never
+ * replay a prompt the user has already submitted.
+ */
+function AbortRestoreConsumer(props: {
+    messages: NormalizedMessage[]
+    onAbortRestore: (text: string) => void
+}) {
+    const lastHandledIdRef = useRef<string | null>(null)
+
+    useEffect(() => {
+        // Walk backwards: find an abort-restore event with no user message after it.
+        // If a user message comes after the abort-restore, the restore was already
+        // acted on — treat it as consumed regardless of page reload.
+        let abortRestoreId: string | null = null
+        for (let i = props.messages.length - 1; i >= 0; i--) {
+            const msg = props.messages[i]
+            if (!msg) continue
+            if (msg.role === 'user') break  // user message after abort-restore → stale
+            if (msg.role !== 'event') continue
+            if (msg.content.type === 'abort-restore') {
+                abortRestoreId = msg.id
+                break
+            }
+        }
+        if (!abortRestoreId) return
+        if (lastHandledIdRef.current === abortRestoreId) return
+        lastHandledIdRef.current = abortRestoreId
+
+        // Find the last user message text before the abort-restore event and
+        // surface it via the sendError path so HappyComposer restores it in
+        // the same way it handles a failed send.
+        for (let i = props.messages.length - 1; i >= 0; i--) {
+            const msg = props.messages[i]
+            if (!msg) continue
+            if (msg.role !== 'user') continue
+            const text = msg.content.text
+            if (text.length > 0) {
+                props.onAbortRestore(text)
+                break
+            }
+        }
+    }, [props.messages, props.onAbortRestore])
+
+    return null
+}
+
+/**
  * Mounts the per-session scratchlist DRAWER (composer-controlled).
  *
  * The drawer renders only when the operator toggles into "scratchlist
@@ -411,6 +461,9 @@ type SessionChatProps = {
     onClearSendError?: () => void
     initialOutlineOpen?: boolean
     onInitialOutlineConsumed?: () => void
+    // Called when an `abort-restore` event arrives and the composer is not empty,
+    // so the caller can surface the aborted text via the existing sendError path.
+    onAbortRestore?: (text: string) => void
 }
 
 /**
@@ -1236,6 +1289,7 @@ function SessionChatInner(props: SessionChatProps) {
 
             <AssistantRuntimeProvider runtime={runtime}>
                 <ShareSeedConsumer sessionId={props.session.id} sessionActive={props.session.active} />
+                <AbortRestoreConsumer messages={normalizedMessages} onAbortRestore={props.onAbortRestore ?? (() => {})} />
                 <DragDropZone disabled={sessionInactive || props.isSending || pendingSchedule != null}>
                     <div className="relative flex min-h-0 flex-1 flex-col">
                         {canViewAgentTerminal && (

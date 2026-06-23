@@ -288,6 +288,7 @@ export default {
   'chat.terminal': 'Terminal',
   'chat.switchRemote': 'Switch to remote mode',
   'chat.sendError.fallback': "Couldn't send your message. Edit and try again.",
+  'chat.sendError.aborted': 'Turn was aborted. Edit and resend if needed.',
   'chat.sendError.sessionInactive': 'This session is archived. Reopen it to send your message.',
   'chat.sendError.sessionInactive.action': 'Reopen',
 
