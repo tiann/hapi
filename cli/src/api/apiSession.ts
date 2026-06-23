@@ -606,8 +606,9 @@ export class ApiSessionClient extends EventEmitter {
         type: 'ready'
     } | {
         // Emitted on abort so the web composer can restore the aborted prompt.
-        // The web side reads the last user message text from normalizedMessages.
+        // Carries the exact in-flight prompt text the web should restore.
         type: 'abort-restore'
+        text: string
     }, id?: string): void {
         const content = {
             role: 'agent',

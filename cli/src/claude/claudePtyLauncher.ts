@@ -96,6 +96,11 @@ class ClaudePtyLauncher extends RemoteLauncherBase {
     private claudeSessionId: string | null = null
     // Live PTY controls (raw keystroke injection) for in-place /model and /effort.
     private ptyControls: { sendKeys: (data: string) => void } | null = null
+    // The prompt currently being processed, captured on submit and cleared when
+    // the turn goes idle. Drives abort-restore: only a prompt that is actually
+    // in flight when the user aborts is restored to the web composer — aborting
+    // during idle/startup/no-submission restores nothing.
+    private promptToRestoreOnAbort: string | null = null
     // The model/effort currently applied to the running Claude TUI, so a config
     // change only drives the slash command for what actually changed.
     private appliedModel: SessionModel = null
@@ -310,6 +315,11 @@ class ClaudePtyLauncher extends RemoteLauncherBase {
     private async handleAbortRequest(): Promise<void> {
         logger.debug('[pty]: handleAbortRequest (interrupt)')
         if (this.ptyControls) {
+            // Capture synchronously up front: the Esc interrupt below can drive
+            // the TUI back to idle (clearing promptToRestoreOnAbort via
+            // onThinkingChange) before this handler finishes its 150 ms wait.
+            const promptToRestore = this.promptToRestoreOnAbort
+            this.promptToRestoreOnAbort = null
             logger.debug('[pty]: Sending interrupt key (Esc) to PTY')
             this.ptyControls.sendKeys('\x1b')
             // Wait briefly before clearing the line: claude TUI (ink) restores
@@ -327,9 +337,12 @@ class ClaudePtyLauncher extends RemoteLauncherBase {
             // message that is now being aborted and should not be auto-delivered
             // to the fresh prompt.
             this.session.queue.reset()
-            // Signal the web composer to restore the aborted prompt text.
-            // The web side reads the last user message from normalizedMessages.
-            this.session.client.sendSessionEvent({ type: 'abort-restore' })
+            // Signal the web composer to restore the exact prompt that was in
+            // flight. Skip the signal entirely when nothing was being processed
+            // so an old prompt is never replayed into an empty composer.
+            if (promptToRestore) {
+                this.session.client.sendSessionEvent({ type: 'abort-restore', text: promptToRestore })
+            }
         } else {
             logger.debug('[pty]: No PTY controls active, falling back to aborting the controller')
             await this.abort()
@@ -389,6 +402,8 @@ class ClaudePtyLauncher extends RemoteLauncherBase {
                     return { message: msg.message }
                 },
                 onMessageSubmitted: (message: string) => {
+                    // Track the in-flight prompt for abort-restore on every submit.
+                    this.promptToRestoreOnAbort = message
                     if (firstSubmitVerified) return
                     firstSubmitVerified = true
                     void this.ensureFirstMessageDelivered(message, signal)
@@ -406,6 +421,9 @@ class ClaudePtyLauncher extends RemoteLauncherBase {
                     this.session.client.emitAgentTerminalOutput(data)
                 },
                 onThinkingChange: (thinking: boolean) => {
+                    // Turn finished → the prompt is no longer in flight, so a
+                    // later abort during idle must not restore it.
+                    if (!thinking) this.promptToRestoreOnAbort = null
                     this.session.onThinkingChange(thinking)
                 },
                 registerControls: (controls) => {
