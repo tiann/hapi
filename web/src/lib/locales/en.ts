@@ -549,7 +549,7 @@ export default {
   'scratchlist.action.moveDown': 'Move entry down',
   'scratchlist.action.promoteToComposer': 'Copy into composer',
   'scratchlist.action.promoteToQueue': 'Send to queue',
-  'scratchlist.action.copy': 'Copy to clipboard',
+  'scratchlist.action.copy': 'Copy text to clipboard (not images)',
   'scratchlist.action.copied': 'Copied!',
   'scratchlist.action.delete': 'Delete entry',
   'scratchlist.entry.lastSaved': 'Saved {time}',

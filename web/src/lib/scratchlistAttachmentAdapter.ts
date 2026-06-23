@@ -7,6 +7,8 @@ import { randomId } from '@/lib/randomId'
 const MAX_PREVIEW_BYTES = 5 * 1024 * 1024
 
 type PendingScratchlistAttachment = PendingAttachment & {
+    /** Mirrors chat upload adapter — HappyComposer treats requires-action + path as ready. */
+    path?: string
     hubAttachment?: ScratchlistAttachmentMetadata
     previewUrl?: string
 }
@@ -83,6 +85,7 @@ export function createScratchlistAttachmentAdapter(api: ApiClient, sessionId: st
                     contentType,
                     file,
                     status: { type: 'requires-action', reason: 'composer-send' },
+                    path: result.attachment.path,
                     hubAttachment: result.attachment,
                     previewUrl
                 } as PendingScratchlistAttachment

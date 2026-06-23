@@ -396,12 +396,9 @@ export function UnifiedButton(props: {
      * button itself is content-agnostic.
      *
      * Caller MUST compute this from the actual routing decision (mode
-     * AND no-attachments AND no-pending-schedule), not the raw
-     * scratchlist toggle. If the toggle is on but the submission would
-     * fall back to chat (because the scratchlist can't represent the
-     * payload), the button must look like a normal chat send. Per
-     * upstream review on PR #798: [Major] "Send button advertises
-     * scratchlist routing even when the submit will go to chat".
+     * AND no-pending-schedule). Attachments in scratchlist mode still
+     * route to scratchlist. If the toggle is on but a pending schedule
+     * would fall back to chat, the button must look like a normal chat send.
      */
     routesToScratchlist?: boolean
 }) {
@@ -751,17 +748,12 @@ export function ComposerButtons(props: {
                 onVoiceToggle={props.onVoiceToggle}
                 /*
                  * Derived, NOT raw scratchlistMode. Mirror SessionChat's
-                 * shouldRouteToScratchlist so the visible send-button state
-                 * matches the actual routing decision: amber + "Send to
-                 * scratchlist" only when mode is on AND the payload would
-                 * be a pure-text scratchlist add. Attachments or a pending
-                 * schedule force a chat fallback in onSendForComposer; the
-                 * button must reflect that, otherwise the UI lies about
-                 * where the user's content is going.
+                 * shouldRouteToScratchlist: amber + "Send to scratchlist"
+                 * whenever mode is on and there is no pending schedule.
+                 * Attachments route to scratchlist too (hub upload adapter).
                  */
                 routesToScratchlist={
                     (props.scratchlistMode ?? false)
-                    && !hasAttachments
                     && props.pendingSchedule == null
                 }
             />

@@ -287,13 +287,16 @@ function ScratchlistAttachmentThumbnails(props: {
     if (urls.length === 0) return null
 
     return (
-        <div className="mt-1 flex flex-wrap gap-1.5">
+        <div
+            className="float-left mr-2 mb-1 flex max-w-[min(8rem,40%)] flex-col gap-1"
+            data-testid="scratchlist-attachment-thumbs"
+        >
             {urls.map((item) => (
                 <img
                     key={item.id}
                     src={item.url}
                     alt={item.filename}
-                    className="h-12 w-12 rounded border border-[var(--app-border)] object-cover"
+                    className="max-h-20 w-full rounded border border-[var(--app-border)] object-cover"
                     data-testid="scratchlist-attachment-thumb"
                 />
             ))}
@@ -355,9 +358,24 @@ function ScratchlistInventory({
                         data-testid="scratchlist-entry"
                     >
                         <div className="flex items-start gap-2">
-                            <span className="flex-1 min-w-0 whitespace-pre-wrap break-words text-sm text-[var(--app-fg)] line-clamp-4">
-                                {entry.text || (entry.attachments?.length ? t('scratchlist.attachmentOnly') : '')}
-                            </span>
+                            <div className="min-w-0 flex-1 overflow-hidden">
+                                {sessionId && api && entry.attachments && entry.attachments.length > 0 ? (
+                                    <ScratchlistAttachmentThumbnails
+                                        sessionId={sessionId}
+                                        api={api}
+                                        attachments={entry.attachments}
+                                    />
+                                ) : null}
+                                <p
+                                    className={
+                                        entry.attachments?.length
+                                            ? 'whitespace-pre-wrap break-words text-sm text-[var(--app-fg)]'
+                                            : 'line-clamp-4 whitespace-pre-wrap break-words text-sm text-[var(--app-fg)]'
+                                    }
+                                >
+                                    {entry.text || (entry.attachments?.length ? t('scratchlist.attachmentOnly') : '')}
+                                </p>
+                            </div>
                             <div className="flex shrink-0 items-center gap-0.5 text-[var(--app-hint)]">
                             <EntryAgeIndicator entry={entry} />
                             <button
@@ -431,13 +449,6 @@ function ScratchlistInventory({
                             </button>
                         </div>
                         </div>
-                        {sessionId && api && entry.attachments && entry.attachments.length > 0 ? (
-                            <ScratchlistAttachmentThumbnails
-                                sessionId={sessionId}
-                                api={api}
-                                attachments={entry.attachments}
-                            />
-                        ) : null}
                     </li>
                 )
             })}

@@ -167,7 +167,7 @@ describe('ScratchlistDrawer copy-to-clipboard action', () => {
             </I18nProvider>,
         )
 
-        fireEvent.click(screen.getByRole('button', { name: 'Copy to clipboard' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Copy text to clipboard (not images)' }))
 
         await waitFor(() => expect(writeText).toHaveBeenCalledWith('copy this'))
         await waitFor(() =>

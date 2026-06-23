@@ -237,7 +237,7 @@ describe('ScratchlistPanel', () => {
         renderPanel()
         expandPanel()
 
-        const copyBtn = screen.getByRole('button', { name: 'Copy to clipboard' })
+        const copyBtn = screen.getByRole('button', { name: 'Copy text to clipboard (not images)' })
         fireEvent.click(copyBtn)
 
         await waitFor(() => expect(writeText).toHaveBeenCalledWith('copy me'))
@@ -272,12 +272,12 @@ describe('ScratchlistPanel', () => {
         renderPanel()
         expandPanel()
 
-        fireEvent.click(screen.getByRole('button', { name: 'Copy to clipboard' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Copy text to clipboard (not images)' }))
 
         await waitFor(() => expect(writeText).toHaveBeenCalled())
         // Should NOT flip to "Copied!" because the copy failed.
         expect(screen.queryByRole('button', { name: 'Copied!' })).toBeNull()
-        expect(screen.getByRole('button', { name: 'Copy to clipboard' })).toBeTruthy()
+        expect(screen.getByRole('button', { name: 'Copy text to clipboard (not images)' })).toBeTruthy()
     })
 
     it('persists collapse state across mounts for the same session', () => {

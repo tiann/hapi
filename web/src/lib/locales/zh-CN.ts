@@ -553,7 +553,7 @@ export default {
   'scratchlist.action.moveDown': '下移',
   'scratchlist.action.promoteToComposer': '复制到输入框',
   'scratchlist.action.promoteToQueue': '加入发送队列',
-  'scratchlist.action.copy': '复制到剪贴板',
+  'scratchlist.action.copy': '复制文字到剪贴板（不含图片）',
   'scratchlist.action.copied': '已复制！',
   'scratchlist.action.delete': '删除条目',
   'scratchlist.entry.lastSaved': '保存于 {time}',
