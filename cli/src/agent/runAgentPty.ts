@@ -175,24 +175,31 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
         opts.onThinkingChange?.(next)
     }
 
-    // Wait until the agent's TUI is ready to receive input. Marker-based agents
-    // require both the prompt marker AND settled output; markerless agents use
-    // idle alone. A longer-idle fallback prevents hanging if a marker never
-    // matches (UI change).
-    const waitForInputReady = async (timeoutMs = 20000): Promise<void> => {
+    // Wait until the agent's TUI is actually ready to receive input. Returns
+    // true once ready, or false if the process exited / the caller aborted — so
+    // the message loop never submits a queued prompt into a turn that is still
+    // running. Marker-based agents (claude) require a LIVE prompt (`inputReady`,
+    // re-armed by a prompt/idle marker or the idle watchdog), not just an output
+    // gap, so a long-but-healthy turn keeps us waiting instead of timing out and
+    // typing into a busy TUI. The quiet fallback only covers a prompt marker
+    // that never matches (claude UI change) while the agent is genuinely idle.
+    const QUIET_FALLBACK_MS = 10000
+    const waitForInputReady = async (opts?: { proceedAfterMs?: number }): Promise<boolean> => {
         const start = Date.now()
-        while (Date.now() - start < timeoutMs) {
-            if (signal?.aborted || !manager.isRunning) return
+        while (true) {
+            if (signal?.aborted || !manager.isRunning) return false
             const idle = Date.now() - lastOutputAt
             if (hasMarkers) {
-                // Require the prompt to be live (inputReady), not just a silence
-                // gap — a long response can go quiet mid-turn. The idle watchdog
-                // re-arms inputReady if an idle marker is missed, and the outer
-                // timeout is the final fallback.
-                if (inputReady && idle >= idleReadyMs) return
+                if (inputReady && idle >= idleReadyMs) return true
+                if (sawOutput && idle >= QUIET_FALLBACK_MS) return true
             } else if (sawOutput && idle >= idleReadyMs) {
-                return
+                return true
             }
+            // Startup only: proceed after a hard cap even if no prompt was ever
+            // detected, so a quirky spawn doesn't hang forever before onReady. The
+            // message loop passes no cap, so it waits for a real prompt instead of
+            // ever submitting a queued message blindly into a running turn.
+            if (opts?.proceedAfterMs != null && Date.now() - start >= opts.proceedAfterMs) return true
             await sleep(80)
         }
     }
@@ -312,8 +319,9 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
 
         // Wait until the prompt is actually usable BEFORE any message arrives, so
         // the first user message is processed immediately instead of being
-        // consumed as the spawn trigger.
-        await waitForInputReady()
+        // consumed as the spawn trigger. Hard-capped so an output-less spawn still
+        // proceeds to the readiness check below instead of hanging here.
+        await waitForInputReady({ proceedAfterMs: 20000 })
 
         // A successful spawn() does not mean the agent reached a working prompt:
         // it can spawn and then exit before rendering one (bad config, invalid
@@ -353,10 +361,12 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
                 continue
             }
 
-            // Queue semantics: wait until output goes idle (agent back at the
-            // prompt) before sending the next queued message.
-            await waitForInputReady()
-            if (!manager.isRunning || signal?.aborted) {
+            // Queue semantics: wait until the agent is back at the prompt before
+            // sending the next queued message. A false return means the process
+            // exited or the caller aborted while we waited — stop the loop rather
+            // than submit into a dead/aborted session.
+            const ready = await waitForInputReady()
+            if (!ready) {
                 break
             }
 
