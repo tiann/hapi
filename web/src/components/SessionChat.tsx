@@ -287,10 +287,10 @@ function ShareSeedConsumer(props: { sessionId: string; sessionActive: boolean })
 
 /**
  * Watches for incoming `abort-restore` events (emitted by the PTY launcher
- * when the user aborts a running turn) and surfaces the last user message
- * text via the existing sendError path (onAbortRestore prop) — but only when
- * no user message has been sent after the abort-restore event, so we never
- * replay a prompt the user has already submitted.
+ * when the user aborts a running turn) and surfaces the aborted prompt text —
+ * carried on the event itself — via the existing sendError path
+ * (onAbortRestore prop). Acts only when no user message has been sent after the
+ * abort-restore event, so we never replay a prompt the user already resubmitted.
  */
 function AbortRestoreConsumer(props: {
     messages: NormalizedMessage[]
@@ -302,33 +302,28 @@ function AbortRestoreConsumer(props: {
         // Walk backwards: find an abort-restore event with no user message after it.
         // If a user message comes after the abort-restore, the restore was already
         // acted on — treat it as consumed regardless of page reload.
-        let abortRestoreId: string | null = null
+        let abortRestore: { id: string; text: string } | null = null
         for (let i = props.messages.length - 1; i >= 0; i--) {
             const msg = props.messages[i]
             if (!msg) continue
             if (msg.role === 'user') break  // user message after abort-restore → stale
             if (msg.role !== 'event') continue
             if (msg.content.type === 'abort-restore') {
-                abortRestoreId = msg.id
+                // The exact in-flight prompt rides on the event; no need to guess
+                // it by scanning historical user turns.
+                const text = typeof msg.content.text === 'string' ? msg.content.text : ''
+                abortRestore = { id: msg.id, text }
                 break
             }
         }
-        if (!abortRestoreId) return
-        if (lastHandledIdRef.current === abortRestoreId) return
-        lastHandledIdRef.current = abortRestoreId
+        if (!abortRestore) return
+        if (lastHandledIdRef.current === abortRestore.id) return
+        lastHandledIdRef.current = abortRestore.id
 
-        // Find the last user message text before the abort-restore event and
-        // surface it via the sendError path so HappyComposer restores it in
-        // the same way it handles a failed send.
-        for (let i = props.messages.length - 1; i >= 0; i--) {
-            const msg = props.messages[i]
-            if (!msg) continue
-            if (msg.role !== 'user') continue
-            const text = msg.content.text
-            if (text.length > 0) {
-                props.onAbortRestore(text)
-                break
-            }
+        // Surface it via the sendError path so HappyComposer restores it the
+        // same way it handles a failed send.
+        if (abortRestore.text.length > 0) {
+            props.onAbortRestore(abortRestore.text)
         }
     }, [props.messages, props.onAbortRestore])
 

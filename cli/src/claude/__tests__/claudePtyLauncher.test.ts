@@ -157,6 +157,7 @@ function createSessionStub() {
             setConfigChangeHandler: (_handler: (() => void) | null) => {},
             getModel: () => null,
             getEffort: () => undefined,
+            onThinkingChange: vi.fn(),
             addSessionFoundCallback: (cb: (sessionId: string) => void) => { harness.foundCallbacks.push(cb) },
             removeSessionFoundCallback: () => {},
             queue: {
@@ -327,7 +328,7 @@ describe('claudePtyLauncher turn-interrupt', () => {
         await launcherPromise
     })
 
-    it('emits abort-restore event on abort (regardless of whether a message was submitted)', async () => {
+    it('emits abort-restore carrying the submitted prompt text on abort', async () => {
         harness.exitReason = null
 
         const { session, sentSessionEvents } = createSessionStub()
@@ -338,24 +339,24 @@ describe('claudePtyLauncher turn-interrupt', () => {
 
         await tick(50)
 
-        // Simulate a message being submitted via onMessageSubmitted callback
+        // Simulate the in-flight prompt being submitted via onMessageSubmitted.
         ptyOptsCaptured.onMessageSubmitted?.('hello world')
 
-        // Trigger abort after message was submitted
+        // Trigger abort while the submitted turn is still running.
         await mockAbortHandlers.onAbort()
 
-        // Should emit abort-restore (text is read by the web from normalizedMessages)
+        // abort-restore carries the exact submitted prompt so the web restores
+        // that text rather than scanning historical user turns.
         const restoreEvent = sentSessionEvents.find((e) => e.type === 'abort-restore')
         expect(restoreEvent).toBeDefined()
-        // abort-restore carries no text field — the web reads the last user message
-        expect((restoreEvent as any)?.text).toBeUndefined()
+        expect((restoreEvent as any)?.text).toBe('hello world')
 
         harness.exitReason = 'exit'
         msgPromise.resolve(null)
         await launcherPromise
     })
 
-    it('emits abort-restore even when no message was submitted before abort', async () => {
+    it('does NOT emit abort-restore when no prompt was submitted before abort', async () => {
         harness.exitReason = null
 
         const { session, sentSessionEvents } = createSessionStub()
@@ -366,12 +367,39 @@ describe('claudePtyLauncher turn-interrupt', () => {
 
         await tick(50)
 
-        // Abort without any message submitted first
+        // Abort during idle/startup, with no prompt ever submitted.
         await mockAbortHandlers.onAbort()
 
-        // Should still emit abort-restore (the web will find no user message to restore)
+        // Nothing was submitted → no prompt to restore → no event (so an old
+        // prompt is never replayed into an empty composer).
         const restoreEvent = sentSessionEvents.find((e) => e.type === 'abort-restore')
-        expect(restoreEvent).toBeDefined()
+        expect(restoreEvent).toBeUndefined()
+
+        harness.exitReason = 'exit'
+        msgPromise.resolve(null)
+        await launcherPromise
+    })
+
+    it('does NOT emit abort-restore when the turn already went idle before abort', async () => {
+        harness.exitReason = null
+
+        const { session, sentSessionEvents } = createSessionStub()
+        const msgPromise = deferred<any>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+
+        const launcherPromise = claudePtyLauncher(session as never)
+
+        await tick(50)
+
+        // A prompt was submitted and its turn completed (thinking → idle).
+        ptyOptsCaptured.onMessageSubmitted?.('completed prompt')
+        ptyOptsCaptured.onThinkingChange?.(false)
+
+        // A later abort must not resurrect the already-completed prompt.
+        await mockAbortHandlers.onAbort()
+
+        const restoreEvent = sentSessionEvents.find((e) => e.type === 'abort-restore')
+        expect(restoreEvent).toBeUndefined()
 
         harness.exitReason = 'exit'
         msgPromise.resolve(null)
