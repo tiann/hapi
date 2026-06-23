@@ -75,6 +75,23 @@ describe('claudePty wrapper', () => {
         expect(lastCall().extraEnv).toMatchObject({ DISABLE_AUTOUPDATER: '1' })
     })
 
+    it('drops inherited CLAUDECODE / CLAUDE_CODE_* but preserves the OAuth token', async () => {
+        const prev = { ...process.env }
+        process.env.CLAUDECODE = '1'
+        process.env.CLAUDE_CODE_ENTRYPOINT = 'cli'
+        process.env.CLAUDE_CODE_OAUTH_TOKEN = 'dummy-test-token'
+        try {
+            await claudePty(makeOpts())
+            const unset = lastCall().unsetEnv ?? []
+            expect(unset).toEqual(expect.arrayContaining(['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT']))
+            // The runner passes per-session auth via CLAUDE_CODE_OAUTH_TOKEN; it
+            // must survive into the PTY child or the session starts unauthenticated.
+            expect(unset).not.toContain('CLAUDE_CODE_OAUTH_TOKEN')
+        } finally {
+            process.env = prev
+        }
+    })
+
     it('forwards callbacks and signal', async () => {
         const nextMessage = vi.fn()
         const onReady = vi.fn()

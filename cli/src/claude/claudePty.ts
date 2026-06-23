@@ -59,7 +59,10 @@ const CLAUDE_IDLE_MARKERS = ['for shortcuts']
 // NOT matched and is preserved.)
 function claudeInheritedEnvKeys(): string[] {
     return Object.keys(process.env).filter(
-        (k) => k === 'CLAUDECODE' || k.startsWith('CLAUDE_CODE_')
+        // Drop the nested-claude markers so the child saves its transcript, but
+        // keep CLAUDE_CODE_OAUTH_TOKEN: the runner passes per-session auth
+        // through it, and unsetting it leaves the PTY child unauthenticated.
+        (k) => k === 'CLAUDECODE' || (k.startsWith('CLAUDE_CODE_') && k !== 'CLAUDE_CODE_OAUTH_TOKEN')
     )
 }
 
