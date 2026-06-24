@@ -122,9 +122,10 @@ export function registerTerminalHandlers(socket: CliSocketWithData, deps: Termin
             return
         }
         terminalRegistry.remove(parsed.data.terminalId)
-        // Drop the scrollback so a reconnecting viewer doesn't replay a dead
-        // terminal's output, and so the buffer doesn't leak for the session's life.
-        clearUserTerminalBuffer(parsed.data.sessionId)
+        // Drop only this terminal's scrollback so a reconnecting viewer doesn't
+        // replay a dead terminal's output (and the buffer doesn't leak), without
+        // wiping the scrollback of the session's other live terminals.
+        clearUserTerminalBuffer(parsed.data.sessionId, parsed.data.terminalId)
         const terminalSocket = terminalNamespace.sockets.get(entry.socketId)
         if (!terminalSocket) {
             return
