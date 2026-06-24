@@ -543,7 +543,8 @@ export function NewSession(props: {
         grokPermissionMode,
         sessionType,
         worktreeName,
-        trimmedDirectory
+        trimmedDirectory,
+        startingMode
     ])
 
     const handlePathClick = useCallback((path: string) => {
