@@ -1,0 +1,23 @@
+---
+description: Fail-closed dogfood on driver soup — blocks feat-dist swap and driver hand-merge
+alwaysApply: true
+---
+
+# Driver soup dogfood (fail-closed)
+
+When dogfooding on `:3006` (driver/integration + manifest layers):
+
+**NEVER**
+- `cp`/`rsync`/`mv` any `worktrees/*/web/dist` into `driver/web/dist` (#921 — rolls back 100+ soup layers to a feat-only bundle)
+- `cd driver/web && bun run build` or raw `vite build` (bypasses atomic swap, preflight, verify rollback)
+- `git merge` / `git cherry-pick` / `git reset` inside `~/coding/hapi/driver` (#962 — hand-merge half-soups the tree)
+- `hapi-driver-rebuild` without `--build-web` (manifest merge — tooling/meta session or operator only)
+
+**ONLY**
+- `hapi-driver-build-web` (builds from `driver/web` source on current driver HEAD)
+- `hapi-driver-rebuild --build-web [--verify]` when driver already contains your layer
+- `hapi-verify-web-dist` to audit (no build)
+
+If rebuild fails: **STOP**. Report blocked to operator. Do not workaround.
+
+See `docs/tooling/driver-soup.md` and `docs/tooling/feature-work-lifecycle.md`.

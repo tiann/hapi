@@ -43,7 +43,28 @@ hapi-driver-rebuild --build-web [--verify]
 # 3. Dogfood on :3006 — follow feature-work-lifecycle.md § Soup dogfood decision tree
 ```
 
-**Forbidden on `driver/`:** hand-edits, `cp` from other checkouts, local commits, raw `bun run build` in `web/` for production dogfood.
+**Forbidden on `driver/`:** hand-edits, `cp` from other checkouts, local commits, raw `bun run build` in `web/` for production dogfood, **feat/worktree `web/dist` → `driver/web/dist` copy** (#921 rollback class).
+
+### Mechanical guards (2026-06-24 — #921 + #962 incidents)
+
+Cursor **`hapi-production-mutation-guard.sh`** (install via `scripts/tooling/hapi-install-cursor-hooks.sh`) **denies** agent shell:
+
+- `cp`/`rsync`/`mv` from `worktrees/*/web/dist` into `driver/web/dist`
+- raw `bun run build` / `vite build` under `driver/web`
+- `git merge|cherry-pick|reset` on `~/coding/hapi/driver`
+- `hapi-driver-rebuild` without `--build-web` (manifest merge — meta/operator only)
+
+**Allowed:** `hapi-driver-build-web`, `hapi-driver-rebuild --build-web [--verify]`, `hapi-verify-web-dist`, `hapi-restart-hub`.
+
+**`verify-soup-web-dist`** (runs inside `hapi-driver-build-web` by default) also fails closed on:
+
+- missing soup marker strings **derived from `driver/web/src`** (feature routes, lazy chunks, assistant-ui modules, scratchlist lib, overseer debug UI) in dist assets / chunk filenames
+- main bundle or precache regression vs `web/dist.prev`
+- dist meta not from `build_web_atomic` / HEAD mismatch
+
+If rebuild or verify fails: **STOP** — do not workaround. Report to operator.
+
+Rule file for agents: `scripts/tooling/cursor-rules/hapi-driver-soup-dogfood.mdc` (copy to `~/.cursor/rules/` or install hooks).
 
 **Operator scripts** (`scripts/tooling/hapi-pr-session-emoji.sh`, `hapi-pr-emoji-batch.sh`, etc.) belong on **fork `main` in `~/coding/hapi`**, not in the driver tree. Rebuild reads tooling from the primary mirror (`HAPI_PRIMARY`, default `~/coding/hapi`). Uncommitted scripts vanish on sync/reset — **commit them to fork main**.
 

@@ -40,46 +40,8 @@ fi
 
 _lc_cmd=$(printf '%s' "$CMD" | tr '[:upper:]' '[:lower:]')
 
-_hapi_production_mutation_match() {
-    local c="$1"
-    local lc
-    lc=$(printf '%s' "$c" | tr '[:upper:]' '[:lower:]')
-
-    # Stack switch / promotion tooling
-    if printf '%s' "$lc" | grep -qE 'hapi-driver-db-prep|hapi-use-worktree|hapi-use-driver|hapi-driver-rebuild.*--activate|hapi-watch-activate-driver|hapi_stack_switch_yes=1'; then
-        return 0
-    fi
-
-    # Manual hub / port hijack
-    if printf '%s' "$lc" | grep -qE 'nohup.*(bun run|src/index\.ts)|manual-hub|>>.*manual-hub'; then
-        return 0
-    fi
-
-    # Kill production listener / hub processes
-    if printf '%s' "$lc" | grep -qE '(^|[[:space:];|&])(kill|pkill|fuser)[[:space:]].*(3006|hapi-hub|/hub/|src/index\.ts)'; then
-        return 0
-    fi
-    if printf '%s' "$lc" | grep -qE 'kill[[:space:]]+[0-9]+' && printf '%s' "$lc" | grep -qE '3006|hapi-hub|manual-hub|cross-flavor'; then
-        return 0
-    fi
-
-    # systemd destruction (catch non-sudo paths too — rare but cheap)
-    if printf '%s' "$lc" | grep -qE 'systemctl[[:space:]]+(stop|restart|kill|disable|mask)[[:space:]]+hapi-(hub|runner|runner-watchdog)'; then
-        return 0
-    fi
-
-    # Driver tree destruction / sneak promote
-    if printf '%s' "$lc" | grep -qE 'git reset --hard.*(driver|hapi/driver)|embeddedassets.*driver|cp -r.*embeddedassets'; then
-        return 0
-    fi
-
-    # Shared DB surgery
-    if printf '%s' "$lc" | grep -qE '(\.hapi/hapi\.db|hapi\.db\.bak)|sqlite3.*hapi\.db.*(drop|delete|update|insert)'; then
-        return 0
-    fi
-
-    return 1
-}
+# shellcheck source=lib/driver-dist-guard-patterns.sh
+source "$(dirname "$(readlink -f "$0")")/lib/driver-dist-guard-patterns.sh"
 
 _is_remote_ssh=0
 if printf '%s' "$_lc_cmd" | grep -qE '(^|[[:space:]|&;])(ssh|scp|rsync)[[:space:]]|wsl[[:space:]].*ssh'; then
@@ -98,23 +60,28 @@ fi
 
 if [ "$_block" -eq 1 ]; then
     DENY_MSG=$(cat <<EOF
-Production HAPI mutation BLOCKED (2026-06-20 rogue-hub incident class).
+Production HAPI mutation BLOCKED (rogue-hub / feat-dist-swap / hand-merge class).
 
 Command: $CMD
 Tool:    ${TOOL:-Shell}
 
-Agents must NOT kill, nohup, stack-switch, DB-prep, or reset driver to change what serves :3006.
-REFUSE from hapi-use-worktree / hapi-restart-hub means STOP — report to operator.
+Blocked classes include:
+  - kill/nohup/stack-switch/DB-prep/manual hub on :3006
+  - cp/rsync/mv feat or worktree web/dist into driver/web/dist (#921 rollback)
+  - raw bun/vite build in driver/web (use hapi-driver-build-web)
+  - git merge/cherry-pick/reset on driver/integration (#962 hand-merge)
+  - hapi-driver-rebuild without --build-web (manifest merge — meta/operator only)
 
-Windows estate agents: refresh Teemo runner only; use hapi-peer-stack for pre-soup browser proof (:3100+).
-Linux soup promotion: manifest + hapi-driver-rebuild — operator or steward only.
+Allowed for feature peers on driver soup:
+  - hapi-driver-build-web [--skip-verify]  (builds from driver/web source)
+  - hapi-driver-rebuild --build-web [--verify]
+  - hapi-verify-web-dist / hapi-restart-hub (patient)
+
+REFUSE means STOP — report to operator. Do not workaround with cp or ad-hoc builds.
 
 Bypass (operator TTY only): HAPI_OPERATOR_PRODUCTION_MUTATION_OVERRIDE=1
 
-See:
-  ~/coding/hapi/.cursor/rules/operator-fork.mdc
-  ~/coding/hapi/scripts/tooling/cursor-rules/hapi-windows-estate.mdc
-  ~/coding/hapi/docs/operator/windows-estate-agents.md
+See: docs/tooling/driver-soup.md, docs/tooling/feature-work-lifecycle.md
 EOF
 )
     jq -n \
