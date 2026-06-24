@@ -3,7 +3,7 @@ import { reduceChatBlocks } from './reducer'
 import { normalizeDecryptedMessage } from './normalize'
 import type { NormalizedMessage } from './types'
 import type { DecryptedMessage } from '@/types/api'
-import type { ThreadGoal, ThreadGoalStatus } from '@/types/api'
+import type { AgentState, ThreadGoal, ThreadGoalStatus } from '@/types/api'
 
 function userMessage(id: string, text: string, createdAt: number): NormalizedMessage {
     return {
@@ -278,5 +278,43 @@ describe('reduceChatBlocks', () => {
             status: 'active',
             tokensUsed: 8016
         })
+    })
+
+    it('does not pin a resolved request as a bottom card when its message is not in the window', () => {
+        // agentState keeps completedRequests after an ask is answered. With no
+        // tool_use message loaded for it, the permission-only synthesis used to
+        // append an "answered" card at the end of the timeline (no re-sort),
+        // pinning it above the composer forever.
+        const messages = [userMessage('u1', 'hello', 1_700_000_000_000)]
+        const agentState = {
+            requests: {},
+            completedRequests: {
+                'ask-done': {
+                    tool: 'AskUserQuestion',
+                    arguments: { questions: [] },
+                    status: 'approved',
+                    createdAt: 1_700_000_000_500,
+                    completedAt: 1_700_000_000_600
+                }
+            }
+        } as unknown as AgentState
+
+        const reduced = reduceChatBlocks(messages, agentState)
+        expect(reduced.blocks.some(b => b.kind === 'tool-call' && b.id === 'ask-done')).toBe(false)
+    })
+
+    it('still synthesizes a card for a pending request with no message in the window', () => {
+        const messages = [userMessage('u1', 'hello', 1_700_000_000_000)]
+        const agentState = {
+            requests: {
+                'ask-pending': { tool: 'AskUserQuestion', arguments: { questions: [] }, createdAt: 1_700_000_000_500 }
+            },
+            completedRequests: {}
+        } as unknown as AgentState
+
+        const reduced = reduceChatBlocks(messages, agentState)
+        const block = reduced.blocks.find(b => b.kind === 'tool-call' && b.id === 'ask-pending')
+        expect(block).toBeDefined()
+        expect(block?.kind === 'tool-call' ? block.tool.permission?.status : null).toBe('pending')
     })
 })

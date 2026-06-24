@@ -118,14 +118,23 @@ export function reduceChatBlocks(
     const rootResult = reduceTimeline(root, reducerContext)
     let hasReadyEvent = rootResult.hasReadyEvent
 
-    // Only create permission-only tool cards when there is no tool call/result in the transcript.
-    // Also skip if the permission is older than the oldest message in the current view,
-    // to avoid mixing old tool cards with newer messages when paginating.
+    // Synthesize a tool card only for a *pending* permission that has no tool
+    // call/result in the transcript — so the user can still answer it when its
+    // tool_use message hasn't loaded. A resolved request (approved/denied/
+    // canceled) is history: agentState keeps it in completedRequests, but
+    // synthesizing it here appends a card to the end of the timeline (there is
+    // no chronological re-sort), pinning a stale "answered" card above the
+    // composer forever. Resolved requests render only via their own message,
+    // when it is in the window.
+    // Also skip if the permission is older than the oldest message in the
+    // current view, to avoid mixing old tool cards with newer messages when
+    // paginating.
     const oldestMessageTime = normalized.length > 0
         ? Math.min(...normalized.map(m => m.createdAt))
         : null
 
     for (const [id, entry] of permissionsById) {
+        if (entry.permission.status !== 'pending') continue
         if (toolIdsInMessages.has(id)) continue
         if (rootResult.toolBlocksById.has(id)) continue
 
@@ -137,7 +146,7 @@ export function reduceChatBlocks(
             continue
         }
 
-        const block = ensureToolBlock(rootResult.blocks, rootResult.toolBlocksById, id, {
+        ensureToolBlock(rootResult.blocks, rootResult.toolBlocksById, id, {
             createdAt,
             localId: null,
             name: entry.toolName,
@@ -145,20 +154,6 @@ export function reduceChatBlocks(
             description: null,
             permission: entry.permission
         })
-
-        if (entry.permission.status === 'approved') {
-            block.tool.state = 'completed'
-            block.tool.completedAt = entry.permission.completedAt ?? createdAt
-            if (block.tool.result === undefined) {
-                block.tool.result = 'Approved'
-            }
-        } else if (entry.permission.status === 'denied' || entry.permission.status === 'canceled') {
-            block.tool.state = 'error'
-            block.tool.completedAt = entry.permission.completedAt ?? createdAt
-            if (block.tool.result === undefined && entry.permission.reason) {
-                block.tool.result = { error: entry.permission.reason }
-            }
-        }
     }
 
     // Calculate latest usage from messages (find the most recent message with usage data)
