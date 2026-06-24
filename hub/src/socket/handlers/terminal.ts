@@ -142,9 +142,9 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
         // Replay buffered output so the terminal shows scrollback immediately
         // instead of staying black until the next output from CLI.
         // The buffer is never explicitly cleared here: it persists so a client
-        // that navigates away and back (new socket, isReconnect=false) still
-        // sees the accumulated output. It is bounded to 256KB per session.
-        const buffered = getUserTerminalBuffer(sessionId)
+        // whose socket reconnects with the same terminalId still sees the
+        // accumulated output. It is bounded to 256KB per terminal.
+        const buffered = getUserTerminalBuffer(sessionId, terminalId)
         if (buffered && !isReconnect) {
             socket.emit('terminal:output', { terminalId, data: buffered })
         }

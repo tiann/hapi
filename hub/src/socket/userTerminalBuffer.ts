@@ -1,31 +1,35 @@
-// Per-session scrollback buffer for the user (remote) terminal output.
+// Per-terminal scrollback buffer for the user (remote) terminal output.
 //
-// A web client that navigates away and back creates a new xterm.js instance
-// with a new terminalId, so the previous output is lost. We keep a rolling
-// buffer per session so a fresh subscriber can replay the current terminal
-// content immediately instead of showing a black screen until the next
-// keystroke or output.
+// A web client whose socket drops and reconnects re-subscribes with the SAME
+// terminalId (held in a ref across transient reconnects), so we keep a rolling
+// buffer per terminal to replay the current content immediately instead of
+// showing a black screen until the next keystroke or output.
 //
-// The buffer is keyed by sessionId only (not terminalId) because each
-// navigation creates a new terminalId for the same session.
+// The buffer is keyed by sessionId + terminalId (not sessionId alone): a session
+// may have several independent terminals open at once (each a separate shell
+// PTY, up to maxTerminalsPerSession), so keying by session alone would mix one
+// shell's output into another and replay it into a terminal that never ran it.
 
 const MAX_BUFFER_BYTES = 256 * 1024
 
 const buffers = new Map<string, string>()
 
-export function appendUserTerminalOutput(sessionId: string, _terminalId: string, data: string): void {
+const keyFor = (sessionId: string, terminalId: string): string => `${sessionId}:${terminalId}`
+
+export function appendUserTerminalOutput(sessionId: string, terminalId: string, data: string): void {
     if (!data) return
-    const next = (buffers.get(sessionId) ?? '') + data
+    const key = keyFor(sessionId, terminalId)
+    const next = (buffers.get(key) ?? '') + data
     buffers.set(
-        sessionId,
+        key,
         next.length > MAX_BUFFER_BYTES ? next.slice(next.length - MAX_BUFFER_BYTES) : next
     )
 }
 
-export function getUserTerminalBuffer(sessionId: string): string {
-    return buffers.get(sessionId) ?? ''
+export function getUserTerminalBuffer(sessionId: string, terminalId: string): string {
+    return buffers.get(keyFor(sessionId, terminalId)) ?? ''
 }
 
-export function clearUserTerminalBuffer(sessionId: string): void {
-    buffers.delete(sessionId)
+export function clearUserTerminalBuffer(sessionId: string, terminalId: string): void {
+    buffers.delete(keyFor(sessionId, terminalId))
 }
