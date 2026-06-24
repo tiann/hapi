@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+    formatMachineUptimeSeconds,
     presentMachineHealth,
     resolveMachineOsLabel,
     shouldShowMachineHostSubtitle,
@@ -39,6 +40,26 @@ describe('presentMachineHealth', () => {
 
     it('returns null when health is missing', () => {
         expect(presentMachineHealth(null, 'linux')).toBeNull()
+    })
+
+    it('formats uptime for tooltip and tile meta', () => {
+        const result = presentMachineHealth({
+            collectedAt: Date.now(),
+            cpuPercent: 10,
+            memoryPercent: 20,
+            uptimeSeconds: 6_540,
+        }, 'linux')
+
+        expect(result?.uptimeDetail).toBe('1h 49m')
+    })
+})
+
+describe('formatMachineUptimeSeconds', () => {
+    it('formats days, hours, minutes, and seconds', () => {
+        expect(formatMachineUptimeSeconds(90_000)).toBe('1d 1h')
+        expect(formatMachineUptimeSeconds(3_720)).toBe('1h 2m')
+        expect(formatMachineUptimeSeconds(300)).toBe('5m')
+        expect(formatMachineUptimeSeconds(45)).toBe('45s')
     })
 })
 

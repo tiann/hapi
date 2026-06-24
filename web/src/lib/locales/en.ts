@@ -260,6 +260,8 @@ export default {
   'machine.health.metric.ram': 'RAM in use',
   'machine.health.tooltip.load': 'Run queue (1 min): {value}',
   'machine.health.tooltip.loadShort': 'Load (1m)',
+  'machine.health.tooltip.uptimeShort': 'Uptime',
+  'machine.health.uptimeCompact': 'up {value}',
   'machine.health.tooltip.hint': 'Updated every ~20s from the runner on this machine.',
   'machine.health.aria.cpu': 'CPU {n} percent',
   'machine.health.aria.ram': 'RAM {n} percent',

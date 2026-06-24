@@ -13,8 +13,32 @@ export type MachineHealthPresentation = {
     metrics: MachineHealthMetricPresentation[]
     overallTone: MachineHealthTone
     loadDetail?: string
+    uptimeDetail?: string
     cpuCount?: number
     status: 'healthy' | 'elevated' | 'high' | 'unknown'
+}
+
+/** Compact uptime for sidebar tiles, e.g. 1h 54m, 2d 4h, 5m. */
+export function formatMachineUptimeSeconds(totalSeconds: number): string | null {
+    if (!Number.isFinite(totalSeconds) || totalSeconds < 0) {
+        return null
+    }
+
+    const seconds = Math.floor(totalSeconds)
+    const days = Math.floor(seconds / 86_400)
+    const hours = Math.floor((seconds % 86_400) / 3_600)
+    const minutes = Math.floor((seconds % 3_600) / 60)
+
+    if (days > 0) {
+        return `${days}d ${hours}h`
+    }
+    if (hours > 0) {
+        return `${hours}h ${minutes}m`
+    }
+    if (minutes > 0) {
+        return `${minutes}m`
+    }
+    return `${seconds}s`
 }
 
 function formatLoad(load1m: number, cpuCount?: number): string {
@@ -88,12 +112,15 @@ export function presentMachineHealth(
     const loadDetail = health.load1m !== undefined && platform !== 'win32'
         ? formatLoad(health.load1m, health.cpuCount)
         : undefined
+    const uptimeDetail = health.uptimeSeconds !== undefined
+        ? formatMachineUptimeSeconds(health.uptimeSeconds)
+        : undefined
 
     if (loadDetail !== undefined) {
         tones.push(loadTone(health.load1m!, health.cpuCount))
     }
 
-    if (metrics.length === 0 && loadDetail === undefined) {
+    if (metrics.length === 0 && loadDetail === undefined && uptimeDetail === undefined) {
         return {
             metrics: [],
             overallTone: 'unknown',
@@ -107,6 +134,7 @@ export function presentMachineHealth(
         metrics,
         overallTone,
         loadDetail,
+        uptimeDetail: uptimeDetail ?? undefined,
         cpuCount: health.cpuCount,
         status: statusFromTone(overallTone)
     }

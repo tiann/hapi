@@ -105,6 +105,14 @@ function MachineHealthTooltipBody(props: {
                         </span>
                     </span>
                 ) : null}
+                {presentation.uptimeDetail ? (
+                    <span className="inline-flex min-w-[7.5rem] items-center gap-2 whitespace-nowrap text-[var(--app-hint)]">
+                        <span>{t('machine.health.tooltip.uptimeShort')}</span>
+                        <span className="font-semibold tabular-nums text-[var(--app-fg)]">
+                            {presentation.uptimeDetail}
+                        </span>
+                    </span>
+                ) : null}
             </span>
             <span className="block text-[11px] leading-snug text-[var(--app-hint)]">
                 {t('machine.health.tooltip.hint')}

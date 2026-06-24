@@ -16,13 +16,14 @@ Cached:          9758076 kB
 })
 
 describe('collectMachineHealth', () => {
-    it('returns schema-valid health with memory and cpu count', () => {
+    it('returns schema-valid health with memory, uptime, and cpu count', () => {
         resetMachineHealthSamplerForTests()
         const health = collectMachineHealth(1_700_000_000_000)
         expect(health.collectedAt).toBe(1_700_000_000_000)
         expect(health.cpuCount).toBeGreaterThan(0)
         expect(health.memoryPercent).toBeGreaterThanOrEqual(0)
         expect(health.memoryPercent).toBeLessThanOrEqual(100)
+        expect(health.uptimeSeconds).toBeGreaterThan(0)
     })
 
     it('computes cpu percent after a second sample', async () => {

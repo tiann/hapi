@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { availableParallelism, cpus, freemem, loadavg, platform, totalmem } from 'node:os'
+import { availableParallelism, cpus, freemem, loadavg, platform, totalmem, uptime } from 'node:os'
 import type { MachineHealth } from '@hapi/protocol/types'
 import { MachineHealthSchema } from '@hapi/protocol/schemas'
 
@@ -97,9 +97,18 @@ function isUnixLikeLoadPlatform(): boolean {
     return platform() !== 'win32'
 }
 
+function computeUptimeSeconds(): number | undefined {
+    const seconds = uptime()
+    if (!Number.isFinite(seconds) || seconds < 0) {
+        return undefined
+    }
+    return Math.floor(seconds)
+}
+
 export function collectMachineHealth(now: number = Date.now()): MachineHealth {
     const cpuCount = availableParallelism()
     const memoryPercent = computeMemoryPercent()
+    const uptimeSeconds = computeUptimeSeconds()
     const load1m = isUnixLikeLoadPlatform() ? loadavg()[0] : undefined
 
     const cpuSnapshot = sumCpuTimes()
@@ -116,7 +125,8 @@ export function collectMachineHealth(now: number = Date.now()): MachineHealth {
         cpuCount,
         ...(load1m !== undefined ? { load1m } : {}),
         ...(cpuPercent !== undefined ? { cpuPercent } : {}),
-        ...(memoryPercent !== undefined ? { memoryPercent } : {})
+        ...(memoryPercent !== undefined ? { memoryPercent } : {}),
+        ...(uptimeSeconds !== undefined ? { uptimeSeconds } : {})
     }
 
     const parsed = MachineHealthSchema.safeParse(health)

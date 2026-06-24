@@ -81,7 +81,15 @@ export function MachineGroupHeader(props: {
     const osLabel = resolveMachineOsLabel(platform)
     const osText = formatOsLabel(osLabel, t)
     const showHost = shouldShowMachineHostSubtitle(props.label, host)
-    const machineMeta = showHost && host ? `${osText} · ${host}` : osText
+    const uptimeText = props.healthPresentation?.uptimeDetail
+    const metaParts = [osText]
+    if (showHost && host) {
+        metaParts.push(host)
+    }
+    if (uptimeText) {
+        metaParts.push(t('machine.health.uptimeCompact', { value: uptimeText }))
+    }
+    const machineMeta = metaParts.join(' · ')
     const hasHealth = props.healthPresentation && props.healthPresentation.metrics.length > 0
 
     return (

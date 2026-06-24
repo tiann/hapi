@@ -49,4 +49,32 @@ describe('MachineGroupHeader', () => {
         expect(screen.getByText('(4)')).toBeTruthy()
         expect(screen.getByLabelText(/CPU 12 percent; RAM 88 percent/i)).toBeTruthy()
     })
+
+    it('shows compact uptime in the machine meta row', () => {
+        render(
+            <I18nProvider>
+                <MachineGroupHeader
+                    label="proxmox"
+                    sessionCount={2}
+                    collapsed={false}
+                    onToggle={() => {}}
+                    machine={{
+                        ...machine,
+                        metadata: { ...machine.metadata!, host: 'proxmox', platform: 'linux' },
+                    }}
+                    healthPresentation={{
+                        metrics: [
+                            { id: 'cpu', shortLabel: 'CPU', percent: 12, tone: 'ok' },
+                            { id: 'ram', shortLabel: 'RAM', percent: 40, tone: 'ok' },
+                        ],
+                        overallTone: 'ok',
+                        status: 'healthy',
+                        uptimeDetail: '1h 54m',
+                    }}
+                />
+            </I18nProvider>
+        )
+
+        expect(screen.getByTitle('Linux · up 1h 54m')).toBeTruthy()
+    })
 })
