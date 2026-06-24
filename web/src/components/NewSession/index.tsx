@@ -482,7 +482,8 @@ export function NewSession(props: {
         yoloMode,
         sessionType,
         worktreeName,
-        trimmedDirectory
+        trimmedDirectory,
+        startingMode
     ])
 
     const handlePathClick = useCallback((path: string) => {
