@@ -10,7 +10,7 @@ import type { TerminalRegistry } from '../../terminalRegistry'
 import type { CliSocketWithData, SocketServer } from '../../socketTypes'
 import type { AccessErrorReason, AccessResult } from './types'
 import { appendAgentTerminalOutput, clearAgentTerminalBuffer } from '../../agentTerminalBuffer'
-import { appendUserTerminalOutput, clearUserTerminalBuffer } from '../../userTerminalBuffer'
+import { appendUserTerminalOutput } from '../../userTerminalBuffer'
 
 type ResolveSessionAccess = (sessionId: string) => AccessResult<StoredSession>
 
@@ -121,11 +121,9 @@ export function registerTerminalHandlers(socket: CliSocketWithData, deps: Termin
         if (!entry || entry.sessionId !== parsed.data.sessionId || entry.cliSocketId !== socket.id) {
             return
         }
+        // remove() fires the registry's onRemove → clears this terminal's
+        // scrollback buffer (without touching the session's other terminals).
         terminalRegistry.remove(parsed.data.terminalId)
-        // Drop only this terminal's scrollback so a reconnecting viewer doesn't
-        // replay a dead terminal's output (and the buffer doesn't leak), without
-        // wiping the scrollback of the session's other live terminals.
-        clearUserTerminalBuffer(parsed.data.sessionId, parsed.data.terminalId)
         const terminalSocket = terminalNamespace.sockets.get(entry.socketId)
         if (!terminalSocket) {
             return
