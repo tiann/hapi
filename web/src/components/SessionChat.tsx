@@ -1201,6 +1201,12 @@ function SessionChatInner(props: SessionChatProps) {
                 <DragDropZone disabled={sessionInactive || props.isSending || pendingSchedule != null}>
                     <div className="relative flex min-h-0 flex-1 flex-col">
                         {canViewAgentTerminal && (
+                            // No `key` needed here: SessionChatInner is itself keyed by
+                            // session.id (see SessionChat wrapper), so switching sessions
+                            // fully remounts this subtree. AgentTerminalView's mount effect
+                            // disconnects the agent-terminal socket on unmount, so the new
+                            // session reconnects/subscribes fresh — the old room is never
+                            // left subscribed.
                             <AgentTerminalView
                                 sessionId={props.session.id}
                                 visible={terminalVisible}
