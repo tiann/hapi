@@ -11,20 +11,48 @@
  * Picks display_video for mp4/webm (ftyp / webm magic), else display_image.
  */
 
-import { readFileSync, lstatSync } from 'node:fs'
+import { readFileSync, lstatSync, existsSync } from 'node:fs'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 
 const HAPI_HOST = process.env.HAPI_HOST ?? 'http://localhost:3006'
 const SETTINGS = process.env.HAPI_SETTINGS ?? `${process.env.HOME}/.hapi/settings.json`
 
-const sessionArg = process.argv[2]
-const imagePath = process.argv[3]
-const title = process.argv[4]
+const envSessionPrefix = process.env.HAPI_SESSION_ID ? process.env.HAPI_SESSION_ID.slice(0, 8) : undefined
+let sessionArg = process.argv[2]
+let imagePath = process.argv[3]
+let title = process.argv[4]
+
+// HAPI_SESSION_ID + path-only: hapi-display-image.mjs <media-path> [title]
+if (envSessionPrefix && sessionArg && !imagePath && existsSync(sessionArg) && lstatSync(sessionArg).isFile()) {
+    imagePath = sessionArg
+    title = process.argv[3]
+    sessionArg = envSessionPrefix
+} else if (!sessionArg && envSessionPrefix) {
+    sessionArg = envSessionPrefix
+}
 
 if (!sessionArg || !imagePath) {
     console.error('usage: hapi-display-image.mjs <session-id-prefix> <media-path> [title]')
+    console.error('  or: HAPI_SESSION_ID=<uuid> hapi-display-image.mjs <media-path> [title]')
     process.exit(2)
+}
+
+function sessionMatchesPrefix(session, prefix) {
+    if (typeof session.id === 'string' && session.id.startsWith(prefix)) {
+        return true
+    }
+    const meta = session.metadata ?? {}
+    const agentIds = [
+        meta.agentSessionId,
+        meta.cursorSessionId,
+        meta.codexSessionId,
+        meta.claudeSessionId,
+        meta.geminiSessionId,
+        meta.opencodeSessionId,
+        meta.kimiSessionId,
+    ]
+    return agentIds.some((id) => typeof id === 'string' && id.startsWith(prefix))
 }
 
 function detectMediaTool(path) {
@@ -65,13 +93,13 @@ const sessionsRes = await fetch(`${HAPI_HOST}/api/sessions?limit=500`, {
 })
 const sessionsBody = await sessionsRes.json()
 const sessions = sessionsBody.sessions ?? sessionsBody
-const session = sessions.find((s) => s.id.startsWith(sessionArg))
+const session = sessions.find((s) => sessionMatchesPrefix(s, sessionArg))
 if (!session) {
-    console.error(`no session for prefix ${sessionArg}`)
+    console.error(`no session for prefix ${sessionArg} (use HAPI session id from /sessions/<uuid>, not cursorSessionId alone)`)
     process.exit(4)
 }
 
-// List endpoint omits metadata; per-session GET includes hapiMcpUrl (#956 / PR #958).
+// List endpoint may omit hapiMcpUrl until hub summary includes it; per-session GET always has it.
 let mcpUrl = session.metadata?.hapiMcpUrl
 if (!mcpUrl) {
     const detailRes = await fetch(`${HAPI_HOST}/api/sessions/${encodeURIComponent(session.id)}`, {
