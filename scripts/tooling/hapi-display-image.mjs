@@ -24,7 +24,7 @@ let imagePath = process.argv[3]
 let title = process.argv[4]
 
 // HAPI_SESSION_ID + path-only: hapi-display-image.mjs <media-path> [title]
-if (envSessionPrefix && sessionArg && !imagePath && existsSync(sessionArg) && lstatSync(sessionArg).isFile()) {
+if (envSessionPrefix && sessionArg && existsSync(sessionArg) && lstatSync(sessionArg).isFile()) {
     imagePath = sessionArg
     title = process.argv[3]
     sessionArg = envSessionPrefix
