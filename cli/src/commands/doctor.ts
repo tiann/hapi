@@ -1,5 +1,6 @@
 import { killRunawayHappyProcesses } from '@/runner/doctor'
 import { runDoctorCommand } from '@/ui/doctor'
+import { runDoctorInlineMedia } from '@/ui/doctorInlineMedia'
 import type { CommandDefinition } from './types'
 
 export const doctorCommand: CommandDefinition = {
@@ -13,6 +14,10 @@ export const doctorCommand: CommandDefinition = {
                 console.log('Errors:', result.errors)
             }
             process.exit(0)
+        }
+        if (commandArgs[0] === 'inline-media') {
+            const code = await runDoctorInlineMedia()
+            process.exit(code)
         }
         await runDoctorCommand()
     }

@@ -35,6 +35,23 @@ function isFile(p) {
     }
 }
 
+function sessionMatchesPrefix(session, prefix) {
+    if (typeof session.id === 'string' && session.id.startsWith(prefix)) {
+        return true
+    }
+    const meta = session.metadata ?? {}
+    const agentIds = [
+        meta.agentSessionId,
+        meta.cursorSessionId,
+        meta.codexSessionId,
+        meta.claudeSessionId,
+        meta.geminiSessionId,
+        meta.opencodeSessionId,
+        meta.kimiSessionId,
+    ]
+    return agentIds.some((id) => typeof id === 'string' && id.startsWith(prefix))
+}
+
 function detectMediaTool(path) {
     const head = readFileSync(path).subarray(0, 16)
     if (head.length >= 12 && head.subarray(4, 8).toString('ascii') === 'ftyp') {
@@ -131,16 +148,17 @@ if (wantsSelf) {
         process.exit(4)
     }
 } else {
-    // Explicit id/prefix: full uuid → direct GET; otherwise list + prefix match.
+    // Explicit id/prefix: full uuid → direct GET; otherwise list + prefix match
+    // (HAPI id or agent session ids such as cursorSessionId).
     const looksFull = /^[0-9a-f-]{36}$/i.test(sessionArg)
     if (looksFull) {
         session = await fetchSessionDetail(sessionArg)
     }
     if (!session) {
         const sessions = await listSessions()
-        const listed = sessions.find((s) => typeof s.id === 'string' && s.id.startsWith(sessionArg))
+        const listed = sessions.find((s) => sessionMatchesPrefix(s, sessionArg))
         if (!listed) {
-            console.error(`no session for prefix ${sessionArg}`)
+            console.error(`no session for prefix ${sessionArg} (use HAPI session id from /sessions/<uuid>, not cursorSessionId alone)`)
             process.exit(4)
         }
         // List summaries may omit hapiMcpUrl; detail fetch always has it when present.
