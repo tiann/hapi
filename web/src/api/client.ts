@@ -342,12 +342,13 @@ export class ApiClient {
         if (authToken) {
             headers.set('authorization', `Bearer ${authToken}`)
         }
-        const res = await fetch(this.buildUrl(`/api/sessions/${encodeURIComponent(sessionId)}/generated-images/${encodeURIComponent(imageId)}`), {
-            headers,
-            // Hub answers with ETag + Cache-Control; browser 304 responses have no body and
-            // fail res.ok — use no-store so GeneratedImageCard always gets bytes (issue #927).
-            cache: 'no-store'
-        })
+        const url = this.buildUrl(`/api/sessions/${encodeURIComponent(sessionId)}/generated-images/${encodeURIComponent(imageId)}`)
+        let res = await fetch(url, { headers })
+        // Hub returns ETag + immutable Cache-Control (#927). Default fetch cache stores 200
+        // responses so remounts avoid RPC; on 304 the body is empty — read from cache.
+        if (res.status === 304) {
+            res = await fetch(url, { headers, cache: 'force-cache' })
+        }
         if (res.status === 401 && attempt === 0 && this.onUnauthorized) {
             const refreshed = await this.onUnauthorized()
             if (refreshed) {
