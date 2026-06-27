@@ -476,18 +476,16 @@ export async function runOmp(opts: {
         // to the exact ompSessionFile (resolved by the hub from ompSessionFile
         // metadata) instead of relying on `--continue`'s most-recent heuristic,
         // which attaches the wrong conversation when a cwd has multiple sessions.
+        // A failed switch_session must surface as a resume failure — falling
+        // back to new_session here would silently start an empty OMP conversation
+        // under the selected HAPI session row, so prompts lose all prior context.
         if (opts.resumeSessionId) {
-            try {
-                const result = await sendOmpRpcAndWait(ompSession, transport, {
-                    type: 'switch_session',
-                    sessionPath: opts.resumeSessionId,
-                }) as { cancelled?: boolean } | null;
-                if (result?.cancelled) {
-                    logger.debug(`[omp] switch_session cancelled by extension for ${opts.resumeSessionId}`);
-                }
-            } catch (error) {
-                logger.debug(`[omp] switch_session failed, falling back to fresh session: ${error instanceof Error ? error.message : String(error)}`);
-                transport.send({ type: 'new_session' });
+            const result = await sendOmpRpcAndWait(ompSession, transport, {
+                type: 'switch_session',
+                sessionPath: opts.resumeSessionId,
+            }) as { cancelled?: boolean } | null;
+            if (result?.cancelled) {
+                throw new Error(`OMP refused to resume session ${opts.resumeSessionId} (cancelled by extension)`);
             }
         } else {
             transport.send({ type: 'new_session' });
