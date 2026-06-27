@@ -170,9 +170,9 @@ export function MachineHealthIndicator(props: {
             id={tooltipId}
             target={chip}
             side="bottom"
-            align="row"
+            align="end"
             className="shrink-0"
-            tooltipClassName="px-3 py-2"
+            tooltipClassName="px-3 py-2 min-w-[16rem]"
             revealOnParentFocusClass={props.revealOnParentFocusClass}
         >
             <MachineHealthTooltipBody presentation={presentation} />
