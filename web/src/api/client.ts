@@ -642,6 +642,14 @@ export class ApiClient {
         )
     }
 
+    /** Generic OMP session endpoint — mirrors callPiEndpoint. */
+    async callOmpEndpoint<T = unknown>(sessionId: string, path: string, init?: RequestInit): Promise<T> {
+        return await this.request<T>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/omp-${path}`,
+            init
+        )
+    }
+
     async getMachineCursorModels(machineId: string): Promise<CursorModelsResponse> {
         return await this.request<CursorModelsResponse>(
             `/api/machines/${encodeURIComponent(machineId)}/cursor-models`

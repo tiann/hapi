@@ -27,6 +27,10 @@ const FLAVOR_BADGES: Record<string, { label: string; colors: string }> = {
         label: 'Op',
         colors: 'bg-[#15803d] text-white',
     },
+    omp: {
+        label: 'Om',
+        colors: 'bg-[#0ea5e9] text-white',
+    },
 }
 
 const UNKNOWN_FLAVOR_BADGE = {

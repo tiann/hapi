@@ -1610,6 +1610,11 @@ export class SyncEngine {
         return await this.rpcGateway.callPiRpc<T>(sessionId, method, params, timeoutMs)
     }
 
+    /** Generic OMP RPC — delegates to rpcGateway.callOmpRpc. */
+    async callOmpRpc<T = unknown>(sessionId: string, method: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<T> {
+        return await this.rpcGateway.callOmpRpc<T>(sessionId, method, params, timeoutMs)
+    }
+
     async listOpencodeReasoningEffortOptionsForSession(sessionId: string): Promise<RpcListOpencodeReasoningEffortOptionsResponse> {
         return await this.rpcGateway.listOpencodeReasoningEffortOptionsForSession(sessionId)
     }

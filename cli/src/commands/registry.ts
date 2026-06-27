@@ -10,6 +10,7 @@ import { geminiCommand } from './gemini'
 import { kimiCommand } from './kimi'
 import { opencodeCommand } from './opencode'
 import { piCommand } from './pi'
+import { ompCommand } from './omp'
 import { hookForwarderCommand } from './hookForwarder'
 import { mcpCommand } from './mcp'
 import { notifyCommand } from './notify'
@@ -25,6 +26,7 @@ const COMMANDS: CommandDefinition[] = [
     kimiCommand,
     opencodeCommand,
     piCommand,
+    ompCommand,
     mcpCommand,
     hubCommand,
     { ...hubCommand, name: 'server' },

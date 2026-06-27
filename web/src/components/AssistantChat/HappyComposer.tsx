@@ -12,7 +12,7 @@ import {
     useRef,
     useState
 } from 'react'
-import type { AgentState, CodexCollaborationMode, PermissionMode, PiModelSummary, ThreadGoal } from '@/types/api'
+import type { AgentState, CodexCollaborationMode, OmpModelSummary, PermissionMode, PiModelSummary, ThreadGoal } from '@/types/api'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import type { ConversationStatus } from '@/realtime/types'
 import { useActiveWord } from '@/hooks/useActiveWord'
@@ -36,9 +36,12 @@ import { getModelOptionsForFlavor, getNextModelForFlavor } from './modelOptions'
 import { getClaudeComposerEffortOptions } from './claudeEffortOptions'
 import { getCodexComposerReasoningEffortOptions } from './codexReasoningEffortOptions'
 import { getPiThinkingLevelOptions, getHighestThinkingLevel, isThinkingLevelSupported } from './piThinkingLevelOptions'
+import { getOmpThinkingLevelOptions, getHighestOmpThinkingLevel } from './ompThinkingLevelOptions'
 import { groupModelsByProvider } from './piModelGroups'
 import { PiModelPanel } from './PiModelPanel'
 import { PiThinkingLevelPanel } from './PiThinkingLevelPanel'
+import { OmpModelPanel } from './OmpModelPanel'
+import { OmpThinkingLevelPanel } from './OmpThinkingLevelPanel'
 
 export interface TextInputState {
     text: string
@@ -106,6 +109,11 @@ export function HappyComposer(props: {
     /** Pi: provider-qualified selected model from metadata (survives reload;
      *  disambiguates when two providers share a modelId). */
     piSelectedModel?: { provider: string; modelId: string } | null
+    /** Full OMP model data with `efforts` array for provider grouping + thinking level filtering. */
+    ompModels?: OmpModelSummary[]
+    /** OMP: provider-qualified selected model from metadata (survives reload;
+     *  disambiguates when two providers share a modelId). */
+    ompSelectedModel?: { provider: string; modelId: string } | null
     availableModelReasoningEffortOptions?: Array<{ value: string; name?: string }>
     /** Cursor: selected base model key (not wire id). */
     selectedModelBase?: string | null
@@ -173,6 +181,8 @@ export function HappyComposer(props: {
         availableModelOptions,
         piModels,
         piSelectedModel,
+        ompModels,
+        ompSelectedModel,
         availableModelReasoningEffortOptions,
         selectedModelBase,
         selectedModelVariant,
@@ -239,6 +249,8 @@ export function HappyComposer(props: {
     const [showSettings, setShowSettings] = useState(false)
     const [showPiModelPanel, setShowPiModelPanel] = useState(false)
     const [showPiThinkingPanel, setShowPiThinkingPanel] = useState(false)
+    const [showOmpModelPanel, setShowOmpModelPanel] = useState(false)
+    const [showOmpThinkingPanel, setShowOmpThinkingPanel] = useState(false)
     const [isAborting, setIsAborting] = useState(false)
     const [isSwitching, setIsSwitching] = useState(false)
     const [showContinueHint, setShowContinueHint] = useState(false)
@@ -452,11 +464,42 @@ export function HappyComposer(props: {
             onEffortChange(getHighestThinkingLevel(selectedPiModel.thinkingLevelMap))
         }
     }, [selectedPiModel, effort, onEffortChange])
+
+    // OMP: find the currently selected model (efforts array drives thinking level filtering).
+    // Prefer provider-qualified match (metadata.ompSelectedModel) for the same reason as Pi.
+    const selectedOmpModel = useMemo(
+        () => ompSelectedModel
+            ? ompModels?.find((m) => m.provider === ompSelectedModel.provider && m.modelId === ompSelectedModel.modelId)
+            : ompModels?.find((m) => m.modelId === model),
+        [ompModels, ompSelectedModel, model]
+    )
+
+    // OMP: reset effort to highest supported level when model changes and current level is unsupported.
+    // Supported = effort must be in `efforts` when present; missing `efforts` means model supports
+    // the default level set (same fallback as getOmpThinkingLevelOptions).
+    useEffect(() => {
+        if (!effort || !selectedOmpModel || !onEffortChange) return
+        if (selectedOmpModel.reasoning === false) {
+            onEffortChange(null)
+            return
+        }
+        const supported = selectedOmpModel.efforts
+        // Case-insensitive match: OMP may return efforts with non-lowercase
+        // casing (e.g. 'High'), and effort is normalized elsewhere.
+        const normalizedEffort = effort.toLowerCase()
+        const isSupported = !supported || supported.length === 0
+            || supported.some(s => s.toLowerCase() === normalizedEffort)
+        if (!isSupported) {
+            onEffortChange(getHighestOmpThinkingLevel(supported))
+        }
+    }, [selectedOmpModel, effort, onEffortChange])
     const claudeEffortOptions = useMemo(
         () => agentFlavor === 'pi'
             ? getPiThinkingLevelOptions(effort, selectedPiModel?.thinkingLevelMap)
-            : getClaudeComposerEffortOptions(effort),
-        [agentFlavor, effort, selectedPiModel]
+            : agentFlavor === 'omp'
+                ? getOmpThinkingLevelOptions(effort, selectedOmpModel?.efforts)
+                : getClaudeComposerEffortOptions(effort),
+        [agentFlavor, effort, selectedPiModel, selectedOmpModel]
     )
     const permissionModes = useMemo(
         () => permissionModeOptions.map((option) => option.mode),
@@ -564,7 +607,8 @@ export function HappyComposer(props: {
             // but this generic cycler only emits a bare modelId (or null), which
             // would lose the provider and can pick the wrong cached match or clear
             // the model. Pi model changes go only through the dedicated PiModelPanel.
-            if (agentFlavor === 'pi') return
+            // OMP has the same provider-disambiguation need and uses OmpModelPanel.
+            if (agentFlavor === 'pi' || agentFlavor === 'omp') return
             if (e.key === 'm' && (e.metaKey || e.ctrlKey) && onModelChange && supportsModelChange(agentFlavor)) {
                 e.preventDefault()
                 onModelChange(getNextModelForFlavor(agentFlavor, model, availableModelOptions))
@@ -697,7 +741,7 @@ export function HappyComposer(props: {
 
     const showCollaborationSettings = Boolean(onCollaborationModeChange && collaborationModeOptions.length > 0)
     const showPermissionSettings = Boolean(onPermissionModeChange && permissionModeOptions.length > 0)
-    const showModelSettings = Boolean(onModelChange && supportsModelChange(agentFlavor) && (piModels && piModels.length > 0 || modelOptions.length > 0))
+    const showModelSettings = Boolean(onModelChange && supportsModelChange(agentFlavor) && (piModels && piModels.length > 0 || ompModels && ompModels.length > 0 || modelOptions.length > 0))
     const showModelEffortSettings = Boolean(
         (onModelEffortChange ?? onModelChange)
         && modelEffortOptions
@@ -706,7 +750,9 @@ export function HappyComposer(props: {
     const showModelReasoningEffortSettings = Boolean(onModelReasoningEffortChange && codexReasoningEffortOptions.length > 0)
     // For Pi: hide effort when selected model explicitly has reasoning: false
     const piEffortHidden = piModels && selectedPiModel && selectedPiModel.reasoning === false
-    const showEffortSettings = Boolean(onEffortChange && supportsEffort(agentFlavor) && !piEffortHidden)
+    // For OMP: same reasoning: false guard via the efforts array model
+    const ompEffortHidden = ompModels && selectedOmpModel && selectedOmpModel.reasoning === false
+    const showEffortSettings = Boolean(onEffortChange && supportsEffort(agentFlavor) && !piEffortHidden && !ompEffortHidden)
     const showFastModeSettings = Boolean(onServiceTierChange)
     const showSettingsButton = Boolean(
         showCollaborationSettings
@@ -750,11 +796,35 @@ export function HappyComposer(props: {
         })()
         : undefined
     const piHasModels = piModels && piModels.length > 0
+    // OMP: same UI label channel (ComposerButtons reuses the pi* props). OMP's
+    // supported-level check uses the `efforts` array, not Pi's thinkingLevelMap.
+    const ompModelLabel = agentFlavor === 'omp'
+        ? (selectedOmpModel?.name ?? selectedOmpModel?.modelId ?? 'Model')
+        : undefined
+    const ompThinkingLabel = agentFlavor === 'omp'
+        ? (() => {
+            if (!selectedOmpModel) return 'Thinking'
+            const supported = selectedOmpModel.efforts
+            // Case-insensitive: efforts may be non-lowercase while effort is normalized.
+            const normalizedEffort = (effort ?? '').toLowerCase()
+            const isSupported = !supported || supported.length === 0
+                || supported.some(s => s.toLowerCase() === normalizedEffort)
+            const effectiveLevel = effort && isSupported
+                ? effort
+                : getHighestOmpThinkingLevel(supported)
+            return effectiveLevel
+                ? (PI_THINKING_LEVEL_LABELS[effectiveLevel as PiThinkingLevel] ?? effectiveLevel)
+                : 'Thinking'
+        })()
+        : undefined
+    const ompHasModels = ompModels && ompModels.length > 0
 
     const closeAllPanels = useCallback(() => {
         setShowSettings(false)
         setShowPiModelPanel(false)
         setShowPiThinkingPanel(false)
+        setShowOmpModelPanel(false)
+        setShowOmpThinkingPanel(false)
     }, [])
 
     const handlePiModelToggle = useCallback(() => {
@@ -770,6 +840,22 @@ export function HappyComposer(props: {
         setShowPiThinkingPanel((v) => !v)
         setShowSettings(false)
         setShowPiModelPanel(false)
+        haptic('light')
+    }, [controlsDisabled, haptic])
+
+    const handleOmpModelToggle = useCallback(() => {
+        if (controlsDisabled) return
+        setShowOmpModelPanel((v) => !v)
+        setShowSettings(false)
+        setShowOmpThinkingPanel(false)
+        haptic('light')
+    }, [controlsDisabled, haptic])
+
+    const handleOmpThinkingToggle = useCallback(() => {
+        if (controlsDisabled) return
+        setShowOmpThinkingPanel((v) => !v)
+        setShowSettings(false)
+        setShowOmpModelPanel(false)
         haptic('light')
     }, [controlsDisabled, haptic])
 
@@ -805,6 +891,48 @@ export function HappyComposer(props: {
                             currentLevel={effort}
                             reasoning={selectedPiModel?.reasoning}
                             thinkingLevelMap={selectedPiModel?.thinkingLevelMap}
+                            controlsDisabled={controlsDisabled}
+                            onSelect={(level) => handleEffortChange(level)}
+                            onClose={closeAllPanels}
+                        />
+                    </div>
+                )
+            }
+
+            if (panels.length > 0) return <>{panels}</>
+        }
+
+        // OMP flavor: same floating-panel layout as Pi, but using OMP panels
+        // (efforts array instead of thinkingLevelMap).
+        if (agentFlavor === 'omp') {
+            const panels: React.ReactNode[] = []
+
+            // Model selection panel
+            if (showOmpModelPanel && ompModels && ompModels.length > 0) {
+                const currentOmpModel = selectedOmpModel ?? null
+                panels.push(
+                    <div key="model" className="absolute bottom-[100%] mb-2 left-2 w-64">
+                        <OmpModelPanel
+                            models={ompModels}
+                            currentModel={currentOmpModel ? { provider: currentOmpModel.provider, modelId: currentOmpModel.modelId } : null}
+                            controlsDisabled={controlsDisabled}
+                            onSelect={(ompModel) => {
+                                handleModelChange({ provider: ompModel.provider, modelId: ompModel.modelId })
+                            }}
+                            onClose={closeAllPanels}
+                        />
+                    </div>
+                )
+            }
+
+            // Thinking level panel
+            if (showOmpThinkingPanel && selectedOmpModel?.reasoning !== false) {
+                panels.push(
+                    <div key="thinking" className="absolute bottom-[100%] mb-2 left-2 w-48">
+                        <OmpThinkingLevelPanel
+                            currentLevel={effort}
+                            reasoning={selectedOmpModel?.reasoning}
+                            efforts={selectedOmpModel?.efforts}
                             controlsDisabled={controlsDisabled}
                             onSelect={(level) => handleEffortChange(level)}
                             onClose={closeAllPanels}
@@ -1130,9 +1258,13 @@ export function HappyComposer(props: {
         showSettings,
         showPiModelPanel,
         showPiThinkingPanel,
+        showOmpModelPanel,
+        showOmpThinkingPanel,
         agentFlavor,
         piModels,
         selectedPiModel,
+        ompModels,
+        selectedOmpModel,
         closeAllPanels,
         showCollaborationSettings,
         showPermissionSettings,
@@ -1271,14 +1403,18 @@ export function HappyComposer(props: {
                             onSchedule={setPendingSchedule}
                             onClearSchedule={isControlled ? onClearScheduleProp : () => setPendingScheduleLocal(null)}
                             hasAttachments={hasAttachments}
-                            piModelLabel={piModelLabel}
-                            piModelDisabled={controlsDisabled || !piHasModels}
-                            piModelOpen={showPiModelPanel}
-                            onPiModelToggle={handlePiModelToggle}
-                            piThinkingLabel={piThinkingLabel}
-                            piThinkingDisabled={controlsDisabled || !piHasModels || !selectedPiModel || selectedPiModel.reasoning === false}
-                            piThinkingOpen={showPiThinkingPanel}
-                            onPiThinkingToggle={handlePiThinkingToggle}
+                            piModelLabel={piModelLabel ?? ompModelLabel}
+                            piModelDisabled={controlsDisabled || (!piHasModels && !ompHasModels)}
+                            piModelOpen={showPiModelPanel || showOmpModelPanel}
+                            onPiModelToggle={agentFlavor === 'omp' ? handleOmpModelToggle : handlePiModelToggle}
+                            piThinkingLabel={piThinkingLabel ?? ompThinkingLabel}
+                            piThinkingDisabled={
+                                controlsDisabled
+                                || agentFlavor === 'pi' && (!piHasModels || !selectedPiModel || selectedPiModel.reasoning === false)
+                                || agentFlavor === 'omp' && (!ompHasModels || !selectedOmpModel || selectedOmpModel.reasoning === false)
+                            }
+                            piThinkingOpen={showPiThinkingPanel || showOmpThinkingPanel}
+                            onPiThinkingToggle={agentFlavor === 'omp' ? handleOmpThinkingToggle : handlePiThinkingToggle}
                             scratchlistMode={props.scratchlistMode}
                             scratchlistCount={props.scratchlistCount}
                             onScratchlistToggle={props.onScratchlistToggle}

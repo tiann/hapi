@@ -48,6 +48,10 @@ export const MetadataSchema = z.object({
     cursorMigrationState: z.enum(['in_progress', 'ambiguous']).optional(),
     kimiSessionId: z.string().optional(),
     piSessionId: z.string().optional(),
+    // OMP session resume token — `get_state` returns sessionId/sessionFile.
+    // `--continue` restores the most-recent session in the cwd-derived dir.
+    ompSessionId: z.string().optional(),
+    ompSessionFile: z.string().optional(),
     tools: z.array(z.string()).optional(),
     slashCommands: z.array(z.string()).optional(),
     homeDir: z.string().optional(),
@@ -73,7 +77,12 @@ export const MetadataSchema = z.object({
     // field stores only modelId (shared across all flavors); this preserves
     // the provider so web can resolve the exact model when two providers
     // share a modelId.
-    piSelectedModel: z.object({ provider: z.string(), modelId: z.string() }).nullable().optional()
+    piSelectedModel: z.object({ provider: z.string(), modelId: z.string() }).nullable().optional(),
+    // Cached OMP model list — written by CLI, read by web (inactive session fallback).
+    // Minimal shape: each entry must have modelId; other fields pass through.
+    ompAvailableModels: z.array(z.object({ modelId: z.string() }).passthrough()).optional(),
+    // OMP-selected model with provider identity (same rationale as piSelectedModel).
+    ompSelectedModel: z.object({ provider: z.string(), modelId: z.string() }).nullable().optional()
 })
 
 export type Metadata = z.infer<typeof MetadataSchema>
