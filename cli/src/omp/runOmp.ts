@@ -64,14 +64,14 @@ export async function runOmp(opts: {
         model: opts.model,
     });
 
-    // OMP resume: `--continue` restores the most-recent session in the
-    // cwd-derived session dir (SessionManager.continueRecent). OMP has no
-    // `--session-id` rpc flag (unlike Pi); precise resume is via the
-    // switch_session RPC at runtime, keyed off ompSessionFile metadata.
+    // OMP resume: OMP has no `--session-id` rpc flag (unlike Pi). `--continue`
+    // restores the most-recent session in the cwd-derived dir, which is wrong
+    // when a directory holds more than one OMP session. Instead, start a fresh
+    // rpc session and switch_session to the exact ompSessionFile (the hub
+    // resolves resumeSessionId to ompSessionFile). OMP's switch_session is
+    // idempotent on the same file, so a no-op switch on the already-current
+    // session is harmless.
     const transportArgs = defaultOmpArgs();
-    if (opts.resumeSessionId) {
-        transportArgs.push('--continue');
-    }
     const transport = new OmpTransport({
         command: resolveOmpCommand(),
         args: transportArgs,
@@ -164,6 +164,15 @@ export async function runOmp(opts: {
         const config = parsed.data;
         logger.debug(`[omp] SetSessionConfig received: ${JSON.stringify(config)}`);
 
+        // OMP rpc mode fixes --approval-mode=yolo at spawn; the only permission
+        // mode offered is 'yolo'. Validate any incoming permissionMode so the
+        // hub's applySessionConfig sees it applied (otherwise it rejects with
+        // "Session did not apply permissionMode" when the web posts /permission-mode).
+        if (config.permissionMode !== undefined && config.permissionMode !== 'yolo') {
+            throw new Error(`Unsupported permission mode for OMP: ${String(config.permissionMode)}`);
+        }
+        const appliedPermissionMode = config.permissionMode === 'yolo' ? 'yolo' as const : undefined;
+
         let requestedModel: { modelId: string | null; provider: string | null } | undefined;
         if (config.model !== undefined) {
             const modelValue = config.model;
@@ -234,6 +243,7 @@ export async function runOmp(opts: {
 
         return {
             applied: {
+                ...(appliedPermissionMode ? { permissionMode: appliedPermissionMode } : {}),
                 model: appliedModel,
                 effort: ompSession.currentThinkingLevel,
             },
@@ -462,10 +472,24 @@ export async function runOmp(opts: {
         // timeout or process exit before ready.
         await transport.ready();
 
-        // On resume, `--continue` already restored the most-recent session in
-        // the cwd-derived dir — sending new_session here would discard that
-        // context and start fresh. Only create a new session on a fresh launch.
-        if (!opts.resumeSessionId) {
+        // On a fresh launch, create a new OMP session. On resume, switch_session
+        // to the exact ompSessionFile (resolved by the hub from ompSessionFile
+        // metadata) instead of relying on `--continue`'s most-recent heuristic,
+        // which attaches the wrong conversation when a cwd has multiple sessions.
+        if (opts.resumeSessionId) {
+            try {
+                const result = await sendOmpRpcAndWait(ompSession, transport, {
+                    type: 'switch_session',
+                    sessionPath: opts.resumeSessionId,
+                }) as { cancelled?: boolean } | null;
+                if (result?.cancelled) {
+                    logger.debug(`[omp] switch_session cancelled by extension for ${opts.resumeSessionId}`);
+                }
+            } catch (error) {
+                logger.debug(`[omp] switch_session failed, falling back to fresh session: ${error instanceof Error ? error.message : String(error)}`);
+                transport.send({ type: 'new_session' });
+            }
+        } else {
             transport.send({ type: 'new_session' });
         }
         transport.send({ type: 'get_state' });
