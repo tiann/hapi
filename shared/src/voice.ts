@@ -95,6 +95,17 @@ no ${name} equivalent.`
 /** ElevenLabs first message — language controlled by ElevenLabs language field */
 export const VOICE_FIRST_MESSAGE = "Hey! Hapi here — what can I help you with?"
 
+/** Appended to ElevenLabs ConvAI agent prompt; filled via startSession dynamicVariables. */
+export const VOICE_ELEVENLABS_SESSION_CONTEXT_BLOCK = `
+
+# Active session at connect
+
+The user connected from a live coding session. Snapshot at connect (may be empty if unavailable):
+
+{{initialConversationContext}}
+
+Use this plus any later context updates when briefing or routing.`
+
 export const VOICE_TOOLS = [
     {
         type: 'client' as const,
@@ -191,7 +202,7 @@ export function buildVoiceAgentConfig(): VoiceAgentConfig {
                 first_message: VOICE_FIRST_MESSAGE,
                 language: 'en',
                 prompt: {
-                    prompt: VOICE_SYSTEM_PROMPT,
+                    prompt: VOICE_SYSTEM_PROMPT + VOICE_ELEVENLABS_SESSION_CONTEXT_BLOCK,
                     llm: 'gemini-2.5-flash',
                     temperature: 0.7,
                     max_tokens: 1024,

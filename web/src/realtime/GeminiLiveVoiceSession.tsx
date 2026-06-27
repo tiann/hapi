@@ -13,7 +13,7 @@ import {
     truncatePromptForProxy
 } from '@/lib/voicePersonalitySession'
 import { loadVoicePersonalityFromStorage } from '@/hooks/useVoicePersonality'
-import { isVoiceProactiveSummaryEnabled, streamDeferredVoiceContext } from '@/lib/voiceContextStream'
+import { deliverVoiceSessionContextAfterConnect, isVoiceProactiveSummaryEnabled } from '@/lib/voiceContextStream'
 import { readStoredVoiceSelection } from '@/lib/voicePickerPreferences'
 import type { VoiceSession, VoiceSessionConfig, StatusCallback } from './types'
 import type { ApiClient } from '@/api/client'
@@ -200,24 +200,19 @@ class GeminiLiveVoiceSessionImpl implements VoiceSession {
                     }
                     state.statusCallback?.('connected')
 
-                    await streamDeferredVoiceContext(
-                        (chunk) => sendClientContent(`[Context] ${chunk}`, false),
-                        config.streamContextChunks ?? []
-                    )
+                    await deliverVoiceSessionContextAfterConnect({
+                        streamContextChunks: config.streamContextChunks,
+                        initialContext: config.initialContext,
+                        sendChunk: (chunk) => sendClientContent(`[Context] ${chunk}`, false)
+                    })
 
                     const proactive = isVoiceProactiveSummaryEnabled()
                     if (proactive) {
-                        if (config.initialContext?.trim()) {
-                            sendClientContent(`[Context] ${config.initialContext}`, false)
-                        }
                         sendClientContent(
                             '[Summarize] Based on all session context above, give the user a brief spoken summary of what the coding agent has been doing, then wait.',
                             true
                         )
                     } else {
-                        if (config.initialContext?.trim()) {
-                            sendClientContent(`[Context] ${config.initialContext}`, false)
-                        }
                         sendClientContent(
                             '[Greet the user. Say a brief hello and invite them to speak. Do not mention Gemini or any model name.]',
                             true

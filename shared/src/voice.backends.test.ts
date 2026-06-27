@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
+    buildVoiceAgentConfig,
     listConfiguredTranscriptionProviders,
     listConfiguredVoiceBackends,
     resolveEffectiveVoiceBackend,
@@ -39,6 +40,13 @@ describe('listConfiguredVoiceBackends', () => {
 
     test('falls back to elevenlabs when no keys configured', () => {
         expect(listConfiguredVoiceBackends({})).toEqual(['elevenlabs'])
+    })
+})
+
+describe('buildVoiceAgentConfig', () => {
+    test('includes ElevenLabs session context placeholder for dynamicVariables', () => {
+        const prompt = buildVoiceAgentConfig().conversation_config.agent.prompt.prompt
+        expect(prompt).toContain('{{initialConversationContext}}')
     })
 })
 
