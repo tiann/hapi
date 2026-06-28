@@ -92,6 +92,31 @@ describe('buildCliArgs', () => {
         expect(args).not.toContain('--service-tier')
     })
 
+    it('passes existing Hapi session id separately from Codex resume thread', () => {
+        const args = buildCliArgs('codex', {
+            directory: '/tmp',
+            resumeSessionId: 'codex-thread-1',
+            existingSessionId: 'hapi-session-1',
+            model: 'gpt-5.5',
+            modelReasoningEffort: 'low',
+        })
+        expect(args).toEqual([
+            'codex',
+            'resume',
+            'codex-thread-1',
+            '--hapi-starting-mode',
+            'remote',
+            '--started-by',
+            'runner',
+            '--existing-session-id',
+            'hapi-session-1',
+            '--model',
+            'gpt-5.5',
+            '--model-reasoning-effort',
+            'low',
+        ])
+    })
+
     it('validates all known permission modes', () => {
         for (const mode of ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan', 'ask', 'debug', 'autoReview', 'read-only', 'safe-yolo', 'yolo']) {
             const args = buildCliArgs('claude', {

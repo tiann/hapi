@@ -7,6 +7,7 @@ import type {
     CodexDesktopScriptResponse,
     CodexDesktopSyncRequest,
     CodexDesktopStatusResponse,
+    CodexArchiveSessionResponse,
     CodexCollaborationMode,
     FileSearchResponse,
     MachinesResponse,
@@ -211,8 +212,16 @@ export class ApiClient {
         })
     }
 
-    async getCodexSessions(): Promise<CodexLocalSessionsResponse> {
-        return await this.request<CodexLocalSessionsResponse>('/api/codex/sessions')
+    async getCodexSessions(cwd?: string | null): Promise<CodexLocalSessionsResponse> {
+        const query = cwd?.trim() ? `?cwd=${encodeURIComponent(cwd.trim())}` : ''
+        return await this.request<CodexLocalSessionsResponse>(`/api/codex/sessions${query}`)
+    }
+
+    async archiveCodexSession(sessionId: string, machineId?: string | null): Promise<CodexArchiveSessionResponse> {
+        return await this.request<CodexArchiveSessionResponse>('/api/codex/archive-session', {
+            method: 'POST',
+            body: JSON.stringify({ sessionId, machineId: machineId ?? undefined })
+        })
     }
 
     async getCodexDesktopStatus(): Promise<CodexDesktopStatusResponse> {

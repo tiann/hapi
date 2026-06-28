@@ -1,4 +1,5 @@
 import { useId, useMemo, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import type { Session } from '@/types/api'
 import type { ApiClient } from '@/api/client'
 import { isTelegramApp } from '@/hooks/useTelegram'
@@ -14,6 +15,9 @@ import { useTranslation } from '@/lib/use-translation'
 import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
 import { isFastServiceTier } from '@/components/AssistantChat/codexFastMode'
 import { getSessionTitle } from '@/lib/sessionTitle'
+import { useToast } from '@/lib/toast-context'
+import { queryKeys } from '@/lib/query-keys'
+import { markCodexSessionsImported } from '@/lib/codexImportedSessions'
 
 function FilesIcon(props: { className?: string }) {
     return (
@@ -98,6 +102,8 @@ export function SessionHeader(props: {
     onSessionReopened?: (newSessionId: string) => void
 }) {
     const { t } = useTranslation()
+    const queryClient = useQueryClient()
+    const { addToast } = useToast()
     const { session, api, onSessionDeleted, onSessionReopened } = props
     const title = useMemo(() => getSessionTitle(session), [session])
     const worktreeBranch = session.metadata?.worktree?.branch
@@ -108,6 +114,9 @@ export function SessionHeader(props: {
         : null
     // Match expected Fast badge semantics (#1004): only explicit service tier, no effort/model heuristics.
     const showFastBadge = agentFlavor === 'codex' && isFastServiceTier(session.serviceTier)
+    const codexSessionId = session.metadata?.flavor === 'codex'
+        ? session.metadata.codexSessionId?.trim() || null
+        : null
 
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
@@ -117,6 +126,7 @@ export function SessionHeader(props: {
     const [exportOpen, setExportOpen] = useState(false)
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
+    const [isSyncingCodex, setIsSyncingCodex] = useState(false)
 
     const { archiveSession, reopenSession, renameSession, deleteSession, isPending } = useSessionActions(
         api,
@@ -139,6 +149,47 @@ export function SessionHeader(props: {
             }
         } catch (error) {
             setReopenError(formatReopenError(error))
+        }
+    }
+
+    const handleSyncCodex = async () => {
+        if (!api || !codexSessionId || isSyncingCodex) return
+
+        setIsSyncingCodex(true)
+        try {
+            // 中文注释：手动同步必须携带当前会话归属机器和目录；多台 runner 在线时后端不能靠猜。
+            const result = await api.syncCodexSession({
+                sessionIds: [codexSessionId],
+                cwd: typeof session.metadata?.path === 'string' ? session.metadata.path : undefined,
+                machineId: typeof session.metadata?.machineId === 'string' ? session.metadata.machineId : undefined
+            })
+            if (!result.success) {
+                throw new Error(result.error || t('codexSync.failed.body'))
+            }
+
+            markCodexSessionsImported([codexSessionId])
+            await Promise.all([
+                queryClient.invalidateQueries({ queryKey: queryKeys.session(session.id) }),
+                queryClient.invalidateQueries({ queryKey: queryKeys.messages(session.id) }),
+                queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
+            ])
+            addToast({
+                title: t('codexSync.manual.success.title'),
+                body: (result.syncedCount ?? 1) === 0
+                    ? t('codexSync.manual.success.noNewMessages')
+                    : t('codexSync.manual.success.body', { n: result.syncedCount ?? 1 }),
+                sessionId: session.id,
+                url: `/sessions/${session.id}`
+            })
+        } catch (error) {
+            addToast({
+                title: t('codexSync.manual.failed.title'),
+                body: error instanceof Error ? error.message : t('codexSync.failed.body'),
+                sessionId: session.id,
+                url: `/sessions/${session.id}`
+            })
+        } finally {
+            setIsSyncingCodex(false)
         }
     }
 
@@ -259,6 +310,7 @@ export function SessionHeader(props: {
                 sessionActive={session.active}
                 onRename={() => setRenameOpen(true)}
                 onExport={() => setExportOpen(true)}
+                onSyncCodex={api && codexSessionId ? handleSyncCodex : undefined}
                 onArchive={() => setArchiveOpen(true)}
                 onReopen={props.canReopen === false ? undefined : handleReopen}
                 reopenDisabledReason={props.reopenDisabledReason}

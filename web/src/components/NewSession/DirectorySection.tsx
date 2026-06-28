@@ -4,6 +4,28 @@ import { Autocomplete } from '@/components/ChatInput/Autocomplete'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { useTranslation } from '@/lib/use-translation'
 
+
+function CodexImportIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            {/* 中文注释：导入 Codex 历史依赖当前目录，放在 Browse 后面表达“选目录后导入”。 */}
+            <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+            <path d="M21 3v6h-6" />
+        </svg>
+    )
+}
+
 function FolderIcon(props: { className?: string }) {
     return (
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={props.className}>
@@ -27,6 +49,8 @@ export function DirectorySection(props: {
     onSuggestionSelect: (index: number) => void
     onPathClick: (path: string) => void
     onChooseFolder?: () => void
+    onImportCodexHistory?: () => void
+    isImportingCodexHistory?: boolean
 }) {
     const { t } = useTranslation()
 
@@ -72,6 +96,21 @@ export function DirectorySection(props: {
                         {t('newSession.browse')}
                     </button>
                 )}
+
+                {props.onImportCodexHistory ? (
+                    <button
+                        type="button"
+                        onClick={props.onImportCodexHistory}
+                        disabled={props.isDisabled || props.isImportingCodexHistory}
+                        aria-label={t('codexSync.tooltip')}
+                        aria-busy={props.isImportingCodexHistory}
+                        className="shrink-0 flex items-center gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-2 py-2 text-xs text-[var(--app-fg)] hover:bg-[var(--app-secondary-bg)] transition-colors disabled:opacity-50"
+                        title={t('codexSync.tooltip')}
+                    >
+                        <CodexImportIcon className={`h-3.5 w-3.5 ${props.isImportingCodexHistory ? 'animate-spin' : ''}`} />
+                        {t('codexSync.newSessionAction')}
+                    </button>
+                ) : null}
             </div>
 
             {props.recentPaths.length > 0 && (

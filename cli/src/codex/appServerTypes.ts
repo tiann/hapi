@@ -127,8 +127,33 @@ export interface ThreadResumeParams {
 export interface ThreadResumeResponse {
     thread: {
         id: string;
+        turns?: Array<{ items?: ResponseItem[] }>;
     };
     model: string;
+    [key: string]: unknown;
+}
+
+export interface ThreadForkParams extends Omit<ThreadResumeParams, 'history' | 'path'> {
+}
+
+export interface ThreadForkResponse {
+    thread: {
+        id: string;
+        turns?: Array<{ items?: ResponseItem[] }>;
+    };
+    model?: string;
+    [key: string]: unknown;
+}
+
+export interface ThreadRollbackParams {
+    threadId: string;
+    numTurns: number;
+}
+
+export interface ThreadRollbackResponse {
+    thread?: {
+        id?: string;
+    };
     [key: string]: unknown;
 }
 

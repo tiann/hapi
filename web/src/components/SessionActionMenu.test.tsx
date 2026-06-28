@@ -89,3 +89,41 @@ describe('SessionActionMenu - Reopen action', () => {
         expect(screen.queryByRole('menuitem', { name: /Archive/ })).toBeNull()
     })
 })
+
+describe('SessionActionMenu - Codex sync action', () => {
+    it('renders Sync from Codex only when a handler is provided', () => {
+        const { rerender } = renderMenu({ onSyncCodex: undefined })
+
+        expect(screen.queryByRole('menuitem', { name: /Sync from Codex/ })).toBeNull()
+
+        rerender(
+            <I18nProvider>
+                <SessionActionMenu
+                    isOpen={true}
+                    onClose={vi.fn()}
+                    sessionActive={false}
+                    onRename={vi.fn()}
+                    onExport={vi.fn()}
+                    onSyncCodex={vi.fn()}
+                    onArchive={vi.fn()}
+                    onReopen={vi.fn()}
+                    onDelete={vi.fn()}
+                    anchorPoint={{ x: 0, y: 0 }}
+                />
+            </I18nProvider>
+        )
+
+        expect(screen.getByRole('menuitem', { name: /Sync from Codex/ })).toBeInTheDocument()
+    })
+
+    it('fires onSyncCodex and closes the menu when clicked', () => {
+        const onSyncCodex = vi.fn()
+        const onClose = vi.fn()
+        renderMenu({ onSyncCodex, onClose })
+
+        fireEvent.click(screen.getByRole('menuitem', { name: /Sync from Codex/ }))
+
+        expect(onSyncCodex).toHaveBeenCalledTimes(1)
+        expect(onClose).toHaveBeenCalledTimes(1)
+    })
+})
