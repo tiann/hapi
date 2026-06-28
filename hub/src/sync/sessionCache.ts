@@ -194,7 +194,6 @@ export class SessionCache {
         const wasActive = session.active
         session.active = true
         session.activeAt = Math.max(session.activeAt, t)
-        this.store.sessions.setSessionActive(sessionId, true, session.activeAt, session.namespace)
 
         this.lastBroadcastAtBySessionId.set(session.id, Date.now())
         this.publisher.emit({
@@ -246,7 +245,6 @@ export class SessionCache {
 
         session.active = true
         session.activeAt = Math.max(session.activeAt, t)
-        this.store.sessions.setSessionActive(session.id, true, session.activeAt, session.namespace)
         session.thinking = requestedThinking || preserveQueuedThinking
         session.thinkingAt = t
         if (requestedThinking || pendingThinkingUntil <= hubNow) {

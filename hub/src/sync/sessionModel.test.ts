@@ -715,7 +715,7 @@ describe('session model', () => {
         }
     })
 
-    it('marks a resumed session active in hub cache and store before returning success', async () => {
+    it('marks a resumed session active in hub cache before returning success without persisting runtime active state', async () => {
         const store = new Store(':memory:')
         const events: unknown[] = []
         const engine = new SyncEngine(
@@ -754,7 +754,8 @@ describe('session model', () => {
 
             expect(result).toEqual({ type: 'success', sessionId: session.id })
             expect(engine.getSession(session.id)?.active).toBe(true)
-            expect(store.sessions.getSession(session.id)?.active).toBe(true)
+            // 中文注释：active=true 是运行时状态，不能跨 Hub 重启持久化；否则旧会话会在重启后假在线。
+            expect(store.sessions.getSession(session.id)?.active).toBe(false)
             expect(events.some((event) => {
                 const record = event as { type?: string; sessionId?: string; data?: { active?: boolean } }
                 return record.type === 'session-updated'
