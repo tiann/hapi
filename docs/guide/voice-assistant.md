@@ -109,9 +109,9 @@ Set `ELEVENLABS_API_KEY` in your environment and restart the hub.
 - Ensure no other app is using the microphone
 - Try refreshing the page
 
-### 小米/MIUI 手机上麦克风授权失败
+### Microphone permission fails on Xiaomi/MIUI devices
 
-如果手机语音在小米/MIUI 设备上无法启动，或浏览器提示无法请求麦克风权限，请检查“小米钱包”等应用的「显示在其它应用上」权限。系统悬浮窗、支付/钱包浮层、聊天气泡、录屏、翻译、护眼或游戏助手等覆盖层可能会干扰浏览器的麦克风授权弹窗。关闭相关悬浮窗或覆盖层后，重新打开 HAPI 页面并再次授权麦克风。
+If voice cannot start on a Xiaomi/MIUI device, or the browser cannot request microphone permission, check the "Display over other apps" permission for Xiaomi Wallet and similar apps. Floating windows, payment or wallet overlays, chat bubbles, screen recorders, translation tools, eye-comfort tools, and game assistants may interfere with the browser's microphone permission prompt. Disable active overlays, reopen HAPI, and grant microphone access again.
 
 ### Voice not responding
 
