@@ -53,7 +53,8 @@ export function createQwenProxyWebSocketHandler(
     return {
         open(clientWs) {
             const data = clientWs.data as { apiKey: string; model: string; language?: string; voiceName?: string; systemInstruction?: string }
-            const upstreamUrl = `${process.env.QWEN_REALTIME_WS_URL || QWEN_WS_BASE}?model=${encodeURIComponent(data.model)}`
+            const upstreamBase = process.env.QWEN_REALTIME_WS_URL || QWEN_WS_BASE
+            const upstreamUrl = `${upstreamBase}?model=${encodeURIComponent(data.model)}`
 
             const upstream = new WebSocketImpl(upstreamUrl, {
                 headers: { 'Authorization': `Bearer ${data.apiKey}` }
@@ -106,12 +107,17 @@ export function createQwenProxyWebSocketHandler(
                     }
                 } catch { /* client gone */ }
             }
-            upstream.onerror = () => {
+            upstream.onerror = (event) => {
                 pendingSetupMap.delete(clientWs)
                 setupAckedMap.delete(clientWs)
                 pendingClientFrames.delete(clientWs)
                 pendingClientBytes.delete(clientWs)
                 upstreamMap.delete(clientWs)
+                console.error('[Voice][QwenProxy] Upstream WebSocket error', {
+                    upstreamBase,
+                    model: data.model,
+                    error: event instanceof Error ? event.message : String(event)
+                })
                 try { clientWs.close(1011, 'Upstream error') } catch { /* */ }
             }
             upstream.onclose = (event) => {
@@ -119,6 +125,14 @@ export function createQwenProxyWebSocketHandler(
                 setupAckedMap.delete(clientWs)
                 pendingClientFrames.delete(clientWs)
                 pendingClientBytes.delete(clientWs)
+                if (event.code !== 1000) {
+                    console.warn('[Voice][QwenProxy] Upstream WebSocket closed', {
+                        upstreamBase,
+                        model: data.model,
+                        code: event.code,
+                        reason: event.reason
+                    })
+                }
                 try { clientWs.close(toClientCloseCode(event.code), event.reason || 'Upstream closed') } catch { /* */ }
                 upstreamMap.delete(clientWs)
             }
