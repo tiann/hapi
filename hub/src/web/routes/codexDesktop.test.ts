@@ -981,9 +981,10 @@ describe('Codex Desktop import routes', () => {
             const app = createRoutesApp('default')
             const response = await app.request('/api/codex/sessions')
 
-            expect(response.status).toBe(200)
+            expect(response.status).toBe(503)
             expect(await response.json()).toEqual({
-                success: true,
+                success: false,
+                error: 'No online machine available for Codex history import',
                 sessions: []
             })
         } finally {
