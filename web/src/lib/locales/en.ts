@@ -158,6 +158,7 @@ export default {
   'session.action.reopen': 'Reopen',
   'session.action.delete': 'Delete',
   'session.action.copy': 'Copy',
+  'session.action.copyReference': 'Copy reference',
 
   // Dialogs
   'dialog.uri.title': 'Open this link?',
