@@ -220,6 +220,108 @@ export type CodexMergeDuplicateSessionsResponse = {
     error: string
 }
 
+export type ClaudeImportScriptResponse = {
+    success: boolean
+    message?: string
+    cwd?: string
+    error?: string
+    // 中文注释：多选导入时返回实际处理完成的 Claude 会话数量，用于前端提示本次导入条数。
+    syncedCount?: number
+    // 中文注释：这里存放本次导入对应的 Claude session ID 列表，方便日志和排查 direct import 结果。
+    sessionIds?: string[]
+}
+
+export type ClaudeLocalSessionSummary = {
+    id: string
+    title: string
+    lastUserMessage?: string | null
+    cwd?: string | null
+    file: string
+    modifiedAt: number
+    originator?: string | null
+    cliVersion?: string | null
+}
+
+export type ClaudeLocalSessionsResponse = {
+    success: true
+    sessions: ClaudeLocalSessionSummary[]
+}
+
+export type ClaudeImportSyncRequest = {
+    // 中文注释：前端弹窗直接提交 Claude session ID，后端会按这些 transcript 直接导入到 Hapi。
+    sessionIds: string[]
+}
+
+export type ClaudeStatusResponse = {
+    success: true
+    claudeProjectsAvailable: boolean
+}
+
+export type AgentImportFlavor = 'codex' | 'cursor' | 'claude'
+
+export type CursorImportSourceFormat = 'legacy' | 'acp'
+
+export type CursorImportRefusalReason =
+    | 'verify_load_failed'
+    | 'missing_on_disk_store'
+    | 'target_already_exists'
+    | 'already_imported'
+    | 'agent_binary_not_found'
+    | 'verify_timeout'
+    | 'corrupted_store'
+    | 'ambiguous_legacy_store'
+    | 'internal_error'
+
+export type CursorImportableSessionSummary = {
+    id: string
+    title: string
+    firstUserMessage?: string | null
+    workspacePath?: string | null
+    storeDbPath: string
+    sourceFormat: CursorImportSourceFormat
+    modifiedAt: number
+    sizeBytes: number
+    alreadyImportedHapiSessionId?: string | null
+}
+
+export type CursorImportableSessionsResponse = {
+    success: true
+    sessions: CursorImportableSessionSummary[]
+} | {
+    success: false
+    error: string
+}
+
+export type CursorImportRowOutcome =
+    | {
+        ok: true
+        uuid: string
+        hapiSessionId: string
+        sourceFormat: CursorImportSourceFormat
+        durationMs: number
+    }
+    | {
+        ok: false
+        uuid: string
+        reason: CursorImportRefusalReason
+        message: string
+        durationMs: number
+    }
+
+export type CursorImportRequest = {
+    uuids: string[]
+    workspacePath?: string | null
+}
+
+export type CursorImportResponse = {
+    success: true
+    results: CursorImportRowOutcome[]
+    importedCount: number
+} | {
+    success: false
+    error: string
+}
+
 export type VisibilityPayload = {
     subscriptionId: string
     visibility: 'visible' | 'hidden'

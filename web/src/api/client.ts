@@ -8,6 +8,13 @@ import type {
     CodexDesktopSyncRequest,
     CodexDesktopStatusResponse,
     CodexCollaborationMode,
+    ClaudeLocalSessionsResponse,
+    ClaudeImportScriptResponse,
+    ClaudeImportSyncRequest,
+    ClaudeStatusResponse,
+    CursorImportableSessionsResponse,
+    CursorImportRequest,
+    CursorImportResponse,
     FileSearchResponse,
     MachinesResponse,
     MessagesResponse,
@@ -234,6 +241,33 @@ export class ApiClient {
     async restartCodexDesktop(): Promise<CodexDesktopScriptResponse> {
         return await this.request<CodexDesktopScriptResponse>('/api/codex/restart-desktop', {
             method: 'POST'
+        })
+    }
+
+    async syncClaudeSession(payload?: ClaudeImportSyncRequest): Promise<ClaudeImportScriptResponse> {
+        // 中文注释：提交本地 transcript 对应的 Claude session ID 列表，后端按这些会话直接导入到 Hapi。
+        return await this.request<ClaudeImportScriptResponse>('/api/claude/sync-session', {
+            method: 'POST',
+            ...(payload ? { body: JSON.stringify(payload) } : {})
+        })
+    }
+
+    async getClaudeSessions(): Promise<ClaudeLocalSessionsResponse> {
+        return await this.request<ClaudeLocalSessionsResponse>('/api/claude/sessions')
+    }
+
+    async getClaudeStatus(): Promise<ClaudeStatusResponse> {
+        return await this.request<ClaudeStatusResponse>('/api/claude/status')
+    }
+
+    async getCursorImportableSessions(): Promise<CursorImportableSessionsResponse> {
+        return await this.request<CursorImportableSessionsResponse>('/api/cursor/importable-sessions')
+    }
+
+    async importCursorSessions(payload: CursorImportRequest): Promise<CursorImportResponse> {
+        return await this.request<CursorImportResponse>('/api/cursor/import', {
+            method: 'POST',
+            body: JSON.stringify(payload)
         })
     }
 
