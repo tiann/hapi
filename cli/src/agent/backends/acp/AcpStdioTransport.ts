@@ -3,6 +3,7 @@ import { logger } from '@/ui/logger';
 import { killProcessByChildProcess } from '@/utils/process';
 import { GEMINI_MODEL_PRESETS } from '@hapi/protocol';
 import { registerActiveAcpTransport, unregisterActiveAcpTransport } from './agentCliGuard';
+import { matchesAcpHttp2Cancel, matchesAcpRetryBackoff } from './acpStderrErrors';
 
 interface JsonRpcRequest {
     jsonrpc: '2.0';
@@ -386,6 +387,24 @@ export class AcpStdioTransport {
             this.stderrErrorHandler({
                 type: 'quota_exceeded',
                 message: 'API quota exceeded. Please check your billing or wait for quota reset.',
+                raw: text
+            });
+            return;
+        }
+
+        if (matchesAcpRetryBackoff(text)) {
+            this.stderrErrorHandler({
+                type: 'unknown',
+                message: 'The ACP agent is retrying after an upstream failure. The turn may be stalled.',
+                raw: text
+            });
+            return;
+        }
+
+        if (matchesAcpHttp2Cancel(text)) {
+            this.stderrErrorHandler({
+                type: 'unknown',
+                message: 'Upstream request was cancelled. The agent may be retrying or stalled.',
                 raw: text
             });
             return;
