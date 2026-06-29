@@ -1,4 +1,4 @@
-import { AgentStateSchema, MetadataSchema, TeamStateSchema } from '@hapi/protocol/schemas'
+import { AgentStateSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
 import type { CodexCollaborationMode, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
 import type { Store } from '../store'
 import { clampAliveTime } from './aliveTime'
@@ -168,6 +168,89 @@ export class SessionCache {
         for (const session of sessions) {
             this.refreshSession(session.id)
         }
+    }
+
+    /**
+     * Apply a structured patch to the cached Session in place.
+     *
+     * Returns `true` if the patch parsed, carried at least one field, and a
+     * Session was present to update. Returns `false` when:
+     *   - the patch data fails SessionPatchSchema (caller falls back to
+     *     refreshSession),
+     *   - the patch is the empty object `{}` — the web client's
+     *     `getSessionPatch` rejects empty payloads and would fall through to
+     *     REST invalidation, so we route empty events through the legacy
+     *     refresh path instead (caller falls back to refreshSession),
+     *   - the session is not in the cache (caller falls back to refreshSession
+     *     so the DB read can hydrate it),
+     *   - the patch's namespace hint disagrees with the cached session
+     *     namespace (cross-namespace event, caller skips).
+     *
+     * Companion to syncEngine.handleRealtimeEvent. Closes the second half of
+     * #884 by giving the four no-data emit-sites in cli/sessionHandlers.ts a
+     * way to propagate their delta straight through to SSE without a DB
+     * re-read or full-Session broadcast.
+     */
+    applySessionPatch(sessionId: string, data: unknown, namespace?: string): boolean {
+        const parsed = SessionPatchSchema.safeParse(data)
+        if (!parsed.success) {
+            return false
+        }
+
+        // Empty patch ({}): forward would hit the web-side fallback that
+        // triggers a REST refetch. Let the caller fall back to refreshSession
+        // so the existing full-Session broadcast path keeps the cache
+        // coherent.
+        if (Object.keys(parsed.data).length === 0) {
+            return false
+        }
+
+        const session = this.sessions.get(sessionId)
+        if (!session) {
+            return false
+        }
+
+        if (namespace && session.namespace !== namespace) {
+            return false
+        }
+
+        const patch = parsed.data
+
+        if (patch.active !== undefined) session.active = patch.active
+        if (patch.thinking !== undefined) session.thinking = patch.thinking
+        if (patch.activeAt !== undefined) session.activeAt = patch.activeAt
+        if (patch.updatedAt !== undefined) session.updatedAt = Math.max(session.updatedAt, patch.updatedAt)
+        if (patch.model !== undefined) session.model = patch.model
+        if (patch.modelReasoningEffort !== undefined) session.modelReasoningEffort = patch.modelReasoningEffort
+        if (patch.effort !== undefined) session.effort = patch.effort
+        if (Object.prototype.hasOwnProperty.call(patch, 'serviceTier')) {
+            session.serviceTier = patch.serviceTier ?? null
+        }
+        if (patch.permissionMode !== undefined) session.permissionMode = patch.permissionMode
+        if (patch.collaborationMode !== undefined) session.collaborationMode = patch.collaborationMode
+        if (patch.backgroundTaskCount !== undefined) session.backgroundTaskCount = patch.backgroundTaskCount
+        if (patch.todos !== undefined) session.todos = patch.todos
+        // teamState uses `null` on the wire as the explicit clear signal
+        // (TeamDelete events); `undefined` means "field absent, don't
+        // touch". Use hasOwnProperty to discriminate, then map null →
+        // undefined to match the cached Session.teamState type
+        // (TeamState | undefined). Without this, a TeamDelete leaves the
+        // hub cache holding the stale pre-delete TeamState even though
+        // the DB row was cleared — sidebar / NotificationHub / dedup all
+        // serve stale data until the next full refresh.
+        if (Object.prototype.hasOwnProperty.call(patch, 'teamState')) {
+            session.teamState = patch.teamState ?? undefined
+        }
+        if (patch.metadata !== undefined) {
+            session.metadata = patch.metadata.value
+            session.metadataVersion = patch.metadata.version
+        }
+        if (patch.agentState !== undefined) {
+            session.agentState = patch.agentState.value
+            session.agentStateVersion = patch.agentState.version
+        }
+
+        return true
     }
 
     handleSessionAlive(payload: {

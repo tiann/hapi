@@ -231,11 +231,41 @@ export const SessionSchema = z.object({
 
 export type Session = z.infer<typeof SessionSchema>
 
+// Versioned wrappers mirror the socket.io `update-session` broadcast shape so
+// metadata/agentState always travel as an atomic (version, value) pair — the
+// version is the only safe way for downstream caches to reject stale patches.
+const VersionedMetadataPatchSchema = z.object({
+    version: z.number(),
+    value: MetadataSchema.nullable()
+})
+
+const VersionedAgentStatePatchSchema = z.object({
+    version: z.number(),
+    value: AgentStateSchema.nullable()
+})
+
 export const SessionPatchSchema = z.object({
     active: z.boolean().optional(),
     thinking: z.boolean().optional(),
     activeAt: z.number().optional(),
     updatedAt: z.number().optional(),
+    // Structured-patch fields for the second half of #884. Letting the four
+    // hub-side emit-sites in cli/sessionHandlers.ts (todos, teamState,
+    // metadata, agentState writes) carry their delta means the web client's
+    // SSE handler can patch the cache in place instead of falling through to
+    // the invalidation fallback that triggers per-session REST refetches.
+    // Versioned wrappers for metadata/agentState mirror the socket.io
+    // `update-session` broadcast shape — the version field is the only safe
+    // way for downstream caches to reject stale patches.
+    metadata: VersionedMetadataPatchSchema.optional(),
+    agentState: VersionedAgentStatePatchSchema.optional(),
+    todos: TodosSchema.optional(),
+    // `null` is the clear signal (TeamDelete events drive
+    // applyTeamStateDelta to return null, which `setSessionTeamState`
+    // persists as a cleared row). The patch must distinguish "field
+    // absent" (don't touch teamState) from "field is null" (clear it);
+    // consumers use hasOwnProperty for the discriminator.
+    teamState: TeamStateSchema.nullable().optional(),
     model: z.string().nullable().optional(),
     modelReasoningEffort: z.string().nullable().optional(),
     effort: z.string().nullable().optional(),
