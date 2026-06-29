@@ -41,6 +41,14 @@ interface ListMachineDirectoryRequest {
     path: string
 }
 
+export function normalizeWindowsDriveRoot(path: string): string {
+    return /^[A-Za-z]:$/.test(path) ? `${path}\\` : path
+}
+
+function canonicalRealpathSync(path: string): string {
+    return normalizeWindowsDriveRoot(realpathSync.native(path))
+}
+
 function normalizeWorkspaceRoots(paths?: string[]): string[] | undefined {
     if (!paths?.length) {
         return undefined
@@ -48,9 +56,9 @@ function normalizeWorkspaceRoots(paths?: string[]): string[] | undefined {
 
     const normalized = Array.from(new Set(paths.map((path) => {
         try {
-            return realpathSync(path)
+            return canonicalRealpathSync(path)
         } catch {
-            return resolvePath(path)
+            return normalizeWindowsDriveRoot(resolvePath(path))
         }
     })))
 
@@ -232,7 +240,7 @@ export class ApiMachineClient {
     private async resolveForWorkspaceCheck(path: string): Promise<string> {
         const absolute = resolvePath(path)
         try {
-            return await realpath(absolute)
+            return normalizeWindowsDriveRoot(await realpath(absolute))
         } catch {
             const missing: string[] = []
             let cursor = absolute
@@ -240,12 +248,12 @@ export class ApiMachineClient {
                 missing.unshift(basename(cursor))
                 cursor = dirname(cursor)
                 try {
-                    return join(await realpath(cursor), ...missing)
+                    return join(normalizeWindowsDriveRoot(await realpath(cursor)), ...missing)
                 } catch {
                     // keep walking to the nearest existing parent
                 }
             }
-            return absolute
+            return normalizeWindowsDriveRoot(absolute)
         }
     }
 
