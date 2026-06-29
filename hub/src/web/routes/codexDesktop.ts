@@ -69,6 +69,11 @@ type CodexLocalSessionsResponse = {
     success: true
     sessions: CodexLocalSessionSummary[]
     machineId?: string
+} | {
+    success: false
+    error: string
+    sessions: []
+    machineId?: string
 }
 
 type CodexImportedMessageContent = {
@@ -1967,11 +1972,21 @@ export function createCodexDesktopRoutes(options: {
 
     app.get('/codex/sessions', async (c) => {
         const cwd = c.req.query('cwd')?.trim() || null
+        const machineId = c.req.query('machineId')?.trim() || null
         const remote = await listCodexSessionsViaMachine({
             engine: options.getSyncEngine(),
             namespace: c.get('namespace'),
-            cwd
+            cwd,
+            machineId
         })
+        if (remote.error) {
+            return c.json({
+                success: false,
+                error: remote.error,
+                sessions: [],
+                ...(remote.machineId ? { machineId: remote.machineId } : {})
+            } satisfies CodexLocalSessionsResponse, 503)
+        }
         return c.json({
             success: true,
             sessions: remote.sessions.map(({ messages: _messages, ...summary }) => summary),

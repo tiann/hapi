@@ -212,8 +212,11 @@ export class ApiClient {
         })
     }
 
-    async getCodexSessions(cwd?: string | null): Promise<CodexLocalSessionsResponse> {
-        const query = cwd?.trim() ? `?cwd=${encodeURIComponent(cwd.trim())}` : ''
+    async getCodexSessions(cwd?: string | null, machineId?: string | null): Promise<CodexLocalSessionsResponse> {
+        const params = new URLSearchParams()
+        if (cwd?.trim()) params.set('cwd', cwd.trim())
+        if (machineId?.trim()) params.set('machineId', machineId.trim())
+        const query = params.size ? `?${params.toString()}` : ''
         return await this.request<CodexLocalSessionsResponse>(`/api/codex/sessions${query}`)
     }
 

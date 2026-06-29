@@ -540,7 +540,7 @@ export function NewSession(props: {
         setIsLoadingCodexImportSessions(true)
         setCodexImportError(null)
         try {
-            const result = await props.api.getCodexSessions(trimmedDirectory || null)
+            const result = await props.api.getCodexSessions(trimmedDirectory || null, machineId)
             setCodexImportSessions(result.sessions)
             setCodexImportMachineId(result.machineId ?? machineId)
             setSelectedCodexImportSessionId((current) => current && result.sessions.some((session) => session.id === current) ? current : null)
