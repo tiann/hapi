@@ -8,6 +8,18 @@ export interface ListCodexModelsRequest {
 
 export type ListCodexModelsResponse = CodexModelsResponse;
 
+const CODEX_MODEL_CACHE_TTL_MS = 300_000;
+
+type CodexModelCache = { models: CodexModelSummary[]; expiry: number };
+
+let codexModelCache: CodexModelCache | null = null;
+let hiddenCodexModelCache: CodexModelCache | null = null;
+
+export function clearCodexModelCache(): void {
+    codexModelCache = null;
+    hiddenCodexModelCache = null;
+}
+
 function asNonEmptyString(value: unknown): string | null {
     return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
 }
@@ -79,7 +91,18 @@ function normalizeModel(entry: unknown): CodexModelSummary | null {
     };
 }
 
+function createCodexModelListError(error: unknown): Error {
+    const message = getErrorMessage(error, 'Failed to list Codex models');
+    return new Error(`Failed to list Codex models: ${message}`, { cause: error });
+}
+
 export async function listCodexModels(includeHidden: boolean = false): Promise<CodexModelSummary[]> {
+    const now = Date.now();
+    const cache = includeHidden ? hiddenCodexModelCache : codexModelCache;
+    if (cache && cache.expiry > now) {
+        return cache.models;
+    }
+
     const client = new CodexAppServerClient();
 
     try {
@@ -99,9 +122,19 @@ export async function listCodexModels(includeHidden: boolean = false): Promise<C
             ? response.data.map(normalizeModel).filter((model): model is CodexModelSummary => model !== null)
             : [];
 
+        const nextCache = {
+            models,
+            expiry: Date.now() + CODEX_MODEL_CACHE_TTL_MS
+        };
+        if (includeHidden) {
+            hiddenCodexModelCache = nextCache;
+        } else {
+            codexModelCache = nextCache;
+        }
+
         return models;
     } catch (error) {
-        throw new Error(getErrorMessage(error, 'Failed to list Codex models'));
+        throw createCodexModelListError(error);
     } finally {
         await client.disconnect().catch(() => undefined);
     }

@@ -22,7 +22,8 @@ import type { Server } from 'socket.io'
 import type { RpcRegistry } from '../socket/rpcRegistry'
 
 const DEFAULT_RPC_TIMEOUT_MS = 30_000
-const MODEL_LIST_RPC_TIMEOUT_MS = 120_000
+const CODEX_MODEL_LIST_RPC_TIMEOUT_MS = 15_000
+const CURSOR_MODEL_LIST_RPC_TIMEOUT_MS = 120_000
 
 /**
  * tiann/hapi#916: thrown by {@link RpcGateway.rpcCall} when the target CLI is
@@ -259,19 +260,19 @@ export class RpcGateway {
     }
 
     async listCodexModelsForSession(sessionId: string): Promise<RpcListCodexModelsResponse> {
-        return await this.sessionRpc(sessionId, RPC_METHODS.ListCodexModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListCodexModelsResponse
+        return await this.sessionRpc(sessionId, RPC_METHODS.ListCodexModels, {}, CODEX_MODEL_LIST_RPC_TIMEOUT_MS) as RpcListCodexModelsResponse
     }
 
     async listCodexModelsForMachine(machineId: string): Promise<RpcListCodexModelsResponse> {
-        return await this.machineRpc(machineId, RPC_METHODS.ListCodexModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListCodexModelsResponse
+        return await this.machineRpc(machineId, RPC_METHODS.ListCodexModels, {}, CODEX_MODEL_LIST_RPC_TIMEOUT_MS) as RpcListCodexModelsResponse
     }
 
     async listCursorModelsForSession(sessionId: string): Promise<RpcListCursorModelsResponse> {
-        return await this.sessionRpc(sessionId, RPC_METHODS.ListCursorModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListCursorModelsResponse
+        return await this.sessionRpc(sessionId, RPC_METHODS.ListCursorModels, {}, CURSOR_MODEL_LIST_RPC_TIMEOUT_MS) as RpcListCursorModelsResponse
     }
 
     async listCursorModelsForMachine(machineId: string): Promise<RpcListCursorModelsResponse> {
-        return await this.machineRpc(machineId, RPC_METHODS.ListCursorModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListCursorModelsResponse
+        return await this.machineRpc(machineId, RPC_METHODS.ListCursorModels, {}, CURSOR_MODEL_LIST_RPC_TIMEOUT_MS) as RpcListCursorModelsResponse
     }
 
     async listOpencodeModelsForSession(sessionId: string): Promise<RpcListOpencodeModelsResponse> {

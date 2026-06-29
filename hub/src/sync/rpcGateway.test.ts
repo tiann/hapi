@@ -53,12 +53,20 @@ describe('RpcGateway RPC timeouts', () => {
         expect(timeouts).toEqual([30_000])
     })
 
-    it('uses an extended RPC timeout when listing Codex models', async () => {
+    it('uses a short RPC timeout when listing Codex models', async () => {
         const { gateway, timeouts } = createGateway()
 
         await gateway.listCodexModelsForMachine('machine-1')
 
-        expect(timeouts).toEqual([120_000])
+        expect(timeouts).toEqual([15_000])
+    })
+
+    it('uses the default RPC timeout when listing Cursor models', async () => {
+        const { gateway, timeouts } = createGateway()
+
+        await gateway.listCursorModelsForMachine('machine-1')
+
+        expect(timeouts).toEqual([30_000])
     })
 
     it('uses an extended RPC timeout when listing Cursor models for a machine', async () => {
@@ -114,4 +122,3 @@ describe('RpcGateway no-target diagnostics (tiann/hapi#916)', () => {
         expect((error as RpcTargetMissingError).code).toBe('socket-disconnected')
     })
 })
-
