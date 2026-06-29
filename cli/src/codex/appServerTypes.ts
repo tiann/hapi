@@ -139,6 +139,11 @@ export type UserInput =
         type: 'skill';
         name: string;
         path: string;
+    }
+    | {
+        type: 'mention';
+        name: string;
+        path: string;
     };
 
 export type SandboxPolicy =
