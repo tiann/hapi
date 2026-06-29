@@ -1,5 +1,5 @@
 import type { CursorPermissionMode } from '@hapi/protocol/types';
-import { matchCliSkuToAcpWireId } from '@hapi/protocol';
+import { cursorCliSkuBaseId, cursorModelBaseId, matchCliSkuToAcpWireId } from '@hapi/protocol';
 import type { AcpSdkBackend } from '@/agent/backends/acp';
 import { logger } from '@/ui/logger';
 
@@ -71,6 +71,9 @@ export type ApplyCursorAcpModelResult = {
     requestedWireId?: string;
 };
 
+type ConfigOption = NonNullable<ReturnType<AcpSdkBackend['getConfigOptionByCategory']>>;
+type ParameterizedCursorModelResult = ApplyCursorAcpModelResult | 'unsupported' | 'failed';
+
 /** Wire id stored on session + keepalive (preserve explicit variant picks). */
 export function wireIdForCursorSessionState(requested: string, resolved: string): string {
     const trimmed = requested.trim();
@@ -101,6 +104,61 @@ export function resolveCursorAcpWireId(
     return matchCliSkuToAcpWireId(trimmed, available);
 }
 
+function findConfigOption(backend: AcpSdkBackend, sessionId: string, key: string): ConfigOption | undefined {
+    return backend.getConfigOptionByCategory?.(sessionId, key)
+        ?? backend.getSessionConfigOptions?.(sessionId)?.find((option) => option.id === key || option.category === key);
+}
+
+function optionHasValue(option: ConfigOption | undefined, value: string): boolean {
+    return Boolean(option?.options?.some((entry) => entry.value === value));
+}
+
+function fastHintForCursorSkuOrWire(modelId: string): 'false' | 'true' {
+    const lower = modelId.trim().toLowerCase();
+    const fastMatch = lower.match(/[\[,](?:\s*)fast=(true|false)(?:\s*)[\],]/)
+        ?? lower.match(/\[\s*fast=(true|false)\s*\]/);
+    if (fastMatch?.[1] === 'true' || fastMatch?.[1] === 'false') {
+        return fastMatch[1];
+    }
+    return lower.includes('-fast') ? 'true' : 'false';
+}
+
+function cursorRequestBaseId(modelId: string): string {
+    return modelId.includes('[')
+        ? cursorModelBaseId(modelId)
+        : cursorCliSkuBaseId(modelId);
+}
+
+async function applyParameterizedCursorModel(
+    backend: AcpSdkBackend,
+    sessionId: string,
+    requested: string
+): Promise<ParameterizedCursorModelResult> {
+    const modelOption = findConfigOption(backend, sessionId, 'model');
+    const fastOption = findConfigOption(backend, sessionId, 'fast');
+    if (!modelOption || !fastOption || !backend.setConfigOption) {
+        return 'unsupported';
+    }
+
+    const baseModel = cursorRequestBaseId(requested);
+    const fast = fastHintForCursorSkuOrWire(requested);
+    if (!optionHasValue(modelOption, baseModel) || !optionHasValue(fastOption, fast)) {
+        return 'unsupported';
+    }
+
+    try {
+        await backend.setConfigOption(sessionId, modelOption.id, baseModel);
+        await backend.setConfigOption(sessionId, fastOption.id, fast);
+    } catch (error) {
+        logger.debug('[cursor-acp] parameterized model config failed', error);
+        return 'failed';
+    }
+
+    const resolved = `${baseModel}[fast=${fast}]`;
+    backend.pinSessionModelWireId(sessionId, resolved);
+    return { applied: true, resolvedWireId: resolved, requestedWireId: requested };
+}
+
 /**
  * Apply a model from the live ACP configOptions list (Zed-style).
  * Only wire ids present in `availableModels` are accepted.
@@ -118,6 +176,15 @@ export async function applyCursorAcpModel(
     const metadata = backend.getSessionModelsMetadata(sessionId);
     const available = metadata?.availableModels ?? [];
     const modelOption = backend.getConfigOptionByCategory?.(sessionId, 'model');
+
+    const parameterized = await applyParameterizedCursorModel(backend, sessionId, trimmed);
+    if (parameterized === 'failed') {
+        return { applied: false };
+    }
+    if (parameterized !== 'unsupported') {
+        return parameterized;
+    }
+
     const optionWireIds = modelOption?.options?.map((option) => ({ modelId: option.value })) ?? [];
     const catalog = [...available, ...optionWireIds];
     const resolved = resolveCursorAcpWireId(trimmed, catalog);

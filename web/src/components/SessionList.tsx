@@ -22,6 +22,9 @@ import { formatRelativeTime } from '@/lib/relativeTime'
 import { formatScheduledTooltipDetail } from '@/lib/scheduledTime'
 import { getCodexImportedAt, subscribeCodexImportedSessions } from '@/lib/codexImportedSessions'
 import { formatReopenError } from '@/lib/reopenError'
+import type { Machine } from '@/types/api'
+import { getMachinePlatform, presentMachineHealth } from '@/lib/machineHealth'
+import { MachineGroupHeader } from '@/components/MachineGroupHeader'
 
 type SessionGroup = {
     key: string
@@ -542,28 +545,6 @@ function SessionListSearch(props: {
     )
 }
 
-function MachineIcon(props: { className?: string }) {
-    return (
-        <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className={props.className}
-        >
-            <rect x="2" y="3" width="20" height="14" rx="2" />
-            <line x1="8" y1="21" x2="16" y2="21" />
-            <line x1="12" y1="17" x2="12" y2="21" />
-        </svg>
-    )
-}
-
-
 function formatCodexImportedRelativeTime(value: number, t: (key: string, params?: Record<string, string | number>) => string): string | null {
     const ms = value < 1_000_000_000_000 ? value * 1000 : value
     if (!Number.isFinite(ms)) return null
@@ -802,10 +783,11 @@ export function SessionList(props: {
     renderHeader?: boolean
     api: ApiClient | null
     machineLabelsById?: Record<string, string>
+    machinesById?: Record<string, Machine>
     selectedSessionId?: string | null
 }) {
     const { t } = useTranslation()
-    const { renderHeader = true, api, selectedSessionId, machineLabelsById = {}, onNewSessionInDirectory } = props
+    const { renderHeader = true, api, selectedSessionId, machineLabelsById = {}, machinesById = {}, onNewSessionInDirectory } = props
     const { sessionPreviewLimit } = useSessionPreviewLimit()
     const { sessionListStatusMode } = useSessionListStatusMode()
     const { showActiveSessionsOnly } = useShowActiveSessionsOnly()
@@ -1045,19 +1027,21 @@ export function SessionList(props: {
             <div className="flex flex-col gap-3 px-2 pt-1 pb-2">
                 {machineGroups.map((mg) => {
                     const machineCollapsed = isMachineCollapsed(mg)
+                    const machine = mg.machineId ? machinesById[mg.machineId] : undefined
+                    const healthPresentation = presentMachineHealth(
+                        machine?.health,
+                        getMachinePlatform(machine)
+                    )
                     return (
                         <div key={mg.machineId ?? UNKNOWN_MACHINE_ID}>
-                            {/* Level 1: Machine */}
-                            <button
-                                type="button"
-                                onClick={() => toggleMachine(mg)}
-                                className="flex w-full items-center gap-2 px-1 py-1.5 text-left rounded-lg transition-colors hover:bg-[var(--app-subtle-bg)] select-none"
-                            >
-                                <ChevronIcon className="h-4 w-4 text-[var(--app-hint)] shrink-0" collapsed={machineCollapsed} />
-                                <MachineIcon className="h-4 w-4 text-[var(--app-hint)] shrink-0" />
-                                <span className="text-sm font-semibold truncate flex-1">{mg.label}</span>
-                                <span className="text-[11px] tabular-nums text-[var(--app-hint)] shrink-0">({mg.totalSessions})</span>
-                            </button>
+                            <MachineGroupHeader
+                                label={mg.label}
+                                sessionCount={mg.totalSessions}
+                                collapsed={machineCollapsed}
+                                onToggle={() => toggleMachine(mg)}
+                                machine={machine}
+                                healthPresentation={healthPresentation}
+                            />
 
                             {/* Level 2: Projects */}
                             <div className="collapsible-panel" data-open={!machineCollapsed || undefined}>

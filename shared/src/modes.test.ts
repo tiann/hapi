@@ -1,11 +1,32 @@
 import { describe, expect, it, test } from 'bun:test'
 import {
+    AGENT_FLAVORS,
+    AgentFlavorSchema,
+    CREATABLE_AGENT_FLAVORS,
     getPermissionModeLabel,
     getPermissionModeOptionsForFlavor,
     getPermissionModeTone,
     getPermissionModesForFlavor,
     isPermissionModeAllowedForFlavor,
 } from './modes'
+
+describe('Gemini CLI sunset (read-only, not creatable)', () => {
+    test('gemini stays a valid flavor so existing stored sessions still validate/load', () => {
+        expect(AGENT_FLAVORS).toContain('gemini')
+        expect(AgentFlavorSchema.safeParse('gemini').success).toBe(true)
+    })
+
+    test('gemini is excluded from creatable flavors (not offered for new sessions)', () => {
+        expect(CREATABLE_AGENT_FLAVORS).not.toContain('gemini')
+    })
+
+    test('all other flavors remain creatable', () => {
+        for (const flavor of AGENT_FLAVORS) {
+            if (flavor === 'gemini') continue
+            expect(CREATABLE_AGENT_FLAVORS).toContain(flavor)
+        }
+    })
+})
 
 describe('getPermissionModesForFlavor', () => {
     test("returns [] for flavor 'pi' (RPC mode has no runtime permission switching)", () => {

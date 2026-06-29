@@ -81,6 +81,57 @@ export type ComposerSendError = {
 
 const defaultSuggestionHandler = async (): Promise<Suggestion[]> => []
 
+export function ModelEffortSettingsSection(props: {
+    agentFlavor?: string | null
+    options: Array<{ value: string; label: string }>
+    selectedValue: string | null | undefined
+    controlsDisabled: boolean
+    onChange: (value: string) => void
+}) {
+    const { t } = useTranslation()
+    const { agentFlavor, options, selectedValue, controlsDisabled, onChange } = props
+
+    return (
+        <div className="py-2">
+            <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
+                {agentFlavor === 'cursor' ? t('misc.variant') : t('misc.effort')}
+            </div>
+            {options.map((option) => {
+                const isSelected = selectedValue === option.value
+                return (
+                    <button
+                        key={option.value}
+                        type="button"
+                        disabled={controlsDisabled}
+                        className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                            controlsDisabled
+                                ? 'cursor-not-allowed opacity-50'
+                                : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
+                        }`}
+                        onClick={() => onChange(option.value)}
+                        onMouseDown={(e) => e.preventDefault()}
+                    >
+                        <div
+                            className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
+                                isSelected
+                                    ? 'border-[var(--app-link)]'
+                                    : 'border-[var(--app-hint)]'
+                            }`}
+                        >
+                            {isSelected && (
+                                <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
+                            )}
+                        </div>
+                        <span className={isSelected ? 'text-[var(--app-link)]' : ''}>
+                            {option.label}
+                        </span>
+                    </button>
+                )
+            })}
+        </div>
+    )
+}
+
 export function HappyComposer(props: {
     sessionId?: string
     disabled?: boolean
@@ -982,6 +1033,24 @@ export function HappyComposer(props: {
                                     })
                                 )}
                             </div>
+                        ) : null}
+
+                        {showModelSettings && showModelEffortSettings ? (
+                            <div className="mx-3 h-px bg-[var(--app-divider)]" />
+                        ) : null}
+
+                        {showModelEffortSettings ? (
+                            <ModelEffortSettingsSection
+                                agentFlavor={agentFlavor}
+                                options={modelEffortOptions!}
+                                selectedValue={selectedModelVariant ?? model}
+                                controlsDisabled={controlsDisabled}
+                                onChange={handleModelEffortChange}
+                            />
+                        ) : null}
+
+                        {(showModelSettings || showModelEffortSettings) && showModelReasoningEffortSettings ? (
+                            <div className="mx-3 h-px bg-[var(--app-divider)]" />
                         ) : null}
 
                         {(showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings) && showEffortSettings ? (

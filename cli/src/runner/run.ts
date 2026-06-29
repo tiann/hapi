@@ -287,6 +287,9 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
       const { directory, sessionId, machineId, approvedNewDirectoryCreation = true } = options;
       const agent = options.agent ?? 'claude';
+      if (agent === 'gemini') {
+        throw new Error('Gemini CLI is no longer supported and cannot be launched (Google sunset the consumer Gemini CLI on 2026-06-18). Existing Gemini sessions remain viewable in the web UI.');
+      }
       const yolo = options.yolo === true;
       const sessionType = options.sessionType ?? 'simple';
       const worktreeName = options.worktreeName;
@@ -1073,19 +1076,20 @@ export function buildCliArgs(
   options: SpawnSessionOptions,
   yolo?: boolean
 ): string[] {
+  if (agent === 'gemini') {
+    throw new Error('Gemini CLI is no longer supported and cannot be launched (Google sunset the consumer Gemini CLI on 2026-06-18).');
+  }
   const agentCommand = agent === 'codex'
     ? 'codex'
     : agent === 'cursor'
       ? 'cursor'
-      : agent === 'gemini'
-        ? 'gemini'
-        : agent === 'kimi'
-          ? 'kimi'
-          : agent === 'opencode'
-            ? 'opencode'
-            : agent === 'pi'
-              ? 'pi'
-              : 'claude';
+      : agent === 'kimi'
+        ? 'kimi'
+        : agent === 'opencode'
+          ? 'opencode'
+          : agent === 'pi'
+            ? 'pi'
+            : 'claude';
   const args = [agentCommand];
   if (options.resumeSessionId) {
     if (agent === 'codex') {

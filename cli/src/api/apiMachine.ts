@@ -26,6 +26,7 @@ import type { SpawnSessionOptions, SpawnSessionResult } from '../modules/common/
 import { applyVersionedAck } from './versionedUpdate'
 import { archiveLocalCodexSession, listLocalCodexSessionSummaries, listLocalCodexSessionsWithMessages } from '../modules/common/codexSessions'
 import { buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
+import { collectMachineHealth } from '@/utils/machineHealth'
 
 type MachineRpcHandlers = {
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>
@@ -74,6 +75,7 @@ function formatWorkspaceRoots(paths?: string[]): string {
 export class ApiMachineClient {
     private socket!: Socket<ServerToClientEvents, ClientToServerEvents>
     private keepAliveInterval: NodeJS.Timeout | null = null
+    private keepAliveStartTimeout: ReturnType<typeof setTimeout> | null = null
     private rpcHandlerManager: RpcHandlerManager
 
     private readonly normalizedWorkspaceRoots: string[] | undefined
@@ -539,15 +541,27 @@ export class ApiMachineClient {
 
     private startKeepAlive(): void {
         this.stopKeepAlive()
-        this.keepAliveInterval = setInterval(() => {
+        const emitAlive = () => {
             this.socket.emit('machine-alive', {
                 machineId: this.machine.id,
-                time: Date.now()
+                time: Date.now(),
+                health: collectMachineHealth()
             })
-        }, 20_000)
+        }
+        // Prime CPU sampling so the first heartbeat already includes CPU %.
+        collectMachineHealth()
+        this.keepAliveStartTimeout = setTimeout(() => {
+            this.keepAliveStartTimeout = null
+            emitAlive()
+            this.keepAliveInterval = setInterval(emitAlive, 20_000)
+        }, 50)
     }
 
     private stopKeepAlive(): void {
+        if (this.keepAliveStartTimeout) {
+            clearTimeout(this.keepAliveStartTimeout)
+            this.keepAliveStartTimeout = null
+        }
         if (this.keepAliveInterval) {
             clearInterval(this.keepAliveInterval)
             this.keepAliveInterval = null

@@ -31,7 +31,7 @@ describe('buildCliArgs', () => {
     })
 
     it('prefers --permission-mode over --yolo when both present', () => {
-        const args = buildCliArgs('gemini', {
+        const args = buildCliArgs('cursor', {
             directory: '/tmp',
             permissionMode: 'yolo',
         }, true)
@@ -41,6 +41,10 @@ describe('buildCliArgs', () => {
         const permIdx = args.indexOf('--permission-mode')
         const yoloIdx = args.indexOf('--yolo')
         expect(yoloIdx).toBe(-1)
+    })
+
+    it('throws for the removed gemini agent (no longer launchable)', () => {
+        expect(() => buildCliArgs('gemini', { directory: '/tmp' })).toThrow(/no longer supported/)
     })
 
     it('adds --yolo when no permissionMode and yolo is true', () => {

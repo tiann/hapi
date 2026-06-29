@@ -142,6 +142,37 @@ describe('resumeCommand', () => {
         })
     })
 
+    it('rejects an active Gemini target before handoff (no longer supported, leaves running session alone)', async () => {
+        const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+        const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+            throw new Error(`process.exit:${code ?? 'undefined'}`)
+        }) as never)
+
+        getLocalResumeTargetMock.mockResolvedValue({
+            sessionId: 'hapi-session-gemini',
+            flavor: 'gemini',
+            directory: '/tmp/project',
+            machineId: 'machine-1',
+            active: true,
+            thinking: false,
+            controlledByUser: false,
+            agentSessionId: 'gemini-conv-1',
+            model: 'gemini-2.5-pro',
+            permissionMode: 'default'
+        })
+
+        try {
+            await expect(resumeCommand.run(createContext(['hapi-session-gemini']))).rejects.toThrow('process.exit:1')
+            // Regression (#953): the gemini guard must fire BEFORE handoff so an
+            // active Gemini session is not stopped and then left failing locally.
+            expect(handoffSessionToLocalMock).not.toHaveBeenCalled()
+            expect(consoleErrorSpy).toHaveBeenCalledWith(expect.any(String), expect.stringContaining('no longer supported'))
+        } finally {
+            consoleErrorSpy.mockRestore()
+            exitSpy.mockRestore()
+        }
+    })
+
     it('fails before launching when the target belongs to another machine', async () => {
         const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
         const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {

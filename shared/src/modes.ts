@@ -11,6 +11,14 @@ export const AGENT_FLAVORS = ['claude', 'codex', 'cursor', 'gemini', 'kimi', 'op
 export type AgentFlavor = typeof AGENT_FLAVORS[number]
 export const AgentFlavorSchema = z.enum(AGENT_FLAVORS)
 
+// Flavors offered when CREATING a new session. Gemini CLI is intentionally
+// excluded: Google sunset the consumer Gemini CLI (2026-06-18) so it can no
+// longer be launched. It is kept in AGENT_FLAVORS / AgentFlavorSchema above so
+// existing stored Gemini sessions still validate and remain viewable.
+export const CREATABLE_AGENT_FLAVORS: readonly AgentFlavor[] = AGENT_FLAVORS.filter(
+    (flavor) => flavor !== 'gemini'
+)
+
 export const CLAUDE_PERMISSION_MODES = ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan'] as const
 export type ClaudePermissionMode = typeof CLAUDE_PERMISSION_MODES[number]
 

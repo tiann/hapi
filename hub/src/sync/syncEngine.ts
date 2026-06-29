@@ -355,7 +355,7 @@ export class SyncEngine {
         this.sessionCache.recordSessionActivity(sessionId, updatedAt)
     }
 
-    handleMachineAlive(payload: { machineId: string; time: number }): void {
+    handleMachineAlive(payload: { machineId: string; time: number; health?: unknown }): void {
         this.machineCache.handleMachineAlive(payload)
     }
 

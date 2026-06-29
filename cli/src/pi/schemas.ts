@@ -17,20 +17,20 @@ import type { PiModelSummary } from '@hapi/protocol/apiTypes';
 // 字段级容错 schema
 // ============================================================================
 
-/** 提取 string 值，非 string 返回 undefined */
-const asOptStr = z.unknown().transform(v => typeof v === 'string' ? v : undefined);
+/** 提取 string 值，非 string 或缺失返回 undefined */
+const asOptStr = z.unknown().optional().transform(v => typeof v === 'string' ? v : undefined);
 
-/** 提取 number 值，非 number 返回 undefined */
-const asOptNum = z.unknown().transform(v => typeof v === 'number' ? v : undefined);
+/** 提取 number 值，非 number 或缺失返回 undefined */
+const asOptNum = z.unknown().optional().transform(v => typeof v === 'number' ? v : undefined);
 
-/** 提取 boolean 值，非 boolean 返回 undefined */
-const asOptBool = z.unknown().transform(v => typeof v === 'boolean' ? v : undefined);
+/** 提取 boolean 值，非 boolean 或缺失返回 undefined */
+const asOptBool = z.unknown().optional().transform(v => typeof v === 'boolean' ? v : undefined);
 
-/** 提取 string 值，非 string 返回指定默认值 */
-const asStrOrDef = (def: string) => z.unknown().transform(v => typeof v === 'string' ? v : def);
+/** 提取 string 值，非 string 或缺失返回指定默认值 */
+const asStrOrDef = (def: string) => z.unknown().optional().transform(v => typeof v === 'string' ? v : def);
 
-/** 提取合法的 thinkingLevelMap，非法结构返回 undefined */
-const asOptThinkingLevelMap = z.unknown().transform((v): Record<string, string | null> | undefined => {
+/** 提取合法的 thinkingLevelMap，非法结构或缺失返回 undefined */
+const asOptThinkingLevelMap = z.unknown().optional().transform((v): Record<string, string | null> | undefined => {
     if (typeof v !== 'object' || v === null) return undefined;
     const map: Record<string, string | null> = {};
     for (const [key, val] of Object.entries(v as Record<string, unknown>)) {
@@ -80,7 +80,7 @@ const PiCommandSummarySchema = z.object({
 const PiCommandEntrySchema = z.object({
     name: asStrOrDef(''),
     description: asOptStr,
-    source: z.unknown().transform(v =>
+    source: z.unknown().optional().transform(v =>
         VALID_COMMAND_SOURCES.includes(v as PiCommandSource)
             ? (v as PiCommandSource)
             : ('skill' as const),
@@ -195,9 +195,11 @@ export const PiAssistantMessageEventSchema = z.object({
 // ============================================================================
 
 export function parsePiCommands(data: unknown) {
-    return PiCommandsResponseDataSchema.safeParse(data).data ?? [];
+    const result = PiCommandsResponseDataSchema.safeParse(data)
+    return result.success ? result.data : []
 }
 
 export function parsePiModels(data: unknown) {
-    return PiModelsResponseDataSchema.safeParse(data).data ?? [];
+    const result = PiModelsResponseDataSchema.safeParse(data)
+    return result.success ? result.data : []
 }
