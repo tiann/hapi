@@ -544,6 +544,7 @@ export default {
   'settings.display.appearance.dark': '深色',
   'settings.display.appearance.oled': 'OLED 纯黑',
   'settings.display.appearance.light': '浅色',
+  'settings.display.colorTheme': '颜色主题',
   'settings.display.themeColors.title': '自定义配色',
   'settings.display.themeColors.description': '应用于当前外观。切换外观可分别自定义每种配色。',
   'settings.display.themeColors.reset': '重置',

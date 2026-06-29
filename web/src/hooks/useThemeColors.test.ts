@@ -78,6 +78,44 @@ describe('useThemeColors', () => {
         expect(localStorage.getItem('hapi-theme-colors')).toBeNull()
     })
 
+
+
+    it('preserves color theme preset variables when no custom colors are stored', () => {
+        localStorage.setItem('hapi-color-theme', 'one')
+        setScheme('light')
+
+        applyThemeColors()
+
+        expect(document.documentElement.style.getPropertyValue('--app-bg').trim()).toBe('#fbfbff')
+        expect(document.documentElement.style.getPropertyValue('--app-link').trim()).toBe('#526fff')
+    })
+
+    it('layers custom colors over color theme presets', () => {
+        localStorage.setItem('hapi-color-theme', 'one')
+        localStorage.setItem('hapi-theme-colors', JSON.stringify({ light: { background: '#123456' } }))
+        setScheme('light')
+
+        applyThemeColors()
+
+        expect(document.documentElement.style.getPropertyValue('--app-bg').trim()).toBe('#123456')
+        expect(document.documentElement.style.getPropertyValue('--app-link').trim()).toBe('#526fff')
+    })
+
+
+
+    it('reapplies color theme preset changes from cross-tab storage events without Settings mounted', () => {
+        localStorage.setItem('hapi-color-theme', 'one')
+        setScheme('light')
+        initializeThemeColors()
+        expect(document.documentElement.style.getPropertyValue('--app-bg').trim()).toBe('#fbfbff')
+
+        localStorage.setItem('hapi-color-theme', 'notion')
+        window.dispatchEvent(new StorageEvent('storage', { key: 'hapi-color-theme', newValue: 'notion' }))
+
+        expect(document.documentElement.style.getPropertyValue('--app-bg').trim()).toBe('#fafafa')
+        expect(document.documentElement.style.getPropertyValue('--app-link').trim()).toBe('#3183d8')
+    })
+
     it('reapplies stored colors for the active appearance during initialization', () => {
         localStorage.setItem('hapi-theme-colors', JSON.stringify({ oled: { background: '#0b0b0b' } }))
         setScheme('oled')
