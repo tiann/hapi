@@ -2,8 +2,14 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { useAppContext } from '@/lib/app-context'
 import { useSessions } from '@/hooks/queries/useSessions'
+import { useMachines } from '@/hooks/queries/useMachines'
 import { useTranslation } from '@/lib/use-translation'
 import { LoadingState } from '@/components/LoadingState'
+import { SessionListSearch } from '@/components/SessionList'
+import {
+    countHiddenActiveSharePickerSessions,
+    filterSharePickerSessions,
+} from '@/lib/sharePickerSessions'
 import {
     deleteShareTransfer,
     getShareTransfer,
@@ -109,6 +115,32 @@ export default function SharePage() {
     const navigate = useNavigate()
     const [load, setLoad] = useState<LoadState>({ state: 'loading' })
     const { sessions, isLoading: sessionsLoading } = useSessions(api)
+    const { machines } = useMachines(api, true)
+    const [searchQuery, setSearchQuery] = useState('')
+
+    const machineLabelsById = useMemo(() => {
+        const labels: Record<string, string> = {}
+        for (const machine of machines) {
+            if (machine.metadata?.displayName) {
+                labels[machine.id] = machine.metadata.displayName
+            } else if (machine.metadata?.host) {
+                labels[machine.id] = machine.metadata.host
+            } else {
+                labels[machine.id] = machine.id.slice(0, 8)
+            }
+        }
+        return labels
+    }, [machines])
+
+    const resolveMachineLabel = useCallback((machineId: string | null): string => {
+        if (machineId && machineLabelsById[machineId]) {
+            return machineLabelsById[machineId]
+        }
+        if (machineId) {
+            return machineId.slice(0, 8)
+        }
+        return t('machine.unknown')
+    }, [machineLabelsById, t])
 
     // Pulled via the typed validateSearch in router.tsx; reading
     // `window.location.search` directly would diverge from the rest of the
@@ -141,24 +173,27 @@ export default function SharePage() {
         return () => { cancelled = true }
     }, [transferId, ingestError])
 
-    // Snapshot the active session list once when sessions finish loading so
-    // the picker doesn't re-shuffle under the operator's finger as SSE
-    // updates roll in (activeAt heartbeats nudge the order every few
-    // seconds; even updatedAt-keyed sorts visually flicker on every
-    // metadata patch). The picker is a one-shot interaction — closing the
-    // share sheet and re-sharing produces a fresh snapshot. Sorted by
-    // updatedAt desc to match SessionList's canonical "most recent
-    // interaction first" order.
-    const [pickerSessions, setPickerSessions] = useState<SessionSummary[] | null>(null)
+    // Snapshot the session list once when sessions finish loading so the
+    // picker doesn't re-shuffle under the operator's finger as SSE updates
+    // roll in. The picker is a one-shot interaction — closing the share
+    // sheet and re-sharing produces a fresh snapshot.
+    const [sessionsSnapshot, setSessionsSnapshot] = useState<SessionSummary[] | null>(null)
     useEffect(() => {
-        if (pickerSessions !== null) return
+        if (sessionsSnapshot !== null) return
         if (sessionsLoading) return
-        setPickerSessions(
-            [...sessions]
-                .filter((s) => s.active)
-                .sort((a, b) => b.updatedAt - a.updatedAt)
-        )
-    }, [pickerSessions, sessions, sessionsLoading])
+        setSessionsSnapshot([...sessions])
+    }, [sessionsSnapshot, sessions, sessionsLoading])
+
+    const isSearching = searchQuery.trim().length > 0
+    const pickerSessions = useMemo(() => {
+        if (!sessionsSnapshot) return null
+        return filterSharePickerSessions(sessionsSnapshot, searchQuery, resolveMachineLabel)
+    }, [sessionsSnapshot, searchQuery, resolveMachineLabel])
+
+    const hiddenActiveCount = useMemo(() => {
+        if (!sessionsSnapshot || isSearching) return 0
+        return countHiddenActiveSharePickerSessions(sessionsSnapshot)
+    }, [sessionsSnapshot, isSearching])
 
     const handlePickSession = useCallback((sessionId: string) => {
         if (!transferId) return
@@ -245,37 +280,45 @@ export default function SharePage() {
 
                     <div>
                         <div className="px-1 pb-1 text-xs font-semibold uppercase tracking-wide text-[var(--app-hint)]">
-                            {t('share.recentSessions')}
+                            {isSearching ? t('share.searchResults') : t('share.recentSessions')}
                         </div>
+                        <SessionListSearch value={searchQuery} onChange={setSearchQuery} />
                         {pickerSessions === null ? (
                             <LoadingState label={t('share.loading')} className="text-sm py-4" />
                         ) : pickerSessions.length === 0 ? (
                             <div className="rounded-md bg-[var(--app-secondary-bg)] p-3 text-xs text-[var(--app-hint)]">
-                                {t('share.noActiveSessions')}
+                                {isSearching ? t('share.noSearchResults') : t('share.noActiveSessions')}
                             </div>
                         ) : (
-                            <ul className="overflow-hidden rounded-md bg-[var(--app-secondary-bg)]">
-                                {pickerSessions.map((session) => (
-                                    <li key={session.id}>
-                                        <button
-                                            type="button"
-                                            onClick={() => handlePickSession(session.id)}
-                                            className="flex w-full items-start gap-3 px-3 py-2.5 text-left transition-colors hover:bg-[var(--app-subtle-bg)]"
-                                        >
-                                            <div className="min-w-0 flex-1">
-                                                <div className="truncate text-sm font-medium text-[var(--app-fg)]">
-                                                    {getSessionTitle(session)}
-                                                </div>
-                                                {session.metadata?.path ? (
-                                                    <div className="truncate text-xs text-[var(--app-hint)]">
-                                                        {session.metadata.path}
+                            <>
+                                <ul className="overflow-hidden rounded-md bg-[var(--app-secondary-bg)]">
+                                    {pickerSessions.map((session) => (
+                                        <li key={session.id}>
+                                            <button
+                                                type="button"
+                                                onClick={() => handlePickSession(session.id)}
+                                                className="flex w-full items-start gap-3 px-3 py-2.5 text-left transition-colors hover:bg-[var(--app-subtle-bg)]"
+                                            >
+                                                <div className="min-w-0 flex-1">
+                                                    <div className="truncate text-sm font-medium text-[var(--app-fg)]">
+                                                        {getSessionTitle(session)}
                                                     </div>
-                                                ) : null}
-                                            </div>
-                                        </button>
-                                    </li>
-                                ))}
-                            </ul>
+                                                    {session.metadata?.path ? (
+                                                        <div className="truncate text-xs text-[var(--app-hint)]">
+                                                            {session.metadata.path}
+                                                        </div>
+                                                    ) : null}
+                                                </div>
+                                            </button>
+                                        </li>
+                                    ))}
+                                </ul>
+                                {hiddenActiveCount > 0 ? (
+                                    <div className="mt-2 px-1 text-xs text-[var(--app-hint)]">
+                                        {t('share.searchForMore', { n: hiddenActiveCount })}
+                                    </div>
+                                ) : null}
+                            </>
                         )}
                     </div>
 

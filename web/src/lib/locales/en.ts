@@ -717,4 +717,7 @@ export default {
   'share.preview.empty': '(empty share)',
   'share.preview.files': '{n} files',
   'share.noActiveSessions': 'No active sessions. Pick "New session" below.',
+  'share.searchResults': 'Matching sessions',
+  'share.noSearchResults': 'No sessions match your search.',
+  'share.searchForMore': '{n} more active sessions — search to find them.',
 } as const

@@ -721,4 +721,7 @@ export default {
   'share.preview.empty': '(空分享)',
   'share.preview.files': '{n} 个文件',
   'share.noActiveSessions': '没有活跃会话。请在下方选择"新建会话"。',
+  'share.searchResults': '匹配的会话',
+  'share.noSearchResults': '没有匹配的会话。',
+  'share.searchForMore': '还有 {n} 个活跃会话 — 搜索以查找。',
 } as const
