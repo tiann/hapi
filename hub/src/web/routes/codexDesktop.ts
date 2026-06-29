@@ -144,6 +144,11 @@ const NO_SYNC_SESSION_SELECTED_ERROR = '未选择需要导入的 Codex 会话'
 const CODEX_TRANSCRIPT_IMPORT_NAMESPACE_ERROR = 'Codex transcript import is not available outside the default namespace'
 const DEFAULT_SCRIPT_TIMEOUT_MS = 60_000
 const DEFAULT_CODEX_SESSION_SCAN_LIMIT = 500
+const DARWIN_CODEX_APP_NAME = 'Codex'
+const DARWIN_CODEX_APP_CANDIDATES = [
+    '/Applications/Codex.app',
+    join(homedir(), 'Applications', 'Codex.app')
+]
 
 function resolveLocalPath(pathValue: string): string {
     return isAbsolute(pathValue) ? pathValue : resolve(process.cwd(), pathValue)
@@ -1151,6 +1156,23 @@ function isCodexLauncherAvailable(): boolean {
     })
 }
 
+function getDarwinCodexAppCandidates(): string[] {
+    return [
+        process.env.HAPI_CODEX_APP_PATH?.trim() ?? '',
+        ...DARWIN_CODEX_APP_CANDIDATES
+    ].filter(Boolean)
+}
+
+function isDarwinCodexAppInstalled(): boolean {
+    return getDarwinCodexAppCandidates().some(candidate => {
+        try {
+            return existsSync(candidate)
+        } catch {
+            return false
+        }
+    })
+}
+
 function isCodexDesktopPath(pathValue: string): boolean {
     return /\\WindowsApps\\OpenAI\.Codex_[^\\]+\\app\\(?:Codex|resources\\codex)\.exe$/i.test(pathValue)
 }
@@ -1184,6 +1206,10 @@ function isCodexDesktopPackageInstalled(): boolean {
 }
 
 function isCodexDesktopInstallAvailable(): boolean {
+    if (process.platform === 'darwin') {
+        return isDarwinCodexAppInstalled() || isCodexLauncherAvailable()
+    }
+
     if (process.platform !== 'win32') {
         return isCodexLauncherAvailable()
     }
@@ -1202,6 +1228,18 @@ function isCodexDesktopInstallAvailable(): boolean {
 }
 
 function isCodexDesktopRunning(): boolean {
+    if (process.platform === 'darwin') {
+        try {
+            const result = spawnSync('pgrep', ['-x', DARWIN_CODEX_APP_NAME], {
+                encoding: 'utf-8',
+                timeout: 5000
+            })
+            return result.status === 0
+        } catch {
+            return false
+        }
+    }
+
     if (process.platform !== 'win32') {
         return false
     }
@@ -1361,11 +1399,128 @@ async function runPowerShellScript(scriptPath: string, workspace: string, script
     throw lastError instanceof Error ? lastError : new Error(String(lastError))
 }
 
+function getDarwinCodexOpenTarget(): string {
+    return getDarwinCodexAppCandidates().find((candidate) => {
+        try {
+            return existsSync(candidate)
+        } catch {
+            return false
+        }
+    }) ?? DARWIN_CODEX_APP_NAME
+}
+
+export function getDarwinCodexOpenArgs(target: string): string[] {
+    return target.endsWith('.app') ? [target] : ['-a', target]
+}
+
+async function restartDarwinCodexDesktop(workspace: string): Promise<{ pid: number; command: string; output: string }> {
+    const output: string[] = []
+    try {
+        const quit = spawnSync('osascript', ['-e', `tell application "${DARWIN_CODEX_APP_NAME}" to quit`], {
+            encoding: 'utf-8',
+            timeout: 5000
+        })
+        const quitOutput = `${quit.stdout ?? ''}${quit.stderr ?? ''}`.trim()
+        if (quitOutput) {
+            output.push(quitOutput)
+        }
+    } catch (error) {
+        output.push(error instanceof Error ? error.message : String(error))
+    }
+
+    return await new Promise((resolvePromise, rejectPromise) => {
+        const target = getDarwinCodexOpenTarget()
+        const child = spawn('open', getDarwinCodexOpenArgs(target), {
+            cwd: workspace,
+            detached: true,
+            stdio: ['ignore', 'pipe', 'pipe']
+        })
+        const launchOutput: string[] = []
+        let settled = false
+        let timeout: ReturnType<typeof setTimeout> | null = null
+
+        const cleanup = () => {
+            if (timeout) {
+                clearTimeout(timeout)
+            }
+            child.off('error', onError)
+            child.off('exit', onExit)
+        }
+
+        const settle = (callback: () => void) => {
+            if (settled) return
+            settled = true
+            cleanup()
+            callback()
+        }
+
+        const onError = (error: Error) => {
+            settle(() => rejectPromise(error))
+        }
+
+        const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+            const combinedLaunchOutput = launchOutput.join('').trim()
+            if (combinedLaunchOutput) {
+                output.push(combinedLaunchOutput)
+            }
+            if (code === 0) {
+                child.unref()
+                settle(() => resolvePromise({
+                    pid: child.pid ?? 0,
+                    command: 'open',
+                    output: output.join('\n').trim()
+                }))
+                return
+            }
+            const detail = output.length > 0 ? `\n${output.join('\n')}` : ''
+            settle(() => rejectPromise(new Error(`open exited with code ${code ?? 'null'}${signal ? ` signal ${signal}` : ''}.${detail}`)))
+        }
+
+        timeout = setTimeout(() => {
+            child.kill()
+            settle(() => rejectPromise(new Error(SCRIPT_TIMEOUT_ERROR)))
+        }, getScriptTimeoutMs())
+
+        child.stdout?.on('data', (chunk) => launchOutput.push(String(chunk)))
+        child.stderr?.on('data', (chunk) => launchOutput.push(String(chunk)))
+        child.once('error', onError)
+        child.once('exit', onExit)
+    })
+}
+
 async function launchRestartScript(): Promise<ScriptLaunchResponse> {
     const scriptPath = getRestartScriptPath()
     const workspace = getWorkspace(scriptPath)
 
     if (!existsSync(scriptPath)) {
+        if (process.platform === 'darwin' && !process.env[RESTART_SCRIPT_ENV_NAME]?.trim()) {
+            try {
+                const launched = await restartDarwinCodexDesktop(workspace)
+                const output = launched.output
+                appendScriptLog(
+                    workspace,
+                    'restart',
+                    `SUCCESS: ${RESTART_SCRIPT_MESSAGE}; pid=${launched.pid}; command=${launched.command}${output ? `; output=${output}` : ''}`
+                )
+                return {
+                    success: true,
+                    message: RESTART_SCRIPT_MESSAGE,
+                    pid: launched.pid,
+                    command: launched.command,
+                    cwd: workspace,
+                    output
+                }
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error)
+                appendScriptLog(workspace, 'restart', `FAILED: ${message}; native=darwin`)
+                return {
+                    success: false,
+                    error: message,
+                    cwd: workspace
+                }
+            }
+        }
+
         appendScriptLog(workspace, 'restart', `FAILED: Script not found: ${scriptPath}`)
         return {
             success: false,
