@@ -8,6 +8,7 @@
  */
 
 import { isKnownFlavor, type LocalResumeTarget, type ResumableSession } from '@hapi/protocol'
+import { isLegacyCursorSession, resolveCursorRemoteProtocol } from '@hapi/protocol/cursorProtocol'
 import type { CursorMigrateOutcome, CursorMigrateToAcpRequest, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, CodexCollaborationMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
@@ -1206,7 +1207,7 @@ export class SyncEngine {
 
         const needsReadyBeforeMerge = spawnResult.sessionId !== access.sessionId
             && flavor === 'cursor'
-            && metadata.cursorSessionProtocol === 'acp'
+            && resolveCursorRemoteProtocol(metadata) === 'acp'
         if (needsReadyBeforeMerge) {
             const readyResult = await this.waitForSessionReady(spawnResult.sessionId)
             if (readyResult !== 'ready') {
@@ -1287,40 +1288,49 @@ export class SyncEngine {
                 }
             }
 
-            const archiveSnapshot = {
-                lifecycleState: metadata.lifecycleState,
-                archivedBy: metadata.archivedBy,
-                archiveReason: metadata.archiveReason,
-                lifecycleStateSince: metadata.lifecycleStateSince
-            }
-
-            let applied: { cursorSessionProtocol?: 'acp' | 'stream-json' }
-            try {
-                applied = await this.sessionCache.clearSessionArchiveMetadata(access.sessionId)
-            } catch (error) {
-                const message = error instanceof Error ? error.message : 'Failed to clear archive metadata'
-                return { type: 'error', message, code: 'metadata_conflict' }
+            let preapplied: { cursorSessionProtocol?: 'acp' | 'stream-json' } | undefined
+            if (isLegacyCursorSession(metadata)) {
+                try {
+                    preapplied = await this.sessionCache.stampLegacyCursorSessionProtocol(access.sessionId)
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : 'Failed to stamp legacy Cursor protocol'
+                    return { type: 'error', message, code: 'metadata_conflict' }
+                }
             }
 
             const resumeResult = await this.resumeSession(access.sessionId, namespace)
             if (resumeResult.type === 'error') {
-                // Resume failed - put the archive flags back so the row stays archived in the UI
-                // and the operator can retry. Best-effort: a concurrent metadata write that
-                // succeeded between clear and restore (e.g. an unrelated rename) wins, in
-                // which case we surface the original resume error rather than masking it.
-                try {
-                    await this.sessionCache.restoreSessionArchiveMetadata(access.sessionId, archiveSnapshot)
-                } catch {
-                    // Swallow restore failures - the resume error is the more important signal.
-                }
+                // Old row stays archived — we defer clearSessionArchiveMetadata until success
+                // so dedup cannot merge away the recovery path during handshake (#917).
                 return resumeResult
+            }
+
+            let applied: { cursorSessionProtocol?: 'acp' | 'stream-json' } | undefined
+            const clearTargets = resumeResult.sessionId === access.sessionId
+                ? [resumeResult.sessionId]
+                : [resumeResult.sessionId, access.sessionId]
+            for (const targetId of clearTargets) {
+                if (!this.sessionCache.getSessionByNamespace(targetId, namespace)) {
+                    continue
+                }
+                try {
+                    applied = await this.sessionCache.clearSessionArchiveMetadata(targetId)
+                    break
+                } catch (error) {
+                    if (targetId === clearTargets[clearTargets.length - 1]) {
+                        const message = error instanceof Error ? error.message : 'Failed to clear archive metadata'
+                        return { type: 'error', message, code: 'metadata_conflict' }
+                    }
+                }
             }
 
             return {
                 type: 'success',
                 sessionId: resumeResult.sessionId,
                 resumed: true,
-                ...(applied.cursorSessionProtocol ? { cursorSessionProtocol: applied.cursorSessionProtocol } : {})
+                ...((applied?.cursorSessionProtocol ?? preapplied?.cursorSessionProtocol)
+                    ? { cursorSessionProtocol: applied?.cursorSessionProtocol ?? preapplied?.cursorSessionProtocol }
+                    : {})
             }
         }
 

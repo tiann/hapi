@@ -11,6 +11,7 @@
         "./messages": "./src/messages.ts",
         "./slashCommands": "./src/slashCommands.ts",
         "./buildInfo": "./src/buildInfo.ts",
+        "./cursorProtocol": "./src/cursorProtocol.ts",
         "./modes": "./src/modes.ts",
         "./rpcMethods": "./src/rpcMethods.ts",
         "./schemas": "./src/schemas.ts",

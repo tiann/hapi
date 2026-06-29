@@ -36,6 +36,15 @@ function isReadyEventContent(content: unknown): boolean {
     return data?.type === 'ready'
 }
 
+export function isSessionReadyMessage(content: unknown): boolean {
+    const message = unwrapRoleWrappedRecordEnvelope(content)
+    if (!message || message.role !== 'agent') {
+        return false
+    }
+
+    return isReadyEventContent(message.content)
+}
+
 export function shouldRecordSessionActivity(content: unknown): boolean {
     const message = unwrapRoleWrappedRecordEnvelope(content)
     if (!message) {

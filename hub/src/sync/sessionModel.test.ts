@@ -2215,6 +2215,35 @@ describe('session model', () => {
             expect(meta?.cursorSessionProtocol).toBe('stream-json')
         })
 
+        it('stamps stream-json without clearing archive metadata for legacy rows', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+
+            const session = cache.getOrCreateSession(
+                'session-cursor-legacy-prestamp',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    flavor: 'cursor',
+                    cursorSessionId: 'legacy-prestamp-id',
+                    lifecycleState: 'archived',
+                    archivedBy: 'cli',
+                    archiveReason: 'Hub restart'
+                },
+                null,
+                'default'
+            )
+
+            const result = await cache.stampLegacyCursorSessionProtocol(session.id)
+
+            expect(result.cursorSessionProtocol).toBe('stream-json')
+            const meta = cache.getSession(session.id)?.metadata as Record<string, unknown> | null | undefined
+            expect(meta?.cursorSessionProtocol).toBe('stream-json')
+            expect(meta?.lifecycleState).toBe('archived')
+            expect(meta?.archiveReason).toBe('Hub restart')
+        })
+
         it('keeps an existing acp protocol intact when clearing archive metadata', async () => {
             const store = new Store(':memory:')
             const events: SyncEvent[] = []
@@ -2466,7 +2495,6 @@ describe('session model', () => {
             })).resolves.toBeUndefined()
         })
     })
-
     // tiann/hapi#916: when the CLI is gone, the kill-RPC throws
     // RpcTargetMissingError. markSessionArchivedFromHub writes the archive
     // metadata directly so the row's lifecycleState still flips to 'archived'.
@@ -2725,6 +2753,362 @@ describe('session model', () => {
             expect(meta?.archiveReason).toBe('User terminated')
             expect(meta?.lifecycleStateSince).toBe(1234)
             expect(meta?.name).toBe('parallel-rename')
+        })
+    })
+
+    describe('cursor ACP reopen handshake (#917)', () => {
+        it('does not merge cursor ACP resume until ready handshake completes', async () => {
+            const store = new Store(':memory:')
+            const engine = new SyncEngine(
+                store,
+                {} as never,
+                new RpcRegistry(),
+                { broadcast() {} } as never
+            )
+
+            try {
+                const oldSession = engine.getOrCreateSession(
+                    'session-cursor-acp-resume-old',
+                    {
+                        path: '/tmp/project',
+                        host: 'localhost',
+                        machineId: 'machine-1',
+                        flavor: 'cursor',
+                        cursorSessionId: 'cursor-acp-1',
+                        cursorSessionProtocol: 'acp',
+                        lifecycleState: 'archived',
+                        archivedBy: 'cli',
+                        archiveReason: 'Hub restart'
+                    },
+                    null,
+                    'default'
+                )
+                engine.getOrCreateMachine(
+                    'machine-1',
+                    { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                    null,
+                    'default'
+                )
+                engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+
+                const spawnedSession = engine.getOrCreateSession(
+                    'session-cursor-acp-resume-new',
+                    {
+                        path: '/tmp/project',
+                        host: 'localhost',
+                        machineId: 'machine-1',
+                        flavor: 'cursor',
+                        cursorSessionId: 'cursor-acp-1',
+                        cursorSessionProtocol: 'acp'
+                    },
+                    null,
+                    'default'
+                )
+
+                let mergeCalls = 0
+                const sessionCache = (engine as any).sessionCache
+                const mergeSessions = sessionCache.mergeSessions.bind(sessionCache)
+                sessionCache.mergeSessions = async (oldSessionId: string, newSessionId: string, namespace: string) => {
+                    mergeCalls += 1
+                    return mergeSessions(oldSessionId, newSessionId, namespace)
+                }
+                ;(engine as any).rpcGateway.spawnSession = async () => {
+                    engine.handleSessionAlive({ sid: spawnedSession.id, time: Date.now() })
+                    return { type: 'success', sessionId: spawnedSession.id }
+                }
+                ;(engine as any).waitForSessionActive = async () => true
+                ;(engine as any).waitForSessionReady = async () => 'timeout'
+
+                const result = await engine.resumeSession(oldSession.id, 'default')
+
+                expect(result.type).toBe('error')
+                if (result.type === 'error') {
+                    expect(result.code).toBe('resume_failed')
+                }
+                expect(mergeCalls).toBe(0)
+                expect(engine.getSession(oldSession.id)).toBeDefined()
+            } finally {
+                engine.stop()
+            }
+        })
+
+        it('skips ACP resume handshake for pre-#799 legacy cursor rows without cursorSessionProtocol', async () => {
+            const priorAutoMigrate = process.env.HAPI_CURSOR_LEGACY_AUTO_MIGRATE
+            process.env.HAPI_CURSOR_LEGACY_AUTO_MIGRATE = '0'
+            const store = new Store(':memory:')
+            const engine = new SyncEngine(
+                store,
+                {} as never,
+                new RpcRegistry(),
+                { broadcast() {} } as never
+            )
+
+            try {
+                const oldSession = engine.getOrCreateSession(
+                    'session-cursor-legacy-resume-old',
+                    {
+                        path: '/tmp/project',
+                        host: 'localhost',
+                        machineId: 'machine-1',
+                        flavor: 'cursor',
+                        cursorSessionId: 'legacy-cursor-1',
+                        lifecycleState: 'archived',
+                        archivedBy: 'cli',
+                        archiveReason: 'Hub restart'
+                    },
+                    null,
+                    'default'
+                )
+                engine.getOrCreateMachine(
+                    'machine-1',
+                    { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                    null,
+                    'default'
+                )
+                engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+
+                const spawnedSession = engine.getOrCreateSession(
+                    'session-cursor-legacy-resume-new',
+                    {
+                        path: '/tmp/project',
+                        host: 'localhost',
+                        machineId: 'machine-1',
+                        flavor: 'cursor',
+                        cursorSessionId: 'legacy-cursor-1'
+                    },
+                    null,
+                    'default'
+                )
+
+                let handshakeCalls = 0
+                ;(engine as any).rpcGateway.spawnSession = async () => {
+                    engine.handleSessionAlive({ sid: spawnedSession.id, time: Date.now() })
+                    return { type: 'success', sessionId: spawnedSession.id }
+                }
+                ;(engine as any).waitForSessionActive = async () => true
+                ;(engine as any).waitForSessionReady = async () => {
+                    handshakeCalls += 1
+                    return 'timeout'
+                }
+
+                const result = await engine.resumeSession(oldSession.id, 'default')
+
+                expect(handshakeCalls).toBe(0)
+                expect(result.type).toBe('success')
+            } finally {
+                if (priorAutoMigrate === undefined) {
+                    delete process.env.HAPI_CURSOR_LEGACY_AUTO_MIGRATE
+                } else {
+                    process.env.HAPI_CURSOR_LEGACY_AUTO_MIGRATE = priorAutoMigrate
+                }
+                engine.stop()
+            }
+        })
+
+        it('pre-stamps legacy protocol before spawn while keeping the row archived', async () => {
+            const priorAutoMigrate = process.env.HAPI_CURSOR_LEGACY_AUTO_MIGRATE
+            process.env.HAPI_CURSOR_LEGACY_AUTO_MIGRATE = '0'
+            const store = new Store(':memory:')
+            const engine = new SyncEngine(
+                store,
+                {} as never,
+                new RpcRegistry(),
+                { broadcast() {} } as never
+            )
+
+            try {
+                const session = engine.getOrCreateSession(
+                    'session-cursor-legacy-reopen-prestamp',
+                    {
+                        path: '/tmp/project',
+                        host: 'localhost',
+                        machineId: 'machine-1',
+                        flavor: 'cursor',
+                        cursorSessionId: 'legacy-reopen-prestamp',
+                        lifecycleState: 'archived',
+                        archivedBy: 'cli',
+                        archiveReason: 'Hub restart'
+                    },
+                    null,
+                    'default'
+                )
+                engine.getOrCreateMachine(
+                    'machine-1',
+                    { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                    null,
+                    'default'
+                )
+                engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+
+                let metadataAtSpawn: Record<string, unknown> | null | undefined
+                ;(engine as any).rpcGateway.spawnSession = async () => {
+                    metadataAtSpawn = engine.getSessionByNamespace(session.id, 'default')?.metadata as Record<string, unknown> | null | undefined
+                    engine.handleSessionAlive({ sid: session.id, time: Date.now() })
+                    return { type: 'success', sessionId: session.id }
+                }
+                ;(engine as any).waitForSessionActive = async () => true
+
+                const result = await engine.reopenSession(session.id, 'default')
+
+                expect(result.type).toBe('success')
+                expect(metadataAtSpawn?.cursorSessionProtocol).toBe('stream-json')
+                expect(metadataAtSpawn?.lifecycleState).toBe('archived')
+            } finally {
+                if (priorAutoMigrate === undefined) {
+                    delete process.env.HAPI_CURSOR_LEGACY_AUTO_MIGRATE
+                } else {
+                    process.env.HAPI_CURSOR_LEGACY_AUTO_MIGRATE = priorAutoMigrate
+                }
+                engine.stop()
+            }
+        })
+
+        it('restores archived metadata when cursor ACP resume handshake fails', async () => {
+            const store = new Store(':memory:')
+            const engine = new SyncEngine(
+                store,
+                {} as never,
+                new RpcRegistry(),
+                { broadcast() {} } as never
+            )
+
+            try {
+                const session = engine.getOrCreateSession(
+                    'session-cursor-acp-reopen-rollback',
+                    {
+                        path: '/tmp/project',
+                        host: 'localhost',
+                        machineId: 'machine-1',
+                        flavor: 'cursor',
+                        cursorSessionId: 'cursor-acp-rollback',
+                        cursorSessionProtocol: 'acp',
+                        lifecycleState: 'archived',
+                        archivedBy: 'cli',
+                        archiveReason: 'Session crashed',
+                        lifecycleStateSince: 1000
+                    },
+                    null,
+                    'default'
+                )
+                engine.getOrCreateMachine(
+                    'machine-1',
+                    { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                    null,
+                    'default'
+                )
+                engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+
+                const spawnedSession = engine.getOrCreateSession(
+                    'session-cursor-acp-reopen-spawned',
+                    {
+                        path: '/tmp/project',
+                        host: 'localhost',
+                        machineId: 'machine-1',
+                        flavor: 'cursor',
+                        cursorSessionId: 'cursor-acp-rollback',
+                        cursorSessionProtocol: 'acp'
+                    },
+                    null,
+                    'default'
+                )
+                ;(engine as any).rpcGateway.spawnSession = async () => {
+                    engine.handleSessionAlive({ sid: spawnedSession.id, time: Date.now() })
+                    return { type: 'success', sessionId: spawnedSession.id }
+                }
+                ;(engine as any).waitForSessionActive = async () => true
+                ;(engine as any).waitForSessionReady = async () => 'timeout'
+
+                const result = await engine.reopenSession(session.id, 'default')
+
+                expect(result.type).toBe('error')
+                const restored = engine.getSessionByNamespace(session.id, 'default')?.metadata as Record<string, unknown> | null | undefined
+                expect(restored?.lifecycleState).toBe('archived')
+                expect(restored?.archiveReason).toBe('Session crashed')
+            } finally {
+                engine.stop()
+            }
+        })
+
+        it('defers dedup merge of archived cursor ACP rows until ready is emitted', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+
+            const archived = cache.getOrCreateSession(
+                'cursor-archived-dup',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    flavor: 'cursor',
+                    cursorSessionId: 'cursor-dedup-1',
+                    cursorSessionProtocol: 'acp',
+                    lifecycleState: 'archived',
+                    archivedBy: 'cli',
+                    archiveReason: 'Hub restart'
+                },
+                null,
+                'default'
+            )
+            const active = cache.getOrCreateSession(
+                'cursor-active-dup',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    flavor: 'cursor',
+                    cursorSessionId: 'cursor-dedup-1',
+                    cursorSessionProtocol: 'acp'
+                },
+                null,
+                'default'
+            )
+            cache.handleSessionAlive({ sid: active.id, time: Date.now() })
+
+            await cache.deduplicateByAgentSessionId(active.id)
+            expect(cache.getSession(archived.id)).toBeDefined()
+
+            store.messages.addMessage(active.id, {
+                role: 'agent',
+                content: { type: 'event', data: { type: 'ready' } }
+            }, 'ready-local')
+
+            await cache.deduplicateByAgentSessionId(active.id)
+            expect(cache.getSession(archived.id)).toBeUndefined()
+        })
+
+        it('merges archived legacy cursor duplicates without waiting for ACP ready', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+
+            const archived = cache.getOrCreateSession(
+                'cursor-legacy-archived-dup',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    flavor: 'cursor',
+                    cursorSessionId: 'legacy-dedup-1',
+                    lifecycleState: 'archived',
+                    archivedBy: 'cli',
+                    archiveReason: 'Hub restart'
+                },
+                null,
+                'default'
+            )
+            const active = cache.getOrCreateSession(
+                'cursor-legacy-active-dup',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    flavor: 'cursor',
+                    cursorSessionId: 'legacy-dedup-1'
+                },
+                null,
+                'default'
+            )
+            cache.handleSessionAlive({ sid: active.id, time: Date.now() })
+
+            await cache.deduplicateByAgentSessionId(active.id)
+            expect(cache.getSession(archived.id)).toBeUndefined()
         })
     })
 })

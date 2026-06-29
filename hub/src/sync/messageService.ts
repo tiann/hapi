@@ -14,6 +14,7 @@ import type { Server } from 'socket.io'
 import { randomUUID } from 'node:crypto'
 import type { Store, CancelQueuedMessageResult } from '../store'
 import { EventPublisher } from './eventPublisher'
+import { isSessionReadyMessage } from './sessionActivity'
 
 type StoredMessageForDelivery = ReturnType<Store['messages']['getMessages']>[number]
 
@@ -89,6 +90,11 @@ export class MessageService {
     getMessages(sessionId: string, limit: number = 200): DecryptedMessage[] {
         const stored = this.store.messages.getMessages(sessionId, limit)
         return toVisibleDecryptedMessages(stored)
+    }
+
+    hasSessionReadyEvent(sessionId: string, limit: number = 100): boolean {
+        const stored = this.store.messages.getMessages(sessionId, limit)
+        return stored.some((message) => isSessionReadyMessage(message.content))
     }
 
     getSessionExport(
