@@ -1085,7 +1085,9 @@ export function buildCliArgs(
             ? 'opencode'
             : agent === 'pi'
               ? 'pi'
-              : 'claude';
+              : agent === 'omp'
+                ? 'omp'
+                : 'claude';
   const args = [agentCommand];
   if (options.resumeSessionId) {
     if (agent === 'codex') {
@@ -1095,6 +1097,12 @@ export function buildCliArgs(
     } else if (agent === 'pi') {
       // Pi uses --session-id for exact session resume (RPC mode)
       args.push('--session-id', options.resumeSessionId);
+    } else if (agent === 'omp') {
+      // OMP resume is dispatched by `hapi omp` via parseRemoteAgentCommandOptions
+      // (--resume -> resumeSessionId), which runOmp forwards to the OMP process
+      // as `--continue` (SessionManager.continueRecent). The bare id is not
+      // passed to the OMP process because OMP has no per-id rpc resume flag.
+      args.push('--resume', options.resumeSessionId);
     } else {
       args.push('--resume', options.resumeSessionId);
     }
@@ -1103,7 +1111,7 @@ export function buildCliArgs(
   if (options.model) {
     args.push('--model', options.model);
   }
-  if (options.effort && (agent === 'claude' || agent === 'pi')) {
+  if (options.effort && (agent === 'claude' || agent === 'pi' || agent === 'omp')) {
     args.push('--effort', options.effort);
   }
   if (options.modelReasoningEffort && (agent === 'codex' || agent === 'opencode')) {
@@ -1112,9 +1120,10 @@ export function buildCliArgs(
   if (options.serviceTier && agent === 'codex') {
     args.push('--service-tier', options.serviceTier);
   }
-  // Pi RPC mode has no permission switching; never pass these flags to it
-  // (the Pi parser rejects --permission-mode and ignores --yolo).
-  if (agent !== 'pi') {
+  // Pi/OMP RPC mode have no runtime permission switching; never pass these
+  // flags (the parsers reject --permission-mode and ignore --yolo; OMP fixes
+  // --approval-mode=yolo at spawn instead).
+  if (agent !== 'pi' && agent !== 'omp') {
     if (options.permissionMode && (PERMISSION_MODES as readonly string[]).includes(options.permissionMode)) {
       args.push('--permission-mode', options.permissionMode);
     } else if (yolo) {

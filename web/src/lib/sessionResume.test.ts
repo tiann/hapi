@@ -31,6 +31,17 @@ describe('sessionResume', () => {
         })).toBe('cursor-1')
     })
 
+    it('resolveAgentSessionIdFromMetadata returns ompSessionId for omp flavor', () => {
+        expect(resolveAgentSessionIdFromMetadata({
+            path: '/p',
+            host: 'h',
+            flavor: 'omp',
+            ompSessionId: 'omp-1',
+            // cross-flavor ids must be ignored
+            codexSessionId: 'codex-1',
+        })).toBe('omp-1')
+    })
+
     it('resolveAgentSessionIdFromMetadata ignores stale cross-flavor ids', () => {
         expect(resolveAgentSessionIdFromMetadata({
             path: '/p',

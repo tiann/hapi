@@ -10,6 +10,7 @@ import type {
     PermissionMode,
     Session,
     PiModelSummary,
+    OmpModelSummary,
     SlashCommand
 } from '@/types/api'
 import type { ChatBlock, NormalizedMessage } from '@/chat/types'
@@ -59,6 +60,7 @@ import {
 import { buildCursorEffortPickerOptions, resolveCursorVariantOptions } from '@/lib/cursorModelOptions'
 import { useOpencodeModels } from '@/hooks/queries/useOpencodeModels'
 import { usePiModels } from '@/hooks/queries/usePiModels'
+import { useOmpModels } from '@/hooks/queries/useOmpModels'
 import { useOpencodeReasoningEffortOptions } from '@/hooks/queries/useOpencodeReasoningEffortOptions'
 import { useVoiceOptional } from '@/lib/voice-context'
 import { VoiceBackendSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
@@ -584,6 +586,13 @@ function SessionChatInner(props: SessionChatProps) {
     // Provider-qualified selected model — disambiguates when two providers
     // share a modelId (hub persists this alongside the legacy modelId string).
     const piSelectedModel = piMetadata?.piSelectedModel as { provider: string; modelId: string } | null | undefined
+    const ompModelsState = useOmpModels({
+        api: props.api,
+        sessionId: props.session.id,
+        enabled: agentFlavor === 'omp' && props.session.active
+    })
+    const ompCachedModels = piMetadata?.ompAvailableModels as OmpModelSummary[] | undefined ?? []
+    const ompSelectedModel = piMetadata?.ompSelectedModel as { provider: string; modelId: string } | null | undefined
     const cursorCatalogReadinessArgs = useMemo(() => ({
         sessionLoading: cursorModelsState.isLoading,
         machineLoading: machineCursorModelsState.isLoading,
@@ -1242,6 +1251,8 @@ function SessionChatInner(props: SessionChatProps) {
                         }
                         piModels={agentFlavor === 'pi' ? (piModelsState.availableModels.length > 0 ? piModelsState.availableModels : piCachedModels) : undefined}
                         piSelectedModel={agentFlavor === 'pi' ? piSelectedModel : undefined}
+                        ompModels={agentFlavor === 'omp' ? (ompModelsState.availableModels.length > 0 ? ompModelsState.availableModels : ompCachedModels) : undefined}
+                        ompSelectedModel={agentFlavor === 'omp' ? ompSelectedModel : undefined}
                         availableModelReasoningEffortOptions={
                             agentFlavor === 'opencode' && opencodeReasoningEffortState.options.length > 0
                                 ? opencodeReasoningEffortState.options

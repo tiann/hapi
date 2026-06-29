@@ -756,6 +756,7 @@ export class SyncEngine {
         if (flavor === 'cursor') return metadata.cursorSessionId ?? null
         if (flavor === 'kimi') return metadata.kimiSessionId ?? null
         if (flavor === 'pi') return metadata.piSessionId ?? null
+        if (flavor === 'omp') return metadata.ompSessionFile ?? metadata.ompSessionId ?? null
 
         return metadata.claudeSessionId ?? this.recoverClaudeSessionIdFromMessages(session.id, namespace)
     }
@@ -1608,6 +1609,11 @@ export class SyncEngine {
     /** Generic Pi RPC — delegates to rpcGateway.callPiRpc. */
     async callPiRpc<T = unknown>(sessionId: string, method: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<T> {
         return await this.rpcGateway.callPiRpc<T>(sessionId, method, params, timeoutMs)
+    }
+
+    /** Generic OMP RPC — delegates to rpcGateway.callOmpRpc. */
+    async callOmpRpc<T = unknown>(sessionId: string, method: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<T> {
+        return await this.rpcGateway.callOmpRpc<T>(sessionId, method, params, timeoutMs)
     }
 
     async listOpencodeReasoningEffortOptionsForSession(sessionId: string): Promise<RpcListOpencodeReasoningEffortOptionsResponse> {
