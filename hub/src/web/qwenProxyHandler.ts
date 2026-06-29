@@ -54,9 +54,10 @@ export function createQwenProxyWebSocketHandler(
         open(clientWs) {
             const data = clientWs.data as { apiKey: string; model: string; language?: string; voiceName?: string; systemInstruction?: string }
             const upstreamBase = process.env.QWEN_REALTIME_WS_URL || QWEN_WS_BASE
-            const upstreamUrl = `${upstreamBase}?model=${encodeURIComponent(data.model)}`
+            const upstreamUrl = new URL(upstreamBase)
+            upstreamUrl.searchParams.set('model', data.model)
 
-            const upstream = new WebSocketImpl(upstreamUrl, {
+            const upstream = new WebSocketImpl(upstreamUrl.toString(), {
                 headers: { 'Authorization': `Bearer ${data.apiKey}` }
             })
 

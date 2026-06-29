@@ -95,6 +95,18 @@ describe('createQwenProxyWebSocketHandler ack-gate', () => {
         expect(lastUpstream?.url).toBe('wss://example.test/realtime?model=qwen3.5-omni-flash-realtime')
     })
 
+    test('preserves existing query parameters in QWEN_REALTIME_WS_URL', () => {
+        process.env.QWEN_REALTIME_WS_URL = 'wss://example.test/realtime?workspace=abc&model=old'
+        const handler = createQwenProxyWebSocketHandler(FakeWebSocket)
+        const client = newClient()
+
+        handler.open(client)
+
+        expect(lastUpstream?.url).toBe(
+            'wss://example.test/realtime?workspace=abc&model=qwen3.5-omni-flash-realtime'
+        )
+    })
+
     test('queues client frames until upstream acks hub-owned session.update with session.updated', () => {
         const handler = createQwenProxyWebSocketHandler(FakeWebSocket)
         const client = newClient()
