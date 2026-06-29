@@ -20,11 +20,13 @@ export async function createSessionScanner(opts: {
     sessionId: string | null;
     workingDirectory: string;
     onMessage: (message: RawJSONLines) => void;
+    onTitleChange?: (title: string) => void;
 }) {
     const scanner = new ClaudeSessionScanner({
         sessionId: opts.sessionId,
         workingDirectory: opts.workingDirectory,
-        onMessage: opts.onMessage
+        onMessage: opts.onMessage,
+        onTitleChange: opts.onTitleChange
     });
 
     await scanner.start();
@@ -45,15 +47,17 @@ export type SessionScanner = ReturnType<typeof createSessionScanner>;
 class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
     private readonly projectDir: string;
     private readonly onMessage: (message: RawJSONLines) => void;
+    private readonly onTitleChange?: (title: string) => void;
     private readonly finishedSessions = new Set<string>();
     private readonly pendingSessions = new Set<string>();
     private currentSessionId: string | null;
     private readonly scannedSessions = new Set<string>();
 
-    constructor(opts: { sessionId: string | null; workingDirectory: string; onMessage: (message: RawJSONLines) => void }) {
+    constructor(opts: { sessionId: string | null; workingDirectory: string; onMessage: (message: RawJSONLines) => void; onTitleChange?: (title: string) => void }) {
         super({ intervalMs: 3000 });
         this.projectDir = getProjectPath(opts.workingDirectory);
         this.onMessage = opts.onMessage;
+        this.onTitleChange = opts.onTitleChange;
         this.currentSessionId = opts.sessionId;
     }
 
@@ -83,7 +87,10 @@ class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
             return;
         }
         const sessionFile = this.sessionFilePath(this.currentSessionId);
-        const { events, totalLines } = await readSessionLog(sessionFile, 0);
+        const { events, titleChanges, totalLines } = await readSessionLog(sessionFile, 0);
+        if (titleChanges.length > 0) {
+            this.onTitleChange?.(titleChanges[titleChanges.length - 1]);
+        }
         logger.debug(`[SESSION_SCANNER] Marking ${events.length} existing messages as processed from session ${this.currentSessionId}`);
         const keys = events.map((entry) => messageKey(entry.event));
         this.seedProcessedKeys(keys);
@@ -113,7 +120,11 @@ class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
         if (sessionId) {
             this.scannedSessions.add(sessionId);
         }
-        const { events, totalLines } = await readSessionLog(filePath, cursor);
+        const { events, titleChanges, totalLines } = await readSessionLog(filePath, cursor);
+        for (const title of titleChanges) {
+            logger.debug(`[SESSION_SCANNER] Title change: ${title}`);
+            this.onTitleChange?.(title);
+        }
         return {
             events,
             nextCursor: totalLines
@@ -172,14 +183,14 @@ function messageKey(message: RawJSONLines): string {
  * Read and parse session log file.
  * Returns only valid conversation messages, silently skipping internal events.
  */
-async function readSessionLog(filePath: string, startLine: number): Promise<{ events: SessionFileScanEntry<RawJSONLines>[]; totalLines: number }> {
+async function readSessionLog(filePath: string, startLine: number): Promise<{ events: SessionFileScanEntry<RawJSONLines>[]; titleChanges: string[]; totalLines: number }> {
     logger.debug(`[SESSION_SCANNER] Reading session file: ${filePath}`);
     let file: string;
     try {
         file = await readFile(filePath, 'utf-8');
     } catch (error) {
         logger.debug(`[SESSION_SCANNER] Session file not found: ${filePath}`);
-        return { events: [], totalLines: startLine };
+        return { events: [], titleChanges: [], totalLines: startLine };
     }
     const lines = file.split('\n');
     const hasTrailingEmpty = lines.length > 0 && lines[lines.length - 1] === '';
@@ -189,6 +200,7 @@ async function readSessionLog(filePath: string, startLine: number): Promise<{ ev
         effectiveStartLine = 0;
     }
     const messages: SessionFileScanEntry<RawJSONLines>[] = [];
+    const titleChanges: string[] = [];
     for (let index = effectiveStartLine; index < lines.length; index += 1) {
         const l = lines[index];
         try {
@@ -196,13 +208,19 @@ async function readSessionLog(filePath: string, startLine: number): Promise<{ ev
                 continue;
             }
             let message = JSON.parse(l);
-            
+
+            // Capture custom-title events from Claude Code's /rename command
+            if (message.type === 'custom-title' && typeof message.customTitle === 'string') {
+                titleChanges.push(message.customTitle);
+                continue;
+            }
+
             // Silently skip known internal Claude Code events
             // These are state/tracking events, not conversation messages
             if (message.type && INTERNAL_CLAUDE_EVENT_TYPES.has(message.type)) {
                 continue;
             }
-            
+
             let parsed = RawJSONLinesSchema.safeParse(message);
             if (!parsed.success) {
                 // Unknown message types are silently skipped.
@@ -214,7 +232,7 @@ async function readSessionLog(filePath: string, startLine: number): Promise<{ ev
             continue;
         }
     }
-    return { events: messages, totalLines };
+    return { events: messages, titleChanges, totalLines };
 }
 
 function sessionIdFromPath(filePath: string): string | null {
