@@ -1,4 +1,6 @@
 import { ComposerPrimitive } from '@assistant-ui/react'
+import { useCallback, useLayoutEffect, useRef, useState } from 'react'
+import type { CodexUsage } from '@hapi/protocol/types'
 import type { ConversationStatus } from '@/realtime/types'
 import { useTranslation } from '@/lib/use-translation'
 import { ScheduleIcon } from '@/components/icons'
@@ -6,7 +8,8 @@ import { ScheduleTimePicker } from './ScheduleTimePicker'
 import type { PendingSchedule } from './ScheduleTimePicker'
 import { useFue } from '@/lib/use-fue'
 import { FueCallout, FueDot } from '@/components/Fue'
-import { useRef, useState } from 'react'
+import { AgentBudgetIndicator } from './AgentBudgetIndicator'
+import { toCodexBudgetState } from './codexBudgetAdapter'
 
 function ChevronIcon() {
     return <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M2.5 3.75L5 6.25L7.5 3.75" /></svg>
@@ -430,6 +433,11 @@ export function UnifiedButton(props: {
     )
 }
 
+function CodexUsageIndicator(props: { usage?: CodexUsage | null }) {
+    const state = toCodexBudgetState(props.usage)
+    return <AgentBudgetIndicator state={state} popoverTitle="Codex Usage" />
+}
+
 export function ComposerButtons(props: {
     canSend: boolean
     controlsDisabled: boolean
@@ -477,6 +485,7 @@ export function ComposerButtons(props: {
     scratchlistMode?: boolean
     scratchlistCount?: number
     onScratchlistToggle?: () => void
+    codexUsage?: CodexUsage | null
 }) {
     const { t } = useTranslation()
     const isVoiceConnected = props.voiceStatus === 'connected'
@@ -661,29 +670,32 @@ export function ComposerButtons(props: {
                 ) : null}
             </div>
 
-            <UnifiedButton
-                canSend={props.canSend}
-                voiceStatus={props.voiceStatus}
-                voiceEnabled={props.voiceEnabled}
-                controlsDisabled={props.controlsDisabled}
-                onSend={props.onSend}
-                onVoiceToggle={props.onVoiceToggle}
-                /*
-                 * Derived, NOT raw scratchlistMode. Mirror SessionChat's
-                 * shouldRouteToScratchlist so the visible send-button state
-                 * matches the actual routing decision: amber + "Send to
-                 * scratchlist" only when mode is on AND the payload would
-                 * be a pure-text scratchlist add. Attachments or a pending
-                 * schedule force a chat fallback in onSendForComposer; the
-                 * button must reflect that, otherwise the UI lies about
-                 * where the user's content is going.
-                 */
-                routesToScratchlist={
-                    (props.scratchlistMode ?? false)
-                    && !hasAttachments
-                    && props.pendingSchedule == null
-                }
-            />
+            <div className="flex items-center gap-1">
+                <CodexUsageIndicator usage={props.codexUsage} />
+                <UnifiedButton
+                    canSend={props.canSend}
+                    voiceStatus={props.voiceStatus}
+                    voiceEnabled={props.voiceEnabled}
+                    controlsDisabled={props.controlsDisabled}
+                    onSend={props.onSend}
+                    onVoiceToggle={props.onVoiceToggle}
+                    /*
+                     * Derived, NOT raw scratchlistMode. Mirror SessionChat's
+                     * shouldRouteToScratchlist so the visible send-button state
+                     * matches the actual routing decision: amber + "Send to
+                     * scratchlist" only when mode is on AND the payload would
+                     * be a pure-text scratchlist add. Attachments or a pending
+                     * schedule force a chat fallback in onSendForComposer; the
+                     * button must reflect that, otherwise the UI lies about
+                     * where the user's content is going.
+                     */
+                    routesToScratchlist={
+                        (props.scratchlistMode ?? false)
+                        && !hasAttachments
+                        && props.pendingSchedule == null
+                    }
+                />
+            </div>
         </div>
     )
 }

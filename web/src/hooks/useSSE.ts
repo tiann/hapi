@@ -8,8 +8,9 @@ import type {
     Session,
     SessionPatch,
     SessionResponse,
-    SessionsResponse,
     SessionSummary,
+    SessionSummaryMetadata,
+    SessionsResponse,
     SyncEvent
 } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
@@ -64,7 +65,7 @@ function getSessionPatch(value: unknown): SessionPatch | null {
     if (!parsed.success) {
         return null
     }
-    return Object.keys(parsed.data).length > 0 ? parsed.data : null
+    return Object.keys(parsed.data).length > 0 ? (parsed.data as SessionPatch) : null
 }
 
 function isMachineRecord(value: unknown): value is Machine {
@@ -318,6 +319,24 @@ export function useSSE(options: {
             })
         }
 
+        const toSummaryMetadata = (metadata: NonNullable<SessionPatch['metadata']> | null): SessionSummaryMetadata | null =>
+            metadata ? {
+                name: metadata.name,
+                path: metadata.path,
+                machineId: metadata.machineId ?? undefined,
+                summary: metadata.summary ? { text: metadata.summary.text } : undefined,
+                flavor: metadata.flavor ?? null,
+                worktree: metadata.worktree,
+                agentSessionId: metadata.codexSessionId
+                    ?? metadata.claudeSessionId
+                    ?? metadata.geminiSessionId
+                    ?? metadata.opencodeSessionId
+                    ?? metadata.cursorSessionId
+                    ?? metadata.kimiSessionId
+                    ?? undefined,
+                lifecycleState: metadata.lifecycleState
+            } : null
+
         const patchSessionSummary = (sessionId: string, patch: SessionPatch): boolean => {
             let patched = false
             queryClient.setQueryData<SessionsResponse | undefined>(queryKeys.sessions, (previous) => {
@@ -338,6 +357,9 @@ export function useSSE(options: {
 
                 const nextSummary: SessionSummary = {
                     ...current,
+                    metadata: Object.prototype.hasOwnProperty.call(patch, 'metadata')
+                        ? toSummaryMetadata(patch.metadata ?? null)
+                        : current.metadata,
                     active: patch.active ?? current.active,
                     thinking: patch.thinking ?? current.thinking,
                     activeAt: patch.activeAt ?? current.activeAt,

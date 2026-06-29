@@ -44,6 +44,7 @@ export const codexCommand: CommandDefinition = {
                 codexArgs?: string[]
                 permissionMode?: CodexPermissionMode
                 resumeSessionId?: string
+                importHistory?: boolean
                 model?: string
                 modelReasoningEffort?: ReasoningEffort
                 serviceTier?: string
@@ -93,6 +94,8 @@ export const codexCommand: CommandDefinition = {
                         throw new Error('Missing --service-tier value')
                     }
                     options.serviceTier = parseServiceTier(tier)
+                } else if (arg === '--hapi-import-history') {
+                    options.importHistory = true
                 } else {
                     unknownArgs.push(arg)
                 }

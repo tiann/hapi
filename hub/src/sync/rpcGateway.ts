@@ -61,6 +61,23 @@ export type RpcOpencodeModel = OpencodeModelSummary
 export type RpcListOpencodeModelsResponse = OpencodeModelsResponse
 export type RpcListOpencodeReasoningEffortOptionsResponse = OpencodeReasoningEffortResponse
 
+
+export type RpcCodexSession = {
+    id: string
+    title: string
+    updatedAt: number
+    path: string | null
+    model: string | null
+    isOld: boolean
+}
+
+export type RpcListCodexSessionsResponse = {
+    success: boolean
+    sessions?: RpcCodexSession[]
+    nextCursor?: string | null
+    error?: string
+}
+
 export class RpcGateway {
     constructor(
         private readonly io: Server,
@@ -137,6 +154,7 @@ export class RpcGateway {
         sessionType?: 'simple' | 'worktree',
         worktreeName?: string,
         resumeSessionId?: string,
+        importHistory?: boolean,
         effort?: string,
         permissionMode?: PermissionMode,
         serviceTier?: string
@@ -145,7 +163,7 @@ export class RpcGateway {
             const result = await this.machineRpc(
                 machineId,
                 RPC_METHODS.SpawnHappySession,
-                { type: 'spawn-in-directory', directory, agent, model, modelReasoningEffort, yolo, sessionType, worktreeName, resumeSessionId, effort, permissionMode, serviceTier }
+                { type: 'spawn-in-directory', directory, agent, model, modelReasoningEffort, yolo, sessionType, worktreeName, resumeSessionId, importHistory, effort, permissionMode, serviceTier }
             )
             if (result && typeof result === 'object') {
                 const obj = result as Record<string, unknown>
@@ -268,6 +286,13 @@ export class RpcGateway {
 
     async listCursorModelsForSession(sessionId: string): Promise<RpcListCursorModelsResponse> {
         return await this.sessionRpc(sessionId, RPC_METHODS.ListCursorModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListCursorModelsResponse
+    }
+
+    async listCodexSessionsForMachine(
+        machineId: string,
+        options?: { includeOld?: boolean; olderThanDays?: number; limit?: number; cursor?: string }
+    ): Promise<RpcListCodexSessionsResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.ListCodexSessions, options ?? {}) as RpcListCodexSessionsResponse
     }
 
     async listCursorModelsForMachine(machineId: string): Promise<RpcListCursorModelsResponse> {

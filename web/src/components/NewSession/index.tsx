@@ -5,6 +5,7 @@ import { usePlatform } from '@/hooks/usePlatform'
 import { useMachinePathsExists } from '@/hooks/useMachinePathsExists'
 import { useSpawnSession } from '@/hooks/mutations/useSpawnSession'
 import { useCodexModels } from '@/hooks/queries/useCodexModels'
+import { useCodexSessions } from '@/hooks/queries/useCodexSessions'
 import { useCursorModelsForMachine } from '@/hooks/queries/useCursorModelsForMachine'
 import { useOpencodeModelsForCwd } from '@/hooks/queries/useOpencodeModelsForCwd'
 import { useSessions } from '@/hooks/queries/useSessions'
@@ -37,6 +38,7 @@ import { MachineSelector } from './MachineSelector'
 import { ModelSelector } from './ModelSelector'
 import { OpencodeModelSelector } from './OpencodeModelSelector'
 import { ClaudeEffortSelector } from './ClaudeEffortSelector'
+import { CodexSessionSelector } from './CodexSessionSelector'
 import { shouldEnableOpencodeModelDiscovery } from './opencodeModelsGate'
 import { ReasoningEffortSelector } from './ReasoningEffortSelector'
 import {
@@ -76,6 +78,8 @@ export function NewSession(props: {
     const pendingCursorBaseRef = useRef<string | null>(null)
     const [effort, setEffort] = useState<ClaudeEffort>('auto')
     const [modelReasoningEffort, setModelReasoningEffort] = useState<CodexReasoningEffort>('default')
+    const [showOldCodexSessions, setShowOldCodexSessions] = useState(false)
+    const [selectedCodexSessionId, setSelectedCodexSessionId] = useState('')
     const [yoloMode, setYoloMode] = useState(loadPreferredYoloMode)
     const [sessionType, setSessionType] = useState<SessionType>('simple')
     const [worktreeName, setWorktreeName] = useState('')
@@ -95,6 +99,9 @@ export function NewSession(props: {
         if (agent !== 'cursor') {
             setModel('auto')
             setCursorSelectedBase('auto')
+        }
+        if (agent !== 'codex') {
+            setSelectedCodexSessionId('')
         }
     }, [agent])
 
@@ -181,6 +188,22 @@ export function NewSession(props: {
         machineId,
         enabled: agent === 'codex' && Boolean(machineId)
     })
+
+    const codexSessionsState = useCodexSessions({
+        api: props.api,
+        machineId,
+        includeOld: showOldCodexSessions,
+        enabled: agent === 'codex' && Boolean(machineId)
+    })
+
+    useEffect(() => {
+        if (!selectedCodexSessionId) return
+        if (codexSessionsState.isLoading) return
+        if (!codexSessionsState.sessions.some((s) => s.id === selectedCodexSessionId)) {
+            setSelectedCodexSessionId('')
+        }
+    }, [selectedCodexSessionId, codexSessionsState.isLoading, codexSessionsState.sessions])
+
     const [opencodeSelectedModel, setOpencodeSelectedModel] = useState<string | null>(null)
     const runnerSpawnError = useMemo(
         () => formatRunnerSpawnError(selectedMachine),
@@ -405,6 +428,7 @@ export function NewSession(props: {
         setMachineId(newMachineId)
         setModel('auto')
         setCursorSelectedBase('auto')
+        setSelectedCodexSessionId('')
         const paths = getRecentPaths(newMachineId)
         if (paths[0]) {
             setDirectory(paths[0])
@@ -526,12 +550,22 @@ export function NewSession(props: {
     }, [suggestions, selectedIndex, moveUp, moveDown, clearSuggestions, handleSuggestionSelect])
 
     async function handleCreate() {
-        if (!machineId || !trimmedDirectory) return
+        if (!machineId) return
+
+        // When resuming a Codex session, use that session's recorded workspace
+        // path as the directory. The form's directory input is irrelevant - the
+        // transcript belongs to a specific project and Codex must run there.
+        const selectedCodexSession = agent === 'codex' && selectedCodexSessionId
+            ? (codexSessionsState.sessions.find((s) => s.id === selectedCodexSessionId) ?? null)
+            : null
+        const spawnDirectory = selectedCodexSession?.path ?? trimmedDirectory
+
+        if (!spawnDirectory) return
 
         setError(null)
         try {
-            const existsResult = await checkPathsExists([trimmedDirectory])
-            const directoryExists = existsResult[trimmedDirectory]
+            const existsResult = await checkPathsExists([spawnDirectory])
+            const directoryExists = existsResult[spawnDirectory]
 
             if (sessionType === 'worktree' && directoryExists === false) {
                 haptic.notification('error')
@@ -565,21 +599,23 @@ export function NewSession(props: {
                 : undefined
             const result = await spawnSession({
                 machineId,
-                directory: trimmedDirectory,
+                directory: spawnDirectory,
                 agent,
                 model: resolvedModel,
                 effort: resolvedEffort,
                 modelReasoningEffort: resolvedModelReasoningEffort,
                 yolo: yoloMode,
                 sessionType,
-                worktreeName: sessionType === 'worktree' ? (worktreeName.trim() || undefined) : undefined
+                worktreeName: sessionType === 'worktree' ? (worktreeName.trim() || undefined) : undefined,
+                resumeSessionId: agent === 'codex' && selectedCodexSessionId ? selectedCodexSessionId : undefined,
+                importHistory: agent === 'codex' && Boolean(selectedCodexSessionId)
             })
 
             if (result.type === 'success') {
                 haptic.notification('success')
                 clearNewSessionFormDraft()
                 setLastUsedMachineId(machineId)
-                addRecentPath(machineId, trimmedDirectory)
+                addRecentPath(machineId, spawnDirectory)
                 props.onSuccess(result.sessionId)
                 return
             }
@@ -592,7 +628,11 @@ export function NewSession(props: {
         }
     }
 
-    const canCreate = Boolean(machineId && trimmedDirectory && !isFormDisabled && !missingWorktreeDirectory)
+    const selectedCodexSessionForCreate = agent === 'codex' && selectedCodexSessionId
+        ? (codexSessionsState.sessions.find((s) => s.id === selectedCodexSessionId) ?? null)
+        : null
+    const hasSpawnDirectory = Boolean(selectedCodexSessionForCreate?.path ?? trimmedDirectory)
+    const canCreate = Boolean(machineId && hasSpawnDirectory && !isFormDisabled && !missingWorktreeDirectory)
 
     return (
         <div className="flex flex-col divide-y divide-[var(--app-divider)]">
@@ -715,6 +755,18 @@ export function NewSession(props: {
                 effort={effort}
                 isDisabled={isFormDisabled}
                 onEffortChange={setEffort}
+            />
+
+            <CodexSessionSelector
+                enabled={agent === 'codex'}
+                includeOld={showOldCodexSessions}
+                sessions={codexSessionsState.sessions}
+                selectedSessionId={selectedCodexSessionId}
+                isLoading={codexSessionsState.isLoading}
+                isDisabled={isFormDisabled}
+                error={codexSessionsState.error}
+                onToggleIncludeOld={setShowOldCodexSessions}
+                onSelectSession={setSelectedCodexSessionId}
             />
             <ReasoningEffortSelector
                 agent={agent}

@@ -5,6 +5,7 @@ import type { CodexSessionEvent } from './codexEventConverter';
 
 interface CodexSessionScannerOptions {
     transcriptPath: string | null;
+    replayExistingEvents?: boolean;
     onEvent: (event: CodexSessionEvent) => void;
     onSessionId?: (sessionId: string) => void;
     replayExistingHistory?: boolean;
@@ -33,6 +34,7 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
     private transcriptPath: string | null;
     private readonly onEvent: (event: CodexSessionEvent) => void;
     private readonly onSessionId?: (sessionId: string) => void;
+    private readonly replayExistingEvents: boolean;
     private readonly fileEpochByPath = new Map<string, number>();
     private readonly fileSizeByPath = new Map<string, number>();
     private replayExistingHistoryOnNextAttach: boolean;
@@ -44,6 +46,7 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
         this.onEvent = opts.onEvent;
         this.onSessionId = opts.onSessionId;
         this.replayExistingHistoryOnNextAttach = opts.replayExistingHistory ?? false;
+        this.replayExistingEvents = opts.replayExistingEvents === true;
     }
 
     async setTranscriptPath(transcriptPath: string): Promise<void> {
@@ -105,6 +108,11 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
 
     private async primeTranscript(filePath: string): Promise<void> {
         const { events, nextCursor } = await this.readSessionFile(filePath, 0);
+        if (this.replayExistingEvents) {
+            for (const entry of events) {
+                this.onEvent(entry.event);
+            }
+        }
         const keys = events.map((entry) => this.generateEventKey(entry.event, { filePath, lineIndex: entry.lineIndex }));
         this.seedProcessedKeys(keys);
         this.setCursor(filePath, nextCursor);

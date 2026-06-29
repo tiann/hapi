@@ -5,6 +5,7 @@ export interface SpawnSessionOptions {
     directory: string
     sessionId?: string
     resumeSessionId?: string
+    importHistory?: boolean
     approvedNewDirectoryCreation?: boolean
     agent?: AgentFlavor
     model?: string

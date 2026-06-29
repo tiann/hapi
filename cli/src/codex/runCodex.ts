@@ -19,6 +19,7 @@ import type { ReasoningEffort } from './appServerTypes';
 import { parseCodexSpecialCommand } from './codexSpecialCommands';
 import { listSlashCommands } from '@/modules/common/slashCommands';
 import { resolveCodexSlashCommand } from './utils/slashCommands';
+import { importCodexSessionHistory } from './importHistory';
 
 export { emitReadyIfIdle } from './utils/emitReadyIfIdle';
 
@@ -29,6 +30,7 @@ export async function runCodex(opts: {
     codexArgs?: string[];
     permissionMode?: PermissionMode;
     resumeSessionId?: string;
+    importHistory?: boolean;
     model?: string;
     modelReasoningEffort?: ReasoningEffort;
     serviceTier?: string;
@@ -77,7 +79,7 @@ export async function runCodex(opts: {
     const sessionWrapperRef: { current: CodexSession | null } = { current: null };
     // 中文注释：当用户直接把现成的 Codex thread 导入到一个全新的 Hapi 会话时，
     // 需要在首次附着 transcript 时回放已有历史；恢复已有 Hapi 会话时则保持原来的增量模式，避免重复灌入旧消息。
-    const replayTranscriptHistoryOnStart = Boolean(opts.resumeSessionId && !opts.existingSessionId);
+    const replayTranscriptHistoryOnStart = Boolean(opts.resumeSessionId && !opts.existingSessionId && !opts.importHistory);
 
     let currentPermissionMode: PermissionMode = opts.permissionMode ?? 'default';
     let currentModel = opts.model;
@@ -100,6 +102,32 @@ export async function runCodex(opts: {
     lifecycle.registerProcessHandlers();
     registerKillSessionHandler(session.rpcHandlerManager, lifecycle);
     registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);
+
+    if (opts.importHistory && opts.resumeSessionId) {
+        try {
+            const importedHistory = await importCodexSessionHistory({
+                session,
+                codexSessionId: opts.resumeSessionId,
+                expectedDirectory: workingDirectory
+            });
+            if (!opts.model && importedHistory.model) {
+                currentModel = importedHistory.model;
+            }
+            if (
+                !opts.modelReasoningEffort
+                && importedHistory.modelReasoningEffort
+                && REASONING_EFFORTS.has(importedHistory.modelReasoningEffort as ReasoningEffort)
+            ) {
+                currentModelReasoningEffort = importedHistory.modelReasoningEffort as ReasoningEffort;
+            }
+        } catch (error) {
+            logger.debug('[codex] Failed to import Codex session history:', error);
+            session.sendAgentMessage({
+                type: 'message',
+                message: `Failed to import Codex session history: ${error instanceof Error ? error.message : String(error)}`
+            });
+        }
+    }
 
     const applyCurrentConfigToSession = (options?: { syncModel?: boolean }) => {
         const sessionInstance = sessionWrapperRef.current;
@@ -412,6 +440,7 @@ export async function runCodex(opts: {
             collaborationMode: currentCollaborationMode,
             resumeSessionId: opts.resumeSessionId,
             replayTranscriptHistoryOnStart,
+            importHistory: opts.importHistory,
             onModeChange: createModeChangeHandler(session),
             onSessionReady: (instance) => {
                 sessionWrapperRef.current = instance;
