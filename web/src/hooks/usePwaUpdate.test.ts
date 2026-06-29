@@ -130,7 +130,7 @@ describe('requestPwaUpdateReload', () => {
             setTimeoutFn: vi.fn((callback, delay) => {
                 expect(delay).toBe(PWA_UPDATE_RELOAD_FALLBACK_MS)
                 return setTimeout(callback, delay)
-            }) as typeof setTimeout,
+            }) as unknown as typeof setTimeout,
         })
 
         await pending

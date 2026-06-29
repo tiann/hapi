@@ -4,6 +4,7 @@ import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { getElevenLabsSupportedLanguages, getLanguageDisplayName, type Language } from '@/lib/languages'
 import { VOICES, getFallbackVoices } from '@/lib/voices'
 import { useAppContext } from '@/lib/app-context'
+import { CompanionPairing } from '@/components/settings/CompanionPairing'
 import { fetchVoiceBackend, fetchVoices, type VoiceInfo } from '@/api/voice'
 import {
     getStaticVoiceOptions,
@@ -371,7 +372,7 @@ function ThemeColorControl(props: { t: (key: string) => string }) {
 
 export default function SettingsPage() {
     const { t, locale, setLocale } = useTranslation()
-    const { api } = useAppContext()
+    const { api, baseUrl } = useAppContext()
     const goBack = useAppGoBack()
     const [isOpen, setIsOpen] = useState(false)
     const [isAppearanceOpen, setIsAppearanceOpen] = useState(false)
@@ -1254,6 +1255,16 @@ export default function SettingsPage() {
                                 {t('settings.voice.advanced.section.title')}
                             </div>
                             <VoiceDiagnosticsControls t={t} voiceBackend={voiceBackend} />
+                        </div>
+                    </div>
+
+                    {/* Companion section */}
+                    <div className="border-b border-[var(--app-divider)]">
+                        <div className="px-3 py-2 text-xs font-semibold text-[var(--app-hint)] uppercase tracking-wide">
+                            {t('settings.companion.title')}
+                        </div>
+                        <div className="px-3 py-3">
+                            <CompanionPairing baseUrl={baseUrl} />
                         </div>
                     </div>
 

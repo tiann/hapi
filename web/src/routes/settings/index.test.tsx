@@ -216,6 +216,13 @@ describe('SettingsPage', () => {
         expect(calledKeys).toContain('settings.about.protocolVersion')
     })
 
+    it('uses correct i18n keys for Companion section', () => {
+        const spyT = renderWithSpyT(<SettingsPage />)
+        const calledKeys = spyT.mock.calls.map((call) => call[0])
+        expect(calledKeys).toContain('settings.companion.title')
+        expect(calledKeys).toContain('settings.companion.noToken')
+    })
+
     it('renders the Appearance setting', () => {
         renderWithProviders(<SettingsPage />)
         expect(screen.getAllByText('Appearance').length).toBeGreaterThanOrEqual(1)
