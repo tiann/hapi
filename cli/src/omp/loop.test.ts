@@ -208,6 +208,32 @@ describe('wireTransportEvents', () => {
         expect(sessionWithInitial.currentModel).toBe('other-model');
     });
 
+    it('initialModel apply disambiguates by currentProvider on resume', async () => {
+        // OCR round 4: on resume, get_state restores currentProvider before
+        // get_available_models arrives. A modelId existing under multiple
+        // providers must match the resumed provider, not the first one.
+        const sessionWithInitial = createMockSession('glm-5.2');
+        const transport = createMockTransport();
+        wireTransportEvents(transport, sessionWithInitial, []);
+        // get_state restored the resumed session's provider first.
+        sessionWithInitial.currentProvider = 'local-openai';
+        const modelsData = {
+            type: 'response', command: 'get_available_models', success: true,
+            data: { models: [
+                { id: 'glm-5.2', provider: 'remote-cloud' },
+                { id: 'glm-5.2', provider: 'local-openai' },
+            ] },
+        };
+        emitEvent(modelsData);
+        expect(sessionWithInitial.initialModelApplied).toBe(true);
+        // set_model is applied fire-and-forget (async), so wait for the send.
+        await vi.waitFor(() => {
+            expect(transport.send).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'set_model', provider: 'local-openai', modelId: 'glm-5.2',
+            }));
+        });
+    });
+
     it('turn_start drains the oldest pending localId (FIFO)', () => {
         const transport = createMockTransport();
         const pendingLocalIds = ['a', 'b'];

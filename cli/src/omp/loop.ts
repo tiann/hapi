@@ -231,7 +231,15 @@ function handleResponse(
                 // so resolving the get_available_models RPC itself is not blocked.
                 if (session.initialModel && transport && !session.initialModelApplied) {
                     session.initialModelApplied = true;
-                    const match = models.find((m) => m.modelId === session.initialModel);
+                    // Prefer the provider OMP is actually using (currentProvider,
+                    // set by get_state on resume) so a modelId that exists under
+                    // multiple providers resumes the correct one instead of the
+                    // first match. Falls back to modelId-only when no provider
+                    // is known yet (fresh session, get_state not returned).
+                    const providerHint = session.currentProvider;
+                    const match = providerHint
+                        ? models.find((m) => m.provider === providerHint && m.modelId === session.initialModel)
+                        : models.find((m) => m.modelId === session.initialModel);
                     if (match) {
                         void (async () => {
                             try {
