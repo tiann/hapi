@@ -53,6 +53,7 @@ class FakeClient {
 }
 
 let lastUpstream: FakeUpstream | null = null
+const origQwenRealtimeWsUrl = process.env.QWEN_REALTIME_WS_URL
 const FakeWebSocket = function FakeWebSocket(url: string, opts?: unknown) {
     const u = new FakeUpstream(url, opts)
     lastUpstream = u
@@ -65,13 +66,47 @@ beforeEach(() => {
 
 afterEach(() => {
     lastUpstream = null
+    if (origQwenRealtimeWsUrl === undefined) delete process.env.QWEN_REALTIME_WS_URL
+    else process.env.QWEN_REALTIME_WS_URL = origQwenRealtimeWsUrl
 })
 
 function newClient() {
-    return new FakeClient({ apiKey: 'k', model: 'qwen3-omni-flash-realtime', language: 'en', voiceName: 'Cherry' }) as unknown as ServerWebSocket<unknown> & FakeClient
+    return new FakeClient({ apiKey: 'k', model: 'qwen3.5-omni-flash-realtime', language: 'en', voiceName: 'Cherry' }) as unknown as ServerWebSocket<unknown> & FakeClient
 }
 
 describe('createQwenProxyWebSocketHandler ack-gate', () => {
+    test('preserves the international DashScope realtime endpoint by default', () => {
+        delete process.env.QWEN_REALTIME_WS_URL
+        const handler = createQwenProxyWebSocketHandler(FakeWebSocket)
+        const client = newClient()
+
+        handler.open(client)
+
+        expect(lastUpstream?.url).toBe('wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime?model=qwen3.5-omni-flash-realtime')
+    })
+
+    test('allows overriding the DashScope realtime endpoint with QWEN_REALTIME_WS_URL', () => {
+        process.env.QWEN_REALTIME_WS_URL = 'wss://example.test/realtime'
+        const handler = createQwenProxyWebSocketHandler(FakeWebSocket)
+        const client = newClient()
+
+        handler.open(client)
+
+        expect(lastUpstream?.url).toBe('wss://example.test/realtime?model=qwen3.5-omni-flash-realtime')
+    })
+
+    test('preserves existing query parameters in QWEN_REALTIME_WS_URL', () => {
+        process.env.QWEN_REALTIME_WS_URL = 'wss://example.test/realtime?workspace=abc&model=old'
+        const handler = createQwenProxyWebSocketHandler(FakeWebSocket)
+        const client = newClient()
+
+        handler.open(client)
+
+        expect(lastUpstream?.url).toBe(
+            'wss://example.test/realtime?workspace=abc&model=qwen3.5-omni-flash-realtime'
+        )
+    })
+
     test('queues client frames until upstream acks hub-owned session.update with session.updated', () => {
         const handler = createQwenProxyWebSocketHandler(FakeWebSocket)
         const client = newClient()
@@ -85,6 +120,7 @@ describe('createQwenProxyWebSocketHandler ack-gate', () => {
         const hubSetup = JSON.parse(upstream.sent[0] as string) as { type: string; session: { instructions: string } }
         expect(hubSetup.type).toBe('session.update')
         expect(typeof hubSetup.session.instructions).toBe('string')
+        expect(hubSetup).not.toHaveProperty('session.tool_choice')
 
         handler.message(client, JSON.stringify({ type: 'response.create' }))
         handler.message(client, JSON.stringify({ type: 'conversation.item.create', item: { type: 'message' } }))
