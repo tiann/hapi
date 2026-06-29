@@ -814,4 +814,7 @@ export default {
   'codexSync.confirm.archiveAction': 'Archive in Codex',
   'session.action.syncCodexDisabledActive': 'Stop or archive the running session before syncing Codex history.',
   'codexSync.manual.success.noNewMessages': 'No new Codex messages.',
+  'share.searchResults': 'Matching sessions',
+  'share.noSearchResults': 'No sessions match your search.',
+  'share.searchForMore': '{n} more active sessions — search to find them.',
 } as const
