@@ -225,7 +225,7 @@ export class ApiMachineClient {
                     ? new Set(params.sessionIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0))
                     : null
                 const allSessions = requestedIds
-                    ? listLocalCodexSessionsWithMessages().filter((session) => requestedIds.has(session.id))
+                    ? listLocalCodexSessionsWithMessages(Number.MAX_SAFE_INTEGER).filter((session) => requestedIds.has(session.id))
                     : listLocalCodexSessionSummaries()
                 const sessions = []
                 for (const session of allSessions) {
