@@ -12,7 +12,7 @@ describe('archiveLocalCodexSession', () => {
         else process.env.CODEX_HOME = originalCodexHome
     })
 
-    it('moves a local codex transcript into archived_sessions preserving relative path', () => {
+    it('moves a local codex transcript into archived_sessions preserving relative path', async () => {
         const root = mkdtempSync(join(tmpdir(), 'codex-home-'))
         process.env.CODEX_HOME = root
         const sessionFile = join(root, 'sessions', '2026', '06', '27', 'rollout-2026-06-27T12-00-00-12345678-1234-1234-1234-123456789abc.jsonl')
@@ -26,12 +26,30 @@ describe('archiveLocalCodexSession', () => {
         expect(sessions).toHaveLength(1)
         expect(sessions[0]?.id).toBe('12345678-1234-1234-1234-123456789abc')
 
-        const result = archiveLocalCodexSession('12345678-1234-1234-1234-123456789abc')
+        const result = await archiveLocalCodexSession('12345678-1234-1234-1234-123456789abc')
         expect(result.success).toBe(true)
         if (!result.success) return
         expect(existsSync(sessionFile)).toBe(false)
         expect(existsSync(result.archivedPath)).toBe(true)
         expect(readFileSync(result.archivedPath, 'utf-8')).toContain('session_meta')
+
+        rmSync(root, { recursive: true, force: true })
+    })
+
+    it('refuses to archive when the caller denies the session', async () => {
+        const root = mkdtempSync(join(tmpdir(), 'codex-home-'))
+        process.env.CODEX_HOME = root
+        const sessionFile = join(root, 'sessions', '2026', '06', '27', 'outside.jsonl')
+        mkdirSync(join(root, 'sessions', '2026', '06', '27'), { recursive: true })
+        writeFileSync(sessionFile, [
+            JSON.stringify({ type: 'session_meta', payload: { id: 'outside-session-id', cwd: '/tmp/outside' } }),
+            JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'outside' }] } })
+        ].join('\n'))
+
+        const result = await archiveLocalCodexSession('outside-session-id', { canArchive: () => false })
+
+        expect(result).toEqual({ success: false, error: 'Codex session is outside workspace roots' })
+        expect(existsSync(sessionFile)).toBe(true)
 
         rmSync(root, { recursive: true, force: true })
     })
@@ -95,6 +113,29 @@ describe('listLocalCodexSessionSummaries', () => {
             threadSource: null,
             forkedFromId: 'original-session-id'
         })
+
+        rmSync(root, { recursive: true, force: true })
+    })
+
+    it('skips subagent transcripts', () => {
+        const root = mkdtempSync(join(tmpdir(), 'codex-home-'))
+        process.env.CODEX_HOME = root
+        const sessionsDir = join(root, 'sessions', '2026', '06', '27')
+        mkdirSync(sessionsDir, { recursive: true })
+
+        writeFileSync(join(sessionsDir, 'subagent.jsonl'), [
+            JSON.stringify({
+                type: 'session_meta',
+                payload: {
+                    id: 'subagent-session-id',
+                    cwd: '/tmp/project',
+                    source: { subagent: 'worker' }
+                }
+            }),
+            JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hidden' }] } })
+        ].join('\n'))
+
+        expect(listLocalCodexSessionSummaries()).toHaveLength(0)
 
         rmSync(root, { recursive: true, force: true })
     })

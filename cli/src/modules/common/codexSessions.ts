@@ -34,6 +34,10 @@ export type LocalCodexSessionWithMessages = LocalCodexSessionSummary & {
     messages: CodexImportedMessageContent[]
 }
 
+export type ArchiveLocalCodexSessionOptions = {
+    canArchive?: (session: LocalCodexSessionSummary) => boolean | Promise<boolean>
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
     return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
 }
@@ -67,6 +71,11 @@ function truncateText(value: string, maxLength: number): string {
 function shouldIgnoreSyntheticUserMessage(text: string): boolean {
     const normalized = text.trim()
     return normalized.startsWith('# AGENTS.md instructions') || normalized.startsWith('<environment_context>')
+}
+
+function isSubagentSource(value: unknown): boolean {
+    const record = asRecord(value)
+    return Boolean(record && Object.prototype.hasOwnProperty.call(record, 'subagent'))
 }
 
 function inferSessionIdFromFileName(filePath: string): string | null {
@@ -283,6 +292,7 @@ function parseCodexLocalSession(filePath: string, includeMessages: boolean): Loc
             if (!record) continue
             if (record.type === 'session_meta') {
                 const payload = asRecord(record.payload)
+                if (isSubagentSource(payload?.source)) return null
                 if (!sessionId && typeof payload?.id === 'string') sessionId = payload.id
                 if (!cwd && typeof payload?.cwd === 'string') cwd = payload.cwd
                 if (!originator && typeof payload?.originator === 'string') originator = payload.originator
@@ -347,7 +357,7 @@ export function listLocalCodexSessionsWithMessages(limit = DEFAULT_CODEX_SESSION
 }
 
 
-export function archiveLocalCodexSession(sessionId: string): { success: true; archivedPath: string } | { success: false; error: string } {
+export async function archiveLocalCodexSession(sessionId: string, options: ArchiveLocalCodexSessionOptions = {}): Promise<{ success: true; archivedPath: string } | { success: false; error: string }> {
     const normalizedId = sessionId.trim()
     if (!normalizedId) return { success: false, error: 'sessionId is required' }
 
@@ -356,6 +366,9 @@ export function archiveLocalCodexSession(sessionId: string): { success: true; ar
     const sessions = listLocalCodexSessionSummaries(DEFAULT_CODEX_SESSION_SCAN_LIMIT * 5)
     const target = sessions.find((session) => session.id === normalizedId)
     if (!target) return { success: false, error: 'Codex session not found' }
+    if (options.canArchive && !(await options.canArchive(target))) {
+        return { success: false, error: 'Codex session is outside workspace roots' }
+    }
 
     const relativePath = relative(sessionsRoot, target.file)
     if (!relativePath || relativePath.startsWith('..')) {
