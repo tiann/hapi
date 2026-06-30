@@ -1103,6 +1103,11 @@ function collectImportCandidates(
     }))
 }
 
+function getCodexImportIds(metadata: Record<string, unknown> | null | undefined): string[] {
+    return [metadata?.codexSessionId, metadata?.codexSourceSessionId]
+        .filter((id): id is string => typeof id === 'string' && id.length > 0)
+}
+
 function selectImportTargetSession(
     store: Store,
     candidates: ImportCandidate[],
@@ -1165,18 +1170,17 @@ function listDuplicateCodexSessionGroups(
 
     const groups = new Map<string, ImportCandidate[]>()
     for (const candidate of collectImportCandidates(store, namespace, getSyncEngine)) {
-        const codexSessionId = typeof candidate.metadata?.codexSessionId === 'string'
-            ? candidate.metadata.codexSessionId
-            : null
-        if (!codexSessionId || !requestedSessionIds.has(codexSessionId)) {
-            continue
-        }
+        for (const codexSessionId of getCodexImportIds(candidate.metadata)) {
+            if (!requestedSessionIds.has(codexSessionId)) {
+                continue
+            }
 
-        const existing = groups.get(codexSessionId)
-        if (existing) {
-            existing.push(candidate)
-        } else {
-            groups.set(codexSessionId, [candidate])
+            const existing = groups.get(codexSessionId)
+            if (existing) {
+                existing.push(candidate)
+            } else {
+                groups.set(codexSessionId, [candidate])
+            }
         }
     }
 

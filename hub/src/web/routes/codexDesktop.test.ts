@@ -1036,4 +1036,32 @@ describe('Codex Desktop import routes', () => {
             rmSync(codexHome, { recursive: true, force: true })
         }
     })
+
+    it('treats source and fork ids as the same duplicate-sessions group', async () => {
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        const store = new Store(':memory:')
+        const forkSession = store.sessions.getOrCreateSession('fork-session-id', { codexSessionId: 'fork-session-id', codexSourceSessionId: 'original-session-id' }, {}, 'default')
+        const dupSession = store.sessions.getOrCreateSession('dup-session-id', { codexSessionId: 'original-session-id' }, {}, 'default')
+        app.route('/api', createCodexDesktopRoutes({
+            store,
+            getSyncEngine: () => null
+        }))
+
+        const response = await app.request('/api/codex/duplicate-sessions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ sessionIds: ['original-session-id'] })
+        })
+
+        expect(response.status).toBe(200)
+        const body = await response.json() as { success: true; duplicates: Array<{ codexSessionId: string; hapiSessionIds: string[] }> }
+        expect(body.success).toBe(true)
+        expect(body.duplicates).toHaveLength(1)
+        expect(body.duplicates[0]?.codexSessionId).toBe('original-session-id')
+        expect(body.duplicates[0]?.hapiSessionIds.sort()).toEqual([dupSession.id, forkSession.id].sort())
+    })
 })
