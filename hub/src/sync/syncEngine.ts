@@ -30,6 +30,7 @@ import {
     type RpcGeneratedImageResponse,
     type RpcListDirectoryResponse,
     type RpcListCodexModelsResponse,
+    type RpcArchiveCodexSessionResponse,
     type RpcListCursorModelsResponse,
     type RpcListOpencodeModelsResponse,
     type RpcListOpencodeReasoningEffortOptionsResponse,
@@ -720,7 +721,8 @@ export class SyncEngine {
         resumeSessionId?: string,
         effort?: string,
         permissionMode?: PermissionMode,
-        serviceTier?: string
+        serviceTier?: string,
+        existingSessionId?: string
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
         return await this.rpcGateway.spawnSession(
             machineId,
@@ -734,7 +736,8 @@ export class SyncEngine {
             resumeSessionId,
             effort,
             permissionMode,
-            serviceTier
+            serviceTier,
+            existingSessionId
         )
     }
 
@@ -1174,9 +1177,12 @@ export class SyncEngine {
             return { type: 'error', message: 'No machine online', code: 'no_machine_online' }
         }
 
-        const preferredPermissionMode = opts?.permissionMode
-            ?? session.permissionMode
-            ?? session.metadata?.preferredPermissionMode
+        const metadataPermissionMode = session.metadata?.preferredPermissionMode
+        const preferredPermissionMode = metadataPermissionMode === 'yolo' && opts?.permissionMode === 'default'
+            ? metadataPermissionMode
+            : opts?.permissionMode
+                ?? session.permissionMode
+                ?? metadataPermissionMode
         const spawnResult = await this.rpcGateway.spawnSession(
             targetMachine.id,
             directory,
@@ -1189,7 +1195,8 @@ export class SyncEngine {
             resumeToken,
             session.effort ?? undefined,
             preferredPermissionMode,
-            session.serviceTier ?? undefined
+            session.serviceTier ?? undefined,
+            access.sessionId
         )
 
         if (spawnResult.type !== 'success') {
@@ -1200,6 +1207,9 @@ export class SyncEngine {
         if (!becameActive) {
             return { type: 'error', message: 'Session failed to become active', code: 'resume_failed' }
         }
+
+        // Resume 成功是服务端已确认的状态：立即写入并广播 active，避免 Web 重新拉取到旧的 inactive 快照。
+        this.sessionCache.markSessionActive(spawnResult.sessionId)
 
         // permissionMode is passed to spawnSession above; do not call set-session-config here.
         // session-alive can arrive before the CLI registers that RPC handler, which caused resume_failed.
@@ -1232,6 +1242,7 @@ export class SyncEngine {
             }
         }
 
+        this.sessionCache.markSessionActive(spawnResult.sessionId)
         return { type: 'success', sessionId: spawnResult.sessionId }
     }
 
@@ -1587,6 +1598,14 @@ export class SyncEngine {
 
     async listCodexModelsForMachine(machineId: string): Promise<RpcListCodexModelsResponse> {
         return await this.rpcGateway.listCodexModelsForMachine(machineId)
+    }
+
+    async listCodexSessionsForMachine(machineId: string, cwd?: string | null, sessionIds?: string[]) {
+        return await this.rpcGateway.listCodexSessionsForMachine(machineId, cwd, sessionIds)
+    }
+
+    async archiveCodexSessionForMachine(machineId: string, sessionId: string): Promise<RpcArchiveCodexSessionResponse> {
+        return await this.rpcGateway.archiveCodexSessionForMachine(machineId, sessionId)
     }
 
     async listCursorModelsForSession(sessionId: string): Promise<RpcListCursorModelsResponse> {

@@ -715,6 +715,58 @@ describe('session model', () => {
         }
     })
 
+    it('marks a resumed session active in hub cache before returning success without persisting runtime active state', async () => {
+        const store = new Store(':memory:')
+        const events: unknown[] = []
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast(event: unknown) { events.push(event) } } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'session-resume-active-state',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'codex',
+                    codexSessionId: 'codex-thread-1'
+                },
+                null,
+                'default',
+                'gpt-5.4'
+            )
+            engine.getOrCreateMachine(
+                'machine-1',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+
+            ;(engine as any).rpcGateway.spawnSession = async () => ({ type: 'success', sessionId: session.id })
+            ;(engine as any).waitForSessionActive = async () => true
+
+            const result = await engine.resumeSession(session.id, 'default')
+
+            expect(result).toEqual({ type: 'success', sessionId: session.id })
+            expect(engine.getSession(session.id)?.active).toBe(true)
+            // 中文注释：active=true 是运行时状态，不能跨 Hub 重启持久化；否则旧会话会在重启后假在线。
+            expect(store.sessions.getSession(session.id)?.active).toBe(false)
+            expect(events.some((event) => {
+                const record = event as { type?: string; sessionId?: string; data?: { active?: boolean } }
+                return record.type === 'session-updated'
+                    && record.sessionId === session.id
+                    && record.data?.active === true
+            })).toBe(true)
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('passes resume session ID to rpc gateway when resuming claude session', async () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(
@@ -960,6 +1012,66 @@ describe('session model', () => {
                 message: 'Resume session ID unavailable. Start a new session in this directory, or retry after the agent has initialized.',
                 code: 'resume_unavailable'
             })
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('does not let stale default resume option override persisted Codex yolo', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'session-codex-yolo-resume',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'codex',
+                    codexSessionId: 'codex-thread-1',
+                    preferredPermissionMode: 'yolo'
+                },
+                null,
+                'default',
+                'gpt-5'
+            )
+            engine.getOrCreateMachine(
+                'machine-1',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+
+            let capturedPermissionMode: string | undefined
+            ;(engine as any).rpcGateway.spawnSession = async (
+                _machineId: string,
+                _directory: string,
+                _agent: string,
+                _model?: string,
+                _modelReasoningEffort?: string,
+                _yolo?: boolean,
+                _sessionType?: string,
+                _worktreeName?: string,
+                _resumeSessionId?: string,
+                _effort?: string,
+                permissionMode?: string
+            ) => {
+                capturedPermissionMode = permissionMode
+                return { type: 'success', sessionId: session.id }
+            }
+            ;(engine as any).waitForSessionActive = async () => true
+
+            const result = await engine.resumeSession(session.id, 'default', { permissionMode: 'default' })
+
+            expect(result).toEqual({ type: 'success', sessionId: session.id })
+            expect(capturedPermissionMode).toBe('yolo')
         } finally {
             engine.stop()
         }

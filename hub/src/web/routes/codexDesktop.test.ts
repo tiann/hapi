@@ -12,6 +12,14 @@ import { createCodexDesktopRoutes, importSelectedCodexSessions } from './codexDe
 
 const originalCodexHome = process.env.CODEX_HOME
 
+
+function createTranscriptFromLines(codexHome: string, sessionId: string, lines: unknown[]): void {
+    const sessionDir = join(codexHome, 'sessions', '2026', '06', '04')
+    mkdirSync(sessionDir, { recursive: true })
+    const transcriptPath = join(sessionDir, `rollout-${sessionId}.jsonl`)
+    writeFileSync(transcriptPath, `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`, 'utf-8')
+}
+
 function createTranscript(codexHome: string, sessionId: string, cwd = 'C:\\work\\project'): void {
     const sessionDir = join(codexHome, 'sessions', '2026', '06', '04')
     mkdirSync(sessionDir, { recursive: true })
@@ -112,6 +120,39 @@ describe('Codex Desktop import routes', () => {
         }
     })
 
+
+    it('archives a Codex transcript via machine RPC route', async () => {
+        const archiveCodexSessionForMachine = async (machineId: string, sessionId: string) => ({
+            success: true as const,
+            archivedPath: `/tmp/${machineId}/${sessionId}.jsonl`
+        })
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createCodexDesktopRoutes({
+            store: new Store(':memory:'),
+            getSyncEngine: () => ({
+                getOnlineMachinesByNamespace: () => [createMachine('machine-1', ['/tmp/project'])],
+                archiveCodexSessionForMachine
+            } as unknown as SyncEngine)
+        }))
+
+        const response = await app.request('/api/codex/archive-session', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ sessionId: 'codex-session-1', machineId: 'machine-1' })
+        })
+
+        expect(response.status).toBe(200)
+        await expect(response.json()).resolves.toEqual({
+            success: true,
+            archivedPath: '/tmp/machine-1/codex-session-1.jsonl',
+            machineId: 'machine-1'
+        })
+    })
+
     it('imports normal response_item chat messages', async () => {
         const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-test-'))
         const store = new Store(':memory:')
@@ -155,6 +196,135 @@ describe('Codex Desktop import routes', () => {
                 },
                 meta: {
                     sentFrom: 'cli'
+                }
+            })
+        } finally {
+            store.close()
+            rmSync(codexHome, { recursive: true, force: true })
+        }
+    })
+
+    it('updates an existing forked import when syncing the original Codex session id', async () => {
+        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-source-test-'))
+        const store = new Store(':memory:')
+        const codexSessionId = '12121212-1212-4121-8121-121212121212'
+        process.env.CODEX_HOME = codexHome
+
+        try {
+            createTranscript(codexHome, codexSessionId)
+
+            const first = await importSelectedCodexSessions({
+                codexSessionIds: [codexSessionId],
+                store,
+                namespace: 'default',
+                getSyncEngine: () => null
+            })
+            expect(first.success).toBe(true)
+
+            const imported = store.sessions.getSessionsByNamespace('default')[0]
+            expect(imported).toBeDefined()
+            store.sessions.updateSessionMetadata(imported.id, {
+                ...(imported.metadata ?? {}),
+                codexSessionId: 'fork-session-id',
+                codexSourceSessionId: codexSessionId
+            }, imported.metadataVersion, 'default')
+
+            const second = await importSelectedCodexSessions({
+                codexSessionIds: [codexSessionId],
+                store,
+                namespace: 'default',
+                getSyncEngine: () => null
+            })
+
+            expect(second.success).toBe(true)
+            const sessions = store.sessions.getSessionsByNamespace('default')
+            expect(sessions).toHaveLength(1)
+            expect(sessions[0]?.metadata).toMatchObject({
+                codexSessionId: 'fork-session-id',
+                codexSourceSessionId: codexSessionId
+            })
+        } finally {
+            store.close()
+            rmSync(codexHome, { recursive: true, force: true })
+        }
+    })
+
+
+    it('deduplicates adjacent event_msg and response_item transcript records', async () => {
+        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-dedup-test-'))
+        const store = new Store(':memory:')
+        const codexSessionId = '66666666-6666-4666-8666-666666666666'
+        process.env.CODEX_HOME = codexHome
+
+        try {
+            createTranscriptFromLines(codexHome, codexSessionId, [
+                {
+                    type: 'session_meta',
+                    payload: {
+                        id: codexSessionId,
+                        cwd: '/home/user/workspace/project',
+                        originator: 'codex_cli_rs',
+                        cli_version: '0.0.0-test'
+                    }
+                },
+                {
+                    type: 'event_msg',
+                    payload: {
+                        type: 'user_message',
+                        message: 'hi'
+                    }
+                },
+                {
+                    type: 'response_item',
+                    payload: {
+                        type: 'message',
+                        role: 'user',
+                        content: [{ type: 'input_text', text: 'hi\n' }]
+                    }
+                },
+                {
+                    type: 'event_msg',
+                    payload: {
+                        type: 'agent_message',
+                        message: 'hi，我在。'
+                    }
+                },
+                {
+                    type: 'response_item',
+                    payload: {
+                        type: 'message',
+                        role: 'assistant',
+                        content: [{ type: 'output_text', text: 'hi，我在。' }]
+                    }
+                }
+            ])
+
+            const result = await importSelectedCodexSessions({
+                codexSessionIds: [codexSessionId],
+                store,
+                namespace: 'default',
+                getSyncEngine: () => null
+            })
+
+            expect(result.success).toBe(true)
+            const session = store.sessions.getSessionsByNamespace('default')[0]
+            const messages = store.messages.getAllMessages(session.id)
+            expect(messages).toHaveLength(2)
+            expect(messages[0].content).toMatchObject({
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'hi'
+                }
+            })
+            expect(messages[1].content).toMatchObject({
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: {
+                        type: 'message',
+                        message: 'hi，我在。'
+                    }
                 }
             })
         } finally {
@@ -314,13 +484,42 @@ describe('Codex Desktop import routes', () => {
             const app = createRoutesApp('default')
             const response = await app.request('/api/codex/sessions')
 
-            expect(response.status).toBe(200)
+            expect(response.status).toBe(503)
             expect(await response.json()).toEqual({
-                success: true,
+                success: false,
+                error: 'No online machine available for Codex history import',
                 sessions: []
             })
         } finally {
             rmSync(codexHome, { recursive: true, force: true })
         }
+    })
+
+    it('treats source and fork ids as the same duplicate-sessions group', async () => {
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        const store = new Store(':memory:')
+        const forkSession = store.sessions.getOrCreateSession('fork-session-id', { codexSessionId: 'fork-session-id', codexSourceSessionId: 'original-session-id' }, {}, 'default')
+        const dupSession = store.sessions.getOrCreateSession('dup-session-id', { codexSessionId: 'original-session-id' }, {}, 'default')
+        app.route('/api', createCodexDesktopRoutes({
+            store,
+            getSyncEngine: () => null
+        }))
+
+        const response = await app.request('/api/codex/duplicate-sessions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ sessionIds: ['original-session-id'] })
+        })
+
+        expect(response.status).toBe(200)
+        const body = await response.json() as { success: true; duplicates: Array<{ codexSessionId: string; hapiSessionIds: string[] }> }
+        expect(body.success).toBe(true)
+        expect(body.duplicates).toHaveLength(1)
+        expect(body.duplicates[0]?.codexSessionId).toBe('original-session-id')
+        expect(body.duplicates[0]?.hapiSessionIds.sort()).toEqual([dupSession.id, forkSession.id].sort())
     })
 })

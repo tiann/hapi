@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
     Navigate,
@@ -50,6 +50,7 @@ import SettingsPage from '@/routes/settings'
 import SharePage from '@/routes/share'
 import { setSharePendingTransfer } from '@/lib/sharePendingState'
 import { deleteShareTransfer } from '@/lib/shareTransfer'
+
 
 function BackIcon(props: { className?: string }) {
     return (
@@ -111,6 +112,26 @@ function CodexImportIcon(props: { className?: string }) {
     )
 }
 
+function RefreshIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+            <path d="M21 3v6h-6" />
+        </svg>
+    )
+}
+
 function FolderOpenIcon(props: { className?: string }) {
     return (
         <svg
@@ -156,6 +177,17 @@ function getMachineTitle(machine: Machine): string {
     return machine.id.slice(0, 8)
 }
 
+type CodexImportContextValue = {
+    openCodexImportDialog: (workDirectory?: string | null) => void
+    isBusy: boolean
+}
+
+const CodexImportContext = createContext<CodexImportContextValue | null>(null)
+
+function useCodexImportAction(): CodexImportContextValue | null {
+    return useContext(CodexImportContext)
+}
+
 function SessionsPage() {
     const { api } = useAppContext()
     const navigate = useNavigate()
@@ -168,6 +200,7 @@ function SessionsPage() {
     const { machines } = useMachines(api, true)
     const [isSyncingCodexSession, setIsSyncingCodexSession] = useState(false)
     const [codexSessions, setCodexSessions] = useState<CodexLocalSessionSummary[]>([])
+    const [codexImportMachineId, setCodexImportMachineId] = useState<string | null>(null)
     const [isLoadingCodexSessions, setIsLoadingCodexSessions] = useState(false)
     const [isSyncConfirmOpen, setIsSyncConfirmOpen] = useState(false)
     const [isRestartingCodexDesktop, setIsRestartingCodexDesktop] = useState(false)
@@ -175,10 +208,28 @@ function SessionsPage() {
     const [duplicateSessionGroups, setDuplicateSessionGroups] = useState<CodexDuplicateSessionGroup[]>([])
     const [isDuplicateMergeConfirmOpen, setIsDuplicateMergeConfirmOpen] = useState(false)
     const [isMergingDuplicateSessions, setIsMergingDuplicateSessions] = useState(false)
+    const [codexImportWorkDirectoryOverride, setCodexImportWorkDirectoryOverride] = useState<string | null>(null)
 
     const handleRefresh = useCallback(() => {
-        void refetch()
-    }, [refetch])
+        void (async () => {
+            try {
+                await refetch()
+                addToast({
+                    title: t('sessions.refresh.success.title'),
+                    body: t('sessions.refresh.success.body'),
+                    sessionId: '',
+                    url: ''
+                })
+            } catch (error) {
+                addToast({
+                    title: t('sessions.refresh.failed.title'),
+                    body: error instanceof Error ? error.message : t('dialog.error.default'),
+                    sessionId: '',
+                    url: ''
+                })
+            }
+        })()
+    }, [addToast, refetch, t])
 
     const projectCount = useMemo(() => new Set(sessions.map(s =>
         s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other'
@@ -212,6 +263,10 @@ function SessionsPage() {
     const currentCodexSessionId = selectedSession?.metadata?.flavor === 'codex'
         ? (selectedSession.metadata.agentSessionId ?? null)
         : null
+    const currentWorkDirectory = codexImportWorkDirectoryOverride
+        ?? selectedSession?.metadata?.worktree?.basePath
+        ?? selectedSession?.metadata?.path
+        ?? null
     const isSessionsIndex = pathname === '/sessions' || pathname === '/sessions/'
     const sidebar = useSidebarResize()
     const handleNewSessionInDirectory = useCallback((args: { machineId: string | null; directory: string }) => {
@@ -361,16 +416,19 @@ function SessionsPage() {
         t
     ])
 
-    const openCodexImportDialog = useCallback(async () => {
+    const openCodexImportDialog = useCallback(async (workDirectory?: string | null) => {
+        setCodexImportWorkDirectoryOverride(workDirectory?.trim() || null)
         if (isLoadingCodexSessions) return
 
         setIsSyncConfirmOpen(true)
         setIsLoadingCodexSessions(true)
         try {
-            const result = await api.getCodexSessions()
+            const result = await api.getCodexSessions(workDirectory)
             setCodexSessions(result.sessions)
+            setCodexImportMachineId(result.machineId ?? null)
         } catch (error) {
             setCodexSessions([])
+            setCodexImportMachineId(null)
             const reason = normalizeCodexScriptError(
                 error instanceof Error ? error.message : null,
                 t('dialog.error.default')
@@ -386,13 +444,22 @@ function SessionsPage() {
         }
     }, [addToast, api, formatCodexSyncFailureBody, isLoadingCodexSessions, normalizeCodexScriptError, t])
 
+    const handleArchiveCodexSession = useCallback(async (codexSession: import('@/types/api').CodexLocalSessionSummary) => {
+        if (!api) return
+        const result = await api.archiveCodexSession(codexSession.id, codexImportMachineId)
+        if (!result.success) {
+            throw new Error(result.error)
+        }
+        setCodexSessions((current) => current.filter((session) => session.id !== codexSession.id))
+    }, [api, codexImportMachineId])
+
     const handleImportCodexSessions = useCallback(async (sessionIds: string[]) => {
         if (isSyncingCodexSession || isLoadingCodexSessions) return
 
         setIsSyncingCodexSession(true)
         try {
             // 中文注释：弹窗提交的是本地 Codex thread ID；后端会直接读取这些 transcript 并导入到 Hapi。
-            const result = await api.syncCodexSession({ sessionIds })
+            const result = await api.syncCodexSession({ sessionIds, cwd: currentWorkDirectory, machineId: codexImportMachineId })
             if (!result.success) {
                 throw new Error(normalizeCodexScriptError(result.error, t('codexSync.failed.body')))
             }
@@ -455,6 +522,8 @@ function SessionsPage() {
         addToast,
         api,
         formatCodexSyncFailureBody,
+        codexImportMachineId,
+        currentWorkDirectory,
         isLoadingCodexSessions,
         isSyncingCodexSession,
         normalizeCodexScriptError,
@@ -465,8 +534,13 @@ function SessionsPage() {
         t
     ])
 
+    const codexImportContextValue = useMemo<CodexImportContextValue>(() => ({
+        openCodexImportDialog: (workDirectory?: string | null) => void openCodexImportDialog(workDirectory),
+        isBusy: isSyncingCodexSession || isLoadingCodexSessions
+    }), [isLoadingCodexSessions, isSyncingCodexSession, openCodexImportDialog])
+
     return (
-        <>
+        <CodexImportContext.Provider value={codexImportContextValue}>
             <div className="flex h-full min-h-0">
             <div
                 className={`${isSessionsIndex ? 'flex' : 'hidden lg:flex'} w-full shrink-0 flex-col bg-[var(--app-bg)]`}
@@ -480,14 +554,14 @@ function SessionsPage() {
                         <div className="flex items-center gap-2">
                             <button
                                 type="button"
-                                onClick={() => void openCodexImportDialog()}
-                                disabled={isSyncingCodexSession || isLoadingCodexSessions}
-                                aria-label={t('codexSync.tooltip')}
-                                aria-busy={isSyncingCodexSession || isLoadingCodexSessions}
+                                onClick={handleRefresh}
+                                disabled={isLoading}
+                                aria-label={t('button.refresh')}
+                                aria-busy={isLoading}
                                 className="p-1.5 rounded-full text-[var(--app-hint)] hover:text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)] transition-colors disabled:opacity-60 disabled:cursor-wait"
-                                title={t('codexSync.tooltip')}
+                                title={t('button.refresh')}
                             >
-                                <CodexImportIcon className={`h-5 w-5 ${isLoadingCodexSessions ? 'animate-spin' : ''}`} />
+                                <RefreshIcon className={`h-5 w-5 ${isLoading ? 'animate-spin' : ''}`} />
                             </button>
                             <button
                                 type="button"
@@ -559,11 +633,17 @@ function SessionsPage() {
             {/* 中文注释：这里展示的是本地 Codex transcript 列表；默认尝试勾选当前 Hapi 会话关联的 Codex thread。 */}
             <CodexSessionSyncDialog
                 isOpen={isSyncConfirmOpen}
-                onClose={() => setIsSyncConfirmOpen(false)}
+                onClose={() => {
+                    setIsSyncConfirmOpen(false)
+                    setCodexImportWorkDirectoryOverride(null)
+                    setCodexImportMachineId(null)
+                }}
                 sessions={codexSessions}
                 currentCodexSessionId={currentCodexSessionId}
+                currentWorkDirectory={currentWorkDirectory}
                 onConfirm={handleImportCodexSessions}
                 onRestartCodexDesktop={handleRestartCodexDesktop}
+                onArchiveSession={handleArchiveCodexSession}
                 isPending={isSyncingCodexSession}
                 isRestartingCodexDesktop={isRestartingCodexDesktop}
                 isLoading={isLoadingCodexSessions}
@@ -578,7 +658,7 @@ function SessionsPage() {
                 onConfirm={handleMergeDuplicateSessions}
                 isPending={isMergingDuplicateSessions}
             />
-        </>
+        </CodexImportContext.Provider>
     )
 }
 
@@ -807,11 +887,11 @@ function SessionPage() {
         onSessionResolved: (resolvedSessionId) => {
             void (async () => {
                 if (api) {
-                    if (session && resolvedSessionId !== session.id) {
-                        seedMessageWindowFromSession(session.id, resolvedSessionId)
-                        queryClient.setQueryData(queryKeys.session(resolvedSessionId), {
-                            session: { ...session, id: resolvedSessionId, active: true }
-                        })
+                    if (session) {
+                        if (resolvedSessionId !== session.id) {
+                            seedMessageWindowFromSession(session.id, resolvedSessionId)
+                        }
+                        void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
                     }
                     try {
                         await Promise.all([
@@ -822,6 +902,13 @@ function SessionPage() {
                             fetchLatestMessages(api, resolvedSessionId),
                         ])
                     } catch {
+                    }
+                    if (session) {
+                        // 中文注释：恢复接口成功后，REST/SSE 可能仍有短暂竞态；最后再乐观置为在线，
+                        // 避免刚 prefetch 到旧 inactive 快照导致状态栏继续显示离线。
+                        queryClient.setQueryData(queryKeys.session(resolvedSessionId), (previous: { session?: typeof session } | undefined) => ({
+                            session: { ...(previous?.session ?? session), id: resolvedSessionId, active: true }
+                        }))
                     }
                 }
                 navigate({
@@ -970,6 +1057,7 @@ function NewSessionPage() {
     const queryClient = useQueryClient()
     const { machines, isLoading: machinesLoading, error: machinesError } = useMachines(api, true)
     const { t } = useTranslation()
+    const codexImport = useCodexImportAction()
     const { directory: initialDirectory, machineId: initialMachineId, shareTransferId } = newSessionRoute.useSearch()
 
     const handleCancel = useCallback(() => {

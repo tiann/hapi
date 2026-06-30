@@ -14,6 +14,7 @@ const harness = vi.hoisted(() => ({
     failListCollaborationModes: false,
     startThreadIds: [] as string[],
     resumeThreadIds: [] as string[],
+    forkThreadIds: [] as string[],
     startTurnThreadIds: [] as string[],
     startTurnParams: [] as Array<Record<string, unknown>>,
     startTurnErrors: [] as Error[],
@@ -30,6 +31,8 @@ const harness = vi.hoisted(() => ({
     failResumeThreadIds: [] as string[],
     nextThreadSystemErrorMessage: null as string | null,
     failNextCompact: false,
+    deferCompact: false,
+    compactResolvers: [] as Array<() => void>,
     deferThreadStatusNotifications: false,
     emitChildThreadEvents: false,
     emitChildUsageEvents: false,
@@ -114,12 +117,24 @@ vi.mock('./codexAppServerClient', () => {
             return { thread: { id }, model: 'gpt-5.4' };
         }
 
+        async forkThread(params?: { threadId?: string }): Promise<{ thread: { id: string }; model: string }> {
+            const sourceId = params?.threadId ?? 'thread-source';
+            const id = `fork-${sourceId}`;
+            harness.forkThreadIds.push(sourceId);
+            return { thread: { id }, model: 'gpt-5.4' };
+        }
+
         async compactThread(params?: { threadId?: string }): Promise<Record<string, never>> {
             const threadId = params?.threadId ?? 'thread-unknown';
             harness.compactThreadIds.push(threadId);
             if (harness.failNextCompact) {
                 harness.failNextCompact = false;
                 throw new Error('compact failed');
+            }
+            if (harness.deferCompact) {
+                await new Promise<void>((resolve) => {
+                    harness.compactResolvers.push(resolve);
+                });
             }
             const compacted = { threadId, turnId: `compact-${harness.compactThreadIds.length}` };
             harness.notifications.push({ method: 'thread/compacted', params: compacted });
@@ -946,6 +961,7 @@ describe('codexRemoteLauncher', () => {
         harness.failListCollaborationModes = false;
         harness.startThreadIds = [];
         harness.resumeThreadIds = [];
+        harness.forkThreadIds = [];
         harness.startTurnThreadIds = [];
         harness.startTurnParams = [];
         harness.startTurnErrors = [];
@@ -962,6 +978,8 @@ describe('codexRemoteLauncher', () => {
         harness.remainingThreadSystemErrors = 0;
         harness.nextThreadSystemErrorMessage = null;
         harness.failNextCompact = false;
+        harness.deferCompact = false;
+        harness.compactResolvers = [];
         harness.deferThreadStatusNotifications = false;
         harness.emitChildThreadEvents = false;
         harness.emitChildUsageEvents = false;
@@ -1457,6 +1475,33 @@ describe('codexRemoteLauncher', () => {
         expect(session.thinking).toBe(false);
     });
 
+    it('does not consume queued messages while same-conversation compact is in flight', async () => {
+        harness.remainingThreadSystemErrors = 1;
+        harness.nextThreadSystemErrorMessage = "Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying.";
+        harness.deferCompact = true;
+        const { session } = createSessionStub(['first message', 'second message']);
+
+        const running = codexRemoteLauncher(session as never);
+
+        await vi.waitFor(() => {
+            expect(harness.compactThreadIds).toEqual(['thread-1']);
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        // 中文注释：compact/retry 期间不能提前消费后续消息，否则 activeTurnId 会被新 turn 覆盖，
+        // 原始 turn 的失败事件会被忽略，前端停在 reticulating。
+        expect(harness.startTurnMessages).toEqual(['first message']);
+
+        harness.compactResolvers.splice(0).forEach((resolve) => resolve());
+        const exitReason = await running;
+
+        expect(exitReason).toBe('exit');
+        expect(harness.startThreadIds).toEqual(['thread-1']);
+        expect(harness.startTurnThreadIds).toEqual(['thread-1', 'thread-1', 'thread-1']);
+        expect(harness.startTurnMessages).toEqual(['first message', 'first message', 'second message']);
+        expect(session.thinking).toBe(false);
+    });
+
     it('keeps using the old thread for later messages after same-thread retries are exhausted', async () => {
         harness.remainingThreadSystemErrors = 4;
         const { session } = createSessionStub(['first message', 'second message']);
@@ -1486,8 +1531,25 @@ describe('codexRemoteLauncher', () => {
         expect(session.sessionId).toBe('thread-old');
         expect(sessionEvents).toContainEqual({
             type: 'message',
-            message: 'Task failed: Codex conversation thread-old could not be resumed; no new conversation was created'
+            message: 'Task failed: Codex conversation thread-old could not be resumed; no new conversation was created. Reason: resume failed'
         });
+        expect(session.thinking).toBe(false);
+    });
+
+    it('forks an imported Codex source thread before continuing it', async () => {
+        const { session } = createSessionStub(['first message', 'second message']);
+        session.sessionId = 'thread-source';
+        (session as { sourceSessionId?: string }).sourceSessionId = 'thread-source';
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(harness.forkThreadIds).toEqual(['thread-source']);
+        expect(harness.resumeThreadIds).toEqual([]);
+        expect(harness.startThreadIds).toEqual([]);
+        expect(harness.startTurnThreadIds).toEqual(['fork-thread-source', 'fork-thread-source']);
+        expect(harness.startTurnMessages).toEqual(['first message', 'second message']);
+        expect(session.sessionId).toBe('fork-thread-source');
         expect(session.thinking).toBe(false);
     });
 

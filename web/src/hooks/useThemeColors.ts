@@ -118,6 +118,7 @@ const DEFAULT_HEX: Record<ThemeScheme, Record<ThemeColorKeyId, string>> = {
 type StoredThemeColors = Partial<Record<ThemeScheme, Partial<Record<ThemeColorKeyId, string>>>>
 
 let initialized = false
+let themeColorsCleanup: (() => void) | null = null
 
 function isBrowser(): boolean {
     return typeof window !== 'undefined' && typeof document !== 'undefined'
@@ -271,17 +272,18 @@ export function getThemeColorPickerValue(scheme: ThemeScheme, id: ThemeColorKeyI
     return override ?? DEFAULT_HEX[scheme][id]
 }
 
-export function initializeThemeColors(): void {
+export function initializeThemeColors(): (() => void) | void {
     if (!isBrowser()) return
 
     applyThemeColors()
 
-    if (initialized) return
+    if (initialized) return themeColorsCleanup ?? undefined
     initialized = true
 
-    window.addEventListener('storage', (event: StorageEvent) => {
+    const onStorage = (event: StorageEvent) => {
         if (event.key === STORAGE_KEY) applyThemeColors()
-    })
+    }
+    window.addEventListener('storage', onStorage)
 
     const themeObserver = new MutationObserver(() => {
         applyThemeColors()
@@ -290,6 +292,19 @@ export function initializeThemeColors(): void {
         attributes: true,
         attributeFilter: ['data-theme'],
     })
+
+    themeColorsCleanup = () => {
+        themeObserver.disconnect()
+        window.removeEventListener('storage', onStorage)
+        initialized = false
+        themeColorsCleanup = null
+    }
+
+    return themeColorsCleanup
+}
+
+export function disposeThemeColors(): void {
+    themeColorsCleanup?.()
 }
 
 export function useThemeColors(): {
