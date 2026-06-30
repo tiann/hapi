@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { archiveLocalCodexSession, listLocalCodexSessionSummaries } from './codexSessions'
+import { archiveLocalCodexSession, listLocalCodexSessionSummaries, listLocalCodexSessionsWithMessagesByIds } from './codexSessions'
 
 describe('archiveLocalCodexSession', () => {
     const originalCodexHome = process.env.CODEX_HOME
@@ -137,6 +137,28 @@ describe('listLocalCodexSessionSummaries', () => {
 
         expect(listLocalCodexSessionSummaries()).toHaveLength(0)
 
+        rmSync(root, { recursive: true, force: true })
+    })
+
+    it('loads messages only for requested session ids', () => {
+        const root = mkdtempSync(join(tmpdir(), 'codex-home-'))
+        process.env.CODEX_HOME = root
+        const sessionsDir = join(root, 'sessions', '2026', '06', '27')
+        mkdirSync(sessionsDir, { recursive: true })
+
+        writeFileSync(join(sessionsDir, 'wanted.jsonl'), [
+            JSON.stringify({ type: 'session_meta', payload: { id: 'wanted-session-id', cwd: '/tmp/project' } }),
+            JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'wanted' }] } })
+        ].join('\n'))
+        writeFileSync(join(sessionsDir, 'other.jsonl'), [
+            JSON.stringify({ type: 'session_meta', payload: { id: 'other-session-id', cwd: '/tmp/project' } }),
+            JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'other' }] } })
+        ].join('\n'))
+
+        const sessions = listLocalCodexSessionsWithMessagesByIds(new Set(['wanted-session-id']))
+
+        expect(sessions.map((session) => session.id)).toEqual(['wanted-session-id'])
+        expect(sessions[0]?.messages).toHaveLength(1)
         rmSync(root, { recursive: true, force: true })
     })
 })

@@ -29,7 +29,7 @@ import {
 } from '../modules/common/grokModels'
 import type { SpawnSessionOptions, SpawnSessionResult } from '../modules/common/rpcTypes'
 import { applyVersionedAck } from './versionedUpdate'
-import { archiveLocalCodexSession, listLocalCodexSessionSummaries, listLocalCodexSessionsWithMessages } from '../modules/common/codexSessions'
+import { archiveLocalCodexSession, listLocalCodexSessionSummaries, listLocalCodexSessionsWithMessages, listLocalCodexSessionsWithMessagesByIds } from '../modules/common/codexSessions'
 import { buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
 import { collectMachineHealth } from '@/utils/machineHealth'
 import { inspectCursorChatStore } from '@/cursor/cursorChatStoreStatus'
@@ -273,7 +273,7 @@ export class ApiMachineClient {
                     ? new Set(params.sessionIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0))
                     : null
                 const allSessions = requestedIds
-                    ? listLocalCodexSessionsWithMessages(Number.MAX_SAFE_INTEGER).filter((session) => requestedIds.has(session.id))
+                    ? listLocalCodexSessionsWithMessagesByIds(requestedIds)
                     : listLocalCodexSessionSummaries()
                 const sessions = []
                 for (const session of allSessions) {

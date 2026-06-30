@@ -433,6 +433,46 @@ describe('Codex Desktop import routes', () => {
         }
     })
 
+    it('updates an existing forked import when syncing the original Codex session id', async () => {
+        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-source-test-'))
+        const store = new Store(':memory:')
+        const codexSessionId = '12121212-1212-4121-8121-121212121212'
+        process.env.CODEX_HOME = codexHome
+
+        try {
+            createTranscript(codexHome, codexSessionId)
+
+            const first = await importSelectedCodexSessions({
+                codexSessionIds: [codexSessionId],
+                store,
+                namespace: 'default',
+                getSyncEngine: () => null
+            })
+            expect(first.success).toBe(true)
+
+            const imported = store.sessions.getSessionsByNamespace('default')[0]
+            expect(imported).toBeDefined()
+            store.sessions.updateSessionMetadata(imported.id, {
+                ...(imported.metadata ?? {}),
+                codexSessionId: 'fork-session-id',
+                codexSourceSessionId: codexSessionId
+            }, imported.metadataVersion, 'default')
+
+            const second = await importSelectedCodexSessions({
+                codexSessionIds: [codexSessionId],
+                store,
+                namespace: 'default',
+                getSyncEngine: () => null
+            })
+
+            expect(second.success).toBe(true)
+            expect(store.sessions.getSessionsByNamespace('default')).toHaveLength(1)
+        } finally {
+            store.close()
+            rmSync(codexHome, { recursive: true, force: true })
+        }
+    })
+
     it('deduplicates mirrored event_msg and response_item user messages', async () => {
         const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-mirror-test-'))
         const store = new Store(':memory:')

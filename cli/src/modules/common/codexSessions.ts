@@ -356,6 +356,14 @@ export function listLocalCodexSessionsWithMessages(limit = DEFAULT_CODEX_SESSION
     return listLocalCodexSessions(true, limit)
 }
 
+export function listLocalCodexSessionsWithMessagesByIds(ids: Set<string>): LocalCodexSessionWithMessages[] {
+    if (ids.size === 0) return []
+    return listLocalCodexSessionSummaries(Number.MAX_SAFE_INTEGER)
+        .filter((session) => ids.has(session.id))
+        .map((session) => parseCodexLocalSession(session.file, true))
+        .filter((session): session is LocalCodexSessionWithMessages => Boolean(session))
+}
+
 
 export async function archiveLocalCodexSession(sessionId: string, options: ArchiveLocalCodexSessionOptions = {}): Promise<{ success: true; archivedPath: string } | { success: false; error: string }> {
     const normalizedId = sessionId.trim()

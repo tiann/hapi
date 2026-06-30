@@ -1107,7 +1107,10 @@ function selectImportTargetSession(
     importedComparableMessages: string[]
 ): ImportTargetSelection {
     const relatedCandidates = candidates
-        .filter((candidate) => candidate.metadata?.codexSessionId === codexSessionId)
+        .filter((candidate) => (
+            candidate.metadata?.codexSessionId === codexSessionId
+            || candidate.metadata?.codexSourceSessionId === codexSessionId
+        ))
         .sort((a, b) => b.updatedAt - a.updatedAt)
 
     let bestSessionId: string | null = null
