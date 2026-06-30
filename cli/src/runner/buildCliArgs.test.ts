@@ -117,6 +117,20 @@ describe('buildCliArgs', () => {
         ])
     })
 
+
+
+    it('does not pass Codex-only existing session id flag to non-Codex agents', () => {
+        const args = buildCliArgs('claude', {
+            directory: '/tmp',
+            resumeSessionId: 'claude-session-1',
+            existingSessionId: 'hapi-session-1',
+        })
+        expect(args).toContain('--resume')
+        expect(args).toContain('claude-session-1')
+        expect(args).not.toContain('--existing-session-id')
+        expect(args).not.toContain('hapi-session-1')
+    })
+
     it('validates all known permission modes', () => {
         for (const mode of ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan', 'ask', 'debug', 'autoReview', 'read-only', 'safe-yolo', 'yolo']) {
             const args = buildCliArgs('claude', {

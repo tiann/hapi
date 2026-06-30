@@ -1115,10 +1115,11 @@ export function buildCliArgs(
     }
   }
   args.push('--hapi-starting-mode', 'remote', '--started-by', 'runner');
-  if (options.existingSessionId) {
-    args.push('--existing-session-id', options.existingSessionId);
-  } else if (options.sessionId) {
-    args.push('--existing-session-id', options.sessionId);
+  if (agent === 'codex') {
+    const existingSessionId = options.existingSessionId ?? options.sessionId;
+    if (existingSessionId) {
+      args.push('--existing-session-id', existingSessionId);
+    }
   }
   if (options.model) {
     args.push('--model', options.model);
