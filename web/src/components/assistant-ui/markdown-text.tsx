@@ -652,8 +652,48 @@ function Em(props: ComponentPropsWithoutRef<'em'>) {
     return <em {...props} className={cn('aui-md-em italic', props.className)} />
 }
 
+const LOCAL_IMAGE_PATH_PATTERN = /^(?:file:\/\/\/|\/|[A-Za-z]:[\\/]).+\.(?:png|jpe?g|gif|webp|avif|bmp|svg)$/i
+
+export function normalizeLocalImagePath(src: string | undefined): string | null {
+    if (!src || !LOCAL_IMAGE_PATH_PATTERN.test(src)) return null
+    if (!src.startsWith('file://')) return src
+    try {
+        return decodeURI(src.slice('file://'.length))
+    } catch {
+        return null
+    }
+}
+
 function Image(props: ComponentPropsWithoutRef<'img'>) {
-    return <img {...props} className={cn('aui-md-img my-3 max-w-full rounded-xl', props.className)} />
+    const chat = useOptionalHappyChatContext()
+    const localPath = normalizeLocalImagePath(typeof props.src === 'string' ? props.src : undefined)
+    const [objectUrl, setObjectUrl] = useState<string | null>(null)
+    const api = chat?.api
+    const sessionId = chat?.sessionId
+
+    useEffect(() => {
+        if (!api || !sessionId || !localPath) {
+            setObjectUrl(null)
+            return
+        }
+        let disposed = false
+        let nextObjectUrl: string | null = null
+        void api.getSessionLocalImageBlob(sessionId, localPath)
+            .then((blob) => {
+                if (disposed) return
+                nextObjectUrl = URL.createObjectURL(blob)
+                setObjectUrl(nextObjectUrl)
+            })
+            .catch(() => {
+                if (!disposed) setObjectUrl(null)
+            })
+        return () => {
+            disposed = true
+            if (nextObjectUrl) URL.revokeObjectURL(nextObjectUrl)
+        }
+    }, [api, sessionId, localPath])
+
+    return <img {...props} src={objectUrl ?? props.src} className={cn('aui-md-img my-3 max-w-full rounded-xl', props.className)} />
 }
 
 export const defaultComponents = memoizeMarkdownComponents({

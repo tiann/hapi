@@ -7,6 +7,7 @@ import type {
     CodexDesktopScriptResponse,
     CodexDesktopSyncRequest,
     CodexDesktopStatusResponse,
+    CodexArchiveSessionResponse,
     CodexCollaborationMode,
     FileSearchResponse,
     MachinesResponse,
@@ -207,8 +208,19 @@ export class ApiClient {
         })
     }
 
-    async getCodexSessions(): Promise<CodexLocalSessionsResponse> {
-        return await this.request<CodexLocalSessionsResponse>('/api/codex/sessions')
+    async getCodexSessions(cwd?: string | null, machineId?: string | null): Promise<CodexLocalSessionsResponse> {
+        const params = new URLSearchParams()
+        if (cwd?.trim()) params.set('cwd', cwd.trim())
+        if (machineId?.trim()) params.set('machineId', machineId.trim())
+        const query = params.size ? `?${params.toString()}` : ''
+        return await this.request<CodexLocalSessionsResponse>(`/api/codex/sessions${query}`)
+    }
+
+    async archiveCodexSession(sessionId: string, machineId?: string | null): Promise<CodexArchiveSessionResponse> {
+        return await this.request<CodexArchiveSessionResponse>('/api/codex/archive-session', {
+            method: 'POST',
+            body: JSON.stringify({ sessionId, machineId: machineId ?? undefined })
+        })
     }
 
     async getCodexDesktopStatus(): Promise<CodexDesktopStatusResponse> {
@@ -318,6 +330,16 @@ export class ApiClient {
     }
 
     async getGeneratedImageBlob(sessionId: string, imageId: string, attempt: number = 0, overrideToken?: string | null): Promise<Blob> {
+        return await this.fetchAuthedBlob(`/api/sessions/${encodeURIComponent(sessionId)}/generated-images/${encodeURIComponent(imageId)}`, attempt, overrideToken)
+    }
+
+    async getSessionLocalImageBlob(sessionId: string, path: string, attempt: number = 0, overrideToken?: string | null): Promise<Blob> {
+        const params = new URLSearchParams()
+        params.set('path', path)
+        return await this.fetchAuthedBlob(`/api/sessions/${encodeURIComponent(sessionId)}/local-image?${params.toString()}`, attempt, overrideToken)
+    }
+
+    private async fetchAuthedBlob(path: string, attempt: number = 0, overrideToken?: string | null): Promise<Blob> {
         const headers = new Headers()
         const liveToken = this.getToken ? this.getToken() : null
         const authToken = overrideToken !== undefined
@@ -326,14 +348,14 @@ export class ApiClient {
         if (authToken) {
             headers.set('authorization', `Bearer ${authToken}`)
         }
-        const res = await fetch(this.buildUrl(`/api/sessions/${encodeURIComponent(sessionId)}/generated-images/${encodeURIComponent(imageId)}`), {
+        const res = await fetch(this.buildUrl(path), {
             headers
         })
         if (res.status === 401 && attempt === 0 && this.onUnauthorized) {
             const refreshed = await this.onUnauthorized()
             if (refreshed) {
                 this.token = refreshed
-                return await this.getGeneratedImageBlob(sessionId, imageId, attempt + 1, refreshed)
+                return await this.fetchAuthedBlob(path, attempt + 1, refreshed)
             }
         }
         if (!res.ok) {

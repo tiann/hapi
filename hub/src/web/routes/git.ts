@@ -17,9 +17,27 @@ const filePathSchema = z.object({
     path: z.string().min(1)
 })
 
+const MAX_LOCAL_IMAGE_BYTES = 25 * 1024 * 1024
+
 const generatedImageSchema = z.object({
     imageId: z.string().min(1)
 })
+
+const IMAGE_MIME_BY_EXT: Record<string, string> = {
+    avif: 'image/avif',
+    bmp: 'image/bmp',
+    gif: 'image/gif',
+    jpeg: 'image/jpeg',
+    jpg: 'image/jpeg',
+    png: 'image/png',
+    svg: 'image/svg+xml',
+    webp: 'image/webp'
+}
+
+function imageMimeTypeForPath(path: string): string | null {
+    const ext = path.toLowerCase().split('.').pop()
+    return ext ? IMAGE_MIME_BY_EXT[ext] ?? null : null
+}
 
 function parseBooleanParam(value: string | undefined): boolean | undefined {
     if (value === 'true') return true
@@ -147,6 +165,30 @@ export function createGitRoutes(getSyncEngine: () => SyncEngine | null): Hono<We
 
         const result = await runRpc(() => engine.readSessionFile(sessionResult.sessionId, parsed.data.path))
         return c.json(result)
+    })
+
+    app.get('/sessions/:id/local-image', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) return sessionResult
+
+        const parsed = filePathSchema.safeParse(c.req.query())
+        if (!parsed.success) return c.json({ error: 'Invalid file path' }, 400)
+
+        const mimeType = imageMimeTypeForPath(parsed.data.path)
+        if (!mimeType) return c.json({ success: false, error: 'Unsupported image type' }, 400)
+
+        const result = await runRpc(() => engine.readSessionFile(sessionResult.sessionId, parsed.data.path, { maxBytes: MAX_LOCAL_IMAGE_BYTES }))
+        if (!result.success || !result.content) {
+            return c.json({ success: false, error: result.error ?? 'Image not found' }, 404)
+        }
+
+        return c.body(Uint8Array.from(Buffer.from(result.content, 'base64')), 200, {
+            'Content-Type': mimeType,
+            'Cache-Control': 'private, max-age=60'
+        })
     })
 
     app.get('/sessions/:id/generated-images/:imageId', async (c) => {

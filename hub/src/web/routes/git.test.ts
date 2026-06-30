@@ -58,4 +58,22 @@ describe('generated images route', () => {
         // The whole point: a cache hit must not touch the CLI over the socket.
         expect(rpcCalls).toBe(0)
     })
+
+    it('serves local session images through the session file RPC', async () => {
+        const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47])
+        const session = { id: 'session-1', namespace: 'default', active: true, metadata: { path: '/tmp/project' } } as unknown as Session
+        const engine = {
+            resolveSessionAccess: () => ({ ok: true as const, sessionId: 'session-1', session }),
+            readSessionFile: async (_sessionId: string, path: string) => ({
+                success: path === '/tmp/project/out.png',
+                content: pngBytes.toString('base64')
+            })
+        } as unknown as Partial<SyncEngine>
+
+        const response = await buildApp(engine).request('/api/sessions/session-1/local-image?path=/tmp/project/out.png')
+
+        expect(response.status).toBe(200)
+        expect(response.headers.get('content-type')).toBe('image/png')
+        expect(Buffer.from(await response.arrayBuffer())).toEqual(pngBytes)
+    })
 })

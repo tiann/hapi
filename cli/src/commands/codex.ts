@@ -44,6 +44,7 @@ export const codexCommand: CommandDefinition = {
                 codexArgs?: string[]
                 permissionMode?: CodexPermissionMode
                 resumeSessionId?: string
+                existingSessionId?: string
                 model?: string
                 modelReasoningEffort?: ReasoningEffort
                 serviceTier?: string
@@ -64,6 +65,12 @@ export const codexCommand: CommandDefinition = {
                 }
                 if (arg === '--started-by') {
                     options.startedBy = commandArgs[++i] as 'runner' | 'terminal'
+                } else if (arg === '--existing-session-id') {
+                    const sessionId = commandArgs[++i]
+                    if (!sessionId) {
+                        throw new Error('Missing --existing-session-id value')
+                    }
+                    options.existingSessionId = sessionId
                 } else if (arg === '--permission-mode') {
                     const mode = commandArgs[++i]
                     if (!mode || !(CODEX_PERMISSION_MODES as readonly string[]).includes(mode)) {

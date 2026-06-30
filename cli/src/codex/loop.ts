@@ -38,6 +38,7 @@ interface LoopOptions {
     modelReasoningEffort?: ReasoningEffort;
     collaborationMode?: CodexCollaborationMode;
     resumeSessionId?: string;
+    sourceSessionId?: string;
     replayTranscriptHistoryOnStart?: boolean;
     onSessionReady?: (session: CodexSession) => void;
 }
@@ -63,6 +64,7 @@ export async function loop(opts: LoopOptions): Promise<void> {
         model: opts.model,
         modelReasoningEffort: opts.modelReasoningEffort,
         collaborationMode: opts.collaborationMode ?? 'default',
+        sourceSessionId: opts.sourceSessionId,
         replayTranscriptHistoryOnStart: opts.replayTranscriptHistoryOnStart ?? false
     });
 

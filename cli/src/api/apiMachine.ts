@@ -24,6 +24,7 @@ import {
 } from '../modules/common/opencodeModels'
 import type { SpawnSessionOptions, SpawnSessionResult } from '../modules/common/rpcTypes'
 import { applyVersionedAck } from './versionedUpdate'
+import { archiveLocalCodexSession, listLocalCodexSessionSummaries, listLocalCodexSessionsWithMessages, listLocalCodexSessionsWithMessagesByIds } from '../modules/common/codexSessions'
 import { buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
 import { collectMachineHealth } from '@/utils/machineHealth'
 
@@ -208,6 +209,54 @@ export class ApiMachineClient {
                 return await listOpencodeModelsForCwd(resolvedCwd)
             }
         )
+
+
+        this.rpcHandlerManager.registerHandler<{ cwd?: string | null; sessionIds?: string[] }, { success: true; sessions: ReturnType<typeof listLocalCodexSessionsWithMessages> | ReturnType<typeof listLocalCodexSessionSummaries> } | { success: false; error: string }>(
+            RPC_METHODS.ListCodexSessions,
+            async (params) => {
+                const rawCwd = typeof params?.cwd === 'string' ? params.cwd.trim() : ''
+                if (rawCwd) {
+                    const resolvedCwd = await this.resolveForWorkspaceCheck(rawCwd)
+                    if (!this.isWithinWorkspaceRoots(resolvedCwd)) {
+                        return { success: false, error: 'Path is outside workspace roots' }
+                    }
+                }
+                const requestedIds = Array.isArray(params?.sessionIds)
+                    ? new Set(params.sessionIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0))
+                    : null
+                const allSessions = requestedIds
+                    ? listLocalCodexSessionsWithMessagesByIds(requestedIds)
+                    : listLocalCodexSessionSummaries()
+                const sessions = []
+                for (const session of allSessions) {
+                    if (await this.isCodexSessionWithinWorkspaceRoots(session)) {
+                        sessions.push(session)
+                    }
+                }
+                return { success: true, sessions }
+            }
+        )
+
+        this.rpcHandlerManager.registerHandler<{ sessionId?: string | null }, { success: true; archivedPath: string } | { success: false; error: string }>(
+            RPC_METHODS.ArchiveCodexSession,
+            async (params) => {
+                const sessionId = typeof params?.sessionId === 'string' ? params.sessionId.trim() : ''
+                if (!sessionId) {
+                    return { success: false, error: 'sessionId is required' }
+                }
+                return await archiveLocalCodexSession(sessionId, {
+                    canArchive: (session) => this.isCodexSessionWithinWorkspaceRoots(session)
+                })
+            }
+        )
+    }
+
+    private async isCodexSessionWithinWorkspaceRoots(session: { cwd?: string | null }): Promise<boolean> {
+        if (!this.normalizedWorkspaceRoots?.length) return true
+        const cwd = session.cwd?.trim()
+        if (!cwd) return false
+        const resolvedCwd = await this.resolveForWorkspaceCheck(cwd)
+        return this.isWithinWorkspaceRoots(resolvedCwd)
     }
 
     private isWithinWorkspaceRoots(absolutePath: string): boolean {
@@ -251,7 +300,7 @@ export class ApiMachineClient {
 
     setRPCHandlers({ spawnSession, stopSession, requestShutdown }: MachineRpcHandlers): void {
         this.rpcHandlerManager.registerHandler(RPC_METHODS.SpawnHappySession, async (params: any) => {
-            const { directory, sessionId, resumeSessionId, machineId, approvedNewDirectoryCreation, agent, model, effort, modelReasoningEffort, yolo, permissionMode, serviceTier, token, sessionType, worktreeName } = params || {}
+            const { directory, sessionId, existingSessionId, resumeSessionId, machineId, approvedNewDirectoryCreation, agent, model, effort, modelReasoningEffort, yolo, permissionMode, serviceTier, token, sessionType, worktreeName } = params || {}
 
             if (!directory) {
                 throw new Error('Directory is required')
@@ -265,6 +314,7 @@ export class ApiMachineClient {
             const result = await spawnSession({
                 directory,
                 sessionId,
+                existingSessionId,
                 resumeSessionId,
                 machineId,
                 approvedNewDirectoryCreation,

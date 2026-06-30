@@ -15,6 +15,7 @@ type SessionActionMenuProps = {
     sessionActive: boolean
     onRename: () => void
     onExport?: () => void
+    onSyncCodex?: () => void
     onArchive: () => void
     onReopen?: () => void
     onDelete: () => void
@@ -104,6 +105,28 @@ function ReopenIcon(props: { className?: string }) {
     )
 }
 
+function SyncIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <path d="M3 12a9 9 0 0 1 15.5-6.2" />
+            <path d="M18 3v6h-6" />
+            <path d="M21 12a9 9 0 0 1-15.5 6.2" />
+            <path d="M6 21v-6h6" />
+        </svg>
+    )
+}
+
 function TrashIcon(props: { className?: string }) {
     return (
         <svg
@@ -141,6 +164,7 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
         sessionActive,
         onRename,
         onExport,
+        onSyncCodex,
         onArchive,
         onReopen,
         onDelete,
@@ -171,6 +195,11 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
     const handleExport = () => {
         onClose()
         onExport?.()
+    }
+
+    const handleSyncCodex = () => {
+        onClose()
+        onSyncCodex?.()
     }
 
     const handleDelete = () => {
@@ -303,6 +332,18 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                     >
                         <DownloadIcon className="text-[var(--app-hint)]" />
                         {t('session.action.export')}
+                    </button>
+                ) : null}
+
+                {onSyncCodex ? (
+                    <button
+                        type="button"
+                        role="menuitem"
+                        className={`${baseItemClassName} hover:bg-[var(--app-subtle-bg)]`}
+                        onClick={handleSyncCodex}
+                    >
+                        <SyncIcon className="text-[var(--app-hint)]" />
+                        {t('session.action.syncCodex')}
                     </button>
                 ) : null}
 

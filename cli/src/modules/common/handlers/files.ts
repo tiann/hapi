@@ -11,6 +11,7 @@ import { getErrorMessage, rpcError } from '../rpcResponses'
 
 interface ReadFileRequest {
     path: string
+    maxBytes?: number
 }
 
 type ReadFileResponse = FileReadResponse
@@ -44,6 +45,16 @@ export function registerFileHandlers(rpcHandlerManager: RpcHandlerManager, worki
 
         try {
             const resolvedPath = resolve(workingDirectory, data.path)
+            // 中文注释：自动渲染本地图片会跨 RPC 读取文件，先 stat 再 readFile，避免大文件被完整 base64 推过 Socket.IO。
+            const maxBytes = typeof data.maxBytes === 'number' && Number.isFinite(data.maxBytes) && data.maxBytes > 0
+                ? data.maxBytes
+                : null
+            if (maxBytes !== null) {
+                const fileStat = await stat(resolvedPath)
+                if (fileStat.size > maxBytes) {
+                    return rpcError(`File is too large. Max bytes: ${maxBytes}`)
+                }
+            }
             const buffer = await readFile(resolvedPath)
             const content = buffer.toString('base64')
             return { success: true, content }
