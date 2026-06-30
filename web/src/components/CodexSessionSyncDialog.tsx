@@ -76,6 +76,7 @@ export function CodexSessionSyncDialog(props: {
     const [hasInitializedWorkdirFilter, setHasInitializedWorkdirFilter] = useState(false)
     const [workdirFilter, setWorkdirFilter] = useState(ALL_WORKDIR_FILTER)
     const [searchQuery, setSearchQuery] = useState('')
+    const [archiveError, setArchiveError] = useState<string | null>(null)
     const wasOpenRef = useRef(false)
     const [importedSessions, setImportedSessions] = useState(() => readCodexImportedSessions())
     const [archiveMenuSessionId, setArchiveMenuSessionId] = useState<string | null>(null)
@@ -123,6 +124,7 @@ export function CodexSessionSyncDialog(props: {
             setHasInitializedWorkdirFilter(false)
             setWorkdirFilter(ALL_WORKDIR_FILTER)
             setSearchQuery('')
+            setArchiveError(null)
             closeArchiveMenu()
             return
         }
@@ -134,6 +136,7 @@ export function CodexSessionSyncDialog(props: {
             setHasInitializedWorkdirFilter(false)
             setWorkdirFilter(ALL_WORKDIR_FILTER)
             setSearchQuery('')
+            setArchiveError(null)
             closeArchiveMenu()
         }
     }, [defaultWorkdirFilter, isOpen])
@@ -181,7 +184,12 @@ export function CodexSessionSyncDialog(props: {
     const handleArchive = async (session: CodexLocalSessionSummary) => {
         if (!onArchiveSession || isPending || isLoading) return
         closeArchiveMenu()
-        await onArchiveSession(session)
+        setArchiveError(null)
+        try {
+            await onArchiveSession(session)
+        } catch (error) {
+            setArchiveError(error instanceof Error ? error.message : t('codexSync.failed.body'))
+        }
     }
 
     const toggleSession = (sessionId: string) => {
@@ -246,6 +254,11 @@ export function CodexSessionSyncDialog(props: {
                 </div>
 
                 <div className="mt-4 space-y-3">
+                    {archiveError ? (
+                        <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-600">
+                            {archiveError}
+                        </div>
+                    ) : null}
                     <div className="flex items-center justify-between gap-2">
                         <div className="text-xs text-[var(--app-hint)]">
                             {t('codexSync.confirm.selectedCount', { n: selectedSessionIds.length })}
@@ -407,7 +420,7 @@ export function CodexSessionSyncDialog(props: {
                                                     <button
                                                         type="button"
                                                         className="block w-full rounded px-3 py-2 text-left text-sm text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)]"
-                                                        onClick={() => void handleArchive(session)}
+                                                        onClick={() => { void handleArchive(session) }}
                                                     >
                                                         {t('codexSync.confirm.archiveAction')}
                                                     </button>
