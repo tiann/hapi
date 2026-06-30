@@ -466,7 +466,12 @@ describe('Codex Desktop import routes', () => {
             })
 
             expect(second.success).toBe(true)
-            expect(store.sessions.getSessionsByNamespace('default')).toHaveLength(1)
+            const sessions = store.sessions.getSessionsByNamespace('default')
+            expect(sessions).toHaveLength(1)
+            expect(sessions[0]?.metadata).toMatchObject({
+                codexSessionId: 'fork-session-id',
+                codexSourceSessionId: codexSessionId
+            })
         } finally {
             store.close()
             rmSync(codexHome, { recursive: true, force: true })
