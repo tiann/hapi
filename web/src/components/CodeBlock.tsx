@@ -1,7 +1,8 @@
-import type { CSSProperties } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
-import { useShikiHighlighter } from '@/lib/shiki'
-import { CopyIcon, CheckIcon } from '@/components/icons'
+import { useCodeWrap } from '@/hooks/useCodeWrap'
+import { useShikiHighlightedLines, splitCodeLines } from '@/lib/shiki'
+import { CopyIcon, CheckIcon, WrapIcon } from '@/components/icons'
 import { useTranslation } from '@/lib/use-translation'
 
 const DEFAULT_COLLAPSE_LINE_THRESHOLD = 18
@@ -20,20 +21,12 @@ function formatCodeLabel(language?: string, title?: string): string {
     return language
 }
 
-function countCodeLines(code: string): number {
-    if (code.length === 0) return 1
-    const lines = code.split('\n')
-    if (lines.length > 1 && lines[lines.length - 1] === '') {
-        lines.pop()
-    }
-    return Math.max(lines.length, 1)
-}
-
 export function CodeBlock(props: {
     code: string
     language?: string
     title?: string
     showCopyButton?: boolean
+    showWrapToggle?: boolean
     collapseLongContent?: boolean
     collapsedHeight?: number
     maxHeight?: number
@@ -44,8 +37,14 @@ export function CodeBlock(props: {
 }) {
     const { t } = useTranslation()
     const showCopyButton = props.showCopyButton ?? true
+    // The wrap toggle is a <button>. Callsites that render CodeBlock inside
+    // an interactive ancestor (a DialogTrigger button, a role="button"
+    // inline preview) must pass false to avoid nesting interactive elements
+    // (invalid HTML / hydration violation). Default on for standalone use.
+    const showWrapToggle = props.showWrapToggle ?? true
     const { copied, copy } = useCopyToClipboard()
-    const highlighted = useShikiHighlighter(props.code, props.language)
+    const { codeWrap, setCodeWrap } = useCodeWrap()
+    const highlightedLines = useShikiHighlightedLines(props.code, props.language)
     const isCollapsed = Boolean(props.collapseLongContent) && shouldCollapseCode(
         props.code,
         props.collapseLineThreshold ?? DEFAULT_COLLAPSE_LINE_THRESHOLD,
@@ -56,13 +55,31 @@ export function CodeBlock(props: {
     const codeTextClass = props.size === 'comfortable'
         ? 'text-sm leading-5'
         : 'text-xs'
-    const lineCount = countCodeLines(props.code)
-    const lineNumberWidth = Math.max(String(lineCount).length, 3)
-    const lineNumbers = Array.from({ length: lineCount }, (_, index) => String(index + 1)).join('\n')
+    // Render one grid row per logical line: a line-number cell and a code
+    // cell that are siblings in the same row. Because they share a grid row,
+    // the line number stays aligned with its line even when the code cell
+    // wraps (the row grows taller and the number pins to the top) -- the
+    // GitHub / VS Code diff behavior. This replaces the earlier two-<pre>
+    // approach whose independent text flows drifted out of alignment while
+    // wrapped.
+    //
+    // `highlightedLines` (one ReactNode per line) is null while shiki is
+    // pending or for unsupported languages; fall back to the raw code split
+    // on newlines using the same normalization, so line numbers match.
+    const fallbackLines = splitCodeLines(props.code)
+    const codeLines: ReactNode[] = highlightedLines ?? fallbackLines
+    const lineNumberWidth = Math.max(String(codeLines.length).length, 3)
     const label = formatCodeLabel(props.language, props.title)
+    // First track sizes to the line-number column; the code column takes the
+    // rest. When wrapped the code column is capped to the container width
+    // (minmax(0,1fr)) so long lines wrap instead of overflowing; unwrapped it
+    // grows to its content (max-content) inside the horizontal-scroll body.
     const codeGridStyle = {
-        gridTemplateColumns: `${lineNumberWidth}ch max-content`
+        gridTemplateColumns: `${lineNumberWidth}ch ${codeWrap ? 'minmax(0, 1fr)' : 'max-content'}`
     } satisfies CSSProperties
+    const codeCellStyle = codeWrap
+        ? { whiteSpace: 'pre-wrap' as const, wordBreak: 'break-word' as const }
+        : { whiteSpace: 'pre' as const }
     const bodyStyle = isCollapsed
         ? { maxHeight: collapsedHeight, overflowY: 'hidden' as const }
         : props.scrollY
@@ -75,36 +92,61 @@ export function CodeBlock(props: {
                 <div className="min-w-0 flex-1 truncate font-mono text-[11px] uppercase tracking-[0.08em] text-[var(--app-code-header-fg)]">
                     {label}
                 </div>
-                {showCopyButton ? (
-                    <button
-                        type="button"
-                        onClick={(event) => {
-                            event.stopPropagation()
-                            copy(props.code)
-                        }}
-                        className="shrink-0 rounded-md p-1 text-[var(--app-code-header-fg)] transition-colors hover:bg-[var(--app-code-copy-hover-bg)] hover:text-[var(--app-fg)]"
-                        title={t('code.copy')}
-                    >
-                        {copied ? <CheckIcon className="h-3.5 w-3.5" /> : <CopyIcon className="h-3.5 w-3.5" />}
-                    </button>
-                ) : null}
+                <div className="flex shrink-0 items-center gap-1">
+                    {showWrapToggle ? (
+                        <button
+                            type="button"
+                            onClick={(event) => {
+                                event.stopPropagation()
+                                setCodeWrap(!codeWrap)
+                            }}
+                            className={`rounded-md p-1 transition-colors hover:bg-[var(--app-code-copy-hover-bg)] hover:text-[var(--app-fg)] ${codeWrap ? 'text-[var(--app-fg)]' : 'text-[var(--app-code-header-fg)]'}`}
+                            title={t(codeWrap ? 'code.wrap.disable' : 'code.wrap.enable')}
+                            aria-pressed={codeWrap}
+                        >
+                            <WrapIcon className="h-3.5 w-3.5" />
+                        </button>
+                    ) : null}
+                    {showCopyButton ? (
+                        <button
+                            type="button"
+                            onClick={(event) => {
+                                event.stopPropagation()
+                                copy(props.code)
+                            }}
+                            className="rounded-md p-1 text-[var(--app-code-header-fg)] transition-colors hover:bg-[var(--app-code-copy-hover-bg)] hover:text-[var(--app-fg)]"
+                            title={t('code.copy')}
+                        >
+                            {copied ? <CheckIcon className="h-3.5 w-3.5" /> : <CopyIcon className="h-3.5 w-3.5" />}
+                        </button>
+                    ) : null}
+                </div>
             </div>
 
             <div
-                className="min-w-0 w-full max-w-full overflow-x-auto"
+                className={`min-w-0 w-full max-w-full ${codeWrap ? '' : 'overflow-x-auto'}`}
                 style={bodyStyle}
             >
-                <div className={`grid w-max min-w-full font-mono ${codeTextClass}`} style={codeGridStyle}>
-                    <pre
-                        aria-hidden="true"
-                        className="m-0 select-none px-3 py-3 text-left text-[var(--app-hint)]/70"
-                    >
-                        {lineNumbers}
-                    </pre>
-                    <pre className="shiki m-0 px-4 py-3 pr-8">
-                        <code className="block">{highlighted ?? props.code}</code>
-                    </pre>
-                </div>
+                <pre
+                    className={`shiki m-0 grid ${codeWrap ? 'w-full' : 'w-max min-w-full'} font-mono ${codeTextClass} py-3`}
+                    style={codeGridStyle}
+                >
+                    {codeLines.map((line, index) => (
+                        <span key={index} className="contents">
+                            <span
+                                data-line-number
+                                aria-hidden="true"
+                                className="select-none px-3 text-left text-[var(--app-hint)]/70"
+                                style={{ alignSelf: 'start' }}
+                            >
+                                {index + 1}
+                            </span>
+                            <span data-code-cell className="pl-4 pr-8" style={codeCellStyle}>
+                                {line}
+                            </span>
+                        </span>
+                    ))}
+                </pre>
             </div>
             {isCollapsed ? (
                 <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center bg-gradient-to-t from-[var(--app-code-bg)] via-[var(--app-code-bg)]/94 to-transparent px-2 pb-2 pt-10">

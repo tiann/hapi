@@ -11,8 +11,8 @@ vi.mock('@/components/MarkdownRenderer', () => ({
 }))
 
 vi.mock('@/components/CodeBlock', () => ({
-    CodeBlock: (props: { code: string; language?: string; title?: string; className?: string }) => (
-        <div className={props.className}>
+    CodeBlock: (props: { code: string; language?: string; title?: string; className?: string; showWrapToggle?: boolean }) => (
+        <div className={props.className} data-show-wrap-toggle={String(props.showWrapToggle ?? true)}>
             {props.title ? <div>{props.title}</div> : null}
             <pre data-language={props.language ?? 'text'}>
                 <code>{props.code}</code>
@@ -348,7 +348,12 @@ describe('Codex agent result formatting', () => {
 })
 
 describe('read file result formatting', () => {
-    function renderToolResult(toolName: string, result: unknown, input: unknown = {}) {
+    function renderToolResult(
+        toolName: string,
+        result: unknown,
+        input: unknown = {},
+        surface: 'inline' | 'dialog' = 'dialog'
+    ) {
         const ResultView = getToolResultViewComponent(toolName)
         const block: ToolCallBlock = {
             id: 'tool-read',
@@ -371,7 +376,7 @@ describe('read file result formatting', () => {
 
         return render(
             <I18nProvider>
-                <ResultView block={block} metadata={null} surface="dialog" />
+                <ResultView block={block} metadata={null} surface={surface} />
             </I18nProvider>
         )
     }
@@ -429,5 +434,29 @@ describe('read file result formatting', () => {
         expect(container.querySelector('pre')).not.toBeNull()
         expect(container).toHaveTextContent('File content')
         expect(container).toHaveTextContent('const value = 1')
+    })
+
+    it('suppresses the CodeBlock wrap toggle on the inline surface (avoids nesting a <button> in the role="button" preview)', () => {
+        const { container } = renderToolResult(
+            'Read',
+            { file: { filePath: '/tmp/example.ts', content: 'const value = 1\nexport { value }' } },
+            {},
+            'inline'
+        )
+
+        expect(container.querySelector('[data-show-wrap-toggle="false"]')).not.toBeNull()
+        expect(container.querySelector('[data-show-wrap-toggle="true"]')).toBeNull()
+    })
+
+    it('keeps the CodeBlock wrap toggle on the dialog surface (button-free container)', () => {
+        const { container } = renderToolResult(
+            'Read',
+            { file: { filePath: '/tmp/example.ts', content: 'const value = 1\nexport { value }' } },
+            {},
+            'dialog'
+        )
+
+        expect(container.querySelector('[data-show-wrap-toggle="true"]')).not.toBeNull()
+        expect(container.querySelector('[data-show-wrap-toggle="false"]')).toBeNull()
     })
 })

@@ -241,9 +241,13 @@ function inferCodeLanguage(path: string | null, text: string): string | null {
 }
 
 function resultCodeBlockProps(surface: ToolViewProps['surface'], collapseLongContent?: boolean) {
+    // The inline surface renders inside ToolCard's role="button" preview,
+    // so the wrap toggle's <button> would nest inside an interactive
+    // ancestor (invalid HTML / hydration violation). Suppress it here; the
+    // dialog surface (button-free) keeps the toggle.
     return surface === 'dialog'
         ? { collapseLongContent: false, size: 'comfortable' as const, scrollY: true }
-        : { collapseLongContent }
+        : { collapseLongContent, showWrapToggle: false }
 }
 
 function renderResultBody(

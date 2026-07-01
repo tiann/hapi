@@ -488,18 +488,6 @@ body {
     color: inherit;
 }
 
-.aui-md-codeblock pre.shiki {
-    margin: 0;
-    padding: 0.75rem 1rem;
-    background-color: transparent !important;
-    font-size: 0.875rem;
-}
-
-.aui-md-codeblock pre.shiki code {
-    display: block;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-}
-
 .aui-md-codeblock .shiki,
 .aui-md-codeblock .shiki span {
     background-color: transparent !important;
