@@ -166,8 +166,8 @@ function DiffInlineView(props: {
     // Same trap as CodeBlock's Phase 1 spike: a `max-content` third track
     // lets the row claim full content width before `whitespace-pre-wrap`
     // ever gets a chance to wrap, so wrap-on must also switch the track to
-    // `minmax(0, 1fr)` (matching the compact variant, which already wraps).
-    const codeColumnTrack = (isComfortable && !codeWrap) ? 'max-content' : 'minmax(0, 1fr)'
+    // `minmax(0, 1fr)`. Both size variants follow the global wrap setting.
+    const codeColumnTrack = codeWrap ? 'minmax(0, 1fr)' : 'max-content'
     const rowStyle = {
         gridTemplateColumns: `${lineNumberWidth}ch ${lineNumberWidth}ch ${codeColumnTrack}`
     } satisfies CSSProperties
@@ -191,16 +191,15 @@ function DiffInlineView(props: {
 
             <div
                 className={cn(
-                    (isComfortable && codeWrap) ? '' : 'overflow-x-auto',
+                    codeWrap ? '' : 'overflow-x-auto',
                     props.scrollY ? 'overflow-y-auto' : 'overflow-y-hidden'
                 )}
                 style={props.scrollY ? { maxHeight: props.maxHeight ?? 420 } : undefined}
             >
                 <div className={cn(
                     'font-mono',
-                    isComfortable
-                        ? cn('text-sm leading-6', codeWrap ? 'w-full' : 'w-max min-w-full')
-                        : 'text-xs'
+                    isComfortable ? 'text-sm leading-6' : 'text-xs',
+                    codeWrap ? 'w-full' : 'w-max min-w-full'
                 )}>
                     {diff.map((part, i) => {
                         const lines = splitDiffLines(part.value)
@@ -224,9 +223,7 @@ function DiffInlineView(props: {
                                             <div className={cn('text-left text-[var(--app-hint)]/80', isComfortable ? 'text-xs leading-6' : 'text-[10px]')}>{leftNumber}</div>
                                             <div className={cn('text-left text-[var(--app-hint)]/80', isComfortable ? 'text-xs leading-6' : 'text-[10px]')}>{rightNumber}</div>
                                             <div className={cn(
-                                                isComfortable
-                                                    ? (codeWrap ? 'whitespace-pre-wrap break-words' : 'whitespace-pre')
-                                                    : 'min-w-0 whitespace-pre-wrap break-words'
+                                                codeWrap ? 'min-w-0 whitespace-pre-wrap break-words' : 'whitespace-pre'
                                             )}>
                                                 <span className="mr-2 inline-block w-3 text-[var(--app-hint)]/90">{prefix}</span>
                                                 <span>{line}</span>

@@ -92,6 +92,27 @@ describe('DiffView', () => {
         expect(screen.queryByRole('button', { pressed: true })).toBeNull()
     })
 
+    it('compact rows also follow the global wrap preference (previously hard-coded to wrap)', () => {
+        const props = {
+            oldString: 'old line\n',
+            newString: 'a very long new line that would need to wrap to avoid horizontal scroll on narrow screens\n',
+            variant: 'inline' as const,
+            size: 'compact' as const
+        }
+
+        // wrap off (default): compact rows now use whitespace-pre + horizontal scroll
+        const off = render(<I18nProvider><DiffView {...props} /></I18nProvider>)
+        expect(off.container.querySelector('.whitespace-pre:not(.whitespace-pre-wrap)')).not.toBeNull()
+        expect(off.container.querySelector('.overflow-x-auto')).not.toBeNull()
+        off.unmount()
+
+        // wrap on: compact rows wrap and drop the horizontal-scroll container
+        window.localStorage.setItem('hapi-code-wrap', '1')
+        const on = render(<I18nProvider><DiffView {...props} /></I18nProvider>)
+        expect(on.container.querySelector('.whitespace-pre-wrap')).not.toBeNull()
+        expect(on.container.querySelector('.overflow-x-auto')).toBeNull()
+    })
+
     it('comfortable rows consume the global wrap preference from localStorage', () => {
         window.localStorage.setItem('hapi-code-wrap', '1')
 
