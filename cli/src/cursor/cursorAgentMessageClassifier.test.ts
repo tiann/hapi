@@ -156,6 +156,20 @@ describe('classifyCursorAgentMessage', () => {
         expect(classifyCursorAgentMessage('\nError: T: Connection stalled after 30s')?.kind).toBe('connection_stalled')
     })
 
+    it('classifies RetriableError prefix from cursor session (real session 0e04ebe7)', () => {
+        // Regression: 2026-06-20 session 0e04ebe7 ("teams structure").
+        // Cursor ACP session (metadata.flavor=cursor) but HAPI persists
+        // agent text in a codex-shaped envelope via convertAgentMessage —
+        // that is NOT the Codex runner. The inline error used RetriableError
+        // instead of Error: T: and was followed immediately by ready.
+        const realWireFormat = '\n\nError: RetriableError: [canceled] http/2 stream closed with error code CANCEL (0x8)'
+        const result = classifyCursorAgentMessage(realWireFormat)
+        expect(result).not.toBeNull()
+        expect(result?.kind).toBe('canceled')
+        expect(result?.transient).toBe(true)
+        expect(result?.source).toBe('text')
+    })
+
     it('classifies error appended to in-flight agent text (real session e7d9b44b)', () => {
         // Regression: 2026-06-13 session e7d9b44b. cursor-agent appended
         // a gRPC stringification to the END of a normal narrative output
