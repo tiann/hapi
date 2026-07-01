@@ -181,10 +181,23 @@ export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLi
     }
 }
 
-export function setControlledByUser(session: ApiSessionClient, mode: 'local' | 'remote'): void {
+export function setControlledByUser(session: ApiSessionClient, mode: 'local' | 'remote' | 'pty'): void {
     session.updateAgentState((currentState) => ({
         ...currentState,
-        controlledByUser: mode === 'local'
+        controlledByUser: mode === 'local',
+        // Persist the launch mode so reopen/resume can restore it. 'pty' is an
+        // immutable launch identity (the web gates the agent-terminal toggle on
+        // it), so once set it must survive later local/remote collaboration-mode
+        // changes — otherwise a pty→local→pty handoff reports external mode
+        // 'remote' and would rewrite it, hiding the terminal toggle for a session
+        // whose PTY is still running.
+        startingMode: currentState.startingMode === 'pty' ? 'pty' : mode
+    }))
+    // Also surface it in metadata so the web can gate the agent-terminal toggle
+    // (only PTY sessions have an agent PTY to view).
+    session.updateMetadata((metadata) => ({
+        ...metadata,
+        startingMode: metadata.startingMode === 'pty' ? 'pty' : mode
     }))
 }
 

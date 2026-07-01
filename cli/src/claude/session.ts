@@ -21,6 +21,11 @@ export class Session extends AgentSessionBase<EnhancedMode> {
     readonly startedBy: 'runner' | 'terminal';
     readonly startingMode: 'local' | 'remote';
     localLaunchFailure: LocalLaunchFailure | null = null;
+    /** Function to write data to the local Claude process's stdin. */
+    writeStdin: ((data: string) => void) | null = null;
+    /** Texts of messages that were forwarded to local Claude via stdin.
+     *  Used by the sessionScanner to skip duplicate user messages. */
+    readonly stdinMessageTexts: Set<string> = new Set();
 
     constructor(opts: {
         api: ApiClient;
@@ -85,13 +90,34 @@ export class Session extends AgentSessionBase<EnhancedMode> {
         return this.permissionMode as PermissionMode | undefined;
     }
 
+    // Fired when the model or effort actually changes mid-session. The PTY
+    // launcher uses this to re-spawn Claude with --resume + the new --model /
+    // --effort (the interactive CLI fixes its model at spawn, so a live change
+    // can only take effect on a fresh, conversation-preserving re-spawn).
+    private configChangeHandler: (() => void) | null = null;
+    setConfigChangeHandler = (handler: (() => void) | null): void => {
+        this.configChangeHandler = handler;
+    };
+
     setModel = (model: SessionModel): void => {
+        if (model === this.model) return;
         this.model = model;
+        this.configChangeHandler?.();
     };
 
     setEffort = (effort: SessionEffort): void => {
+        if (effort === this.effort) return;
         this.effort = effort;
+        this.configChangeHandler?.();
     };
+
+    getModel(): SessionModel {
+        return this.model ?? null;
+    }
+
+    getEffort(): SessionEffort {
+        return this.effort ?? null;
+    }
 
     recordLocalLaunchFailure = (message: string, exitReason: LocalLaunchExitReason): void => {
         this.localLaunchFailure = { message, exitReason };

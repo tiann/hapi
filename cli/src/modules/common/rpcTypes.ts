@@ -16,6 +16,7 @@ export interface SpawnSessionOptions {
     token?: string
     sessionType?: 'simple' | 'worktree'
     worktreeName?: string
+    startingMode?: 'remote' | 'pty'
 }
 
 export type SpawnSessionResult =

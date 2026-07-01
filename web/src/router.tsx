@@ -932,6 +932,19 @@ function SessionPage() {
             onClearSendError={clearSendError}
             initialOutlineOpen={outline}
             onInitialOutlineConsumed={handleInitialOutlineConsumed}
+            onAbortRestore={(text) => {
+                sendErrorIdRef.current += 1
+                setSendErrors((prev) => ({
+                    ...prev,
+                    [sessionId]: {
+                        id: sendErrorIdRef.current,
+                        text,
+                        message: t('chat.sendError.aborted'),
+                        code: 'abort',
+                        scheduledAt: null
+                    }
+                }))
+            }}
         />
     )
 }
@@ -950,7 +963,7 @@ function SessionDetailRoute() {
             return
         }
         navigate({ to: '/sessions', replace: true })
-    }, [navigate, sessionNotFound])
+    }, [navigate, sessionNotFound, sessionId])
 
     if (sessionNotFound) {
         return (

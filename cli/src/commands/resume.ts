@@ -2,7 +2,7 @@ import chalk from 'chalk'
 import React from 'react'
 import { render } from 'ink'
 import { existsSync } from 'node:fs'
-import type { LocalResumeTarget, ResumableSession } from '@hapi/protocol'
+import { getFlavorLabel, type LocalResumeTarget, type ResumableSession } from '@hapi/protocol'
 import type {
     ClaudePermissionMode,
     CodexPermissionMode,
@@ -24,7 +24,7 @@ function formatSessionLine(session: ResumableSession, index: number): string {
     const state = session.active
         ? session.controlledByUser ? 'local' : 'remote'
         : 'inactive'
-    return `${index + 1}. ${session.flavor.padEnd(8)} ${state.padEnd(8)} ${name}  ${session.directory}`
+    return `${index + 1}. ${getFlavorLabel(session.flavor).padEnd(12)} ${state.padEnd(8)} ${name}  ${session.directory}`
 }
 
 async function selectSession(sessions: ResumableSession[]): Promise<string> {

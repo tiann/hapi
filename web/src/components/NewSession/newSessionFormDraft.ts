@@ -13,6 +13,7 @@ export type NewSessionFormDraft = {
     yoloMode: boolean
     sessionType: SessionType
     worktreeName: string
+    startingMode?: 'remote' | 'pty'
 }
 
 export function saveNewSessionFormDraft(draft: NewSessionFormDraft): void {
@@ -54,7 +55,8 @@ export function loadNewSessionFormDraft(): NewSessionFormDraft | null {
                 : 'default',
             yoloMode: Boolean(parsed.yoloMode),
             sessionType: (parsed.sessionType as SessionType | undefined) ?? 'simple',
-            worktreeName: typeof parsed.worktreeName === 'string' ? parsed.worktreeName : ''
+            worktreeName: typeof parsed.worktreeName === 'string' ? parsed.worktreeName : '',
+            startingMode: parsed.startingMode === 'pty' ? 'pty' : undefined
         }
     } catch {
         return null

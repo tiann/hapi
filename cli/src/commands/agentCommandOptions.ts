@@ -2,7 +2,14 @@ import type { PermissionMode } from '@hapi/protocol/types'
 
 export type RemoteAgentCommandOptions<TPermissionMode extends PermissionMode> = {
     startedBy?: 'runner' | 'terminal'
+    // Control mode: who drives the session (terminal vs web). Orthogonal to
+    // flavor and to how the agent process is launched.
     startingMode?: 'local' | 'remote'
+    // Launch axis: run the agent as an interactive PTY terminal. Only pty-capable
+    // flavors (claude has its own parser; agy) act on this; the rest ignore it.
+    // Kept separate from `startingMode` so non-pty flavors never have to know
+    // about pty (it always collapses to remote-controlled at the session level).
+    interactive?: boolean
     permissionMode?: TPermissionMode
     model?: string
     effort?: string
@@ -25,8 +32,13 @@ export function parseRemoteAgentCommandOptions<TPermissionMode extends Permissio
             const value = args[++i]
             if (value === 'local' || value === 'remote') {
                 options.startingMode = value
+            } else if (value === 'pty') {
+                // pty is a launch flag, not a control mode — split it out so the
+                // control axis stays 'local' | 'remote' (default) and only
+                // pty-capable flavors read `interactive`.
+                options.interactive = true
             } else {
-                throw new Error('Invalid --hapi-starting-mode (expected local or remote)')
+                throw new Error('Invalid --hapi-starting-mode (expected local, remote, or pty)')
             }
         } else if (arg === '--permission-mode') {
             const mode = args[++i]

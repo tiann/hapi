@@ -159,6 +159,24 @@ describe('parseRemoteAgentCommandOptions — pi flavor', () => {
         )).toThrow('Invalid --hapi-starting-mode')
     })
 
+    it('maps --hapi-starting-mode pty to the interactive launch flag, not a control mode', () => {
+        // pty is a launch axis (how the process is driven), not a control mode
+        // (who drives the session). Non-pty flavors ignore `interactive`; pty
+        // flavors (claude/agy) read it to launch their interactive terminal.
+        const result = parseRemoteAgentCommandOptions(
+            ['--hapi-starting-mode', 'pty'],
+            ALLOWED
+        )
+        expect(result.interactive).toBe(true)
+        // control mode is left to its default — pty does NOT occupy startingMode
+        expect(result.startingMode).toBeUndefined()
+    })
+
+    it('does not set interactive for local/remote', () => {
+        expect(parseRemoteAgentCommandOptions(['--hapi-starting-mode', 'remote'], ALLOWED).interactive).toBeUndefined()
+        expect(parseRemoteAgentCommandOptions(['--hapi-starting-mode', 'local'], ALLOWED).interactive).toBeUndefined()
+    })
+
     it('handles a full pi invocation end-to-end', () => {
         const result = parseRemoteAgentCommandOptions(
             [

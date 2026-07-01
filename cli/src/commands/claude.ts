@@ -15,6 +15,93 @@ import { withBunRuntimeEnv } from '@/utils/bunRuntime'
 import { extractErrorInfo } from '@/utils/errorUtils'
 import type { CommandDefinition } from './types'
 
+/**
+ * Parse `hapi` / `hapi claude` CLI args into {@link StartOptions} plus a
+ * showHelp flag. Extracted from {@link claudeCommand}.run so the arg handling
+ * is unit-testable. Expects a leading `claude` subcommand to already be
+ * stripped from `args`.
+ */
+export function parseClaudeStartOptions(args: string[]): { options: StartOptions; showHelp: boolean } {
+    const options: StartOptions = {}
+    let showHelp = false
+    const unknownArgs: string[] = []
+    let hasExplicitPermissionMode = false
+
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i]
+
+        if (arg === '-h' || arg === '--help') {
+            showHelp = true
+            unknownArgs.push(arg)
+        } else if (arg === '--hapi-starting-mode') {
+            const value = z.enum(['local', 'remote', 'pty']).parse(args[++i])
+            if (value === 'pty') {
+                // pty is the interactive-launch axis, not a control mode.
+                options.interactive = true
+            } else {
+                options.startingMode = value
+            }
+        } else if (arg === '--permission-mode') {
+            const mode = args[++i]
+            if (!mode || !(CLAUDE_PERMISSION_MODES as readonly string[]).includes(mode)) {
+                throw new Error(`Invalid --permission-mode value: ${mode ?? '(missing)'}`)
+            }
+            options.permissionMode = mode as StartOptions['permissionMode']
+            hasExplicitPermissionMode = true
+        } else if (arg === '--yolo' && !hasExplicitPermissionMode) {
+            options.permissionMode = 'bypassPermissions'
+            unknownArgs.push('--dangerously-skip-permissions')
+        } else if (arg === '--dangerously-skip-permissions' && !hasExplicitPermissionMode) {
+            options.permissionMode = 'bypassPermissions'
+            unknownArgs.push(arg)
+        } else if (arg === '--model') {
+            const model = args[++i]
+            if (!model) {
+                throw new Error('Missing --model value')
+            }
+            options.model = model
+            unknownArgs.push('--model', model)
+        } else if (arg === '--effort') {
+            const effort = args[++i]
+            if (!effort) {
+                throw new Error('Missing --effort value')
+            }
+            options.effort = effort
+            unknownArgs.push('--effort', effort)
+        } else if (arg === '--started-by') {
+            options.startedBy = args[++i] as 'runner' | 'terminal'
+        } else {
+            unknownArgs.push(arg)
+            if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+                unknownArgs.push(args[++i])
+            }
+        }
+    }
+
+    // PTY mode surfaces AskUserQuestion / permission requests in the web UI via
+    // claude's PreToolUse hook (see ptyPermissionHandler). `--dangerously-skip-
+    // permissions` makes claude bypass that hook entirely, so the question
+    // renders only in the PTY TUI and never reaches the chat. In PTY mode we
+    // always drop the flag — regardless of the resolved permission mode (an
+    // explicit `--permission-mode default --dangerously-skip-permissions` would
+    // otherwise keep it) — and rely on the hook instead: under bypassPermissions
+    // every request is auto-approved, while question tools are still forwarded to
+    // the web.
+    if (options.interactive) {
+        for (let i = unknownArgs.length - 1; i >= 0; i--) {
+            if (unknownArgs[i] === '--dangerously-skip-permissions') {
+                unknownArgs.splice(i, 1)
+            }
+        }
+    }
+
+    if (unknownArgs.length > 0) {
+        options.claudeArgs = [...(options.claudeArgs || []), ...unknownArgs]
+    }
+
+    return { options, showHelp }
+}
+
 export const claudeCommand: CommandDefinition = {
     name: 'default',
     requiresRuntimeAssets: true,
@@ -25,59 +112,7 @@ export const claudeCommand: CommandDefinition = {
             args.shift()
         }
 
-        const options: StartOptions = {}
-        let showHelp = false
-        const unknownArgs: string[] = []
-        let hasExplicitPermissionMode = false
-
-        for (let i = 0; i < args.length; i++) {
-            const arg = args[i]
-
-            if (arg === '-h' || arg === '--help') {
-                showHelp = true
-                unknownArgs.push(arg)
-            } else if (arg === '--hapi-starting-mode') {
-                options.startingMode = z.enum(['local', 'remote']).parse(args[++i])
-            } else if (arg === '--permission-mode') {
-                const mode = args[++i]
-                if (!mode || !(CLAUDE_PERMISSION_MODES as readonly string[]).includes(mode)) {
-                    throw new Error(`Invalid --permission-mode value: ${mode ?? '(missing)'}`)
-                }
-                options.permissionMode = mode as StartOptions['permissionMode']
-                hasExplicitPermissionMode = true
-            } else if (arg === '--yolo' && !hasExplicitPermissionMode) {
-                options.permissionMode = 'bypassPermissions'
-                unknownArgs.push('--dangerously-skip-permissions')
-            } else if (arg === '--dangerously-skip-permissions' && !hasExplicitPermissionMode) {
-                options.permissionMode = 'bypassPermissions'
-                unknownArgs.push(arg)
-            } else if (arg === '--model') {
-                const model = args[++i]
-                if (!model) {
-                    throw new Error('Missing --model value')
-                }
-                options.model = model
-                unknownArgs.push('--model', model)
-            } else if (arg === '--effort') {
-                const effort = args[++i]
-                if (!effort) {
-                    throw new Error('Missing --effort value')
-                }
-                options.effort = effort
-                unknownArgs.push('--effort', effort)
-            } else if (arg === '--started-by') {
-                options.startedBy = args[++i] as 'runner' | 'terminal'
-            } else {
-                unknownArgs.push(arg)
-                if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
-                    unknownArgs.push(args[++i])
-                }
-            }
-        }
-
-        if (unknownArgs.length > 0) {
-            options.claudeArgs = [...(options.claudeArgs || []), ...unknownArgs]
-        }
+        const { options, showHelp } = parseClaudeStartOptions(args)
 
         if (showHelp) {
             console.log(`

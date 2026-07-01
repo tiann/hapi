@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react'
 import { Box, Text, useInput, useStdout } from 'ink'
-import type { ResumableSession } from '@hapi/protocol'
+import { getFlavorLabel, type ResumableSession } from '@hapi/protocol'
 import {
     filterResumeSessions,
     formatResumeSessionRelativeTime,
@@ -85,7 +85,7 @@ function padEndColumns(value: string, width: number): string {
 function formatSessionLine(session: ResumableSession, width: number): string {
     const state = getResumeSessionState(session)
     const time = formatResumeSessionRelativeTime(session.updatedAt).padStart(10)
-    const prefix = `${time}  ${session.flavor.padEnd(8)} ${state.padEnd(8)} `
+    const prefix = `${time}  ${getFlavorLabel(session.flavor).padEnd(12)} ${state.padEnd(8)} `
     const nameBudget = Math.max(12, width - prefix.length)
     const name = truncateText(getResumeSessionName(session), nameBudget)
     return padEndColumns(`${prefix}${name}`, width)

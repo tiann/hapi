@@ -61,6 +61,7 @@ import { useOpencodeModels } from '@/hooks/queries/useOpencodeModels'
 import { usePiModels } from '@/hooks/queries/usePiModels'
 import { useOpencodeReasoningEffortOptions } from '@/hooks/queries/useOpencodeReasoningEffortOptions'
 import { useVoiceOptional } from '@/lib/voice-context'
+import { AgentTerminalView } from '@/components/AgentTerminal/AgentTerminalView'
 import { VoiceBackendSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
 import { isRemoteTerminalSupported } from '@/utils/terminalSupport'
 
@@ -252,6 +253,51 @@ function ShareSeedConsumer(props: { sessionId: string; sessionActive: boolean })
 }
 
 /**
+ * Watches for incoming `abort-restore` events (emitted by the PTY launcher
+ * when the user aborts a running turn) and surfaces the aborted prompt text —
+ * carried on the event itself — via the existing sendError path
+ * (onAbortRestore prop). Acts only when no user message has been sent after the
+ * abort-restore event, so we never replay a prompt the user already resubmitted.
+ */
+function AbortRestoreConsumer(props: {
+    messages: NormalizedMessage[]
+    onAbortRestore: (text: string) => void
+}) {
+    const lastHandledIdRef = useRef<string | null>(null)
+
+    useEffect(() => {
+        // Walk backwards: find an abort-restore event with no user message after it.
+        // If a user message comes after the abort-restore, the restore was already
+        // acted on — treat it as consumed regardless of page reload.
+        let abortRestore: { id: string; text: string } | null = null
+        for (let i = props.messages.length - 1; i >= 0; i--) {
+            const msg = props.messages[i]
+            if (!msg) continue
+            if (msg.role === 'user') break  // user message after abort-restore → stale
+            if (msg.role !== 'event') continue
+            if (msg.content.type === 'abort-restore') {
+                // The exact in-flight prompt rides on the event; no need to guess
+                // it by scanning historical user turns.
+                const text = typeof msg.content.text === 'string' ? msg.content.text : ''
+                abortRestore = { id: msg.id, text }
+                break
+            }
+        }
+        if (!abortRestore) return
+        if (lastHandledIdRef.current === abortRestore.id) return
+        lastHandledIdRef.current = abortRestore.id
+
+        // Surface it via the sendError path so HappyComposer restores it the
+        // same way it handles a failed send.
+        if (abortRestore.text.length > 0) {
+            props.onAbortRestore(abortRestore.text)
+        }
+    }, [props.messages, props.onAbortRestore])
+
+    return null
+}
+
+/**
  * Mounts the per-session scratchlist DRAWER (composer-controlled).
  *
  * The drawer renders only when the operator toggles into "scratchlist
@@ -377,6 +423,9 @@ type SessionChatProps = {
     onClearSendError?: () => void
     initialOutlineOpen?: boolean
     onInitialOutlineConsumed?: () => void
+    // Called when an `abort-restore` event arrives and the composer is not empty,
+    // so the caller can surface the aborted text via the existing sendError path.
+    onAbortRestore?: (text: string) => void
 }
 
 /**
@@ -406,11 +455,19 @@ function SessionChatInner(props: SessionChatProps) {
     const sessionInactive = !props.session.active
     const inactiveCanResume = inactiveSessionCanResume(props.session, props.messages.length)
     const terminalSupported = isRemoteTerminalSupported(props.session.metadata)
+    // Offer the agent terminal only for an ACTIVE PTY session: a 'remote'/SDK
+    // session has no agent PTY, and an archived/inactive one has no live PTY (and
+    // no buffer once the runner exits), so its terminal would just be an empty,
+    // misleadingly "connected" view. Matches the composer terminal button, which
+    // is likewise gated on `session.active`.
+    const canViewAgentTerminal =
+        props.session.metadata?.startingMode === 'pty' && props.session.active
     const normalizedCacheRef = useRef<Map<string, { source: DecryptedMessage; normalized: NormalizedMessage | null }>>(new Map())
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
     const visibleGroupsRef = useRef<ToolGroupBlock[]>([])
     const [forceScrollToken, setForceScrollToken] = useState(0)
     const [outlineOpen, setOutlineOpen] = useState(props.initialOutlineOpen ?? false)
+    const [terminalVisible, setTerminalVisible] = useState(false)
     useEffect(() => {
         if (!props.initialOutlineOpen) {
             return
@@ -418,7 +475,6 @@ function SessionChatInner(props: SessionChatProps) {
         setOutlineOpen(true)
         props.onInitialOutlineConsumed?.()
     }, [props.initialOutlineOpen, props.onInitialOutlineConsumed])
-
     const [cursorSelectedBase, setCursorSelectedBase] = useState('auto')
     const lastSyncedCursorModelRef = useRef<string | null | undefined>(undefined)
     const scratchlist = useScratchlist(props.session.id)
@@ -1109,6 +1165,8 @@ function SessionChatInner(props: SessionChatProps) {
                 filesActive={false}
                 onToggleOutline={handleToggleOutline}
                 outlineActive={outlineOpen}
+                onToggleTerminal={canViewAgentTerminal ? () => setTerminalVisible(v => !v) : undefined}
+                terminalActive={terminalVisible}
                 api={props.api}
                 onSessionDeleted={props.onBack}
                 onSessionReopened={(newSessionId) => {
@@ -1122,6 +1180,7 @@ function SessionChatInner(props: SessionChatProps) {
 
             <CursorMigrationBanner metadata={props.session.metadata} />
 
+            <div className="flex flex-col min-h-0 flex-1">
             {props.session.teamState && (
                 <TeamPanel teamState={props.session.teamState} />
             )}
@@ -1138,8 +1197,23 @@ function SessionChatInner(props: SessionChatProps) {
 
             <AssistantRuntimeProvider runtime={runtime}>
                 <ShareSeedConsumer sessionId={props.session.id} sessionActive={props.session.active} />
+                <AbortRestoreConsumer messages={normalizedMessages} onAbortRestore={props.onAbortRestore ?? (() => {})} />
                 <DragDropZone disabled={sessionInactive || props.isSending || pendingSchedule != null}>
-
+                    <div className="relative flex min-h-0 flex-1 flex-col">
+                        {canViewAgentTerminal && (
+                            // No `key` needed here: SessionChatInner is itself keyed by
+                            // session.id (see SessionChat wrapper), so switching sessions
+                            // fully remounts this subtree. AgentTerminalView's mount effect
+                            // disconnects the agent-terminal socket on unmount, so the new
+                            // session reconnects/subscribes fresh — the old room is never
+                            // left subscribed.
+                            <AgentTerminalView
+                                sessionId={props.session.id}
+                                visible={terminalVisible}
+                                className={terminalVisible ? 'flex-1 min-h-0' : 'hidden'}
+                            />
+                        )}
+                        <div className={(terminalVisible && canViewAgentTerminal) ? 'hidden' : 'flex min-h-0 flex-1 flex-col'}>
                     <HappyThread
                         // Key with prefix: different components under the same session
                         // (thread, scratchlist, composer) must have distinct keys to avoid
@@ -1169,6 +1243,7 @@ function SessionChatInner(props: SessionChatProps) {
                         outlineItems={outlineItems}
                         onOutlineOpenChange={setOutlineOpen}
                     />
+                    </div>
 
                     {codexCollaborationModeSupported && codexModelsState.error ? (
                         <div className="px-3 pb-2">
@@ -1339,8 +1414,10 @@ function SessionChatInner(props: SessionChatProps) {
                         sendError={props.sendError ?? null}
                         onClearSendError={props.onClearSendError}
                     />
+                    </div>
                 </DragDropZone>
             </AssistantRuntimeProvider>
+            </div>
 
             {/* Voice session component - renders nothing but initializes voice backend */}
             {voice && (

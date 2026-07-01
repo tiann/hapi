@@ -1,3 +1,4 @@
+import { z } from 'zod'
 import {
     TerminalErrorPayloadSchema,
     TerminalExitPayloadSchema,
@@ -8,6 +9,8 @@ import type { StoredSession } from '../../../store'
 import type { TerminalRegistry } from '../../terminalRegistry'
 import type { CliSocketWithData, SocketServer } from '../../socketTypes'
 import type { AccessErrorReason, AccessResult } from './types'
+import { appendAgentTerminalOutput, clearAgentTerminalBuffer } from '../../agentTerminalBuffer'
+import { appendUserTerminalOutput } from '../../userTerminalBuffer'
 
 type ResolveSessionAccess = (sessionId: string) => AccessResult<StoredSession>
 
@@ -68,7 +71,45 @@ export function registerTerminalHandlers(socket: CliSocketWithData, deps: Termin
             return
         }
         terminalRegistry.markActivity(parsed.data.terminalId)
+        // Keep a scrollback buffer so reconnecting web clients see the
+        // current terminal content instead of a black screen.
+        appendUserTerminalOutput(parsed.data.sessionId, parsed.data.terminalId, parsed.data.data)
         forwardTerminalEvent('terminal:output', parsed.data)
+    })
+
+    socket.on('agent-terminal:output', (data: unknown) => {
+        const parsed = terminalOutputSchema.safeParse(data)
+        if (!parsed.success) {
+            return
+        }
+        const sessionAccess = resolveSessionAccess(parsed.data.sessionId)
+        if (!sessionAccess.ok) {
+            emitAccessError('session', parsed.data.sessionId, sessionAccess.reason)
+            return
+        }
+        // Keep a scrollback buffer so a web client that subscribes later can be
+        // replayed the current screen (avoids the black-screen-until-keystroke).
+        appendAgentTerminalOutput(parsed.data.sessionId, parsed.data.data)
+        // Broadcast to the agent-terminal room (distinct from the user-terminal's
+        // `session:${id}` room) so only agent-terminal viewers receive PTY output
+        // and the streaming-teardown viewer count stays accurate.
+        terminalNamespace.to(`agent-session:${parsed.data.sessionId}`).emit('agent-terminal:output', parsed.data)
+    })
+
+    socket.on('agent-terminal:reset', (data: unknown) => {
+        const parsed = z.object({ sessionId: z.string().min(1) }).safeParse(data)
+        if (!parsed.success) {
+            return
+        }
+        const sessionAccess = resolveSessionAccess(parsed.data.sessionId)
+        if (!sessionAccess.ok) {
+            emitAccessError('session', parsed.data.sessionId, sessionAccess.reason)
+            return
+        }
+        // A fresh agent PTY spawned — drop the previous session's scrollback so a
+        // re-subscribing viewer doesn't replay stale (and alt-screen-corrupted)
+        // output from before the restart.
+        clearAgentTerminalBuffer(parsed.data.sessionId)
     })
 
     socket.on('terminal:exit', (data: unknown) => {
@@ -80,6 +121,8 @@ export function registerTerminalHandlers(socket: CliSocketWithData, deps: Termin
         if (!entry || entry.sessionId !== parsed.data.sessionId || entry.cliSocketId !== socket.id) {
             return
         }
+        // remove() fires the registry's onRemove → clears this terminal's
+        // scrollback buffer (without touching the session's other terminals).
         terminalRegistry.remove(parsed.data.terminalId)
         const terminalSocket = terminalNamespace.sockets.get(entry.socketId)
         if (!terminalSocket) {

@@ -231,6 +231,8 @@ export default {
   'newSession.opencodeModel.empty': 'No OpenCode models discovered for this directory',
   'newSession.opencodeModel.default': 'Default',
   'newSession.reasoningEffort': 'Reasoning effort',
+  'newSession.pty.title': 'PTY mode (Experimental)',
+  'newSession.pty.desc': 'Runs Claude through its interactive CLI instead of the Agent SDK, with a live terminal alongside the chat.',
   'newSession.yolo': 'YOLO mode',
   'newSession.yolo.title': 'Bypass approvals and sandbox',
   'newSession.yolo.desc': 'Uses dangerous agent flags when spawning.',
@@ -275,6 +277,7 @@ export default {
   'chat.terminal': 'Terminal',
   'chat.switchRemote': 'Switch to remote mode',
   'chat.sendError.fallback': "Couldn't send your message. Edit and try again.",
+  'chat.sendError.aborted': 'Turn was aborted. Edit and resend if needed.',
   'chat.sendError.sessionInactive': 'This session is archived. Reopen it to send your message.',
   'chat.sendError.sessionInactive.action': 'Reopen',
 
