@@ -106,7 +106,7 @@ function createHapiMcpServer(client: ApiSessionClient, emitTitleSummary: boolean
     }
 
     mcp.registerTool<any, any>('change_title', {
-        description: 'Change the title of the current chat session',
+        description: 'Change the title of the current HAPI chat session. Call once when the user\'s primary objective is clear; use a concise task title.',
         title: 'Change Chat Title',
         inputSchema: changeTitleInputSchema,
     }, async (args: { title: string }) => {
@@ -137,7 +137,7 @@ function createHapiMcpServer(client: ApiSessionClient, emitTitleSummary: boolean
     });
 
     mcp.registerTool<any, any>('display_image', {
-        description: 'Display a local image file inline in the current HAPI chat session',
+        description: 'Display a local image file inline in the current HAPI chat session. Call with the absolute filesystem path when the user should see a screenshot, diagram, or generated image.',
         title: 'Display Image',
         inputSchema: displayImageInputSchema,
     }, async (args: { path: string; title?: string }) => {
@@ -171,7 +171,7 @@ function createHapiMcpServer(client: ApiSessionClient, emitTitleSummary: boolean
     });
 
     mcp.registerTool<any, any>('display_video', {
-        description: 'Display a local mp4 or webm file inline in the current HAPI chat session',
+        description: 'Display a local mp4 or webm file inline in the current HAPI chat session. Call with the absolute filesystem path when the user should see a screen recording or video artifact.',
         title: 'Display Video',
         inputSchema: displayVideoInputSchema,
     }, async (args: { path: string; title?: string }) => {

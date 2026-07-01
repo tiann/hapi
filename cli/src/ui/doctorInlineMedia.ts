@@ -207,6 +207,14 @@ export async function runDoctorInlineMedia(): Promise<number> {
         ))
     }
 
+    const cursorSessions = withBridge.filter((b) => b.flavor === 'cursor')
+    if (cursorSessions.length > 0) {
+        console.log(chalk.bold('\nCursor ACP'))
+        console.log(chalk.gray('  Cursor ignores session/new mcpServers. Remote sessions use .cursor/mcp.json + `agent mcp enable hapi`.'))
+        console.log(chalk.gray('  Tool names are bare: display_image, display_video, change_title (not hapi_display_image).'))
+        console.log(chalk.gray('  Verify on the session machine: agent mcp list-tools hapi'))
+    }
+
     console.log(chalk.bold('\nAgent inline path'))
     console.log(chalk.gray('  1. MCP tool display_image / display_video in the running session (ACP flavors via hapi bridge)'))
     console.log(chalk.gray('  2. Shell fallback (HAPI session id prefix, not cursorSessionId):'))

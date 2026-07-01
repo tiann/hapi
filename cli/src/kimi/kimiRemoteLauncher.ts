@@ -10,7 +10,6 @@ import type { PermissionMode } from './types';
 import { createKimiBackend } from './utils/kimiBackend';
 import { KimiPermissionHandler } from './utils/permissionHandler';
 import { resolveKimiRuntimeConfig } from './utils/config';
-import { HAPI_MCP_BRIDGE_PROMPT } from '@/modules/common/hapiMcpBridgePrompt';
 
 class KimiRemoteLauncher extends RemoteLauncherBase {
     private readonly session: KimiSession;
@@ -24,7 +23,6 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
     private currentBackendModel: string | null = null;
     private setModelSupported: boolean | undefined = undefined;
     private lastDisplayedToolCall = new Map<string, string>();
-    private instructionsSent = false;
 
     constructor(session: KimiSession, opts: { model?: string }) {
         super(process.env.DEBUG ? session.logPath : undefined);
@@ -158,15 +156,9 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
             this.applyDisplayMode(batch.mode.permissionMode, batch.mode.model);
             messageBuffer.addMessage(batch.message, 'user');
 
-            let messageText = batch.message;
-            if (!this.instructionsSent) {
-                messageText = `${HAPI_MCP_BRIDGE_PROMPT}\n\n${messageText}`;
-                this.instructionsSent = true;
-            }
-
             const promptContent: PromptContent[] = [{
                 type: 'text',
-                text: messageText
+                text: batch.message,
             }];
 
             session.onThinkingChange(true);

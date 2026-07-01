@@ -10,7 +10,7 @@ import type { OpencodeMode, PermissionMode } from './types';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { createOpencodeBackend } from './utils/opencodeBackend';
 import { OpencodePermissionHandler } from './utils/permissionHandler';
-import { PLAN_MODE_INSTRUCTION, TITLE_INSTRUCTION } from './utils/systemPrompt';
+import { PLAN_MODE_INSTRUCTION } from './utils/systemPrompt';
 import { resolveThoughtLevelEffort } from './thoughtLevelEffort';
 
 type OpencodeRemoteLauncherOptions = {
@@ -24,7 +24,6 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private happyServer: { stop: () => void } | null = null;
     private abortController = new AbortController();
     private displayPermissionMode: PermissionMode | null = null;
-    private instructionsSent = false;
     private currentBackendModel: string | null = null;
     private defaultBackendModel: string | null = null;
     private currentBackendEffort: string | null = null;
@@ -266,19 +265,14 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             this.applyDisplayMode(batch.mode.permissionMode);
             messageBuffer.addMessage(batch.message, 'user');
 
-            // Inject title instructions on first prompt
             let messageText = batch.message;
             if (batch.mode.permissionMode === 'plan') {
                 messageText = `${PLAN_MODE_INSTRUCTION}\n\n${messageText}`;
             }
-            if (!this.instructionsSent) {
-                messageText = `${TITLE_INSTRUCTION}\n\n${messageText}`;
-                this.instructionsSent = true;
-            }
 
             const promptContent: PromptContent[] = [{
                 type: 'text',
-                text: messageText
+                text: messageText,
             }];
 
             session.onThinkingChange(true);
