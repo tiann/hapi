@@ -70,6 +70,13 @@ type Pattern = {
 //      -- each bullet line starts with whitespace+dash, NOT with "Error:".
 //      Multiline `^Error:` rejects it.
 //
+//   4. RetriableError prefix (session 0e04ebe7, 2026-06-20):
+//        "\n\nError: RetriableError: [canceled] http/2 stream closed..."
+//      -- same gRPC bracket notation as `Error: T:` but cursor-agent
+//      sometimes stringifies via RetriableError instead. Still a Cursor
+//      ACP session; HAPI persists agent messages in a codex-shaped
+//      envelope (`convertAgentMessage`) which is NOT the Codex runner.
+//
 // The diagnostic strength is in the `[snake_case]` bracket form (gRPC's
 // stable status notation) and `Error: T:` prefix - both characteristic of
 // cursor-agent's runtime stringification, rare in genuine prose. The
@@ -86,27 +93,32 @@ type Pattern = {
 // `[ \t]*` consumes the spaces, the next char is `-`, not `Error`.
 const PATTERNS: Pattern[] = [
     {
-        test: (t) => /^[ \t]*Error: T: \[resource_exhausted\]/im.test(t),
+        test: (t) => /^[ \t]*Error: T: \[resource_exhausted\]/im.test(t)
+            || /^[ \t]*Error: RetriableError: \[resource_exhausted\]/im.test(t),
         kind: 'quota_exhausted',
         transient: false
     },
     {
-        test: (t) => /^[ \t]*Error: T: \[canceled\]/im.test(t),
+        test: (t) => /^[ \t]*Error: T: \[canceled\]/im.test(t)
+            || /^[ \t]*Error: RetriableError: \[canceled\]/im.test(t),
         kind: 'canceled',
         transient: true
     },
     {
-        test: (t) => /^[ \t]*Error: T: \[deadline_exceeded\]/im.test(t),
+        test: (t) => /^[ \t]*Error: T: \[deadline_exceeded\]/im.test(t)
+            || /^[ \t]*Error: RetriableError: \[deadline_exceeded\]/im.test(t),
         kind: 'deadline_exceeded',
         transient: true
     },
     {
-        test: (t) => /^[ \t]*Error: T: \[unavailable\]/im.test(t),
+        test: (t) => /^[ \t]*Error: T: \[unavailable\]/im.test(t)
+            || /^[ \t]*Error: RetriableError: \[unavailable\]/im.test(t),
         kind: 'unavailable',
         transient: true
     },
     {
-        test: (t) => /^[ \t]*Error: T: Connection stalled/im.test(t),
+        test: (t) => /^[ \t]*Error: T: Connection stalled/im.test(t)
+            || /^[ \t]*Error: RetriableError: Connection stalled/im.test(t),
         kind: 'connection_stalled',
         transient: true
     },
@@ -120,9 +132,10 @@ const PATTERNS: Pattern[] = [
         kind: 'capacity_exhausted',
         transient: false
     },
-    // catch-all for unknown `Error: T:` prefixes — placed last
+    // catch-all for unknown `Error: T:` / `Error: RetriableError:` prefixes — placed last
     {
-        test: (t) => /^[ \t]*Error: T:/im.test(t),
+        test: (t) => /^[ \t]*Error: T:/im.test(t)
+            || /^[ \t]*Error: RetriableError:/im.test(t),
         kind: 'unknown_t_prefix',
         transient: false
     }
