@@ -3,6 +3,7 @@ import type { CSSProperties } from 'react'
 import { useMemo } from 'react'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { usePointerFocusRing } from '@/hooks/usePointerFocusRing'
+import { useCodeWrap } from '@/hooks/useCodeWrap'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/use-translation'
 
@@ -155,14 +156,20 @@ function DiffInlineView(props: {
     maxHeight?: number
 }) {
     const diff = useMemo(() => diffLines(props.oldString, props.newString), [props.oldString, props.newString])
+    const { codeWrap } = useCodeWrap()
     const isComfortable = props.size === 'comfortable'
     const lineNumberWidth = Math.max(
         String(countLines(props.oldString)).length,
         String(countLines(props.newString)).length,
         2
     )
+    // Same trap as CodeBlock's Phase 1 spike: a `max-content` third track
+    // lets the row claim full content width before `whitespace-pre-wrap`
+    // ever gets a chance to wrap, so wrap-on must also switch the track to
+    // `minmax(0, 1fr)`. Both size variants follow the global wrap setting.
+    const codeColumnTrack = codeWrap ? 'minmax(0, 1fr)' : 'max-content'
     const rowStyle = {
-        gridTemplateColumns: `${lineNumberWidth}ch ${lineNumberWidth}ch ${isComfortable ? 'max-content' : 'minmax(0, 1fr)'}`
+        gridTemplateColumns: `${lineNumberWidth}ch ${lineNumberWidth}ch ${codeColumnTrack}`
     } satisfies CSSProperties
 
     let oldLineNumber = 1
@@ -184,12 +191,16 @@ function DiffInlineView(props: {
 
             <div
                 className={cn(
-                    'overflow-x-auto',
+                    codeWrap ? '' : 'overflow-x-auto',
                     props.scrollY ? 'overflow-y-auto' : 'overflow-y-hidden'
                 )}
                 style={props.scrollY ? { maxHeight: props.maxHeight ?? 420 } : undefined}
             >
-                <div className={cn('font-mono', isComfortable ? 'w-max min-w-full text-sm leading-6' : 'text-xs')}>
+                <div className={cn(
+                    'font-mono',
+                    isComfortable ? 'text-sm leading-6' : 'text-xs',
+                    codeWrap ? 'w-full' : 'w-max min-w-full'
+                )}>
                     {diff.map((part, i) => {
                         const lines = splitDiffLines(part.value)
 
@@ -211,7 +222,9 @@ function DiffInlineView(props: {
                                         <div key={j} className={rowClass} style={rowStyle}>
                                             <div className={cn('text-left text-[var(--app-hint)]/80', isComfortable ? 'text-xs leading-6' : 'text-[10px]')}>{leftNumber}</div>
                                             <div className={cn('text-left text-[var(--app-hint)]/80', isComfortable ? 'text-xs leading-6' : 'text-[10px]')}>{rightNumber}</div>
-                                            <div className={cn(isComfortable ? 'whitespace-pre' : 'min-w-0 whitespace-pre-wrap break-words')}>
+                                            <div className={cn(
+                                                codeWrap ? 'min-w-0 whitespace-pre-wrap break-words' : 'whitespace-pre'
+                                            )}>
                                                 <span className="mr-2 inline-block w-3 text-[var(--app-hint)]/90">{prefix}</span>
                                                 <span>{line}</span>
                                             </div>

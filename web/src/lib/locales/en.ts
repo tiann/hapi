@@ -298,6 +298,8 @@ export default {
   // Code block
   'code.copy': 'Copy',
   'code.truncated': 'Preview truncated — open details for full output',
+  'code.wrap.enable': 'Enable word wrap',
+  'code.wrap.disable': 'Disable word wrap',
 
   // Diff view
   'diff.title': 'Diff',

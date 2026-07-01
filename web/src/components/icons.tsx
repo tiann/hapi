@@ -72,3 +72,17 @@ export function ScheduleIcon(props: IconProps) {
         2
     )
 }
+
+/** Word-wrap toggle — lines with a wrap-around arrow on the last line. */
+export function WrapIcon(props: IconProps) {
+    return createIcon(
+        <>
+            <path d="M3 6h18" />
+            <path d="M3 12h13a3 3 0 0 1 0 6h-4" />
+            <polyline points="15 15 12 18 15 21" />
+            <path d="M3 18h4" />
+        </>,
+        props,
+        2
+    )
+}

@@ -21,7 +21,9 @@ import { cn, encodeBase64 } from '@/lib/utils'
 import { SyntaxHighlighter } from '@/components/assistant-ui/shiki-highlighter'
 import { MermaidDiagram } from '@/components/assistant-ui/mermaid-diagram'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
-import { CopyIcon, CheckIcon } from '@/components/icons'
+import { useCodeWrap } from '@/hooks/useCodeWrap'
+import { CopyIcon, CheckIcon, WrapIcon } from '@/components/icons'
+import { useTranslation } from '@/lib/use-translation'
 import { useOptionalHappyChatContext } from '@/components/AssistantChat/context'
 import { decodeFilePathHref, remarkFilePathLinks } from '@/lib/remark-file-path-links'
 import { UriConfirmDialog } from '@/components/UriConfirmDialog'
@@ -362,7 +364,9 @@ export function UriConfirmProvider({ children }: { children: ReactNode }) {
 // ── Components ───────────────────────────────────────────────────────────────
 
 function CodeHeader(props: CodeHeaderProps) {
+    const { t } = useTranslation()
     const { copied, copy } = useCopyToClipboard()
+    const { codeWrap, setCodeWrap } = useCodeWrap()
     const language = props.language && props.language !== 'unknown' ? props.language : 'text'
 
     return (
@@ -370,29 +374,52 @@ function CodeHeader(props: CodeHeaderProps) {
             <div className="min-w-0 flex-1 truncate font-mono">
                 {language}
             </div>
-            <button
-                type="button"
-                onClick={() => copy(props.code)}
-                className="shrink-0 rounded-md p-1 text-[var(--app-code-header-fg)] transition-colors hover:bg-[var(--app-code-copy-hover-bg)] hover:text-[var(--app-fg)]"
-                title="Copy"
-            >
-                {copied ? <CheckIcon className="h-3.5 w-3.5" /> : <CopyIcon className="h-3.5 w-3.5" />}
-            </button>
+            <div className="flex shrink-0 items-center gap-1">
+                <button
+                    type="button"
+                    onClick={() => setCodeWrap(!codeWrap)}
+                    className={`rounded-md p-1 transition-colors hover:bg-[var(--app-code-copy-hover-bg)] hover:text-[var(--app-fg)] ${codeWrap ? 'text-[var(--app-fg)]' : 'text-[var(--app-code-header-fg)]'}`}
+                    title={t(codeWrap ? 'code.wrap.disable' : 'code.wrap.enable')}
+                    aria-pressed={codeWrap}
+                >
+                    <WrapIcon className="h-3.5 w-3.5" />
+                </button>
+                <button
+                    type="button"
+                    onClick={() => copy(props.code)}
+                    className="rounded-md p-1 text-[var(--app-code-header-fg)] transition-colors hover:bg-[var(--app-code-copy-hover-bg)] hover:text-[var(--app-fg)]"
+                    title="Copy"
+                >
+                    {copied ? <CheckIcon className="h-3.5 w-3.5" /> : <CopyIcon className="h-3.5 w-3.5" />}
+                </button>
+            </div>
         </div>
     )
 }
 
 function Pre(props: ComponentPropsWithoutRef<'pre'>) {
-    const { className, ...rest } = props
+    const { className, style, ...rest } = props
+    const { codeWrap } = useCodeWrap()
 
     return (
-        <div className="aui-md-pre-wrapper min-w-0 w-full max-w-full overflow-x-auto overflow-y-hidden">
+        <div className={cn(
+            'aui-md-pre-wrapper min-w-0 w-full max-w-full overflow-y-hidden',
+            codeWrap ? '' : 'overflow-x-auto'
+        )}>
             <pre
                 {...rest}
                 className={cn(
-                    'aui-md-pre m-0 w-max min-w-full rounded-b-xl bg-[var(--app-code-bg)] px-4 py-3 text-sm',
+                    'aui-md-pre m-0 rounded-b-xl bg-[var(--app-code-bg)] px-4 py-3 text-sm',
+                    codeWrap ? '' : 'w-max min-w-full',
                     className
                 )}
+                // Inline style, not a `whitespace-pre-wrap` class: index.css
+                // has an unlayered `.aui-md :where(pre) { white-space: pre }`
+                // rule that always beats Tailwind's `@layer utilities`
+                // regardless of specificity (unlayered CSS always outranks
+                // any `@layer` in the cascade). See shiki-highlighter.tsx
+                // for the same fix + fuller explanation.
+                style={codeWrap ? { ...style, whiteSpace: 'pre-wrap', wordBreak: 'break-word' } : style}
             />
         </div>
     )
