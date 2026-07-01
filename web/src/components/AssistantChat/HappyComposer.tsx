@@ -31,6 +31,7 @@ import { shouldShowComposerStatusBar, StatusBar } from '@/components/AssistantCh
 import { ComposerButtons } from '@/components/AssistantChat/ComposerButtons'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { AttachmentItem } from '@/components/AssistantChat/AttachmentItem'
+import { getContextBudgetTokens } from '@/chat/modelConfig'
 import { useTranslation } from '@/lib/use-translation'
 import { getModelOptionsForFlavor, getNextModelForFlavor } from './modelOptions'
 import { getClaudeComposerEffortOptions } from './claudeEffortOptions'
@@ -80,6 +81,30 @@ export type ComposerSendError = {
 }
 
 const defaultSuggestionHandler = async (): Promise<Suggestion[]> => []
+type SettingsPanel = 'main' | 'model' | 'speed'
+
+function formatReasoningLabel(value: string | null | undefined, label: string, locale: 'en' | 'zh-CN'): string {
+    const normalized = value?.trim().toLowerCase()
+    if (locale !== 'zh-CN') return label
+    if (!normalized || normalized === 'default') return '默认'
+    if (normalized === 'low') return '低'
+    if (normalized === 'medium') return '中'
+    if (normalized === 'high') return '高'
+    if (normalized === 'xhigh' || normalized === 'max') return '超高'
+    return label
+}
+
+function formatCompactModelLabel(label: string): string {
+    return label
+        .replace(/^GPT-/i, '')
+        .replace(/^gpt-/i, '')
+}
+
+function formatTokenCount(value: number): string {
+    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
+    if (value >= 1_000) return `${Math.round(value / 1_000)}k`
+    return String(value)
+}
 
 export function ModelEffortSettingsSection(props: {
     agentFlavor?: string | null
@@ -200,8 +225,9 @@ export function HappyComposer(props: {
     // inline error affordance until the user dismisses or starts editing.
     sendError?: ComposerSendError | null
     onClearSendError?: () => void
+    showStatusBar?: boolean
 }) {
-    const { t } = useTranslation()
+    const { t, locale } = useTranslation()
     const {
         sessionId,
         disabled = false,
@@ -249,7 +275,8 @@ export function HappyComposer(props: {
         onSchedule: onScheduleProp,
         onClearSchedule: onClearScheduleProp,
         sendError = null,
-        onClearSendError
+        onClearSendError,
+        showStatusBar = true
     } = props
 
     // Use ?? so missing values fall back to default (destructuring defaults only handle undefined)
@@ -288,6 +315,7 @@ export function HappyComposer(props: {
         selection: { start: 0, end: 0 }
     })
     const [showSettings, setShowSettings] = useState(false)
+    const [settingsPanel, setSettingsPanel] = useState<SettingsPanel>('main')
     const [showPiModelPanel, setShowPiModelPanel] = useState(false)
     const [showPiThinkingPanel, setShowPiThinkingPanel] = useState(false)
     const [isAborting, setIsAborting] = useState(false)
@@ -678,7 +706,13 @@ export function HappyComposer(props: {
 
     const handleSettingsToggle = useCallback(() => {
         haptic('light')
-        setShowSettings(prev => !prev)
+        setShowSettings(prev => {
+            const next = !prev
+            if (next) {
+                setSettingsPanel('main')
+            }
+            return next
+        })
     }, [haptic])
 
     const handleSubmit = useCallback((event?: ReactFormEvent<HTMLFormElement>) => {
@@ -702,6 +736,33 @@ export function HappyComposer(props: {
         setShowSettings(false)
         haptic('light')
     }, [onCollaborationModeChange, controlsDisabled, haptic])
+
+    const handlePlanModeToggle = useCallback(() => {
+        handleCollaborationChange(collaborationMode === 'plan' ? 'default' : 'plan')
+    }, [collaborationMode, handleCollaborationChange])
+
+    const handleGoalModeOpen = useCallback(() => {
+        if (controlsDisabled) return
+        const trimmedStart = composerText.trimStart()
+        const nextText = trimmedStart.startsWith('/goal')
+            ? composerText
+            : composerText.trim().length > 0
+                ? `/goal ${composerText.trim()}`
+                : '/goal '
+        api.composer().setText(nextText)
+        setTimeout(() => {
+            const el = textareaRef.current
+            if (!el) return
+            const cursor = nextText.length
+            el.setSelectionRange(cursor, cursor)
+            try {
+                el.focus({ preventScroll: true })
+            } catch {
+                el.focus()
+            }
+        }, 0)
+        haptic('light')
+    }, [api, composerText, controlsDisabled, haptic])
 
     const handleModelChange = useCallback((nextModel: { provider: string; modelId: string } | string | null) => {
         if (!onModelChange || controlsDisabled) return
@@ -747,6 +808,12 @@ export function HappyComposer(props: {
     ], [t])
 
     const showCollaborationSettings = Boolean(onCollaborationModeChange && collaborationModeOptions.length > 0)
+    const showPlanModeTool = Boolean(
+        agentFlavor === 'codex'
+        && onCollaborationModeChange
+        && collaborationModeOptions.some((option) => option.mode === 'plan')
+    )
+    const showGoalModeTool = agentFlavor === 'codex'
     const showPermissionSettings = Boolean(onPermissionModeChange && permissionModeOptions.length > 0)
     const showModelSettings = Boolean(onModelChange && supportsModelChange(agentFlavor) && (piModels && piModels.length > 0 || modelOptions.length > 0))
     const showModelEffortSettings = Boolean(
@@ -761,7 +828,6 @@ export function HappyComposer(props: {
     const showFastModeSettings = Boolean(onServiceTierChange)
     const showSettingsButton = Boolean(
         showCollaborationSettings
-        || showPermissionSettings
         || showModelSettings
         || showModelEffortSettings
         || showModelReasoningEffortSettings
@@ -770,6 +836,48 @@ export function HappyComposer(props: {
     )
     const showAbortButton = true
     const voiceEnabled = Boolean(onVoiceToggle)
+    const currentModelLabel = useMemo(() => {
+        if (selectedModelBase !== undefined) {
+            const match = modelOptions.find((option) => option.value === selectedModelBase)
+            if (match) return match.label
+        }
+        const match = modelOptions.find((option) => option.value === model)
+        return match?.label ?? model ?? t('misc.model')
+    }, [model, modelOptions, selectedModelBase, t])
+    const currentReasoningOption = useMemo(
+        () => codexReasoningEffortOptions.find((option) => option.value === modelReasoningEffort)
+            ?? codexReasoningEffortOptions.find((option) => option.value === null)
+            ?? null,
+        [codexReasoningEffortOptions, modelReasoningEffort]
+    )
+    const currentReasoningLabel = currentReasoningOption
+        ? formatReasoningLabel(currentReasoningOption.value, currentReasoningOption.label, locale)
+        : null
+    const compactModelLabel = formatCompactModelLabel(currentModelLabel)
+    const settingsLabel = currentReasoningLabel
+        ? `${compactModelLabel} ${currentReasoningLabel}`
+        : compactModelLabel
+    const permissionLabel = useMemo(
+        () => permissionModeOptions.find((option) => option.mode === permissionMode)?.label ?? permissionMode,
+        [permissionModeOptions, permissionMode]
+    )
+    const contextUsage = useMemo(() => {
+        if (contextSize === undefined) return null
+        const maxContextSize = contextWindow ?? getContextBudgetTokens(model, agentFlavor)
+        if (!maxContextSize) {
+            return {
+                percentage: 0,
+                label: `ctx ${formatTokenCount(contextSize)}`
+            }
+        }
+
+        const percentage = Math.min(100, Math.max(0, (contextSize / maxContextSize) * 100))
+        const percentageLeft = Math.max(0, Math.round(100 - percentage))
+        return {
+            percentage,
+            label: `ctx ${formatTokenCount(contextSize)}/${formatTokenCount(maxContextSize)} (${percentageLeft}% left)`
+        }
+    }, [contextSize, contextWindow, model, agentFlavor])
 
     const handleSend = useCallback(() => {
         api.composer().send()
@@ -824,6 +932,20 @@ export function HappyComposer(props: {
         haptic('light')
     }, [controlsDisabled, haptic])
 
+    useEffect(() => {
+        if (!showSettings) return
+
+        function handlePointerDown(event: PointerEvent) {
+            const target = event.target
+            if (!(target instanceof Element)) return
+            if (target.closest('[data-composer-settings-menu], .settings-button')) return
+            setShowSettings(false)
+        }
+
+        document.addEventListener('pointerdown', handlePointerDown)
+        return () => document.removeEventListener('pointerdown', handlePointerDown)
+    }, [showSettings])
+
     const overlays = useMemo(() => {
         // Pi flavor: separate floating panels for model and thinking level.
         // (Pi RPC mode has no runtime permission switching → no permission panel.)
@@ -867,132 +989,76 @@ export function HappyComposer(props: {
             if (panels.length > 0) return <>{panels}</>
         }
 
-        // Non-Pi flavors: original unified gear menu
-        if (showSettings && (showCollaborationSettings || showPermissionSettings || showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings || showEffortSettings || showFastModeSettings)) {
-            return (
-                <div className="absolute bottom-[100%] mb-2 w-full">
-                    <FloatingOverlay maxHeight={320}>
-                        {showCollaborationSettings ? (
-                            <div className="py-2">
-                                <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
-                                    {t('misc.collaborationMode')}
-                                </div>
-                                {collaborationModeOptions.map((option) => (
-                                    <button
-                                        key={option.mode}
-                                        type="button"
-                                        disabled={controlsDisabled}
-                                        className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
-                                            controlsDisabled
-                                                ? 'cursor-not-allowed opacity-50'
-                                                : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
-                                        }`}
-                                        onClick={() => handleCollaborationChange(option.mode)}
-                                        onMouseDown={(e) => e.preventDefault()}
-                                    >
-                                        <div
-                                            className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
-                                                collaborationMode === option.mode
-                                                    ? 'border-[var(--app-link)]'
-                                                    : 'border-[var(--app-hint)]'
-                                            }`}
-                                        >
-                                            {collaborationMode === option.mode && (
-                                                <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
-                                            )}
-                                        </div>
-                                        <span className={collaborationMode === option.mode ? 'text-[var(--app-link)]' : ''}>
-                                            {option.label}
-                                        </span>
-                                    </button>
-                                ))}
-                            </div>
-                        ) : null}
+        const renderMenuOption = (
+            key: string,
+            selected: boolean,
+            label: string,
+            onClick: () => void
+        ) => (
+            <button
+                key={key}
+                type="button"
+                disabled={controlsDisabled}
+                className={`flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm transition-colors ${
+                    controlsDisabled
+                        ? 'cursor-not-allowed opacity-50'
+                        : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
+                }`}
+                onClick={onClick}
+                onMouseDown={(e) => e.preventDefault()}
+            >
+                <span className={selected ? 'font-medium text-[var(--app-fg)]' : 'text-[var(--app-fg)]'}>
+                    {label}
+                </span>
+                {selected ? <span className="text-[var(--app-hint)]">✓</span> : <span className="h-4 w-4" />}
+            </button>
+        )
+        const renderMenuRow = (key: string, label: string, onClick: () => void) => (
+            <button
+                key={key}
+                type="button"
+                disabled={controlsDisabled}
+                className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm text-[var(--app-fg)] transition-colors hover:bg-[var(--app-secondary-bg)] disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={onClick}
+                onMouseDown={(e) => e.preventDefault()}
+            >
+                <span className="truncate">{label}</span>
+                <span className="text-base leading-none text-[var(--app-hint)]">›</span>
+            </button>
+        )
+        const renderBackRow = (label: string) => (
+            <button
+                type="button"
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-semibold text-[var(--app-hint)] transition-colors hover:bg-[var(--app-secondary-bg)]"
+                onClick={() => setSettingsPanel('main')}
+                onMouseDown={(e) => e.preventDefault()}
+            >
+                <span className="text-base leading-none">‹</span>
+                {label}
+            </button>
+        )
+        const sectionDivider = <div className="mx-3 h-px bg-[var(--app-divider)]" />
 
-                        {showCollaborationSettings && (showPermissionSettings || showModelSettings || showModelReasoningEffortSettings || showEffortSettings) ? (
-                            <div className="mx-3 h-px bg-[var(--app-divider)]" />
-                        ) : null}
-
-                        {showPermissionSettings ? (
-                            <div className="py-2">
-                                <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
-                                    {t('misc.permissionMode')}
-                                </div>
-                                {permissionModeOptions.map((option) => (
-                                    <button
-                                        key={option.mode}
-                                        type="button"
-                                        disabled={controlsDisabled}
-                                        className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
-                                            controlsDisabled
-                                                ? 'cursor-not-allowed opacity-50'
-                                                : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
-                                        }`}
-                                        onClick={() => handlePermissionChange(option.mode)}
-                                        onMouseDown={(e) => e.preventDefault()}
-                                    >
-                                        <div
-                                            className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
-                                                permissionMode === option.mode
-                                                    ? 'border-[var(--app-link)]'
-                                                    : 'border-[var(--app-hint)]'
-                                            }`}
-                                        >
-                                            {permissionMode === option.mode && (
-                                                <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
-                                            )}
-                                        </div>
-                                        <span className={permissionMode === option.mode ? 'text-[var(--app-link)]' : ''}>
-                                            {option.label}
-                                        </span>
-                                    </button>
-                                ))}
-                            </div>
-                        ) : null}
-
-                        {(showCollaborationSettings || showPermissionSettings) && (showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings || showEffortSettings) ? (
-                            <div className="mx-3 h-px bg-[var(--app-divider)]" />
-                        ) : null}
-
-                        {showModelSettings ? (
-                            <div className="py-2">
-                                <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
-                                    {t('misc.model')}
-                                </div>
-                                {piModelGroups ? (
+        // Non-Pi flavors: compact lower-right menu, with model/speed as subpanels.
+        if (showSettings && (showCollaborationSettings || showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings || showEffortSettings || showFastModeSettings)) {
+            if (settingsPanel === 'model') {
+                return (
+                    <div data-composer-settings-menu className="absolute bottom-[100%] right-0 mb-2 w-[210px]">
+                        <FloatingOverlay maxHeight={320}>
+                            {renderBackRow(t('misc.model'))}
+                            {sectionDivider}
+                            {showModelSettings ? (
+                                piModelGroups ? (
                                     piModelGroups.map((group) => (
                                         <div key={group.provider}>
                                             <div className="px-3 pt-2 pb-0.5 text-xs font-medium text-[var(--app-hint)]">
                                                 {group.label}
                                             </div>
-                                            {group.models.map((piModel) => (
-                                                <button
-                                                    key={piModel.modelId}
-                                                    type="button"
-                                                    disabled={controlsDisabled}
-                                                    className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
-                                                        controlsDisabled
-                                                            ? 'cursor-not-allowed opacity-50'
-                                                            : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
-                                                    }`}
-                                                    onClick={() => handleModelChange({ provider: piModel.provider, modelId: piModel.modelId })}
-                                                    onMouseDown={(e) => e.preventDefault()}
-                                                >
-                                                    <div
-                                                        className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
-                                                            model === piModel.modelId
-                                                                ? 'border-[var(--app-link)]'
-                                                                : 'border-[var(--app-hint)]'
-                                                    }`}
-                                                    >
-                                                        {model === piModel.modelId && (
-                                                            <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
-                                                        )}
-                                                    </div>
-                                                    <span className={model === piModel.modelId ? 'text-[var(--app-link)]' : ''}>
-                                                        {piModel.name ?? piModel.modelId}
-                                                    </span>
-                                                </button>
+                                            {group.models.map((piModel) => renderMenuOption(
+                                                piModel.modelId,
+                                                model === piModel.modelId,
+                                                piModel.name ?? piModel.modelId,
+                                                () => handleModelChange({ provider: piModel.provider, modelId: piModel.modelId })
                                             ))}
                                         </div>
                                     ))
@@ -1001,179 +1067,102 @@ export function HappyComposer(props: {
                                         const isSelected = selectedModelBase !== undefined
                                             ? selectedModelBase === option.value
                                             : model === option.value
-                                        return (
-                                        <button
-                                            key={option.value ?? 'auto'}
-                                            type="button"
-                                            disabled={controlsDisabled}
-                                            className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
-                                                controlsDisabled
-                                                    ? 'cursor-not-allowed opacity-50'
-                                                    : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
-                                            }`}
-                                            onClick={() => handleModelChange(option.value)}
-                                            onMouseDown={(e) => e.preventDefault()}
-                                        >
-                                            <div
-                                                className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
-                                                    isSelected
-                                                        ? 'border-[var(--app-link)]'
-                                                        : 'border-[var(--app-hint)]'
-                                                }`}
-                                            >
-                                                {isSelected && (
-                                                    <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
-                                                )}
-                                            </div>
-                                            <span className={isSelected ? 'text-[var(--app-link)]' : ''}>
-                                                {option.label}
-                                            </span>
-                                        </button>
+                                        return renderMenuOption(
+                                            option.value ?? 'auto',
+                                            isSelected,
+                                            option.label,
+                                            () => handleModelChange(option.value)
                                         )
                                     })
-                                )}
-                            </div>
-                        ) : null}
+                                )
+                            ) : null}
+                            {showModelSettings && showModelEffortSettings ? sectionDivider : null}
+                            {showModelEffortSettings ? (
+                                modelEffortOptions!.map((option) => renderMenuOption(
+                                    option.value ?? 'auto',
+                                    (selectedModelVariant ?? model) === option.value,
+                                    option.label,
+                                    () => handleModelEffortChange(option.value)
+                                ))
+                            ) : null}
+                        </FloatingOverlay>
+                    </div>
+                )
+            }
 
-                        {showModelSettings && showModelEffortSettings ? (
-                            <div className="mx-3 h-px bg-[var(--app-divider)]" />
-                        ) : null}
+            if (settingsPanel === 'speed') {
+                return (
+                    <div data-composer-settings-menu className="absolute bottom-[100%] right-0 mb-2 w-[210px]">
+                        <FloatingOverlay maxHeight={240}>
+                            {renderBackRow(t('misc.speed'))}
+                            {sectionDivider}
+                            {fastModeOptions.map((option) => renderMenuOption(
+                                option.value ?? 'standard',
+                                serviceTier === option.value,
+                                option.label,
+                                () => handleServiceTierChange(option.value)
+                            ))}
+                        </FloatingOverlay>
+                    </div>
+                )
+            }
 
-                        {showModelEffortSettings ? (
-                            <ModelEffortSettingsSection
-                                agentFlavor={agentFlavor}
-                                options={modelEffortOptions!}
-                                selectedValue={selectedModelVariant ?? model}
-                                controlsDisabled={controlsDisabled}
-                                onChange={handleModelEffortChange}
-                            />
-                        ) : null}
-
-                        {(showModelSettings || showModelEffortSettings) && showModelReasoningEffortSettings ? (
-                            <div className="mx-3 h-px bg-[var(--app-divider)]" />
-                        ) : null}
-
-                        {(showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings) && showEffortSettings ? (
-                            <div className="mx-3 h-px bg-[var(--app-divider)]" />
-                        ) : null}
-
+            return (
+                <div data-composer-settings-menu className="absolute bottom-[100%] right-0 mb-2 w-[210px]">
+                    <FloatingOverlay maxHeight={320}>
                         {showModelReasoningEffortSettings ? (
                             <div className="py-2">
                                 <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
-                                    {t('misc.reasoningEffort')}
+                                    {t('misc.reasoning')}
                                 </div>
-                                {codexReasoningEffortOptions.map((option) => (
-                                    <button
-                                        key={option.value ?? 'default'}
-                                        type="button"
-                                        disabled={controlsDisabled}
-                                        className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
-                                            controlsDisabled
-                                                ? 'cursor-not-allowed opacity-50'
-                                                : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
-                                        }`}
-                                        onClick={() => handleModelReasoningEffortChange(option.value)}
-                                        onMouseDown={(e) => e.preventDefault()}
-                                    >
-                                        <div
-                                            className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
-                                                modelReasoningEffort === option.value
-                                                    ? 'border-[var(--app-link)]'
-                                                    : 'border-[var(--app-hint)]'
-                                            }`}
-                                        >
-                                            {modelReasoningEffort === option.value && (
-                                                <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
-                                            )}
-                                        </div>
-                                        <span className={modelReasoningEffort === option.value ? 'text-[var(--app-link)]' : ''}>
-                                            {option.label}
-                                        </span>
-                                    </button>
-                                ))}
+                                {codexReasoningEffortOptions
+                                    .filter((option) => option.value !== null)
+                                    .map((option) => renderMenuOption(
+                                        option.value ?? 'default',
+                                        modelReasoningEffort === option.value,
+                                        formatReasoningLabel(option.value, option.label, locale),
+                                        () => handleModelReasoningEffortChange(option.value)
+                                    ))}
                             </div>
                         ) : null}
 
-                        {showModelReasoningEffortSettings && showEffortSettings ? (
-                            <div className="mx-3 h-px bg-[var(--app-divider)]" />
-                        ) : null}
-
-                        {showEffortSettings ? (
+                        {!showModelReasoningEffortSettings && showEffortSettings ? (
                             <div className="py-2">
                                 <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
                                     {t('misc.effort')}
                                 </div>
-                                {claudeEffortOptions.map((option) => (
-                                    <button
-                                        key={option.value ?? 'auto'}
-                                        type="button"
-                                        disabled={controlsDisabled}
-                                        className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
-                                            controlsDisabled
-                                                ? 'cursor-not-allowed opacity-50'
-                                                : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
-                                        }`}
-                                        onClick={() => handleEffortChange(option.value)}
-                                        onMouseDown={(e) => e.preventDefault()}
-                                    >
-                                        <div
-                                            className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
-                                                effort === option.value
-                                                    ? 'border-[var(--app-link)]'
-                                                    : 'border-[var(--app-hint)]'
-                                            }`}
-                                        >
-                                            {effort === option.value && (
-                                                <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
-                                            )}
-                                        </div>
-                                        <span className={effort === option.value ? 'text-[var(--app-link)]' : ''}>
-                                            {option.label}
-                                        </span>
-                                    </button>
+                                {claudeEffortOptions.map((option) => renderMenuOption(
+                                    option.value ?? 'auto',
+                                    effort === option.value,
+                                    option.label,
+                                    () => handleEffortChange(option.value)
                                 ))}
                             </div>
                         ) : null}
 
-                        {(showModelReasoningEffortSettings || showEffortSettings) && showFastModeSettings ? (
-                            <div className="mx-3 h-px bg-[var(--app-divider)]" />
-                        ) : null}
+                        {(showModelReasoningEffortSettings || showEffortSettings) && (showModelSettings || showModelEffortSettings || showFastModeSettings) ? sectionDivider : null}
 
-                        {showFastModeSettings ? (
-                            <div className="py-2">
-                                <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
-                                    {t('misc.fastMode')}
+                        {showModelSettings || showModelEffortSettings
+                            ? renderMenuRow('model', currentModelLabel, () => setSettingsPanel('model'))
+                            : null}
+                        {showFastModeSettings
+                            ? renderMenuRow('speed', t('misc.speed'), () => setSettingsPanel('speed'))
+                            : null}
+
+                        {!showModelReasoningEffortSettings && !showEffortSettings && showCollaborationSettings ? (
+                            <>
+                                <div className="py-2">
+                                    <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
+                                        {t('misc.collaborationMode')}
+                                    </div>
+                                    {collaborationModeOptions.map((option) => renderMenuOption(
+                                        option.mode,
+                                        collaborationMode === option.mode,
+                                        option.label,
+                                        () => handleCollaborationChange(option.mode)
+                                    ))}
                                 </div>
-                                {fastModeOptions.map((option) => (
-                                    <button
-                                        key={option.value ?? 'standard'}
-                                        type="button"
-                                        disabled={controlsDisabled}
-                                        className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
-                                            controlsDisabled
-                                                ? 'cursor-not-allowed opacity-50'
-                                                : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
-                                        }`}
-                                        onClick={() => handleServiceTierChange(option.value)}
-                                        onMouseDown={(e) => e.preventDefault()}
-                                    >
-                                        <div
-                                            className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
-                                                serviceTier === option.value
-                                                    ? 'border-[var(--app-link)]'
-                                                    : 'border-[var(--app-hint)]'
-                                            }`}
-                                        >
-                                            {serviceTier === option.value && (
-                                                <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
-                                            )}
-                                        </div>
-                                        <span className={serviceTier === option.value ? 'text-[var(--app-link)]' : ''}>
-                                            {option.label}
-                                        </span>
-                                    </button>
-                                ))}
-                            </div>
+                            </>
                         ) : null}
                     </FloatingOverlay>
                 </div>
@@ -1197,6 +1186,7 @@ export function HappyComposer(props: {
         return null
     }, [
         showSettings,
+        settingsPanel,
         showPiModelPanel,
         showPiThinkingPanel,
         agentFlavor,
@@ -1214,6 +1204,8 @@ export function HappyComposer(props: {
         showEffortSettings,
         showFastModeSettings,
         modelOptions,
+        piModelGroups,
+        currentModelLabel,
         codexReasoningEffortOptions,
         claudeEffortOptions,
         fastModeOptions,
@@ -1231,10 +1223,12 @@ export function HappyComposer(props: {
         handleCollaborationChange,
         handlePermissionChange,
         handleModelChange,
+        handleModelEffortChange,
         handleModelReasoningEffortChange,
         handleEffortChange,
         handleServiceTierChange,
         handleSuggestionSelect,
+        locale,
         t
     ])
 
@@ -1244,7 +1238,7 @@ export function HappyComposer(props: {
                 <ComposerPrimitive.Root className="relative" onSubmit={handleSubmit}>
                     {overlays}
 
-                    {shouldShowComposerStatusBar(agentFlavor) ? (
+                    {showStatusBar && shouldShowComposerStatusBar(agentFlavor) ? (
                         <StatusBar
                             active={active}
                             thinking={thinking}
@@ -1318,6 +1312,22 @@ export function HappyComposer(props: {
                             controlsDisabled={controlsDisabled}
                             showSettingsButton={showSettingsButton}
                             onSettingsToggle={handleSettingsToggle}
+                            settingsLabel={settingsLabel}
+                            settingsModelLabel={compactModelLabel}
+                            settingsReasoningLabel={currentReasoningLabel}
+                            settingsOpen={showSettings}
+                            contextUsagePercent={contextUsage?.percentage ?? null}
+                            contextUsageLabel={contextUsage?.label}
+                            permissionMode={permissionMode}
+                            permissionLabel={permissionLabel}
+                            permissionModeOptions={permissionModeOptions}
+                            onPermissionModeChange={showPermissionSettings ? handlePermissionChange : undefined}
+                            showPlanModeButton={showPlanModeTool}
+                            planModeActive={collaborationMode === 'plan'}
+                            onPlanModeToggle={showPlanModeTool ? handlePlanModeToggle : undefined}
+                            showGoalModeButton={showGoalModeTool}
+                            goalModeActive={threadGoal?.status === 'active'}
+                            onGoalModeOpen={showGoalModeTool ? handleGoalModeOpen : undefined}
                             showTerminalButton={showTerminalButton}
                             terminalDisabled={terminalDisabled}
                             terminalLabel={terminalLabel}

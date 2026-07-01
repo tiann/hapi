@@ -358,6 +358,33 @@ export type CodexModelsResponse = {
 
 export type ListCodexModelsResponse = CodexModelsResponse
 
+export type CodexSubscriptionLimitWindow = {
+    usedPercent: number
+    windowDurationMins: number | null
+    resetsAt: number | null
+}
+
+export type CodexSubscriptionLimits = {
+    limitId: string | null
+    limitName: string | null
+    planType: string | null
+    primary: CodexSubscriptionLimitWindow | null
+    secondary: CodexSubscriptionLimitWindow | null
+    updatedAt: number
+}
+
+export type CodexSubscriptionLimitsResponse = {
+    success: boolean
+    limits?: CodexSubscriptionLimits
+    error?: string
+}
+
+export type GetCodexSubscriptionLimitsRequest = {
+    model?: string | null
+}
+
+export type GetCodexSubscriptionLimitsResponse = CodexSubscriptionLimitsResponse
+
 export type OpencodeModelSummary = {
     modelId: string
     name?: string

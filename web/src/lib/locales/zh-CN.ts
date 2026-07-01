@@ -433,6 +433,9 @@ export default {
 
   // Composer buttons
   'composer.settings': '设置',
+  'composer.moreTools': '更多工具',
+  'composer.planMode': '计划模式',
+  'composer.goalMode': '目标模式',
   'composer.terminal': '终端',
   'composer.abort': '中止',
   'composer.switchRemote': '切换到远程模式',
@@ -688,8 +691,10 @@ export default {
   'misc.collaborationMode': '协作模式',
   'misc.permissionMode': '权限模式',
   'misc.model': '模型',
+  'misc.reasoning': '推理',
   'misc.reasoningEffort': '推理强度',
   'misc.effort': '思考强度',
+  'misc.speed': '速度',
   'misc.fastMode': '快速模式',
   'misc.fastModeStandard': '标准',
   'misc.fastModeFast': '快速',

@@ -11,6 +11,9 @@ import type {
 export type {
     CodexModelsResponse,
     CodexModelSummary,
+    CodexSubscriptionLimitsResponse,
+    CodexSubscriptionLimits,
+    CodexSubscriptionLimitWindow,
     CommandResponse,
     CursorModelsResponse,
     CursorModelSummary,

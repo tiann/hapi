@@ -66,6 +66,28 @@ export interface CollaborationModeListResponse {
     [key: string]: unknown;
 }
 
+export interface RateLimitWindow {
+    usedPercent?: number;
+    windowDurationMins?: number | null;
+    resetsAt?: number | null;
+    [key: string]: unknown;
+}
+
+export interface RateLimitSnapshot {
+    limitId?: string | null;
+    limitName?: string | null;
+    primary?: RateLimitWindow | null;
+    secondary?: RateLimitWindow | null;
+    planType?: string | null;
+    [key: string]: unknown;
+}
+
+export interface GetAccountRateLimitsResponse {
+    rateLimits?: RateLimitSnapshot;
+    rateLimitsByLimitId?: Record<string, RateLimitSnapshot | undefined> | null;
+    [key: string]: unknown;
+}
+
 export interface ThreadStartParams {
     model?: string;
     modelProvider?: string;

@@ -28,6 +28,7 @@ import {
     type RpcCommandResponse,
     type RpcDeleteUploadResponse,
     type RpcGeneratedImageResponse,
+    type RpcGetCodexSubscriptionLimitsResponse,
     type RpcListDirectoryResponse,
     type RpcListCodexModelsResponse,
     type RpcListCursorModelsResponse,
@@ -49,6 +50,7 @@ export type {
     RpcCommandResponse,
     RpcDeleteUploadResponse,
     RpcGeneratedImageResponse,
+    RpcGetCodexSubscriptionLimitsResponse,
     RpcListDirectoryResponse,
     RpcListCodexModelsResponse,
     RpcListCursorModelsResponse,
@@ -1585,8 +1587,46 @@ export class SyncEngine {
         return await this.rpcGateway.listCodexModelsForSession(sessionId)
     }
 
+    async getCodexSubscriptionLimitsForSession(sessionId: string): Promise<RpcGetCodexSubscriptionLimitsResponse> {
+        const session = this.getSession(sessionId)
+        const model = session?.model ?? null
+        try {
+            return await this.rpcGateway.getCodexSubscriptionLimitsForSession(sessionId, model)
+        } catch (error) {
+            if (!(error instanceof RpcTargetMissingError)) {
+                throw error
+            }
+
+            const metadata = session?.metadata
+            const onlineMachines = session
+                ? this.machineCache.getOnlineMachinesByNamespace(session.namespace)
+                : []
+            const targetMachine = (() => {
+                if (metadata?.machineId) {
+                    const exact = onlineMachines.find((machine) => machine.id === metadata.machineId)
+                    if (exact) return exact
+                }
+                if (metadata?.host) {
+                    const hostMatch = onlineMachines.find((machine) => machine.metadata?.host === metadata.host)
+                    if (hostMatch) return hostMatch
+                }
+                return onlineMachines.length === 1 ? onlineMachines[0] : null
+            })()
+
+            if (!targetMachine) {
+                throw error
+            }
+
+            return await this.rpcGateway.getCodexSubscriptionLimitsForMachine(targetMachine.id, model)
+        }
+    }
+
     async listCodexModelsForMachine(machineId: string): Promise<RpcListCodexModelsResponse> {
         return await this.rpcGateway.listCodexModelsForMachine(machineId)
+    }
+
+    async getCodexSubscriptionLimitsForMachine(machineId: string): Promise<RpcGetCodexSubscriptionLimitsResponse> {
+        return await this.rpcGateway.getCodexSubscriptionLimitsForMachine(machineId)
     }
 
     async listCursorModelsForSession(sessionId: string): Promise<RpcListCursorModelsResponse> {

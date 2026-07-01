@@ -1118,6 +1118,23 @@ function SessionChatInner(props: SessionChatProps) {
                         replace: true
                     })
                 }}
+                status={{
+                    active: props.session.active,
+                    thinking: props.session.thinking,
+                    agentState: props.session.agentState,
+                    backgroundTaskCount: props.session.backgroundTaskCount,
+                    contextSize: reduced.latestUsage?.contextSize,
+                    contextCacheRead: reduced.latestUsage?.cacheRead,
+                    contextWindow: reduced.latestUsage?.contextWindow,
+                    model: props.session.model,
+                    modelReasoningEffort: agentFlavor === 'codex' || agentFlavor === 'opencode' ? props.session.modelReasoningEffort : undefined,
+                    serviceTier: props.session.serviceTier,
+                    permissionMode: props.session.permissionMode,
+                    collaborationMode: codexCollaborationModeSupported ? props.session.collaborationMode : undefined,
+                    threadGoal: reduced.latestGoal,
+                    agentFlavor,
+                    voiceStatus: voice?.status
+                }}
             />
 
             <CursorMigrationBanner metadata={props.session.metadata} />
@@ -1212,6 +1229,7 @@ function SessionChatInner(props: SessionChatProps) {
                         pendingSchedule={pendingSchedule}
                         onSchedule={setPendingSchedule}
                         onClearSchedule={() => setPendingSchedule(null)}
+                        showStatusBar={false}
                         permissionMode={props.session.permissionMode}
                         collaborationMode={codexCollaborationModeSupported ? props.session.collaborationMode : undefined}
                         threadGoal={reduced.latestGoal}

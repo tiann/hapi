@@ -74,6 +74,17 @@ function createApp(session: Session, opts?: {
             { id: 'gpt-5.5', displayName: 'GPT-5.5', isDefault: true }
         ]
     })
+    const getCodexSubscriptionLimitsForSession = async () => ({
+        success: true,
+        limits: {
+            limitId: 'codex',
+            limitName: 'Codex',
+            planType: 'plus',
+            primary: { usedPercent: 12, windowDurationMins: 300, resetsAt: 1_762_000_000 },
+            secondary: { usedPercent: 34, windowDurationMins: 10_080, resetsAt: 1_762_500_000 },
+            updatedAt: 1_762_000_000_000
+        }
+    })
     const listOpencodeModelsForSession = async () => ({
         success: true,
         availableModels: [
@@ -112,6 +123,7 @@ function createApp(session: Session, opts?: {
             : { ok: false, reason: 'not-found' },
         applySessionConfig,
         listCodexModelsForSession,
+        getCodexSubscriptionLimitsForSession,
         listCursorModelsForSession,
         listOpencodeModelsForSession,
         listOpencodeReasoningEffortOptionsForSession,
@@ -618,6 +630,25 @@ describe('sessions routes', () => {
             models: [
                 { id: 'gpt-5.5', displayName: 'GPT-5.5', isDefault: true }
             ]
+        })
+    })
+
+    it('returns Codex subscription limits for active Codex sessions', async () => {
+        const { app } = createApp(createSession())
+
+        const response = await app.request('/api/sessions/session-1/codex-subscription-limits')
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            success: true,
+            limits: {
+                limitId: 'codex',
+                limitName: 'Codex',
+                planType: 'plus',
+                primary: { usedPercent: 12, windowDurationMins: 300, resetsAt: 1_762_000_000 },
+                secondary: { usedPercent: 34, windowDurationMins: 10_080, resetsAt: 1_762_500_000 },
+                updatedAt: 1_762_000_000_000
+            }
         })
     })
 
