@@ -489,13 +489,13 @@ body {
 }
 
 .aui-md-codeblock .shiki,
-.aui-md-codeblock .shiki span {
+.aui-md-codeblock .shiki span:not([data-line-number]) {
     background-color: transparent !important;
 }
 
 /* Shiki dual theme colors */
 .shiki,
-.shiki span {
+.shiki span:not([data-line-number]) {
     color: var(--shiki-light) !important;
     font-style: var(--shiki-light-font-style) !important;
     font-weight: var(--shiki-light-font-weight) !important;
@@ -503,9 +503,9 @@ body {
 }
 
 html[data-theme="dark"] .shiki,
-html[data-theme="dark"] .shiki span,
+html[data-theme="dark"] .shiki span:not([data-line-number]),
 html[data-theme="oled"] .shiki,
-html[data-theme="oled"] .shiki span {
+html[data-theme="oled"] .shiki span:not([data-line-number]) {
     color: var(--shiki-dark) !important;
     font-style: var(--shiki-dark-font-style) !important;
     font-weight: var(--shiki-dark-font-weight) !important;

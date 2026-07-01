@@ -30,24 +30,28 @@ export function SyntaxHighlighter(props: SyntaxHighlighterProps) {
     return (
         <div className={`aui-md-codeblock min-w-0 w-full max-w-full overflow-y-hidden rounded-b-xl bg-[var(--app-code-bg)] ${codeWrap ? '' : 'overflow-x-auto'}`}>
             <pre
-                className={`shiki m-0 grid ${codeWrap ? 'w-full' : 'w-max min-w-full'} text-sm font-mono py-3`}
+                className={`shiki m-0 grid ${codeWrap ? 'w-full' : 'w-max min-w-full'} text-sm font-mono`}
                 style={codeGridStyle}
             >
-                {codeLines.map((line, index) => (
-                    <span key={index} className="contents">
-                        <span
-                            data-line-number
-                            aria-hidden="true"
-                            className="select-none px-3 text-left text-[var(--app-hint)]/70"
-                            style={{ alignSelf: 'start' }}
-                        >
-                            {index + 1}
+                {codeLines.map((line, index) => {
+                    // py lives on the first/last row cells (not the container)
+                    // so the gutter background reaches the top and bottom edges.
+                    const rowPad = `${index === 0 ? 'pt-3' : ''} ${index === codeLines.length - 1 ? 'pb-3' : ''}`
+                    return (
+                        <span key={index} className="contents">
+                            <span
+                                data-line-number
+                                aria-hidden="true"
+                                className={`select-none bg-[var(--app-code-header-bg)] px-3 text-right text-[var(--app-hint)]/70 ${rowPad}`}
+                            >
+                                {index + 1}
+                            </span>
+                            <span data-code-cell className={`pl-4 pr-4 ${rowPad}`} style={codeCellStyle}>
+                                {line}
+                            </span>
                         </span>
-                        <span data-code-cell className="pl-4 pr-4" style={codeCellStyle}>
-                            {line}
-                        </span>
-                    </span>
-                ))}
+                    )
+                })}
             </pre>
         </div>
     )

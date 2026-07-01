@@ -128,24 +128,28 @@ export function CodeBlock(props: {
                 style={bodyStyle}
             >
                 <pre
-                    className={`shiki m-0 grid ${codeWrap ? 'w-full' : 'w-max min-w-full'} font-mono ${codeTextClass} py-3`}
+                    className={`shiki m-0 grid ${codeWrap ? 'w-full' : 'w-max min-w-full'} font-mono ${codeTextClass}`}
                     style={codeGridStyle}
                 >
-                    {codeLines.map((line, index) => (
-                        <span key={index} className="contents">
-                            <span
-                                data-line-number
-                                aria-hidden="true"
-                                className="select-none px-3 text-left text-[var(--app-hint)]/70"
-                                style={{ alignSelf: 'start' }}
-                            >
-                                {index + 1}
+                    {codeLines.map((line, index) => {
+                        // py lives on the first/last row cells (not the container)
+                        // so the gutter background reaches the top and bottom edges.
+                        const rowPad = `${index === 0 ? 'pt-3' : ''} ${index === codeLines.length - 1 ? 'pb-3' : ''}`
+                        return (
+                            <span key={index} className="contents">
+                                <span
+                                    data-line-number
+                                    aria-hidden="true"
+                                    className={`select-none bg-[var(--app-code-header-bg)] px-3 text-right text-[var(--app-hint)]/70 ${rowPad}`}
+                                >
+                                    {index + 1}
+                                </span>
+                                <span data-code-cell className={`pl-4 pr-8 ${rowPad}`} style={codeCellStyle}>
+                                    {line}
+                                </span>
                             </span>
-                            <span data-code-cell className="pl-4 pr-8" style={codeCellStyle}>
-                                {line}
-                            </span>
-                        </span>
-                    ))}
+                        )
+                    })}
                 </pre>
             </div>
             {isCollapsed ? (
