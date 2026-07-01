@@ -429,6 +429,9 @@ export default {
 
   // Composer buttons
   'composer.settings': 'Settings',
+  'composer.moreTools': 'More tools',
+  'composer.planMode': 'Plan mode',
+  'composer.goalMode': 'Goal mode',
   'composer.terminal': 'Terminal',
   'composer.abort': 'Abort',
   'composer.switchRemote': 'Switch to remote mode',
@@ -684,8 +687,10 @@ export default {
   'misc.collaborationMode': 'Collaboration Mode',
   'misc.permissionMode': 'Permission Mode',
   'misc.model': 'Model',
+  'misc.reasoning': 'Reasoning',
   'misc.reasoningEffort': 'Reasoning Effort',
   'misc.effort': 'Effort',
+  'misc.speed': 'Speed',
   'misc.fastMode': 'Fast Mode',
   'misc.fastModeStandard': 'Standard',
   'misc.fastModeFast': 'Fast',

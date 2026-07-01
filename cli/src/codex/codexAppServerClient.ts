@@ -4,6 +4,7 @@ import { JsonLineParser } from '@/utils/jsonLineParser';
 import { killProcessByChildProcess } from '@/utils/process';
 import type {
     CollaborationModeListResponse,
+    GetAccountRateLimitsResponse,
     InitializeParams,
     InitializeResponse,
     ModelListParams,
@@ -165,6 +166,13 @@ export class CodexAppServerClient extends JsonLineParser {
             timeoutMs: 30_000
         });
         return response as CollaborationModeListResponse;
+    }
+
+    async readAccountRateLimits(): Promise<GetAccountRateLimitsResponse> {
+        const response = await this.sendRequest('account/rateLimits/read', undefined, {
+            timeoutMs: 30_000
+        });
+        return response as GetAccountRateLimitsResponse;
     }
 
     async setExperimentalFeatureEnablement(

@@ -6,6 +6,11 @@ import {
     type ListCodexModelsRequest,
     type ListCodexModelsResponse
 } from '../codexModels';
+import {
+    getCodexSubscriptionLimits,
+    type GetCodexSubscriptionLimitsRequest,
+    type GetCodexSubscriptionLimitsResponse
+} from '../codexSubscriptionLimits';
 import { getErrorMessage, rpcError } from '../rpcResponses';
 
 export function registerCodexModelHandlers(rpcHandlerManager: RpcHandlerManager): void {
@@ -20,4 +25,19 @@ export function registerCodexModelHandlers(rpcHandlerManager: RpcHandlerManager)
             return rpcError(getErrorMessage(error, 'Failed to list Codex models'));
         }
     });
+
+    rpcHandlerManager.registerHandler<GetCodexSubscriptionLimitsRequest, GetCodexSubscriptionLimitsResponse>(
+        RPC_METHODS.GetCodexSubscriptionLimits,
+        async (data) => {
+            logger.debug('Get Codex subscription limits request');
+
+            try {
+                const limits = await getCodexSubscriptionLimits(data?.model);
+                return { success: true, limits };
+            } catch (error) {
+                logger.debug('Failed to read Codex subscription limits:', error);
+                return rpcError(getErrorMessage(error, 'Failed to read Codex subscription limits'));
+            }
+        }
+    );
 }

@@ -1,16 +1,16 @@
 import { useId, useMemo, useRef, useState } from 'react'
-import type { Session } from '@/types/api'
+import type { CodexSubscriptionLimits, CodexSubscriptionLimitWindow, Session } from '@/types/api'
 import type { ApiClient } from '@/api/client'
 import { isTelegramApp } from '@/hooks/useTelegram'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
+import { useCodexSubscriptionLimits } from '@/hooks/queries/useCodexSubscriptionLimits'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { SessionExportDialog } from '@/components/SessionExportDialog'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { formatReopenError } from '@/lib/reopenError'
-import { getSessionModelLabel } from '@/lib/sessionModelLabel'
 import { useTranslation } from '@/lib/use-translation'
-import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
+import type { StatusBarProps } from '@/components/AssistantChat/StatusBar'
 
 function getSessionTitle(session: Session): string {
     if (session.metadata?.name) {
@@ -24,58 +24,6 @@ function getSessionTitle(session: Session): string {
         return parts.length > 0 ? parts[parts.length - 1] : session.id.slice(0, 8)
     }
     return session.id.slice(0, 8)
-}
-
-function FilesIcon(props: { className?: string }) {
-    return (
-        <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="18"
-            height="18"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className={props.className}
-        >
-            <path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
-            <path d="M14 2v6h6" />
-        </svg>
-    )
-}
-
-function OutlineIcon(props: { className?: string }) {
-    return (
-        <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="18"
-            height="18"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className={props.className}
-        >
-            <path d="M8 6h13" />
-            <path d="M8 12h13" />
-            <path d="M8 18h13" />
-            <path d="M3 6h.01" />
-            <path d="M3 12h.01" />
-            <path d="M3 18h.01" />
-        </svg>
-    )
-}
-
-function headerToggleClass(active: boolean): string {
-    return `flex h-8 w-8 items-center justify-center rounded-full transition-colors ${
-        active
-            ? 'bg-[var(--app-button)] text-[var(--app-button-text)] hover:opacity-90'
-            : 'text-[var(--app-hint)] hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)]'
-    }`
 }
 
 function MoreVerticalIcon(props: { className?: string }) {
@@ -95,6 +43,141 @@ function MoreVerticalIcon(props: { className?: string }) {
     )
 }
 
+function getStatusDotClass(status?: StatusBarProps): string {
+    if (!status) return 'hidden'
+    const hasPermissions = status.agentState?.requests && Object.keys(status.agentState.requests).length > 0
+    if (!status.active) return 'bg-[#999]'
+    if (status.voiceStatus === 'connecting' || status.thinking || (status.backgroundTaskCount ?? 0) > 0) return 'bg-[#007AFF] animate-pulse'
+    if (hasPermissions) return 'bg-[#FF9500] animate-pulse'
+    return 'bg-[#34C759]'
+}
+
+function clampPercent(value: number): number {
+    return Math.max(0, Math.min(100, value))
+}
+
+function formatLimitDuration(window: CodexSubscriptionLimitWindow | null): string {
+    const duration = window?.windowDurationMins
+    if (!duration || duration <= 0) {
+        return 'limit'
+    }
+    if (duration === 300) {
+        return '5h'
+    }
+    if (duration >= 7 * 24 * 60) {
+        const days = Math.round(duration / (24 * 60))
+        return `${days}d`
+    }
+    if (duration >= 60) {
+        const hours = duration / 60
+        return Number.isInteger(hours) ? `${hours}h` : `${hours.toFixed(1)}h`
+    }
+    return `${duration}m`
+}
+
+function formatLimitWindow(window: CodexSubscriptionLimitWindow | null): string | null {
+    if (!window) {
+        return null
+    }
+    return `${formatLimitDuration(window)} ${Math.round(100 - clampPercent(window.usedPercent))}%`
+}
+
+function getRemainingPercent(window: CodexSubscriptionLimitWindow): number {
+    return Math.round(100 - clampPercent(window.usedPercent))
+}
+
+function getLimitPercentClass(remainingPercent: number | null): string {
+    if (remainingPercent === null) {
+        return 'text-[var(--app-hint)]'
+    }
+    if (remainingPercent < 10) {
+        return 'text-red-500'
+    }
+    if (remainingPercent < 30) {
+        return 'text-orange-500'
+    }
+    return 'text-[var(--app-hint)]'
+}
+
+function getDisplayLimitWindows(limits: CodexSubscriptionLimits | null): CodexSubscriptionLimitWindow[] {
+    const windows = [limits?.primary, limits?.secondary]
+        .filter((window): window is CodexSubscriptionLimitWindow => Boolean(window))
+
+    const fiveHourWindow = windows.find((window) => window.windowDurationMins === 300)
+    const weeklyWindow = windows.find((window) => (window.windowDurationMins ?? 0) >= 7 * 24 * 60)
+    if (fiveHourWindow || weeklyWindow) {
+        return [fiveHourWindow, weeklyWindow]
+            .filter((window): window is CodexSubscriptionLimitWindow => Boolean(window))
+    }
+
+    return windows.sort((a, b) => (a.windowDurationMins ?? Number.MAX_SAFE_INTEGER) - (b.windowDurationMins ?? Number.MAX_SAFE_INTEGER))
+}
+
+function formatResetAt(resetsAt: number | null): string | null {
+    if (!resetsAt) {
+        return null
+    }
+    const timestamp = resetsAt > 1_000_000_000_000 ? resetsAt : resetsAt * 1000
+    const date = new Date(timestamp)
+    if (Number.isNaN(date.getTime())) {
+        return null
+    }
+    return date.toLocaleString()
+}
+
+function CodexSubscriptionLimitsBadge(props: {
+    limits: CodexSubscriptionLimits | null
+    isFetching: boolean
+    error: string | null
+}) {
+    const windows = getDisplayLimitWindows(props.limits)
+    const text = windows.length > 0
+        ? windows.map(formatLimitWindow).filter(Boolean).join(' · ')
+        : '5h -- · 7d --'
+    const rows = windows.length > 0
+        ? windows.map((window) => ({
+            label: formatLimitDuration(window),
+            remaining: getRemainingPercent(window)
+        }))
+        : [
+            { label: '5h', remaining: null },
+            { label: '7d', remaining: null }
+        ]
+    const resetDetails = windows
+        .map((window) => {
+            const resetAt = formatResetAt(window.resetsAt)
+            const used = Math.round(clampPercent(window.usedPercent))
+            const remaining = getRemainingPercent(window)
+            const prefix = `${formatLimitDuration(window)}: ${remaining}% remaining, ${used}% used`
+            return resetAt ? `${prefix}, resets ${resetAt}` : prefix
+        })
+        .filter(Boolean)
+        .join('\n')
+    const title = props.error
+        ? `Codex limits unavailable: ${props.error}`
+        : resetDetails || 'Codex subscription limits'
+
+    return (
+        <div
+            className={[
+                'flex shrink-0 flex-col items-end justify-center px-2 py-0.5 text-[11px] font-medium leading-3 tabular-nums',
+                props.isFetching ? 'opacity-60' : ''
+            ].filter(Boolean).join(' ')}
+            title={title}
+            aria-label={`Codex subscription limits: ${text}`}
+        >
+            {rows.map((row) => (
+                <div key={row.label} className="flex items-center gap-1 text-[var(--app-hint)]">
+                    <span>{row.label}</span>
+                    <span className={getLimitPercentClass(row.remaining)}>
+                        {row.remaining === null ? '--' : `${row.remaining}%`}
+                    </span>
+                </div>
+            ))}
+        </div>
+    )
+}
+
 export function SessionHeader(props: {
     session: Session
     onBack: () => void
@@ -105,12 +188,11 @@ export function SessionHeader(props: {
     api: ApiClient | null
     onSessionDeleted?: () => void
     onSessionReopened?: (newSessionId: string) => void
+    status?: StatusBarProps
 }) {
     const { t } = useTranslation()
     const { session, api, onSessionDeleted, onSessionReopened } = props
     const title = useMemo(() => getSessionTitle(session), [session])
-    const worktreeBranch = session.metadata?.worktree?.branch
-    const modelLabel = getSessionModelLabel(session)
 
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
@@ -126,6 +208,13 @@ export function SessionHeader(props: {
         session.id,
         session.metadata?.flavor ?? null
     )
+    const codexLimitsState = useCodexSubscriptionLimits({
+        api,
+        sessionId: session.id,
+        model: session.model ?? null,
+        enabled: session.active && session.metadata?.flavor === 'codex',
+        thinking: props.status?.thinking ?? session.thinking
+    })
     const [reopenError, setReopenError] = useState<string | null>(null)
 
     const handleDelete = async () => {
@@ -183,51 +272,24 @@ export function SessionHeader(props: {
                         </svg>
                     </button>
 
-                    {/* Session info - two lines: title and path */}
-                    <div className="min-w-0 flex-1">
+                    <div className="flex min-w-0 flex-1 items-center gap-2">
+                        {props.status ? (
+                            <span
+                                className={`h-2 w-2 shrink-0 rounded-full ${getStatusDotClass(props.status)}`}
+                                aria-hidden="true"
+                            />
+                        ) : null}
                         <div className="truncate font-semibold">
                             {title}
                         </div>
-                        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-[var(--app-hint)]">
-                            <span className="inline-flex items-center gap-1">
-                                <AgentFlavorIcon flavor={session.metadata?.flavor} className="h-3.5 w-3.5 shrink-0" />
-                                {session.metadata?.flavor?.trim() || 'unknown'}
-                            </span>
-                            {modelLabel ? (
-                                <span>
-                                    {t(modelLabel.key)}: {modelLabel.value}
-                                </span>
-                            ) : null}
-                            {worktreeBranch ? (
-                                <span>{t('session.item.worktree')}: {worktreeBranch}</span>
-                            ) : null}
-                        </div>
                     </div>
 
-                    {props.onToggleFiles ? (
-                        <button
-                            type="button"
-                            onClick={props.onToggleFiles}
-                            className={headerToggleClass(props.filesActive ?? false)}
-                            title={props.filesActive ? t('session.view.returnToChat') : t('session.title')}
-                            aria-label={props.filesActive ? t('session.view.returnToChat') : t('session.title')}
-                            aria-pressed={props.filesActive ?? false}
-                        >
-                            <FilesIcon />
-                        </button>
-                    ) : null}
-
-                    {props.onToggleOutline ? (
-                        <button
-                            type="button"
-                            onClick={props.onToggleOutline}
-                            className={headerToggleClass(props.outlineActive ?? false)}
-                            title={props.outlineActive ? t('session.outline.close') : t('session.outline.open')}
-                            aria-label={props.outlineActive ? t('session.outline.close') : t('session.outline.open')}
-                            aria-pressed={props.outlineActive ?? false}
-                        >
-                            <OutlineIcon />
-                        </button>
+                    {session.metadata?.flavor === 'codex' ? (
+                        <CodexSubscriptionLimitsBadge
+                            limits={codexLimitsState.limits}
+                            isFetching={codexLimitsState.isFetching}
+                            error={codexLimitsState.error}
+                        />
                     ) : null}
 
                     <button
@@ -255,6 +317,10 @@ export function SessionHeader(props: {
                 onArchive={() => setArchiveOpen(true)}
                 onReopen={handleReopen}
                 onDelete={() => setDeleteOpen(true)}
+                onToggleFiles={props.onToggleFiles}
+                filesActive={props.filesActive}
+                onToggleOutline={props.onToggleOutline}
+                outlineActive={props.outlineActive}
                 anchorPoint={menuAnchorPoint}
                 menuId={menuId}
             />

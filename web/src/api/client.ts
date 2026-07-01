@@ -24,6 +24,7 @@ import type {
     SessionsResponse
 } from '@/types/api'
 import type {
+    CodexSubscriptionLimitsResponse,
     CodexModelsResponse,
     CursorMigrateOutcome,
     CursorMigrateToAcpRequest,
@@ -613,6 +614,12 @@ export class ApiClient {
     async getSessionCodexModels(sessionId: string): Promise<CodexModelsResponse> {
         return await this.request<CodexModelsResponse>(
             `/api/sessions/${encodeURIComponent(sessionId)}/codex-models`
+        )
+    }
+
+    async getSessionCodexSubscriptionLimits(sessionId: string): Promise<CodexSubscriptionLimitsResponse> {
+        return await this.request<CodexSubscriptionLimitsResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/codex-subscription-limits`
         )
     }
 

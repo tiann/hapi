@@ -18,6 +18,10 @@ type SessionActionMenuProps = {
     onArchive: () => void
     onReopen?: () => void
     onDelete: () => void
+    onToggleFiles?: () => void
+    filesActive?: boolean
+    onToggleOutline?: () => void
+    outlineActive?: boolean
     anchorPoint: { x: number; y: number }
     menuId?: string
 }
@@ -84,6 +88,50 @@ function DownloadIcon(props: { className?: string }) {
     )
 }
 
+function FilesIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+            <path d="M14 2v6h6" />
+        </svg>
+    )
+}
+
+function OutlineIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <path d="M8 6h13" />
+            <path d="M8 12h13" />
+            <path d="M8 18h13" />
+            <path d="M3 6h.01" />
+            <path d="M3 12h.01" />
+            <path d="M3 18h.01" />
+        </svg>
+    )
+}
+
 function ReopenIcon(props: { className?: string }) {
     return (
         <svg
@@ -144,6 +192,10 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
         onArchive,
         onReopen,
         onDelete,
+        onToggleFiles,
+        filesActive,
+        onToggleOutline,
+        outlineActive,
         anchorPoint,
         menuId
     } = props
@@ -176,6 +228,16 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
     const handleDelete = () => {
         onClose()
         onDelete()
+    }
+
+    const handleToggleFiles = () => {
+        onClose()
+        onToggleFiles?.()
+    }
+
+    const handleToggleOutline = () => {
+        onClose()
+        onToggleOutline?.()
     }
 
     const updatePosition = useCallback(() => {
@@ -284,6 +346,34 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                 aria-labelledby={headingId}
                 className="flex flex-col gap-1"
             >
+                {onToggleFiles ? (
+                    <button
+                        type="button"
+                        role="menuitem"
+                        className={`${baseItemClassName} hover:bg-[var(--app-subtle-bg)]`}
+                        onClick={handleToggleFiles}
+                    >
+                        <FilesIcon className={filesActive ? 'text-[var(--app-link)]' : 'text-[var(--app-hint)]'} />
+                        {filesActive ? t('session.view.returnToChat') : t('session.title')}
+                    </button>
+                ) : null}
+
+                {onToggleOutline ? (
+                    <button
+                        type="button"
+                        role="menuitem"
+                        className={`${baseItemClassName} hover:bg-[var(--app-subtle-bg)]`}
+                        onClick={handleToggleOutline}
+                    >
+                        <OutlineIcon className={outlineActive ? 'text-[var(--app-link)]' : 'text-[var(--app-hint)]'} />
+                        {outlineActive ? t('session.outline.close') : t('session.outline.open')}
+                    </button>
+                ) : null}
+
+                {(onToggleFiles || onToggleOutline) ? (
+                    <div className="mx-2 h-px bg-[var(--app-divider)]" />
+                ) : null}
+
                 <button
                     type="button"
                     role="menuitem"

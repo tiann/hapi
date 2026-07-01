@@ -126,8 +126,8 @@ function formatTokenCount(value: number): string {
 
 function formatCodexReasoningLabel(effort?: string | null): string {
     const normalized = effort?.trim().toLowerCase()
-    if (!normalized || normalized === 'default') return 'reasoning default'
-    return `reasoning ${normalized}`
+    if (!normalized || normalized === 'default') return 'default'
+    return normalized
 }
 
 function isCodexFastMode(model?: string | null, effort?: string | null): boolean {
@@ -145,7 +145,7 @@ export function shouldShowComposerStatusBar(agentFlavor: string | null | undefin
     return agentFlavor !== 'cursor'
 }
 
-export function StatusBar(props: {
+export type StatusBarProps = {
     active: boolean
     thinking: boolean
     agentState: AgentState | null | undefined
@@ -161,7 +161,35 @@ export function StatusBar(props: {
     threadGoal?: ThreadGoal | null
     agentFlavor?: string | null
     voiceStatus?: ConversationStatus
-}) {
+}
+
+function getContextUsageInfo(props: Pick<StatusBarProps, 'contextSize' | 'contextWindow' | 'model' | 'agentFlavor'>): {
+    text: string
+    compactText: string
+    percentageUsed: number
+} | null {
+    if (props.contextSize === undefined) return null
+    const maxContextSize = props.contextWindow ?? getContextBudgetTokens(props.model, props.agentFlavor)
+    if (!maxContextSize) {
+        const count = formatTokenCount(props.contextSize)
+        return {
+            text: `ctx ${count}`,
+            compactText: `ctx ${count.toUpperCase()}`,
+            percentageUsed: 0
+        }
+    }
+
+    const percentageUsed = Math.min(100, Math.max(0, (props.contextSize / maxContextSize) * 100))
+    const roundedUsed = Math.round(percentageUsed)
+    const percentageLeft = Math.max(0, Math.round(100 - percentageUsed))
+    return {
+        text: `ctx ${formatTokenCount(props.contextSize)}/${formatTokenCount(maxContextSize)} (${roundedUsed}%)`,
+        compactText: `ctx ${formatTokenCount(maxContextSize).toUpperCase()}, ${percentageLeft}% left`,
+        percentageUsed
+    }
+}
+
+export function StatusBar(props: StatusBarProps) {
     const { t } = useTranslation()
     const connectionStatus = useMemo(
         () => getConnectionStatus(props.active, props.thinking, props.agentState, props.voiceStatus, props.backgroundTaskCount ?? 0, t),
@@ -177,20 +205,10 @@ export function StatusBar(props: {
         },
         [props.contextSize, props.contextWindow, props.model, props.agentFlavor, t]
     )
-    const contextUsageLabel = useMemo(() => {
-        if (props.contextSize === undefined) return null
-        const maxContextSize = props.contextWindow ?? getContextBudgetTokens(props.model, props.agentFlavor)
-        if (!maxContextSize) return `ctx ${formatTokenCount(props.contextSize)}`
-        const percentageUsed = Math.min(100, Math.round((props.contextSize / maxContextSize) * 100))
-        return `ctx ${formatTokenCount(props.contextSize)}/${formatTokenCount(maxContextSize)} (${percentageUsed}%)`
-    }, [props.contextSize, props.contextWindow, props.model, props.agentFlavor])
-    const compactContextUsageLabel = useMemo(() => {
-        if (props.contextSize === undefined) return null
-        const maxContextSize = props.contextWindow ?? getContextBudgetTokens(props.model, props.agentFlavor)
-        if (!maxContextSize) return `ctx ${formatTokenCount(props.contextSize)}`
-        const percentageLeft = Math.max(0, Math.round(100 - (props.contextSize / maxContextSize) * 100))
-        return `ctx ${formatTokenCount(maxContextSize).toUpperCase()}, ${percentageLeft}% left`
-    }, [props.contextSize, props.contextWindow, props.model, props.agentFlavor])
+    const contextUsage = useMemo(
+        () => getContextUsageInfo(props),
+        [props.contextSize, props.contextWindow, props.model, props.agentFlavor]
+    )
     const cacheHitLabel = useMemo(() => {
         if (!props.contextCacheRead || props.contextCacheRead <= 0) return null
         return `cache ${formatTokenCount(props.contextCacheRead)}`
@@ -227,6 +245,35 @@ export function StatusBar(props: {
             ? 'goal'
             : `goal ${props.threadGoal.status === 'budgetLimited' ? 'limited' : props.threadGoal.status}`
         : null
+    const modeItems = (
+        <>
+            {codexReasoningLabel ? (
+                <span className="whitespace-nowrap text-xs text-[var(--app-hint)]">
+                    {codexReasoningLabel}
+                </span>
+            ) : null}
+            {codexFastMode ? (
+                <span className="whitespace-nowrap text-xs text-[#34C759]">
+                    fast
+                </span>
+            ) : null}
+            {goalLabel ? (
+                <span className="whitespace-nowrap text-xs text-[var(--app-link)]">
+                    {goalLabel}
+                </span>
+            ) : null}
+            {collaborationModeLabel ? (
+                <span className="whitespace-nowrap text-xs text-blue-500">
+                    {collaborationModeLabel}
+                </span>
+            ) : null}
+            {displayPermissionMode ? (
+                <span className={`whitespace-nowrap text-xs ${permissionModeColor}`}>
+                    {permissionModeLabel}
+                </span>
+            ) : null}
+        </>
+    )
 
     return (
         <div className="flex min-w-0 items-center justify-between gap-2 px-2 pb-1">
@@ -239,13 +286,13 @@ export function StatusBar(props: {
                         {connectionStatus.text}
                     </span>
                 </div>
-                {contextUsageLabel ? (
+                {contextUsage ? (
                     <span className={`min-w-0 whitespace-nowrap text-[10px] ${contextWarning?.color ?? 'text-[var(--app-hint)]'}`}>
                         <span className="sm:hidden">
-                            {compactContextUsageLabel}
+                            {contextUsage.compactText}
                         </span>
                         <span className="hidden sm:inline">
-                            {contextUsageLabel}{contextWarning ? ` · ${contextWarning.text}` : ''}
+                            {contextUsage.text}{contextWarning ? ` · ${contextWarning.text}` : ''}
                         </span>
                     </span>
                 ) : null}
@@ -257,31 +304,7 @@ export function StatusBar(props: {
             </div>
 
             <div className="flex min-w-0 shrink-0 items-center gap-2">
-                {codexReasoningLabel ? (
-                    <span className="whitespace-nowrap text-xs text-[var(--app-hint)]">
-                        {codexReasoningLabel}
-                    </span>
-                ) : null}
-                {codexFastMode ? (
-                    <span className="whitespace-nowrap text-xs text-[#34C759]">
-                        fast
-                    </span>
-                ) : null}
-                {goalLabel ? (
-                    <span className="whitespace-nowrap text-xs text-[var(--app-link)]">
-                        {goalLabel}
-                    </span>
-                ) : null}
-                {collaborationModeLabel ? (
-                    <span className="whitespace-nowrap text-xs text-blue-500">
-                        {collaborationModeLabel}
-                    </span>
-                ) : null}
-                {displayPermissionMode ? (
-                    <span className={`whitespace-nowrap text-xs ${permissionModeColor}`}>
-                        {permissionModeLabel}
-                    </span>
-                ) : null}
+                {modeItems}
             </div>
         </div>
     )

@@ -1,6 +1,8 @@
 import type { AgentFlavor, CodexCollaborationMode, PermissionMode } from '@hapi/protocol/types'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import type {
+    CodexSubscriptionLimitsResponse,
+    GetCodexSubscriptionLimitsRequest,
     CodexModelSummary,
     CodexModelsResponse,
     CommandResponse,
@@ -55,6 +57,7 @@ export type RpcListDirectoryResponse = ListDirectoryResponse
 export type RpcPathExistsResponse = PathExistsResponse
 export type RpcCodexModel = CodexModelSummary
 export type RpcListCodexModelsResponse = CodexModelsResponse
+export type RpcGetCodexSubscriptionLimitsResponse = CodexSubscriptionLimitsResponse
 export type RpcCursorModel = CursorModelSummary
 export type RpcListCursorModelsResponse = CursorModelsResponse
 export type RpcOpencodeModel = OpencodeModelSummary
@@ -262,8 +265,28 @@ export class RpcGateway {
         return await this.sessionRpc(sessionId, RPC_METHODS.ListCodexModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListCodexModelsResponse
     }
 
+    async getCodexSubscriptionLimitsForSession(sessionId: string, model?: string | null): Promise<RpcGetCodexSubscriptionLimitsResponse> {
+        const request: GetCodexSubscriptionLimitsRequest = { model: model ?? null }
+        return await this.sessionRpc(
+            sessionId,
+            RPC_METHODS.GetCodexSubscriptionLimits,
+            request,
+            DEFAULT_RPC_TIMEOUT_MS
+        ) as RpcGetCodexSubscriptionLimitsResponse
+    }
+
     async listCodexModelsForMachine(machineId: string): Promise<RpcListCodexModelsResponse> {
         return await this.machineRpc(machineId, RPC_METHODS.ListCodexModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListCodexModelsResponse
+    }
+
+    async getCodexSubscriptionLimitsForMachine(machineId: string, model?: string | null): Promise<RpcGetCodexSubscriptionLimitsResponse> {
+        const request: GetCodexSubscriptionLimitsRequest = { model: model ?? null }
+        return await this.machineRpc(
+            machineId,
+            RPC_METHODS.GetCodexSubscriptionLimits,
+            request,
+            DEFAULT_RPC_TIMEOUT_MS
+        ) as RpcGetCodexSubscriptionLimitsResponse
     }
 
     async listCursorModelsForSession(sessionId: string): Promise<RpcListCursorModelsResponse> {
