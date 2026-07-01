@@ -560,19 +560,6 @@ export function ComposerButtons(props: {
                     </button>
                 ) : null}
 
-                {props.showAbortButton ? (
-                    <button
-                        type="button"
-                        aria-label={t('composer.abort')}
-                        title={t('composer.abort')}
-                        disabled={props.abortDisabled}
-                        className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 transition-colors hover:bg-[var(--app-bg)] hover:text-red-500 disabled:cursor-not-allowed disabled:opacity-50"
-                        onClick={props.onAbort}
-                    >
-                        <AbortIcon spinning={props.isAborting} />
-                    </button>
-                ) : null}
-
                 {props.showSwitchButton ? (
                     <button
                         type="button"
@@ -658,6 +645,19 @@ export function ComposerButtons(props: {
                             />
                         )}
                     </>
+                ) : null}
+
+                {props.showAbortButton ? (
+                    <button
+                        type="button"
+                        aria-label={t('composer.abort')}
+                        title={t('composer.abort')}
+                        disabled={props.abortDisabled}
+                        className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 transition-colors hover:bg-[var(--app-bg)] hover:text-red-500 disabled:cursor-not-allowed disabled:opacity-50"
+                        onClick={props.onAbort}
+                    >
+                        <AbortIcon spinning={props.isAborting} />
+                    </button>
                 ) : null}
             </div>
 
