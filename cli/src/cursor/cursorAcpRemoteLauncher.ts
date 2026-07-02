@@ -271,6 +271,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
             session.onThinkingChange(true);
             this.turnHasModelError = false;
+            this.lastAssistantText = null;
 
             try {
                 await backend.prompt(acpSessionId, promptContent, (message) => {
