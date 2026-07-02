@@ -9,8 +9,13 @@ import { Bot, Context, InlineKeyboard } from 'grammy'
 import { SyncEngine, Session, type Machine } from '../sync/syncEngine'
 import { handleCallback, CallbackContext } from './callbacks'
 import { formatReadyNotification, formatSessionNotification, createNotificationKeyboard } from './sessionView'
-import { getAgentName } from '../notifications/sessionInfo'
-import type { NotificationChannel, TaskNotification } from '../notifications/notificationTypes'
+import { getAgentName, getSessionName } from '../notifications/sessionInfo'
+import type {
+    ModelErrorNotification,
+    NotificationChannel,
+    TaskNotification
+} from '../notifications/notificationTypes'
+import { formatModelErrorBody, formatModelErrorTitle } from '../notifications/modelErrorCopy'
 import type { Store } from '../store'
 
 export interface BotContext extends Context {
@@ -260,6 +265,37 @@ export class HappyBot implements NotificationChannel {
                 })
             } catch (error) {
                 console.error(`[HAPIBot] Failed to send notification to chat ${chatId}:`, error)
+            }
+        }
+    }
+
+    async sendModelError(session: Session, notification: ModelErrorNotification): Promise<void> {
+        if (!session.active) {
+            return
+        }
+
+        const agentName = getAgentName(session)
+        const sessionName = getSessionName(session)
+        const title = formatModelErrorTitle(notification.kind)
+        const body = formatModelErrorBody(notification, { agentName, sessionName })
+        // Plain text (no parse_mode): sessionName and rawSnippet can contain
+        // Markdown metacharacters; Telegram drops the whole message on parse errors.
+        const text = `\u{1F6A8} Model error - ${title}\n\n${body}`
+        const url = buildMiniAppDeepLink(this.publicUrl, `session_${session.id}`)
+        const keyboard = new InlineKeyboard().webApp('Open Session', url)
+
+        const chatIds = this.getBoundChatIds(session.namespace)
+        if (chatIds.length === 0) {
+            return
+        }
+
+        for (const chatId of chatIds) {
+            try {
+                await this.bot.api.sendMessage(chatId, text, {
+                    reply_markup: keyboard
+                })
+            } catch (error) {
+                console.error(`[HAPIBot] Failed to send model-error notification to chat ${chatId}:`, error)
             }
         }
     }
