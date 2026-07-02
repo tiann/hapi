@@ -1,6 +1,5 @@
 import React from 'react';
 import { randomUUID } from 'node:crypto';
-import { lstat, readFile } from 'node:fs/promises';
 
 import { CodexAppServerClient } from './codexAppServerClient';
 import { CodexPermissionHandler } from './utils/permissionHandler';
@@ -14,7 +13,7 @@ import type { CodexSession } from './session';
 import type { EnhancedMode } from './loop';
 import { hasCodexCliOverrides } from './utils/codexCliOverrides';
 import { AppServerEventConverter } from './utils/appServerEventConverter';
-import { detectImageMimeType, registerGeneratedImage } from '@/modules/common/generatedImages';
+import { registerGeneratedImageFromPath } from '@/modules/common/generatedImages';
 import { registerAppServerPermissionHandlers } from './utils/appServerPermissionAdapter';
 import { buildThreadStartParams, buildTurnStartParams } from './utils/appServerConfig';
 import type { ThreadGoal, ThreadGoalStatus } from './appServerTypes';
@@ -27,32 +26,17 @@ import {
 } from '@/modules/common/remote/RemoteLauncherBase';
 
 
-async function registerGeneratedImageFromPath(args: { id: string; path: string; fileName?: string | null }): Promise<ReturnType<typeof registerGeneratedImage> | null> {
-    try {
-        const info = await lstat(args.path);
-        if (!info.isFile()) {
-            throw new Error('Path is not a regular file');
-        }
-        const maxImageBytes = 25 * 1024 * 1024;
-        if (info.size > maxImageBytes) {
-            throw new Error('Image is too large to display inline');
-        }
-        const bytes = await readFile(args.path);
-        const mimeType = detectImageMimeType(bytes);
-        if (!mimeType) {
-            throw new Error('Unsupported image content');
-        }
-        return registerGeneratedImage({
-            id: args.id,
-            path: args.path,
-            fileName: args.fileName,
-            mimeType,
-            bytes
-        });
-    } catch (error) {
-        logger.debug('[CodexRemoteLauncher] Failed to register generated image:', error instanceof Error ? error.message : String(error));
-        return null;
+
+async function registerGeneratedImageFromPathWrapper(args: { id: string; path: string; fileName?: string | null }): Promise<Awaited<ReturnType<typeof registerGeneratedImageFromPath>> | null> {
+    const image = await registerGeneratedImageFromPath({
+        id: args.id,
+        path: args.path,
+        fileName: args.fileName
+    });
+    if (!image) {
+        logger.debug('[CodexRemoteLauncher] Failed to register generated image from path');
     }
+    return image;
 }
 
 type HappyServer = Awaited<ReturnType<typeof buildHapiMcpBridge>>['server'];
@@ -2215,7 +2199,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 const imageId = randomUUID();
                 const savedPath = asString(msg.saved_path ?? msg.savedPath);
                 if (savedPath) {
-                    const image = await registerGeneratedImageFromPath({
+                    const image = await registerGeneratedImageFromPathWrapper({
                         id: imageId,
                         path: savedPath,
                         fileName: asString(msg.file_name ?? msg.fileName)
@@ -2229,7 +2213,12 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         sourceImageId,
                         fileName: image.fileName,
                         mimeType: image.mimeType,
-                        id: randomUUID()
+                        id: randomUUID(),
+                        source: {
+                            ingress: 'tool_result',
+                            flavor: 'codex',
+                            toolCallId: asString(msg.call_id ?? msg.callId),
+                        },
                     });
                 }
             }

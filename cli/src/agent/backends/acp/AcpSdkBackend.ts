@@ -70,6 +70,7 @@ export class AcpSdkBackend implements AgentBackend {
     private promptUsageCallback: ((msg: AgentMessage) => void) | null = null;
     private usageUpdateListener: ((msg: AgentMessage) => void) | null = null;
     private lastForwardedUsageUpdate: AcpUsageUpdate | null = null;
+    private sessionUpdateQueue: Promise<void> = Promise.resolve();
 
     /** Retry configuration for ACP initialization */
     private static readonly INIT_RETRY_OPTIONS = {
@@ -101,7 +102,12 @@ export class AcpSdkBackend implements AgentBackend {
     private static readonly LATE_FLUSH_QUIET_PERIOD_MS = 250;
     private static readonly LATE_FLUSH_WINDOW_MS = 6000;
 
-    constructor(private readonly options: { command: string; args?: string[]; env?: Record<string, string> }) {}
+    constructor(private readonly options: {
+        command: string;
+        args?: string[];
+        env?: Record<string, string>;
+        flavor?: AgentFlavor;
+    }) {}
 
     async initialize(): Promise<void> {
         if (this.transport) return;
@@ -400,8 +406,9 @@ export class AcpSdkBackend implements AgentBackend {
             AcpSdkBackend.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS,
             AcpSdkBackend.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS
         );
+        await this.sessionUpdateQueue;
         this.messageHandler?.drainBuffers();
-        this.messageHandler = new AcpMessageHandler(onUpdate);
+        this.messageHandler = new AcpMessageHandler(onUpdate, { flavor: this.options.flavor });
         this.isProcessingMessage = true;
         this.lastSessionUpdateAt = Date.now();
         this.latestUsageUpdate = null;
@@ -425,12 +432,17 @@ export class AcpSdkBackend implements AgentBackend {
                 AcpSdkBackend.UPDATE_QUIET_PERIOD_MS,
                 AcpSdkBackend.UPDATE_DRAIN_TIMEOUT_MS
             );
+            await this.sessionUpdateQueue;
             this.messageHandler?.drainBuffers();
             // Block here until the model truly stops streaming straggler
             // chunks (or LATE_FLUSH_WINDOW_MS elapses), so turn_complete and
             // the launcher's ready signal only fire once every chunk has been
             // emitted to this turn's onUpdate.
             await this.drainLateBuffers();
+            // Late window can enqueue async image registration; drain again
+            // before turn_complete so generated_image precedes turn boundary.
+            await this.sessionUpdateQueue;
+            this.messageHandler?.drainBuffers();
             try {
                 const latestUsageUpdate = this.readLatestUsageUpdate();
                 if (promptUsage) {
@@ -543,6 +555,7 @@ export class AcpSdkBackend implements AgentBackend {
 
     async disconnect(): Promise<void> {
         if (!this.transport) return;
+        await this.sessionUpdateQueue;
         this.messageHandler?.drainBuffers();
         this.messageHandler = null;
         this.activeSessionId = null;
@@ -561,8 +574,17 @@ export class AcpSdkBackend implements AgentBackend {
         }
         this.lastSessionUpdateAt = Date.now();
         const update = params.update;
-        this.captureUsageUpdate(update);
-        this.messageHandler?.handleUpdate(update);
+        this.sessionUpdateQueue = this.sessionUpdateQueue
+            .then(async () => {
+                this.captureUsageUpdate(update);
+                await this.messageHandler?.handleUpdate(update);
+            })
+            .catch((error) => {
+                logger.debug(
+                    '[AcpSdkBackend] session update failed:',
+                    error instanceof Error ? error.message : String(error)
+                );
+            });
     }
 
     private captureUsageUpdate(update: unknown): void {

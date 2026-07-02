@@ -757,6 +757,7 @@ export function reduceTimeline(
                         imageId: c.imageId,
                         fileName: c.fileName,
                         mimeType: c.mimeType,
+                        source: c.source,
                         meta: msg.meta
                     })
                     continue

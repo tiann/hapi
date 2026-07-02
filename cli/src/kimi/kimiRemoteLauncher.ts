@@ -158,7 +158,7 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
 
             const promptContent: PromptContent[] = [{
                 type: 'text',
-                text: batch.message
+                text: batch.message,
             }];
 
             session.onThinkingChange(true);
@@ -235,6 +235,9 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
                 break;
             case 'error':
                 this.messageBuffer.addMessage(message.message, 'status');
+                break;
+            case 'generated_image':
+                this.messageBuffer.addMessage(`Generated image: ${message.fileName}`, 'assistant');
                 break;
             case 'turn_complete':
                 this.messageBuffer.addMessage('Turn complete', 'status');
