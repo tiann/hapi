@@ -278,12 +278,9 @@ export class HappyBot implements NotificationChannel {
         const sessionName = getSessionName(session)
         const title = formatModelErrorTitle(notification.kind)
         const body = formatModelErrorBody(notification, { agentName, sessionName })
-        // Leading siren + bold title is the urgent variant -- distinct from
-        // ready/task copy so Telegram clients render it as visually
-        // higher-severity. Telegram supports basic Markdown; the bold title
-        // line gives a glance that's easy to differentiate from "ready"
-        // chat messages even before the operator opens the chat.
-        const text = `\u{1F6A8} *Model error* - ${title}\n\n${body}`
+        // Plain text (no parse_mode): sessionName and rawSnippet can contain
+        // Markdown metacharacters; Telegram drops the whole message on parse errors.
+        const text = `\u{1F6A8} Model error - ${title}\n\n${body}`
         const url = buildMiniAppDeepLink(this.publicUrl, `session_${session.id}`)
         const keyboard = new InlineKeyboard().webApp('Open Session', url)
 
@@ -295,7 +292,6 @@ export class HappyBot implements NotificationChannel {
         for (const chatId of chatIds) {
             try {
                 await this.bot.api.sendMessage(chatId, text, {
-                    parse_mode: 'Markdown',
                     reply_markup: keyboard
                 })
             } catch (error) {
