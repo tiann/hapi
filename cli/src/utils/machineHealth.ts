@@ -72,6 +72,64 @@ export function readLinuxMemoryUsedPercent(meminfo: string): number | undefined 
     return Math.max(0, Math.min(100, Math.round(((total - approxAvailable) / total) * 100)))
 }
 
+function parseVmStatPagesValue(vmStat: string, label: string): number | undefined {
+    for (const line of vmStat.split('\n')) {
+        const trimmed = line.trim()
+        if (!trimmed.startsWith(`${label}:`)) {
+            continue
+        }
+        const match = trimmed.match(/(\d+)\.?\s*$/)
+        if (!match) {
+            return undefined
+        }
+        const pages = Number(match[1])
+        return Number.isFinite(pages) ? pages : undefined
+    }
+    return undefined
+}
+
+function parseVmStatPageSize(vmStat: string): number | undefined {
+    const match = vmStat.match(/page size of (\d+) bytes/)
+    if (!match) {
+        return undefined
+    }
+    const size = Number(match[1])
+    return Number.isFinite(size) && size > 0 ? size : undefined
+}
+
+/**
+ * Darwin used-memory percent, matching Activity Monitor's "Memory Used" figure:
+ * App Memory + Wired + Compressed. It sums the anonymous (non-file-backed) resident
+ * pages, the wired-down pages, and the pages occupied by the compressor — the
+ * genuinely-occupied memory. Free and reclaimable file cache (inactive/speculative
+ * file-backed pages) are simply not part of that sum.
+ *
+ * os.freemem() (total - free) instead counts reclaimable file cache as used, which is why
+ * the pre-fix path reported a stuck ~99% "High pressure" on macOS. Summing occupied pages
+ * keeps parity with the Linux branch, whose total - MemAvailable likewise treats reclaimable
+ * cache as available and anonymous/wired memory as used. The three fields were validated on a
+ * real Mac mini against `top`'s wired/compressor byte figures.
+ *
+ * Any unparseable required field — including the page-size header — returns undefined so the
+ * caller falls back to os.freemem() rather than reporting a wrong-but-plausible percent.
+ */
+export function readDarwinMemoryUsedPercent(vmStat: string, totalBytes: number): number | undefined {
+    if (!totalBytes || totalBytes <= 0) {
+        return undefined
+    }
+
+    const pageSize = parseVmStatPageSize(vmStat)
+    const anonymous = parseVmStatPagesValue(vmStat, 'Anonymous pages')
+    const wired = parseVmStatPagesValue(vmStat, 'Pages wired down')
+    const compressor = parseVmStatPagesValue(vmStat, 'Pages occupied by compressor')
+    if (pageSize === undefined || anonymous === undefined || wired === undefined || compressor === undefined) {
+        return undefined
+    }
+
+    const used = (anonymous + wired + compressor) * pageSize
+    return Math.max(0, Math.min(100, Math.round((used / totalBytes) * 100)))
+}
+
 function computeMemoryPercent(): number | undefined {
     if (platform() === 'linux') {
         try {
