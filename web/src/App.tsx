@@ -8,6 +8,7 @@ import { initializeThemeColors } from '@/hooks/useThemeColors'
 import { useAuth } from '@/hooks/useAuth'
 import { useAuthSource } from '@/hooks/useAuthSource'
 import { useServerUrl } from '@/hooks/useServerUrl'
+import { useDelayedTrue } from '@/hooks/useDelayedTrue'
 import { useSSE } from '@/hooks/useSSE'
 import { useSyncingState } from '@/hooks/useSyncingState'
 import { usePushNotifications } from '@/hooks/usePushNotifications'
@@ -37,6 +38,10 @@ import type { SyncEvent } from '@/types/api'
 type ToastEvent = Extract<SyncEvent, { type: 'toast' }>
 
 const REQUIRE_SERVER_URL = requireHubUrlForLogin()
+
+// SSE reconnects on a healthy network complete in ~1-2s; only surface the
+// reconnecting banner when the disconnected state actually persists.
+const RECONNECT_BANNER_GRACE_MS = 3_000
 
 function withPwaBanner(content: ReactNode) {
     return (
@@ -140,6 +145,7 @@ function AppInner() {
     const { isSyncing, startSync, endSync } = useSyncingState()
     const [sseDisconnected, setSseDisconnected] = useState(false)
     const [sseDisconnectReason, setSseDisconnectReason] = useState<string | null>(null)
+    const showSseReconnecting = useDelayedTrue(sseDisconnected && !isSyncing, RECONNECT_BANNER_GRACE_MS)
     const syncTokenRef = useRef(0)
     const isFirstConnectRef = useRef(true)
     const baseUrlRef = useRef(baseUrl)
@@ -437,11 +443,11 @@ function AppInner() {
             <VoiceProvider>
                 <PwaUpdateBannerWithStatusOffset
                     isSyncing={isSyncing}
-                    isReconnecting={sseDisconnected && !isSyncing}
+                    isReconnecting={showSseReconnecting}
                 />
                 <SyncingBanner isSyncing={isSyncing} />
                 <ReconnectingBanner
-                    isReconnecting={sseDisconnected && !isSyncing}
+                    isReconnecting={showSseReconnecting}
                     reason={sseDisconnectReason}
                 />
                 <VoiceErrorBanner />

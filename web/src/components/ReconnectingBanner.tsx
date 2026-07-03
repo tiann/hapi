@@ -8,6 +8,9 @@ function getReasonLabel(reason: string, t: (key: string) => string): string {
     if (reason === 'visibility-recovery') {
         return t('reconnecting.reason.visibilityRecovery')
     }
+    if (reason === 'connect-timeout') {
+        return t('reconnecting.reason.connectTimeout')
+    }
     if (reason === 'closed') {
         return t('reconnecting.reason.closed')
     }
