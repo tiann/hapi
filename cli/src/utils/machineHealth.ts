@@ -1,3 +1,4 @@
+import { execSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { availableParallelism, cpus, freemem, loadavg, platform, totalmem, uptime } from 'node:os'
 import type { MachineHealth } from '@hapi/protocol/types'
@@ -136,6 +137,18 @@ function computeMemoryPercent(): number | undefined {
             const fromProc = readLinuxMemoryUsedPercent(readFileSync('/proc/meminfo', 'utf8'))
             if (fromProc !== undefined) {
                 return fromProc
+            }
+        } catch {
+            // fall through to os.freemem()
+        }
+    }
+
+    if (platform() === 'darwin') {
+        try {
+            const vmStat = execSync('vm_stat', { encoding: 'utf8', timeout: 1000 })
+            const fromVmStat = readDarwinMemoryUsedPercent(vmStat, totalmem())
+            if (fromVmStat !== undefined) {
+                return fromVmStat
             }
         } catch {
             // fall through to os.freemem()
