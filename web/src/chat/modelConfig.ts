@@ -80,7 +80,9 @@ export function getContextBudgetTokens(model: string | null | undefined, flavor?
                 : DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS
         }
         if (trimmedModel.startsWith('claude-')) {
-            return DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS
+            return trimmedModel.endsWith('[1m]')
+                ? LARGE_CLAUDE_CONTEXT_WINDOW_TOKENS
+                : DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS
         }
         return null
     })()
