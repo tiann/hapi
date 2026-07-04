@@ -620,6 +620,251 @@ JWT payload includes:
 
 Browser terminal sockets use JWT. Hub then maps terminal events to a connected CLI socket in the matching session room and namespace.
 
+## Multi-tenant zero-knowledge direction
+
+The SaaS direction is a **zero-knowledge control plane**, not a code host. The cloud routes encrypted session traffic and tenant metadata. Code, secrets, and agent execution stay on the user's machine.
+
+```text
+Signed client / PWA / desktop
+  - device key
+  - decrypts session content
+  - sends user intent
+        │
+        │ encrypted payload + routing metadata
+        ▼
+SaaS Hub control plane
+  - auth, tenants, RBAC
+  - realtime routing
+  - encrypted blob storage
+  - audit metadata
+  - no plaintext session keys
+        │
+        │ encrypted RPC relay
+        ▼
+User machine runner
+  - machine key
+  - runs the agent
+  - reads/writes workspace
+  - resolves local secrets
+  - executes terminal/file/git/model RPC
+```
+
+### User-facing trust promise
+
+Use plain product language. Do not make users understand cryptography.
+
+```text
+Your code stays on your machine.
+Your secrets stay on your machine.
+Session content is encrypted before it reaches HAPI Cloud.
+New devices must be approved by a device you already trust.
+HAPI Cloud routes messages; it cannot read them.
+```
+
+Avoid blockchain language in the product. It adds confusion and does not solve the real trust boundary. If third-party timestamping is ever needed, publish only a periodic Merkle root of the audit log, never user metadata or payloads.
+
+### Tenant model
+
+The current `CLI_API_TOKEN:<namespace>` pattern is enough for local-first partitioning. It is not enough for SaaS tenancy. SaaS needs first-class tenants.
+
+```text
+Tenant
+  ├─ Users
+  ├─ Memberships / roles
+  ├─ Devices
+  ├─ Machines
+  ├─ Sessions
+  ├─ Messages
+  ├─ Attachments
+  ├─ Machine tokens
+  ├─ Encrypted session keys
+  └─ Audit events
+```
+
+Rules:
+
+- Every tenant-owned table has `tenant_id`.
+- `tenant_id` comes from auth context, never request body.
+- Every API route checks membership and role.
+- Every RPC verifies session, machine, and device belong to the same tenant.
+- Every room/cache/pubsub key includes tenant scope.
+- Cross-tenant denial tests are required for routes, sockets, terminal, and RPC.
+
+For Postgres, prefer Row Level Security as a second guard behind application checks:
+
+```sql
+ALTER TABLE sessions ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON sessions
+USING (tenant_id = current_setting('app.tenant_id')::uuid);
+```
+
+### Device and machine keys
+
+Bearer tokens identify API callers. They should not be enough to decrypt session content.
+
+Recommended keys:
+
+```text
+Device identity: Ed25519
+Device encryption: X25519
+Machine identity: Ed25519
+Machine encryption: X25519
+Session data key: one symmetric key per session
+Content encryption: AEAD, XChaCha20-Poly1305 or AES-GCM
+KDF: HKDF
+```
+
+The Hub stores public keys and encrypted key packages only. It never stores private keys or plaintext session data keys.
+
+### Pairing and device approval
+
+```text
+1. Runner creates a machine keypair.
+2. Local setup shows QR / pairing code.
+3. Client creates a device keypair.
+4. Pairing establishes trust between machine and device.
+5. Session data key is encrypted to approved device public keys.
+6. Adding a new device requires an existing trusted device signature.
+```
+
+Hub cannot silently add a device if clients verify the signed device list.
+
+### End-to-end encrypted content
+
+Encrypt before data reaches the Hub:
+
+- user prompts
+- agent responses
+- permission request details
+- terminal input/output
+- file previews
+- attachments
+- generated images
+- session exports
+
+Hub may see only routing metadata:
+
+- tenant id
+- session id
+- machine id
+- timestamps
+- ciphertext size
+- online/offline state
+- billing counters
+
+Use associated data so ciphertext is bound to context:
+
+```text
+aad = tenant_id + session_id + message_seq + message_type + schema_version
+```
+
+### Secrets stay local
+
+Do not upload secret values, even encrypted, unless a future feature absolutely needs it. Use handles.
+
+```text
+Web shows:     GITHUB_TOKEN [local secret]
+Hub sees:      secret_handle = "github_token:default"
+Runner reads:  macOS Keychain / 1Password / local vault
+```
+
+### Logs and telemetry
+
+Production logs must not contain payloads.
+
+Allowed:
+
+```text
+request_id, tenant_id, session_id, machine_id, event_type, status, duration_ms, error_code, ciphertext_size
+```
+
+Forbidden:
+
+```text
+prompt, agent output, terminal text, file content, secret value, raw RPC params, auth headers
+```
+
+Telemetry stays opt-in and payload-free.
+
+### Audit and transparency
+
+Keep an append-only audit log for trust-critical actions:
+
+- device added / removed
+- machine paired / revoked
+- session key rotated
+- tenant policy changed
+- staff access requested
+- token revoked
+
+Each event should be signed and included in a Merkle tree. Clients can verify that the device list they see matches the signed log. This solves the “did the cloud secretly add a device?” problem without blockchain.
+
+### UX surfaces for trust
+
+Users should see status, not crypto terms.
+
+Session banner:
+
+```text
+Private session
+Code stays on your computer. Cloud only forwards encrypted messages.
+```
+
+Privacy check page:
+
+```text
+Code stays local: yes
+Secrets stay local: yes
+Messages encrypted: yes
+Trusted devices: 2
+Connected machines: 1
+Staff access: none
+Retention: 7 days
+```
+
+Technical details can live behind an expandable panel or whitepaper link.
+
+### SaaS rollout phases
+
+Phase 1, tenant-safe control plane:
+
+- Add tenants, users, memberships, roles.
+- Replace global namespace auth with per-user, per-machine, per-device credentials.
+- Add `tenant_id` to tenant-owned resources.
+- Add Postgres storage option with RLS.
+- Add cross-tenant denial tests.
+
+Phase 2, zero-knowledge content:
+
+- Add device and machine keypairs.
+- Add session data keys and encrypted key packages.
+- Encrypt messages, terminal IO, file previews, attachments, generated images, and exports.
+- Remove payloads from logs.
+
+Phase 3, multi-instance Hub:
+
+- Add Redis or NATS pubsub.
+- Tenant-scope rooms, cache keys, and pubsub topics.
+- Add presence, rate limits, quotas, and retention jobs.
+- Make caches rebuildable from durable state.
+
+Phase 4, trust hardening:
+
+- Signed desktop or mobile client for users who do not trust dynamically served Web JS.
+- Device approval signatures.
+- Signed transparency log.
+- BYOK / customer-managed keys for enterprise.
+- Audit export, pentest, SOC 2 readiness.
+
+### Explicit non-goals
+
+- Do not rewrite the backend in Rust just for multi-tenancy. Tenant isolation and encryption are the work.
+- Do not use blockchain by default. Signed Merkle logs are enough.
+- Do not upload plaintext code, secrets, terminal output, or prompts to the Hub.
+- Do not claim dynamic Web E2EE prevents a malicious server from shipping malicious JavaScript. Offer signed clients for that trust level.
+- Do not cloud-host user agents by default. If cloud execution is added later, it needs separate sandbox architecture.
+
 ## Agent flavors
 
 Current shared flavors:
