@@ -2,6 +2,8 @@
 
 HAPI consists of three interconnected components that work together to provide remote AI agent control.
 
+For maintainer-level package boundaries, sequence diagrams, and refactor guidance, see [Architecture Deep Dive](./architecture.md).
+
 ## Architecture Overview
 
 ```

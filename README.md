@@ -37,6 +37,7 @@ For self-hosted options (Cloudflare Tunnel, Tailscale), see [Installation](docs/
 
 - [App](docs/guide/pwa.md)
 - [How it Works](docs/guide/how-it-works.md)
+- [Architecture Deep Dive](docs/guide/architecture.md)
 - [Cursor Agent](docs/guide/cursor.md)
 - [Voice Assistant](docs/guide/voice-assistant.md)
 - [Why HAPI](docs/guide/why-hapi.md)
