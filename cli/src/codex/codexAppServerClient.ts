@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { logger } from '@/ui/logger';
 import { JsonLineParser } from '@/utils/jsonLineParser';
 import { killProcessByChildProcess } from '@/utils/process';
+import { resolveCodexCommand, withCodexSpawnEnv } from './utils/codexExecutable';
 import type {
     CollaborationModeListResponse,
     InitializeParams,
@@ -91,9 +92,12 @@ export class CodexAppServerClient extends JsonLineParser {
             return;
         }
 
-        this.process = spawn('codex', ['app-server'], {
-            env: Object.keys(process.env).reduce((acc, key) => {
-                const value = process.env[key];
+        const codexCommand = resolveCodexCommand();
+        const codexEnv = withCodexSpawnEnv(process.env);
+
+        this.process = spawn(codexCommand.command, [...codexCommand.args, 'app-server'], {
+            env: Object.keys(codexEnv).reduce((acc, key) => {
+                const value = codexEnv[key];
                 if (typeof value === 'string') acc[key] = value;
                 return acc;
             }, {} as Record<string, string>),

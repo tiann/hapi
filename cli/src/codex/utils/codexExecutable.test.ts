@@ -1,4 +1,4 @@
-import { win32 } from 'node:path';
+import { delimiter, win32 } from 'node:path';
 import { beforeAll, afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { execFileSyncMock, existsSyncMock, homedirMock } = vi.hoisted(() => ({
@@ -32,6 +32,7 @@ vi.mock('node:os', async () => {
 });
 
 const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+const originalEnv = process.env;
 const homeDir = win32.join('home', 'junes');
 const nodeRoot = win32.join('toolchains', 'nodejs');
 
@@ -80,6 +81,7 @@ describe('resolveCodexCommand', () => {
     beforeEach(() => {
         vi.clearAllMocks();
         vi.resetModules();
+        process.env = { ...originalEnv };
         homedirMock.mockReturnValue(homeDir);
         execFileSyncMock.mockImplementation(() => {
             throw new Error('not found');
@@ -88,6 +90,7 @@ describe('resolveCodexCommand', () => {
     });
 
     afterAll(() => {
+        process.env = originalEnv;
         if (originalPlatformDescriptor) {
             Object.defineProperty(process, 'platform', originalPlatformDescriptor);
         }
@@ -169,6 +172,54 @@ describe('resolveCodexCommand', () => {
         expect(resolveCodexCommand()).toEqual({
             command: 'node',
             args: [script]
+        });
+    });
+
+
+    it('appends common Codex install locations to PATH for service-launched processes', async () => {
+        setPlatform('darwin');
+        const { withCodexSpawnEnv } = await import('./codexExecutable');
+
+        const env = withCodexSpawnEnv({ PATH: ['/usr/bin', '/bin'].join(delimiter) });
+
+        expect(env.PATH?.split(delimiter)).toEqual([
+            '/usr/bin',
+            '/bin',
+            `${homeDir}/.local/bin`,
+            `${homeDir}/.npm-global/bin`,
+            `${homeDir}/.bun/bin`,
+            '/opt/homebrew/bin',
+            '/usr/local/bin'
+        ]);
+    });
+
+    it('does not duplicate PATH fallback dirs', async () => {
+        setPlatform('darwin');
+        const { withCodexSpawnEnv } = await import('./codexExecutable');
+
+        const env = withCodexSpawnEnv({ PATH: ['/opt/homebrew/bin', '/usr/bin', `${homeDir}/.bun/bin`].join(delimiter) });
+
+        expect(env.PATH?.split(delimiter)).toEqual([
+            '/opt/homebrew/bin',
+            '/usr/bin',
+            `${homeDir}/.bun/bin`,
+            `${homeDir}/.local/bin`,
+            `${homeDir}/.npm-global/bin`,
+            '/usr/local/bin'
+        ]);
+    });
+
+
+    it('uses an absolute common install path when the current PATH is minimal', async () => {
+        setPlatform('darwin');
+        const codexPath = '/opt/homebrew/bin/codex';
+        process.env.PATH = ['/usr/bin', '/bin'].join(delimiter);
+        existsSyncMock.mockImplementation((candidate: string) => candidate === codexPath);
+        const { resolveCodexCommand } = await import('./codexExecutable');
+
+        expect(resolveCodexCommand()).toEqual({
+            command: codexPath,
+            args: []
         });
     });
 
