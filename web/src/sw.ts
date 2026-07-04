@@ -60,20 +60,6 @@ registerRoute(
 )
 
 registerRoute(
-    ({ url }) => url.pathname === '/api/machines',
-    new NetworkFirst({
-        cacheName: 'api-machines',
-        networkTimeoutSeconds: 10,
-        plugins: [
-            new ExpirationPlugin({
-                maxEntries: 5,
-                maxAgeSeconds: 60 * 10
-            })
-        ]
-    })
-)
-
-registerRoute(
     /^https:\/\/cdn\.socket\.io\/.*/,
     new CacheFirst({
         cacheName: 'cdn-socketio',
