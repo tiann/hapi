@@ -24,6 +24,12 @@ export interface ConversionContext {
     version?: string
     gitBranch?: string
     parentUuid?: string | null
+    // The model preset the session actually selected at launch time (e.g. "fable[1m]"),
+    // with the `[1m]` suffix intact. Some 1M presets (fable[1m]) arrive on system/init
+    // with the suffix already dropped ("claude-fable-5"), so this preserved preset is
+    // the only turn-1 signal that such a session is 1M. Used only to seed the very first
+    // contextWindow estimate before result.modelUsage confirms the real value.
+    selectedModel?: string | null
 }
 
 type PermissionResponse = {

@@ -105,7 +105,8 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
         const sdkToLogConverter = new SDKToLogConverter({
             sessionId: session.sessionId || 'unknown',
             cwd: session.path,
-            version: process.env.npm_package_version
+            version: process.env.npm_package_version,
+            selectedModel: session.getModel()
         }, permissionHandler.getResponses());
 
         const handleSessionFound = (sessionId: string) => {
