@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
 export interface Settings {
@@ -62,8 +62,11 @@ export async function writeSettings(settingsFile: string, settings: Settings): P
     if (!existsSync(dir)) {
         await mkdir(dir, { recursive: true, mode: 0o700 })
     }
+    await chmod(dir, 0o700).catch(() => {})
 
     const tmpFile = settingsFile + '.tmp'
-    await writeFile(tmpFile, JSON.stringify(settings, null, 2))
+    await writeFile(tmpFile, JSON.stringify(settings, null, 2), { mode: 0o600 })
+    await chmod(tmpFile, 0o600).catch(() => {})
     await rename(tmpFile, settingsFile)
+    await chmod(settingsFile, 0o600).catch(() => {})
 }

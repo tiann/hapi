@@ -12,6 +12,7 @@ jobs:
   pr-review:
     if: |
       github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
       !endsWith(github.actor, '[bot]') &&
       !contains(github.event.pull_request.labels.*.name, 'bot-skip')
     runs-on: ubuntu-latest
@@ -89,7 +90,7 @@ jobs:
         if: steps.check_bot.outputs.has_review_for_current_head != 'true'
         uses: actions/checkout@v4
         with:
-          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0
 
       - name: Pre-fetch base and head refs
@@ -115,7 +116,7 @@ jobs:
           responses-api-endpoint: ${{ secrets.OPENAI_BASE_URL }}
           model: ${{ vars.OPENAI_MODEL || 'gpt-5.2-codex' }}
           effort: ${{ vars.OPENAI_EFFORT || 'high' }}
-          sandbox: danger-full-access
+          sandbox: workspace-write
           safety-strategy: drop-sudo
           prompt-file: .github/prompts/codex-pr-review.md
           allow-bots: true

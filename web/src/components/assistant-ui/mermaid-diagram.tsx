@@ -1,5 +1,6 @@
 import type { SyntaxHighlighterProps } from '@assistant-ui/react-markdown'
 import { useEffect, useId, useState, type ComponentPropsWithoutRef } from 'react'
+import DOMPurify from 'dompurify'
 import { cn } from '@/lib/utils'
 
 let initializedTheme: 'light' | 'dark' | null = null
@@ -16,6 +17,14 @@ function resolveTheme() {
     if (typeof document === 'undefined') return 'light' as const
     const theme = document.documentElement.dataset.theme
     return theme === 'dark' || theme === 'oled' ? 'dark' as const : 'light' as const
+}
+
+function sanitizeMermaidSvg(svg: string): string {
+    return DOMPurify.sanitize(svg, {
+        USE_PROFILES: { svg: true, svgFilters: true },
+        FORBID_TAGS: ['foreignObject', 'iframe', 'script', 'style'],
+        FORBID_ATTR: ['onbegin', 'onend', 'onclick', 'onerror', 'onfocus', 'onload', 'onmouseover'],
+    })
 }
 
 async function ensureMermaid(theme: 'light' | 'dark') {
@@ -115,7 +124,7 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
 
                 const result = await mermaid.render(`mermaid-${id}`, props.code)
                 if (cancelled) return
-                setSvg(result.svg)
+                setSvg(sanitizeMermaidSvg(result.svg))
                 setRenderError(false)
             } catch {
                 if (cancelled) return

@@ -1,6 +1,5 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { cors } from 'hono/cors'
-import { logger } from 'hono/logger'
 import { join } from 'node:path'
 import { existsSync } from 'node:fs'
 import { serveStatic } from 'hono/bun'
@@ -32,6 +31,61 @@ import type { WebSocketData } from '@socket.io/bun-engine'
 import { loadEmbeddedAssetMap, type EmbeddedWebAsset } from './embeddedAssets'
 import { isBunCompiled } from '../utils/bunCompiled'
 import type { Store } from '../store'
+
+const SENSITIVE_QUERY_KEYS = new Set(['token', 'accessToken', 'authorization'])
+
+function redactSensitiveUrl(input: string): string {
+    try {
+        const url = new URL(input, 'http://hapi.local')
+        for (const key of SENSITIVE_QUERY_KEYS) {
+            if (url.searchParams.has(key)) {
+                url.searchParams.set(key, '[REDACTED]')
+            }
+        }
+        return `${url.pathname}${url.search}${url.hash}`
+    } catch {
+        return input.replace(/([?&](?:token|accessToken|authorization)=)[^&\s]+/gi, '$1[REDACTED]')
+    }
+}
+
+type WebContext = Context<WebAppEnv>
+
+async function safeRequestLogger(c: WebContext, next: () => Promise<void>): Promise<void> {
+    const startedAt = Date.now()
+    const method = c.req.method
+    const path = redactSensitiveUrl(c.req.url)
+    console.log(`<-- ${method} ${path}`)
+    await next()
+    console.log(`--> ${method} ${path} ${c.res.status} ${Date.now() - startedAt}ms`)
+}
+
+function applySecurityHeaders(c: WebContext): void {
+    c.header('X-Content-Type-Options', 'nosniff')
+    c.header('X-Frame-Options', 'DENY')
+    c.header('Referrer-Policy', 'no-referrer')
+    c.header('Permissions-Policy', [
+        'camera=()',
+        'geolocation=()',
+        'payment=()',
+        'usb=()',
+        'fullscreen=(self)',
+        'microphone=(self)'
+    ].join(', '))
+    c.header('Content-Security-Policy', [
+        "default-src 'self'",
+        "base-uri 'self'",
+        "object-src 'none'",
+        "frame-ancestors 'none'",
+        "form-action 'self'",
+        "script-src 'self' 'wasm-unsafe-eval'",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data: blob: https:",
+        "font-src 'self' data:",
+        "connect-src 'self' https: wss: ws:",
+        "media-src 'self' data: blob:",
+        "worker-src 'self' blob:"
+    ].join('; '))
+}
 
 // Normalise upstream close codes before forwarding to the browser client.
 // Codes 1005/1006/1015 are reserved and cannot be sent in a close frame;
@@ -212,7 +266,15 @@ function createWebApp(options: {
 }): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
 
-    app.use('*', logger())
+    app.use('*', async (c, next) => {
+        applySecurityHeaders(c)
+        await safeRequestLogger(c, next)
+        const path = c.req.path
+        const isCacheableGeneratedImage = /^\/api\/sessions\/[^/]+\/generated-images\//.test(path)
+        if ((path.startsWith('/api/') || path.startsWith('/cli/')) && !isCacheableGeneratedImage && !c.res.headers.has('Cache-Control')) {
+            c.header('Cache-Control', 'no-store')
+        }
+    })
 
     // Health check endpoint (no auth required)
     app.get('/health', (c) => c.json({ status: 'ok', protocolVersion: PROTOCOL_VERSION }))

@@ -104,4 +104,21 @@ describe('MermaidDiagram', () => {
         }))
     })
 
+    it('sanitizes Mermaid SVG before injecting it into the DOM', async () => {
+        mermaidMocks.renderMock.mockResolvedValueOnce({
+            svg: '<svg data-testid="mock-mermaid" onload="alert(1)"><script>alert(1)</script><text>safe</text></svg>'
+        })
+
+        renderMermaid('graph TD\nA --> B')
+
+        await waitFor(() => {
+            const diagram = document.querySelector('[data-mermaid-diagram][data-rendered="true"]')
+            const svg = diagram?.querySelector('[data-testid="mock-mermaid"]')
+            expect(svg).toBeTruthy()
+            expect(svg?.getAttribute('onload')).toBeNull()
+            expect(diagram?.querySelector('script')).toBeNull()
+            expect(diagram?.textContent).toContain('safe')
+        })
+    })
+
 })

@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { Github, Menu, X } from "lucide-react";
+import { ExternalLink, Menu, X } from "lucide-react";
 import { useState } from "react";
 import { Link } from "wouter";
 import { ModeToggle } from "./ModeToggle";
@@ -30,7 +30,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               <LanguageToggle />
               <ModeToggle />
               <a href="https://github.com/tiann/hapi" target="_blank" rel="noreferrer" className="text-muted-foreground hover:text-foreground transition-colors">
-                <Github className="h-5 w-5" />
+                <ExternalLink className="h-5 w-5" />
               </a>
               <Button className="font-bold shadow-hard hover:translate-y-0.5 hover:shadow-none transition-all border-2 border-border" asChild>
                 <a href="/docs/">{t('nav.getStarted')}</a>
@@ -57,7 +57,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                   <a href="/docs/">{t('nav.getStarted')}</a>
                 </Button>
                 <a href="https://github.com/tiann/hapi" target="_blank" rel="noreferrer" className="flex items-center justify-center gap-2 text-sm font-medium p-2 hover:bg-muted rounded-md">
-                  <Github className="h-4 w-4" /> {t('nav.viewOnGithub')}
+                  <ExternalLink className="h-4 w-4" /> {t('nav.viewOnGithub')}
                 </a>
               </div>
             </nav>
