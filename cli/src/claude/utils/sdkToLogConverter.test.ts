@@ -571,8 +571,9 @@ describe('SDKToLogConverter', () => {
             // result.modelUsage both use the suffixed id "claude-opus-4-8[1m]", while each
             // assistant message reports the bare "claude-opus-4-8". Because init and result
             // agree, the cache stores 1M under the suffixed key and the assistant lookup —
-            // which goes through resolvedModel (= the suffixed init id), not the bare
-            // message.model — finds it. (A lookup keyed on the bare message.model would miss.)
+            // which goes through the resolved cache key (= the suffixed init id here), not
+            // the bare message.model — finds it. (A lookup keyed on the bare message.model
+            // would miss.)
             const seededConverter = new SDKToLogConverter({
                 ...context,
                 selectedModel: 'opus[1m]'
@@ -619,9 +620,10 @@ describe('SDKToLogConverter', () => {
             // the web status bar picks the most recent usage message without filtering
             // sidechains, the subagent's assistant message must carry the main 1M window,
             // or the footer denominator would visibly drop to 200k while the subagent runs.
-            // The subagent emits no system/init of its own, so resolvedModel stays on the
-            // main model — and since lookups always go through resolvedModel, the sidechain
-            // message inherits the main window automatically.
+            // The subagent emits no system/init of its own, so the resolved cache key stays
+            // on the main model — and since lookups always go through that key, the sidechain
+            // message inherits the main window automatically. (The subagent's own 200k is
+            // still cached under its own id, but it is never the resolved lookup key here.)
             const liveConverter = new SDKToLogConverter({
                 ...context,
                 selectedModel: 'opus[1m]'
@@ -664,13 +666,12 @@ describe('SDKToLogConverter', () => {
         })
 
         it('keeps plain vs [1m] variants of the same base model on distinct cache keys (multi-tier: no collision)', () => {
-            // On some tiers plain "sonnet" is 200k while "sonnet[1m]" is 1M. system/init.model
-            // and the result.modelUsage key always agree (both bare for plain, both suffixed
-            // for [1m]); only the per-turn assistant message.model is bare, hence lossy. Looking
-            // up by the session's resolved model (= last init = result key) keeps the two
-            // variants on DISTINCT keys so they never overwrite each other. (Normalizing the
-            // suffix away would collapse both to "claude-sonnet-5" and let plain sonnet's 200k
-            // clobber the 1M learned for sonnet[1m].)
+            // On some tiers plain "sonnet" is 200k while "sonnet[1m]" is 1M. For sonnet the
+            // CLI already reports the "[1m]" on system/init.model and the result key, so the
+            // two variants land on DISTINCT cache keys on their own (only the per-turn
+            // assistant message.model is bare/lossy, which is why lookups go through the
+            // resolved cache key, not message.model). fable is the case where the CLI does
+            // NOT suffix the id and the key has to be folded — covered by the next test.
             const conv = new SDKToLogConverter({ ...context, selectedModel: 'sonnet[1m]' } as any)
 
             // Turn 1 on sonnet[1m]: learns 1M under the suffixed key.
@@ -708,6 +709,48 @@ describe('SDKToLogConverter', () => {
             const t3 = conv.convert({
                 type: 'assistant',
                 message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'c' }], usage: { input_tokens: 10, output_tokens: 20 } }
+            } as any) as any
+            expect(t3?.message?.usage?.context_window).toBe(1_000_000)
+        })
+
+        it('distinguishes fable vs fable[1m] even though the CLI reports both with the bare id', () => {
+            // Unlike opus[1m]/sonnet[1m], the CLI reports BOTH "fable" and "fable[1m]" with
+            // the bare id "claude-fable-5" on system/init and in result.modelUsage. A cache
+            // keyed on that raw id alone can't tell the two apart, so switching fable[1m]
+            // (1M) -> fable (200k) would keep showing the stale 1M until fable's result
+            // lands. Folding the selectedModel's "[1m]" into the cache key keeps them
+            // distinct. selectedModel is the ONLY turn-1 signal that separates them here.
+            const conv = new SDKToLogConverter({ ...context, selectedModel: 'fable[1m]' } as any)
+
+            // fable[1m]: seeds 1M from selectedModel, result confirms 1M.
+            conv.convert({ type: 'system', subtype: 'init', session_id: 's', model: 'claude-fable-5' } as SDKSystemMessage)
+            conv.convert({
+                type: 'result', subtype: 'success', num_turns: 1, total_cost_usd: 0,
+                duration_ms: 1, duration_api_ms: 1, is_error: false, session_id: 's',
+                modelUsage: { 'claude-fable-5': { contextWindow: 1_000_000 } }
+            } as SDKResultMessage)
+            const t1 = conv.convert({
+                type: 'assistant',
+                message: { role: 'assistant', model: 'claude-fable-5', content: [{ type: 'text', text: 'a' }], usage: { input_tokens: 10, output_tokens: 20 } }
+            } as any) as any
+            expect(t1?.message?.usage?.context_window).toBe(1_000_000)
+
+            // Switch to plain fable (200k): must re-seed 200k, NOT keep the stale 1M.
+            conv.updateSelectedModel('fable')
+            conv.convert({ type: 'system', subtype: 'init', session_id: 's', model: 'claude-fable-5' } as SDKSystemMessage)
+            const t2 = conv.convert({
+                type: 'assistant',
+                message: { role: 'assistant', model: 'claude-fable-5', content: [{ type: 'text', text: 'b' }], usage: { input_tokens: 10, output_tokens: 20 } }
+            } as any) as any
+            expect(t2?.message?.usage?.context_window).toBe(200_000)
+
+            // Switch back to fable[1m]: its 1M entry was never overwritten by plain fable's
+            // 200k (distinct keys), so turn-1 before the next result still reads 1M.
+            conv.updateSelectedModel('fable[1m]')
+            conv.convert({ type: 'system', subtype: 'init', session_id: 's', model: 'claude-fable-5' } as SDKSystemMessage)
+            const t3 = conv.convert({
+                type: 'assistant',
+                message: { role: 'assistant', model: 'claude-fable-5', content: [{ type: 'text', text: 'c' }], usage: { input_tokens: 10, output_tokens: 20 } }
             } as any) as any
             expect(t3?.message?.usage?.context_window).toBe(1_000_000)
         })
