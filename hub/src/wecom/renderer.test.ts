@@ -20,6 +20,7 @@ function session(id: string, overrides: Partial<Session> = {}): Session {
         model: null,
         modelReasoningEffort: null,
         effort: null,
+        serviceTier: null,
         ...overrides
     }
 }
