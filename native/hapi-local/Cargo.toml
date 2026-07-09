@@ -1,0 +1,9 @@
+[package]
+name = "hapi-local"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+base64 = "0.22"
+portable-pty = "0.9"
+sha2 = "0.10"

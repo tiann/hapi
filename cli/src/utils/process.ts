@@ -1,5 +1,11 @@
-import type { ChildProcess } from 'node:child_process';
+import { execFile, type ChildProcess } from 'node:child_process';
+import { promisify } from 'node:util';
 import spawn from 'cross-spawn';
+import { nativeHelperPath } from '@/native/localHelper';
+import { logger } from '@/ui/logger';
+
+const execFileAsync = promisify(execFile);
+let loggedMissingNativeKill = false;
 
 export const isWindows = (): boolean => process.platform === 'win32';
 
@@ -73,6 +79,14 @@ function killProcessWindows(pid: number, force: boolean): boolean {
   }
 }
 
+function nativeErrorOutput(error: unknown): string {
+  const err = error as { stdout?: unknown; stderr?: unknown; message?: unknown };
+  return [err.stderr, err.stdout, err.message]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .join('\n')
+    .trim();
+}
+
 export async function killProcess(pid: number, force: boolean = false): Promise<boolean> {
   if (!Number.isFinite(pid) || pid <= 0) {
     return false;
@@ -120,6 +134,29 @@ function collectProcessTree(pid: number): number[] {
  * then waits asynchronously for processes to die.
  */
 async function killProcessTree(pid: number, force: boolean): Promise<boolean> {
+  const helper = nativeHelperPath();
+  if (helper) {
+    try {
+      await execFileAsync(helper, [
+        'process',
+        'kill-tree',
+        '--pid',
+        String(pid),
+        ...(force ? ['--force'] : [])
+      ], { encoding: 'utf8' });
+      return true;
+    } catch (error) {
+      logger.debug('[native] hapi-local kill-tree failed; using TypeScript fallback', nativeErrorOutput(error));
+    }
+  } else if (!loggedMissingNativeKill) {
+    loggedMissingNativeKill = true;
+    logger.debug('[native] hapi-local not found; using TypeScript kill-tree fallback');
+  }
+
+  if (isWindows()) {
+    return killProcess(pid, force);
+  }
+
   // Collect all PIDs first (sync) - returns in child-first order
   const pids = collectProcessTree(pid);
 
@@ -178,11 +215,6 @@ export async function killProcessByChildProcess(
     return false;
   }
 
-  if (isWindows()) {
-    // Windows taskkill /T already kills the entire process tree
-    return killProcess(pid, force);
-  }
-
-  // Kill entire process tree on Unix to prevent orphan processes
+  // Kill entire process tree to prevent orphan processes
   return killProcessTree(pid, force);
 }

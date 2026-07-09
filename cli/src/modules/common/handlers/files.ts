@@ -5,6 +5,7 @@ import { resolve } from 'path'
 import type { FileReadResponse, GeneratedImageResponse } from '@hapi/protocol/apiTypes'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import type { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager'
+import { nativeReadFile, nativeWriteFile } from '@/native/filesystem'
 import { validatePath } from '../pathSecurity'
 import { getGeneratedImage } from '../generatedImages'
 import { getErrorMessage, rpcError } from '../rpcResponses'
@@ -43,6 +44,13 @@ export function registerFileHandlers(rpcHandlerManager: RpcHandlerManager, worki
         }
 
         try {
+            const nativeResponse = await nativeReadFile({ root: workingDirectory, path: data.path })
+            if (nativeResponse) {
+                return nativeResponse.success
+                    ? { success: true, content: nativeResponse.content ?? '' }
+                    : rpcError(nativeResponse.error ?? 'Failed to read file')
+            }
+
             const resolvedPath = resolve(workingDirectory, data.path)
             const buffer = await readFile(resolvedPath)
             const content = buffer.toString('base64')
@@ -83,9 +91,22 @@ export function registerFileHandlers(rpcHandlerManager: RpcHandlerManager, worki
         }
 
         try {
+            const nativeResponse = await nativeWriteFile({
+                root: workingDirectory,
+                path: data.path,
+                content: data.content,
+                expectedHash: data.expectedHash
+            })
+            if (nativeResponse) {
+                return nativeResponse.success
+                    ? { success: true, hash: nativeResponse.hash }
+                    : rpcError(nativeResponse.error ?? 'Failed to write file')
+            }
+
+            const resolvedPath = resolve(workingDirectory, data.path)
             if (data.expectedHash !== null && data.expectedHash !== undefined) {
                 try {
-                    const existingBuffer = await readFile(data.path)
+                    const existingBuffer = await readFile(resolvedPath)
                     const existingHash = createHash('sha256').update(existingBuffer).digest('hex')
 
                     if (existingHash !== data.expectedHash) {
@@ -100,7 +121,7 @@ export function registerFileHandlers(rpcHandlerManager: RpcHandlerManager, worki
                 }
             } else {
                 try {
-                    await stat(data.path)
+                    await stat(resolvedPath)
                     return rpcError('File already exists but was expected to be new')
                 } catch (error) {
                     const nodeError = error as NodeJS.ErrnoException
@@ -111,7 +132,7 @@ export function registerFileHandlers(rpcHandlerManager: RpcHandlerManager, worki
             }
 
             const buffer = Buffer.from(data.content, 'base64')
-            await writeFile(data.path, buffer)
+            await writeFile(resolvedPath, buffer)
 
             const hash = createHash('sha256').update(buffer).digest('hex')
 

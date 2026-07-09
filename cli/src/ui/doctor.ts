@@ -6,6 +6,7 @@
  */
 
 import chalk from 'chalk'
+import { execFileSync } from 'node:child_process'
 import { configuration } from '@/configuration'
 import { readSettings } from '@/persistence'
 import { checkIfRunnerRunningAndCleanupStaleState } from '@/runner/controlClient'
@@ -16,6 +17,7 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { isBunCompiled, projectPath, runtimePath } from '@/projectPath'
 import { getInvokedCwd } from '@/utils/invokedCwd'
+import { nativeHelperStatus } from '@/native/localHelper'
 import packageJson from '../../package.json'
 
 /**
@@ -66,6 +68,41 @@ function getLogFiles(logDir: string): { file: string, path: string, modified: Da
     }
 }
 
+function getNativeHelperVersion(path: string): string {
+    try {
+        return execFileSync(path, ['--version'], {
+            encoding: 'utf8',
+            timeout: 2000
+        }).trim()
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        return `version check failed: ${message}`
+    }
+}
+
+function printNativeHelperDiagnostics(): void {
+    const helper = nativeHelperStatus()
+    if (helper.status === 'disabled') {
+        console.log(`Native Helper: ${chalk.yellow('disabled')} (HAPI_NATIVE_HELPER=0)`)
+        return
+    }
+
+    if (helper.path) {
+        console.log(`Native Helper: ${chalk.green(helper.path)}`)
+        console.log(`Native Helper Version: ${chalk.green(getNativeHelperVersion(helper.path))}`)
+        return
+    }
+
+    console.log(`Native Helper: ${chalk.yellow('not found; using TypeScript fallback')}`)
+    if (helper.override) {
+        console.log(`Native Helper Override: ${chalk.yellow(helper.override)}`)
+    }
+    if (helper.candidates.length > 0) {
+        console.log(chalk.gray('Native Helper Candidates:'))
+        helper.candidates.forEach(candidate => console.log(chalk.gray(`  - ${candidate}`)))
+    }
+}
+
 /**
  * Run doctor command specifically for runner diagnostics
  */
@@ -103,6 +140,7 @@ export async function runDoctorCommand(filter?: 'all' | 'runner'): Promise<void>
             console.log(`CLI Entrypoint: ${chalk.blue(cliEntrypoint)}`);
             console.log(`CLI Exists: ${existsSync(cliEntrypoint) ? chalk.green('✓ Yes') : chalk.red('❌ No')}`);
         }
+        printNativeHelperDiagnostics();
         console.log('');
 
         // Configuration
@@ -148,6 +186,11 @@ export async function runDoctorCommand(filter?: 'all' | 'runner'): Promise<void>
             console.log(chalk.gray('  Run `hapi auth login` to configure or set CLI_API_TOKEN env var'));
         }
 
+    }
+
+    if (filter === 'runner') {
+        console.log(chalk.bold('🔧 Runner Spawn Diagnostics'));
+        printNativeHelperDiagnostics();
     }
 
     // Runner status - shown for both 'all' and 'runner' filters

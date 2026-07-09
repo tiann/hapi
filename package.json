@@ -26,7 +26,9 @@
         "test:e2e": "playwright test",
         "test:e2e:ui": "playwright test --ui",
         "clean-session": "bun run hub/scripts/cleanup-sessions.ts",
-        "release-all": "cd cli && bun run release-all"
+        "release-all": "cd cli && bun run release-all",
+        "native:build": "cargo build --manifest-path native/hapi-local/Cargo.toml --release",
+        "native:test": "cargo test --manifest-path native/hapi-local/Cargo.toml"
     },
     "devDependencies": {
         "@playwright/test": "^1.61.1",

@@ -7,11 +7,22 @@ import type {
     TerminalReadyPayload
 } from '@hapi/protocol'
 import type { TerminalSession } from './types'
+import { spawnNativeTerminal } from '@/native/terminal'
 
 type TerminalRuntime = TerminalSession & {
-    proc: Bun.Subprocess
-    terminal: Bun.Terminal
+    proc: {
+        killed: boolean
+        exitCode: number | null
+        signalCode?: NodeJS.Signals | null
+        kill: () => unknown
+    }
+    terminal: {
+        write: (data: string) => void
+        resize: (cols: number, rows: number) => void
+        close: () => void
+    }
     idleTimer: ReturnType<typeof setTimeout> | null
+    killProcessOnCleanup: boolean
 }
 
 type TerminalManagerOptions = {
@@ -166,15 +177,56 @@ export class TerminalManager {
             return
         }
 
+        const sessionPath = this.getSessionPath() ?? getInvokedCwd()
+        const shellCommand = resolveShellCommand()
+        const decoder = new TextDecoder()
+
+        const nativeTerminal = spawnNativeTerminal({
+            command: shellCommand[0],
+            args: shellCommand.slice(1),
+            cwd: sessionPath,
+            cols,
+            rows,
+            env: this.filteredEnv,
+            onReady: () => this.onReady({ sessionId: this.sessionId, terminalId }),
+            onOutput: (data) => {
+                this.onOutput({ sessionId: this.sessionId, terminalId, data })
+                const active = this.terminals.get(terminalId)
+                if (active) {
+                    this.markActivity(active)
+                }
+            },
+            onError: (message) => this.emitError(terminalId, message)
+        })
+        if (nativeTerminal) {
+            const runtime: TerminalRuntime = {
+                terminalId,
+                cols,
+                rows,
+                proc: nativeTerminal.process,
+                terminal: nativeTerminal.terminal,
+                idleTimer: null,
+                killProcessOnCleanup: false
+            }
+            this.terminals.set(terminalId, runtime)
+            this.markActivity(runtime)
+            nativeTerminal.process.on('exit', (code, signal) => {
+                this.onExit({
+                    sessionId: this.sessionId,
+                    terminalId,
+                    code: code ?? null,
+                    signal
+                })
+                this.cleanup(terminalId)
+            })
+            return
+        }
+
         const bun = getOptionalBun()
         if (!bun || typeof bun.spawn !== 'function') {
             this.emitError(terminalId, 'Terminal is unavailable in this runtime.')
             return
         }
-
-        const sessionPath = this.getSessionPath() ?? getInvokedCwd()
-        const shellCommand = resolveShellCommand()
-        const decoder = new TextDecoder()
 
         try {
             const proc = bun.spawn(shellCommand, {
@@ -228,7 +280,8 @@ export class TerminalManager {
                 rows,
                 proc,
                 terminal,
-                idleTimer: null
+                idleTimer: null,
+                killProcessOnCleanup: true
             }
 
             this.terminals.set(terminalId, runtime)
@@ -306,7 +359,7 @@ export class TerminalManager {
             clearTimeout(runtime.idleTimer)
         }
 
-        if (!runtime.proc.killed && runtime.proc.exitCode === null) {
+        if (runtime.killProcessOnCleanup && !runtime.proc.killed && runtime.proc.exitCode === null) {
             try {
                 runtime.proc.kill()
             } catch (error) {

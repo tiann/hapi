@@ -10,9 +10,11 @@ import {
     stopRunnerSession
 } from '@/runner/controlClient'
 import { getLatestRunnerLog } from '@/ui/logger'
-import { spawnHappyCLI } from '@/utils/spawnHappyCLI'
+import { getHappyCliCommand, spawnHappyCLI } from '@/utils/spawnHappyCLI'
 import { runDoctorCommand } from '@/ui/doctor'
 import { initializeToken } from '@/ui/tokenInit'
+import { getRunnerServiceStatus, installRunnerService, uninstallRunnerService } from '@/runner/service'
+import { nativeSpawnDetached } from '@/native/process'
 import type { CommandDefinition } from './types'
 
 /**
@@ -138,12 +140,20 @@ export const runnerCommand: CommandDefinition = {
                     childArgs.push('--workspace-root', workspaceRoot)
                 }
             }
-            const child = spawnHappyCLI(childArgs, {
-                detached: true,
-                stdio: 'ignore',
+            const command = getHappyCliCommand(childArgs)
+            const nativePid = await nativeSpawnDetached({
+                command: command.command,
+                args: command.args,
                 env: process.env
             })
-            child.unref()
+            if (!nativePid) {
+                const child = spawnHappyCLI(childArgs, {
+                    detached: true,
+                    stdio: 'ignore',
+                    env: process.env
+                })
+                child.unref()
+            }
 
             let started = false
             for (let i = 0; i < 50; i++) {
@@ -161,6 +171,50 @@ export const runnerCommand: CommandDefinition = {
                 process.exit(1)
             }
             process.exit(0)
+        }
+
+        if (runnerSubcommand === 'service') {
+            const serviceSubcommand = mutableArgs[1]
+
+            if (serviceSubcommand === 'install') {
+                if (await checkIfRunnerRunningAndCleanupStaleState()) {
+                    console.log('Existing runner detected, stopping it before installing the auto-start service...')
+                    await stopRunner()
+
+                    if (!(await waitForRunnerToStop())) {
+                        console.error('Failed to stop existing runner')
+                        process.exit(1)
+                    }
+                }
+
+                const result = await installRunnerService({ workspaceRoots })
+                console.log('Runner auto-start service installed')
+                console.log(`  Service file: ${result.servicePath}`)
+                if (result.persistedApiUrl) {
+                    console.log('  Saved current HAPI_API_URL to settings for reboot startup')
+                }
+                if (result.persistedToken) {
+                    console.log('  Saved current CLI_API_TOKEN to settings for reboot startup')
+                }
+                console.log('  Runner will start automatically after reboot/login')
+                process.exit(0)
+            }
+
+            if (serviceSubcommand === 'uninstall') {
+                const result = await uninstallRunnerService()
+                console.log('Runner auto-start service removed')
+                console.log(`  Removed: ${result.servicePath}`)
+                process.exit(0)
+            }
+
+            if (serviceSubcommand === 'status') {
+                console.log(await getRunnerServiceStatus())
+                process.exit(0)
+            }
+
+            console.error(`Unknown runner service subcommand: ${serviceSubcommand ?? '(missing)'}`)
+            console.error('Usage: hapi runner service install|uninstall|status')
+            process.exit(1)
         }
 
         if (runnerSubcommand === 'start-sync') {
@@ -197,6 +251,9 @@ ${chalk.bold('Usage:')}
   hapi runner stop               Stop the runner (sessions stay alive)
   hapi runner status             Show runner status
   hapi runner list               List active sessions
+  hapi runner service install    Start runner automatically after reboot/login
+  hapi runner service uninstall  Remove runner auto-start service
+  hapi runner service status     Show OS auto-start service status
 
 ${chalk.bold('Options:')}
   --workspace-root <path>        Restrict the runner to this directory.

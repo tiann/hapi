@@ -18,6 +18,8 @@ oclif.manifest.json
 /npm/*/package.json
 /npm/*/bin/hapi
 /npm/*/bin/hapi.exe
+/npm/*/bin/hapi-local
+/npm/*/bin/hapi-local.exe
 /npm/*/bin/hapi.cjs
 /npm/*/NOTICE
 

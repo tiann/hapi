@@ -93,7 +93,7 @@ class Hapi < Formula
   end
 
   def install
-    bin.install "hapi"
+    bin.install "hapi", "hapi-local"
   end
 
   test do

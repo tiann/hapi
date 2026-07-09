@@ -4,6 +4,7 @@ import { basename, join, resolve } from 'path'
 import type { DirectoryEntry, ListDirectoryResponse } from '@hapi/protocol/apiTypes'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import type { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager'
+import { nativeDirectoryTree, nativeListDirectory } from '@/native/filesystem'
 import { validatePath } from '../pathSecurity'
 import { getErrorMessage, rpcError } from '../rpcResponses'
 
@@ -43,6 +44,13 @@ export function registerDirectoryHandlers(rpcHandlerManager: RpcHandlerManager, 
         }
 
         try {
+            const nativeResponse = await nativeListDirectory({ root: workingDirectory, path: targetPath })
+            if (nativeResponse) {
+                return nativeResponse.success
+                    ? { success: true, entries: nativeResponse.entries ?? [] }
+                    : rpcError(nativeResponse.error ?? 'Failed to list directory')
+            }
+
             const resolvedPath = resolve(workingDirectory, targetPath)
             const entries = await readdir(resolvedPath, { withFileTypes: true })
 
@@ -155,6 +163,17 @@ export function registerDirectoryHandlers(rpcHandlerManager: RpcHandlerManager, 
         try {
             if (data.maxDepth < 0) {
                 return rpcError('maxDepth must be non-negative')
+            }
+
+            const nativeResponse = await nativeDirectoryTree({
+                root: workingDirectory,
+                path: targetPath,
+                maxDepth: data.maxDepth
+            })
+            if (nativeResponse) {
+                return nativeResponse.success
+                    ? { success: true, tree: nativeResponse.tree }
+                    : rpcError(nativeResponse.error ?? 'Failed to get directory tree')
             }
 
             const baseName = resolvedRoot === '/' ? '/' : basename(resolvedRoot) || resolvedRoot

@@ -7,6 +7,7 @@ import {
 
 const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')
 const originalTerminalShell = process.env.HAPI_TERMINAL_SHELL
+const originalNativeHelper = process.env.HAPI_NATIVE_HELPER
 const originalComSpec = process.env.ComSpec
 const globalWithBun = globalThis as unknown as {
     Bun?: {
@@ -34,6 +35,7 @@ describe('TerminalManager Windows support', () => {
         vi.clearAllMocks()
         process.env.ComSpec = 'C:\\Windows\\System32\\cmd.exe'
         process.env.HAPI_TERMINAL_SHELL = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe'
+        process.env.HAPI_NATIVE_HELPER = '0'
         setPlatform('win32')
     })
 
@@ -55,6 +57,11 @@ describe('TerminalManager Windows support', () => {
             delete process.env.ComSpec
         } else {
             process.env.ComSpec = originalComSpec
+        }
+        if (originalNativeHelper === undefined) {
+            delete process.env.HAPI_NATIVE_HELPER
+        } else {
+            process.env.HAPI_NATIVE_HELPER = originalNativeHelper
         }
     })
 

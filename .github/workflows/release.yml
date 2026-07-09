@@ -9,7 +9,7 @@ permissions:
     contents: write
 
 jobs:
-    release:
+    web-assets:
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v4
@@ -17,36 +17,116 @@ jobs:
               with:
                   bun-version: 1.3.14
             - run: bun install
-            - run: bun run build:single-exe:all
+            - name: Build embedded web assets once
+              run: |
+                  bun run download:tunwg
+                  bun run build:web
+                  (cd hub && bun run generate:embedded-web-assets)
+            - name: Upload embedded web assets
+              uses: actions/upload-artifact@v4
+              with:
+                  name: embedded-web-assets
+                  path: |
+                      web/dist
+                      hub/src/web/embeddedAssets.generated.ts
+                      shared/tools/tunwg
+                  if-no-files-found: error
+
+    build:
+        needs: web-assets
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - target: bun-darwin-arm64
+                      artifact: hapi-darwin-arm64
+                      runner: macos-14
+                    - target: bun-darwin-x64
+                      artifact: hapi-darwin-x64
+                      runner: macos-15-intel
+                    - target: bun-linux-arm64
+                      artifact: hapi-linux-arm64
+                      runner: ubuntu-24.04-arm
+                    - target: bun-linux-x64-baseline
+                      artifact: hapi-linux-x64-baseline
+                      runner: ubuntu-latest
+                    - target: bun-windows-x64
+                      artifact: hapi-win32-x64
+                      runner: windows-latest
+        runs-on: ${{ matrix.runner }}
+        steps:
+            - uses: actions/checkout@v4
+            - uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: 1.3.14
+            - uses: dtolnay/rust-toolchain@stable
+            - run: bun install
+            - uses: actions/download-artifact@v4
+              with:
+                  name: embedded-web-assets
+                  path: .
+            - name: Build single-exe target with native helper
+              shell: bash
+              run: |
+                  cd cli
+                  bun run scripts/build-executable.ts --with-web-assets --target '${{ matrix.target }}'
+            - name: Upload built target
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ${{ matrix.artifact }}
+                  path: |
+                      cli/dist-exe/${{ matrix.target }}/hapi
+                      cli/dist-exe/${{ matrix.target }}/hapi.exe
+                      cli/dist-exe/${{ matrix.target }}/hapi-local
+                      cli/dist-exe/${{ matrix.target }}/hapi-local.exe
+                  if-no-files-found: error
+
+    release:
+        needs: build
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: 1.3.14
+            - uses: actions/download-artifact@v4
+              with:
+                  path: cli/release-input
             - name: Package release artifacts
               run: |
-                  cd cli/dist-exe
-                  mkdir -p ../release-artifacts
+                  mkdir -p cli/release-artifacts
 
-                  for dir in bun-*/; do
-                      target="${dir%/}"
-                      # bun-darwin-arm64 -> hapi-darwin-arm64
-                      name="hapi-${target#bun-}"
-                      name="${name/windows/win32}"
-
-                      if [[ "$target" == *"windows"* ]]; then
-                          zip -j "../release-artifacts/${name}.zip" "$target"/hapi.exe
+                  for dir in cli/release-input/hapi-*/; do
+                      name="$(basename "$dir")"
+                      hapi_bin="$(find "$dir" -type f \( -name hapi -o -name hapi.exe \) | head -n 1)"
+                      helper_bin="$(find "$dir" -type f \( -name hapi-local -o -name hapi-local.exe \) | head -n 1)"
+                      test -n "$hapi_bin"
+                      test -n "$helper_bin"
+                      if [[ "$name" == *"win32"* ]]; then
+                          zip -j "cli/release-artifacts/${name}.zip" "$hapi_bin" "$helper_bin"
                       else
-                          tar -czvf "../release-artifacts/${name}.tar.gz" -C "$target" hapi
+                          tar -czvf "cli/release-artifacts/${name}.tar.gz" -C "$(dirname "$hapi_bin")" "$(basename "$hapi_bin")" "$(basename "$helper_bin")"
                       fi
                   done
 
-                  cd ../release-artifacts
+                  cd cli/release-artifacts
                   sha256sum * > checksums.txt
             - name: Create Release
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               run: |
-                  gh release create "${GITHUB_REF#refs/tags/}" \
+                  tag="${GITHUB_REF#refs/tags/}"
+                  prerelease=()
+                  if [[ "$tag" == *"-"* ]]; then
+                      prerelease=(--prerelease)
+                  fi
+                  gh release create "$tag" \
                       --title "Release ${GITHUB_REF#refs/tags/}" \
                       --generate-notes \
+                      "${prerelease[@]}" \
                       cli/release-artifacts/*
             - name: Update Homebrew formula
+              if: ${{ !contains(github.ref_name, '-') }}
               continue-on-error: true
               env:
                   GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

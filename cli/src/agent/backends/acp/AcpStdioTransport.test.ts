@@ -17,6 +17,7 @@ vi.mock('./agentCliGuard', () => ({
 }));
 
 vi.mock('node:child_process', () => ({
+    execFile: vi.fn(),
     spawn: vi.fn(() => {
         spawnState.exitHandlers = [];
         const handlers = new Map<string, Array<(...args: unknown[]) => void>>();

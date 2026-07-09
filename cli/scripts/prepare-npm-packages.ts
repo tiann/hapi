@@ -26,35 +26,40 @@ const PLATFORMS = [
         os: 'darwin',
         cpu: 'arm64',
         buildTarget: 'bun-darwin-arm64',
-        binName: 'hapi'
+        binName: 'hapi',
+        helperName: 'hapi-local'
     },
     {
         name: 'darwin-x64',
         os: 'darwin',
         cpu: 'x64',
         buildTarget: 'bun-darwin-x64',
-        binName: 'hapi'
+        binName: 'hapi',
+        helperName: 'hapi-local'
     },
     {
         name: 'linux-arm64',
         os: 'linux',
         cpu: 'arm64',
         buildTarget: 'bun-linux-arm64',
-        binName: 'hapi'
+        binName: 'hapi',
+        helperName: 'hapi-local'
     },
     {
         name: 'linux-x64',
         os: 'linux',
         cpu: 'x64',
         buildTarget: 'bun-linux-x64-baseline',
-        binName: 'hapi'
+        binName: 'hapi',
+        helperName: 'hapi-local'
     },
     {
         name: 'win32-x64',
         os: 'win32',
         cpu: 'x64',
         buildTarget: 'bun-windows-x64',
-        binName: 'hapi.exe'
+        binName: 'hapi.exe',
+        helperName: 'hapi-local.exe'
     }
 ] as const;
 
@@ -94,7 +99,7 @@ function generatePlatformPackageJson(
         bin: {
             hapi: `bin/${platform.binName}`
         },
-        files: [`bin/${platform.binName}`],
+        files: [`bin/${platform.binName}`, `bin/${platform.helperName}`],
         license: mainPkg.license ?? 'MIT',
         repository: mainPkg.repository
     };
@@ -186,6 +191,15 @@ async function preparePlatform(
 
     copyFileSync(srcBin, destBin);
     console.log(`Copied: ${srcBin} -> ${destBin}`);
+
+    const srcHelper = join(distExeDir, platform.buildTarget, platform.helperName);
+    const destHelper = join(binDir, platform.helperName);
+    if (!existsSync(srcHelper)) {
+        throw new Error(`Native helper not found: ${srcHelper}`);
+    }
+    copyFileSync(srcHelper, destHelper);
+    chmodSync(destHelper, 0o755);
+    console.log(`Copied: ${srcHelper} -> ${destHelper}`);
 }
 
 function updateMainPackageOptionalDeps(version: string): void {

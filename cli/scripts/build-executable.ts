@@ -1,5 +1,5 @@
 import { dirname, isAbsolute, join } from 'node:path';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const DEFAULT_TARGETS = [
@@ -137,6 +137,67 @@ function getPlatformDir(platform: string, arch: string): string {
     throw new Error(`Unsupported platform: ${platform}`);
 }
 
+
+function getNativeHelperBinaryName(platform: string): string {
+    return platform === 'win32' ? 'hapi-local.exe' : 'hapi-local';
+}
+
+function hostMatchesTarget(platform: string, arch: string): boolean {
+    return platform === process.platform && arch === process.arch;
+}
+
+async function runCommand(cmd: string[], cwd: string): Promise<void> {
+    console.log(`[build:exe] ${cmd.join(' ')}`);
+    const proc = Bun.spawn({
+        cmd,
+        env: process.env,
+        stdout: 'inherit',
+        stderr: 'inherit',
+        cwd
+    });
+    const exitCode = await proc.exited;
+    if (exitCode !== 0) {
+        throw new Error(`Command failed: ${cmd.join(' ')} (exit ${exitCode})`);
+    }
+}
+
+async function buildNativeHelper(workspaceRoot: string, platform: string, arch: string): Promise<string> {
+    const helperName = getNativeHelperBinaryName(platform);
+    if (!hostMatchesTarget(platform, arch)) {
+        const prebuiltRoot = process.env.HAPI_NATIVE_HELPER_PREBUILT_DIR?.trim();
+        if (prebuiltRoot) {
+            const prebuilt = join(prebuiltRoot, getPlatformDir(platform, arch), helperName);
+            if (existsSync(prebuilt)) {
+                return prebuilt;
+            }
+        }
+        throw new Error(
+            `Cannot build native helper for ${platform}-${arch} on ${process.platform}-${process.arch}. ` +
+            'Build this target on a matching runner or set HAPI_NATIVE_HELPER_PREBUILT_DIR.'
+        );
+    }
+
+    const manifestPath = join(workspaceRoot, 'native', 'hapi-local', 'Cargo.toml');
+    await runCommand(['cargo', 'build', '--manifest-path', manifestPath, '--release'], workspaceRoot);
+    return join(workspaceRoot, 'native', 'hapi-local', 'target', 'release', helperName);
+}
+
+async function copyNativeHelper(workspaceRoot: string, target: string, outdir: string): Promise<void> {
+    const { platform, arch } = parseTarget(target);
+    const helperName = getNativeHelperBinaryName(platform);
+    const src = await buildNativeHelper(workspaceRoot, platform, arch);
+    if (!existsSync(src)) {
+        throw new Error(`Native helper not found after build: ${src}`);
+    }
+    const dest = join(outdir, target, helperName);
+    mkdirSync(dirname(dest), { recursive: true });
+    copyFileSync(src, dest);
+    if (platform !== 'win32') {
+        chmodSync(dest, 0o755);
+    }
+    console.log(`[build:exe] Copied native helper: ${src} -> ${dest}`);
+}
+
 function assertArchivesExist(projectRoot: string, platform: string, arch: string): void {
     const platformDir = getPlatformDir(platform, arch);
     const archives = [
@@ -223,20 +284,7 @@ async function buildTarget(projectRoot: string, target: string, outdir: string, 
         join(projectRoot, 'src', 'bootstrap.ts')
     ];
 
-    console.log(`[build:exe] ${cmd.join(' ')}`);
-
-    const proc = Bun.spawn({
-        cmd,
-        env: process.env,
-        stdout: 'inherit',
-        stderr: 'inherit',
-        cwd: projectRoot
-    });
-
-    const exitCode = await proc.exited;
-    if (exitCode !== 0) {
-        throw new Error(`Build failed for target ${target} (exit ${exitCode})`);
-    }
+    await runCommand(cmd, projectRoot);
 }
 
 async function main(): Promise<void> {
@@ -267,6 +315,7 @@ async function main(): Promise<void> {
     ensureEmbeddedAssetsManifest(workspaceRoot, includeWebAssets);
 
     for (const targetName of targets) {
+        await copyNativeHelper(workspaceRoot, targetName, outdir);
         await buildTarget(projectRoot, targetName, outdir, name);
     }
 }

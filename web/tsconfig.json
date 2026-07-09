@@ -5,6 +5,7 @@
         "lib": ["ES2020", "ESNext", "ESNext.Disposable", "DOM", "DOM.Iterable"],
         "jsx": "react-jsx",
         "noEmit": true,
+        "ignoreDeprecations": "6.0",
         "types": ["vite/client"],
         "baseUrl": ".",
         "paths": {

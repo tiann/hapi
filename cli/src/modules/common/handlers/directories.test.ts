@@ -63,4 +63,22 @@ describe('directory RPC handlers', () => {
         expect(link?.type).toBe('other')
         expect(link?.size).toBeUndefined()
     })
+
+    it('builds a bounded directory tree', async () => {
+        const response = await rpc.handleRequest({
+            method: 'session-test:getDirectoryTree',
+            params: JSON.stringify({ path: '', maxDepth: 1 })
+        })
+
+        const parsed = JSON.parse(response) as {
+            success: boolean
+            tree?: { name: string; type: string; children?: Array<{ name: string; type: string; children?: unknown[] }> }
+        }
+        expect(parsed.success).toBe(true)
+        expect(parsed.tree?.type).toBe('directory')
+        const names = (parsed.tree?.children ?? []).map((entry) => entry.name)
+        expect(names).toContain('src')
+        expect(names).toContain('README.md')
+        expect((parsed.tree?.children ?? []).find((entry) => entry.name === 'src')?.children).toBeUndefined()
+    })
 })

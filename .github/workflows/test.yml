@@ -12,8 +12,10 @@ jobs:
             - uses: oven-sh/setup-bun@v2
               with:
                   bun-version: 1.3.14
+            - uses: dtolnay/rust-toolchain@stable
             - run: bun install
             - run: bun typecheck
+            - run: bun run native:test
             - name: Create integration test env
               run: |
                   {
@@ -24,3 +26,12 @@ jobs:
                       echo "HAPI_DAEMON_HEARTBEAT_INTERVAL=30000"
                   } > cli/.env.integration-test
             - run: bun run test
+            - name: Build host single-exe native helper smoke
+              run: |
+                  set -euo pipefail
+                  tmp="$(mktemp -d)"
+                  bun run download:tunwg
+                  cd cli
+                  bun run scripts/build-executable.ts --outdir "$tmp" --name hapi-smoke
+                  test -x "$tmp/bun-linux-x64-baseline/hapi-local"
+                  "$tmp/bun-linux-x64-baseline/hapi-smoke" --version
