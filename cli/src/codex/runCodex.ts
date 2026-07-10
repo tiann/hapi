@@ -22,7 +22,16 @@ import { resolveCodexSlashCommand } from './utils/slashCommands';
 
 export { emitReadyIfIdle } from './utils/emitReadyIfIdle';
 
-const REASONING_EFFORTS = new Set<ReasoningEffort>(['none', 'minimal', 'low', 'medium', 'high', 'xhigh'])
+const REASONING_EFFORTS = new Set<ReasoningEffort>([
+    'none',
+    'minimal',
+    'low',
+    'medium',
+    'high',
+    'xhigh',
+    'max',
+    'ultra'
+])
 
 export async function runCodex(opts: {
     startedBy?: 'runner' | 'terminal';

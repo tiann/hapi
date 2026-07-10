@@ -12,6 +12,7 @@ import { useActiveSuggestions, type Suggestion } from '@/hooks/useActiveSuggesti
 import { useDirectorySuggestions } from '@/hooks/useDirectorySuggestions'
 import { useRecentPaths } from '@/hooks/useRecentPaths'
 import { useTranslation } from '@/lib/use-translation'
+import { getCodexModelReasoningEfforts } from '@/lib/codexModelCapabilities'
 import {
     buildNewSessionCursorPickerState,
     isCursorEffortWireAllowed,
@@ -199,6 +200,26 @@ export function NewSession(props: {
         }
         return options
     }, [codexModelsState.models, model])
+    const codexSupportedReasoningEfforts = useMemo(
+        () => getCodexModelReasoningEfforts(codexModelsState.models, model),
+        [codexModelsState.models, model]
+    )
+    const codexReasoningEffortOptions = useMemo(
+        () => codexSupportedReasoningEfforts?.map((value) => ({ value })),
+        [codexSupportedReasoningEfforts]
+    )
+
+    useEffect(() => {
+        if (
+            agent !== 'codex'
+            || modelReasoningEffort === 'default'
+            || !codexSupportedReasoningEfforts
+            || codexSupportedReasoningEfforts.includes(modelReasoningEffort)
+        ) {
+            return
+        }
+        setModelReasoningEffort('default')
+    }, [agent, codexSupportedReasoningEfforts, modelReasoningEffort])
     const cursorModelsState = useCursorModelsForMachine({
         api: props.api,
         machineId,
@@ -719,7 +740,8 @@ export function NewSession(props: {
             <ReasoningEffortSelector
                 agent={agent}
                 value={modelReasoningEffort}
-                isDisabled={isFormDisabled}
+                availableOptions={agent === 'codex' ? codexReasoningEffortOptions : undefined}
+                isDisabled={isFormDisabled || (agent === 'codex' && codexModelsState.isLoading)}
                 onChange={setModelReasoningEffort}
             />
             <YoloToggle

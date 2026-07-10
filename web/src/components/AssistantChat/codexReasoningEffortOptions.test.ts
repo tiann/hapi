@@ -23,6 +23,37 @@ describe('getCodexComposerReasoningEffortOptions', () => {
         ])
     })
 
+    it('uses model-reported max and ultra efforts for Codex', () => {
+        expect(getCodexComposerReasoningEffortOptions('ultra', 'codex', [
+            { value: 'low' },
+            { value: 'medium' },
+            { value: 'high' },
+            { value: 'xhigh' },
+            { value: 'max' },
+            { value: 'ultra' }
+        ])).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'low', label: 'Low' },
+            { value: 'medium', label: 'Medium' },
+            { value: 'high', label: 'High' },
+            { value: 'xhigh', label: 'XHigh' },
+            { value: 'max', label: 'Max' },
+            { value: 'ultra', label: 'Ultra' }
+        ])
+    })
+
+    it('keeps an unsupported current Codex effort visible', () => {
+        expect(getCodexComposerReasoningEffortOptions('ultra', 'codex', [
+            { value: 'low' },
+            { value: 'max' }
+        ])).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'ultra', label: 'Ultra' },
+            { value: 'low', label: 'Low' },
+            { value: 'max', label: 'Max' }
+        ])
+    })
+
     it('returns no options for OpenCode until dynamic options are available', () => {
         expect(getCodexComposerReasoningEffortOptions(null, 'opencode')).toEqual([])
         expect(getCodexComposerReasoningEffortOptions(null, 'opencode', [])).toEqual([])

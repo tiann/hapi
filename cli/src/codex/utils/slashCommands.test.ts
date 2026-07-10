@@ -41,6 +41,12 @@ describe('resolveCodexSlashCommand', () => {
         expect(resolveCodexSlashCommand('/reasoning low', state)).toMatchObject({
             updates: { modelReasoningEffort: 'low' }
         });
+        expect(resolveCodexSlashCommand('/reasoning max', state)).toMatchObject({
+            updates: { modelReasoningEffort: 'max' }
+        });
+        expect(resolveCodexSlashCommand('/reasoning ultra', state)).toMatchObject({
+            updates: { modelReasoningEffort: 'ultra' }
+        });
         expect(resolveCodexSlashCommand('/permissions yolo', state)).toMatchObject({
             updates: { permissionMode: 'yolo' }
         });

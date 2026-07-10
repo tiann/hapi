@@ -123,7 +123,7 @@ describe('appServerConfig', () => {
     it('passes model reasoning effort via thread config', () => {
         const params = buildThreadStartParams({
             cwd: '/workspace/project',
-            mode: { permissionMode: 'default', modelReasoningEffort: 'xhigh', collaborationMode: 'default' },
+            mode: { permissionMode: 'default', modelReasoningEffort: 'ultra', collaborationMode: 'default' },
             mcpServers
         });
 
@@ -133,7 +133,7 @@ describe('appServerConfig', () => {
                 args: ['mcp']
             },
             developer_instructions: codexSystemPrompt,
-            model_reasoning_effort: 'xhigh'
+            model_reasoning_effort: 'ultra'
         });
     });
 

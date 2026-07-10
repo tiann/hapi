@@ -21,6 +21,10 @@ import { buildConversationOutline } from '@/chat/outline'
 import { buildVisibleChatBlocks, isToolGroupBlock, type ToolGroupBlock } from '@/chat/toolGroups'
 import { isQueuedForInvocation, mergeMessages } from '@/lib/messages'
 import { inactiveSessionCanResume } from '@/lib/sessionResume'
+import {
+    getCodexModelReasoningEfforts,
+    supportsCodexReasoningEffort
+} from '@/lib/codexModelCapabilities'
 import { HappyComposer, type ComposerSendError } from '@/components/AssistantChat/HappyComposer'
 import { codexModelAdvertisesFastTier } from '@/components/AssistantChat/codexFastMode'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
@@ -516,6 +520,16 @@ function SessionChatInner(props: SessionChatProps) {
         }
         return options
     }, [agentFlavor, codexModelsState.models])
+    const codexSupportedReasoningEfforts = useMemo(
+        () => agentFlavor === 'codex'
+            ? getCodexModelReasoningEfforts(codexModelsState.models, props.session.model)
+            : undefined,
+        [agentFlavor, codexModelsState.models, props.session.model]
+    )
+    const codexReasoningEffortOptions = useMemo(
+        () => codexSupportedReasoningEfforts?.map((value) => ({ value })),
+        [codexSupportedReasoningEfforts]
+    )
     const opencodeModelsState = useOpencodeModels({
         api: props.api,
         sessionId: props.session.id,
@@ -911,6 +925,17 @@ function SessionChatInner(props: SessionChatProps) {
     // Model mode change handler
     const handleModelChange = useCallback(async (model: { provider: string; modelId: string } | string | null) => {
         try {
+            if (
+                agentFlavor === 'codex'
+                && props.session.modelReasoningEffort
+                && supportsCodexReasoningEffort(
+                    codexModelsState.models,
+                    model,
+                    props.session.modelReasoningEffort
+                ) === false
+            ) {
+                await setModelReasoningEffort(null)
+            }
             await setModel(model)
             haptic.notification('success')
             props.onRefresh()
@@ -918,7 +943,15 @@ function SessionChatInner(props: SessionChatProps) {
             haptic.notification('error')
             console.error('Failed to set model:', e)
         }
-    }, [setModel, props.onRefresh, haptic])
+    }, [
+        agentFlavor,
+        codexModelsState.models,
+        props.session.modelReasoningEffort,
+        setModelReasoningEffort,
+        setModel,
+        props.onRefresh,
+        haptic
+    ])
 
     const handleCursorBaseModelChange = useCallback(async (baseKey: string | null) => {
         if (!cursorPicker) {
@@ -1243,9 +1276,11 @@ function SessionChatInner(props: SessionChatProps) {
                         piModels={agentFlavor === 'pi' ? (piModelsState.availableModels.length > 0 ? piModelsState.availableModels : piCachedModels) : undefined}
                         piSelectedModel={agentFlavor === 'pi' ? piSelectedModel : undefined}
                         availableModelReasoningEffortOptions={
-                            agentFlavor === 'opencode' && opencodeReasoningEffortState.options.length > 0
-                                ? opencodeReasoningEffortState.options
-                                : undefined
+                            agentFlavor === 'codex'
+                                ? codexReasoningEffortOptions
+                                : agentFlavor === 'opencode' && opencodeReasoningEffortState.options.length > 0
+                                    ? opencodeReasoningEffortState.options
+                                    : undefined
                         }
                         active={props.session.active}
                         allowSendWhenInactive

@@ -16,6 +16,8 @@ function parseReasoningEffort(value: string): ReasoningEffort {
         case 'medium':
         case 'high':
         case 'xhigh':
+        case 'max':
+        case 'ultra':
             return value
         default:
             throw new Error('Invalid --model-reasoning-effort value')

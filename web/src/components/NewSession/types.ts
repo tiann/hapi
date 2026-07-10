@@ -10,7 +10,8 @@ import type { AgentFlavor, ClaudeEffortLevel } from '@hapi/protocol'
 
 export type AgentType = AgentFlavor
 export type SessionType = 'simple' | 'worktree'
-export type CodexReasoningEffort = 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+// Codex reports supported efforts dynamically; keep this open for new server values.
+export type CodexReasoningEffort = string
 export type ClaudeEffort = 'auto' | ClaudeEffortLevel
 
 function modelPresetOptions<TModel extends string>(
