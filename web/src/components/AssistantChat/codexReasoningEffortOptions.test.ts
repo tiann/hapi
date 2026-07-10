@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { getCodexComposerReasoningEffortOptions } from './codexReasoningEffortOptions'
+import {
+    getCodexComposerReasoningEffortOptions,
+    getCodexModelReasoningEffortOptions
+} from './codexReasoningEffortOptions'
 
 describe('getCodexComposerReasoningEffortOptions', () => {
     it('includes the default option and preset values for Codex', () => {
@@ -20,6 +23,60 @@ describe('getCodexComposerReasoningEffortOptions', () => {
             { value: 'medium', label: 'Medium' },
             { value: 'high', label: 'High' },
             { value: 'xhigh', label: 'XHigh' }
+        ])
+    })
+
+    it('uses the default Codex model catalog efforts for auto model selection', () => {
+        expect(getCodexModelReasoningEffortOptions('auto', [
+            {
+                id: 'gpt-5.6-sol',
+                isDefault: true,
+                supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']
+            },
+            {
+                id: 'gpt-5.6-luna',
+                isDefault: false,
+                supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max']
+            }
+        ])).toEqual([
+            { value: 'low', name: 'Low' },
+            { value: 'medium', name: 'Medium' },
+            { value: 'high', name: 'High' },
+            { value: 'xhigh', name: 'XHigh' },
+            { value: 'max', name: 'Max' },
+            { value: 'ultra', name: 'Ultra' }
+        ])
+    })
+
+    it('uses the explicitly selected Codex model effort subset', () => {
+        expect(getCodexModelReasoningEffortOptions('GPT-5.6-LUNA', [
+            {
+                id: 'gpt-5.6-sol',
+                isDefault: true,
+                supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']
+            },
+            {
+                id: 'gpt-5.6-luna',
+                isDefault: false,
+                supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max']
+            }
+        ])).toEqual([
+            { value: 'low', name: 'Low' },
+            { value: 'medium', name: 'Medium' },
+            { value: 'high', name: 'High' },
+            { value: 'xhigh', name: 'XHigh' },
+            { value: 'max', name: 'Max' }
+        ])
+    })
+
+    it('builds Codex composer options from the active model catalog', () => {
+        expect(getCodexComposerReasoningEffortOptions(null, 'codex', [
+            { value: 'max', name: 'Max' },
+            { value: 'ultra', name: 'Ultra' }
+        ])).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'max', label: 'Max' },
+            { value: 'ultra', label: 'Ultra' }
         ])
     })
 

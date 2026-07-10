@@ -153,7 +153,24 @@ export type SandboxPolicy =
         excludeSlashTmp?: boolean;
     };
 
-export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+export const REASONING_EFFORTS = [
+    'none',
+    'minimal',
+    'low',
+    'medium',
+    'high',
+    'xhigh',
+    'max',
+    'ultra'
+] as const;
+
+export type ReasoningEffort = typeof REASONING_EFFORTS[number];
+
+const REASONING_EFFORT_SET = new Set<string>(REASONING_EFFORTS);
+
+export function isReasoningEffort(value: unknown): value is ReasoningEffort {
+    return typeof value === 'string' && REASONING_EFFORT_SET.has(value);
+}
 export type ReasoningSummary = 'auto' | 'none' | 'brief' | 'detailed';
 
 export type CollaborationMode = {

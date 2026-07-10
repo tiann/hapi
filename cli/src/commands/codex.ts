@@ -5,21 +5,14 @@ import { maybeAutoStartServer } from '@/utils/autoStartServer'
 import type { CommandDefinition } from './types'
 import { CODEX_PERMISSION_MODES } from '@hapi/protocol/modes'
 import type { CodexPermissionMode } from '@hapi/protocol/types'
-import type { ReasoningEffort } from '@/codex/appServerTypes'
+import { isReasoningEffort, type ReasoningEffort } from '@/codex/appServerTypes'
 import { assertCodexLocalSupported } from '@/codex/utils/codexVersion'
 
 function parseReasoningEffort(value: string): ReasoningEffort {
-    switch (value) {
-        case 'none':
-        case 'minimal':
-        case 'low':
-        case 'medium':
-        case 'high':
-        case 'xhigh':
-            return value
-        default:
-            throw new Error('Invalid --model-reasoning-effort value')
+    if (isReasoningEffort(value)) {
+        return value
     }
+    throw new Error('Invalid --model-reasoning-effort value')
 }
 
 // Mirror the web /service-tier endpoint's enum so the internal resume spawn

@@ -89,6 +89,21 @@ describe('codexCommand', () => {
         })
     })
 
+    it('forwards the gpt-5.6 ultra reasoning effort to runCodex', async () => {
+        await codexCommand.run(createCommandContext([
+            '--started-by', 'runner',
+            '--model', 'gpt-5.6-sol',
+            '--model-reasoning-effort', 'ultra'
+        ]))
+
+        expect(runCodexMock).toHaveBeenCalledWith({
+            startedBy: 'runner',
+            model: 'gpt-5.6-sol',
+            modelReasoningEffort: 'ultra',
+            codexArgs: ['--model', 'gpt-5.6-sol']
+        })
+    })
+
     it('rejects an unsupported --service-tier value', async () => {
         const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
         const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {

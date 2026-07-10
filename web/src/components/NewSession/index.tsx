@@ -39,6 +39,7 @@ import { OpencodeModelSelector } from './OpencodeModelSelector'
 import { ClaudeEffortSelector } from './ClaudeEffortSelector'
 import { shouldEnableOpencodeModelDiscovery } from './opencodeModelsGate'
 import { ReasoningEffortSelector } from './ReasoningEffortSelector'
+import { getCodexModelReasoningEffortOptions } from '@/components/AssistantChat/codexReasoningEffortOptions'
 import {
     loadPreferredAgent,
     loadPreferredYoloMode,
@@ -199,6 +200,31 @@ export function NewSession(props: {
         }
         return options
     }, [codexModelsState.models, model])
+    const codexReasoningEffortOptions = useMemo(() => {
+        if (agent !== 'codex') {
+            return undefined
+        }
+        const dynamicOptions = getCodexModelReasoningEffortOptions(model, codexModelsState.models)
+        if (!dynamicOptions) {
+            return undefined
+        }
+        return [
+            { value: 'default' as const, label: 'Default' },
+            ...dynamicOptions.map((option) => ({
+                value: option.value as CodexReasoningEffort,
+                label: option.name ?? option.value
+            }))
+        ]
+    }, [agent, codexModelsState.models, model])
+
+    useEffect(() => {
+        if (!codexReasoningEffortOptions || modelReasoningEffort === 'default') {
+            return
+        }
+        if (!codexReasoningEffortOptions.some((option) => option.value === modelReasoningEffort)) {
+            setModelReasoningEffort('default')
+        }
+    }, [codexReasoningEffortOptions, modelReasoningEffort])
     const cursorModelsState = useCursorModelsForMachine({
         api: props.api,
         machineId,
@@ -720,6 +746,7 @@ export function NewSession(props: {
                 agent={agent}
                 value={modelReasoningEffort}
                 isDisabled={isFormDisabled}
+                options={codexReasoningEffortOptions}
                 onChange={setModelReasoningEffort}
             />
             <YoloToggle

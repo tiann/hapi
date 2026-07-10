@@ -469,7 +469,7 @@ export function HappyComposer(props: {
             ? getCodexComposerReasoningEffortOptions(
                 modelReasoningEffort,
                 agentFlavor,
-                agentFlavor === 'opencode' ? availableModelReasoningEffortOptions : undefined
+                availableModelReasoningEffortOptions
             )
             : [],
         [agentFlavor, modelReasoningEffort, availableModelReasoningEffortOptions]

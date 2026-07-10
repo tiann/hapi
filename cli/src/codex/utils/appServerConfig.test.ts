@@ -269,6 +269,31 @@ describe('appServerConfig', () => {
         });
     });
 
+    it('passes gpt-5.6 ultra reasoning effort to turn/start', () => {
+        const params = buildTurnStartParams({
+            threadId: 'thread-1',
+            message: 'hello',
+            cwd: '/workspace/project',
+            mode: {
+                permissionMode: 'default',
+                model: 'gpt-5.6-sol',
+                modelReasoningEffort: 'ultra',
+                collaborationMode: 'default'
+            }
+        });
+
+        expect(params.effort).toBe('ultra');
+        expect(params.collaborationMode).toEqual({
+            mode: 'default',
+            settings: {
+                model: 'gpt-5.6-sol',
+                reasoning_effort: 'ultra',
+                developer_instructions: withCollaborationInstructions(codexSystemPrompt)
+            }
+        });
+        expect(params.model).toBeUndefined();
+    });
+
     it('detects namespaced models that do not support reasoning summary', () => {
         const params = buildTurnStartParams({
             threadId: 'thread-1',

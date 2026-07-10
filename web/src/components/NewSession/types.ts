@@ -10,7 +10,7 @@ import type { AgentFlavor, ClaudeEffortLevel } from '@hapi/protocol'
 
 export type AgentType = AgentFlavor
 export type SessionType = 'simple' | 'worktree'
-export type CodexReasoningEffort = 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+export type CodexReasoningEffort = 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra'
 export type ClaudeEffort = 'auto' | ClaudeEffortLevel
 
 function modelPresetOptions<TModel extends string>(
@@ -47,6 +47,7 @@ export const CODEX_REASONING_EFFORT_OPTIONS: { value: CodexReasoningEffort; labe
     { value: 'high', label: 'High' },
     { value: 'xhigh', label: 'XHigh' },
     { value: 'max', label: 'Max' },
+    { value: 'ultra', label: 'Ultra' },
 ]
 
 export const CLAUDE_EFFORT_OPTIONS: { value: ClaudeEffort; label: string }[] = [
