@@ -1,4 +1,4 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
 import { join } from 'node:path'
@@ -32,6 +32,7 @@ import type { WebSocketData } from '@socket.io/bun-engine'
 import { loadEmbeddedAssetMap, type EmbeddedWebAsset } from './embeddedAssets'
 import { isBunCompiled } from '../utils/bunCompiled'
 import type { Store } from '../store'
+import { getWebAssetCacheControl } from './webAssetCache'
 
 // Normalise upstream close codes before forwarding to the browser client.
 // Codes 1005/1006/1015 are reserved and cannot be sent in a close frame;
@@ -193,9 +194,14 @@ function findWebappDistDir(): { distDir: string; indexHtmlPath: string } {
 function serveEmbeddedAsset(asset: EmbeddedWebAsset): Response {
     return new Response(Bun.file(asset.sourcePath), {
         headers: {
-            'Content-Type': asset.mimeType
+            'Content-Type': asset.mimeType,
+            'Cache-Control': getWebAssetCacheControl(asset.path)
         }
     })
+}
+
+function applyWebAssetCacheControl(c: Context, path: string): void {
+    c.header('Cache-Control', getWebAssetCacheControl(path))
 }
 
 function createWebApp(options: {
@@ -328,7 +334,10 @@ from GitHub Pages instead of through the relay tunnel.
         return app
     }
 
-    app.use('/assets/*', serveStatic({ root: distDir }))
+    app.use('/assets/*', serveStatic({
+        root: distDir,
+        onFound: (_path, c) => applyWebAssetCacheControl(c, c.req.path)
+    }))
 
     app.use('*', async (c, next) => {
         if (c.req.path.startsWith('/api')) {
@@ -336,7 +345,10 @@ from GitHub Pages instead of through the relay tunnel.
             return
         }
 
-        return await serveStatic({ root: distDir })(c, next)
+        return await serveStatic({
+            root: distDir,
+            onFound: (_path, staticContext) => applyWebAssetCacheControl(staticContext, staticContext.req.path)
+        })(c, next)
     })
 
     app.get('*', async (c, next) => {
@@ -345,7 +357,11 @@ from GitHub Pages instead of through the relay tunnel.
             return
         }
 
-        return await serveStatic({ root: distDir, path: 'index.html' })(c, next)
+        return await serveStatic({
+            root: distDir,
+            path: 'index.html',
+            onFound: (_path, staticContext) => applyWebAssetCacheControl(staticContext, '/index.html')
+        })(c, next)
     })
 
     return app
