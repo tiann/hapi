@@ -49,3 +49,7 @@ export function codexModelAdvertisesFastTier(
 export function isFastServiceTier(serviceTier?: string | null): boolean {
     return serviceTier?.trim().toLowerCase() === 'fast'
 }
+
+export function getDisplayedCodexServiceTier(serviceTier?: string | null): 'standard' | 'fast' {
+    return isFastServiceTier(serviceTier) ? 'fast' : 'standard'
+}
