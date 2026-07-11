@@ -215,7 +215,7 @@ describe('runCodex', () => {
         }))
     })
 
-    it('accepts max and ultra reasoning efforts from session config', async () => {
+    it('accepts and normalizes model-reported reasoning efforts from session config', async () => {
         await runCodexImpl({ workingDirectory: '/tmp/project' })
 
         const registration = harness.session.rpcHandlerManager.registerHandler.mock.calls.find(
@@ -225,9 +225,9 @@ describe('runCodex', () => {
         expect(handler).toBeTypeOf('function')
 
         await handler?.({ modelReasoningEffort: 'max' })
-        await handler?.({ modelReasoningEffort: 'ultra' })
+        await handler?.({ modelReasoningEffort: ' EXTREME ' })
 
         expect(mockCodexSession.setModelReasoningEffort).toHaveBeenNthCalledWith(2, 'max')
-        expect(mockCodexSession.setModelReasoningEffort).toHaveBeenNthCalledWith(3, 'ultra')
+        expect(mockCodexSession.setModelReasoningEffort).toHaveBeenNthCalledWith(3, 'extreme')
     })
 })

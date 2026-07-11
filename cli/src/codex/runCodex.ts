@@ -19,19 +19,9 @@ import type { ReasoningEffort } from './appServerTypes';
 import { parseCodexSpecialCommand } from './codexSpecialCommands';
 import { listSlashCommands } from '@/modules/common/slashCommands';
 import { resolveCodexSlashCommand } from './utils/slashCommands';
+import { parseReasoningEffortValue } from './utils/reasoningEffort';
 
 export { emitReadyIfIdle } from './utils/emitReadyIfIdle';
-
-const REASONING_EFFORTS = new Set<ReasoningEffort>([
-    'none',
-    'minimal',
-    'low',
-    'medium',
-    'high',
-    'xhigh',
-    'max',
-    'ultra'
-])
 
 export async function runCodex(opts: {
     startedBy?: 'runner' | 'terminal';
@@ -312,16 +302,6 @@ export async function runCodex(opts: {
         return parsed.data;
     };
 
-    const resolveModelReasoningEffort = (value: unknown): ReasoningEffort | undefined => {
-        if (value === null) {
-            return undefined;
-        }
-        if (typeof value !== 'string' || !REASONING_EFFORTS.has(value as ReasoningEffort)) {
-            throw new Error('Invalid model reasoning effort');
-        }
-        return value as ReasoningEffort;
-    };
-
     const resolveModel = (value: unknown): string => {
         if (typeof value !== 'string') {
             throw new Error('Invalid model');
@@ -371,7 +351,7 @@ export async function runCodex(opts: {
         }
 
         if (config.modelReasoningEffort !== undefined) {
-            currentModelReasoningEffort = resolveModelReasoningEffort(config.modelReasoningEffort);
+            currentModelReasoningEffort = parseReasoningEffortValue(config.modelReasoningEffort);
         }
 
         if (config.collaborationMode !== undefined) {

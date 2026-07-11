@@ -23,14 +23,15 @@ describe('getCodexComposerReasoningEffortOptions', () => {
         ])
     })
 
-    it('uses model-reported max and ultra efforts for Codex', () => {
-        expect(getCodexComposerReasoningEffortOptions('ultra', 'codex', [
+    it('uses arbitrary model-reported efforts for Codex', () => {
+        expect(getCodexComposerReasoningEffortOptions('extreme', 'codex', [
             { value: 'low' },
             { value: 'medium' },
             { value: 'high' },
             { value: 'xhigh' },
             { value: 'max' },
-            { value: 'ultra' }
+            { value: 'ultra' },
+            { value: 'extreme' }
         ])).toEqual([
             { value: null, label: 'Default' },
             { value: 'low', label: 'Low' },
@@ -38,7 +39,8 @@ describe('getCodexComposerReasoningEffortOptions', () => {
             { value: 'high', label: 'High' },
             { value: 'xhigh', label: 'XHigh' },
             { value: 'max', label: 'Max' },
-            { value: 'ultra', label: 'Ultra' }
+            { value: 'ultra', label: 'Ultra' },
+            { value: 'extreme', label: 'Extreme' }
         ])
     })
 

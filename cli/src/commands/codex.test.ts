@@ -107,17 +107,17 @@ describe('codexCommand', () => {
         }
     })
 
-    it('accepts max and ultra model reasoning efforts', async () => {
+    it('accepts and normalizes a dynamic model reasoning effort', async () => {
         await codexCommand.run(createCommandContext([
             '--started-by',
             'runner',
             '--model-reasoning-effort',
-            'ultra'
+            ' EXTREME '
         ]))
 
         expect(runCodexMock).toHaveBeenCalledWith({
             startedBy: 'runner',
-            modelReasoningEffort: 'ultra'
+            modelReasoningEffort: 'extreme'
         })
     })
 

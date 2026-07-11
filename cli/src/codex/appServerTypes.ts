@@ -153,7 +153,9 @@ export type SandboxPolicy =
         excludeSlashTmp?: boolean;
     };
 
-export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
+// The app server reports supported effort identifiers per model. Keep this
+// open so newly introduced server values can flow through without a CLI update.
+export type ReasoningEffort = string;
 export type ReasoningSummary = 'auto' | 'none' | 'brief' | 'detailed';
 
 export type CollaborationMode = {
