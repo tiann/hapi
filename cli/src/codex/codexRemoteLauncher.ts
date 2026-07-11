@@ -94,6 +94,7 @@ const SAME_THREAD_MAX_COMPACT_RETRIES = 1;
 const SAME_THREAD_COMPACT_TIMEOUT_MS = 10 * 60 * 1000;
 const CODEX_GOALS_UNSUPPORTED_MESSAGE = 'Codex goals are not supported by this Codex runtime. Upgrade Codex or enable features.goals.';
 const MAX_CODEX_GOAL_OBJECTIVE_CHARS = 4_000;
+const HAPI_TOP_LEVEL_THREAD_SOURCE = 'user';
 
 type GoalForwardSignature = {
     objective: string | null;
@@ -2773,7 +2774,10 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     mcpServers,
                     cliOverrides: session.codexCliOverrides
                 });
-                const threadResponse = await appServerClient.startThread(threadParams, {
+                const threadResponse = await appServerClient.startThread({
+                    ...threadParams,
+                    threadSource: HAPI_TOP_LEVEL_THREAD_SOURCE
+                }, {
                     signal: this.abortController.signal
                 });
                 const threadRecord = asRecord(threadResponse);
@@ -3023,7 +3027,10 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     }
 
                     if (!threadId) {
-                        const threadResponse = await appServerClient.startThread(threadParams, {
+                        const threadResponse = await appServerClient.startThread({
+                            ...threadParams,
+                            threadSource: HAPI_TOP_LEVEL_THREAD_SOURCE
+                        }, {
                             signal: this.abortController.signal
                         });
                         const threadRecord = asRecord(threadResponse);

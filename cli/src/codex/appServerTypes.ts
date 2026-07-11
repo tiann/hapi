@@ -81,6 +81,8 @@ export interface ThreadStartParams {
     baseInstructions?: string;
     developerInstructions?: string;
     personality?: string;
+    /** Client-supplied analytics classification persisted with the thread. */
+    threadSource?: string;
     ephemeral?: boolean;
     experimentalRawEvents?: boolean;
 }
