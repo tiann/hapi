@@ -68,6 +68,33 @@ import { useVoiceOptional } from '@/lib/voice-context'
 import { VoiceBackendSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
 import { isRemoteTerminalSupported } from '@/utils/terminalSupport'
 
+type SessionModelSelection = { provider: string; modelId: string } | string | null
+
+export async function applyModelChangeWithReasoningRollback(args: {
+    model: SessionModelSelection
+    previousModelReasoningEffort: string | null
+    shouldClearReasoningEffort: boolean
+    setModel: (model: SessionModelSelection) => Promise<void>
+    setModelReasoningEffort: (effort: string | null) => Promise<void>
+}): Promise<void> {
+    let clearedReasoningEffort = false
+
+    try {
+        if (args.shouldClearReasoningEffort) {
+            await args.setModelReasoningEffort(null)
+            clearedReasoningEffort = true
+        }
+        await args.setModel(args.model)
+    } catch (error) {
+        if (clearedReasoningEffort && args.previousModelReasoningEffort) {
+            await args.setModelReasoningEffort(args.previousModelReasoningEffort).catch((restoreError) => {
+                console.error('Failed to restore model reasoning effort:', restoreError)
+            })
+        }
+        throw error
+    }
+}
+
 /**
  * Returns whether a PendingSchedule should trigger an auto-clear timer.
  *
@@ -923,20 +950,24 @@ function SessionChatInner(props: SessionChatProps) {
     }, [setCollaborationMode, props.onRefresh, haptic])
 
     // Model mode change handler
-    const handleModelChange = useCallback(async (model: { provider: string; modelId: string } | string | null) => {
+    const handleModelChange = useCallback(async (model: SessionModelSelection) => {
+        const previousModelReasoningEffort = props.session.modelReasoningEffort
+        const shouldClearReasoningEffort = agentFlavor === 'codex'
+            && Boolean(previousModelReasoningEffort)
+            && supportsCodexReasoningEffort(
+                codexModelsState.models,
+                model,
+                previousModelReasoningEffort
+            ) === false
+
         try {
-            if (
-                agentFlavor === 'codex'
-                && props.session.modelReasoningEffort
-                && supportsCodexReasoningEffort(
-                    codexModelsState.models,
-                    model,
-                    props.session.modelReasoningEffort
-                ) === false
-            ) {
-                await setModelReasoningEffort(null)
-            }
-            await setModel(model)
+            await applyModelChangeWithReasoningRollback({
+                model,
+                previousModelReasoningEffort,
+                shouldClearReasoningEffort,
+                setModel,
+                setModelReasoningEffort
+            })
             haptic.notification('success')
             props.onRefresh()
         } catch (e) {
