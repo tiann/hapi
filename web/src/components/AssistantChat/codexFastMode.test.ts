@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { codexModelAdvertisesFastTier, isFastServiceTier } from './codexFastMode'
+import {
+    codexModelAdvertisesFastTier,
+    getDisplayedCodexServiceTier,
+    isFastServiceTier
+} from './codexFastMode'
 
 // Mirrors the real Codex catalog: the Fast tier's id is 'priority' and its
 // display name is 'Fast', so the CLI captures both as lowercased tokens
@@ -47,5 +51,17 @@ describe('isFastServiceTier', () => {
         expect(isFastServiceTier(null)).toBe(false)
         expect(isFastServiceTier(undefined)).toBe(false)
         expect(isFastServiceTier('standard')).toBe(false)
+    })
+})
+
+describe('getDisplayedCodexServiceTier', () => {
+    it('displays untouched and explicit non-fast tiers as standard', () => {
+        expect(getDisplayedCodexServiceTier(null)).toBe('standard')
+        expect(getDisplayedCodexServiceTier(undefined)).toBe('standard')
+        expect(getDisplayedCodexServiceTier('standard')).toBe('standard')
+    })
+
+    it('preserves the fast selection', () => {
+        expect(getDisplayedCodexServiceTier('fast')).toBe('fast')
     })
 })
