@@ -278,14 +278,29 @@ export class MessageQueue2<T> {
     }
 
     /**
-     * Remove and return a queued item by localId, or null if not found.
+     * Remove and return a queued item by localId (with its original index),
+     * or null if not found. Pair with {@link restoreTakenItem} when an async
+     * operation may need to put the item back in order.
      */
-    takeByLocalId(localId: string): QueueItem<T> | null {
+    takeByLocalId(localId: string): { item: QueueItem<T>; index: number } | null {
         if (!localId) return null;
         const idx = this.queue.findIndex(item => item.localId === localId);
         if (idx === -1) return null;
         const [item] = this.queue.splice(idx, 1);
-        return item ?? null;
+        if (!item) return null;
+        return { item, index: idx };
+    }
+
+    /**
+     * Re-insert an item previously removed by {@link takeByLocalId} at its
+     * original index (clamped if the queue shrank).
+     */
+    restoreTakenItem(taken: { item: QueueItem<T>; index: number }): void {
+        if (this.closed) {
+            throw new Error('Cannot restore into closed queue');
+        }
+        const idx = Math.max(0, Math.min(taken.index, this.queue.length));
+        this.queue.splice(idx, 0, taken.item);
     }
 
     /**

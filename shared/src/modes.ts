@@ -160,7 +160,8 @@ export function getCodexCollaborationModeOptions(): CodexCollaborationModeOption
  *
  * - Codex: app-server `turn/steer` (true mid-turn inject)
  * - Cursor: ACP cancel + immediate next `session/prompt` (interrupt-and-send;
- *   Cursor ACP has no non-interrupting steer primitive)
+ *   Cursor ACP has no non-interrupting steer primitive). Legacy stream-json
+ *   Cursor sessions are NOT steerable — gate with {@link isSteeringSupportedForSession}.
  *
  * Claude / others: not supported (no reachable mid-turn inject path).
  */
@@ -168,4 +169,32 @@ export const STEERING_SUPPORTED_FLAVORS = ['codex', 'cursor'] as const
 
 export function isSteeringSupportedForFlavor(flavor?: string | null): boolean {
     return (STEERING_SUPPORTED_FLAVORS as readonly string[]).includes(flavor ?? '')
+}
+
+/**
+ * Session-aware steer gate. Prefer this over {@link isSteeringSupportedForFlavor}
+ * when metadata is available: legacy Cursor stream-json sessions advertise
+ * flavor `cursor` but cannot steer.
+ *
+ * Matches CLI legacy detection: explicit `stream-json`, or a pre-ACP session
+ * that has `cursorSessionId` without `cursorSessionProtocol: 'acp'`.
+ */
+export function isSteeringSupportedForSession(metadata?: {
+    flavor?: string | null
+    cursorSessionId?: string | null
+    cursorSessionProtocol?: 'acp' | 'stream-json' | null
+} | null): boolean {
+    if (metadata?.flavor === 'codex') {
+        return true
+    }
+    if (metadata?.flavor !== 'cursor') {
+        return false
+    }
+    if (metadata.cursorSessionProtocol === 'stream-json') {
+        return false
+    }
+    if (!metadata.cursorSessionProtocol && metadata.cursorSessionId) {
+        return false
+    }
+    return true
 }

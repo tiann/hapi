@@ -199,13 +199,13 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 if (this.pendingSteer) {
                     return { steered: false, error: 'A steer is already pending' };
                 }
-                const item = session.queue.takeByLocalId(localId);
-                if (!item) {
+                const taken = session.queue.takeByLocalId(localId);
+                if (!taken) {
                     return { steered: false, error: 'Message not in queue' };
                 }
                 this.pendingSteer = {
-                    message: item.message,
-                    mode: item.mode,
+                    message: taken.item.message,
+                    mode: taken.item.mode,
                     localId
                 };
                 try {
@@ -213,7 +213,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 } catch (error) {
                     logger.debug('[cursor-acp] cancel for steer failed', error);
                     // Put the message back so it is not lost.
-                    session.queue.push(item.message, item.mode, localId);
+                    session.queue.restoreTakenItem(taken);
                     this.pendingSteer = null;
                     return { steered: false, error: 'Failed to interrupt active turn' };
                 }

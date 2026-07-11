@@ -11,7 +11,7 @@ import { useSteerQueuedMessage } from '@/hooks/mutations/useSteerQueuedMessage'
 import { useTranslation } from '@/lib/use-translation'
 import { useToast } from '@/lib/toast-context'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
-import { isSteeringSupportedForFlavor } from '@hapi/protocol'
+import { isSteeringSupportedForSession } from '@hapi/protocol'
 import { formatScheduledTime } from '@/lib/scheduledTime'
 
 function ClockIcon() {
@@ -155,14 +155,18 @@ export function computeCanCancel({
 export function QueuedMessagesBar({
     sessionId,
     api,
-    agentFlavor,
+    sessionMetadata,
     isThinking,
     onEdit,
 }: {
     sessionId: string
     api: ApiClient | null
-    /** Session agent flavor — gates the Steer button. */
-    agentFlavor?: string | null
+    /** Session metadata — gates the Steer button (flavor + Cursor protocol). */
+    sessionMetadata?: {
+        flavor?: string | null
+        cursorSessionId?: string | null
+        cursorSessionProtocol?: 'acp' | 'stream-json' | null
+    } | null
     /** True while an agent turn is in flight. */
     isThinking?: boolean
     /**
@@ -178,7 +182,7 @@ export function QueuedMessagesBar({
     const steerMutation = useSteerQueuedMessage(api)
     const { t } = useTranslation()
     const { addToast } = useToast()
-    const steeringSupported = isSteeringSupportedForFlavor(agentFlavor)
+    const steeringSupported = isSteeringSupportedForSession(sessionMetadata)
 
     if (queued.length === 0) {
         return null

@@ -7,7 +7,7 @@
  * - No E2E encryption; data is stored as JSON in SQLite
  */
 
-import { isKnownFlavor, isSteeringSupportedForFlavor, type LocalResumeTarget, type ResumableSession } from '@hapi/protocol'
+import { isKnownFlavor, isSteeringSupportedForSession, type LocalResumeTarget, type ResumableSession } from '@hapi/protocol'
 import type { CursorMigrateOutcome, CursorMigrateToAcpRequest, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, CodexCollaborationMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
@@ -438,8 +438,7 @@ export class SyncEngine {
         if (!session) {
             return { status: 'failed', error: 'Session not found', localId: null }
         }
-        const flavor = session.metadata?.flavor ?? null
-        if (!isSteeringSupportedForFlavor(flavor)) {
+        if (!isSteeringSupportedForSession(session.metadata)) {
             return { status: 'failed', error: 'Steering is not supported for this agent', localId: null }
         }
         if (session.agentState?.controlledByUser === true) {

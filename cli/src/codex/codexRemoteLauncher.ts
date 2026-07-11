@@ -1850,26 +1850,29 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 if (!turnInFlight || !this.currentThreadId || !this.currentTurnId) {
                     return { steered: false, error: 'No active steerable turn' };
                 }
-                const item = session.queue.peekByLocalId(localId);
-                if (!item) {
+                // Reserve before awaiting turn/steer so the main loop cannot
+                // collect the same row for turn/start while steer is in flight.
+                const taken = session.queue.takeByLocalId(localId);
+                if (!taken) {
                     return { steered: false, error: 'Message not in queue' };
                 }
-                const isControlCommand = Boolean(item.isolate)
-                    || Boolean(parseCodexSpecialCommand(item.message).type);
+                const isControlCommand = Boolean(taken.item.isolate)
+                    || Boolean(parseCodexSpecialCommand(taken.item.message).type);
                 if (isControlCommand) {
+                    session.queue.restoreTakenItem(taken);
                     return { steered: false, error: 'Control commands cannot be steered' };
                 }
                 const batch: QueuedMessage = {
-                    message: item.message,
-                    mode: item.mode,
-                    isolate: Boolean(item.isolate),
-                    hash: item.modeHash
+                    message: taken.item.message,
+                    mode: taken.item.mode,
+                    isolate: Boolean(taken.item.isolate),
+                    hash: taken.item.modeHash
                 };
                 const steered = await trySteerActiveTurn(batch);
                 if (!steered) {
+                    session.queue.restoreTakenItem(taken);
                     return { steered: false, error: 'Active turn is not steerable' };
                 }
-                session.queue.takeByLocalId(localId);
                 session.client.emitMessagesConsumed([localId], { steered: true });
                 return { steered: true };
             }

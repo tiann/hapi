@@ -582,12 +582,13 @@ describe('MessageQueue2', () => {
             expect(queue.size()).toBe(1);
         });
 
-        it('take removes and returns the item', () => {
+        it('take removes and returns the item with its index', () => {
             const queue = new MessageQueue2<string>(mode => mode);
             queue.push('msg1', 'local', 'id-a');
             queue.push('msg2', 'local', 'id-b');
             const taken = queue.takeByLocalId('id-a');
-            expect(taken?.message).toBe('msg1');
+            expect(taken?.item.message).toBe('msg1');
+            expect(taken?.index).toBe(0);
             expect(queue.size()).toBe(1);
             expect(queue.queue[0].localId).toBe('id-b');
         });
@@ -595,6 +596,18 @@ describe('MessageQueue2', () => {
         it('take returns null when missing', () => {
             const queue = new MessageQueue2<string>(mode => mode);
             expect(queue.takeByLocalId('missing')).toBeNull();
+        });
+
+        it('restoreTakenItem puts the item back at the original index', () => {
+            const queue = new MessageQueue2<string>(mode => mode);
+            queue.push('a', 'local', 'id-a');
+            queue.push('b', 'local', 'id-b');
+            queue.push('c', 'local', 'id-c');
+            const taken = queue.takeByLocalId('id-b');
+            expect(taken).not.toBeNull();
+            expect(queue.queue.map((item) => item.localId)).toEqual(['id-a', 'id-c']);
+            queue.restoreTakenItem(taken!);
+            expect(queue.queue.map((item) => item.localId)).toEqual(['id-a', 'id-b', 'id-c']);
         });
     });
 
