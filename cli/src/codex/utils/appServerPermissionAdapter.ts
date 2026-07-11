@@ -187,7 +187,7 @@ function elicitationOptions(property: Record<string, unknown>): Array<{ label: s
 
 function buildElicitationUserInput(params: unknown): { questions: unknown[]; url?: string } | null {
     const request = unwrapElicitationRequest(params);
-    const mode = asString(request.mode);
+    const mode = asString(request.mode) ?? 'form';
     const message = asString(request.message) ?? 'MCP server requires input';
 
     if (mode === 'url') {

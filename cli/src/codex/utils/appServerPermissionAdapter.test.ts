@@ -288,6 +288,35 @@ describe('registerAppServerPermissionHandlers', () => {
         });
     });
 
+    it('treats an omitted MCP elicitation mode as a form request', async () => {
+        const { client, handlers } = createClient();
+        const onUserInputRequest = vi.fn(async () => ({
+            decision: 'accept' as const,
+            answers: { nickname: { answers: ['user_note: Codex'] } }
+        }));
+        registerAppServerPermissionHandlers({
+            client: client as never,
+            permissionHandler: { handleToolCall: vi.fn() } as never,
+            onUserInputRequest
+        });
+
+        const handler = handlers.get('mcpServer/elicitation/request');
+        await expect(handler?.({
+            serverName: 'external',
+            message: 'Choose a nickname',
+            requestedSchema: {
+                type: 'object',
+                properties: { nickname: { type: 'string' } },
+                required: ['nickname']
+            }
+        })).resolves.toEqual({
+            action: 'accept',
+            content: { nickname: 'Codex' },
+            _meta: null
+        });
+        expect(onUserInputRequest).toHaveBeenCalledOnce();
+    });
+
     it('forwards URL MCP elicitation and preserves a declined response', async () => {
         const { client, handlers } = createClient();
         const permissionHandler = {
