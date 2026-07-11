@@ -73,4 +73,24 @@ describe('parseClaudeStartOptions', () => {
         expect(options.startedBy).toBe('runner')
         expect(showHelp).toBe(true)
     })
+
+    it('captures --hapi-session-id as existingSessionId and does NOT leak it into claudeArgs', () => {
+        // Runner injects --hapi-session-id alongside claude's own --resume on a
+        // PTY reopen. The hub id must reuse the row (existingSessionId); the flag
+        // must not reach the claude binary, which would reject it.
+        const { options } = parseClaudeStartOptions([
+            '--hapi-starting-mode', 'pty',
+            '--hapi-session-id', 'hub-id-123',
+            '--resume', 'claude-conv-1',
+        ])
+        expect(options.existingSessionId).toBe('hub-id-123')
+        expect(options.claudeArgs ?? []).not.toContain('--hapi-session-id')
+        expect(options.claudeArgs ?? []).not.toContain('hub-id-123')
+        // claude's own conversation resume still passes through untouched.
+        expect(options.claudeArgs ?? []).toEqual(expect.arrayContaining(['--resume', 'claude-conv-1']))
+    })
+
+    it('throws when --hapi-session-id has no value', () => {
+        expect(() => parseClaudeStartOptions(['--hapi-session-id'])).toThrow('Missing --hapi-session-id value')
+    })
 })

@@ -1244,6 +1244,12 @@ export class SyncEngine {
             (session.agentState as { startingMode?: 'local' | 'remote' | 'pty' } | null)?.startingMode === 'pty'
                 ? 'pty'
                 : undefined
+        // Preserve the hub session id for the PTY reopen/resume path. Passing the
+        // existing id makes the runner boot the CLI with `--hapi-session-id`, so
+        // the child reuses this row (same id) instead of spawning a new id that
+        // then gets merged and deletes the old row (the reopen 404 / new-row bug).
+        // Non-PTY resume keeps the legacy fresh-id + merge path unchanged.
+        const existingSessionId = resumedStartingMode === 'pty' ? access.sessionId : undefined
         const spawnResult = await this.rpcGateway.spawnSession(
             targetMachine.id,
             directory,
@@ -1257,7 +1263,8 @@ export class SyncEngine {
             session.effort ?? undefined,
             preferredPermissionMode,
             session.serviceTier ?? undefined,
-            resumedStartingMode
+            resumedStartingMode,
+            existingSessionId
         )
 
         if (spawnResult.type !== 'success') {

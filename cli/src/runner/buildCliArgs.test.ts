@@ -236,4 +236,41 @@ describe('buildCliArgs', () => {
             '--permission-mode', 'plan'
         ])
     })
+
+    it('passes --hapi-session-id when reusing an existing hub session id (reopen/resume)', () => {
+        const args = buildCliArgs('claude', {
+            directory: '/tmp',
+            existingSessionId: 'existing-hub-id',
+            startingMode: 'pty',
+        })
+        const idx = args.indexOf('--hapi-session-id')
+        expect(idx).toBeGreaterThanOrEqual(0)
+        expect(args[idx + 1]).toBe('existing-hub-id')
+    })
+
+    it('does not emit --hapi-session-id from the legacy (reserved) sessionId field', () => {
+        // The runner's `sessionId` option is reserved/unused by spawn; some
+        // callers pass an arbitrary tag. Only `existingSessionId` (hub reopen)
+        // may drive --hapi-session-id, else the child would try to reuse a
+        // non-existent hub row.
+        const args = buildCliArgs('claude', { directory: '/tmp', sessionId: 'arbitrary-tag' })
+        expect(args).not.toContain('--hapi-session-id')
+    })
+
+    it('omits --hapi-session-id for a fresh spawn (no existing hub session id)', () => {
+        const args = buildCliArgs('claude', { directory: '/tmp' })
+        expect(args).not.toContain('--hapi-session-id')
+    })
+    it('does not emit --hapi-session-id for a non-claude flavor (only claude parses it)', () => {
+        // The pty gate + this emit are flavor-agnostic, but ONLY claude's parser
+        // consumes --hapi-session-id. A non-claude pty flavor would silently
+        // swallow it (parseRemoteAgentCommandOptions ignores unknown flags) →
+        // child mints a new hub id → merge/404 recurs. Guard the emit to claude.
+        const args = buildCliArgs('opencode', {
+            directory: '/tmp',
+            existingSessionId: 'existing-hub-id',
+            startingMode: 'pty',
+        })
+        expect(args).not.toContain('--hapi-session-id')
+    })
 })

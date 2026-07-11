@@ -70,6 +70,16 @@ export function parseClaudeStartOptions(args: string[]): { options: StartOptions
             unknownArgs.push('--effort', effort)
         } else if (arg === '--started-by') {
             options.startedBy = args[++i] as 'runner' | 'terminal'
+        } else if (arg === '--hapi-session-id') {
+            // Runner-injected: reuse this existing hub session id (reopen/resume)
+            // rather than minting a new one. Consumed by runClaude via
+            // bootstrapExistingSession; must NOT leak into claudeArgs (claude
+            // itself rejects the flag).
+            const id = args[++i]
+            if (!id) {
+                throw new Error('Missing --hapi-session-id value')
+            }
+            options.existingSessionId = id
         } else {
             unknownArgs.push(arg)
             if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
