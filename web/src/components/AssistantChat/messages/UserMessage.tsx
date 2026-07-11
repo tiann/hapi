@@ -11,9 +11,11 @@ import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { getConversationMessageAnchorId } from '@/chat/outline'
 import { MessageMetadata } from '@/components/AssistantChat/messages/MessageMetadata'
 import { MessageTimestamp } from '@/components/AssistantChat/messages/MessageTimestamp'
+import { useTranslation } from '@/lib/use-translation'
 
 export function HappyUserMessage() {
     const ctx = useHappyChatContext()
+    const { t } = useTranslation()
     const { copied, copy } = useCopyToClipboard()
     const [showMetadata, setShowMetadata] = useState(false)
     const role = useAssistantState(({ message }) => message.role)
@@ -120,10 +122,10 @@ export function HappyUserMessage() {
                 <div className="flex justify-end items-center gap-2">
                     {steered && (
                         <span
-                            title="Steered into the active turn"
+                            title={t('queuedMessages.steeredBadgeTitle')}
                             className="inline-flex items-center gap-0.5 text-[10px] leading-none text-[var(--app-hint)]"
                         >
-                            ↳ Steered
+                            {t('queuedMessages.steeredBadge')}
                         </span>
                     )}
                     <MessageTimestamp className="text-[10px] leading-none text-[var(--app-hint)]" />

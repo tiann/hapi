@@ -456,6 +456,8 @@ export default {
   'queuedMessages.steerNow': 'Steer',
   'queuedMessages.steerFailed': 'Could not steer message',
   'queuedMessages.steerAlreadyInvoked': 'Message already sent',
+  'queuedMessages.steeredBadge': '↳ Steered',
+  'queuedMessages.steeredBadgeTitle': 'Steered into the active turn',
 
   // Scratchlist (per-session workbench, issue #11)
   'scratchlist.title': 'Scratchlist',

@@ -460,6 +460,8 @@ export default {
   'queuedMessages.steerNow': '立即发出',
   'queuedMessages.steerFailed': '无法立即发出',
   'queuedMessages.steerAlreadyInvoked': '消息已发出',
+  'queuedMessages.steeredBadge': '↳ 已介入',
+  'queuedMessages.steeredBadgeTitle': '已介入当前进行中的回合',
 
   // Scratchlist (per-session workbench, issue #11)
   'scratchlist.title': '草稿夹',
