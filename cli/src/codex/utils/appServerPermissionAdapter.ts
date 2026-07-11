@@ -215,9 +215,10 @@ function buildElicitationUserInput(params: unknown): { questions: unknown[]; url
 
     const questions = Object.entries(properties).map(([id, rawProperty]) => {
         const property = asRecord(rawProperty) ?? {};
+        const fieldQuestion = asString(property.title) ?? asString(property.description) ?? id;
         return {
             id,
-            question: asString(property.title) ?? asString(property.description) ?? id,
+            question: `${message}\n\n${fieldQuestion}`,
             required: required.has(id),
             options: elicitationOptions(property)
         };

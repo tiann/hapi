@@ -18,7 +18,21 @@ describe('MCP URL request user input', () => {
     it('reports popup failures instead of treating the URL as opened', () => {
         const open = vi.spyOn(window, 'open').mockReturnValue(null)
         expect(openRequestUserInputUrl('https://example.com/login')).toBe(false)
-        expect(open).toHaveBeenCalledWith('https://example.com/login', '_blank')
+        expect(open).toHaveBeenCalledWith('about:blank', '_blank')
+    })
+
+    it('severs opener access before navigating to an external MCP URL', () => {
+        const replace = vi.fn()
+        const popup = {
+            opener: window,
+            location: { replace }
+        } as unknown as Window
+        const open = vi.spyOn(window, 'open').mockReturnValue(popup)
+
+        expect(openRequestUserInputUrl('https://example.com/login')).toBe(true)
+        expect(open).toHaveBeenCalledWith('about:blank', '_blank')
+        expect(popup.opener).toBeNull()
+        expect(replace).toHaveBeenCalledWith('https://example.com/login')
     })
 
     it('preserves optional form questions and allows them to stay empty', () => {

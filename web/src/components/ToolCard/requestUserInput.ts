@@ -30,10 +30,16 @@ export function isRequestUserInputToolName(toolName: string): boolean {
 }
 
 export function openRequestUserInputUrl(url: string): boolean {
-    const opened = window.open(url, '_blank')
+    const opened = window.open('about:blank', '_blank')
     if (!opened) return false
-    opened.opener = null
-    return true
+    try {
+        opened.opener = null
+        opened.location.replace(url)
+        return true
+    } catch {
+        opened.close()
+        return false
+    }
 }
 
 export function parseRequestUserInputInput(input: unknown): { questions: RequestUserInputQuestion[]; url: string | null } {

@@ -245,12 +245,12 @@ describe('registerAppServerPermissionHandlers', () => {
             input: {
                 questions: [{
                     id: 'approval',
-                    question: 'approval',
+                    question: 'Allow the qmd MCP server to run tool "status"?\n\napproval',
                     required: true,
                     options: [{ label: 'allow', description: '' }, { label: 'deny', description: '' }]
                 }, {
                     id: 'comment',
-                    question: 'Optional comment',
+                    question: 'Allow the qmd MCP server to run tool "status"?\n\nOptional comment',
                     required: false,
                     options: []
                 }]
