@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
     isRequestUserInputQuestionAnswered,
     isRequestUserInputUrlConfirmed,
+    formatRequestUserInputAnswers,
     openRequestUserInputUrl,
     parseRequestUserInputInput
 } from './requestUserInput'
@@ -45,10 +46,11 @@ describe('MCP URL request user input', () => {
             id: 'comment',
             question: 'Comment',
             required: false,
+            multiple: false,
             options: []
         })
         expect(isRequestUserInputQuestionAnswered(parsed.questions[0]!, {
-            selected: null,
+            selected: [],
             userNote: ''
         })).toBe(true)
     })
@@ -64,11 +66,11 @@ describe('MCP URL request user input', () => {
         }).questions[0]!
 
         expect(isRequestUserInputQuestionAnswered(question, {
-            selected: null,
+            selected: [],
             userNote: 'please approve'
         })).toBe(false)
         expect(isRequestUserInputQuestionAnswered(question, {
-            selected: 'true',
+            selected: ['true'],
             userNote: 'please approve'
         })).toBe(true)
     })
@@ -80,7 +82,7 @@ describe('MCP URL request user input', () => {
             questions: [{ id: 'unrelated', question: 'Continue?', options: [] }]
         })
         expect(isRequestUserInputUrlConfirmed(hidden, {
-            unrelated: { selected: null, userNote: 'yes' }
+            unrelated: { selected: [], userNote: 'yes' }
         })).toBe(false)
 
         const explicit = parseRequestUserInputInput({
@@ -92,10 +94,29 @@ describe('MCP URL request user input', () => {
             }]
         })
         expect(isRequestUserInputUrlConfirmed(explicit, {
-            __mcp_url_confirmation: { selected: null, userNote: '' }
+            __mcp_url_confirmation: { selected: [], userNote: '' }
         })).toBe(false)
         expect(isRequestUserInputUrlConfirmed(explicit, {
-            __mcp_url_confirmation: { selected: 'Open', userNote: '' }
+            __mcp_url_confirmation: { selected: ['Open'], userNote: '' }
         })).toBe(true)
+    })
+
+    it('serializes every selected value for multiple-choice questions', () => {
+        const parsed = parseRequestUserInputInput({
+            questions: [{
+                id: 'tags',
+                question: 'Tags',
+                required: true,
+                multiple: true,
+                options: [{ label: 'bug' }, { label: 'feature' }]
+            }]
+        })
+
+        expect(parsed.questions[0]?.multiple).toBe(true)
+        expect(formatRequestUserInputAnswers({
+            tags: { selected: ['bug', 'feature'], userNote: '' }
+        })).toEqual({
+            answers: { tags: { answers: ['bug', 'feature'] } }
+        })
     })
 })

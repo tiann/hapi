@@ -68,7 +68,7 @@ export function RequestUserInputView(props: ToolViewProps) {
                             // Question with options
                             <div className="mt-3 flex flex-col gap-1">
                                 {q.options.map((opt, optIdx) => {
-                                    const isSelected = answer?.selected === opt.label
+                                    const isSelected = answer?.selected.includes(opt.label) ?? false
 
                                     return (
                                         <div

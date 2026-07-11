@@ -359,11 +359,13 @@ describe('registerAppServerPermissionHandlers', () => {
                     id: 'tags',
                     question: 'Choose metadata\n\ntags',
                     required: true,
+                    multiple: true,
                     options: [{ label: 'bug', description: '' }, { label: 'feature', description: '' }]
                 }, {
                     id: 'paths',
                     question: 'Choose metadata\n\npaths',
                     required: true,
+                    multiple: true,
                     options: []
                 }]
             }

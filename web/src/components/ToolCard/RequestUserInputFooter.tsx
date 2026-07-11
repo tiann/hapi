@@ -60,7 +60,7 @@ function OptionRow(props: {
 }
 
 type QuestionState = {
-    selected: string | null
+    selected: string[]
     userNote: string
 }
 
@@ -87,7 +87,7 @@ export function RequestUserInputFooter(props: {
         setStep(0)
         const initial: Record<string, QuestionState> = {}
         for (const q of questions) {
-            initial[q.id] = { selected: null, userNote: '' }
+            initial[q.id] = { selected: [], userNote: '' }
         }
         setStateByQuestion(initial)
         setLoading(false)
@@ -166,13 +166,17 @@ export function RequestUserInputFooter(props: {
         setStep((s) => Math.max(s - 1, 0))
     }
 
-    const selectOption = (questionId: string, optionLabel: string) => {
+    const selectOption = (question: RequestUserInputQuestion, optionLabel: string) => {
         haptic.selection()
         setStateByQuestion((prev) => ({
             ...prev,
-            [questionId]: {
-                ...prev[questionId],
-                selected: optionLabel
+            [question.id]: {
+                ...prev[question.id],
+                selected: question.multiple
+                    ? prev[question.id]?.selected.includes(optionLabel)
+                        ? prev[question.id].selected.filter((value) => value !== optionLabel)
+                        : [...(prev[question.id]?.selected ?? []), optionLabel]
+                    : [optionLabel]
             }
         }))
     }
@@ -233,7 +237,7 @@ export function RequestUserInputFooter(props: {
                         <>
                             <div className="mt-3 flex flex-col gap-1">
                                 {currentQuestion.options.map((opt, optIdx) => {
-                                    const isSelected = currentState?.selected === opt.label
+                                    const isSelected = currentState?.selected.includes(opt.label) ?? false
                                     return (
                                         <OptionRow
                                             key={optIdx}
@@ -241,7 +245,7 @@ export function RequestUserInputFooter(props: {
                                             disabled={props.disabled || loading}
                                             title={opt.label}
                                             description={opt.description}
-                                            onClick={() => selectOption(currentQuestion.id, opt.label)}
+                                            onClick={() => selectOption(currentQuestion, opt.label)}
                                         />
                                     )
                                 })}

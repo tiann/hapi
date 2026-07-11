@@ -229,6 +229,7 @@ function buildElicitationUserInput(params: unknown): { questions: unknown[]; url
             id,
             question: `${message}\n\n${fieldQuestion}`,
             required: required.has(id),
+            ...(property.type === 'array' ? { multiple: true } : {}),
             options: elicitationOptions(property)
         };
     });
