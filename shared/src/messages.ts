@@ -10,7 +10,13 @@ const VISIBLE_CLAUDE_SYSTEM_SUBTYPES = new Set([
     'api_error',
     'turn_duration',
     'microcompact_boundary',
-    'compact_boundary'
+    'compact_boundary',
+    // Auto-generated recap Claude Code's TUI writes to the transcript on window
+    // blur/focus (5min+ idle). Only observed on the interactive PTY path
+    // (claudePtyLauncher / claudeLocalLauncher) — SDK/remote mode never emits it.
+    // Chat-visible here also means CLI-forwarded, web-rendered, and included in
+    // session export (parity with turn_duration / compact_boundary).
+    'away_summary'
 ])
 
 export function isRoleWrappedRecord(value: unknown): value is RoleWrappedRecord {

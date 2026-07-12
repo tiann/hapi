@@ -81,4 +81,21 @@ describe("RawJSONLinesSchema", () => {
             expect((parsed as Record<string, unknown>).futureBreakdown).toEqual({ tokens: { in: 1, out: 2 } });
         });
     });
+
+    describe("system / away_summary record", () => {
+        it("preserves the recap text in `content` (not declared on the base schema, relies on passthrough)", () => {
+            // Claude code's away_summary record carries the recap text in `content`.
+            // If Zod strips undeclared fields, the recap text never reaches the hub/web.
+            const parsed = RawJSONLinesSchema.parse({
+                type: "system",
+                subtype: "away_summary",
+                uuid: "evt-4",
+                content: "Building X, next: wire up Y.",
+                timestamp: "2026-07-12T00:00:00.000Z",
+                isMeta: false
+            });
+            if (parsed.type !== "system") throw new Error("expected system record");
+            expect((parsed as Record<string, unknown>).content).toBe("Building X, next: wire up Y.");
+        });
+    });
 });

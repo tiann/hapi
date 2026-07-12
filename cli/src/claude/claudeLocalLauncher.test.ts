@@ -97,6 +97,16 @@ describe('claudeLocalLauncher message filtering', () => {
         expect(sentMessages).toHaveLength(2)
     })
 
+    it('forwards away_summary (auto recap) system messages', async () => {
+        const { session, sentMessages } = createSessionStub()
+        await claudeLocalLauncher(session as never)
+
+        harness.scannerOnMessage!({ type: 'system', subtype: 'away_summary', uuid: '1', content: 'recap text' })
+
+        expect(sentMessages).toHaveLength(1)
+        expect(sentMessages[0]).toMatchObject({ subtype: 'away_summary', content: 'recap text' })
+    })
+
     it('forwards normal conversation messages', async () => {
         const { session, sentMessages } = createSessionStub()
         await claudeLocalLauncher(session as never)
