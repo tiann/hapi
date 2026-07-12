@@ -2,7 +2,7 @@ import type { AgentFlavor } from '@hapi/protocol';
 import type { AgentBackend, AgentMessage, AgentSessionConfig, PermissionRequest, PermissionResponse, PromptContent } from '@/agent/types';
 import { asString, isObject } from '@hapi/protocol';
 import { AcpStdioTransport, type AcpStderrError } from './AcpStdioTransport';
-import { AcpMessageHandler } from './AcpMessageHandler';
+import { AcpMessageHandler, type AcpTextChunkMode } from './AcpMessageHandler';
 import { ACP_SESSION_UPDATE_TYPES } from './constants';
 import { logger } from '@/ui/logger';
 import { withRetry } from '@/utils/time';
@@ -101,7 +101,12 @@ export class AcpSdkBackend implements AgentBackend {
     private static readonly LATE_FLUSH_QUIET_PERIOD_MS = 250;
     private static readonly LATE_FLUSH_WINDOW_MS = 6000;
 
-    constructor(private readonly options: { command: string; args?: string[]; env?: Record<string, string> }) {}
+    constructor(private readonly options: {
+        command: string;
+        args?: string[];
+        env?: Record<string, string>;
+        textChunkMode?: AcpTextChunkMode;
+    }) {}
 
     async initialize(): Promise<void> {
         if (this.transport) return;
@@ -401,7 +406,7 @@ export class AcpSdkBackend implements AgentBackend {
             AcpSdkBackend.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS
         );
         this.messageHandler?.drainBuffers();
-        this.messageHandler = new AcpMessageHandler(onUpdate);
+        this.messageHandler = new AcpMessageHandler(onUpdate, { textChunkMode: this.options.textChunkMode });
         this.isProcessingMessage = true;
         this.lastSessionUpdateAt = Date.now();
         this.latestUsageUpdate = null;

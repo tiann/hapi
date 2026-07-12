@@ -23,7 +23,23 @@ const MODELS_WITHOUT_REASONING_SUMMARY = new Set([
     'gpt-5.3-codex-spark'
 ]);
 
+const MCP_ELICITATION_ONLY_APPROVAL_POLICY = {
+    granular: {
+        sandbox_approval: false,
+        rules: false,
+        skill_approval: false,
+        request_permissions: false,
+        mcp_elicitations: true
+    }
+} as const satisfies ApprovalPolicy;
+
 function resolveApprovalPolicy(mode: EnhancedMode): ApprovalPolicy {
+    if (mode.permissionMode === 'yolo' || mode.permissionMode === 'read-only') {
+        // Codex's `never` policy auto-declines MCP elicitations before app-server
+        // can forward them. Keep command/sandbox prompts disabled for Yolo and
+        // read-only while allowing auth and structured input to reach HAPI's UI.
+        return MCP_ELICITATION_ONLY_APPROVAL_POLICY;
+    }
     return resolveCodexPermissionModeConfig(mode.permissionMode).approvalPolicy;
 }
 

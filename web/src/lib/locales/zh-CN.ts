@@ -8,6 +8,9 @@ export default {
   'loading.files': '加载文件…',
   'loading.messages': '加载消息…',
   'loading.machines': '加载机器…',
+  'message.copy': '复制',
+  'message.copied': '已复制',
+  'message.info': '消息详情',
 
   // Login / Auth
   'login.title': 'HAPI',
@@ -200,6 +203,12 @@ export default {
   'session.export.toast.success.body': '已下载 {filename}',
   'session.export.toast.error.title': '导出失败',
 
+  // Mermaid diagrams
+  'mermaid.openFullscreen': '全屏查看图表',
+  'mermaid.viewerTitle': '图表',
+  'mermaid.loading': '正在加载图表…',
+  'mermaid.renderError': '无法渲染图表。',
+
   // Common buttons
   'button.cancel': '取消',
   'button.save': '保存',
@@ -220,7 +229,7 @@ export default {
   'newSession.type.simple': '简单',
   'newSession.type.simple.desc': '直接使用选定的目录',
   'newSession.type.worktree': '工作树',
-  'newSession.type.worktree.desc': '在仓库旁创建新工作树',
+  'newSession.type.worktree.desc': '在仓库旁创建新工作树（Cursor 使用原生 ~/.cursor/worktrees）',
   'newSession.type.worktree.placeholder': 'feature-x (默认 1228-xxxx)',
   'newSession.agent': '代理',
   'newSession.model': '模型',
@@ -340,6 +349,8 @@ export default {
   'file.page.download': '下载文件',
   'file.page.tab.diff': 'Diff',
   'file.page.tab.file': '文件',
+  'file.page.tab.source': '源码',
+  'file.page.tab.preview': '预览',
   'file.page.missingPath': '未提供文件路径。',
   'file.page.binary': '该文件看起来是二进制文件，无法显示。',
   'file.page.imagePreviewAlt': '{name} 图片预览',
@@ -401,6 +412,7 @@ export default {
   'tool.requestUserInput.textPlaceholder': '输入您的答案…',
   'tool.requestUserInput.noteLabel': '补充说明（可选）',
   'tool.requestUserInput.notePlaceholder': '添加备注…',
+  'tool.requestUserInput.popupBlocked': '无法打开登录页面。请允许弹出窗口后重试。',
   'toolGroup.title': '工具活动',
   'toolGroup.primary.fileTargets': '{target} 等 +{n}',
   'toolGroup.primary.commandTargets': '{target} 等 +{n}',

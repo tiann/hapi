@@ -32,35 +32,93 @@ describe('convertCodexEvent', () => {
         expect(result?.userMessage).toBe('hello user');
     });
 
-    it('converts response_item user messages', () => {
+    it('converts completed plan items into proposed plan messages', () => {
         const result = convertCodexEvent({
+            type: 'event_msg',
+            payload: {
+                type: 'item_completed',
+                turn_id: 'turn-1',
+                item: { type: 'Plan', id: 'plan-1', text: '## Plan\n\n1. Inspect\n2. Implement' }
+            }
+        });
+
+        expect(result?.message).toMatchObject({
+            type: 'proposed_plan',
+            plan: '## Plan\n\n1. Inspect\n2. Implement',
+            id: 'plan-1',
+            turnId: 'turn-1'
+        });
+    });
+
+    it('ignores empty completed plan items', () => {
+        const result = convertCodexEvent({
+            type: 'event_msg',
+            payload: {
+                type: 'item_completed',
+                turn_id: 'turn-1',
+                item: { type: 'Plan', id: 'plan-1', text: '   ' }
+            }
+        });
+
+        expect(result).toBeNull();
+    });
+
+    it('ignores completed plan items without a turn id', () => {
+        const result = convertCodexEvent({
+            type: 'event_msg',
+            payload: {
+                type: 'item_completed',
+                item: { type: 'Plan', id: 'plan-1', text: '## Plan' }
+            }
+        });
+
+        expect(result).toBeNull();
+    });
+
+    it.each(['task_complete', 'turn_aborted', 'task_failed'])('converts %s into a turn boundary', (type) => {
+        const result = convertCodexEvent({
+            type: 'event_msg',
+            payload: { type, turn_id: 'turn-1' }
+        });
+
+        expect(result).toEqual({ finishedTurnId: 'turn-1' });
+    });
+
+    it.each([
+        ['user text', {
             type: 'response_item',
             payload: {
                 type: 'message',
                 role: 'user',
                 content: [{ type: 'input_text', text: 'hello from response_item user' }]
             }
-        });
-
-        expect(result).toEqual({
-            userMessage: 'hello from response_item user'
-        });
-    });
-
-    it('converts response_item assistant messages', () => {
-        const result = convertCodexEvent({
+        }],
+        ['user image', {
+            type: 'response_item',
+            payload: {
+                type: 'message',
+                role: 'user',
+                content: [{ type: 'input_image', image_url: 'data:image/png;base64,abc' }]
+            }
+        }],
+        ['assistant text', {
             type: 'response_item',
             payload: {
                 type: 'message',
                 role: 'assistant',
                 content: [{ type: 'output_text', text: 'hello from response_item assistant' }]
             }
-        });
-
-        expect(result?.message).toMatchObject({
-            type: 'message',
-            message: 'hello from response_item assistant'
-        });
+        }],
+        ['injected user context', {
+            type: 'response_item',
+            payload: {
+                type: 'message',
+                role: 'user',
+                content: [{ type: 'input_text', text: '# AGENTS.md\n<environment_context>hidden context</environment_context>' }]
+            }
+        }]
+    ])('ignores %s response_item messages', (_name, event) => {
+        expect(convertCodexEvent(event)).toBeNull();
     });
 
     it('converts reasoning events', () => {

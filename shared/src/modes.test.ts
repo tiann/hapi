@@ -80,6 +80,14 @@ describe('isPermissionModeAllowedForFlavor', () => {
         expect(isPermissionModeAllowedForFlavor('safe-yolo', 'pi')).toBe(false)
         expect(isPermissionModeAllowedForFlavor('ask', 'pi')).toBe(false)
     })
+
+    test("cursor includes autoReview", () => {
+        expect(getPermissionModesForFlavor('cursor')).toContain('autoReview')
+        expect(getPermissionModeLabel('autoReview')).toBe('Auto-review')
+        expect(getPermissionModeTone('autoReview')).toBe('warning')
+        expect(isPermissionModeAllowedForFlavor('autoReview', 'cursor')).toBe(true)
+        expect(isPermissionModeAllowedForFlavor('autoReview', 'claude')).toBe(false)
+    })
 })
 
 describe('getPermissionModeLabel', () => {

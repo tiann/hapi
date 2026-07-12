@@ -54,22 +54,11 @@ describe('buildMessageMetadataLabels', () => {
         expect(parts).toContain('Duration: 0.0s')
     })
 
-    it('does not drop an Invoke line when invokedAt is the unix epoch', () => {
-        const parts = buildMessageMetadataLabels({ invokedAt: 0 })
-        expect(parts.some(p => p.startsWith('Invoke:'))).toBe(true)
-    })
-
-    it('omits the Invoke line when invokedAt is null or undefined', () => {
-        expect(buildMessageMetadataLabels({ invokedAt: null }).some(p => p.startsWith('Invoke:'))).toBe(false)
-        expect(buildMessageMetadataLabels({}).some(p => p.startsWith('Invoke:'))).toBe(false)
-    })
-
     // Proof of Invariance — single-turn inputs (turnCount omitted, or < 2)
     // must produce byte-identical output to the pre-aggregate footer so
     // existing single-turn cards do not regress visually.
     it('single-turn input is byte-identical with or without turnCount=1', () => {
         const base = {
-            invokedAt: 1700000000000,
             durationMs: 1234,
             model: 'claude-sonnet-4-6',
             usage: { input_tokens: 3, output_tokens: 19, service_tier: 'standard' }
@@ -84,7 +73,6 @@ describe('buildMessageMetadataLabels', () => {
     // formatting would surface visually in single-turn cards.
     it('pre-aggregate single-turn call produces the exact label sequence', () => {
         const parts = buildMessageMetadataLabels({
-            invokedAt: 1700000000000,
             durationMs: 1234,
             model: 'claude-sonnet-4-6',
             usage: { input_tokens: 3, output_tokens: 19, service_tier: 'standard' }
@@ -92,9 +80,7 @@ describe('buildMessageMetadataLabels', () => {
         // The Invoke value depends on the runner's timezone, so match its
         // shape rather than a literal time string. The remaining labels are
         // timezone-independent and locked exactly.
-        expect(parts).toHaveLength(4)
-        expect(parts[0]).toMatch(/^Invoke: \d{2}:\d{2}:\d{2}$/)
-        expect(parts.slice(1)).toEqual([
+        expect(parts).toEqual([
             'Duration: 1.2s',
             'Model: claude-sonnet-4-6',
             'Usage: 22 billable tokens (3 in / 19 out)'
@@ -103,7 +89,6 @@ describe('buildMessageMetadataLabels', () => {
 
     it('switches to Models/Total/N turns labels only when turnCount >= 2', () => {
         const parts = buildMessageMetadataLabels({
-            invokedAt: 1700000000000,
             model: 'claude-sonnet-4-6, claude-haiku-4-5-20251001',
             usage: { input_tokens: 100, output_tokens: 200, service_tier: 'standard' },
             turnCount: 3
@@ -119,7 +104,6 @@ describe('buildMessageMetadataLabels', () => {
         // Mid-session model switch is rare; the common multi-turn case is one
         // model repeated across N turns. The label must stay singular then.
         const parts = buildMessageMetadataLabels({
-            invokedAt: 1700000000000,
             model: 'claude-sonnet-4-6',
             usage: { input_tokens: 10, output_tokens: 20, service_tier: 'standard' },
             turnCount: 2
@@ -131,7 +115,6 @@ describe('buildMessageMetadataLabels', () => {
 
     it('omits Duration on aggregated footers when durationMs is undefined', () => {
         const parts = buildMessageMetadataLabels({
-            invokedAt: 1700000000000,
             model: 'claude-sonnet-4-6, claude-haiku-4-5-20251001',
             usage: { input_tokens: 10, output_tokens: 20, service_tier: 'standard' },
             turnCount: 2

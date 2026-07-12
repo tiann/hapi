@@ -16,6 +16,8 @@ import type {
     TurnStartResponse,
     TurnInterruptParams,
     TurnInterruptResponse,
+    ThreadRollbackParams,
+    ThreadRollbackResponse,
     ThreadCompactStartParams,
     ThreadCompactStartResponse,
     ThreadGoalSetParams,
@@ -205,6 +207,18 @@ export class CodexAppServerClient extends JsonLineParser {
             timeoutMs: 30_000
         });
         return response as TurnInterruptResponse;
+    }
+
+    /**
+     * Deprecated upstream, but still required to match Codex's native
+     * safety-buffering retry flow. Keep the protocol call isolated here so it
+     * can be replaced when app-server exposes a successor.
+     */
+    async rollbackThread(params: ThreadRollbackParams): Promise<ThreadRollbackResponse> {
+        const response = await this.sendRequest('thread/rollback', params, {
+            timeoutMs: 30_000
+        });
+        return response as ThreadRollbackResponse;
     }
 
     async compactThread(

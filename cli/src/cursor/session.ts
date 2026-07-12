@@ -14,6 +14,10 @@ type CursorModelApplyHandler = (model: string | null | undefined) => Promise<str
 
 export class CursorSession extends AgentSessionBase<EnhancedMode> {
     readonly cursorArgs?: string[];
+    /** Cursor-native `--worktree` name (`true` = flag without name). */
+    readonly cursorWorktree?: boolean | string;
+    /** Extra `--add-dir` roots for Cursor ACP spawn. */
+    readonly cursorAddDirs?: readonly string[];
     model?: string;
     readonly startedBy: 'runner' | 'terminal';
     readonly startingMode: 'local' | 'remote';
@@ -32,6 +36,8 @@ export class CursorSession extends AgentSessionBase<EnhancedMode> {
         startedBy: 'runner' | 'terminal';
         startingMode: 'local' | 'remote';
         cursorArgs?: string[];
+        cursorWorktree?: boolean | string;
+        cursorAddDirs?: readonly string[];
         model?: string;
         permissionMode?: PermissionMode;
     }) {
@@ -55,6 +61,8 @@ export class CursorSession extends AgentSessionBase<EnhancedMode> {
         });
 
         this.cursorArgs = opts.cursorArgs;
+        this.cursorWorktree = opts.cursorWorktree;
+        this.cursorAddDirs = opts.cursorAddDirs;
         this.model = opts.model;
         this.startedBy = opts.startedBy;
         this.startingMode = opts.startingMode;

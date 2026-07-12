@@ -47,7 +47,7 @@ export type KimiPermissionMode = typeof KIMI_PERMISSION_MODES[number]
 export const OPENCODE_PERMISSION_MODES = ['default', 'plan', 'yolo'] as const
 export type OpencodePermissionMode = typeof OPENCODE_PERMISSION_MODES[number]
 
-export const CURSOR_PERMISSION_MODES = ['default', 'plan', 'ask', 'debug', 'yolo'] as const
+export const CURSOR_PERMISSION_MODES = ['default', 'plan', 'ask', 'debug', 'autoReview', 'yolo'] as const
 export type CursorPermissionMode = typeof CURSOR_PERMISSION_MODES[number]
 
 export const PERMISSION_MODES = [
@@ -58,6 +58,7 @@ export const PERMISSION_MODES = [
     'plan',
     'ask',
     'debug',
+    'autoReview',
     'read-only',
     'safe-yolo',
     'yolo'
@@ -72,6 +73,7 @@ export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
     plan: 'Plan Mode',
     ask: 'Ask Mode',
     debug: 'Debug Mode',
+    autoReview: 'Auto-review',
     bypassPermissions: 'Yolo',
     'read-only': 'Read Only',
     'safe-yolo': 'Safe Yolo',
@@ -87,6 +89,7 @@ export const PERMISSION_MODE_TONES: Record<PermissionMode, PermissionModeTone> =
     plan: 'info',
     ask: 'info',
     debug: 'info',
+    autoReview: 'warning',
     bypassPermissions: 'danger',
     'read-only': 'warning',
     'safe-yolo': 'warning',

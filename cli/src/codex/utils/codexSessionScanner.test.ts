@@ -163,4 +163,30 @@ describe('codexSessionScanner', () => {
         expect(events).toHaveLength(1);
         expect(events[0]?.payload).toEqual({ type: 'agent_message', message: 'after-truncate' });
     });
+
+    it('retries an unterminated final record after it is completed', async () => {
+        await writeFile(
+            transcriptPath,
+            JSON.stringify({ type: 'session_meta', payload: { id: 'session-partial' } }) + '\n'
+        );
+        scanner = await createCodexSessionScanner({
+            transcriptPath,
+            onEvent: (event) => events.push(event)
+        });
+        const event = JSON.stringify({
+            type: 'event_msg',
+            payload: { type: 'agent_message', message: 'completed later' }
+        });
+        const splitAt = Math.floor(event.length / 2);
+
+        await appendFile(transcriptPath, event.slice(0, splitAt));
+        await wait(300);
+        expect(events).toEqual([]);
+
+        await appendFile(transcriptPath, event.slice(splitAt));
+        await wait(700);
+
+        expect(events).toHaveLength(1);
+        expect(events[0]?.payload).toEqual({ type: 'agent_message', message: 'completed later' });
+    });
 });

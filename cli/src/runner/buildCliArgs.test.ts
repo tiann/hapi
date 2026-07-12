@@ -93,7 +93,7 @@ describe('buildCliArgs', () => {
     })
 
     it('validates all known permission modes', () => {
-        for (const mode of ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan', 'ask', 'read-only', 'safe-yolo', 'yolo']) {
+        for (const mode of ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan', 'ask', 'debug', 'autoReview', 'read-only', 'safe-yolo', 'yolo']) {
             const args = buildCliArgs('claude', {
                 directory: '/tmp',
                 permissionMode: mode,
@@ -101,6 +101,34 @@ describe('buildCliArgs', () => {
             expect(args).toContain('--permission-mode')
             expect(args).toContain(mode)
         }
+    })
+
+    it('passes --cursor-worktree for cursor worktree sessions', () => {
+        const args = buildCliArgs('cursor', {
+            directory: '/tmp/repo',
+            sessionType: 'worktree',
+            worktreeName: 'feature-x',
+        })
+        expect(args).toContain('--cursor-worktree')
+        expect(args).toContain('feature-x')
+    })
+
+    it('passes bare --cursor-worktree when name is omitted', () => {
+        const args = buildCliArgs('cursor', {
+            directory: '/tmp/repo',
+            sessionType: 'worktree',
+        })
+        expect(args).toContain('--cursor-worktree')
+        expect(args[args.length - 1]).toBe('--cursor-worktree')
+    })
+
+    it('does not pass --cursor-worktree for non-cursor worktree sessions', () => {
+        const args = buildCliArgs('claude', {
+            directory: '/tmp/repo',
+            sessionType: 'worktree',
+            worktreeName: 'feature-x',
+        })
+        expect(args).not.toContain('--cursor-worktree')
     })
 
     it('uses --session-id for pi resume (not --resume)', () => {

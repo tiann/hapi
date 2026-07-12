@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
+    applyModelChangeWithReasoningRollback,
     buildGoalStateMessages,
     isScratchlistHotkeyBlockedTarget,
     isScratchlistToggleHotkey,
@@ -8,6 +9,42 @@ import {
 } from './SessionChat'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import type { AttachmentMetadata, DecryptedMessage } from '@/types/api'
+
+describe('applyModelChangeWithReasoningRollback', () => {
+    it('restores the previous effort when the model switch fails after clearing it', async () => {
+        const modelError = new Error('model switch failed')
+        const setModel = vi.fn(async () => { throw modelError })
+        const setModelReasoningEffort = vi.fn(async () => {})
+
+        await expect(applyModelChangeWithReasoningRollback({
+            model: 'gpt-next',
+            previousModelReasoningEffort: 'extreme',
+            shouldClearReasoningEffort: true,
+            setModel,
+            setModelReasoningEffort
+        })).rejects.toBe(modelError)
+
+        expect(setModelReasoningEffort.mock.calls).toEqual([[null], ['extreme']])
+        expect(setModel).toHaveBeenCalledWith('gpt-next')
+    })
+
+    it('keeps the cleared effort when the model switch succeeds', async () => {
+        const setModel = vi.fn(async () => {})
+        const setModelReasoningEffort = vi.fn(async () => {})
+
+        await applyModelChangeWithReasoningRollback({
+            model: 'gpt-next',
+            previousModelReasoningEffort: 'extreme',
+            shouldClearReasoningEffort: true,
+            setModel,
+            setModelReasoningEffort
+        })
+
+        expect(setModelReasoningEffort).toHaveBeenCalledOnce()
+        expect(setModelReasoningEffort).toHaveBeenCalledWith(null)
+        expect(setModel).toHaveBeenCalledWith('gpt-next')
+    })
+})
 
 function userMessage(props: {
     id: string

@@ -10,6 +10,10 @@ describe('getContextBudgetTokens', () => {
         expect(getContextBudgetTokens('claude-sonnet-4-6', 'claude')).toBe(190_000)
     })
 
+    it('uses the large budget for a full Claude model name carrying a [1m] suffix', () => {
+        expect(getContextBudgetTokens('claude-opus-4-8[1m]', 'claude')).toBe(990_000)
+    })
+
     it('uses Codex app-server context window with headroom', () => {
         expect(getContextBudgetTokens('gpt-5.4', 'codex')).toBe(248_400)
     })

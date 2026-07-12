@@ -7,20 +7,7 @@ import { CODEX_PERMISSION_MODES } from '@hapi/protocol/modes'
 import type { CodexPermissionMode } from '@hapi/protocol/types'
 import type { ReasoningEffort } from '@/codex/appServerTypes'
 import { assertCodexLocalSupported } from '@/codex/utils/codexVersion'
-
-function parseReasoningEffort(value: string): ReasoningEffort {
-    switch (value) {
-        case 'none':
-        case 'minimal':
-        case 'low':
-        case 'medium':
-        case 'high':
-        case 'xhigh':
-            return value
-        default:
-            throw new Error('Invalid --model-reasoning-effort value')
-    }
-}
+import { parseReasoningEffortValue } from '@/codex/utils/reasoningEffort'
 
 // Mirror the web /service-tier endpoint's enum so the internal resume spawn
 // path can never seed/persist an unsupported tier string.
@@ -86,7 +73,7 @@ export const codexCommand: CommandDefinition = {
                     if (!effort) {
                         throw new Error('Missing --model-reasoning-effort value')
                     }
-                    options.modelReasoningEffort = parseReasoningEffort(effort)
+                    options.modelReasoningEffort = parseReasoningEffortValue(effort)
                 } else if (arg === '--service-tier') {
                     const tier = commandArgs[++i]
                     if (!tier) {
@@ -106,7 +93,11 @@ export const codexCommand: CommandDefinition = {
             }
 
             await initializeToken()
-            await maybeAutoStartServer()
+            if (options.startedBy === 'runner') {
+                await maybeAutoStartServer()
+            } else {
+                void maybeAutoStartServer({ waitForReady: false, quiet: true })
+            }
             await authAndSetupMachineIfNeeded()
             await runCodex(options)
         } catch (error) {

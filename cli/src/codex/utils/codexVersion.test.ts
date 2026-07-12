@@ -18,6 +18,7 @@ vi.mock('cross-spawn', () => ({
 
 import {
     assertCodexLocalSupported,
+    CODEX_VERSION_TIMEOUT_MS,
     isCodexVersionAtLeast,
     MIN_CODEX_HOOKS_VERSION,
     parseCodexVersion
@@ -74,7 +75,8 @@ describe('codexVersion', () => {
                 'node',
                 [codexScriptPath, '--version'],
                 expect.objectContaining({
-                    encoding: 'utf8'
+                    encoding: 'utf8',
+                    timeout: CODEX_VERSION_TIMEOUT_MS
                 })
             )
         })

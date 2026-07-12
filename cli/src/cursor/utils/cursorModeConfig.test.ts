@@ -3,6 +3,7 @@ import type { AcpSdkBackend } from '@/agent/backends/acp';
 import {
     applyCursorAcpModel,
     applyCursorAcpMode,
+    isCursorAutoReviewMode,
     resolveCursorAcpWireId,
     toCursorAcpMode,
     wireIdForCursorSessionState
@@ -19,9 +20,12 @@ describe('toCursorAcpMode', () => {
     it('maps HAPI cursor modes to Cursor ACP modes', () => {
         expect(toCursorAcpMode('default')).toBe('agent');
         expect(toCursorAcpMode('yolo')).toBe('agent');
+        expect(toCursorAcpMode('autoReview')).toBe('agent');
         expect(toCursorAcpMode('plan')).toBe('plan');
         expect(toCursorAcpMode('ask')).toBe('ask');
         expect(toCursorAcpMode('debug')).toBe('debug');
+        expect(isCursorAutoReviewMode('autoReview')).toBe(true);
+        expect(isCursorAutoReviewMode('yolo')).toBe(false);
         expect(toCursorAcpMode(undefined)).toBe('agent');
     });
 });

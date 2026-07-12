@@ -148,6 +148,10 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         this.client.sendUserMessage(text);
     };
 
+    notifyUserActivity = (): void => {
+        this.client.notifyUserActivity();
+    };
+
     sendSessionEvent = (event: Parameters<ApiSessionClient['sendSessionEvent']>[0]): void => {
         this.client.sendSessionEvent(event);
     };
