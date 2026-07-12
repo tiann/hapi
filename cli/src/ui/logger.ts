@@ -13,6 +13,25 @@ import { join, basename } from 'node:path'
 import { readRunnerState } from '@/persistence'
 
 /**
+ * Convert a value into something JSON-serializable for logs.
+ *
+ * `JSON.stringify(new Error(...))` returns `"{}"` because Error's own
+ * properties are non-enumerable, which silently swallowed real failures
+ * (e.g. "response stream error {}"). Surface name/message/stack instead so
+ * the true cause reaches the logs and, downstream, the web UI.
+ */
+function serializeLogArg(arg: unknown): unknown {
+  if (arg instanceof Error) {
+    return {
+      name: arg.name,
+      message: arg.message,
+      stack: arg.stack
+    }
+  }
+  return arg
+}
+
+/**
  * Consistent date/time formatting functions
  */
 function createTimestampForFilename(date: Date = new Date()): string {
@@ -44,7 +63,7 @@ function getSessionLogPath(): string {
   return join(configuration.logsDir, filename)
 }
 
-class Logger {
+export class Logger {
   private dangerouslyUnencryptedServerLoggingUrl: string | undefined
 
   constructor(
@@ -89,6 +108,10 @@ class Logger {
 
     // Some of our messages are huge, but we still want to show them in the logs
     const truncateStrings = (obj: unknown): unknown => {
+      if (obj instanceof Error) {
+        return truncateStrings(serializeLogArg(obj))
+      }
+
       if (typeof obj === 'string') {
         return obj.length > maxStringLength 
           ? obj.substring(0, maxStringLength) + '... [truncated for logs]'
@@ -187,8 +210,8 @@ class Logger {
         body: JSON.stringify({
           timestamp: new Date().toISOString(),
           level,
-          message: `${message} ${args.map(a => 
-            typeof a === 'object' ? JSON.stringify(a, null, 2) : String(a)
+          message: `${message} ${args.map(a =>
+            typeof a === 'object' ? JSON.stringify(serializeLogArg(a), null, 2) : String(a)
           ).join(' ')}`,
           source: 'cli',
           platform: process.platform
@@ -200,8 +223,8 @@ class Logger {
   }
 
   private logToFile(prefix: string, message: string, ...args: unknown[]): void {
-    const logLine = `${prefix} ${message} ${args.map(arg => 
-      typeof arg === 'string' ? arg : JSON.stringify(arg)
+    const logLine = `${prefix} ${message} ${args.map(arg =>
+      typeof arg === 'string' ? arg : JSON.stringify(serializeLogArg(arg))
     ).join(' ')}\n`
     
     // Send to remote server if configured

@@ -17,6 +17,7 @@ import { App } from '@/App'
 import { SessionChat } from '@/components/SessionChat'
 import { SessionList } from '@/components/SessionList'
 import { CodexSessionSyncDialog } from '@/components/CodexSessionSyncDialog'
+import { ClaudeSessionSyncDialog } from '@/components/ClaudeSessionSyncDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { NewSession } from '@/components/NewSession'
 import { WorkspaceBrowser } from '@/components/WorkspaceBrowser'
@@ -42,7 +43,8 @@ import { clearDraftsAfterSend } from '@/lib/clearDraftsAfterSend'
 import { inactiveSessionCanResume } from '@/lib/sessionResume'
 import { markSessionSeen } from '@/lib/sessionLastSeen'
 import { clearCodexImportedSession, markCodexSessionsImported } from '@/lib/codexImportedSessions'
-import type { Machine, CodexDuplicateSessionGroup, CodexLocalSessionSummary } from '@/types/api'
+import { clearClaudeImportedSession, markClaudeSessionsImported } from '@/lib/claudeImportedSessions'
+import type { Machine, CodexDuplicateSessionGroup, CodexLocalSessionSummary, ClaudeLocalSessionSummary } from '@/types/api'
 import FilesPage from '@/routes/sessions/files'
 import FilePage from '@/routes/sessions/file'
 import TerminalPage from '@/routes/sessions/terminal'
@@ -111,6 +113,29 @@ function CodexImportIcon(props: { className?: string }) {
     )
 }
 
+function ClaudeImportIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            {/* 中文注释：导入箭头叠加一条向下入库的指示，和 Codex 入口图标区分，弱化“聊天”含义。 */}
+            <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+            <path d="M21 3v6h-6" />
+            <path d="M12 9v6" />
+            <path d="M9 12l3 3 3-3" />
+        </svg>
+    )
+}
+
 function FolderOpenIcon(props: { className?: string }) {
     return (
         <svg
@@ -175,6 +200,10 @@ function SessionsPage() {
     const [duplicateSessionGroups, setDuplicateSessionGroups] = useState<CodexDuplicateSessionGroup[]>([])
     const [isDuplicateMergeConfirmOpen, setIsDuplicateMergeConfirmOpen] = useState(false)
     const [isMergingDuplicateSessions, setIsMergingDuplicateSessions] = useState(false)
+    const [isSyncingClaudeSession, setIsSyncingClaudeSession] = useState(false)
+    const [claudeSessions, setClaudeSessions] = useState<ClaudeLocalSessionSummary[]>([])
+    const [isLoadingClaudeSessions, setIsLoadingClaudeSessions] = useState(false)
+    const [isClaudeSyncConfirmOpen, setIsClaudeSyncConfirmOpen] = useState(false)
 
     const handleRefresh = useCallback(() => {
         void refetch()
@@ -210,6 +239,9 @@ function SessionsPage() {
         markSessionSeen(selectedSessionId, selectedSession.updatedAt)
     }, [selectedSessionId, selectedSession?.updatedAt])
     const currentCodexSessionId = selectedSession?.metadata?.flavor === 'codex'
+        ? (selectedSession.metadata.agentSessionId ?? null)
+        : null
+    const currentClaudeSessionId = selectedSession?.metadata?.flavor === 'claude'
         ? (selectedSession.metadata.agentSessionId ?? null)
         : null
     const isSessionsIndex = pathname === '/sessions' || pathname === '/sessions/'
@@ -465,6 +497,64 @@ function SessionsPage() {
         t
     ])
 
+    const openClaudeImportDialog = useCallback(async () => {
+        if (isLoadingClaudeSessions) return
+
+        setIsClaudeSyncConfirmOpen(true)
+        setIsLoadingClaudeSessions(true)
+        try {
+            const result = await api.getClaudeSessions()
+            setClaudeSessions(result.sessions)
+        } catch (error) {
+            setClaudeSessions([])
+            addToast({
+                title: t('claudeSync.failed.title'),
+                body: t('claudeSync.failed.bodyWithReason', {
+                    reason: error instanceof Error ? error.message : t('dialog.error.default')
+                }),
+                sessionId: '',
+                url: ''
+            })
+        } finally {
+            setIsLoadingClaudeSessions(false)
+        }
+    }, [addToast, api, isLoadingClaudeSessions, t])
+
+    const handleImportClaudeSessions = useCallback(async (sessionIds: string[]) => {
+        if (isSyncingClaudeSession || isLoadingClaudeSessions) return
+
+        setIsSyncingClaudeSession(true)
+        try {
+            // 中文注释：弹窗提交本地 Claude session ID；后端直接读取这些 transcript 并导入到 Hapi。
+            const result = await api.syncClaudeSession({ sessionIds })
+            if (!result.success) {
+                throw new Error(result.error || t('claudeSync.failed.body'))
+            }
+
+            addToast({
+                title: t('claudeSync.success.title'),
+                body: t('claudeSync.success.body', { n: result.syncedCount ?? sessionIds.length }),
+                sessionId: '',
+                url: ''
+            })
+            // 中文注释：导入成功后先在浏览器侧记住这些 Claude session 的导入时间，供左侧会话列表显示特殊时间文案。
+            markClaudeSessionsImported(sessionIds)
+            setIsClaudeSyncConfirmOpen(false)
+            await refetch()
+        } catch (syncError) {
+            addToast({
+                title: t('claudeSync.failed.title'),
+                body: t('claudeSync.failed.bodyWithReason', {
+                    reason: syncError instanceof Error ? syncError.message : t('dialog.error.default')
+                }),
+                sessionId: '',
+                url: ''
+            })
+        } finally {
+            setIsSyncingClaudeSession(false)
+        }
+    }, [addToast, api, isLoadingClaudeSessions, isSyncingClaudeSession, refetch, t])
+
     return (
         <>
             <div className="flex h-full min-h-0">
@@ -488,6 +578,17 @@ function SessionsPage() {
                                 title={t('codexSync.tooltip')}
                             >
                                 <CodexImportIcon className={`h-5 w-5 ${isLoadingCodexSessions ? 'animate-spin' : ''}`} />
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => void openClaudeImportDialog()}
+                                disabled={isSyncingClaudeSession || isLoadingClaudeSessions}
+                                aria-label={t('claudeSync.tooltip')}
+                                aria-busy={isSyncingClaudeSession || isLoadingClaudeSessions}
+                                className="p-1.5 rounded-full text-[var(--app-hint)] hover:text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)] transition-colors disabled:opacity-60 disabled:cursor-wait"
+                                title={t('claudeSync.tooltip')}
+                            >
+                                <ClaudeImportIcon className={`h-5 w-5 ${isLoadingClaudeSessions ? 'animate-spin' : ''}`} />
                             </button>
                             <button
                                 type="button"
@@ -567,6 +668,16 @@ function SessionsPage() {
                 isPending={isSyncingCodexSession}
                 isRestartingCodexDesktop={isRestartingCodexDesktop}
                 isLoading={isLoadingCodexSessions}
+            />
+            {/* 中文注释：展示本地 Claude transcript 列表；默认尝试勾选当前 Hapi 会话关联的 Claude session。 */}
+            <ClaudeSessionSyncDialog
+                isOpen={isClaudeSyncConfirmOpen}
+                onClose={() => setIsClaudeSyncConfirmOpen(false)}
+                sessions={claudeSessions}
+                currentClaudeSessionId={currentClaudeSessionId}
+                onConfirm={handleImportClaudeSessions}
+                isPending={isSyncingClaudeSession}
+                isLoading={isLoadingClaudeSessions}
             />
             <ConfirmDialog
                 isOpen={isDuplicateMergeConfirmOpen && duplicateSessionGroups.length > 0}
@@ -746,6 +857,8 @@ function SessionPage() {
             clearDraftsAfterSend(sentSessionId, sessionId)
             // 中文注释：一旦用户已经在 Hapi 内继续这个 Codex 会话，就清除"刚从 Codex 导入"的标记。
             clearCodexImportedSession(session?.metadata?.codexSessionId)
+            // 中文注释：Claude 会话同理；用户在 Hapi 内继续后清除"刚从 Claude 导入"的标记。
+            clearClaudeImportedSession(session?.metadata?.claudeSessionId)
             // A successful send supersedes any previously-rendered error
             // for that session.  Other sessions' errors stay put.
             setSendErrors((prev) => {
