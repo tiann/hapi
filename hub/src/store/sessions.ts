@@ -187,18 +187,32 @@ export function getOrCreateSession(
     namespace: string,
     model?: string,
     effort?: string,
-    modelReasoningEffort?: string
+    modelReasoningEffort?: string,
+    requestedId?: string
 ): StoredSession {
     const existing = db.prepare(
         'SELECT * FROM sessions WHERE tag = ? AND namespace = ? ORDER BY created_at DESC LIMIT 1'
     ).get(tag, namespace) as DbSessionRow | undefined
 
     if (existing) {
+        if (requestedId && existing.id !== requestedId) {
+            throw new SessionIdentityConflictError('Session tag is already bound to a different id')
+        }
         return toStoredSession(existing)
     }
 
     const now = Date.now()
-    const id = randomUUID()
+    const id = requestedId ?? randomUUID()
+
+    if (requestedId) {
+        const existingById = getSession(db, requestedId)
+        if (existingById) {
+            if (existingById.namespace === namespace && existingById.tag === tag) {
+                return existingById
+            }
+            throw new SessionIdentityConflictError('Session id is already bound to a different session')
+        }
+    }
 
     const metadataJson = JSON.stringify(metadata)
     const agentStateJson = agentState === null || agentState === undefined ? null : JSON.stringify(agentState)
@@ -241,6 +255,13 @@ export function getOrCreateSession(
         throw new Error('Failed to create session')
     }
     return row
+}
+
+export class SessionIdentityConflictError extends Error {
+    constructor(message: string) {
+        super(message)
+        this.name = 'SessionIdentityConflictError'
+    }
 }
 
 export function updateSessionMetadata(

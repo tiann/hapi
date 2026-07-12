@@ -3,6 +3,7 @@ import { withBunRuntimeEnv } from '@/utils/bunRuntime'
 import { resolveCodexCommand } from './codexExecutable'
 
 export const MIN_CODEX_HOOKS_VERSION = '0.124.0'
+export const CODEX_VERSION_TIMEOUT_MS = 3_000
 
 const SEMVER_PATTERN = /\b(\d+)\.(\d+)\.(\d+)\b/
 
@@ -59,6 +60,7 @@ export function assertCodexLocalSupported(): void {
     const result = spawn.sync(codexCommand.command, [...codexCommand.args, '--version'], {
         encoding: 'utf8',
         env: withBunRuntimeEnv(),
+        timeout: CODEX_VERSION_TIMEOUT_MS,
         windowsHide: process.platform === 'win32'
     })
 

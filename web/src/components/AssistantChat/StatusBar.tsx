@@ -10,6 +10,7 @@ import type { AgentState, CodexCollaborationMode, PermissionMode } from '@/types
 import type { ConversationStatus } from '@/realtime/types'
 import type { ThreadGoal } from '@/types/api'
 import { getContextBudgetTokens } from '@/chat/modelConfig'
+import { formatCodexReasoningLabel, shouldShowCodexReasoningLabel } from '@/lib/codexStatusLabels'
 import { isFastServiceTier } from './codexFastMode'
 import { useTranslation } from '@/lib/use-translation'
 
@@ -124,12 +125,6 @@ function formatTokenCount(value: number): string {
     return String(value)
 }
 
-function formatCodexReasoningLabel(effort?: string | null): string {
-    const normalized = effort?.trim().toLowerCase()
-    if (!normalized || normalized === 'default') return 'reasoning default'
-    return `reasoning ${normalized}`
-}
-
 /** Cursor native ACP does not emit usage_update; hide the bar to avoid empty/misleading UI. */
 export function shouldShowComposerStatusBar(agentFlavor: string | null | undefined): boolean {
     return agentFlavor !== 'cursor'
@@ -202,7 +197,7 @@ export function StatusBar(props: {
     const collaborationModeLabel = displayCollaborationMode
         ? getCodexCollaborationModeLabel(displayCollaborationMode)
         : null
-    const codexReasoningLabel = (props.agentFlavor === 'codex' || props.agentFlavor === 'opencode')
+    const codexReasoningLabel = shouldShowCodexReasoningLabel(props.agentFlavor)
         ? formatCodexReasoningLabel(props.modelReasoningEffort)
         : null
     const codexFastMode = props.agentFlavor === 'codex'

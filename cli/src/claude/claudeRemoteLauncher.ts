@@ -105,7 +105,8 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
         const sdkToLogConverter = new SDKToLogConverter({
             sessionId: session.sessionId || 'unknown',
             cwd: session.path,
-            version: process.env.npm_package_version
+            version: process.env.npm_package_version,
+            selectedModel: session.getModel()
         }, permissionHandler.getResponses());
 
         const handleSessionFound = (sessionId: string) => {
@@ -318,6 +319,12 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 let p = pending;
                                 pending = null;
                                 permissionHandler.handleModeChange(p.mode.permissionMode);
+                                // Re-resolve the selected-model seed hint for every turn, not
+                                // just the first: a single claudeRemote() call keeps accepting
+                                // new turns (potentially with a different model, e.g. after a
+                                // mid-session model switch), so a construction-time snapshot
+                                // would go stale. See SDKToLogConverter.updateSelectedModel.
+                                sdkToLogConverter.updateSelectedModel(p.mode.model ?? null);
                                 return p;
                             }
 
@@ -332,6 +339,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 modeHash = msg.hash;
                                 mode = msg.mode;
                                 permissionHandler.handleModeChange(mode.permissionMode);
+                                sdkToLogConverter.updateSelectedModel(mode.model ?? null);
                                 return {
                                     message: msg.message,
                                     mode: msg.mode

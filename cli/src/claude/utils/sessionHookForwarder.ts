@@ -1,5 +1,7 @@
 import { request } from 'node:http';
 
+export const SESSION_HOOK_FORWARD_TIMEOUT_MS = 1_000;
+
 function logError(message: string, error?: unknown): void {
     const detail = error instanceof Error ? error.message : (error ? String(error) : '');
     const suffix = detail ? `: ${detail}` : '';
@@ -93,6 +95,13 @@ export async function runSessionHookForwarder(args: string[]): Promise<void> {
 
         let hadError = false;
         await new Promise<void>((resolve) => {
+            let settled = false;
+            let timedOut = false;
+            const finish = () => {
+                if (settled) return;
+                settled = true;
+                resolve();
+            };
             const req = request({
                 host: '127.0.0.1',
                 port,
@@ -111,16 +120,25 @@ export async function runSessionHookForwarder(args: string[]): Promise<void> {
                 res.on('error', (error) => {
                     hadError = true;
                     logError('Error reading hook server response', error);
-                    resolve();
+                    finish();
                 });
-                res.on('end', () => resolve());
+                res.on('end', finish);
                 res.resume();
             });
 
             req.on('error', (error) => {
                 hadError = true;
-                logError('Failed to send hook request', error);
-                resolve();
+                if (!timedOut) {
+                    logError('Failed to send hook request', error);
+                }
+                finish();
+            });
+            req.setTimeout(SESSION_HOOK_FORWARD_TIMEOUT_MS, () => {
+                timedOut = true;
+                hadError = true;
+                logError(`Hook request timed out after ${SESSION_HOOK_FORWARD_TIMEOUT_MS}ms`);
+                req.destroy();
+                finish();
             });
             req.end(body);
         });

@@ -8,6 +8,9 @@ export default {
   'loading.files': 'Loading files…',
   'loading.messages': 'Loading messages…',
   'loading.machines': 'Loading machines…',
+  'message.copy': 'Copy',
+  'message.copied': 'Copied',
+  'message.info': 'Message details',
 
   // Login / Auth
   'login.title': 'HAPI',
@@ -196,6 +199,12 @@ export default {
   'session.export.toast.success.body': 'Downloaded {filename}',
   'session.export.toast.error.title': 'Export failed',
 
+  // Mermaid diagrams
+  'mermaid.openFullscreen': 'Open diagram full screen',
+  'mermaid.viewerTitle': 'Diagram',
+  'mermaid.loading': 'Loading diagram…',
+  'mermaid.renderError': 'Could not render diagram.',
+
   // Common buttons
   'button.cancel': 'Cancel',
   'button.save': 'Save',
@@ -216,7 +225,7 @@ export default {
   'newSession.type.simple': 'Simple',
   'newSession.type.simple.desc': 'Use selected directory as-is',
   'newSession.type.worktree': 'Worktree',
-  'newSession.type.worktree.desc': 'Create a new worktree next to repo',
+  'newSession.type.worktree.desc': 'Create a new worktree next to repo (Cursor uses native ~/.cursor/worktrees)',
   'newSession.type.worktree.placeholder': 'feature-x (default 1228-xxxx)',
   'newSession.agent': 'Agent',
   'newSession.model': 'Model',
@@ -336,6 +345,8 @@ export default {
   'file.page.download': 'Download file',
   'file.page.tab.diff': 'Diff',
   'file.page.tab.file': 'File',
+  'file.page.tab.source': 'Source',
+  'file.page.tab.preview': 'Preview',
   'file.page.missingPath': 'No file path provided.',
   'file.page.binary': 'This looks like a binary file. It cannot be displayed.',
   'file.page.imagePreviewAlt': 'Image preview for {name}',
@@ -397,6 +408,7 @@ export default {
   'tool.requestUserInput.textPlaceholder': 'Type your answer…',
   'tool.requestUserInput.noteLabel': 'Additional note (optional)',
   'tool.requestUserInput.notePlaceholder': 'Add a note…',
+  'tool.requestUserInput.popupBlocked': 'Could not open the sign-in page. Allow popups and try again.',
   'toolGroup.title': 'Tool activity',
   'toolGroup.primary.fileTargets': '{target} +{n}',
   'toolGroup.primary.commandTargets': '{target} +{n}',

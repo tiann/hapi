@@ -14,7 +14,13 @@ export function toCursorAcpMode(mode: CursorPermissionMode | undefined): CursorA
     if (mode === 'plan') return 'plan';
     if (mode === 'ask') return 'ask';
     if (mode === 'debug') return 'debug';
+    // autoReview / yolo / default map to agent; auto-review is a spawn flag + slash, not ACP mode.
     return 'agent';
+}
+
+/** True when HAPI permission mode should spawn/toggle Cursor Auto-review. */
+export function isCursorAutoReviewMode(mode: CursorPermissionMode | undefined): boolean {
+    return mode === 'autoReview';
 }
 
 function resolveAcpModeConfigValue(
@@ -28,7 +34,7 @@ function resolveAcpModeConfigValue(
     if (optionValues.includes(acpMode)) {
         return acpMode;
     }
-    if (mode === 'yolo' || mode === 'default') {
+    if (mode === 'yolo' || mode === 'default' || mode === 'autoReview') {
         if (optionValues.includes('agent')) {
             return 'agent';
         }

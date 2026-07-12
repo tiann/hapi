@@ -70,11 +70,13 @@ function createSessionStub(
     codexArgs?: string[],
     path = '/tmp/worktree',
     initialTranscriptPath: string | null = null,
-    replayTranscriptHistoryOnStart = false
+    replayTranscriptHistoryOnStart = false,
+    pendingClient = false
 ) {
     const sessionEvents: Array<{ type: string; message?: string }> = [];
     const userMessages: string[] = [];
     const agentMessages: unknown[] = [];
+    let userActivityCount = 0;
     let localLaunchFailure: { message: string; exitReason: 'switch' | 'exit' } | null = null;
     let sessionId: string | null = null;
     let transcriptPath: string | null = initialTranscriptPath;
@@ -94,6 +96,7 @@ function createSessionStub(
             codexArgs,
             replayTranscriptHistoryOnStart,
             client: {
+                isPending: () => pendingClient,
                 rpcHandlerManager: {
                     registerHandler: () => {}
                 }
@@ -130,6 +133,9 @@ function createSessionStub(
             sendUserMessage: (message: string) => {
                 userMessages.push(message);
             },
+            notifyUserActivity: () => {
+                userActivityCount += 1;
+            },
             sendAgentMessage: (message: unknown) => {
                 agentMessages.push(message);
             },
@@ -138,6 +144,7 @@ function createSessionStub(
         sessionEvents,
         userMessages,
         agentMessages,
+        getUserActivityCount: () => userActivityCount,
         getLocalLaunchFailure: () => localLaunchFailure
     };
 }
@@ -354,6 +361,68 @@ describe('codexLocalLauncher', () => {
         });
     });
 
+    it('falls back to fresh transcript activity when SessionStart does not arrive', async () => {
+        const originalCodexHome = process.env.CODEX_HOME;
+        process.env.CODEX_HOME = tempDir;
+        const now = new Date();
+        const sessionDirectory = join(
+            tempDir,
+            'sessions',
+            String(now.getUTCFullYear()),
+            String(now.getUTCMonth() + 1).padStart(2, '0'),
+            String(now.getUTCDate()).padStart(2, '0')
+        );
+        await mkdir(sessionDirectory, { recursive: true });
+        const transcriptPath = join(sessionDirectory, 'rollout-fallback-thread.jsonl');
+        const { session, userMessages } = createSessionStub(
+            'default',
+            ['--cd', '/tmp/effective-codex-cwd'],
+            '/tmp/worktree',
+            null,
+            true,
+            true
+        );
+        let releaseRunBarrier: (() => void) | undefined;
+        harness.runBarrier = new Promise((resolve) => {
+            releaseRunBarrier = resolve;
+        });
+
+        try {
+            const launcherPromise = codexLocalLauncher(session as never);
+            await vi.waitFor(() => expect(harness.launches).toHaveLength(1));
+            expect(session.sessionId).toBeNull();
+
+            await writeFile(transcriptPath, [
+                JSON.stringify({
+                    type: 'session_meta',
+                    payload: { id: 'fallback-thread', cwd: '/tmp/effective-codex-cwd' }
+                }),
+                JSON.stringify({
+                    timestamp: new Date().toISOString(),
+                    type: 'event_msg',
+                    payload: { type: 'user_message', message: 'fallback prompt' }
+                })
+            ].join('\n') + '\n');
+
+            await vi.waitFor(
+                () => expect(session.sessionId).toBe('fallback-thread'),
+                { timeout: 3_000, interval: 50 }
+            );
+            if (releaseRunBarrier) releaseRunBarrier();
+            await launcherPromise;
+
+            expect(session.transcriptPath).toBe(transcriptPath);
+            expect(userMessages).toContain('fallback prompt');
+        } finally {
+            if (releaseRunBarrier) releaseRunBarrier();
+            if (originalCodexHome === undefined) {
+                delete process.env.CODEX_HOME;
+            } else {
+                process.env.CODEX_HOME = originalCodexHome;
+            }
+        }
+    });
+
     it('replays existing transcript messages when importing a Codex thread into a new Hapi session', async () => {
         const transcriptPath = join(tempDir, 'codex-import-transcript.jsonl');
         const { session, agentMessages } = createSessionStub('default', undefined, '/tmp/worktree', null, true);
@@ -390,9 +459,9 @@ describe('codexLocalLauncher', () => {
         });
     });
 
-    it('replays existing response_item chat messages when importing a Codex thread into a new Hapi session', async () => {
+    it('replays semantic chat events once and keeps a same-turn preface before its plan', async () => {
         const transcriptPath = join(tempDir, 'codex-import-response-item-transcript.jsonl');
-        const { session, userMessages, agentMessages } = createSessionStub('default', undefined, '/tmp/worktree', null, true);
+        const { session, userMessages, agentMessages, getUserActivityCount } = createSessionStub('default', undefined, '/tmp/worktree', null, true);
         let releaseRunBarrier: (() => void) | undefined;
         harness.runBarrier = new Promise((resolve) => {
             releaseRunBarrier = resolve;
@@ -407,7 +476,23 @@ describe('codexLocalLauncher', () => {
                     payload: {
                         type: 'message',
                         role: 'user',
-                        content: [{ type: 'input_text', text: 'old response_item user message' }]
+                        content: [{ type: 'input_text', text: 'visible user message' }]
+                    }
+                }),
+                JSON.stringify({
+                    type: 'event_msg',
+                    payload: { type: 'user_message', message: 'visible user message' }
+                }),
+                JSON.stringify({
+                    type: 'event_msg',
+                    payload: {
+                        type: 'item_completed',
+                        turn_id: 'turn-with-preface',
+                        item: {
+                            type: 'Plan',
+                            id: 'plan-1',
+                            text: '## Proposed plan\n\n1. Inspect\n2. Implement'
+                        }
                     }
                 }),
                 JSON.stringify({
@@ -415,7 +500,31 @@ describe('codexLocalLauncher', () => {
                     payload: {
                         type: 'message',
                         role: 'assistant',
-                        content: [{ type: 'output_text', text: 'old response_item assistant message' }]
+                        content: [{
+                            type: 'output_text',
+                            text: 'visible assistant preface\n\n<proposed_plan>## Proposed plan\n\n1. Inspect\n2. Implement</proposed_plan>'
+                        }],
+                        internal_chat_message_metadata_passthrough: { turn_id: 'turn-with-preface' }
+                    }
+                }),
+                JSON.stringify({
+                    type: 'event_msg',
+                    payload: {
+                        type: 'agent_message',
+                        message: 'visible assistant preface',
+                        phase: 'final_answer'
+                    }
+                }),
+                JSON.stringify({
+                    type: 'event_msg',
+                    payload: { type: 'task_complete', turn_id: 'turn-with-preface' }
+                }),
+                JSON.stringify({
+                    type: 'response_item',
+                    payload: {
+                        type: 'message',
+                        role: 'user',
+                        content: [{ type: 'input_text', text: '<environment_context>hidden context</environment_context>' }]
                     }
                 })
             ].join('\n') + '\n'
@@ -434,12 +543,87 @@ describe('codexLocalLauncher', () => {
         }
         await launcherPromise;
 
-        expect(userMessages).toContain('old response_item user message');
-        expect(agentMessages).toContainEqual({
+        expect(userMessages).toEqual(['visible user message']);
+        expect(getUserActivityCount()).toBe(0);
+        expect(agentMessages).toEqual([{
             type: 'message',
-            message: 'old response_item assistant message',
+            message: 'visible assistant preface',
             id: expect.any(String)
+        }, {
+            type: 'tool-call',
+            name: 'ExitPlanMode',
+            callId: 'codex-proposed-plan:plan-1',
+            input: { plan: '## Proposed plan\n\n1. Inspect\n2. Implement' },
+            id: 'plan-1'
+        }, {
+            type: 'tool-call-result',
+            callId: 'codex-proposed-plan:plan-1',
+            output: null,
+            id: 'plan-1:result'
+        }]);
+    });
+
+    it('replays a plan-only turn when the turn completes', async () => {
+        const transcriptPath = join(tempDir, 'codex-import-plan-only-transcript.jsonl');
+        const { session, agentMessages } = createSessionStub('default', undefined, '/tmp/worktree', null, true);
+        let releaseRunBarrier: (() => void) | undefined;
+        harness.runBarrier = new Promise((resolve) => {
+            releaseRunBarrier = resolve;
         });
+
+        await writeFile(
+            transcriptPath,
+            [
+                JSON.stringify({ type: 'session_meta', payload: { id: 'codex-thread-plan-only' } }),
+                JSON.stringify({
+                    type: 'event_msg',
+                    payload: {
+                        type: 'item_completed',
+                        turn_id: 'turn-plan-only',
+                        item: { type: 'Plan', id: 'plan-only', text: '## Plan only' }
+                    }
+                }),
+                JSON.stringify({
+                    type: 'response_item',
+                    payload: {
+                        type: 'message',
+                        role: 'assistant',
+                        content: [{ type: 'output_text', text: '<proposed_plan>## Plan only</proposed_plan>' }],
+                        internal_chat_message_metadata_passthrough: { turn_id: 'turn-plan-only' }
+                    }
+                }),
+                JSON.stringify({
+                    type: 'event_msg',
+                    payload: { type: 'task_complete', turn_id: 'turn-plan-only' }
+                })
+            ].join('\n') + '\n'
+        );
+
+        const launcherPromise = codexLocalLauncher(session as never);
+        await wait(50);
+
+        harness.sessionHookHandlers[0]?.('codex-thread-plan-only', {
+            transcript_path: transcriptPath
+        });
+        await wait(300);
+
+        if (releaseRunBarrier) {
+            releaseRunBarrier();
+        }
+        await launcherPromise;
+
+        expect(agentMessages).toEqual([{
+            type: 'tool-call',
+            name: 'ExitPlanMode',
+            callId: 'codex-proposed-plan:plan-only',
+            input: { plan: '## Plan only' },
+            id: 'plan-only'
+        }, {
+            type: 'tool-call-result',
+            callId: 'codex-proposed-plan:plan-only',
+            output: null,
+            id: 'plan-only:result'
+        }]);
     });
 
     it('does not let a later non-clear hook replace the primary session', async () => {

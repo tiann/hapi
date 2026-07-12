@@ -377,6 +377,25 @@ describe('AcpMessageHandler', () => {
         expect(messages).toEqual([{ type: 'text', text: 'hello world' }]);
     });
 
+    it('preserves overlapping text chunks in delta mode', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler(
+            (message) => messages.push(message),
+            { textChunkMode: 'delta' }
+        );
+
+        for (const text of ['|-----|', '-----|', '-----|\n']) {
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+                content: { type: 'text', text }
+            });
+        }
+
+        handler.flushText();
+
+        expect(messages).toEqual([{ type: 'text', text: '|-----|-----|-----|\n' }]);
+    });
+
     it('keeps existing tool name when update only has kind fallback', () => {
         const messages: AgentMessage[] = [];
         const handler = new AcpMessageHandler((message) => messages.push(message));

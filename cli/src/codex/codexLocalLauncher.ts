@@ -1,14 +1,18 @@
 import { logger } from '@/ui/logger';
+import { resolve } from 'node:path';
 import { startHookServer } from '@/claude/utils/startHookServer';
 import { codexLocal } from './codexLocal';
 import type { ReasoningEffort } from './appServerTypes';
 import { CodexSession } from './session';
 import { createCodexSessionScanner, type CodexSessionScanner } from './utils/codexSessionScanner';
-import { convertCodexEvent } from './utils/codexEventConverter';
+import { convertCodexEvent, type CodexMessage } from './utils/codexEventConverter';
 import { buildHapiMcpBridge } from './utils/buildHapiMcpBridge';
-import { stripCodexCliOverrides } from './utils/codexCliOverrides';
+import { parseCodexCliOverrides, stripCodexCliOverrides } from './utils/codexCliOverrides';
 import { buildCodexPermissionModeCliArgs } from './utils/permissionModeConfig';
 import { BaseLocalLauncher } from '@/modules/common/launcher/BaseLocalLauncher';
+import { createCodexTranscriptLocator, type CodexTranscriptLocator } from './utils/codexTranscriptLocator';
+
+type ProposedPlanMessage = Extract<CodexMessage, { type: 'proposed_plan' }>;
 
 export async function codexLocalLauncher(session: CodexSession): Promise<'switch' | 'exit'> {
     const resumeSessionId = session.sessionId;
@@ -18,6 +22,9 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
     let hookReady = false;
     let shuttingDown = false;
     let pendingScannerSetup: Promise<void> | null = null;
+    let transcriptLocator: CodexTranscriptLocator | null = null;
+    let scannerTranscriptPath: string | null = null;
+    const pendingPlansByTurnId = new Map<string, ProposedPlanMessage>();
     const permissionMode = session.getPermissionMode();
     const managedPermissionMode = permissionMode === 'read-only' || permissionMode === 'safe-yolo' || permissionMode === 'yolo'
         ? permissionMode
@@ -28,6 +35,8 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
             ...stripCodexCliOverrides(session.codexArgs)
         ]
         : session.codexArgs;
+    const cwdOverride = parseCodexCliOverrides(session.codexArgs).cwd;
+    const effectiveCodexCwd = cwdOverride ? resolve(session.path, cwdOverride) : session.path;
 
     // Start hapi hub for MCP bridge (same as remote mode)
     const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client);
@@ -56,6 +65,38 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
         return primarySessionId === null || primarySessionId === sessionId;
     };
 
+    const sendProposedPlan = (message: ProposedPlanMessage): void => {
+        const callId = `codex-proposed-plan:${message.id}`;
+        session.sendAgentMessage({
+            type: 'tool-call',
+            name: 'ExitPlanMode',
+            callId,
+            input: { plan: message.plan },
+            id: message.id
+        });
+        session.sendAgentMessage({
+            type: 'tool-call-result',
+            callId,
+            output: null,
+            id: `${message.id}:result`
+        });
+    };
+
+    const flushPendingPlan = (turnId: string): void => {
+        const message = pendingPlansByTurnId.get(turnId);
+        if (!message) {
+            return;
+        }
+        pendingPlansByTurnId.delete(turnId);
+        sendProposedPlan(message);
+    };
+
+    const flushAllPendingPlans = (): void => {
+        for (const turnId of pendingPlansByTurnId.keys()) {
+            flushPendingPlan(turnId);
+        }
+    };
+
     const bindPrimarySession = (sessionId: string, transcriptPath: string, allowSwitch = false): void => {
         if (primarySessionId && primarySessionId !== sessionId && !allowSwitch) {
             logger.debug(`[codex-local]: Ignoring non-primary SessionStart hook ${sessionId}; primary is ${primarySessionId}`);
@@ -78,7 +119,11 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
             return;
         }
         if (scanner) {
+            if (scannerTranscriptPath !== transcriptPath) {
+                flushAllPendingPlans();
+            }
             await scanner.setTranscriptPath(transcriptPath);
+            scannerTranscriptPath = transcriptPath;
             return;
         }
         const createdScanner = await createCodexSessionScanner({
@@ -103,9 +148,19 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                 }
                 if (converted?.userMessage) {
                     session.sendUserMessage(converted.userMessage);
+                } else if (converted?.userActivity) {
+                    session.notifyUserActivity();
                 }
                 if (converted?.message) {
-                    session.sendAgentMessage(converted.message);
+                    if (converted.message.type === 'proposed_plan') {
+                        // Codex may complete the Plan item before emitting its final text preface.
+                        pendingPlansByTurnId.set(converted.message.turnId, converted.message);
+                    } else {
+                        session.sendAgentMessage(converted.message);
+                    }
+                }
+                if (converted?.finishedTurnId) {
+                    flushPendingPlan(converted.finishedTurnId);
                 }
             }
         });
@@ -114,6 +169,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
             return;
         }
         scanner = createdScanner;
+        scannerTranscriptPath = transcriptPath;
     };
 
     const handleTranscriptPath = (transcriptPath: string): Promise<void> => {
@@ -142,6 +198,12 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
         const hookSource = typeof data.source === 'string' ? data.source : null;
         const shouldAllowSessionSwitch = hookSource === 'clear';
 
+        if (transcriptPath) {
+            const activeLocator = transcriptLocator;
+            transcriptLocator = null;
+            void activeLocator?.cleanup();
+        }
+
         if (!transcriptPath) {
             handleSessionFound(sessionId, shouldAllowSessionSwitch);
             return;
@@ -159,6 +221,27 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
         }
     });
     logger.debug(`[codex-local]: Started Codex SessionStart hook server on port ${hookServer.port}`);
+
+    if (session.client.isPending()) {
+        const createdLocator = createCodexTranscriptLocator({
+            cwd: effectiveCodexCwd,
+            startupTimestampMs: Date.now(),
+            resumeSessionId,
+            onLocated: ({ sessionId, transcriptPath }) => {
+                if (shuttingDown || hookReady || primaryTranscriptPath) {
+                    return;
+                }
+                transcriptLocator = null;
+                bindPrimarySession(sessionId, transcriptPath);
+            },
+            onAmbiguous: (paths) => {
+                transcriptLocator = null;
+                logger.warn(`[codex-local]: Transcript fallback was ambiguous (${paths.length} active candidates)`);
+            }
+        });
+        transcriptLocator = createdLocator;
+        await createdLocator.ready;
+    }
 
     const launcher = new BaseLocalLauncher({
         label: 'codex-local',
@@ -204,6 +287,9 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
         shuttingDown = true;
         session.removeTranscriptPathCallback(handleTranscriptPathCallback);
         hookServer.stop();
+        const activeLocator = transcriptLocator;
+        transcriptLocator = null;
+        void activeLocator?.cleanup();
         if (pendingScannerSetup) {
             await pendingScannerSetup;
         }
@@ -211,6 +297,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
         if (activeScanner) {
             await activeScanner.cleanup();
         }
+        flushAllPendingPlans();
         happyServer.stop();
         if (!hookReady) {
             logger.debug('[codex-local]: SessionStart hook did not provide transcript path before shutdown');

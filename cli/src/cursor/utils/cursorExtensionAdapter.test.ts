@@ -162,12 +162,31 @@ describe('CursorExtensionAdapter', () => {
             expect.objectContaining({
                 type: 'tool_call',
                 id: 'task-1',
-                name: 'CursorTask'
+                name: 'CursorTask',
+                status: 'completed'
             }),
             expect.objectContaining({
                 type: 'tool_result',
                 id: 'task-1',
                 status: 'completed'
+            })
+        ]);
+    });
+
+    it('keeps CursorTask running when status is in_progress', async () => {
+        const { handlers, getMessages } = createHarness();
+        await handlers.get('cursor/task')!({
+            toolCallId: 'task-2',
+            title: 'Subagent',
+            status: 'in_progress'
+        }, null);
+
+        expect(getMessages()).toEqual([
+            expect.objectContaining({
+                type: 'tool_call',
+                id: 'task-2',
+                name: 'CursorTask',
+                status: 'in_progress'
             })
         ]);
     });

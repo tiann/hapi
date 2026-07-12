@@ -107,7 +107,6 @@ export async function startHookServer(options: HookServerOptions): Promise<HookS
                     const sessionId = data.session_id || data.sessionId;
                     if (sessionId) {
                         logger.debug(`[hookServer] Session hook received session ID: ${sessionId}`);
-                        onSessionHook(sessionId, data);
                     } else {
                         logger.debug('[hookServer] Session hook received but no session_id found in data');
                         res.writeHead(422, { 'Content-Type': 'text/plain' }).end('missing session_id');
@@ -117,6 +116,13 @@ export async function startHookServer(options: HookServerOptions): Promise<HookS
                     if (!res.headersSent && !res.writableEnded) {
                         res.writeHead(200, { 'Content-Type': 'text/plain' }).end('ok');
                     }
+                    setImmediate(() => {
+                        try {
+                            onSessionHook(sessionId, data);
+                        } catch (error) {
+                            logger.debug('[hookServer] Error dispatching session hook:', error);
+                        }
+                    });
                 } catch (error) {
                     clearTimeout(timeout);
                     if (timedOut) {

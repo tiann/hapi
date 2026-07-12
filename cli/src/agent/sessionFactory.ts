@@ -184,6 +184,88 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
     }
 }
 
+export async function bootstrapLazySession(options: SessionBootstrapOptions): Promise<SessionBootstrapResult> {
+    const workingDirectory = options.workingDirectory ?? getInvokedCwd()
+    const startedBy = options.startedBy ?? 'terminal'
+    if (startedBy !== 'terminal') {
+        throw new Error('Lazy session bootstrap is only supported for terminal sessions')
+    }
+
+    const api = await ApiClient.create()
+    const machineId = await getMachineIdOrExit()
+    const machineMetadata = buildMachineMetadata()
+    const metadata = buildSessionMetadata({
+        flavor: options.flavor,
+        startedBy,
+        workingDirectory,
+        machineId,
+        metadataOverrides: options.metadataOverrides
+    })
+    const agentState = options.agentState === undefined ? {} : options.agentState
+    const now = Date.now()
+    const requestedId = randomUUID()
+    const sessionTag = options.tag ?? randomUUID()
+    const sessionInfo: Session = {
+        id: requestedId,
+        namespace: 'pending',
+        seq: 0,
+        createdAt: now,
+        updatedAt: now,
+        active: false,
+        activeAt: now,
+        metadata,
+        metadataVersion: 0,
+        agentState,
+        agentStateVersion: 0,
+        thinking: false,
+        thinkingAt: now,
+        todos: [],
+        model: options.model ?? null,
+        modelReasoningEffort: options.modelReasoningEffort ?? null,
+        effort: options.effort ?? null,
+        serviceTier: null,
+        permissionMode: undefined,
+        collaborationMode: undefined
+    }
+
+    const session = api.sessionSyncClient(sessionInfo, {
+        materialize: async (snapshot, signal) => {
+            const materialized = await api.getOrCreateSession({
+                id: requestedId,
+                tag: sessionTag,
+                metadata: snapshot.metadata ?? metadata,
+                state: snapshot.agentState,
+                model: options.model,
+                modelReasoningEffort: options.modelReasoningEffort,
+                effort: options.effort,
+                machine: {
+                    id: machineId,
+                    metadata: machineMetadata
+                },
+                timeoutMs: 10_000,
+                signal
+            })
+            if (materialized.id !== requestedId) {
+                throw new Error(`Hub returned unexpected session id ${materialized.id}`)
+            }
+            return materialized
+        },
+        onMaterialized: (materialized, snapshot) => {
+            void reportSessionStarted(materialized.id, snapshot.metadata ?? metadata)
+        }
+    })
+
+    return {
+        api,
+        session,
+        sessionInfo,
+        metadata,
+        machineId,
+        startedBy,
+        workingDirectory
+    }
+}
+
 export async function bootstrapExistingSession(options: {
     sessionId: string
     flavor: string

@@ -142,7 +142,10 @@ function startServerAsChild(): void {
 /**
  * Main entry point: auto-start hub if conditions are met
  */
-export async function maybeAutoStartServer(): Promise<void> {
+export async function maybeAutoStartServer(options?: {
+    waitForReady?: boolean
+    quiet?: boolean
+}): Promise<void> {
     try {
         const shouldStart = await shouldAutoStartServer()
         if (!shouldStart) {
@@ -150,24 +153,36 @@ export async function maybeAutoStartServer(): Promise<void> {
         }
 
         logger.debug('[AUTO-START] Starting hub automatically...')
-        console.log(chalk.gray('Starting HAPI hub in background...'))
+        if (!options?.quiet) {
+            console.log(chalk.gray('Starting HAPI hub in background...'))
+        }
 
         startServerAsChild()
+
+        if (options?.waitForReady === false) {
+            return
+        }
 
         const isReady = await waitForServerReady(configuration.apiUrl)
 
         if (!isReady) {
-            console.log(chalk.yellow('Warning: Hub did not start within expected time'))
-            console.log(chalk.gray('  Try running `hapi hub` manually to see errors'))
+            if (!options?.quiet) {
+                console.log(chalk.yellow('Warning: Hub did not start within expected time'))
+                console.log(chalk.gray('  Try running `hapi hub` manually to see errors'))
+            }
             return
         }
 
-        console.log(chalk.green('HAPI hub started'))
+        if (!options?.quiet) {
+            console.log(chalk.green('HAPI hub started'))
+        }
     } catch (error) {
         logger.debug('[AUTO-START] Error during hub auto-start', error)
-        console.log(chalk.yellow('Warning: Failed to auto-start hub'))
-        if (error instanceof Error) {
-            console.log(chalk.gray(`  Error: ${error.message}`))
+        if (!options?.quiet) {
+            console.log(chalk.yellow('Warning: Failed to auto-start hub'))
+            if (error instanceof Error) {
+                console.log(chalk.gray(`  Error: ${error.message}`))
+            }
         }
     }
 }

@@ -1,4 +1,16 @@
-export type ApprovalPolicy = 'untrusted' | 'on-failure' | 'on-request' | 'never';
+export type ApprovalPolicyPreset = 'untrusted' | 'on-failure' | 'on-request' | 'never';
+
+export type ApprovalPolicy =
+    | ApprovalPolicyPreset
+    | {
+        granular: {
+            sandbox_approval: boolean;
+            rules: boolean;
+            skill_approval?: boolean;
+            request_permissions?: boolean;
+            mcp_elicitations: boolean;
+        };
+    };
 export type SandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';
 
 export interface InitializeCapabilities {
@@ -153,7 +165,9 @@ export type SandboxPolicy =
         excludeSlashTmp?: boolean;
     };
 
-export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+// The app server reports supported effort identifiers per model. Keep this
+// open so newly introduced server values can flow through without a CLI update.
+export type ReasoningEffort = string;
 export type ReasoningSummary = 'auto' | 'none' | 'brief' | 'detailed';
 
 export type CollaborationMode = {
@@ -199,6 +213,19 @@ export interface TurnInterruptParams {
 
 export interface TurnInterruptResponse {
     ok: boolean;
+    [key: string]: unknown;
+}
+
+export interface ThreadRollbackParams {
+    threadId: string;
+    numTurns: number;
+}
+
+export interface ThreadRollbackResponse {
+    thread: {
+        id: string;
+        [key: string]: unknown;
+    };
     [key: string]: unknown;
 }
 

@@ -1,6 +1,7 @@
 export type CodexCliOverrides = {
     sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
     approvalPolicy?: 'untrusted' | 'on-failure' | 'on-request' | 'never';
+    cwd?: string;
 };
 
 const SANDBOX_VALUES = new Set<CodexCliOverrides['sandbox']>([
@@ -43,6 +44,23 @@ export function parseCodexCliOverrides(args?: string[]): CodexCliOverrides {
         if (arg === '--dangerously-bypass-approvals-and-sandbox') {
             overrides.approvalPolicy = 'never';
             overrides.sandbox = 'danger-full-access';
+            continue;
+        }
+
+        if (arg === '-C' || arg === '--cd') {
+            const value = args[i + 1];
+            if (value && value !== '--') {
+                overrides.cwd = value;
+                i += 1;
+            }
+            continue;
+        }
+
+        if (arg.startsWith('--cd=') || arg.startsWith('-C=')) {
+            const value = arg.slice(arg.indexOf('=') + 1);
+            if (value) {
+                overrides.cwd = value;
+            }
             continue;
         }
 

@@ -358,6 +358,8 @@ function normalizePlanEntries(entries: unknown): PlanItem[] {
     return items;
 }
 
+export type AcpTextChunkMode = 'dedupe' | 'delta';
+
 function getSuffixPrefixOverlap(base: string, next: string): number {
     const maxOverlap = Math.min(base.length, next.length);
     for (let length = maxOverlap; length > 0; length -= 1) {
@@ -380,8 +382,14 @@ export class AcpMessageHandler {
     private lastReasoningSnapshotAt: number | null = null;
     private lastReasoningSnapshotText = '';
     private reasoningSnapshotEmitted = false;
+    private readonly textChunkMode: AcpTextChunkMode;
 
-    constructor(private readonly onMessage: (message: AgentMessage) => void) {}
+    constructor(
+        private readonly onMessage: (message: AgentMessage) => void,
+        options: { textChunkMode?: AcpTextChunkMode } = {}
+    ) {
+        this.textChunkMode = options.textChunkMode ?? 'dedupe';
+    }
 
     /**
      * Emits any buffered assistant text as a single message and clears the
@@ -444,6 +452,13 @@ export class AcpMessageHandler {
     }
 
     private appendTextChunk(text: string): void {
+        if (this.textChunkMode === 'delta') {
+            if (text) {
+                this.bufferedText += text;
+            }
+            return;
+        }
+
         if (!text) {
             return;
         }
