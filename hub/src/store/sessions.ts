@@ -235,7 +235,7 @@ export function getOrCreateSession(
             @model_reasoning_effort,
             @effort,
             NULL, NULL,
-            0, NULL, 0
+            0, @active_at, 0
         )
     `).run({
         id,
@@ -243,6 +243,9 @@ export function getOrCreateSession(
         namespace,
         created_at: now,
         updated_at: now,
+        // Never persist NULL — CLI SessionSchema requires numeric activeAt.
+        // Legacy rows may still be NULL; sessionCache coerces on read.
+        active_at: now,
         metadata: metadataJson,
         agent_state: agentStateJson,
         model: model ?? null,

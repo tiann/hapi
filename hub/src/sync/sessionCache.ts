@@ -150,7 +150,13 @@ export class SessionCache {
             createdAt: stored.createdAt,
             updatedAt: stored.updatedAt,
             active: existing?.active ?? stored.active,
-            activeAt: existing?.activeAt ?? (stored.activeAt ?? stored.createdAt),
+            // Legacy / idle rows may still have active_at NULL in SQLite.
+            // Public Session.activeAt is always a number for CLI Zod parse.
+            activeAt: existing?.activeAt
+                ?? stored.activeAt
+                ?? stored.updatedAt
+                ?? stored.createdAt
+                ?? 0,
             metadata,
             metadataVersion: stored.metadataVersion,
             agentState,

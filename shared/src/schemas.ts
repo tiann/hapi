@@ -211,7 +211,8 @@ export const SessionSchema = z.object({
     createdAt: z.number(),
     updatedAt: z.number(),
     active: z.boolean(),
-    activeAt: z.number(),
+    // Hub may still emit null for legacy SQLite rows; keep output type number.
+    activeAt: z.number().nullish().transform((value) => value ?? 0),
     metadata: MetadataSchema.nullable(),
     metadataVersion: z.number(),
     agentState: AgentStateSchema.nullable(),

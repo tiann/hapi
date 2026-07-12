@@ -12,6 +12,26 @@ function getMetadata(store: Store, id: string): Record<string, unknown> | null {
     return (row?.metadata ?? null) as Record<string, unknown> | null
 }
 
+describe('getOrCreateSession: active_at', () => {
+    it('persists a non-null active_at on insert (never NULL)', () => {
+        const store = makeStore()
+        const created = store.sessions.getOrCreateSession(
+            'active-at-write',
+            { path: '/tmp/project', host: 'localhost' },
+            null,
+            'default'
+        )
+
+        expect(typeof created.activeAt).toBe('number')
+        expect(created.activeAt).not.toBeNull()
+        expect(created.activeAt).toBe(created.createdAt)
+
+        const reloaded = store.sessions.getSession(created.id)
+        expect(reloaded?.activeAt).toBe(created.createdAt)
+        store.close()
+    })
+})
+
 describe('getOrCreateSession: requested identity', () => {
     it('creates and idempotently reloads a client-requested id', () => {
         const store = makeStore()
