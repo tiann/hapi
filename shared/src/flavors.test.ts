@@ -6,6 +6,7 @@ import {
     isKnownFlavor,
     supportsEffort,
     supportsModelChange,
+    isCodexFamilyFlavor,
 } from './flavors'
 
 describe('hasCapability', () => {
@@ -104,6 +105,10 @@ describe('isKnownFlavor', () => {
 })
 
 describe('convenience functions', () => {
+    test('treats Grok as a generic ACP/Codex-family permission flow', () => {
+        expect(isCodexFamilyFlavor('grok')).toBe(true)
+    })
+
     test('supportsModelChange matches hasCapability', () => {
         expect(supportsModelChange('claude')).toBe(true)
         expect(supportsModelChange('gemini')).toBe(true)

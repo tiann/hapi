@@ -22,8 +22,8 @@ export default defineConfig({
       { text: 'Installation', link: '/guide/installation' },
       { text: 'PWA', link: '/guide/pwa' },
       { text: 'How it Works', link: '/guide/how-it-works' },
-            { text: 'Cursor Agent', link: '/guide/cursor' },
-            { text: 'Grok Build', link: '/guide/grok' },
+      { text: 'Cursor Agent', link: '/guide/cursor' },
+      { text: 'Grok Build', link: '/guide/grok' },
       { text: 'Voice Assistant', link: '/guide/voice-assistant' },
       { text: 'Why HAPI', link: '/guide/why-hapi' },
       { text: 'FAQ', link: '/guide/faq' }
