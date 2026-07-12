@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import React from 'react'
 import { logger } from '@/ui/logger'
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge'
@@ -74,6 +75,14 @@ class GrokRemoteLauncher extends RemoteLauncherBase {
             ...this.opts
         })
         this.backend = backend
+        backend.setSessionInfoUpdateListener(({ title }) => {
+            if (typeof title !== 'string') return
+            session.client.sendClaudeSessionMessage({
+                type: 'summary',
+                summary: title,
+                leafUuid: randomUUID()
+            })
+        })
         backend.onStderrError((error) => {
             const activeModel = this.currentBackendModel ?? this.opts.model ?? null
             if (isGrokBuildAuxiliaryQuotaError(`${error.message}\n${error.raw}`, activeModel)) {

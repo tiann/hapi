@@ -25,6 +25,10 @@ type AcpUsageUpdate = {
     contextWindow: number | undefined;
 };
 
+export type AcpSessionInfoUpdate = {
+    title?: string | null;
+};
+
 export type AcpModelDescriptor = {
     modelId: string;
     name?: string;
@@ -73,6 +77,7 @@ export class AcpSdkBackend implements AgentBackend {
     private latestUsageUpdate: AcpUsageUpdate | null = null;
     private promptUsageCallback: ((msg: AgentMessage) => void) | null = null;
     private usageUpdateListener: ((msg: AgentMessage) => void) | null = null;
+    private sessionInfoUpdateListener: ((update: AcpSessionInfoUpdate) => void) | null = null;
     private lastForwardedUsageUpdate: AcpUsageUpdate | null = null;
 
     /** Retry configuration for ACP initialization */
@@ -406,6 +411,11 @@ export class AcpSdkBackend implements AgentBackend {
         this.usageUpdateListener = listener;
     }
 
+    /** Forwards ACP `session_info_update` metadata independently of prompt turns. */
+    setSessionInfoUpdateListener(listener: ((update: AcpSessionInfoUpdate) => void) | null): void {
+        this.sessionInfoUpdateListener = listener;
+    }
+
     async prompt(
         sessionId: string,
         content: PromptContent[],
@@ -593,8 +603,19 @@ export class AcpSdkBackend implements AgentBackend {
         if (sessionId) {
             this.captureAvailableCommands(sessionId, update);
         }
+        this.captureSessionInfoUpdate(update);
         this.captureUsageUpdate(update);
         this.messageHandler?.handleUpdate(update);
+    }
+
+    private captureSessionInfoUpdate(update: unknown): void {
+        if (!isObject(update)) return;
+        if (asString(update.sessionUpdate) !== ACP_SESSION_UPDATE_TYPES.sessionInfoUpdate) return;
+        if (!Object.prototype.hasOwnProperty.call(update, 'title')) return;
+
+        const title = update.title;
+        if (typeof title !== 'string' && title !== null) return;
+        this.sessionInfoUpdateListener?.({ title });
     }
 
     private captureUsageUpdate(update: unknown): void {

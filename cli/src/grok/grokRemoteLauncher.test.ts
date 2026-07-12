@@ -8,6 +8,9 @@ const harness = vi.hoisted(() => ({
     prompts: [] as unknown[][],
     autoCommandAvailable: true,
     stderrHandler: null as null | ((error: { message: string; raw: string }) => void),
+    sessionInfoUpdateHandler: null as null | ((update: { title?: string | null }) => void),
+    nativeTitle: null as string | null,
+    nativeTitleSent: false,
 }))
 
 vi.mock('./utils/grokBackend', () => ({
@@ -23,6 +26,10 @@ vi.mock('./utils/grokBackend', () => ({
         }),
         prompt: vi.fn(async (_sessionId: string, content: unknown[]) => {
             harness.prompts.push(content)
+            if (harness.nativeTitle !== null && !harness.nativeTitleSent) {
+                harness.nativeTitleSent = true
+                harness.sessionInfoUpdateHandler?.({ title: harness.nativeTitle })
+            }
             if (harness.prompts.length === 1) {
                 harness.stderrHandler?.({
                     message: 'status=402 Payment Required model_id=grok-build spending-limit',
@@ -33,6 +40,7 @@ vi.mock('./utils/grokBackend', () => ({
         cancelPrompt: vi.fn(async () => {}),
         respondToPermission: vi.fn(async () => {}),
         onStderrError: vi.fn((handler) => { harness.stderrHandler = handler }),
+        setSessionInfoUpdateListener: vi.fn((handler) => { harness.sessionInfoUpdateHandler = handler }),
         onPermissionRequest: vi.fn(),
         disconnect: vi.fn(async () => {}),
         getSessionModelsMetadata: vi.fn(() => ({
@@ -83,7 +91,8 @@ function createSession() {
                 registerHandler(method: string, handler: () => unknown) { rpcHandlers.set(method, handler) }
             },
             sendAgentMessage: vi.fn(),
-            sendSessionEvent: vi.fn()
+            sendSessionEvent: vi.fn(),
+            sendClaudeSessionMessage: vi.fn()
         },
         queue,
         sessionId: null as string | null,
@@ -121,6 +130,9 @@ describe('grokRemoteLauncher runtime config', () => {
         harness.setModes = []
         harness.prompts = []
         harness.stderrHandler = null
+        harness.sessionInfoUpdateHandler = null
+        harness.nativeTitle = null
+        harness.nativeTitleSent = false
         harness.autoCommandAvailable = true
     })
 
@@ -163,6 +175,20 @@ describe('grokRemoteLauncher runtime config', () => {
             expect.stringContaining('/always-approve off'),
             expect.stringContaining('permission-2')
         ])
+    })
+
+    it('forwards ACP native titles while retaining the prompt fallback', async () => {
+        harness.nativeTitle = 'Native Grok title'
+        const { session } = createSession()
+
+        await grokRemoteLauncher(session as never, { model: 'grok-a', effort: 'low' })
+
+        expect(session.client.sendClaudeSessionMessage).toHaveBeenCalledWith({
+            type: 'summary',
+            summary: 'Native Grok title',
+            leafUuid: expect.any(String)
+        })
+        expect(JSON.stringify(harness.prompts[1])).toContain('hapi_change_title')
     })
 
     it('rolls Auto back to Default when Grok does not advertise the feature', async () => {

@@ -828,6 +828,52 @@ describe('AcpSdkBackend', () => {
         expect(realtimeUsage.map((m) => m.contextTokens)).toEqual([1_000, 2_500]);
     });
 
+    it('forwards title changes from session_info_update', () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const updates: Array<{ title?: string | null }> = [];
+        backend.setSessionInfoUpdateListener((update) => updates.push(update));
+
+        const backendInternal = backend as unknown as {
+            activeSessionId: string | null;
+            handleSessionUpdate: (params: unknown) => void;
+        };
+        backendInternal.activeSessionId = 'session-1';
+
+        backendInternal.handleSessionUpdate({
+            sessionId: 'session-1',
+            update: {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.sessionInfoUpdate,
+                title: 'Native ACP title'
+            }
+        });
+        backendInternal.handleSessionUpdate({
+            sessionId: 'session-1',
+            update: {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.sessionInfoUpdate,
+                title: null
+            }
+        });
+        backendInternal.handleSessionUpdate({
+            sessionId: 'session-1',
+            update: {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.sessionInfoUpdate,
+                title: 123
+            }
+        });
+        backendInternal.handleSessionUpdate({
+            sessionId: 'other-session',
+            update: {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.sessionInfoUpdate,
+                title: 'Wrong session'
+            }
+        });
+
+        expect(updates).toEqual([
+            { title: 'Native ACP title' },
+            { title: null }
+        ]);
+    });
+
     it('emits a context-only usage on finalize when the prompt response carries no usage', async () => {
         backendStatics.UPDATE_QUIET_PERIOD_MS = 25;
         backendStatics.UPDATE_DRAIN_TIMEOUT_MS = 200;
