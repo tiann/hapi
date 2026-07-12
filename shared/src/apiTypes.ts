@@ -379,6 +379,13 @@ export type ListOpencodeModelsResponse = OpencodeModelsResponse
 export type GrokModelSummary = {
     modelId: string
     name?: string
+    reasoningEfforts?: GrokReasoningEffortOption[]
+}
+
+export type GrokReasoningEffortOption = {
+    value: string
+    name?: string
+    isDefault?: boolean
 }
 
 export type GrokModelsResponse = {
@@ -388,6 +395,13 @@ export type GrokModelsResponse = {
     error?: string
 }
 export type ListGrokModelsResponse = GrokModelsResponse
+
+export type GrokReasoningEffortResponse = {
+    success: boolean
+    options?: GrokReasoningEffortOption[]
+    currentValue?: string | null
+    error?: string
+}
 
 export type OpencodeReasoningEffortOption = {
     value: string

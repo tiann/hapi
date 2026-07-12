@@ -40,7 +40,7 @@ import { ModelSelector } from './ModelSelector'
 import { OpencodeModelSelector } from './OpencodeModelSelector'
 import { LaunchEffortSelector } from './LaunchEffortSelector'
 import { shouldEnableOpencodeModelDiscovery } from './opencodeModelsGate'
-import { buildGrokModelOptions, shouldEnableGrokModelDiscovery } from './grokModels'
+import { buildGrokEffortOptions, buildGrokModelOptions, shouldEnableGrokModelDiscovery } from './grokModels'
 import { ReasoningEffortSelector } from './ReasoningEffortSelector'
 import {
     loadPreferredAgent,
@@ -380,6 +380,14 @@ export function NewSession(props: {
     const grokModelOptions = useMemo(
         () => buildGrokModelOptions(grokModelsState.availableModels),
         [grokModelsState.availableModels]
+    )
+    const grokEffortOptions = useMemo(
+        () => buildGrokEffortOptions(
+            grokModelsState.availableModels,
+            model,
+            grokModelsState.currentModelId
+        ),
+        [grokModelsState.availableModels, grokModelsState.currentModelId, model]
     )
     useEffect(() => {
         // Auto-pick the OpenCode default model when discovery finishes, so the
@@ -761,6 +769,7 @@ export function NewSession(props: {
                 effort={effort}
                 isDisabled={isFormDisabled}
                 onEffortChange={setEffort}
+                grokOptions={agent === 'grok' ? grokEffortOptions : undefined}
             />
             <ReasoningEffortSelector
                 agent={agent}

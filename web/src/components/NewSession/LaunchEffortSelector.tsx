@@ -7,6 +7,7 @@ export function LaunchEffortSelector(props: {
     effort: ClaudeEffort
     isDisabled: boolean
     onEffortChange: (value: ClaudeEffort) => void
+    grokOptions?: Array<{ value: string; label: string }>
 }) {
     const { t } = useTranslation()
 
@@ -14,7 +15,9 @@ export function LaunchEffortSelector(props: {
         return null
     }
 
-    const options = props.agent === 'grok' ? GROK_EFFORT_OPTIONS : CLAUDE_EFFORT_OPTIONS
+    const options = props.agent === 'grok'
+        ? (props.grokOptions ?? GROK_EFFORT_OPTIONS)
+        : CLAUDE_EFFORT_OPTIONS
 
     return (
         <div className="flex flex-col gap-1.5 px-3 py-3">

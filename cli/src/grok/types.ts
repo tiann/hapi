@@ -4,6 +4,6 @@ export type PermissionMode = GrokPermissionMode
 
 export interface GrokMode {
     permissionMode: PermissionMode
-    model?: string
-    effort?: string
+    model?: string | null
+    effort?: string | null
 }

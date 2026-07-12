@@ -28,6 +28,7 @@ type AcpUsageUpdate = {
 export type AcpModelDescriptor = {
     modelId: string;
     name?: string;
+    reasoningEfforts?: Array<{ value: string; name?: string; isDefault?: boolean }>;
 };
 
 export type AcpSessionModelsMetadata = {
@@ -238,6 +239,7 @@ export class AcpSdkBackend implements AgentBackend {
             try {
                 await this.transport.sendRequest('session/set_mode', { sessionId, modeId });
                 this.setModeSupported = true;
+                this.updateThoughtLevelCurrentValue(sessionId, modeId);
                 return;
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
@@ -335,7 +337,7 @@ export class AcpSdkBackend implements AgentBackend {
             modelId
         });
 
-        if (opts?.flavor === 'opencode') {
+        if (opts?.flavor === 'opencode' || opts?.flavor === 'grok') {
             // OpenCode's set_model response only carries an opaque `_meta` block,
             // not `availableModels`/`currentModelId`. Optimistically update the
             // cached currentModelId (the call succeeded, so the agent has switched)
@@ -771,6 +773,16 @@ export class AcpSdkBackend implements AgentBackend {
         });
     }
 
+    private updateThoughtLevelCurrentValue(sessionId: string, value: string): void {
+        const options = this.sessionConfigOptions.get(sessionId);
+        if (!options) return;
+        this.sessionConfigOptions.set(sessionId, options.map((option) => (
+            option.category === 'thought_level'
+                ? { ...option, currentValue: value }
+                : option
+        )));
+    }
+
     /** After a successful model config apply, avoid stale base-only ACP currentValue overwriting cache. */
     pinSessionModelWireId(sessionId: string, modelId: string): void {
         this.updateCurrentModelOptimistic(sessionId, modelId);
@@ -808,9 +820,9 @@ export class AcpSdkBackend implements AgentBackend {
     }
 
     private captureSessionConfigOptions(sessionId: string, response: unknown): void {
-        if (!isObject(response) || !Array.isArray(response.configOptions)) return;
+        if (!isObject(response)) return;
 
-        const options = response.configOptions
+        const options = (Array.isArray(response.configOptions) ? response.configOptions : [])
             .filter((entry): entry is Record<string, unknown> => isObject(entry))
             .map((entry): AcpConfigOptionDescriptor | null => {
                 const id = asString(entry.id);
@@ -831,7 +843,33 @@ export class AcpSdkBackend implements AgentBackend {
             })
             .filter((entry): entry is AcpConfigOptionDescriptor => entry !== null);
 
-        this.sessionConfigOptions.set(sessionId, options);
+        const meta = isObject(response._meta) ? response._meta : null;
+        const xaiConfig = meta && isObject(meta['x.ai/sessionConfig'])
+            ? meta['x.ai/sessionConfig']
+            : null;
+        const xaiOptions = xaiConfig && Array.isArray(xaiConfig.options)
+            ? xaiConfig.options.filter((entry): entry is Record<string, unknown> => isObject(entry))
+            : [];
+        const effortOptions = xaiOptions
+            .filter((entry) => asString(entry.category) === 'mode')
+            .map((entry) => ({
+                value: asString(entry.id) ?? '',
+                name: asString(entry.label) ?? undefined,
+                selected: entry.selected === true
+            }))
+            .filter((entry) => entry.value.length > 0);
+        if (effortOptions.length > 0) {
+            options.push({
+                id: 'x.ai/reasoning-effort',
+                category: 'thought_level',
+                currentValue: effortOptions.find((entry) => entry.selected)?.value,
+                options: effortOptions.map(({ value, name }) => ({ value, name }))
+            });
+        }
+
+        if (options.length > 0) {
+            this.sessionConfigOptions.set(sessionId, options);
+        }
     }
 
     /**
@@ -886,7 +924,11 @@ export class AcpSdkBackend implements AgentBackend {
         }
 
         const byModelId = new Map<string, AcpModelDescriptor>();
-        const addModel = (modelId: string, name?: string) => {
+        const addModel = (
+            modelId: string,
+            name?: string,
+            reasoningEfforts?: AcpModelDescriptor['reasoningEfforts']
+        ) => {
             const trimmedId = modelId.trim();
             if (!trimmedId) return;
             const trimmedName = name?.trim();
@@ -895,13 +937,13 @@ export class AcpSdkBackend implements AgentBackend {
                 byModelId.set(
                     trimmedId,
                     trimmedName && trimmedName !== trimmedId
-                        ? { modelId: trimmedId, name: trimmedName }
-                        : { modelId: trimmedId }
+                        ? { modelId: trimmedId, name: trimmedName, ...(reasoningEfforts ? { reasoningEfforts } : {}) }
+                        : { modelId: trimmedId, ...(reasoningEfforts ? { reasoningEfforts } : {}) }
                 );
                 return;
             }
             if (!existing.name && trimmedName && trimmedName !== trimmedId) {
-                byModelId.set(trimmedId, { modelId: trimmedId, name: trimmedName });
+                byModelId.set(trimmedId, { ...existing, name: trimmedName });
             }
         };
 
@@ -910,14 +952,25 @@ export class AcpSdkBackend implements AgentBackend {
                 if (!isObject(entry)) continue;
                 const modelId = asString(entry.modelId) ?? asString(entry.value);
                 if (!modelId) continue;
-                addModel(modelId, asString(entry.name) ?? undefined);
+                const meta = isObject(entry._meta) ? entry._meta : null;
+                const reasoningEfforts = meta && Array.isArray(meta.reasoningEfforts)
+                    ? meta.reasoningEfforts
+                        .filter((effort): effort is Record<string, unknown> => isObject(effort))
+                        .map((effort) => ({
+                            value: asString(effort.value) ?? asString(effort.id) ?? '',
+                            name: asString(effort.label) ?? undefined,
+                            isDefault: effort.default === true
+                        }))
+                        .filter((effort) => effort.value.length > 0)
+                    : undefined;
+                addModel(modelId, asString(entry.name) ?? undefined, reasoningEfforts);
             }
         } else {
             // Preserve previously-captured availableModels when the response only
             // updates currentModelId (e.g. a setModel response from some agents).
             const existing = this.sessionModelsMetadata.get(sessionId);
             for (const entry of existing?.availableModels ?? []) {
-                addModel(entry.modelId, entry.name);
+                addModel(entry.modelId, entry.name, entry.reasoningEfforts);
             }
         }
 

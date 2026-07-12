@@ -13,9 +13,19 @@ import type { GrokSession } from './session'
 import type { PermissionMode } from './types'
 import { createGrokBackend, formatGrokError } from './utils/grokBackend'
 import { GrokPermissionHandler } from './utils/permissionHandler'
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
+import { GROK_TITLE_INSTRUCTION } from './utils/systemPrompt'
 
 const PLAN_MODE_INSTRUCTION =
     'Work in plan-only mode. Analyze and propose a plan, but do not execute commands or modify files.'
+
+type GrokRemoteLauncherOptions = {
+    model?: string
+    effort?: string
+    onModelRollback?: (model: string | null) => void
+    onEffortRollback?: (effort: string | null) => void
+    onConfigDiscovered?: (config: { model: string | null; effort: string | null }) => void
+}
 
 class GrokRemoteLauncher extends RemoteLauncherBase {
     private backend: ReturnType<typeof createGrokBackend> | null = null
@@ -24,10 +34,15 @@ class GrokRemoteLauncher extends RemoteLauncherBase {
     private abortController = new AbortController()
     private displayPermissionMode: PermissionMode | null = null
     private readonly lastDisplayedToolCall = new Map<string, string>()
+    private currentBackendModel: string | null = null
+    private defaultBackendModel: string | null = null
+    private currentBackendEffort: string | null = null
+    private defaultBackendEffort: string | null = null
+    private instructionsSent = false
 
     constructor(
         private readonly session: GrokSession,
-        private readonly opts: { model?: string; effort?: string }
+        private readonly opts: GrokRemoteLauncherOptions
     ) {
         super(process.env.DEBUG ? session.logPath : undefined)
     }
@@ -95,13 +110,42 @@ class GrokRemoteLauncher extends RemoteLauncherBase {
         }
 
         session.registerExistingNativeSession(acpSessionId)
+        const modelMetadata = backend.getSessionModelsMetadata(acpSessionId)
+        const effortMetadata = backend.getThoughtLevelConfigOption(acpSessionId)
+        this.currentBackendModel = modelMetadata?.currentModelId ?? this.opts.model ?? null
+        this.defaultBackendModel = this.currentBackendModel
+        this.currentBackendEffort = effortMetadata?.currentValue ?? this.opts.effort ?? null
+        this.defaultBackendEffort = this.currentBackendEffort
+        this.opts.onConfigDiscovered?.({
+            model: this.currentBackendModel,
+            effort: this.currentBackendEffort
+        })
+
+        session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ListGrokModels, async () => {
+            const metadata = backend.getSessionModelsMetadata(acpSessionId)
+            if (!metadata) return { success: false, error: 'Grok model metadata is not available' }
+            return {
+                success: true,
+                availableModels: metadata.availableModels,
+                currentModelId: metadata.currentModelId
+            }
+        })
+        session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ListGrokReasoningEffortOptions, async () => {
+            const metadata = backend.getThoughtLevelConfigOption(acpSessionId)
+            if (!metadata) return { success: false, error: 'Grok effort metadata is not available' }
+            return {
+                success: true,
+                options: metadata.options,
+                currentValue: metadata.currentValue ?? null
+            }
+        })
         this.permissionHandler = new GrokPermissionHandler(
             session.client,
             backend,
             () => session.getPermissionMode() as PermissionMode | undefined
         )
         this.applyDisplayMode(session.getPermissionMode() as PermissionMode | undefined)
-        this.messageBuffer.addMessage(`[MODEL:${this.opts.model ?? 'default'}]`, 'system')
+        this.messageBuffer.addMessage(`[MODEL:${this.currentBackendModel ?? 'default'}]`, 'system')
 
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbort(),
@@ -116,11 +160,52 @@ class GrokRemoteLauncher extends RemoteLauncherBase {
                 break
             }
 
+            const requestedModel = batch.mode.model === null
+                ? this.defaultBackendModel
+                : batch.mode.model
+            if (requestedModel && requestedModel !== this.currentBackendModel) {
+                try {
+                    await backend.setModel(acpSessionId, requestedModel, { flavor: 'grok' })
+                    this.currentBackendModel = requestedModel
+                    batch.mode.model = requestedModel
+                } catch (error) {
+                    logger.warn('[grok-remote] Inline model switch failed', error)
+                    this.rollbackModel(batch, this.currentBackendModel)
+                    session.sendSessionEvent({
+                        type: 'message',
+                        message: `Failed to switch Grok model to ${requestedModel}.`
+                    })
+                }
+            }
+
+            const requestedEffort = batch.mode.effort === null
+                ? this.defaultBackendEffort
+                : batch.mode.effort
+            if (requestedEffort && requestedEffort !== this.currentBackendEffort) {
+                try {
+                    await backend.setMode(acpSessionId, requestedEffort)
+                    this.currentBackendEffort = requestedEffort
+                    batch.mode.effort = requestedEffort
+                } catch (error) {
+                    logger.warn('[grok-remote] Inline effort switch failed', error)
+                    this.rollbackEffort(batch, this.currentBackendEffort)
+                    session.sendSessionEvent({
+                        type: 'message',
+                        message: `Failed to switch Grok effort to ${requestedEffort}.`
+                    })
+                }
+            }
+
             this.applyDisplayMode(batch.mode.permissionMode)
             this.messageBuffer.addMessage(batch.message, 'user')
-            const text = batch.mode.permissionMode === 'plan'
+            const isSlashCommand = batch.message.trimStart().startsWith('/')
+            let text = batch.mode.permissionMode === 'plan' && !isSlashCommand
                 ? `${PLAN_MODE_INSTRUCTION}\n\n${batch.message}`
                 : batch.message
+            if (!this.instructionsSent && !isSlashCommand) {
+                text = `${GROK_TITLE_INSTRUCTION}\n\n${text}`
+                this.instructionsSent = true
+            }
             const promptContent: PromptContent[] = [{ type: 'text', text }]
 
             session.onThinkingChange(true)
@@ -208,6 +293,20 @@ class GrokRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
+    private rollbackModel(batch: { mode: { model?: string | null } }, model: string | null): void {
+        batch.mode.model = model
+        this.session.setModel(model)
+        this.session.pushKeepAlive()
+        this.opts.onModelRollback?.(model)
+    }
+
+    private rollbackEffort(batch: { mode: { effort?: string | null } }, effort: string | null): void {
+        batch.mode.effort = effort
+        this.session.setEffort(effort)
+        this.session.pushKeepAlive()
+        this.opts.onEffortRollback?.(effort)
+    }
+
     private async handleAbort(): Promise<void> {
         if (this.backend && this.session.sessionId) {
             await this.backend.cancelPrompt(this.session.sessionId)
@@ -244,7 +343,7 @@ function toAcpMcpServers(config: Record<string, { command: string; args: string[
 
 export async function grokRemoteLauncher(
     session: GrokSession,
-    opts: { model?: string; effort?: string }
+    opts: GrokRemoteLauncherOptions
 ): Promise<'switch' | 'exit'> {
     return new GrokRemoteLauncher(session, opts).launch()
 }

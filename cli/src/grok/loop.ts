@@ -21,6 +21,9 @@ interface GrokLoopOptions {
     effort?: string
     resumeSessionId?: string
     onSessionReady?: (session: GrokSession) => void
+    onModelRollback?: (model: string | null) => void
+    onEffortRollback?: (effort: string | null) => void
+    onConfigDiscovered?: (config: { model: string | null; effort: string | null }) => void
 }
 
 export async function grokLoop(opts: GrokLoopOptions): Promise<void> {
@@ -54,12 +57,15 @@ export async function grokLoop(opts: GrokLoopOptions): Promise<void> {
         startingMode: opts.startingMode,
         logTag: 'grok-loop',
         runLocal: (instance) => grokLocalLauncher(instance, {
-            model: opts.model,
-            effort: opts.effort
+            model: instance.getModel() ?? undefined,
+            effort: instance.getEffort() ?? undefined
         }),
         runRemote: (instance) => grokRemoteLauncher(instance, {
-            model: opts.model,
-            effort: opts.effort
+            model: instance.getModel() ?? undefined,
+            effort: instance.getEffort() ?? undefined,
+            onModelRollback: opts.onModelRollback,
+            onEffortRollback: opts.onEffortRollback,
+            onConfigDiscovered: opts.onConfigDiscovered
         }),
         onSessionReady: opts.onSessionReady
     })

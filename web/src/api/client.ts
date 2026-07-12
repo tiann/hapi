@@ -32,6 +32,7 @@ import type {
     FileReadResponse,
     GitCommandResponse,
     GrokModelsResponse,
+    GrokReasoningEffortResponse,
     ListDirectoryResponse,
     MachineListDirectoryResponse,
     MachinePathsExistsResponse,
@@ -658,6 +659,18 @@ export class ApiClient {
     async getMachineGrokModelsForCwd(machineId: string, cwd: string): Promise<GrokModelsResponse> {
         return await this.request<GrokModelsResponse>(
             `/api/machines/${encodeURIComponent(machineId)}/grok-models?cwd=${encodeURIComponent(cwd)}`
+        )
+    }
+
+    async getSessionGrokModels(sessionId: string): Promise<GrokModelsResponse> {
+        return await this.request<GrokModelsResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/grok-models`
+        )
+    }
+
+    async getSessionGrokReasoningEffortOptions(sessionId: string): Promise<GrokReasoningEffortResponse> {
+        return await this.request<GrokReasoningEffortResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/grok-reasoning-effort-options`
         )
     }
 

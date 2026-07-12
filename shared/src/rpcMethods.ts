@@ -31,6 +31,8 @@ export const RPC_METHODS = {
     ListOpencodeModels: 'listOpencodeModels',
     ListOpencodeModelsForCwd: 'listOpencodeModelsForCwd',
     ListGrokModelsForCwd: 'listGrokModelsForCwd',
+    ListGrokModels: 'listGrokModels',
+    ListGrokReasoningEffortOptions: 'listGrokReasoningEffortOptions',
     ListOpencodeReasoningEffortOptions: 'listOpencodeReasoningEffortOptions'
 } as const
 

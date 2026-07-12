@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { buildGrokModelsArgs, parseGrokModelsOutput } from './grokModels'
+import { buildGrokModelsArgs, parseGrokInitializeModels, parseGrokModelsOutput } from './grokModels'
 
 describe('Grok model discovery', () => {
     test('runs the official model listing command in the selected cwd', () => {
@@ -23,6 +23,36 @@ Available models:
                 { modelId: 'custom-fast' }
             ],
             currentModelId: 'grok-4.5'
+        })
+    })
+
+    test('parses model names and per-model efforts from ACP initialize metadata', () => {
+        expect(parseGrokInitializeModels({
+            _meta: {
+                modelState: {
+                    currentModelId: 'grok-4.5',
+                    availableModels: [{
+                        modelId: 'grok-4.5',
+                        name: 'Grok 4.5',
+                        _meta: {
+                            reasoningEfforts: [
+                                { value: 'high', label: 'High Effort', default: true },
+                                { value: 'low', label: 'Low Effort', default: false }
+                            ]
+                        }
+                    }]
+                }
+            }
+        })).toEqual({
+            currentModelId: 'grok-4.5',
+            availableModels: [{
+                modelId: 'grok-4.5',
+                name: 'Grok 4.5',
+                reasoningEfforts: [
+                    { value: 'high', name: 'High Effort', isDefault: true },
+                    { value: 'low', name: 'Low Effort', isDefault: false }
+                ]
+            }]
         })
     })
 })

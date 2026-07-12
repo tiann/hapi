@@ -43,6 +43,8 @@ function getAgentConfigDir(flavor?: string): string {
             return process.env.CLAUDE_CONFIG_DIR || join(getHomeDirectory(), '.claude');
         case 'codex':
             return process.env.CODEX_HOME || join(getHomeDirectory(), '.codex');
+        case 'grok':
+            return process.env.GROK_HOME || join(getHomeDirectory(), '.grok');
         default:
             return join(getHomeDirectory(), `.${normalizedFlavor}`);
     }
@@ -56,6 +58,9 @@ function getUserSkillsRoots(flavor?: string): string[] {
             roots.push(join(getAgentConfigDir(flavor), 'skills'));
             break;
         case 'codex':
+            roots.push(join(getAgentConfigDir(flavor), 'skills'));
+            break;
+        case 'grok':
             roots.push(join(getAgentConfigDir(flavor), 'skills'));
             break;
     }
@@ -74,6 +79,9 @@ function getProjectSkillsRoots(directory: string, flavor?: string): string[] {
             break;
         case 'codex':
             roots.push(join(directory, '.codex', 'skills'));
+            break;
+        case 'grok':
+            roots.push(join(directory, '.grok', 'skills'));
             break;
     }
     return roots;

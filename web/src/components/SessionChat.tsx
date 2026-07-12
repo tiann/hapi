@@ -62,6 +62,8 @@ import {
 } from '@/lib/sessionChatCursorModel'
 import { buildCursorEffortPickerOptions, resolveCursorVariantOptions } from '@/lib/cursorModelOptions'
 import { useOpencodeModels } from '@/hooks/queries/useOpencodeModels'
+import { useGrokModels } from '@/hooks/queries/useGrokModels'
+import { useGrokReasoningEffortOptions } from '@/hooks/queries/useGrokReasoningEffortOptions'
 import { usePiModels } from '@/hooks/queries/usePiModels'
 import { useOpencodeReasoningEffortOptions } from '@/hooks/queries/useOpencodeReasoningEffortOptions'
 import { useVoiceOptional } from '@/lib/voice-context'
@@ -577,6 +579,27 @@ function SessionChatInner(props: SessionChatProps) {
             label: opencodeModel.name ?? opencodeModel.modelId
         }))
     }, [agentFlavor, opencodeModelsState.availableModels])
+    const grokModelsState = useGrokModels({
+        api: props.api,
+        sessionId: props.session.id,
+        enabled: agentFlavor === 'grok' && props.session.active
+    })
+    const grokEffortState = useGrokReasoningEffortOptions({
+        api: props.api,
+        sessionId: props.session.id,
+        enabled: agentFlavor === 'grok' && props.session.active
+    })
+    const grokModelOptions = useMemo(() => (
+        agentFlavor === 'grok'
+            ? [
+                { value: null, label: 'Default' },
+                ...grokModelsState.availableModels.map((model) => ({
+                    value: model.modelId,
+                    label: model.name ?? model.modelId
+                }))
+            ]
+            : undefined
+    ), [agentFlavor, grokModelsState.availableModels])
     const cursorModelsState = useCursorModels({
         api: props.api,
         sessionId: props.session.id,
@@ -1296,6 +1319,8 @@ function SessionChatInner(props: SessionChatProps) {
                                     )
                                     : agentFlavor === 'opencode'
                                         ? opencodeModelOptions
+                                        : agentFlavor === 'grok'
+                                            ? grokModelOptions
                                         // Pi uses its own provider-qualified picker (piModels prop).
                                         // Feeding piModelOptions here would make the generic Ctrl/Cmd+M
                                         // cycler (getNextModelForFlavor) post a bare modelId string,
@@ -1312,6 +1337,11 @@ function SessionChatInner(props: SessionChatProps) {
                                 : agentFlavor === 'opencode' && opencodeReasoningEffortState.options.length > 0
                                     ? opencodeReasoningEffortState.options
                                     : undefined
+                        }
+                        availableEffortOptions={
+                            agentFlavor === 'grok' && grokEffortState.options.length > 0
+                                ? grokEffortState.options
+                                : undefined
                         }
                         active={props.session.active}
                         allowSendWhenInactive
@@ -1361,6 +1391,10 @@ function SessionChatInner(props: SessionChatProps) {
                                         : undefined)
                                     : agentFlavor === 'pi'
                                         ? (props.session.active && !piModelsState.error ? handleModelChange : undefined)
+                                        : agentFlavor === 'grok'
+                                            ? (props.session.active && !controlledByUser && !grokModelsState.error
+                                                ? handleModelChange
+                                                : undefined)
                                         : handleModelChange
                         }
                         onModelEffortChange={
@@ -1380,7 +1414,13 @@ function SessionChatInner(props: SessionChatProps) {
                                 ? handleModelReasoningEffortChange
                                 : undefined
                         }
-                        onEffortChange={handleEffortChange}
+                        onEffortChange={
+                            agentFlavor === 'grok'
+                                ? (props.session.active && !controlledByUser && grokEffortState.options.length > 0
+                                    ? handleEffortChange
+                                    : undefined)
+                                : handleEffortChange
+                        }
                         serviceTier={agentFlavor === 'codex' ? props.session.serviceTier : undefined}
                         onServiceTierChange={
                             agentFlavor === 'codex'

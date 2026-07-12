@@ -20,6 +20,8 @@ export type {
     GitCommandResponse,
     GrokModelsResponse,
     GrokModelSummary,
+    GrokReasoningEffortResponse,
+    GrokReasoningEffortOption,
     ListDirectoryResponse,
     MachineDirectoryEntry,
     MachineListDirectoryResponse,

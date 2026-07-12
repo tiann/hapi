@@ -54,8 +54,8 @@ export async function runGrok(opts: {
     setControlledByUser(session, startingMode)
 
     let currentPermissionMode: PermissionMode = opts.permissionMode ?? 'default'
-    const currentModel = opts.model ?? null
-    const currentEffort = opts.effort ?? null
+    let currentModel = opts.model ?? null
+    let currentEffort = opts.effort ?? null
     const queue = new MessageQueue2<GrokMode>((mode) => hashObject(mode))
     const sessionRef: { current: GrokSession | null } = { current: null }
 
@@ -93,12 +93,15 @@ export async function runGrok(opts: {
     registerSessionConfigRpc<PermissionMode>({
         rpcHandlerManager: session.rpcHandlerManager,
         flavor: 'grok',
-        modelMode: 'ignore',
+        modelMode: 'nullable',
         modelReasoningEffortMode: 'ignore',
+        effortMode: 'nullable',
         onApply: (config) => {
             if (config.permissionMode !== undefined) {
                 currentPermissionMode = config.permissionMode
             }
+            if (config.model !== undefined) currentModel = config.model
+            if (config.effort !== undefined) currentEffort = config.effort
         },
         onAfterApply: syncSessionMode,
         appliedFallback: () => ({ permissionMode: currentPermissionMode })
@@ -118,6 +121,17 @@ export async function runGrok(opts: {
             model: opts.model,
             effort: opts.effort,
             resumeSessionId: opts.resumeSessionId,
+            onModelRollback: (model) => {
+                currentModel = model
+            },
+            onEffortRollback: (effort) => {
+                currentEffort = effort
+            },
+            onConfigDiscovered: (config) => {
+                currentModel = config.model
+                currentEffort = config.effort
+                syncSessionMode()
+            },
             onModeChange: createModeChangeHandler(session),
             onSessionReady: (instance) => {
                 sessionRef.current = instance

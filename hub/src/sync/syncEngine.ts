@@ -33,6 +33,7 @@ import {
     type RpcListCursorModelsResponse,
     type RpcListOpencodeModelsResponse,
     type RpcListGrokModelsResponse,
+    type RpcListGrokReasoningEffortOptionsResponse,
     type RpcListOpencodeReasoningEffortOptionsResponse,
     type RpcCursorModel,
     type RpcOpencodeModel,
@@ -55,6 +56,7 @@ export type {
     RpcListCursorModelsResponse,
     RpcListOpencodeModelsResponse,
     RpcListGrokModelsResponse,
+    RpcListGrokReasoningEffortOptionsResponse,
     RpcListOpencodeReasoningEffortOptionsResponse,
     RpcCursorModel,
     RpcOpencodeModel,
@@ -1621,6 +1623,14 @@ export class SyncEngine {
 
     async listGrokModelsForCwd(machineId: string, cwd: string): Promise<RpcListGrokModelsResponse> {
         return await this.rpcGateway.listGrokModelsForCwd(machineId, cwd)
+    }
+
+    async listGrokModelsForSession(sessionId: string): Promise<RpcListGrokModelsResponse> {
+        return await this.rpcGateway.listGrokModelsForSession(sessionId)
+    }
+
+    async listGrokReasoningEffortOptionsForSession(sessionId: string): Promise<RpcListGrokReasoningEffortOptionsResponse> {
+        return await this.rpcGateway.listGrokReasoningEffortOptionsForSession(sessionId)
     }
 
     /** Generic Pi RPC — delegates to rpcGateway.callPiRpc. */

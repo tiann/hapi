@@ -1,6 +1,9 @@
 import { spawn } from 'node:child_process'
-import type { GrokModelSummary, GrokModelsResponse } from '@hapi/protocol/apiTypes'
+import { asString, isObject } from '@hapi/protocol'
+import type { GrokModelSummary, GrokModelsResponse, GrokReasoningEffortOption } from '@hapi/protocol/apiTypes'
+import { AcpStdioTransport } from '@/agent/backends/acp/AcpStdioTransport'
 import { getErrorMessage } from './rpcResponses'
+import packageJson from '../../../package.json'
 
 export interface ListGrokModelsForCwdRequest {
     cwd?: string
@@ -56,7 +59,43 @@ export function parseGrokModelsOutput(output: string): {
     return { availableModels, currentModelId }
 }
 
-async function runGrokModelsProbe(cwd: string): Promise<ListGrokModelsForCwdResponse> {
+export function parseGrokInitializeModels(response: unknown): {
+    availableModels: GrokModelSummary[]
+    currentModelId: string | null
+} {
+    if (!isObject(response) || !isObject(response._meta) || !isObject(response._meta.modelState)) {
+        return { availableModels: [], currentModelId: null }
+    }
+    const state = response._meta.modelState
+    const currentModelId = asString(state.currentModelId)
+    const rawModels = Array.isArray(state.availableModels) ? state.availableModels : []
+    const availableModels = rawModels
+        .filter((entry): entry is Record<string, unknown> => isObject(entry))
+        .map((entry): GrokModelSummary | null => {
+            const modelId = asString(entry.modelId)
+            if (!modelId) return null
+            const meta = isObject(entry._meta) ? entry._meta : null
+            const rawEfforts = meta && Array.isArray(meta.reasoningEfforts) ? meta.reasoningEfforts : []
+            const reasoningEfforts = rawEfforts
+                .filter((effort): effort is Record<string, unknown> => isObject(effort))
+                .map((effort): GrokReasoningEffortOption => ({
+                    value: asString(effort.value) ?? asString(effort.id) ?? '',
+                    name: asString(effort.label) ?? undefined,
+                    isDefault: effort.default === true
+                }))
+                .filter((effort) => effort.value.length > 0)
+            return {
+                modelId,
+                name: asString(entry.name) ?? undefined,
+                ...(reasoningEfforts.length > 0 ? { reasoningEfforts } : {})
+            }
+        })
+        .filter((entry): entry is GrokModelSummary => entry !== null)
+
+    return { availableModels, currentModelId }
+}
+
+async function runGrokModelsCliProbe(cwd: string): Promise<ListGrokModelsForCwdResponse> {
     return await new Promise((resolve, reject) => {
         const child = spawn('grok', buildGrokModelsArgs(cwd), {
             env: process.env,
@@ -98,6 +137,37 @@ async function runGrokModelsProbe(cwd: string): Promise<ListGrokModelsForCwdResp
             resolve({ success: true, ...parseGrokModelsOutput(stdout) })
         })
     })
+}
+
+async function runGrokModelsProbe(cwd: string): Promise<ListGrokModelsForCwdResponse> {
+    const transport = new AcpStdioTransport({
+        command: 'grok',
+        args: ['--cwd', cwd, 'agent', '--reasoning-effort', 'low', 'stdio'],
+        env: Object.fromEntries(
+            Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)
+        )
+    })
+    try {
+        const response = await transport.sendRequest('initialize', {
+            protocolVersion: 1,
+            clientCapabilities: {
+                fs: { readTextFile: false, writeTextFile: false },
+                terminal: false,
+                _meta: { parameterizedModelPicker: true }
+            },
+            clientInfo: { name: 'hapi-grok-models', version: packageJson.version }
+        }, { timeoutMs: PROBE_TIMEOUT_MS })
+        const parsed = parseGrokInitializeModels(response)
+        if (parsed.availableModels.length > 0) {
+            return { success: true, ...parsed }
+        }
+    } catch {
+        // Older Grok builds may not expose modelState during initialize.
+        // Fall back to the stable `grok models` command below.
+    } finally {
+        await transport.close().catch(() => undefined)
+    }
+    return await runGrokModelsCliProbe(cwd)
 }
 
 export async function listGrokModelsForCwd(cwd: string): Promise<ListGrokModelsForCwdResponse> {

@@ -71,6 +71,7 @@ export type PermissionResponse =
 export type AgentSessionModelDescriptor = {
     modelId: string;
     name?: string;
+    reasoningEfforts?: Array<{ value: string; name?: string; isDefault?: boolean }>;
 };
 
 export type AgentSessionModelsMetadata = {

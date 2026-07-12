@@ -76,10 +76,14 @@ Remote mode uses Grok's ACP stdio agent (`grok agent stdio`). HAPI stores the na
 
 For a new local session, HAPI supplies a UUID with `grok --session-id`, so the session can be resumed without scraping the fullscreen TUI.
 
+## Model and effort controls
+
+The Create page discovers Grok's ACP model catalog and the reasoning-effort choices advertised for each model. Remote sessions can switch both model and effort between turns; HAPI applies them through ACP `session/set_model` and `session/set_mode`.
+
+HAPI also exposes Grok's common slash commands, discovers skills from `.grok/skills`, `~/.grok/skills`, and shared `.agents/skills`, and asks Grok to set a concise HAPI session title after the first normal prompt.
+
 ## Current limitations
 
-- The Create page discovers models with `grok models`; mid-session model switching is not exposed yet.
-- Reasoning effort can be selected at launch but is not changed mid-session.
 - OAuth/device-code login must be completed outside the HAPI Web UI.
 - Grok subscription, credit, and model availability are controlled by xAI.
 

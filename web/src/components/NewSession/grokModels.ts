@@ -24,3 +24,27 @@ export function buildGrokModelOptions(
         }))
     ]
 }
+
+export function buildGrokEffortOptions(
+    availableModels: GrokModelSummary[],
+    selectedModel: string,
+    currentModelId: string | null
+): Array<{ value: string; label: string }> {
+    const effectiveModel = selectedModel === 'auto' ? currentModelId : selectedModel
+    const efforts = availableModels.find((model) => model.modelId === effectiveModel)?.reasoningEfforts
+    if (!efforts || efforts.length === 0) {
+        return [
+            { value: 'auto', label: 'Default' },
+            { value: 'low', label: 'Low' },
+            { value: 'medium', label: 'Medium' },
+            { value: 'high', label: 'High' }
+        ]
+    }
+    return [
+        { value: 'auto', label: 'Default' },
+        ...efforts.map((effort) => ({
+            value: effort.value,
+            label: effort.name ?? effort.value
+        }))
+    ]
+}
