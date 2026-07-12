@@ -412,6 +412,10 @@ export function isSkippableAgentContent(content: unknown): boolean {
     const data = isObject(content.data) ? content.data : null
     if (!data) return false
     if (Boolean(data.isMeta) || Boolean(data.isCompactSummary)) return true
+    // A recap with no text is pure noise — drop it here rather than let it reach
+    // the away_summary branch (a bare "recap:" row) or, via a null return, fall
+    // through to the raw-JSON stringify fallback in normalize.ts.
+    if (data.type === 'system' && data.subtype === 'away_summary' && !asString(data.content)) return true
     return !isClaudeChatVisibleMessage({ type: data.type, subtype: data.subtype })
 }
 
@@ -480,6 +484,22 @@ export function normalizeAgentRecord(
                     type: 'turn-duration',
                     durationMs: asNumber(data.durationMs) ?? 0,
                     targetMessageId: asString(data.messageId) ?? undefined
+                },
+                isSidechain: false,
+                meta
+            }
+        }
+        if (data.type === 'system' && data.subtype === 'away_summary') {
+            // Recap text lives in `content`. Empty recaps are dropped upstream by
+            // isSkippableAgentContent, so content is a non-empty string here.
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'event',
+                content: {
+                    type: 'recap',
+                    text: asString(data.content) ?? ''
                 },
                 isSidechain: false,
                 meta

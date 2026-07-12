@@ -134,6 +134,18 @@ describe('getEventPresentation — thread goals', () => {
     })
 })
 
+describe('getEventPresentation — recap (away_summary)', () => {
+    it('formats the auto-generated away recap with a recap: prefix, distinct from manual /recap', () => {
+        const result = getEventPresentation({
+            type: 'recap',
+            text: 'Building the login flow, next: wire up the submit handler.'
+        })
+
+        expect(result.icon).toBe('💭')
+        expect(result.text).toBe('recap: Building the login flow, next: wire up the submit handler.')
+    })
+})
+
 describe('formatResetTime', () => {
     it('formats a unix timestamp to a non-empty string', () => {
         const result = formatResetTime(1774278000)

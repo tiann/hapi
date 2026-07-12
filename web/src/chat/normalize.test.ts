@@ -71,6 +71,48 @@ describe('normalizeDecryptedMessage', () => {
         })
     })
 
+    it('normalizes away_summary (auto recap) system output into a recap event', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'system',
+                    subtype: 'away_summary',
+                    uuid: 'sys-3',
+                    content: 'Building the login flow, next: wire up the submit handler.'
+                }
+            }
+        })
+
+        expect(normalizeDecryptedMessage(message)).toMatchObject({
+            id: 'msg-1',
+            role: 'event',
+            isSidechain: false,
+            content: {
+                type: 'recap',
+                text: 'Building the login flow, next: wire up the submit handler.'
+            }
+        })
+    })
+
+    it('skips away_summary with empty content instead of emitting a bare recap row', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'system',
+                    subtype: 'away_summary',
+                    uuid: 'sys-4',
+                    content: ''
+                }
+            }
+        })
+
+        expect(normalizeDecryptedMessage(message)).toBeNull()
+    })
+
     it('keeps the stringify fallback for unknown non-system agent payloads', () => {
         const message = makeMessage({
             role: 'agent',
