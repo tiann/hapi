@@ -2,11 +2,16 @@ import { describe, expect, it } from 'vitest'
 import { resolveToolAutoApprovalDecision } from './BasePermissionHandler'
 
 describe('resolveToolAutoApprovalDecision skill_lookup', () => {
-    it('auto-approves the read-only HAPI skill lookup tool', () => {
+    it.each([
+        'skill_lookup',
+        'hapi_skill_lookup',
+        'happy__skill_lookup',
+        'mcp__hapi__skill_lookup'
+    ])('auto-approves the exact read-only HAPI tool name %s', (toolName) => {
         expect(resolveToolAutoApprovalDecision(
             'default',
-            'hapi_skill_lookup',
-            'mcp__hapi__skill_lookup-1'
+            toolName,
+            'call-1'
         )).toBe('approved')
     })
 
