@@ -63,7 +63,7 @@ function formatLimitType(limitType: string | undefined): string {
     return limitType.replace(/_/g, ' ')
 }
 
-function formatDuration(ms: number): string {
+export function formatDuration(ms: number): string {
     const seconds = ms / 1000
     if (seconds < 60) return `${seconds.toFixed(1)}s`
     const mins = Math.floor(seconds / 60)
