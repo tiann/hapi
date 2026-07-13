@@ -57,16 +57,16 @@ export function getPiThinkingLevelOptions(
 
 /** Check whether a thinking level is supported by the model's thinkingLevelMap */
 export function isThinkingLevelSupported(level: string, map?: PiThinkingLevelMap): boolean {
-    // xhigh requires explicit opt-in via the map
-    if (level === 'xhigh') {
+    // xhigh and max require explicit opt-in via the map
+    if (level === 'xhigh' || level === 'max') {
         if (!map || !(level in map)) return false
         return map[level] !== null
-    }
+    
     if (!map || !(level in map)) return true
     return map[level] !== null
 }
 
-/** A level is excluded if it maps to `null` in the thinkingLevelMap, or xhigh without explicit opt-in */
+/** A level is excluded if it maps to `null` in the thinkingLevelMap, or xhigh/max without explicit opt-in */
 function isLevelExcluded(level: string, map?: PiThinkingLevelMap): boolean {
     return !isThinkingLevelSupported(level, map)
 }
