@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { open, stat } from 'node:fs/promises';
 import { BaseSessionScanner, SessionFileScanEntry, SessionFileScanResult, SessionFileScanStats } from '@/modules/common/session/BaseSessionScanner';
 import { logger } from '@/ui/logger';
 import type { CodexSessionEvent } from './codexEventConverter';
@@ -34,7 +34,12 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
     private readonly onEvent: (event: CodexSessionEvent) => void;
     private readonly onSessionId?: (sessionId: string) => void;
     private readonly fileEpochByPath = new Map<string, number>();
-    private readonly fileSizeByPath = new Map<string, number>();
+    private readonly fileStateByPath = new Map<string, {
+        device: number;
+        inode: number;
+        partialLine: Buffer;
+        nextLineIndex: number;
+    }>();
     private replayExistingHistoryOnNextAttach: boolean;
     private observedSessionId: string | null = null;
 
@@ -110,70 +115,94 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
         this.setCursor(filePath, nextCursor);
     }
 
-    private async readSessionFile(filePath: string, startLine: number): Promise<SessionFileScanResult<CodexSessionEvent>> {
-        let content: string;
+    private async readSessionFile(filePath: string, startOffset: number): Promise<SessionFileScanResult<CodexSessionEvent>> {
+        let fileStats;
         try {
-            content = await readFile(filePath, 'utf-8');
+            fileStats = await stat(filePath);
         } catch (error) {
-            logger.debug(`[codex-session-scanner] Failed to read transcript ${filePath}: ${error}`);
-            return { events: [], nextCursor: startLine };
+            logger.debug(`[codex-session-scanner] Failed to stat transcript ${filePath}: ${error}`);
+            return { events: [], nextCursor: startOffset };
         }
 
-        const lines = content.split('\n');
-        const hasTrailingEmpty = lines.length > 0 && lines[lines.length - 1] === '';
-        const totalLines = hasTrailingEmpty ? lines.length - 1 : lines.length;
-        let nextCursor = totalLines;
-        const currentSize = Buffer.byteLength(content);
-        const previousSize = this.fileSizeByPath.get(filePath);
-        let effectiveStartLine = startLine;
+        const previousState = this.fileStateByPath.get(filePath);
+        const identityChanged = Boolean(
+            previousState
+            && (previousState.device !== fileStats.dev || previousState.inode !== fileStats.ino)
+        );
+        let effectiveStartOffset = startOffset;
+        let partialLine = previousState?.partialLine ?? Buffer.alloc(0);
+        let nextLineIndex = previousState?.nextLineIndex ?? 0;
 
-        if ((previousSize !== undefined && currentSize < previousSize) || effectiveStartLine > totalLines) {
-            effectiveStartLine = 0;
+        if (identityChanged || fileStats.size < effectiveStartOffset) {
+            effectiveStartOffset = 0;
+            partialLine = Buffer.alloc(0);
+            nextLineIndex = 0;
             const nextEpoch = (this.fileEpochByPath.get(filePath) ?? 0) + 1;
             this.fileEpochByPath.set(filePath, nextEpoch);
         }
-        this.fileSizeByPath.set(filePath, currentSize);
 
-        const events: SessionFileScanEntry<CodexSessionEvent>[] = [];
-        for (let lineIndex = 0; lineIndex < totalLines; lineIndex += 1) {
-            const line = lines[lineIndex];
-            if (!line || line.trim().length === 0) {
-                continue;
-            }
-
-            let parsed: unknown;
+        const bytesToRead = fileStats.size - effectiveStartOffset;
+        let appended: Buffer = Buffer.alloc(0);
+        if (bytesToRead > 0) {
             try {
-                parsed = JSON.parse(line);
+                appended = await readTranscriptRange(filePath, effectiveStartOffset, bytesToRead);
             } catch (error) {
-                logger.debug(`[codex-session-scanner] Failed to parse transcript line ${filePath}:${lineIndex + 1}: ${error}`);
-                if (!hasTrailingEmpty && lineIndex === totalLines - 1) {
-                    nextCursor = lineIndex;
-                }
-                continue;
+                logger.debug(`[codex-session-scanner] Failed to read transcript ${filePath}: ${error}`);
+                return { events: [], nextCursor: startOffset };
             }
-
-            const event = parseCodexSessionEvent(parsed);
-            if (!event) {
-                continue;
-            }
-
-            if (event.type === 'session_meta') {
-                const sessionId = extractSessionId(event);
-                if (sessionId) {
-                    this.updateSessionId(sessionId);
-                }
-            }
-
-            if (lineIndex < effectiveStartLine) {
-                continue;
-            }
-
-            events.push({ event, lineIndex });
         }
+
+        const content = partialLine.length > 0
+            ? Buffer.concat([partialLine, appended])
+            : appended;
+        const events: SessionFileScanEntry<CodexSessionEvent>[] = [];
+
+        const parseLine = (lineBuffer: Buffer, lineIndex: number, allowIncomplete: boolean): boolean => {
+            const line = lineBuffer.toString('utf-8');
+            if (!line || line.trim().length === 0) return true;
+            try {
+                const event = parseCodexSessionEvent(JSON.parse(line));
+                if (!event) return true;
+                if (event.type === 'session_meta') {
+                    const sessionId = extractSessionId(event);
+                    if (sessionId) this.updateSessionId(sessionId);
+                }
+                events.push({ event, lineIndex });
+                return true;
+            } catch (error) {
+                if (!allowIncomplete) {
+                    logger.debug(`[codex-session-scanner] Failed to parse transcript line ${filePath}:${lineIndex + 1}: ${error}`);
+                }
+                return false;
+            }
+        };
+
+        let lineStart = 0;
+        for (let index = 0; index < content.length; index += 1) {
+            if (content[index] !== 0x0a) continue;
+            parseLine(content.subarray(lineStart, index), nextLineIndex, false);
+            nextLineIndex += 1;
+            lineStart = index + 1;
+        }
+
+        const trailing = content.subarray(lineStart);
+        if (trailing.length > 0 && parseLine(trailing, nextLineIndex, true)) {
+            partialLine = Buffer.alloc(0);
+            nextLineIndex += 1;
+        } else {
+            partialLine = Buffer.from(trailing);
+        }
+
+        this.fileStateByPath.set(filePath, {
+            device: fileStats.dev,
+            inode: fileStats.ino,
+            partialLine,
+            nextLineIndex
+        });
 
         return {
             events,
-            nextCursor
+            nextCursor: effectiveStartOffset + appended.length
         };
     }
 
@@ -184,6 +213,22 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
         this.observedSessionId = sessionId;
         this.onSessionId?.(sessionId);
     }
+}
+
+export async function readTranscriptRange(filePath: string, startOffset: number, length: number): Promise<Buffer> {
+    const content = Buffer.allocUnsafe(length);
+    let bytesRead = 0;
+    const handle = await open(filePath, 'r');
+    try {
+        while (bytesRead < length) {
+            const result = await handle.read(content, bytesRead, length - bytesRead, startOffset + bytesRead);
+            if (result.bytesRead === 0) break;
+            bytesRead += result.bytesRead;
+        }
+    } finally {
+        await handle.close();
+    }
+    return bytesRead === content.length ? content : content.subarray(0, bytesRead);
 }
 
 function parseCodexSessionEvent(value: unknown): CodexSessionEvent | null {
