@@ -61,7 +61,8 @@ export function isThinkingLevelSupported(level: string, map?: PiThinkingLevelMap
     if (level === 'xhigh' || level === 'max') {
         if (!map || !(level in map)) return false
         return map[level] !== null
-    
+    }
+
     if (!map || !(level in map)) return true
     return map[level] !== null
 }
