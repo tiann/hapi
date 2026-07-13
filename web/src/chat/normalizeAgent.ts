@@ -1,6 +1,7 @@
 import type { AgentEvent, CodexReview, CodexReviewFinding, NormalizedAgentContent, NormalizedMessage, ToolResultPermission } from '@/chat/types'
 import { AGENT_MESSAGE_PAYLOAD_TYPE, asNumber, asString, isObject } from '@hapi/protocol'
 import { isClaudeChatVisibleMessage } from '@hapi/protocol/messages'
+import { parseAgentTimestampMs } from '@/chat/agentTimestamp'
 
 function normalizeToolResultPermissions(value: unknown): ToolResultPermission | undefined {
     if (!isObject(value)) return undefined
@@ -226,6 +227,7 @@ function normalizeAssistantOutput(
     const uuid = asString(data.uuid) ?? messageId
     const parentUUID = asString(data.parentUuid) ?? null
     const isSidechain = Boolean(data.isSidechain)
+    const agentTimestamp = parseAgentTimestampMs(data.timestamp)
 
     const message = isObject(data.message) ? data.message : null
     if (!message) return null
@@ -269,6 +271,7 @@ function normalizeAssistantOutput(
         isSidechain,
         content: blocks,
         meta,
+        agentTimestamp,
         usage: inputTokens !== null && outputTokens !== null ? {
             input_tokens: inputTokens,
             output_tokens: outputTokens,
@@ -290,6 +293,7 @@ function normalizeUserOutput(
     const uuid = asString(data.uuid) ?? messageId
     const parentUUID = asString(data.parentUuid) ?? null
     const isSidechain = Boolean(data.isSidechain)
+    const agentTimestamp = parseAgentTimestampMs(data.timestamp)
 
     const message = isObject(data.message) ? data.message : null
     if (!message) return null
@@ -303,7 +307,8 @@ function normalizeUserOutput(
             createdAt,
             role: 'agent',
             isSidechain: true,
-            content: [{ type: 'sidechain', uuid, parentUUID, prompt: messageContent }]
+            content: [{ type: 'sidechain', uuid, parentUUID, prompt: messageContent }],
+            agentTimestamp
         }
     }
 
@@ -322,7 +327,8 @@ function normalizeUserOutput(
             createdAt,
             role: 'agent',
             isSidechain: true,
-            content: [{ type: 'sidechain', uuid, parentUUID, prompt: messageContent }]
+            content: [{ type: 'sidechain', uuid, parentUUID, prompt: messageContent }],
+            agentTimestamp
         }
     }
 
@@ -341,7 +347,8 @@ function normalizeUserOutput(
                 createdAt,
                 role: 'agent',
                 isSidechain: true,
-                content: [{ type: 'sidechain', uuid, parentUUID, prompt: textParts.join('\n\n') }]
+                content: [{ type: 'sidechain', uuid, parentUUID, prompt: textParts.join('\n\n') }],
+                agentTimestamp
             }
         }
     }
@@ -362,7 +369,8 @@ function normalizeUserOutput(
                 role: 'user',
                 isSidechain: false,
                 content: { type: 'text', text: textParts.join('\n\n') },
-                meta
+                meta,
+                agentTimestamp
             }
         }
     }
@@ -403,7 +411,8 @@ function normalizeUserOutput(
         role: 'agent',
         isSidechain,
         content: blocks,
-        meta
+        meta,
+        agentTimestamp
     }
 }
 

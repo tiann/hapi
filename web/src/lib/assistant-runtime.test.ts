@@ -48,6 +48,8 @@ function toolCall(id: string, overrides: Partial<ToolCallBlock> = {}): ToolCallB
             createdAt: 0,
             startedAt: null,
             completedAt: null,
+            execStartedAt: null,
+            execCompletedAt: null,
             description: null
         },
         children: [],

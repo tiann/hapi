@@ -380,6 +380,7 @@ export default {
   'tool.trace': 'Trace',
   'tool.trace.callsSuffix': 'calls',
   'tool.result': 'Result',
+  'tool.duration': 'Duration',
   'tool.semanticTitle.readFile': 'Read file',
   'tool.semanticTitle.runShell': 'Run shell',
   'tool.semanticTitle.search': 'Search',

@@ -16,6 +16,8 @@ import { getToolPresentation } from '@/components/ToolCard/knownTools'
 import { getToolFullViewComponent, getToolViewComponent } from '@/components/ToolCard/views/_all'
 import { getToolResultViewComponent } from '@/components/ToolCard/views/_results'
 import { formatTaskChildLabel, TaskStateIcon } from '@/components/ToolCard/helpers'
+import { toolDurationMs } from '@/components/ToolCard/toolDuration'
+import { formatDuration } from '@/chat/presentation'
 import type { TerminalToolDisplayMode } from '@/hooks/useTerminalToolDisplayMode'
 import { usePointerFocusRing } from '@/hooks/usePointerFocusRing'
 import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
@@ -222,9 +224,16 @@ export function ToolDetailDialogContent(props: {
     const isQuestionToolWithAnswers = isQuestionTool
         && permission?.answers
         && Object.keys(permission.answers).length > 0
+    const durationMs = toolDurationMs(props.block.tool)
 
     return (
         <div className="mt-3 flex max-h-[75vh] flex-col gap-4 overflow-auto">
+            {durationMs != null ? (
+                <div className="flex items-center gap-2 text-xs">
+                    <span className="font-medium text-[var(--app-hint)]">{t('tool.duration')}</span>
+                    <span className="font-mono text-[var(--app-hint)]">{formatDuration(durationMs)}</span>
+                </div>
+            ) : null}
             <div>
                 <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">
                     {isQuestionToolWithAnswers ? t('tool.questionsAnswers') : t('tool.input')}

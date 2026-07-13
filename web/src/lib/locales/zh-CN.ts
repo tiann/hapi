@@ -384,6 +384,7 @@ export default {
   'tool.trace': '追踪',
   'tool.trace.callsSuffix': '次调用',
   'tool.result': '结果',
+  'tool.duration': '耗时',
   'tool.semanticTitle.readFile': '读取文件',
   'tool.semanticTitle.runShell': '运行命令',
   'tool.semanticTitle.search': '搜索',

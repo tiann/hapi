@@ -66,6 +66,8 @@ export function ensureToolBlock(
         input: unknown
         description: string | null
         permission?: ToolPermission
+        /** Claude entry execution-machine timestamp for the tool_use, if known (see `ChatToolCall.execStartedAt`). */
+        agentTimestamp?: number | null
     }
 ): ToolCallBlock {
     const existing = toolBlocksById.get(id)
@@ -131,6 +133,11 @@ export function ensureToolBlock(
         createdAt: seed.createdAt,
         startedAt: initialState === 'running' ? seed.createdAt : null,
         completedAt: null,
+        // Exec start is only ever a real Claude entry timestamp (never the hub
+        // receive time). Null keeps the tool on the hub-time fallback in
+        // toolDurationMs; the tool_use path backfills the real value.
+        execStartedAt: initialState === 'running' ? (seed.agentTimestamp ?? null) : null,
+        execCompletedAt: null,
         description: seed.description,
         permission: seed.permission
     }
