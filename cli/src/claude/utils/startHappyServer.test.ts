@@ -40,18 +40,20 @@ describe('startHappyServer skill_lookup', () => {
         await rm(sandboxDir, { recursive: true, force: true })
     })
 
-    async function connect(): Promise<Client> {
+    async function connect(enableSkillLookup = true): Promise<Client> {
         const sessionClient = {
             updateMetadata: vi.fn(),
             sendAgentMessage: vi.fn(),
             sendClaudeSessionMessage: vi.fn()
         } as unknown as ApiSessionClient
-        const server = await startHappyServer(sessionClient, {
-            skillLookup: {
-                workingDirectory,
-                flavor: 'opencode'
+        const server = await startHappyServer(sessionClient, enableSkillLookup
+            ? {
+                skillLookup: {
+                    workingDirectory,
+                    flavor: 'opencode'
+                }
             }
-        })
+            : {})
         stopServer = server.stop
 
         client = new Client(
@@ -97,5 +99,15 @@ describe('startHappyServer skill_lookup', () => {
 
         expect(result.isError).toBe(true)
         expect(result.content?.[0]?.text).toContain('Skill not found: missing')
+    })
+
+    it('does not expose the fallback tool to native-skill sessions', async () => {
+        const mcp = await connect(false)
+        const tools = await mcp.listTools()
+
+        expect(tools.tools.map((tool) => tool.name)).toEqual([
+            'change_title',
+            'display_image'
+        ])
     })
 })

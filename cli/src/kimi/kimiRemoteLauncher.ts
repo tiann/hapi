@@ -45,7 +45,9 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
         const session = this.session;
         const messageBuffer = this.messageBuffer;
 
-        const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client);
+        const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client, {
+            skillLookup: { workingDirectory: session.path, flavor: 'kimi' }
+        });
         this.happyServer = happyServer;
 
         const runtimeConfig = resolveKimiRuntimeConfig({ model: this.model });

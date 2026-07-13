@@ -4,7 +4,7 @@ type ToolHandler = (args: Record<string, unknown>) => Promise<unknown>
 
 const harness = vi.hoisted(() => ({
     tools: new Map<string, ToolHandler>(),
-    callTool: vi.fn(async () => ({
+    callTool: vi.fn(async (_request: unknown) => ({
         content: [{ type: 'text', text: 'forwarded' }],
         isError: false
     }))

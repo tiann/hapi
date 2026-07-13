@@ -13,12 +13,21 @@ import { logger } from "@/ui/logger";
 import { ApiSessionClient } from "@/api/apiSession";
 import { randomUUID } from "node:crypto";
 import { detectImageMimeType, registerGeneratedImage } from "@/modules/common/generatedImages";
+import { resolveSkill } from "@/modules/common/skills";
 
 type StartHappyServerOptions = {
     emitTitleSummary?: boolean;
+    skillLookup?: {
+        workingDirectory: string;
+        flavor: string;
+    };
 };
 
-function createHapiMcpServer(client: ApiSessionClient, emitTitleSummary: boolean): McpServer {
+function createHapiMcpServer(
+    client: ApiSessionClient,
+    emitTitleSummary: boolean,
+    skillLookup: StartHappyServerOptions['skillLookup']
+): McpServer {
     const handler = async (title: string) => {
         logger.debug('[hapiMCP] Changing title to:', title);
         try {
@@ -48,6 +57,10 @@ function createHapiMcpServer(client: ApiSessionClient, emitTitleSummary: boolean
     const displayImageInputSchema: z.ZodTypeAny = z.object({
         path: z.string().describe('Local filesystem path of the image to display to the user'),
         title: z.string().optional().describe('Optional display title or filename for the image'),
+    });
+
+    const skillLookupInputSchema: z.ZodTypeAny = z.object({
+        name: z.string().trim().min(1).max(128).describe('Exact skill name shown by HAPI skill autocomplete'),
     });
 
     mcp.registerTool<any, any>('change_title', {
@@ -145,6 +158,50 @@ function createHapiMcpServer(client: ApiSessionClient, emitTitleSummary: boolean
         }
     });
 
+    if (skillLookup) {
+        mcp.registerTool<any, any>('skill_lookup', {
+            description: 'Load a HAPI skill by exact name. When a user message starts with $name, call this tool with that name before acting.',
+            title: 'Look Up Skill',
+            inputSchema: skillLookupInputSchema,
+        }, async (args: { name: string }) => {
+            logger.debug('[hapiMCP] Looking up skill:', args.name);
+            try {
+                const skill = await resolveSkill(args.name, skillLookup.workingDirectory, {
+                    flavor: skillLookup.flavor
+                });
+                if (!skill) {
+                    throw new Error(`Skill not found: ${args.name}`);
+                }
+
+                const header = [
+                    `Skill: ${skill.name}`,
+                    ...(skill.description ? [`Description: ${skill.description}`] : [])
+                ].join('\n');
+                return {
+                    content: [
+                        {
+                            type: 'text' as const,
+                            text: `${header}\n\n${skill.body}`,
+                        },
+                    ],
+                    isError: false,
+                };
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                logger.debug('[hapiMCP] Failed to look up skill:', message);
+                return {
+                    content: [
+                        {
+                            type: 'text' as const,
+                            text: `Failed to look up skill: ${message}`,
+                        },
+                    ],
+                    isError: true,
+                };
+            }
+        });
+    }
+
     return mcp;
 }
 
@@ -165,7 +222,7 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
     const mcps = new Map<string, McpServer>();
 
     const createMcpTransport = () => {
-        const mcp = createHapiMcpServer(client, emitTitleSummary);
+        const mcp = createHapiMcpServer(client, emitTitleSummary, options.skillLookup);
         const transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),
             onsessioninitialized: (sessionId) => {
@@ -219,9 +276,14 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
         hapiMcpUrl: mcpUrl,
     }));
 
+    const toolNames = ['change_title', 'display_image'];
+    if (options.skillLookup) {
+        toolNames.push('skill_lookup');
+    }
+
     return {
         url: mcpUrl,
-        toolNames: ['change_title', 'display_image'],
+        toolNames,
         stop: () => {
             logger.debug('[hapiMCP] Stopping server');
             for (const mcp of mcps.values()) {

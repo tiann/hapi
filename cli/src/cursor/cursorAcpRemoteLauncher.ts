@@ -68,7 +68,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         const session = this.session;
         const messageBuffer = this.messageBuffer;
 
-        const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client);
+        const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client, {
+            skillLookup: { workingDirectory: session.path, flavor: 'cursor' }
+        });
         this.happyServer = happyServer;
 
         const autoReview = isCursorAutoReviewMode(session.getPermissionMode() as PermissionMode);

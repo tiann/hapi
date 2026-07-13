@@ -21,12 +21,13 @@ const AUTO_APPROVE_TOOL_NAME_HINTS = [
     'change_title',
     'happy__change_title',
     'hapi_change_title',  // OpenCode MCP tool pattern
+    'skill_lookup',
     'geminireasoning',
     'codexreasoning',
     'think',
     'save_memory'
 ];
-const AUTO_APPROVE_TOOL_ID_HINTS = ['change_title', 'save_memory'];
+const AUTO_APPROVE_TOOL_ID_HINTS = ['change_title', 'skill_lookup', 'save_memory'];
 const AUTO_APPROVE_WRITE_TOOL_HINTS = ['write', 'edit', 'create', 'delete', 'patch', 'fs-edit'];
 
 export function resolveToolAutoApprovalDecision(
