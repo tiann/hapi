@@ -63,6 +63,26 @@ function startStub(handler: (path: string, body: string) => { status: number; bo
     });
 }
 
+function startDelayedStub(
+    delayMs: number,
+    response: { status: number; body: string }
+): Promise<number> {
+    return new Promise((resolve) => {
+        server = createServer((req, res) => {
+            req.resume();
+            req.on('end', () => {
+                setTimeout(() => {
+                    res.writeHead(response.status, { 'Content-Type': 'application/json' }).end(response.body);
+                }, delayMs);
+            });
+        });
+        server.listen(0, '127.0.0.1', () => {
+            const addr = server!.address();
+            resolve(typeof addr === 'object' && addr ? addr.port : 0);
+        });
+    });
+}
+
 function withStdin(payload: string, fn: () => Promise<void>): Promise<void> {
     const original = process.stdin;
     // Minimal async-iterable stdin stub.
@@ -127,6 +147,30 @@ describe('runSessionHookForwarder — PreToolUse routing', () => {
 
         expect(JSON.parse(out.get()).hookSpecificOutput.permissionDecision).toBe('deny');
     });
+
+    it('does not time out a slow PreToolUse approval (waits past the 1s SessionStart cap)', async () => {
+        // The web approval modal can take far longer than the 1s fire-and-forget
+        // SessionStart forward cap. A forward-level timeout on the pre-tool-use
+        // POST would deny every approval the user doesn't answer within one
+        // second (the hook-side timeout is 3600s). Regression guard: a 1.3s
+        // reply (past SESSION_HOOK_FORWARD_TIMEOUT_MS = 1s) must still allow.
+        const port = await startDelayedStub(1_300, {
+            status: 200,
+            body: JSON.stringify({ permissionDecision: 'allow' })
+        });
+
+        const out = captureStdout();
+        try {
+            await withStdin(
+                JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_use_id: 'tc-slow' }),
+                () => runSessionHookForwarder(['--port', String(port), '--token', 'tok'])
+            );
+        } finally {
+            out.restore();
+        }
+
+        expect(JSON.parse(out.get()).hookSpecificOutput.permissionDecision).toBe('allow');
+    }, 10_000);
 
     it('routes SessionStart to /hook/session-start and writes nothing to stdout', async () => {
         let hitPath = '';

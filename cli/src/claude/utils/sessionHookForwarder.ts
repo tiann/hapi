@@ -50,7 +50,13 @@ function postHook(
     port: number,
     token: string,
     path: string,
-    body: Buffer
+    body: Buffer,
+    // Optional request timeout. Only the fire-and-forget SessionStart forward
+    // sets this (so a dead hub can't stall startup); the PreToolUse bridge must
+    // NOT time out here — it waits on the web approval modal, whose own hook-side
+    // timeout is 3600s (generateHookSettings). Applying the 1s cap here would
+    // deny every approval the user doesn't answer within one second.
+    timeoutMs?: number
 ): Promise<{ statusCode?: number; body: string; error: boolean }> {
     return new Promise((resolve) => {
         const chunks: Buffer[] = [];
@@ -91,12 +97,14 @@ function postHook(
             }
             finish({ body: '', error: true });
         });
-        req.setTimeout(SESSION_HOOK_FORWARD_TIMEOUT_MS, () => {
-            timedOut = true;
-            logError(`Hook request timed out after ${SESSION_HOOK_FORWARD_TIMEOUT_MS}ms`);
-            req.destroy();
-            finish({ body: '', error: true });
-        });
+        if (timeoutMs !== undefined) {
+            req.setTimeout(timeoutMs, () => {
+                timedOut = true;
+                logError(`Hook request timed out after ${timeoutMs}ms`);
+                req.destroy();
+                finish({ body: '', error: true });
+            });
+        }
         req.end(body);
     });
 }
@@ -217,7 +225,7 @@ export async function runSessionHookForwarder(args: string[]): Promise<void> {
             return;
         }
 
-        const response = await postHook(port, token, '/hook/session-start', body);
+        const response = await postHook(port, token, '/hook/session-start', body, SESSION_HOOK_FORWARD_TIMEOUT_MS);
         if (response.error || (response.statusCode && response.statusCode >= 400)) {
             if (response.statusCode && response.statusCode >= 400) {
                 logError(`Hook server responded with status ${response.statusCode}`);
