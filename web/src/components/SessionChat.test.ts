@@ -4,6 +4,7 @@ import {
     buildGoalStateMessages,
     isScratchlistHotkeyBlockedTarget,
     isScratchlistToggleHotkey,
+    resolvePiContextWindow,
     shouldAutoClearPendingSchedule,
     shouldRouteToScratchlist,
 } from './SessionChat'
@@ -43,6 +44,25 @@ describe('applyModelChangeWithReasoningRollback', () => {
         expect(setModelReasoningEffort).toHaveBeenCalledOnce()
         expect(setModelReasoningEffort).toHaveBeenCalledWith(null)
         expect(setModel).toHaveBeenCalledWith('gpt-next')
+    })
+})
+
+describe('resolvePiContextWindow', () => {
+    const models = [
+        { provider: 'provider-a', modelId: 'shared-model', contextWindow: 100_000 },
+        { provider: 'provider-b', modelId: 'shared-model', contextWindow: 200_000 },
+    ]
+
+    it('uses the provider-qualified selected model when model ids collide', () => {
+        expect(resolvePiContextWindow(
+            models,
+            { provider: 'provider-b', modelId: 'shared-model' },
+            'shared-model',
+        )).toBe(200_000)
+    })
+
+    it('falls back to the legacy model id when selected-model metadata is absent', () => {
+        expect(resolvePiContextWindow(models, undefined, 'shared-model')).toBe(100_000)
     })
 })
 
