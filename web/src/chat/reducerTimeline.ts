@@ -885,14 +885,17 @@ export function reduceTimeline(
                     })
 
                     if (block.tool.state === 'pending') {
-                        block.tool = { ...block.tool, state: 'running', startedAt: msg.createdAt }
+                        block.tool = { ...block.tool, state: 'running' }
                     }
-                    // Record the tool_use entry's Claude execution timestamp as
-                    // the exec start. Runs regardless of state (not just the
-                    // pending→running transition) so it also backfills when the
-                    // tool_result entry was reduced first. Null (no Claude
-                    // timestamp) is a no-op, leaving exec start unset so
+                    // Backfill both the hub-clock start and the Claude exec start
+                    // regardless of state (not just the pending→running
+                    // transition), so a tool_result reduced before its tool_use
+                    // still lowers startedAt to the (earlier) tool_use receive
+                    // time. Otherwise both hub ends equal the result time and
+                    // toolDurationMs reads 0.0s. setEarliest* take the min; a
+                    // null exec timestamp is a no-op, leaving exec start unset so
                     // toolDurationMs falls back to hub times on both sides.
+                    setEarliestStartedAt(block, msg.createdAt)
                     setEarliestExecStartedAt(block, msg.agentTimestamp ?? null)
 
                     if (isSubagentToolName(c.name) && !context.consumedGroupIds.has(msg.id)) {

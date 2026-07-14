@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { reduceTimeline } from './reducerTimeline'
+import { toolDurationMs } from '@/components/ToolCard/toolDuration'
 import type { TracedMessage } from './tracer'
 
 function makeContext() {
@@ -464,6 +465,22 @@ describe('reduceTimeline', () => {
             const toolBlock = blocks.find(b => b.kind === 'tool-call') as any
             expect(toolBlock.tool.execStartedAt).toBeNull()
             expect(toolBlock.tool.execCompletedAt).toBe(1_700_000_002_100)
+        })
+
+        it('backfills the hub startedAt on reorder so a timestamp-less pair is not shown as 0.0s', () => {
+            // Reorder + no Claude timestamps: the block is created from the
+            // tool_result, so the hub startedAt is the result receive time.
+            // Without lowering it to the later tool_use's (earlier) receive
+            // time, both hub ends equal the result time and the duration row
+            // would read 0.0s instead of the real hub receive window.
+            const { blocks } = reduceTimeline([
+                toolResult(),
+                toolUse()
+            ], makeContext())
+            const toolBlock = blocks.find(b => b.kind === 'tool-call') as any
+            expect(toolBlock.tool.startedAt).toBe(1_700_000_000_000)
+            expect(toolBlock.tool.completedAt).toBe(1_700_000_001_800)
+            expect(toolDurationMs(toolBlock.tool)).toBe(1_800)
         })
     })
 
