@@ -170,6 +170,21 @@ describe('classifyCursorAgentMessage', () => {
         expect(result?.source).toBe('text')
     })
 
+    it('marks RetriableError resource_exhausted as transient for auto-bridge', () => {
+        // Operator ask 2026-07-14: Cursor emits this exact wire string.
+        // It already classified as quota_exhausted, but with transient:false —
+        // auto-bridge only retries transient:true. RetriableError means the
+        // agent labeled the failure retriable; keep Error: T: / stderr quota
+        // paths non-transient.
+        const exactWire = 'Error: RetriableError: [resource_exhausted] Error'
+        const result = classifyCursorAgentMessage(exactWire)
+        expect(result).not.toBeNull()
+        expect(result?.kind).toBe('quota_exhausted')
+        expect(result?.transient).toBe(true)
+        expect(result?.source).toBe('text')
+        expect(result?.raw).toBe(exactWire)
+    })
+
     it('classifies error appended to in-flight agent text (real session e7d9b44b)', () => {
         // Regression: 2026-06-13 session e7d9b44b. cursor-agent appended
         // a gRPC stringification to the END of a normal narrative output
