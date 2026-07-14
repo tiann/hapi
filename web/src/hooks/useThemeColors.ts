@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { applyColorTheme, getColorThemeStorageKey, getStoredColorTheme, type ColorScheme } from './useColorTheme'
+import { applyColorTheme, getColorThemePickerValue, getColorThemeStorageKey, getStoredColorTheme, type ColorScheme } from './useColorTheme'
 
 /**
  * Per-appearance "key color" customization.
@@ -269,7 +269,7 @@ export function applyThemeColors(): void {
 
 export function getThemeColorPickerValue(scheme: ThemeScheme, id: ThemeColorKeyId): string {
     const override = getStoredThemeColors()[scheme]?.[id]
-    return override ?? DEFAULT_HEX[scheme][id]
+    return override ?? getColorThemePickerValue(getStoredColorTheme(), scheme, id) ?? DEFAULT_HEX[scheme][id]
 }
 
 export function initializeThemeColors(): void {
@@ -379,7 +379,7 @@ export function useThemeColors(): {
     }, [])
 
     const getPickerValue = useCallback(
-        (id: ThemeColorKeyId) => overrides[id] ?? DEFAULT_HEX[scheme][id],
+        (id: ThemeColorKeyId) => overrides[id] ?? getColorThemePickerValue(getStoredColorTheme(), scheme, id) ?? DEFAULT_HEX[scheme][id],
         [overrides, scheme],
     )
 

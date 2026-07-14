@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import type { ThemeColorKeyId } from './useThemeColors'
 
 export type ColorScheme = 'light' | 'dark' | 'oled'
 export type ColorThemePreset =
@@ -22,7 +23,7 @@ export type ColorThemePreset =
 
 export type ColorThemeOption = {
     value: ColorThemePreset
-    label: string
+    labelKey: string
     preview: {
         light: string
         dark: string
@@ -48,23 +49,23 @@ type ThemePalette = {
 const COLOR_THEME_KEY = 'hapi-color-theme'
 
 const COLOR_THEME_OPTIONS: ReadonlyArray<ColorThemeOption> = [
-    { value: 'default', label: 'Default', preview: { light: '#ffffff', dark: '#1c1c1e', accent: '#111827' } },
-    { value: 'notion', label: 'Notion', preview: { light: '#fafafa', dark: '#191919', accent: '#3183d8' } },
-    { value: 'one', label: 'One', preview: { light: '#fbfbff', dark: '#1f2433', accent: '#526fff' } },
-    { value: 'proof', label: 'Proof', preview: { light: '#f8f7f2', dark: '#18231f', accent: '#2f7d5b' } },
-    { value: 'raycast', label: 'Raycast', preview: { light: '#ffffff', dark: '#201617', accent: '#ff5555' } },
-    { value: 'rose-pine', label: 'Rose Pine', preview: { light: '#fffaf3', dark: '#191724', accent: '#c65f7b' } },
-    { value: 'solarized', label: 'Solarized', preview: { light: '#fdf6e3', dark: '#002b36', accent: '#b58900' } },
-    { value: 'vercel', label: 'Vercel', preview: { light: '#ffffff', dark: '#000000', accent: '#0070f3' } },
-    { value: 'vs-code-plus', label: 'VS Code Plus', preview: { light: '#ffffff', dark: '#1e1e1e', accent: '#007acc' } },
-    { value: 'xcode', label: 'Xcode', preview: { light: '#f7f9ff', dark: '#1f2024', accent: '#0a84ff' } },
-    { value: 'linear', label: 'Linear', preview: { light: '#f7f7fb', dark: '#08090d', accent: '#5e6ad2' } },
-    { value: 'lobster', label: 'Lobster', preview: { light: '#fff7f4', dark: '#161821', accent: '#ff5b6e' } },
-    { value: 'material', label: 'Material', preview: { light: '#fffbfe', dark: '#1c1b1f', accent: '#6750a4' } },
-    { value: 'matrix', label: 'Matrix', preview: { light: '#f5fff7', dark: '#030806', accent: '#00ff66' } },
-    { value: 'monokai', label: 'Monokai', preview: { light: '#f8f7ef', dark: '#272822', accent: '#a6e22e' } },
-    { value: 'night-owl', label: 'Night Owl', preview: { light: '#fbfdff', dark: '#011627', accent: '#82aaff' } },
-    { value: 'nord', label: 'Nord', preview: { light: '#eceff4', dark: '#2e3440', accent: '#88c0d0' } },
+    { value: 'default', labelKey: 'settings.display.colorTheme.default', preview: { light: '#ffffff', dark: '#1c1c1e', accent: '#111827' } },
+    { value: 'notion', labelKey: 'settings.display.colorTheme.notion', preview: { light: '#fafafa', dark: '#191919', accent: '#3183d8' } },
+    { value: 'one', labelKey: 'settings.display.colorTheme.one', preview: { light: '#fbfbff', dark: '#1f2433', accent: '#526fff' } },
+    { value: 'proof', labelKey: 'settings.display.colorTheme.proof', preview: { light: '#f8f7f2', dark: '#18231f', accent: '#2f7d5b' } },
+    { value: 'raycast', labelKey: 'settings.display.colorTheme.raycast', preview: { light: '#ffffff', dark: '#201617', accent: '#ff5555' } },
+    { value: 'rose-pine', labelKey: 'settings.display.colorTheme.rosePine', preview: { light: '#fffaf3', dark: '#191724', accent: '#c65f7b' } },
+    { value: 'solarized', labelKey: 'settings.display.colorTheme.solarized', preview: { light: '#fdf6e3', dark: '#002b36', accent: '#b58900' } },
+    { value: 'vercel', labelKey: 'settings.display.colorTheme.vercel', preview: { light: '#ffffff', dark: '#000000', accent: '#0070f3' } },
+    { value: 'vs-code-plus', labelKey: 'settings.display.colorTheme.vsCodePlus', preview: { light: '#ffffff', dark: '#1e1e1e', accent: '#007acc' } },
+    { value: 'xcode', labelKey: 'settings.display.colorTheme.xcode', preview: { light: '#f7f9ff', dark: '#1f2024', accent: '#0a84ff' } },
+    { value: 'linear', labelKey: 'settings.display.colorTheme.linear', preview: { light: '#f7f7fb', dark: '#08090d', accent: '#5e6ad2' } },
+    { value: 'lobster', labelKey: 'settings.display.colorTheme.lobster', preview: { light: '#fff7f4', dark: '#161821', accent: '#ff5b6e' } },
+    { value: 'material', labelKey: 'settings.display.colorTheme.material', preview: { light: '#fffbfe', dark: '#1c1b1f', accent: '#6750a4' } },
+    { value: 'matrix', labelKey: 'settings.display.colorTheme.matrix', preview: { light: '#f5fff7', dark: '#030806', accent: '#00ff66' } },
+    { value: 'monokai', labelKey: 'settings.display.colorTheme.monokai', preview: { light: '#f8f7ef', dark: '#272822', accent: '#a6e22e' } },
+    { value: 'night-owl', labelKey: 'settings.display.colorTheme.nightOwl', preview: { light: '#fbfdff', dark: '#011627', accent: '#82aaff' } },
+    { value: 'nord', labelKey: 'settings.display.colorTheme.nord', preview: { light: '#eceff4', dark: '#2e3440', accent: '#88c0d0' } },
 ]
 
 const PALETTES: Record<Exclude<ColorThemePreset, 'default'>, Record<'light' | 'dark', ThemePalette>> = {
@@ -195,10 +196,6 @@ export function getColorThemeOptions(): ReadonlyArray<ColorThemeOption> {
     return COLOR_THEME_OPTIONS
 }
 
-export function getColorThemeLabel(theme: ColorThemePreset): string {
-    return COLOR_THEME_OPTIONS.find((option) => option.value === theme)?.label ?? 'Default'
-}
-
 export function getColorThemePreview(theme: ColorThemePreset): ColorThemeOption['preview'] {
     return COLOR_THEME_OPTIONS.find((option) => option.value === theme)?.preview ?? COLOR_THEME_OPTIONS[0]!.preview
 }
@@ -209,6 +206,21 @@ export function getColorThemeStorageKey(): string {
 
 export function getColorThemeBackground(theme: ColorThemePreset, scheme: ColorScheme): string | null {
     return theme === 'default' ? null : PALETTES[theme][toPaletteScheme(scheme)].background
+}
+
+export function getColorThemePickerValue(theme: ColorThemePreset, scheme: ColorScheme, id: ThemeColorKeyId): string | null {
+    if (theme === 'default') return null
+    const palette = PALETTES[theme][toPaletteScheme(scheme)]
+    const values: Record<ThemeColorKeyId, string> = {
+        background: palette.background,
+        surface: palette.secondary,
+        text: palette.foreground,
+        hint: palette.hint,
+        accent: palette.accent,
+        border: compositeOnBackground(palette.border, palette.background),
+        userBubble: palette.surface,
+    }
+    return values[id]
 }
 
 export function applyColorTheme(theme: ColorThemePreset = getStoredColorTheme(), scheme: ColorScheme): void {
@@ -236,7 +248,7 @@ export function applyColorTheme(theme: ColorThemePreset = getStoredColorTheme(),
         '--app-dialog-bg': values.dialog,
         '--app-chat-user-bg': values.surface,
         '--app-chat-user-fg': values.foreground,
-        '--app-chat-user-chip-bg': withAlpha(values.accent, scheme === 'dark' ? 0.24 : 0.15),
+        '--app-chat-user-chip-bg': withAlpha(values.accent, toPaletteScheme(scheme) === 'dark' ? 0.24 : 0.15),
         '--app-chat-user-chip-fg': values.accent,
         '--app-tool-card-bg': values.surface,
         '--app-tool-card-hover-bg': values.surfaceHover,
@@ -329,6 +341,15 @@ function mix(a: string, b: string, weight: number): string {
 function withAlpha(hex: string, alpha: number): string {
     const color = parseHex(hex)
     return `rgba(${color.r}, ${color.g}, ${color.b}, ${alpha})`
+}
+
+function compositeOnBackground(rgba: string, background: string): string {
+    const match = /^rgba\((\d+), (\d+), (\d+), ([\d.]+)\)$/.exec(rgba)
+    if (!match) return rgba
+    const base = parseHex(background)
+    const alpha = Number(match[4])
+    const blend = (foreground: number, behind: number) => Math.round(foreground * alpha + behind * (1 - alpha))
+    return toHex(blend(Number(match[1]), base.r), blend(Number(match[2]), base.g), blend(Number(match[3]), base.b))
 }
 
 function readableText(hex: string): string {

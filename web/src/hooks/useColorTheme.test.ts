@@ -8,7 +8,7 @@ import {
     useColorTheme,
 } from './useColorTheme'
 
-const THEME_VARS = ['--app-bg', '--app-fg', '--app-link', '--app-button', '--app-secondary-bg']
+const THEME_VARS = ['--app-bg', '--app-fg', '--app-link', '--app-button', '--app-secondary-bg', '--app-chat-user-chip-bg']
 
 describe('useColorTheme', () => {
     beforeEach(() => {
@@ -64,5 +64,12 @@ describe('useColorTheme', () => {
         act(() => result.current.setColorTheme('notion'))
         expect(document.documentElement.style.getPropertyValue('--app-bg')).toBe('#191919')
         expect(document.documentElement.style.getPropertyValue('--app-fg')).toBe('#d9d9d8')
+    })
+
+    it('uses dark palette contrast values for OLED', () => {
+        applyColorTheme('one', 'oled')
+
+        expect(document.documentElement.style.getPropertyValue('--app-bg')).toBe('#1f2433')
+        expect(document.documentElement.style.getPropertyValue('--app-chat-user-chip-bg')).toBe('rgba(123, 140, 255, 0.24)')
     })
 })

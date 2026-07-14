@@ -101,6 +101,15 @@ describe('useThemeColors', () => {
         expect(document.documentElement.style.getPropertyValue('--app-link').trim()).toBe('#526fff')
     })
 
+    it('uses the active color theme as the custom color picker baseline', () => {
+        localStorage.setItem('hapi-color-theme', 'one')
+        setScheme('light')
+        const { result } = renderHook(() => useThemeColors())
+
+        expect(result.current.getPickerValue('background')).toBe('#fbfbff')
+        expect(result.current.getPickerValue('accent')).toBe('#526fff')
+    })
+
 
 
     it('reapplies color theme preset changes from cross-tab storage events without Settings mounted', () => {
