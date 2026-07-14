@@ -92,9 +92,17 @@ type Pattern = {
 // Bullet-list prose like "  - Error: T: ..." still rejects: after
 // `[ \t]*` consumes the spaces, the next char is `-`, not `Error`.
 const PATTERNS: Pattern[] = [
+    // RetriableError resource_exhausted is auto-bridgeable: cursor-agent
+    // labeled the failure RetriableError, so mark transient:true. Keep the
+    // `Error: T:` form (and stderr quota_exceeded mapping) non-transient —
+    // those are harder quota / capacity stops, not hiccups.
     {
-        test: (t) => /^[ \t]*Error: T: \[resource_exhausted\]/im.test(t)
-            || /^[ \t]*Error: RetriableError: \[resource_exhausted\]/im.test(t),
+        test: (t) => /^[ \t]*Error: RetriableError: \[resource_exhausted\]/im.test(t),
+        kind: 'quota_exhausted',
+        transient: true
+    },
+    {
+        test: (t) => /^[ \t]*Error: T: \[resource_exhausted\]/im.test(t),
         kind: 'quota_exhausted',
         transient: false
     },
