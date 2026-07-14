@@ -14,6 +14,10 @@ import { getDraft } from '@/lib/composer-drafts'
  *    stopped session that then reopens under a new HAPI session id) must
  *    not steal the hand-off — otherwise the remounted chat never sees
  *    the transfer. Consume + seed happen in the same effect once active.
+ *  - The pending slot is bound to a target session id, so a different
+ *    active chat cannot claim a share armed for an inactive pick.
+ *    Reopen paths that swap A → B must call
+ *    `retargetSharePendingTransfer(A, B)` before navigating.
  *  - Consume runs in an effect, not during render — React.StrictMode
  *    double-invokes render functions in dev; a render-time consume
  *    would delete the key on the discarded pass.
@@ -39,7 +43,7 @@ export function ShareSeedConsumer(props: { sessionId: string; sessionActive: boo
     useEffect(() => {
         if (!props.sessionActive) return
         if (consumedRef.current) return
-        const transferId = consumeSharePendingTransfer()
+        const transferId = consumeSharePendingTransfer(props.sessionId)
         if (!transferId) return
         consumedRef.current = true
 

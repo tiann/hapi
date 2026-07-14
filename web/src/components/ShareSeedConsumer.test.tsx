@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, waitFor } from '@testing-library/react'
 import {
     SHARE_PENDING_TRANSFER_KEY,
+    peekSharePendingTransfer,
+    retargetSharePendingTransfer,
     setSharePendingTransfer,
 } from '@/lib/sharePendingState'
 
@@ -52,18 +54,28 @@ beforeEach(() => {
 })
 
 describe('ShareSeedConsumer', () => {
-    it('leaves the pending key untouched while inactive, then seeds on a new active session id', async () => {
-        setSharePendingTransfer('xfer-handoff')
+    it('leaves the pending key untouched while inactive, then seeds after retarget to a new active id', async () => {
+        setSharePendingTransfer('xfer-handoff', 'session-a')
 
         const inactive = render(
             <ShareSeedConsumer sessionId="session-a" sessionActive={false} />,
         )
-        expect(window.sessionStorage.getItem(SHARE_PENDING_TRANSFER_KEY)).toBe('xfer-handoff')
+        expect(peekSharePendingTransfer()).toEqual({ transferId: 'xfer-handoff', sessionId: 'session-a' })
         expect(getShareTransfer).not.toHaveBeenCalled()
 
         inactive.unmount()
-        expect(window.sessionStorage.getItem(SHARE_PENDING_TRANSFER_KEY)).toBe('xfer-handoff')
+        expect(peekSharePendingTransfer()).toEqual({ transferId: 'xfer-handoff', sessionId: 'session-a' })
 
+        // Unrelated active chat must not steal the pending share.
+        const other = render(
+            <ShareSeedConsumer sessionId="session-other" sessionActive={true} />,
+        )
+        await Promise.resolve()
+        expect(getShareTransfer).not.toHaveBeenCalled()
+        expect(peekSharePendingTransfer()).toEqual({ transferId: 'xfer-handoff', sessionId: 'session-a' })
+        other.unmount()
+
+        retargetSharePendingTransfer('session-a', 'session-b')
         render(<ShareSeedConsumer sessionId="session-b" sessionActive={true} />)
 
         await waitFor(() => {
@@ -74,12 +86,12 @@ describe('ShareSeedConsumer', () => {
     })
 
     it('consumes and seeds when the same session flips from inactive to active', async () => {
-        setSharePendingTransfer('xfer-same-id')
+        setSharePendingTransfer('xfer-same-id', 'session-a')
 
         const { rerender } = render(
             <ShareSeedConsumer sessionId="session-a" sessionActive={false} />,
         )
-        expect(window.sessionStorage.getItem(SHARE_PENDING_TRANSFER_KEY)).toBe('xfer-same-id')
+        expect(peekSharePendingTransfer()?.transferId).toBe('xfer-same-id')
         expect(getShareTransfer).not.toHaveBeenCalled()
 
         rerender(<ShareSeedConsumer sessionId="session-a" sessionActive={true} />)
@@ -92,7 +104,7 @@ describe('ShareSeedConsumer', () => {
     })
 
     it('seeds only once under StrictMode double-invoke', async () => {
-        setSharePendingTransfer('xfer-strict')
+        setSharePendingTransfer('xfer-strict', 'session-a')
 
         render(
             <StrictMode>

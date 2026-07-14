@@ -200,7 +200,7 @@ export default function SharePage() {
         // Don't await deleteShareTransfer here — SessionChat consumes the
         // payload then deletes the IDB row (it owns the lifecycle once we
         // hand off). If we delete here, SessionChat won't find it.
-        setSharePendingTransfer(transferId)
+        setSharePendingTransfer(transferId, sessionId)
         navigate({ to: '/sessions/$sessionId', params: { sessionId } })
     }, [navigate, transferId])
 
