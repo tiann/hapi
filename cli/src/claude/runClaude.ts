@@ -263,8 +263,19 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                     return;
                 }
                 currentPermissionMode = mode as PermissionMode;
-                currentSessionRef.current?.setPermissionMode(mode as PermissionMode);
-                syncSessionModes();
+                // Bookkeeping only — do NOT notify the launcher's respawn path.
+                // The only mode this callback ever receives is 'acceptEdits'
+                // ("Allow all edits"), which is emulated entirely by HAPI's own
+                // PreToolUse-hook policy (resolveClaudeModePolicy reading
+                // currentPermissionMode, updated synchronously above) — it does
+                // NOT depend on claude's native --permission-mode. Notifying
+                // here would respawn the PTY while the tool call that was JUST
+                // approved is still starting/running, killing it mid-flight
+                // (bot review finding). Same reasoning as the back-sync path
+                // above; contrast with the /plan command below, which DOES
+                // notify because plan/auto modes are claude-native-enforced.
+                currentSessionRef.current?.setPermissionMode(mode as PermissionMode, { notify: false });
+                syncSessionModes({ notifyPermissionModeChange: false });
             }
         });
     }

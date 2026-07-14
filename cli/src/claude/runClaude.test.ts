@@ -116,6 +116,7 @@ function createFakeClaudeSession(initialMode: string) {
 
 function createFakeApiSessionClient() {
     const rpcHandlers = new Map<string, (payload: unknown) => unknown>()
+    let userMessageHandler: ((data: unknown, localId?: string) => void) | null = null
     return {
         rpcHandlerManager: {
             registerHandler: (method: string, handler: (payload: unknown) => unknown) => {
@@ -123,9 +124,10 @@ function createFakeApiSessionClient() {
             }
         },
         _rpcHandlers: rpcHandlers,
+        _emitUserMessage: (data: unknown, localId?: string) => userMessageHandler?.(data, localId),
         updateMetadata: vi.fn(),
         updateAgentState: vi.fn((fn: (state: Record<string, unknown>) => Record<string, unknown>) => fn({})),
-        onUserMessage: vi.fn(),
+        onUserMessage: vi.fn((handler: (data: unknown, localId?: string) => void) => { userMessageHandler = handler }),
         onCancelQueuedMessage: vi.fn(),
         sendSessionEvent: vi.fn()
     }
@@ -183,5 +185,70 @@ describe('runClaude PTY permissionMode: back-sync vs HAPI-driven changes', () =>
         await setSessionConfig!({ permissionMode: 'acceptEdits' })
 
         expect(fakeClaudeSession.setPermissionMode).toHaveBeenCalledWith('acceptEdits', { notify: true })
+    })
+
+    it('does NOT notify the launcher respawn path for the PTY "approve & switch" response (web "Allow all edits")', async () => {
+        fakeClaudeSession = createFakeClaudeSession('default')
+        const apiSessionClient = createFakeApiSessionClient()
+        bootstrapSessionMock.mockResolvedValue({
+            api: {},
+            session: apiSessionClient,
+            sessionInfo: { id: 'sess-approve-switch' }
+        })
+
+        await runClaude({ interactive: true, permissionMode: 'default', workingDirectory: '/tmp/hapi-test-proj' })
+
+        expect(hookServerCapture.opts?.onPreToolUse).toBeTypeOf('function')
+
+        // Claude is mid-PreToolUse for an Edit call, awaiting the web approval
+        // modal (not auto-allowed: Edit isn't in the PTY read-only allowlist and
+        // 'default' mode has no auto-approval policy for it).
+        void hookServerCapture.opts.onPreToolUse({
+            tool_name: 'Edit',
+            tool_use_id: 'edit-1',
+            session_id: 'claude-sess-1',
+            permission_mode: 'default'
+        })
+
+        fakeClaudeSession.setPermissionMode.mockClear()
+
+        // The user clicks "Allow all edits": approves THIS pending Edit call
+        // and asks to switch to acceptEdits for the rest of the session.
+        const permissionRpc = apiSessionClient._rpcHandlers.get(RPC_METHODS.Permission)
+        expect(permissionRpc).toBeTypeOf('function')
+        await permissionRpc!({ id: 'edit-1', approved: true, mode: 'acceptEdits' })
+
+        // acceptEdits is emulated entirely by HAPI's own PreToolUse-hook policy
+        // (resolveClaudeModePolicy reading currentPermissionMode) -- not by
+        // claude's native --permission-mode -- so switching to it must NOT
+        // respawn the PTY. A respawn here would abort the very Edit tool call
+        // that was just approved, before/while it runs (bot review finding).
+        expect(fakeClaudeSession.setPermissionMode).toHaveBeenCalled()
+        for (const call of fakeClaudeSession.setPermissionMode.mock.calls) {
+            expect(call).toEqual(['acceptEdits', { notify: false }])
+        }
+    })
+
+    it('DOES notify the launcher respawn path for the /plan command (claude-native-enforced mode)', async () => {
+        fakeClaudeSession = createFakeClaudeSession('default')
+        const apiSessionClient = createFakeApiSessionClient()
+        bootstrapSessionMock.mockResolvedValue({
+            api: {},
+            session: apiSessionClient,
+            sessionInfo: { id: 'sess-plan' }
+        })
+
+        await runClaude({ interactive: true, permissionMode: 'default', workingDirectory: '/tmp/hapi-test-proj' })
+
+        fakeClaudeSession.setPermissionMode.mockClear()
+
+        // Unlike acceptEdits, 'plan' mode is enforced by claude itself (native
+        // --permission-mode), so switching into it must still respawn the PTY.
+        // Called with no `opts` at all -- Session.setPermissionMode defaults
+        // `notify` to true, i.e. it DOES notify (respawn), unlike the back-sync
+        // and approve-and-switch paths which pass an explicit `{ notify: false }`.
+        apiSessionClient._emitUserMessage({ role: 'user', content: { type: 'text', text: '/plan' } })
+
+        expect(fakeClaudeSession.setPermissionMode).toHaveBeenCalledWith('plan')
     })
 })
