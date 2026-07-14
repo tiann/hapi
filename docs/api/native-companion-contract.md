@@ -2,7 +2,10 @@
 
 **Audience:** Implementers of native companion apps (Android phone + Wear OS, iOS, etc.) that pair with a hapi hub via FCM.
 
-**Auth:** Same JWT as the web client (`POST /api/bind` → `Authorization: Bearer`).
+**Auth:** Exchange the pairing `code` / CLI access token with `POST /api/auth`:
+`{ "accessToken": "<code>" }`. Use the returned JWT as `Authorization: Bearer <token>`
+for device registration and session actions. `POST /api/bind` is only for Telegram Mini App
+binding (requires Telegram `initData`).
 
 ## Scope
 
