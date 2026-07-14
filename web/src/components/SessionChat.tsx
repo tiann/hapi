@@ -1381,6 +1381,7 @@ function SessionChatInner(props: SessionChatProps) {
                         modelReasoningEffort={agentFlavor === 'codex' || agentFlavor === 'opencode' ? props.session.modelReasoningEffort : undefined}
                         effort={props.session.effort}
                         agentFlavor={agentFlavor}
+                        isPtySession={props.session.metadata?.startingMode === 'pty'}
                         availableModelOptions={
                             agentFlavor === 'codex'
                                 ? codexModelOptions

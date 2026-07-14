@@ -11,12 +11,27 @@ import type { SessionEffort, SessionModel } from "@/api/types"
 import { logger } from "@/ui/logger"
 import { readFile } from "node:fs/promises"
 import { join } from "node:path"
+import type { ClaudePermissionMode } from "@hapi/protocol/types"
 import {
     RemoteLauncherBase,
     type RemoteLauncherDisplayContext,
     type RemoteLauncherExitReason,
     type LaunchOutcome
 } from "@/modules/common/remote/RemoteLauncherBase"
+
+// HAPI's ClaudePermissionMode has no `manual` literal (it calls that mode
+// `default`), but claude's own `--permission-mode` flag has no `default`
+// literal — verified via `claude --help`: the accepted values are exactly
+// acceptEdits, auto, bypassPermissions, manual, dontAsk, plan. Passing HAPI's
+// `default` straight through makes claude reject the flag and the spawn fails.
+// `bypassPermissions` is handled separately (omitted from spawn args — see
+// buildSpawnArgs) so it has no entry here.
+const CLAUDE_SPAWN_PERMISSION_MODE: Readonly<Record<Exclude<ClaudePermissionMode, 'bypassPermissions'>, string>> = {
+    default: 'manual',
+    acceptEdits: 'acceptEdits',
+    plan: 'plan',
+    auto: 'auto',
+}
 
 // Delay before respawning the PTY after a launch failure, so a persistent
 // failure surfaces its error at a steady cadence instead of a tight respawn loop.
@@ -105,6 +120,25 @@ class ClaudePtyLauncher extends RemoteLauncherBase {
     // change only drives the slash command for what actually changed.
     private appliedModel: SessionModel = null
     private appliedEffort: SessionEffort = null
+    // The permissionMode the CURRENTLY RUNNING claude process was (or is being)
+    // spawned with. Mirrors appliedModel/appliedEffort but is reconciled at the
+    // top of every launchOnce (not just when a change is applied) — see
+    // launchOnce — because unlike model/effort, a permissionMode change takes
+    // effect via a full respawn (see respawnForPermissionMode), and a change
+    // that arrives while a respawn is already in flight is naturally picked up
+    // by the NEXT launchOnce's buildSpawnArgs() regardless of what triggered it.
+    private appliedPermissionMode: ClaudePermissionMode | null = null
+    // True while the CURRENT launchOnce's PTY is being killed by a deliberate
+    // permission-mode respawn (see respawnForPermissionMode), as opposed to a
+    // real user-initiated abort or a crash. Reset at the top of every
+    // launchOnce and set (if it happens at all) only while that same
+    // launchOnce's claudePty() call is in flight, so by the time launchOnce
+    // checks `signal.aborted` after claudePty() returns, this flag correctly
+    // reflects whether THIS invocation's abort was the deliberate respawn.
+    // Gates the "Aborted by user" session event so a permission-mode change
+    // does not show a false abort message on every respawn (the respawn is
+    // meant to be invisible — see Fix 1 in the plan).
+    private respawningForConfig = false
     // When set, PTY output is fed here to detect claude's "Switch model?" dialog
     // (across chunks, ANSI-stripped) and accept it with Enter.
     private confirmWatch: { feed: (chunk: string) => void } | null = null
@@ -134,6 +168,25 @@ class ClaudePtyLauncher extends RemoteLauncherBase {
     }
 
     private async applyConfigChange(): Promise<void> {
+        // permission-mode respawn only needs ptyAbortController (a class field
+        // independent of ptyControls) — checked FIRST, ahead of the `!controls`
+        // early return below. A running claude fixes its mode at spawn, so
+        // between a previous respawn's kill and its replacement process's
+        // registerControls callback, ptyControls is null (can outlast the
+        // 120ms debounce on a cold cache / slow claude startup). Gating the
+        // whole function behind `!controls` would silently drop a permission
+        // mode change that arrives in that window: session.getPermissionMode()
+        // would already report the new target, but the running process would
+        // keep the old one until some LATER distinct change happened to
+        // trigger a respawn — a lost update the web would not be able to tell
+        // apart from a successful switch (it already shows the new mode
+        // optimistically).
+        const permissionMode = this.session.getPermissionMode()
+        if (permissionMode !== undefined && permissionMode !== this.appliedPermissionMode) {
+            this.appliedPermissionMode = permissionMode
+            this.respawnForPermissionMode(permissionMode)
+        }
+
         const controls = this.ptyControls
         if (!controls) return
         const model = this.session.getModel()
@@ -154,6 +207,55 @@ class ClaudePtyLauncher extends RemoteLauncherBase {
                 await this.sleep(300)
             }
         }
+    }
+
+    // Unlike model/effort (which have /model and /effort slash commands claude
+    // applies in place), a running claude process fixes its permission mode at
+    // spawn — there is no live command or reliable keybinding to change it
+    // in-place. Converge on a new target by killing the current PTY child
+    // WITHOUT setting exitReason: RemoteLauncherBase.runRespawnLoop's `while
+    // (!this.exitReason)` loop treats that exactly like a mid-session crash and
+    // immediately re-launches via launchOnce, whose buildSpawnArgs() reads
+    // session.getPermissionMode() fresh and resumes the SAME conversation via
+    // `--resume <claudeSessionId>` — the same recovery path the base class
+    // already uses for an unexpected crash, just triggered deliberately here.
+    // A turn that was mid-flight is interrupted by the respawn; that is this
+    // design's accepted cost (the caller changed the permission mode on
+    // purpose), not a session-ending failure.
+    private respawnForPermissionMode(target: ClaudePermissionMode): void {
+        if (!this.ptyAbortController || this.ptyAbortController.signal.aborted) return
+        logger.debug(`[pty]: respawning PTY for permissionMode change -> ${target}`)
+        // Suppress the generic "Aborted by user" session event this deliberate
+        // abort would otherwise trigger in launchOnce (see Fix 1) — this
+        // respawn is meant to be invisible to the user, mirroring the seamless
+        // in-place feel of a /model or /effort change.
+        this.respawningForConfig = true
+        // Preserve a message that is genuinely in flight (already dequeued and
+        // submitted to the OLD claude process — tracked via
+        // promptToRestoreOnAbort, the same signal handleAbortRequest's
+        // abort-restore uses) so the respawn does not silently lose it.
+        // Verified empirically (2026-07-14, against real claude 2.1.207): on
+        // `--resume`, claude does NOT regenerate or continue an interrupted
+        // turn. Instead it locally appends a synthetic no-op "Continue from
+        // where you left off." / "No response requested." pair to the
+        // transcript — same timestamp, no real API call — that closes out the
+        // dangling turn, then sits idle. So re-delivering the exact same text
+        // as a fresh message after the respawn is safe: claude never
+        // independently attempts to answer the original prompt, so there is no
+        // risk of a duplicate response. Re-queued at the FRONT (unshift) so it
+        // is delivered before anything the user typed and queued while the old
+        // process was still finishing up — those already-queued (not yet
+        // submitted) messages are untouched here and survive on their own.
+        const inFlightPrompt = this.promptToRestoreOnAbort
+        if (inFlightPrompt) {
+            this.promptToRestoreOnAbort = null
+            this.session.queue.unshift(inFlightPrompt, {
+                permissionMode: target,
+                model: this.session.getModel() ?? undefined,
+                effort: this.session.getEffort() ?? undefined,
+            })
+        }
+        this.ptyAbortController.abort()
     }
 
     private confirmModelDialog(timeoutMs = 3500): Promise<void> {
@@ -179,12 +281,12 @@ class ClaudePtyLauncher extends RemoteLauncherBase {
         })
     }
 
-    // Re-derive Claude's spawn args each (re)launch: --model/--effort/--resume are
-    // dynamic (the model/effort can change mid-session, and a re-spawn must resume
-    // the existing conversation), so strip any stale copies from the base args and
-    // append the current values.
+    // Re-derive Claude's spawn args each (re)launch: --model/--effort/--resume/
+    // --permission-mode are dynamic (they can change mid-session, and a re-spawn
+    // must resume the existing conversation with the current values), so strip
+    // any stale copies from the base args and append the current values.
     private buildSpawnArgs(): string[] {
-        const DYNAMIC = new Set(['--model', '--effort', '--resume'])
+        const DYNAMIC = new Set(['--model', '--effort', '--resume', '--permission-mode'])
         const base: string[] = []
         const args = this.session.claudeArgs ?? []
         // Preserve a HAPI-resume uuid passed in the initial args (first spawn,
@@ -202,11 +304,24 @@ class ClaudePtyLauncher extends RemoteLauncherBase {
         const resumeId = this.claudeSessionId ?? resumeFromArgs
         const model = this.session.getModel()
         const effort = this.session.getEffort()
+        const permissionMode = this.session.getPermissionMode()
         return [
             ...base,
             ...(resumeId ? ['--resume', resumeId] : []),
             ...(model ? ['--model', model] : []),
             ...(effort ? ['--effort', effort] : []),
+            // bypassPermissions is deliberately excluded: passing it as
+            // --permission-mode makes claude bypass the PreToolUse hook the
+            // same way --dangerously-skip-permissions does (see claude.ts),
+            // which would break question-tool routing to the web. It stays
+            // hook-emulated only (resolveClaudeModePolicy auto-allows it).
+            // Every other mode is mapped through CLAUDE_SPAWN_PERMISSION_MODE:
+            // HAPI's `default` has no `--permission-mode` equivalent literal in
+            // claude (claude calls that mode `manual`) — passing `default`
+            // straight through makes claude reject the flag and fail to spawn.
+            ...(permissionMode && permissionMode !== 'bypassPermissions'
+                ? ['--permission-mode', CLAUDE_SPAWN_PERMISSION_MODE[permissionMode]]
+                : []),
         ]
     }
 
@@ -386,6 +501,26 @@ class ClaudePtyLauncher extends RemoteLauncherBase {
         let reachedReady = false
         let gatedFirstMessage = false
         let firstSubmitVerified = false
+        // This launch's own controls, captured from registerControls below.
+        // onExit uses this (not the shared this.ptyControls) to decide whether
+        // it is safe to null out this.ptyControls — see the onExit comment for
+        // why a straight unconditional null is unsafe.
+        let myControls: { sendKeys: (data: string) => void } | null = null
+        // This spawn's args (buildSpawnArgs, called below) already read
+        // session.getPermissionMode() fresh, so whatever that value is right now
+        // is what THIS process is being launched with — fold it into applied
+        // bookkeeping here rather than only where the change was first
+        // requested. This absorbs a change that arrived while a previous
+        // respawn was already in flight (ptyControls null, so applyConfigChange
+        // could not act on it) into the spawn that is happening anyway, and
+        // keeps a later toggle back to an old target from being skipped by
+        // applyConfigChange's dedup.
+        this.appliedPermissionMode = this.session.getPermissionMode() ?? null
+        // Reset for this spawn's lifetime. respawnForPermissionMode sets this
+        // back to true (synchronously, before aborting) only if IT is what
+        // ends this specific claudePty() call below — see the signal.aborted
+        // check after the try block.
+        this.respawningForConfig = false
         try {
             await claudePty({
                 sessionId: this.session.sessionId,
@@ -439,23 +574,61 @@ class ClaudePtyLauncher extends RemoteLauncherBase {
                     this.session.onThinkingChange(thinking)
                 },
                 registerControls: (controls) => {
+                    myControls = controls
                     this.ptyControls = controls
                     this.session.client.resetAgentTerminal()
                     this.session.client.setAgentTerminalControls(controls)
                 },
                 onExit: (code: number | null) => {
                     logger.debug(`[pty]: claude PTY exited with code ${code}`)
-                    this.ptyControls = null
-                    this.session.client.sendSessionEvent({
-                        type: 'message',
-                        message: `Process exited with code ${code}`
-                    })
+                    // Only clear this.ptyControls if it still points at what THIS
+                    // launch installed. onExit fires when the killed child is
+                    // actually reaped by the OS — asynchronously, and NOT
+                    // ordered against claudePty()'s own promise resolving. On a
+                    // deliberate respawn (respawnForPermissionMode aborts
+                    // without setting exitReason), claudePty() for this launch
+                    // can resolve, runRespawnLoop can advance to the NEXT
+                    // launchOnce, and that next launch's registerControls can
+                    // install controls#2 on this.ptyControls — all BEFORE this
+                    // stale onExit macrotask runs. An unconditional
+                    // `this.ptyControls = null` here would then clobber the
+                    // live process's controls out from under it (breaking
+                    // in-place /model, /effort, and Esc-abort for the entire
+                    // remaining lifetime of that process). Comparing against
+                    // myControls (this launch's own closure-captured reference)
+                    // makes the null-out a no-op once ownership has moved on.
+                    if (this.ptyControls === myControls) this.ptyControls = null
+                    // Sibling of the "Aborted by user" gate below: a deliberate
+                    // permission-mode respawn kills this same process, and
+                    // without this gate every respawn would also show a
+                    // spurious "Process exited with code ..." message in the
+                    // web chat (the same false-alarm class Fix 1 addresses),
+                    // undermining the intended seamless respawn UX.
+                    //
+                    // Gated on THIS launch's `signal` (closure-captured),
+                    // NOT the shared `respawningForConfig` flag: for the same
+                    // async-ordering reason as above, by the time this stale
+                    // onExit fires, the NEXT launchOnce may have already reset
+                    // respawningForConfig to false at its top, making the flag
+                    // read as "not a respawn" even though it was. `signal` has
+                    // no such reset — once aborted it stays aborted for the
+                    // rest of this launch's lifetime, so it correctly reflects
+                    // whether THIS launch's death was deliberate (respawn OR
+                    // user abort OR session exit — all of which already show
+                    // their own message, e.g. "Aborted by user" below) versus a
+                    // genuine unexpected crash (signal never aborted).
+                    if (!signal.aborted) {
+                        this.session.client.sendSessionEvent({
+                            type: 'message',
+                            message: `Process exited with code ${code}`
+                        })
+                    }
                 },
             })
 
             this.session.consumeOneTimeFlags()
 
-            if (!this.exitReason && signal.aborted) {
+            if (!this.exitReason && signal.aborted && !this.respawningForConfig) {
                 this.session.client.sendSessionEvent({ type: 'message', message: 'Aborted by user' })
             }
 
@@ -499,6 +672,7 @@ class ClaudePtyLauncher extends RemoteLauncherBase {
 
         this.appliedModel = session.getModel()
         this.appliedEffort = session.getEffort()
+        this.appliedPermissionMode = session.getPermissionMode() ?? null
 
         session.setConfigChangeHandler(() => this.scheduleConfigApply())
 

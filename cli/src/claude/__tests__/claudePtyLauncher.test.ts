@@ -6,6 +6,12 @@ const harness = vi.hoisted(() => ({
     cleanupCalls: 0,
     foundCallbacks: [] as Array<(sessionId: string) => void>,
     exitReason: 'exit' as string | null,
+    // Opt-in: when false (the default, used by every pre-existing test below),
+    // the mocked RemoteLauncherBase.runRespawnLoop calls launchOnce exactly
+    // ONCE, matching the old behavior those tests were written against. The
+    // permissionMode-respawn tests below turn this on to exercise the real
+    // "abort -> loop calls launchOnce again" respawn mechanics.
+    loopRespawns: false,
 }))
 
 let lastSendKeysSpy = vi.fn()
@@ -19,7 +25,18 @@ vi.mock('../claudePty', () => ({
             sendKeys: lastSendKeysSpy
         })
         opts.onReady?.()
-        await opts.nextMessage()
+        // Mirrors real runAgentPty: an aborted signal ends the PTY session (the
+        // driver kills the child and returns) independent of whether nextMessage
+        // ever resolves — this is what lets a deliberate respawn (aborting
+        // ptyAbortController without setting exitReason) actually end the
+        // current launchOnce so RemoteLauncherBase's loop can relaunch.
+        await Promise.race([
+            opts.nextMessage(),
+            new Promise<void>((resolve) => {
+                if (opts.signal?.aborted) { resolve(); return }
+                opts.signal?.addEventListener('abort', () => resolve(), { once: true })
+            }),
+        ])
     }),
 }))
 
@@ -60,10 +77,28 @@ vi.mock('@/modules/common/remote/RemoteLauncherBase', () => ({
             await handler()
         }
         protected async runRespawnLoop(opts: any): Promise<void> {
-            const controller = new AbortController()
-            this.ptyAbortController = controller
-            await opts.launchOnce(controller.signal)
-            this.ptyAbortController = null
+            if (!harness.loopRespawns) {
+                const controller = new AbortController()
+                this.ptyAbortController = controller
+                await opts.launchOnce(controller.signal)
+                this.ptyAbortController = null
+                return
+            }
+            // Faithful (bounded by exitReason) re-implementation of the real
+            // while(!exitReason) loop, so a respawn (abort without setting
+            // exitReason) genuinely causes launchOnce to be invoked again with
+            // freshly-recomputed spawn args.
+            while (!harness.exitReason) {
+                const controller = new AbortController()
+                this.ptyAbortController = controller
+                opts.onLaunchStart?.(true)
+                const outcome = await opts.launchOnce(controller.signal)
+                this.ptyAbortController = null
+                if (outcome?.error) {
+                    opts.onLaunchFailure?.(outcome.error)
+                    break
+                }
+            }
         }
         async start(): Promise<string> {
             await (this as unknown as { runMainLoop: () => Promise<void> }).runMainLoop()
@@ -72,7 +107,11 @@ vi.mock('@/modules/common/remote/RemoteLauncherBase', () => ({
     },
 }))
 
-import { claudePtyLauncher, lastUserPromptText, transcriptConfirmsDelivery } from '../claudePtyLauncher'
+import {
+    claudePtyLauncher,
+    lastUserPromptText,
+    transcriptConfirmsDelivery
+} from '../claudePtyLauncher'
 
 describe('transcriptConfirmsDelivery', () => {
     const userLine = (text: string) => JSON.stringify({ type: 'user', message: { content: text } })
@@ -143,6 +182,8 @@ describe('lastUserPromptText', () => {
 function createSessionStub() {
     const sentMessages: Array<Record<string, unknown>> = []
     const sentSessionEvents: Array<Record<string, unknown>> = []
+    let permissionMode: string | undefined = 'default'
+    let capturedConfigHandler: (() => void) | null = null
     return {
         session: {
             sessionId: 'pty-session',
@@ -154,9 +195,12 @@ function createSessionStub() {
             hookSettingsPath: '/tmp/hooks/pty.json',
             consumeOneTimeFlags: () => {},
             setKillHandler: (_handler: () => void) => {},
-            setConfigChangeHandler: (_handler: (() => void) | null) => {},
+            setConfigChangeHandler: (handler: (() => void) | null) => { capturedConfigHandler = handler },
+            fireConfigChangeHandler: () => { capturedConfigHandler?.() },
             getModel: () => null,
             getEffort: () => undefined,
+            getPermissionMode: () => permissionMode,
+            setPermissionModeForTest: (mode: string | undefined) => { permissionMode = mode },
             onThinkingChange: vi.fn(),
             addSessionFoundCallback: (cb: (sessionId: string) => void) => { harness.foundCallbacks.push(cb) },
             removeSessionFoundCallback: () => {},
@@ -164,6 +208,7 @@ function createSessionStub() {
                 waitForMessagesAndGetAsString: vi.fn().mockResolvedValue(null),
                 reset: vi.fn(),
                 pendingLocalIds: vi.fn(() => [] as string[]),
+                unshift: vi.fn(),
             },
             client: {
                 sendClaudeSessionMessage: (msg: Record<string, unknown>) => { sentMessages.push(msg) },
@@ -531,6 +576,351 @@ describe('claudePtyLauncher turn-interrupt', () => {
         await abortPromise
 
         vi.useRealTimers()
+        harness.exitReason = 'exit'
+        msgPromise.resolve(null)
+        await launcherPromise
+    })
+})
+
+describe('claudePtyLauncher buildSpawnArgs permission-mode mapping', () => {
+    afterEach(() => {
+        harness.exitReason = 'exit'
+        mockAbortHandlers = null
+        ptyOptsCaptured = null
+    })
+
+    it('maps HAPI default -> claude manual (claude has no "default" --permission-mode literal)', async () => {
+        const { session } = createSessionStub()
+        ;(session as any).setPermissionModeForTest('default')
+        await claudePtyLauncher(session as never)
+        expect(ptyOptsCaptured.claudeArgs).toEqual(expect.arrayContaining(['--permission-mode', 'manual']))
+    })
+
+    it('passes acceptEdits, plan, and auto through unchanged', async () => {
+        for (const mode of ['acceptEdits', 'plan', 'auto']) {
+            const { session } = createSessionStub()
+            ;(session as any).setPermissionModeForTest(mode)
+            await claudePtyLauncher(session as never)
+            expect(ptyOptsCaptured.claudeArgs).toEqual(expect.arrayContaining(['--permission-mode', mode]))
+        }
+    })
+
+    it('omits --permission-mode entirely for bypassPermissions', async () => {
+        const { session } = createSessionStub()
+        ;(session as any).setPermissionModeForTest('bypassPermissions')
+        await claudePtyLauncher(session as never)
+        expect(ptyOptsCaptured.claudeArgs).not.toContain('--permission-mode')
+    })
+})
+
+describe('claudePtyLauncher permissionMode respawn', () => {
+    const tick = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+    afterEach(() => {
+        harness.exitReason = 'exit'
+        harness.loopRespawns = false
+        mockAbortHandlers = null
+        ptyOptsCaptured = null
+    })
+
+    it('respawns claude (kills + relaunches with fresh spawn args) when permissionMode changes mid-session', async () => {
+        harness.exitReason = null
+        harness.loopRespawns = true
+        const { session } = createSessionStub()
+        // Never resolves on its own during this test — the running "process"
+        // stays up until the respawn's abort ends it (mirrors an in-progress
+        // PTY session idling at the prompt).
+        const msgPromise = deferred<any>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+        const { claudePty: mockedClaudePty } = await import('../claudePty')
+        // mock.calls is a shared, file-wide-cumulative array (never reset
+        // between tests), so measure a DELTA from a baseline captured here
+        // rather than asserting an absolute count.
+        const callsBeforeLaunch = vi.mocked(mockedClaudePty).mock.calls.length
+
+        const launcherPromise = claudePtyLauncher(session as never)
+        await tick(50)
+
+        expect(vi.mocked(mockedClaudePty).mock.calls.length).toBe(callsBeforeLaunch + 1)
+        expect(ptyOptsCaptured.claudeArgs).toEqual(expect.arrayContaining(['--permission-mode', 'manual']))
+
+        // Mid-session change (e.g. web dropdown / SetSessionConfig RPC): Session
+        // notifies the launcher's configChangeHandler.
+        ;(session as any).setPermissionModeForTest('acceptEdits')
+        ;(session as any).fireConfigChangeHandler()
+
+        // scheduleConfigApply debounces 120ms before applyConfigChange triggers
+        // the respawn (aborts the in-flight launch) — advance well past it.
+        await tick(300)
+
+        // A SECOND claudePty invocation proves an actual respawn happened (kill
+        // + relaunch), not a live in-place change — and its args already carry
+        // the new mode.
+        expect(vi.mocked(mockedClaudePty).mock.calls.length).toBeGreaterThanOrEqual(callsBeforeLaunch + 2)
+        expect(ptyOptsCaptured.claudeArgs).toEqual(expect.arrayContaining(['--permission-mode', 'acceptEdits']))
+
+        harness.exitReason = 'exit'
+        msgPromise.resolve(null)
+        await launcherPromise
+    })
+
+    it('does NOT respawn when the config-change handler fires but permissionMode is unchanged', async () => {
+        harness.exitReason = null
+        harness.loopRespawns = true
+        const { session } = createSessionStub()
+        const msgPromise = deferred<any>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+        const { claudePty: mockedClaudePty } = await import('../claudePty')
+
+        const launcherPromise = claudePtyLauncher(session as never)
+        await tick(50)
+
+        const callsAfterFirstLaunch = vi.mocked(mockedClaudePty).mock.calls.length
+
+        // configChangeHandler fires (e.g. a model/effort change) but
+        // permissionMode is still 'default' (unchanged) -> no respawn.
+        ;(session as any).fireConfigChangeHandler()
+        await tick(300)
+
+        expect(vi.mocked(mockedClaudePty).mock.calls.length).toBe(callsAfterFirstLaunch)
+
+        harness.exitReason = 'exit'
+        msgPromise.resolve(null)
+        await launcherPromise
+    })
+})
+
+describe('claudePtyLauncher permissionMode respawn — seamless UX + in-flight prompt (Round 2 fixes)', () => {
+    const tick = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+    afterEach(() => {
+        harness.exitReason = 'exit'
+        harness.loopRespawns = false
+        mockAbortHandlers = null
+        ptyOptsCaptured = null
+    })
+
+    it('does NOT emit "Aborted by user" to the web chat when respawning for a permissionMode change (Fix 1)', async () => {
+        harness.exitReason = null
+        harness.loopRespawns = true
+        const { session, sentSessionEvents } = createSessionStub()
+        const msgPromise = deferred<any>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+
+        const launcherPromise = claudePtyLauncher(session as never)
+        await tick(50)
+
+        ;(session as any).setPermissionModeForTest('acceptEdits')
+        ;(session as any).fireConfigChangeHandler()
+        await tick(300)
+
+        const abortedEvent = sentSessionEvents.find(
+            (e) => e.type === 'message' && e.message === 'Aborted by user'
+        )
+        expect(abortedEvent).toBeUndefined()
+
+        harness.exitReason = 'exit'
+        msgPromise.resolve(null)
+        await launcherPromise
+    })
+
+    // Real production ordering (verified against runAgentPty/node-pty): the
+    // killed child's onExit fires as a SEPARATE, LATER macrotask — after
+    // claudePty()'s own promise has already resolved (which itself unblocks
+    // the microtask chain: launchOnce#1's tail runs, then runRespawnLoop
+    // advances the while loop and calls launchOnce#2, whose registerControls
+    // installs controls#2 — ALL of that happens before the onExit macrotask
+    // below ever fires). A prior version of this test fired onExit
+    // SYNCHRONOUSLY inside the abort listener (before Promise.race even
+    // resolved), which is the opposite of real ordering and let the
+    // respawningForConfig-based gate pass while still being broken for the
+    // real (macrotask) ordering — see Round 3 hostile-review.
+    const exitAwareImpl = async (opts: any) => {
+        ptyOptsCaptured = opts
+        lastSendKeysSpy = vi.fn()
+        opts.registerControls?.({ resize: () => {}, sendKeys: lastSendKeysSpy })
+        opts.onReady?.()
+        await Promise.race([
+            opts.nextMessage(),
+            new Promise<void>((resolve) => {
+                if (opts.signal?.aborted) { resolve(); return }
+                opts.signal?.addEventListener('abort', () => {
+                    // Defer onExit to a macrotask AFTER resolve() unblocks this
+                    // claudePty() call's own promise — mirrors the child process
+                    // being reaped by the OS well after the driver has already
+                    // returned from its abort-triggered kill().
+                    setTimeout(() => opts.onExit?.(null), 0)
+                    resolve()
+                }, { once: true })
+            }),
+        ])
+    }
+
+    it('does NOT emit a spurious "Process exited with code" message when respawning for a permissionMode change (Fix 1 sibling: onExit)', async () => {
+        harness.exitReason = null
+        harness.loopRespawns = true
+        const { session, sentSessionEvents } = createSessionStub()
+        const msgPromise = deferred<any>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+        const { claudePty: mockedClaudePty } = await import('../claudePty')
+
+        // Queue this for BOTH spawns this test drives (initial + respawn) via
+        // two mockImplementationOnce calls, so the shared default mock (used
+        // by every other test in this file) is untouched afterward.
+        vi.mocked(mockedClaudePty).mockImplementationOnce(exitAwareImpl)
+        vi.mocked(mockedClaudePty).mockImplementationOnce(exitAwareImpl)
+
+        const launcherPromise = claudePtyLauncher(session as never)
+        await tick(50)
+
+        ;(session as any).setPermissionModeForTest('acceptEdits')
+        ;(session as any).fireConfigChangeHandler()
+        await tick(300)
+
+        const exitEvent = sentSessionEvents.find(
+            (e) => e.type === 'message' && typeof e.message === 'string' &&
+                (e.message as string).startsWith('Process exited with code')
+        )
+        expect(exitEvent).toBeUndefined()
+
+        harness.exitReason = 'exit'
+        msgPromise.resolve(null)
+        await launcherPromise
+    })
+
+    it('does NOT clobber the respawned process\'s live ptyControls with the stale dying process\'s onExit (Round 3 Fix B)', async () => {
+        harness.exitReason = null
+        harness.loopRespawns = true
+        const { session } = createSessionStub()
+        const msgPromise = deferred<any>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+        const { claudePty: mockedClaudePty } = await import('../claudePty')
+
+        // Same two-spawn, macrotask-onExit mock as the test above: the first
+        // process's onExit fires AFTER the second process's registerControls
+        // has already installed controls#2.
+        vi.mocked(mockedClaudePty).mockImplementationOnce(exitAwareImpl)
+        vi.mocked(mockedClaudePty).mockImplementationOnce(exitAwareImpl)
+
+        const launcherPromise = claudePtyLauncher(session as never)
+        await tick(50)
+
+        ;(session as any).setPermissionModeForTest('acceptEdits')
+        ;(session as any).fireConfigChangeHandler()
+        // Long enough for: debounce (120ms) -> respawn -> process#2's
+        // registerControls -> process#1's deferred (macrotask) onExit.
+        await tick(300)
+
+        // lastSendKeysSpy now points at process#2's sendKeys (each
+        // exitAwareImpl invocation reassigns the shared spy). If the stale
+        // onExit from process#1 clobbered this.ptyControls to null, the
+        // launcher's abort handler would fall through to its "no controls"
+        // branch instead of sending the Esc interrupt to the live process.
+        expect(mockAbortHandlers).toBeTruthy()
+        await mockAbortHandlers.onAbort()
+        expect(lastSendKeysSpy).toHaveBeenCalledWith('\x1b')
+
+        harness.exitReason = 'exit'
+        msgPromise.resolve(null)
+        await launcherPromise
+    })
+
+    it('still respawns with the new permissionMode when ptyControls is null during the change (Fix 3: cold-start window)', async () => {
+        harness.exitReason = null
+        harness.loopRespawns = true
+        const { session } = createSessionStub()
+        const msgPromise = deferred<any>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+        const { claudePty: mockedClaudePty } = await import('../claudePty')
+        const callsBeforeLaunch = vi.mocked(mockedClaudePty).mock.calls.length
+
+        // Simulate a cold-start spawn that never calls registerControls before
+        // the config change fires below — ptyControls stays null past the
+        // 120ms debounce, mirroring a slow claude startup racing a
+        // SetSessionConfig RPC.
+        vi.mocked(mockedClaudePty).mockImplementationOnce(async (opts: any) => {
+            ptyOptsCaptured = opts
+            opts.onReady?.()
+            await Promise.race([
+                opts.nextMessage(),
+                new Promise<void>((resolve) => {
+                    if (opts.signal?.aborted) { resolve(); return }
+                    opts.signal?.addEventListener('abort', () => resolve(), { once: true })
+                }),
+            ])
+        })
+
+        const launcherPromise = claudePtyLauncher(session as never)
+        await tick(50)
+
+        expect(vi.mocked(mockedClaudePty).mock.calls.length).toBe(callsBeforeLaunch + 1)
+        expect(ptyOptsCaptured.claudeArgs).toEqual(expect.arrayContaining(['--permission-mode', 'manual']))
+
+        // Mid-session change while ptyControls is still null for the running
+        // (cold-start) spawn — without Fix 3 this is silently dropped by
+        // applyConfigChange's `if (!controls) return` early return.
+        ;(session as any).setPermissionModeForTest('acceptEdits')
+        ;(session as any).fireConfigChangeHandler()
+        await tick(300)
+
+        expect(vi.mocked(mockedClaudePty).mock.calls.length).toBeGreaterThanOrEqual(callsBeforeLaunch + 2)
+        expect(ptyOptsCaptured.claudeArgs).toEqual(expect.arrayContaining(['--permission-mode', 'acceptEdits']))
+
+        harness.exitReason = 'exit'
+        msgPromise.resolve(null)
+        await launcherPromise
+    })
+
+    it('re-queues an in-flight submitted prompt at the front of the queue when respawning (Fix 2)', async () => {
+        harness.exitReason = null
+        harness.loopRespawns = true
+        const { session } = createSessionStub()
+        const msgPromise = deferred<any>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+
+        const launcherPromise = claudePtyLauncher(session as never)
+        await tick(50)
+
+        // Simulate a message that was already dequeued and submitted to the
+        // running claude process (mid-generation) via onMessageSubmitted.
+        ptyOptsCaptured.onMessageSubmitted?.('what is the deploy status?')
+
+        // Mid-generation permission-mode change triggers the respawn.
+        ;(session as any).setPermissionModeForTest('acceptEdits')
+        ;(session as any).fireConfigChangeHandler()
+        await tick(300)
+
+        // The in-flight prompt must be re-queued at the FRONT (unshift) so the
+        // resumed process's nextMessage naturally resubmits it as a fresh turn
+        // instead of it being silently lost.
+        expect(session.queue.unshift).toHaveBeenCalledWith(
+            'what is the deploy status?',
+            expect.objectContaining({ permissionMode: 'acceptEdits' })
+        )
+
+        harness.exitReason = 'exit'
+        msgPromise.resolve(null)
+        await launcherPromise
+    })
+
+    it('does NOT re-queue anything when no prompt was in flight at the time of a permissionMode change', async () => {
+        harness.exitReason = null
+        harness.loopRespawns = true
+        const { session } = createSessionStub()
+        const msgPromise = deferred<any>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+
+        const launcherPromise = claudePtyLauncher(session as never)
+        await tick(50)
+
+        // No onMessageSubmitted call this time — the session is idle when the
+        // permission mode changes.
+        ;(session as any).setPermissionModeForTest('acceptEdits')
+        ;(session as any).fireConfigChangeHandler()
+        await tick(300)
+
+        expect(session.queue.unshift).not.toHaveBeenCalled()
+
         harness.exitReason = 'exit'
         msgPromise.resolve(null)
         await launcherPromise

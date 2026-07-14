@@ -153,7 +153,10 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             if (syncedMode) {
                 logger.debug(`[pty] adopting claude TUI permission mode: ${currentPermissionMode} → ${syncedMode}`);
                 currentPermissionMode = syncedMode;
-                syncSessionModes();
+                // Bookkeeping only — claude is already running in syncedMode, so
+                // do NOT notify the launcher (would trigger a pointless respawn
+                // re-entering the very change this is reporting on).
+                syncSessionModes({ notifyPermissionModeChange: false });
             }
             const toolUseId = data.tool_use_id || `${data.tool_name ?? 'tool'}-${data.session_id ?? ''}`;
             return ptyPermissionHandler.requestDecision(toolUseId, data.tool_name ?? '', data.tool_input);
@@ -230,12 +233,20 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     let currentAllowedTools: string[] | undefined = undefined; // Track current allowed tools
     let currentDisallowedTools: string[] | undefined = undefined; // Track current disallowed tools
 
-    const syncSessionModes = () => {
+    // notifyPermissionModeChange controls whether a real permissionMode change
+    // notifies the PTY launcher's configChangeHandler (which respawns claude
+    // with the new --permission-mode). Every caller wants the default (true —
+    // this is an intentional HAPI-driven change) EXCEPT the back-sync path
+    // (claude self-reporting its own live mode via the PreToolUse hook): that
+    // mode is already what claude is running, so notifying would re-enter the
+    // respawn path for a change claude already made on its own. See
+    // Session.setPermissionMode for the corresponding { notify } contract.
+    const syncSessionModes = (opts?: { notifyPermissionModeChange?: boolean }) => {
         const sessionInstance = currentSessionRef.current;
         if (!sessionInstance) {
             return;
         }
-        sessionInstance.setPermissionMode(currentPermissionMode);
+        sessionInstance.setPermissionMode(currentPermissionMode, { notify: opts?.notifyPermissionModeChange ?? true });
         sessionInstance.setModel(currentModel);
         sessionInstance.setEffort(currentEffort);
         logger.debug(`[loop] Synced session config for keepalive: permissionMode=${currentPermissionMode}, model=${currentModel ?? 'auto'}, effort=${currentEffort ?? 'auto'}`);
