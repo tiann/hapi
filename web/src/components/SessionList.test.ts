@@ -61,6 +61,23 @@ describe('getWorktreeSessionLabel', () => {
 
         expect(getWorktreeSessionLabel(session)).toBeNull()
     })
+
+    it('falls back to the worktree directory name when metadata name is blank', () => {
+        const session = makeSession({
+            id: 'windows-worktree-session',
+            metadata: {
+                path: 'C:\\work\\hapi-worktrees\\fix-resume',
+                worktree: {
+                    basePath: 'C:\\work\\hapi',
+                    branch: 'fix/resume',
+                    name: '   ',
+                    worktreePath: 'C:\\work\\hapi-worktrees\\fix-resume\\'
+                }
+            }
+        })
+
+        expect(getWorktreeSessionLabel(session)).toBe('fix-resume')
+    })
 })
 
 describe('deduplicateSessionsByAgentId', () => {
