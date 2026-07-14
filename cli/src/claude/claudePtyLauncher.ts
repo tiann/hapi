@@ -230,30 +230,22 @@ class ClaudePtyLauncher extends RemoteLauncherBase {
         // respawn is meant to be invisible to the user, mirroring the seamless
         // in-place feel of a /model or /effort change.
         this.respawningForConfig = true
-        // Preserve a message that is genuinely in flight (already dequeued and
+        // A message that is genuinely in flight (already dequeued and
         // submitted to the OLD claude process — tracked via
-        // promptToRestoreOnAbort, the same signal handleAbortRequest's
-        // abort-restore uses) so the respawn does not silently lose it.
-        // Verified empirically (2026-07-14, against real claude 2.1.207): on
-        // `--resume`, claude does NOT regenerate or continue an interrupted
-        // turn. Instead it locally appends a synthetic no-op "Continue from
-        // where you left off." / "No response requested." pair to the
-        // transcript — same timestamp, no real API call — that closes out the
-        // dangling turn, then sits idle. So re-delivering the exact same text
-        // as a fresh message after the respawn is safe: claude never
-        // independently attempts to answer the original prompt, so there is no
-        // risk of a duplicate response. Re-queued at the FRONT (unshift) so it
-        // is delivered before anything the user typed and queued while the old
-        // process was still finishing up — those already-queued (not yet
-        // submitted) messages are untouched here and survive on their own.
+        // promptToRestoreOnAbort) may have already driven side-effecting tools
+        // (file edits, shell commands) before the respawn interrupts it.
+        // Re-queuing it (unshift) for automatic re-submission after `--resume`
+        // would silently repeat those side effects, even though `--resume`
+        // itself does not regenerate or continue the interrupted turn (it
+        // locally appends a synthetic no-op close-out pair to the transcript).
+        // Instead, mirror handleAbortRequest's user-abort path exactly: emit
+        // `abort-restore` so the web composer restores the prompt text and
+        // the user decides whether to re-submit it, with the actually-applied
+        // side effects visible in the transcript first.
         const inFlightPrompt = this.promptToRestoreOnAbort
         if (inFlightPrompt) {
             this.promptToRestoreOnAbort = null
-            this.session.queue.unshift(inFlightPrompt, {
-                permissionMode: target,
-                model: this.session.getModel() ?? undefined,
-                effort: this.session.getEffort() ?? undefined,
-            })
+            this.session.client.sendSessionEvent({ type: 'abort-restore', text: inFlightPrompt })
         }
         this.ptyAbortController.abort()
     }

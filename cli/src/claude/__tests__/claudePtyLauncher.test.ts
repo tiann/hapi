@@ -871,10 +871,10 @@ describe('claudePtyLauncher permissionMode respawn — seamless UX + in-flight p
         await launcherPromise
     })
 
-    it('re-queues an in-flight submitted prompt at the front of the queue when respawning (Fix 2)', async () => {
+    it('sends abort-restore for an in-flight submitted prompt when respawning (does NOT auto re-submit / re-queue)', async () => {
         harness.exitReason = null
         harness.loopRespawns = true
-        const { session } = createSessionStub()
+        const { session, sentSessionEvents } = createSessionStub()
         const msgPromise = deferred<any>()
         vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
 
@@ -882,7 +882,10 @@ describe('claudePtyLauncher permissionMode respawn — seamless UX + in-flight p
         await tick(50)
 
         // Simulate a message that was already dequeued and submitted to the
-        // running claude process (mid-generation) via onMessageSubmitted.
+        // running claude process (mid-generation) via onMessageSubmitted. The
+        // old process may already have driven side-effecting tools (file
+        // edits, shell commands) against this prompt before the respawn
+        // interrupts it.
         ptyOptsCaptured.onMessageSubmitted?.('what is the deploy status?')
 
         // Mid-generation permission-mode change triggers the respawn.
@@ -890,23 +893,25 @@ describe('claudePtyLauncher permissionMode respawn — seamless UX + in-flight p
         ;(session as any).fireConfigChangeHandler()
         await tick(300)
 
-        // The in-flight prompt must be re-queued at the FRONT (unshift) so the
-        // resumed process's nextMessage naturally resubmits it as a fresh turn
-        // instead of it being silently lost.
-        expect(session.queue.unshift).toHaveBeenCalledWith(
-            'what is the deploy status?',
-            expect.objectContaining({ permissionMode: 'acceptEdits' })
-        )
+        // The in-flight prompt must NOT be silently re-queued for automatic
+        // re-submission — that would repeat any side effects the old process
+        // already applied. Instead it is handed back to the web composer via
+        // abort-restore (same shape as handleAbortRequest's user-abort path),
+        // so the user decides whether to re-submit it.
+        const restoreEvent = sentSessionEvents.find((e) => e.type === 'abort-restore')
+        expect(restoreEvent).toBeDefined()
+        expect((restoreEvent as any)?.text).toBe('what is the deploy status?')
+        expect(session.queue.unshift).not.toHaveBeenCalled()
 
         harness.exitReason = 'exit'
         msgPromise.resolve(null)
         await launcherPromise
     })
 
-    it('does NOT re-queue anything when no prompt was in flight at the time of a permissionMode change', async () => {
+    it('does NOT send abort-restore when no prompt was in flight at the time of a permissionMode change', async () => {
         harness.exitReason = null
         harness.loopRespawns = true
-        const { session } = createSessionStub()
+        const { session, sentSessionEvents } = createSessionStub()
         const msgPromise = deferred<any>()
         vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
 
@@ -919,6 +924,8 @@ describe('claudePtyLauncher permissionMode respawn — seamless UX + in-flight p
         ;(session as any).fireConfigChangeHandler()
         await tick(300)
 
+        const restoreEvent = sentSessionEvents.find((e) => e.type === 'abort-restore')
+        expect(restoreEvent).toBeUndefined()
         expect(session.queue.unshift).not.toHaveBeenCalled()
 
         harness.exitReason = 'exit'
