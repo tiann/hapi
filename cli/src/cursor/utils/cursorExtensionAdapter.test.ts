@@ -74,9 +74,12 @@ describe('CursorExtensionAdapter', () => {
             answers: { q1: ['opt-a'] }
         });
         expect(handled).toBe(true);
+        // Cursor ACP expects the outcome nested under `outcome` (see cursor.com/docs/cli/acp).
         await expect(pending).resolves.toEqual({
-            outcome: 'answered',
-            answers: [{ questionId: 'q1', selectedOptionIds: ['opt-a'] }]
+            outcome: {
+                outcome: 'answered',
+                answers: [{ questionId: 'q1', selectedOptionIds: ['opt-a'] }]
+            }
         });
     });
 
@@ -90,10 +93,14 @@ describe('CursorExtensionAdapter', () => {
             decision: 'denied'
         });
 
-        await expect(pending).resolves.toEqual({ outcome: 'cancelled' });
+        await expect(pending).resolves.toEqual({ outcome: { outcome: 'cancelled' } });
     });
 
-    it('resolves create_plan approval as accepted', async () => {
+    it('resolves create_plan approval as accepted with nested outcome envelope', async () => {
+        // Regression for the plan-approval bug: operator clicks "Yes" on a Cursor
+        // CreatePlan approval, but the agent received `User cancelled` because the
+        // response outcome was returned flat instead of nested. Cursor reads
+        // `response.outcome.outcome`, so the envelope MUST be nested.
         const { handlers, adapter } = createHarness();
         const pending = handlers.get('cursor/create_plan')!({
             toolCallId: 'plan-1',
@@ -106,7 +113,23 @@ describe('CursorExtensionAdapter', () => {
             decision: 'approved'
         });
 
-        await expect(pending).resolves.toEqual({ outcome: 'accepted' });
+        await expect(pending).resolves.toEqual({ outcome: { outcome: 'accepted' } });
+    });
+
+    it('resolves create_plan approved_for_session as accepted with nested envelope', async () => {
+        const { handlers, adapter } = createHarness();
+        const pending = handlers.get('cursor/create_plan')!({
+            toolCallId: 'plan-1b',
+            plan: '# Plan'
+        }, null);
+
+        await adapter.handlePermissionResponse({
+            id: 'plan-1b',
+            approved: true,
+            decision: 'approved_for_session'
+        });
+
+        await expect(pending).resolves.toEqual({ outcome: { outcome: 'accepted' } });
     });
 
     it('resolves create_plan denial as rejected', async () => {
@@ -119,7 +142,20 @@ describe('CursorExtensionAdapter', () => {
             decision: 'denied'
         });
 
-        await expect(pending).resolves.toEqual({ outcome: 'rejected' });
+        await expect(pending).resolves.toEqual({ outcome: { outcome: 'rejected' } });
+    });
+
+    it('resolves create_plan abort as cancelled', async () => {
+        const { handlers, adapter } = createHarness();
+        const pending = handlers.get('cursor/create_plan')!({ toolCallId: 'plan-3' }, null);
+
+        await adapter.handlePermissionResponse({
+            id: 'plan-3',
+            approved: false,
+            decision: 'abort'
+        });
+
+        await expect(pending).resolves.toEqual({ outcome: { outcome: 'cancelled' } });
     });
 
     it('returns false from handlePermissionResponse for unrelated permission ids', async () => {
@@ -198,8 +234,8 @@ describe('CursorExtensionAdapter', () => {
 
         await adapter.cancelAll('User aborted');
 
-        await expect(askPending).resolves.toEqual({ outcome: 'cancelled' });
-        await expect(planPending).resolves.toEqual({ outcome: 'cancelled' });
+        await expect(askPending).resolves.toEqual({ outcome: { outcome: 'cancelled' } });
+        await expect(planPending).resolves.toEqual({ outcome: { outcome: 'cancelled' } });
         expect(getAgentState().requests).toEqual({});
         expect(getAgentState().completedRequests).toMatchObject({
             'q-cancel': { status: 'canceled', decision: 'abort' },
