@@ -39,6 +39,7 @@ const harness = vi.hoisted(() => ({
     failResumeThreadIds: [] as string[],
     nextThreadSystemErrorMessage: null as string | null,
     failNextCompact: false,
+    deferCompactCompletion: false,
     deferThreadStatusNotifications: false,
     emitChildThreadEvents: false,
     emitChildUsageEvents: false,
@@ -130,6 +131,9 @@ vi.mock('./codexAppServerClient', () => {
             if (harness.failNextCompact) {
                 harness.failNextCompact = false;
                 throw new Error('compact failed');
+            }
+            if (harness.deferCompactCompletion) {
+                return {};
             }
             const compacted = { threadId, turnId: `compact-${harness.compactThreadIds.length}` };
             harness.notifications.push({ method: 'thread/compacted', params: compacted });
@@ -908,10 +912,16 @@ function createMode(): EnhancedMode {
     };
 }
 
-function createSessionStub(messages = ['hello from launcher test'], mode = createMode()) {
+function createSessionStub(
+    messages = ['hello from launcher test'],
+    mode = createMode(),
+    isolateMessages = false
+) {
     const queue = new MessageQueue2<EnhancedMode>((mode) => JSON.stringify(mode));
     messages.forEach((message, index) => {
-        if (index === 0 && messages.length > 1) {
+        if (isolateMessages) {
+            queue.pushIsolated(message, mode);
+        } else if (index === 0 && messages.length > 1) {
             queue.pushIsolateAndClear(message, mode);
         } else {
             queue.push(message, mode);
@@ -1066,6 +1076,7 @@ describe('codexRemoteLauncher', () => {
         harness.remainingThreadSystemErrors = 0;
         harness.nextThreadSystemErrorMessage = null;
         harness.failNextCompact = false;
+        harness.deferCompactCompletion = false;
         harness.deferThreadStatusNotifications = false;
         harness.emitChildThreadEvents = false;
         harness.emitChildUsageEvents = false;
@@ -2678,6 +2689,42 @@ describe('codexRemoteLauncher', () => {
             type: 'message',
             message: 'Compaction started'
         });
+        expect(sessionEvents).toContainEqual({
+            type: 'message',
+            message: 'Compaction completed'
+        });
+    });
+
+    it('does not start the next turn until manual compaction finishes', async () => {
+        harness.deferCompactCompletion = true;
+        const { session, sessionEvents } = createSessionStub([
+            'first message',
+            '/compact',
+            'after compact'
+        ], createMode(), true);
+
+        const running = codexRemoteLauncher(session as never);
+        await vi.waitFor(() => {
+            expect(harness.compactThreadIds).toEqual(['thread-1']);
+        });
+
+        expect(harness.startTurnMessages).toEqual(['first message']);
+        expect(sessionEvents).not.toContainEqual({
+            type: 'message',
+            message: 'Compaction completed'
+        });
+
+        const compacted = { threadId: 'thread-1', turnId: 'compact-1' };
+        harness.dispatchNotification?.('thread/compacted', compacted);
+        harness.dispatchNotification?.('turn/completed', {
+            threadId: 'thread-1',
+            turn: { id: 'compact-1', status: 'completed' }
+        });
+
+        const exitReason = await running;
+
+        expect(exitReason).toBe('exit');
+        expect(harness.startTurnMessages).toEqual(['first message', 'after compact']);
         expect(sessionEvents).toContainEqual({
             type: 'message',
             message: 'Compaction completed'
