@@ -28,6 +28,7 @@ import { useSidebarResize } from '@/hooks/useSidebarResize'
 import { useMessages } from '@/hooks/queries/useMessages'
 import { useMachines } from '@/hooks/queries/useMachines'
 import { useSession } from '@/hooks/queries/useSession'
+import { useCursorChatStoreStatus } from '@/hooks/queries/useCursorChatStoreStatus'
 import { useSessions } from '@/hooks/queries/useSessions'
 import { useSlashCommands } from '@/hooks/queries/useSlashCommands'
 import { useSkills } from '@/hooks/queries/useSkills'
@@ -41,6 +42,7 @@ import { fetchLatestMessages, seedMessageWindowFromSession } from '@/lib/message
 import { clearDraftsAfterSend } from '@/lib/clearDraftsAfterSend'
 import { inactiveSessionCanResume } from '@/lib/sessionResume'
 import { markSessionSeen } from '@/lib/sessionLastSeen'
+import { useSessionBrowserTitle } from '@/hooks/useSessionBrowserTitle'
 import { clearCodexImportedSession, markCodexSessionsImported } from '@/lib/codexImportedSessions'
 import type { Machine, CodexDuplicateSessionGroup, CodexLocalSessionSummary } from '@/types/api'
 import FilesPage from '@/routes/sessions/files'
@@ -633,6 +635,11 @@ function SessionPage() {
         refetch: refetchSession,
     } = useSession(api, sessionId)
     const {
+        status: cursorChatStoreStatus,
+        isApplicable: cursorChatStoreApplicable,
+        error: cursorChatStoreError,
+    } = useCursorChatStoreStatus({ api, session })
+    const {
         messages,
         pendingMessages,
         warning: messagesWarning,
@@ -727,6 +734,16 @@ function SessionPage() {
         })()
     }, [api, queryClient, navigate, addToast, t])
 
+    const cursorReopenDisabledReason = cursorChatStoreApplicable && cursorChatStoreStatus?.onDisk !== true
+        ? cursorChatStoreError
+            ? t('session.action.reopenCursorCheckFailed')
+            : cursorChatStoreStatus?.onDisk === false
+                ? t('session.action.reopenCursorMissing')
+                : t('session.action.reopenCursorChecking')
+        : undefined
+    const canOfferInactiveReopen = session
+        ? inactiveSessionCanResume(session, messages.length, cursorChatStoreStatus?.onDisk)
+        : false
     const rawSendError = sendErrors[sessionId] ?? null
     const sendError: ComposerSendError | null = rawSendError
         ? {
@@ -734,7 +751,7 @@ function SessionPage() {
             text: rawSendError.text,
             message: rawSendError.message,
             scheduledAt: rawSendError.scheduledAt,
-            action: rawSendError.code === 'session_inactive'
+            action: rawSendError.code === 'session_inactive' && canOfferInactiveReopen
                 ? {
                     label: t('chat.sendError.sessionInactive.action'),
                     onClick: () => reopenFromErrorAffordance(sessionId),
@@ -781,7 +798,7 @@ function SessionPage() {
             if (!api || !session || session.active) {
                 return currentSessionId
             }
-            if (!inactiveSessionCanResume(session, messages.length)) {
+            if (!inactiveSessionCanResume(session, messages.length, cursorChatStoreStatus?.onDisk)) {
                 // #918: surface as a session_inactive ApiError so the
                 // onError consumer's classifier renders the Reopen
                 // affordance.  `status: 409` mirrors the hub guard for
@@ -918,6 +935,8 @@ function SessionPage() {
         <SessionChat
             api={api}
             session={session}
+            cursorChatOnDisk={cursorChatStoreStatus?.onDisk}
+            reopenDisabledReason={cursorReopenDisabledReason}
             messages={messages}
             pendingMessages={pendingMessages}
             messagesWarning={messagesWarning}
@@ -949,7 +968,8 @@ function SessionDetailRoute() {
     const pathname = useLocation({ select: location => location.pathname })
     const { sessionId } = useParams({ from: '/sessions/$sessionId' })
     const navigate = useNavigate()
-    const { notFound: sessionNotFound } = useSession(api, sessionId)
+    const { session, notFound: sessionNotFound } = useSession(api, sessionId)
+    useSessionBrowserTitle(session)
     const basePath = `/sessions/${sessionId}`
     const isChat = pathname === basePath || pathname === `${basePath}/`
 

@@ -1,11 +1,13 @@
 import type { AgentFlavor, CodexCollaborationMode, PermissionMode } from '@hapi/protocol/types'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
+import { CursorChatStoreStatusSchema } from '@hapi/protocol/apiTypes'
 import type {
     CodexModelSummary,
     CodexModelsResponse,
     CommandResponse,
     CursorModelSummary,
     CursorModelsResponse,
+    CursorChatStoreStatus,
     DeleteUploadResponse,
     DirectoryEntry,
     FileReadResponse,
@@ -59,6 +61,7 @@ export type RpcCodexModel = CodexModelSummary
 export type RpcListCodexModelsResponse = CodexModelsResponse
 export type RpcCursorModel = CursorModelSummary
 export type RpcListCursorModelsResponse = CursorModelsResponse
+export type RpcCursorChatStoreStatus = CursorChatStoreStatus
 export type RpcOpencodeModel = OpencodeModelSummary
 export type RpcListOpencodeModelsResponse = OpencodeModelsResponse
 export type RpcListGrokModelsResponse = GrokModelsResponse
@@ -208,6 +211,20 @@ export class RpcGateway {
             exists[key] = value === true
         }
         return exists
+    }
+
+    async getCursorChatStoreStatus(
+        machineId: string,
+        workspacePath: string,
+        cursorSessionId: string,
+        homeDir?: string
+    ): Promise<RpcCursorChatStoreStatus> {
+        const result = await this.machineRpc(
+            machineId,
+            RPC_METHODS.CursorChatStoreStatus,
+            { workspacePath, cursorSessionId, homeDir }
+        )
+        return CursorChatStoreStatusSchema.parse(result)
     }
 
     async getGitStatus(sessionId: string, cwd?: string): Promise<RpcCommandResponse> {

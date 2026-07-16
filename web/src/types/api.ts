@@ -14,6 +14,7 @@ export type {
     CommandResponse,
     CursorModelsResponse,
     CursorModelSummary,
+    CursorChatStoreStatus,
     DeleteUploadResponse,
     DirectoryEntry,
     FileReadResponse,

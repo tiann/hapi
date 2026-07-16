@@ -9,6 +9,7 @@ const harness = vi.hoisted(() => ({
     loadSessionCalled: false,
     newSessionCalled: false,
     promptCalls: 0,
+    prompts: [] as unknown[][],
     backendArgs: null as { command: string; args?: string[] } | null,
     setConfigOptionCalls: [] as Array<{ sessionId: string; configId: string; value: string }>,
     deferSetConfigOption: null as Promise<void> | null,
@@ -89,8 +90,9 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                 }
                 return undefined;
             }),
-            prompt: vi.fn(async () => {
+            prompt: vi.fn(async (_sessionId: string, content: unknown[]) => {
                 harness.promptCalls++;
+                harness.prompts.push(content);
             }),
             cancelPrompt: vi.fn(async () => {}),
             respondToPermission: vi.fn(async () => {}),
@@ -182,6 +184,7 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.loadSessionCalled = false;
         harness.newSessionCalled = false;
         harness.promptCalls = 0;
+        harness.prompts = [];
         harness.setConfigOptionCalls = [];
         harness.deferSetConfigOption = null;
         harness.releaseSetConfigOption = null;
@@ -765,5 +768,8 @@ describe('cursorAcpRemoteLauncher', () => {
         await cursorAcpRemoteLauncher(session);
 
         expect(harness.promptCalls).toBe(2);
+        expect(JSON.stringify(harness.prompts[0])).toContain('$name');
+        expect(JSON.stringify(harness.prompts[0])).toContain('skill_lookup');
+        expect(JSON.stringify(harness.prompts[1])).not.toContain('skill_lookup');
     });
 });

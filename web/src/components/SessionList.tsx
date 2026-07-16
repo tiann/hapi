@@ -22,9 +22,11 @@ import { formatRelativeTime } from '@/lib/relativeTime'
 import { formatScheduledTooltipDetail } from '@/lib/scheduledTime'
 import { getCodexImportedAt, subscribeCodexImportedSessions } from '@/lib/codexImportedSessions'
 import { formatReopenError } from '@/lib/reopenError'
+import { getSessionTitle } from '@/lib/sessionTitle'
 import type { Machine } from '@/types/api'
 import { getMachinePlatform, presentMachineHealth } from '@/lib/machineHealth'
 import { MachineGroupHeader } from '@/components/MachineGroupHeader'
+import { useCursorChatStoreStatus } from '@/hooks/queries/useCursorChatStoreStatus'
 
 type SessionGroup = {
     key: string
@@ -439,18 +441,22 @@ function ChevronIcon(props: { className?: string; collapsed?: boolean }) {
     )
 }
 
-export function getSessionTitle(session: SessionSummary): string {
-    if (session.metadata?.name) {
-        return session.metadata.name
+export { getSessionTitle } from '@/lib/sessionTitle'
+
+export function getWorktreeSessionLabel(session: SessionSummary): string | null {
+    const worktree = session.metadata?.worktree
+    if (!worktree) {
+        return null
     }
-    if (session.metadata?.summary?.text) {
-        return session.metadata.summary.text
+
+    const name = worktree.name.trim()
+    if (name) {
+        return name
     }
-    if (session.metadata?.path) {
-        const parts = session.metadata.path.split('/').filter(Boolean)
-        return parts.length > 0 ? parts[parts.length - 1] : session.id.slice(0, 8)
-    }
-    return session.id.slice(0, 8)
+
+    const path = (worktree.worktreePath ?? session.metadata?.path ?? '').replace(/[\\/]+$/, '')
+    const parts = path.split(/[\\/]+/).filter(Boolean)
+    return parts.at(-1) ?? null
 }
 
 function getTodoProgress(session: SessionSummary): { completed: number; total: number } | null {
@@ -467,9 +473,11 @@ export function sessionMatchesQuery(session: SessionSummary, query: string, mach
     if (!query) return true
     const searchable = [
         getSessionTitle(session),
+        getWorktreeSessionLabel(session),
         session.id,
         session.metadata?.path,
         session.metadata?.worktree?.basePath,
+        session.metadata?.worktree?.worktreePath,
         session.metadata?.name,
         session.metadata?.summary?.text,
         session.metadata?.flavor,
@@ -589,6 +597,22 @@ function SessionItem(props: {
     const [renameOpen, setRenameOpen] = useState(false)
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
+    const {
+        status: cursorChatStoreStatus,
+        isApplicable: cursorChatStoreApplicable,
+        error: cursorChatStoreError,
+    } = useCursorChatStoreStatus({
+        api,
+        session: s,
+        enabled: menuOpen
+    })
+    const cursorReopenDisabledReason = cursorChatStoreApplicable && cursorChatStoreStatus?.onDisk !== true
+        ? cursorChatStoreError
+            ? t('session.action.reopenCursorCheckFailed')
+            : cursorChatStoreStatus?.onDisk === false
+                ? t('session.action.reopenCursorMissing')
+                : t('session.action.reopenCursorChecking')
+        : undefined
 
     const { archiveSession, reopenSession, renameSession, deleteSession, isPending } = useSessionActions(
         api,
@@ -626,6 +650,7 @@ function SessionItem(props: {
     })
 
     const sessionName = getSessionTitle(s)
+    const worktreeLabel = getWorktreeSessionLabel(s)
     const todoProgress = getTodoProgress(s)
     const attention = useMemo(
         () => showDetailedStatus
@@ -706,9 +731,14 @@ function SessionItem(props: {
                         </span>
                     </div>
                 </div>
-                {showPath ? (
-                    <div className="truncate text-xs text-[var(--app-hint)]">
-                        {s.metadata?.path ?? s.id}
+                {showPath || worktreeLabel ? (
+                    <div
+                        className="truncate text-xs text-[var(--app-hint)]"
+                        title={worktreeLabel
+                            ? s.metadata?.worktree?.worktreePath ?? s.metadata?.path
+                            : undefined}
+                    >
+                        {worktreeLabel ?? s.metadata?.path ?? s.id}
                     </div>
                 ) : null}
             </button>
@@ -719,7 +749,8 @@ function SessionItem(props: {
                 sessionActive={s.active}
                 onRename={() => setRenameOpen(true)}
                 onArchive={() => setArchiveOpen(true)}
-                onReopen={handleReopen}
+                onReopen={cursorReopenDisabledReason ? undefined : handleReopen}
+                reopenDisabledReason={cursorReopenDisabledReason}
                 onDelete={() => setDeleteOpen(true)}
                 anchorPoint={menuAnchorPoint}
             />

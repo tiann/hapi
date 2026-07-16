@@ -8,7 +8,7 @@
  */
 
 import { isKnownFlavor, type LocalResumeTarget, type ResumableSession } from '@hapi/protocol'
-import type { CursorMigrateOutcome, CursorMigrateToAcpRequest, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
+import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, CodexCollaborationMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { Server } from 'socket.io'
@@ -36,6 +36,7 @@ import {
     type RpcListGrokReasoningEffortOptionsResponse,
     type RpcListOpencodeReasoningEffortOptionsResponse,
     type RpcCursorModel,
+    type RpcCursorChatStoreStatus,
     type RpcOpencodeModel,
     type RpcPathExistsResponse,
     type RpcReadFileResponse,
@@ -59,6 +60,7 @@ export type {
     RpcListGrokReasoningEffortOptionsResponse,
     RpcListOpencodeReasoningEffortOptionsResponse,
     RpcCursorModel,
+    RpcCursorChatStoreStatus,
     RpcOpencodeModel,
     RpcPathExistsResponse,
     RpcReadFileResponse,
@@ -81,6 +83,10 @@ export type LocalResumeTargetResult =
 export type LocalHandoffResult =
     | { type: 'success' }
     | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'already_local' | 'handoff_failed' }
+
+export type CursorChatStoreStatusResult =
+    | { type: 'success'; status: CursorChatStoreStatus }
+    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'resume_unavailable' | 'no_machine_online' | 'probe_failed' }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
     return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -187,6 +193,69 @@ export class SyncEngine {
 
     getSessions(): Session[] {
         return this.sessionCache.getSessions()
+    }
+
+    private resolveOnlineMachineForSession(
+        session: Session,
+        namespace: string,
+        options?: { strictMachineId?: boolean }
+    ): Machine | null {
+        const onlineMachines = this.machineCache.getOnlineMachinesByNamespace(namespace)
+        if (session.metadata?.machineId) {
+            const exact = onlineMachines.find((machine) => machine.id === session.metadata?.machineId)
+            if (exact) return exact
+            if (options?.strictMachineId) return null
+        }
+        if (session.metadata?.host) {
+            const hostMatch = onlineMachines.find((machine) => machine.metadata?.host === session.metadata?.host)
+            if (hostMatch) return hostMatch
+        }
+        return null
+    }
+
+    async getCursorChatStoreStatus(sessionId: string, namespace: string): Promise<CursorChatStoreStatusResult> {
+        const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
+        if (!access.ok) {
+            return {
+                type: 'error',
+                message: access.reason === 'access-denied' ? 'Session access denied' : 'Session not found',
+                code: access.reason === 'access-denied' ? 'access_denied' : 'session_not_found'
+            }
+        }
+
+        const metadata = access.session.metadata
+        if (metadata?.flavor !== 'cursor' || !metadata.path || !metadata.cursorSessionId) {
+            return {
+                type: 'error',
+                message: 'Cursor resume metadata is unavailable',
+                code: 'resume_unavailable'
+            }
+        }
+
+        const targetMachine = this.resolveOnlineMachineForSession(
+            access.session,
+            namespace,
+            { strictMachineId: true }
+        )
+        if (!targetMachine) {
+            return { type: 'error', message: 'No machine online', code: 'no_machine_online' }
+        }
+
+        try {
+            const status = await this.rpcGateway.getCursorChatStoreStatus(
+                targetMachine.id,
+                metadata.path,
+                metadata.cursorSessionId,
+                metadata.homeDir
+            )
+            return { type: 'success', status }
+        } catch (error) {
+            return {
+                type: 'error',
+                message: error instanceof Error ? error.message : 'Failed to inspect Cursor chat store',
+                code: 'probe_failed'
+            }
+        }
     }
 
     getSessionsByNamespace(namespace: string): Session[] {
@@ -1168,25 +1237,37 @@ export class SyncEngine {
 
         const metadata = session.metadata!
 
-        const onlineMachines = this.machineCache.getOnlineMachinesByNamespace(namespace)
-        if (onlineMachines.length === 0) {
+        const targetMachine = this.resolveOnlineMachineForSession(
+            session,
+            namespace,
+            { strictMachineId: flavor === 'cursor' }
+        )
+        if (!targetMachine) {
             return { type: 'error', message: 'No machine online', code: 'no_machine_online' }
         }
 
-        const targetMachine = (() => {
-            if (metadata.machineId) {
-                const exact = onlineMachines.find((machine) => machine.id === metadata.machineId)
-                if (exact) return exact
+        if (flavor === 'cursor' && resumeToken) {
+            try {
+                const chatStatus = await this.rpcGateway.getCursorChatStoreStatus(
+                    targetMachine.id,
+                    directory,
+                    resumeToken,
+                    metadata.homeDir
+                )
+                if (!chatStatus.onDisk) {
+                    return {
+                        type: 'error',
+                        message: 'Cursor chat data is no longer available on the recorded machine',
+                        code: 'resume_unavailable'
+                    }
+                }
+            } catch (error) {
+                return {
+                    type: 'error',
+                    message: error instanceof Error ? error.message : 'Failed to inspect Cursor chat store',
+                    code: 'resume_failed'
+                }
             }
-            if (metadata.host) {
-                const hostMatch = onlineMachines.find((machine) => machine.metadata?.host === metadata.host)
-                if (hostMatch) return hostMatch
-            }
-            return null
-        })()
-
-        if (!targetMachine) {
-            return { type: 'error', message: 'No machine online', code: 'no_machine_online' }
         }
 
         const preferredPermissionMode = opts?.permissionMode

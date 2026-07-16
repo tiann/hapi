@@ -16,6 +16,7 @@ import { PermissionModeSchema } from '@hapi/protocol/schemas';
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import type { SessionEndReason } from '@hapi/protocol';
+import { SKILL_LOOKUP_INSTRUCTION } from '@/modules/common/skillLookupInstruction';
 
 function emitReadyIfIdle(props: {
     queueSize: () => number;
@@ -70,8 +71,19 @@ export async function runAgentSession(opts: {
 
     const permissionAdapter = new PermissionAdapter(session, backend, () => currentPermissionMode);
 
-    const happyServer = await startHappyServer(session);
-    const bridgeCommand = getHappyCliCommand(['mcp', '--url', happyServer.url]);
+    const happyServer = await startHappyServer(session, {
+        skillLookup: {
+            workingDirectory,
+            flavor: opts.agentType
+        }
+    });
+    const bridgeCommand = getHappyCliCommand([
+        'mcp',
+        '--url',
+        happyServer.url,
+        '--tools',
+        happyServer.toolNames.join(',')
+    ]);
     const mcpServers = [
         {
             name: 'happy',
@@ -89,6 +101,7 @@ export async function runAgentSession(opts: {
     let thinking = false;
     let shouldExit = false;
     let waitAbortController: AbortController | null = null;
+    let skillLookupInstructionSent = false;
 
     const syncKeepAlive = () => {
         session.keepAlive(thinking, 'remote', {
@@ -167,9 +180,15 @@ export async function runAgentSession(opts: {
                 continue;
             }
 
+            let messageText = batch.message;
+            if (!skillLookupInstructionSent && !messageText.trimStart().startsWith('/')) {
+                messageText = `${SKILL_LOOKUP_INSTRUCTION}\n\n${messageText}`;
+                skillLookupInstructionSent = true;
+            }
+
             const promptContent: PromptContent[] = [{
                 type: 'text',
-                text: batch.message
+                text: messageText
             }];
 
             thinking = true;

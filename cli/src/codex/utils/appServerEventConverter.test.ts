@@ -833,6 +833,29 @@ describe('AppServerEventConverter', () => {
         ]);
     });
 
+    it('maps completed contextCompaction items and preserves the turn boundary', () => {
+        const converter = new AppServerEventConverter();
+        const events = converter.handleNotification('item/completed', {
+            threadId: 'thread-1',
+            turnId: 'turn-compact',
+            item: { id: 'compact-item-1', type: 'contextCompaction' }
+        });
+
+        expect(events).toEqual([
+            {
+                type: 'thread_compacted',
+                thread_id: 'thread-1',
+                turn_id: 'turn-compact',
+                await_turn_completion: true
+            },
+            {
+                type: 'context_compacted',
+                thread_id: 'thread-1',
+                turn_id: 'turn-compact'
+            }
+        ]);
+    });
+
     it('ignores compacted notifications without thread ids', () => {
         const converter = new AppServerEventConverter();
 

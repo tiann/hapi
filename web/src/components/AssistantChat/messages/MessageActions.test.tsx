@@ -67,4 +67,53 @@ describe('MessageActions', () => {
 
         expect(screen.queryByRole('button', { name: 'Message details' })).toBeNull()
     })
+
+    it('keeps the info button reachable on touch devices (no hover-only class)', () => {
+        renderActions({
+            align: 'start',
+            copyText: 'message body',
+            metadata: { durationMs: 1250, model: 'gpt-5.2-codex' }
+        })
+
+        const button = screen.getByRole('button', { name: 'Message details' })
+        expect(button.className.split(' ')).not.toContain('happy-message-actions-desktop-only')
+    })
+
+    it('keeps the action row reachable on touch devices for tool-only messages with metadata', () => {
+        // Tool-only assistant turns (no trailing text) have no copyText, but
+        // can still carry model/duration metadata from the first tool block
+        // in the response group (see assistant-runtime.ts toThreadMessageLike).
+        renderActions({
+            align: 'start',
+            copyText: undefined,
+            metadata: { durationMs: 1250, model: 'gpt-5.2-codex' }
+        })
+
+        const button = screen.getByRole('button', { name: 'Message details' })
+        const row = button.closest('.happy-message-actions')
+        expect(row).not.toBeNull()
+        expect(row!.className.split(' ')).not.toContain('happy-message-actions-desktop-only-row')
+    })
+
+    it('keeps the timestamp reachable on touch devices (no hover-only class)', () => {
+        renderActions({ align: 'start', copyText: 'message body' })
+
+        const time = document.querySelector('time')
+        expect(time).not.toBeNull()
+        const wrapper = time!.parentElement!
+        expect(wrapper.className.split(' ')).not.toContain('happy-message-actions-desktop-only')
+    })
+
+    it('keeps the row reachable on touch devices even with neither copy text nor metadata (timestamp-only row)', () => {
+        // DesktopTimestamp always renders inside the row regardless of
+        // canCopy/hasMetadata, so the row is never actually empty -- hiding
+        // it via the hover-only row class would hide a real timestamp.
+        renderActions({ align: 'end', copyText: undefined, metadata: undefined })
+
+        const time = document.querySelector('time')
+        expect(time).not.toBeNull()
+        const row = time!.closest('.happy-message-actions')
+        expect(row).not.toBeNull()
+        expect(row!.className.split(' ')).not.toContain('happy-message-actions-desktop-only-row')
+    })
 })

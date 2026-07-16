@@ -866,6 +866,23 @@ export class AppServerEventConverter {
                 return events;
             }
 
+            if (itemType === 'contextcompaction') {
+                if (method === 'item/completed') {
+                    const threadId = asString(eventScope.thread_id);
+                    const turnId = asString(eventScope.turn_id);
+                    if (threadId) {
+                        events.push({
+                            type: 'thread_compacted',
+                            thread_id: threadId,
+                            ...(turnId ? { turn_id: turnId } : {}),
+                            await_turn_completion: true
+                        });
+                        events.push(scoped({ type: 'context_compacted' }));
+                    }
+                }
+                return events;
+            }
+
             if (itemType === 'agentmessage') {
                 if (method === 'item/completed') {
                     if (this.completedAgentMessageItems.has(itemId)) {

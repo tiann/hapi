@@ -6,6 +6,7 @@ import {
     filterActiveSessionsOnly,
     getNextSessionVisibleCount,
     getSessionDedupKey,
+    getWorktreeSessionLabel,
     getVisibleSessionPreview,
     isSidebarEmptySessionStub,
     normalizeSearch,
@@ -33,6 +34,51 @@ function makeSession(overrides: Partial<SessionSummary> & { id: string }): Sessi
         ...overrides
     }
 }
+
+describe('getWorktreeSessionLabel', () => {
+    it('returns the worktree name for sessions grouped under a shared repository', () => {
+        const session = makeSession({
+            id: 'worktree-session',
+            metadata: {
+                path: '/work/hapi-worktrees/fix-resume',
+                worktree: {
+                    basePath: '/work/hapi',
+                    branch: 'fix/resume',
+                    name: 'fix-resume',
+                    worktreePath: '/work/hapi-worktrees/fix-resume'
+                }
+            }
+        })
+
+        expect(getWorktreeSessionLabel(session)).toBe('fix-resume')
+    })
+
+    it('does not add a subtitle to ordinary sessions', () => {
+        const session = makeSession({
+            id: 'ordinary-session',
+            metadata: { path: '/work/hapi' }
+        })
+
+        expect(getWorktreeSessionLabel(session)).toBeNull()
+    })
+
+    it('falls back to the worktree directory name when metadata name is blank', () => {
+        const session = makeSession({
+            id: 'windows-worktree-session',
+            metadata: {
+                path: 'C:\\work\\hapi-worktrees\\fix-resume',
+                worktree: {
+                    basePath: 'C:\\work\\hapi',
+                    branch: 'fix/resume',
+                    name: '   ',
+                    worktreePath: 'C:\\work\\hapi-worktrees\\fix-resume\\'
+                }
+            }
+        })
+
+        expect(getWorktreeSessionLabel(session)).toBe('fix-resume')
+    })
+})
 
 describe('deduplicateSessionsByAgentId', () => {
     it('deduplicates sessions with the same agentSessionId', () => {
@@ -241,6 +287,24 @@ describe('session list search helpers', () => {
         expect(sessionMatchesQuery(session, normalizeSearch('bot review'), 'desktop')).toBe(true)
         expect(sessionMatchesQuery(session, normalizeSearch('desktop'), 'desktop')).toBe(true)
         expect(sessionMatchesQuery(session, normalizeSearch('missing'), 'desktop')).toBe(false)
+    })
+
+    it('matches the displayed worktree label and worktree path', () => {
+        const session = makeSession({
+            id: 'worktree-session',
+            metadata: {
+                path: '/work/hapi',
+                worktree: {
+                    basePath: '/work/hapi',
+                    branch: 'fix/sidebar-search',
+                    name: 'sidebar-search',
+                    worktreePath: '/work/hapi-worktrees/fix-sidebar-search'
+                }
+            }
+        })
+
+        expect(sessionMatchesQuery(session, normalizeSearch('sidebar-search'), 'desktop')).toBe(true)
+        expect(sessionMatchesQuery(session, normalizeSearch('hapi-worktrees'), 'desktop')).toBe(true)
     })
 })
 

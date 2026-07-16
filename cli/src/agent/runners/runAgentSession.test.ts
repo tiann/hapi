@@ -7,7 +7,12 @@ const harness = vi.hoisted(() => ({
     cancelPrompt: vi.fn(async () => {}),
     cancelAll: vi.fn(async () => {}),
     stopServer: vi.fn(),
-    disconnect: vi.fn(async () => {})
+    disconnect: vi.fn(async () => {}),
+    prompts: [] as unknown[][],
+    startHappyServerOptions: null as unknown,
+    bridgeArgs: [] as string[],
+    newSessionOptions: null as unknown,
+    killHandler: null as null | (() => Promise<void>)
 }))
 
 vi.mock('@/agent/sessionFactory', () => ({
@@ -38,8 +43,12 @@ vi.mock('@/agent/AgentRegistry', () => ({
     AgentRegistry: {
         create: vi.fn(() => ({
             initialize: vi.fn(async () => {}),
-            newSession: vi.fn(async () => 'agent-session-1'),
-            prompt: vi.fn(async () => {
+            newSession: vi.fn(async (options: unknown) => {
+                harness.newSessionOptions = options
+                return 'agent-session-1'
+            }),
+            prompt: vi.fn(async (_sessionId: string, content: unknown[]) => {
+                harness.prompts.push(content)
                 if (harness.promptError) {
                     throw harness.promptError
                 }
@@ -61,18 +70,27 @@ vi.mock('@/agent/permissionAdapter', () => ({
 }))
 
 vi.mock('@/claude/utils/startHappyServer', () => ({
-    startHappyServer: vi.fn(async () => ({
-        url: 'http://127.0.0.1:1234',
-        stop: harness.stopServer
-    }))
+    startHappyServer: vi.fn(async (_session: unknown, options: unknown) => {
+        harness.startHappyServerOptions = options
+        return {
+            url: 'http://127.0.0.1:1234',
+            toolNames: ['change_title', 'display_image', 'skill_lookup'],
+            stop: harness.stopServer
+        }
+    })
 }))
 
 vi.mock('@/utils/spawnHappyCLI', () => ({
-    getHappyCliCommand: vi.fn(() => ({ command: 'hapi', args: [], env: [] }))
+    getHappyCliCommand: vi.fn((args: string[]) => {
+        harness.bridgeArgs = args
+        return { command: 'hapi', args, env: [] }
+    })
 }))
 
 vi.mock('@/claude/registerKillSessionHandler', () => ({
-    registerKillSessionHandler: vi.fn()
+    registerKillSessionHandler: vi.fn((_manager: unknown, handler: () => Promise<void>) => {
+        harness.killHandler = handler
+    })
 }))
 
 vi.mock('@/utils/invokedCwd', () => ({
@@ -101,6 +119,11 @@ describe('runAgentSession', () => {
         harness.cancelAll.mockClear()
         harness.stopServer.mockClear()
         harness.disconnect.mockClear()
+        harness.prompts = []
+        harness.startHappyServerOptions = null
+        harness.bridgeArgs = []
+        harness.newSessionOptions = null
+        harness.killHandler = null
     })
 
     it('reports unhandled ACP runner failures as error, not completed', async () => {
@@ -119,5 +142,46 @@ describe('runAgentSession', () => {
 
         expect(harness.sendSessionDeath).toHaveBeenCalledWith('error')
         expect(harness.sendSessionDeath).not.toHaveBeenCalledWith('completed')
+    })
+
+    it('enables skill lookup and injects its instruction only on the first prompt', async () => {
+        const running = runAgentSession({ agentType: 'acp' })
+        await vi.waitFor(() => expect(harness.userMessageHandler).not.toBeNull())
+
+        harness.userMessageHandler?.({ content: { text: 'first', attachments: [] } }, 'local-1')
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+        harness.userMessageHandler?.({ content: { text: 'second', attachments: [] } }, 'local-2')
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(2))
+
+        await harness.killHandler?.()
+        await running
+
+        expect(harness.startHappyServerOptions).toEqual({
+            skillLookup: {
+                workingDirectory: '/tmp/project',
+                flavor: 'acp'
+            }
+        })
+        expect(harness.bridgeArgs).toEqual([
+            'mcp',
+            '--url',
+            'http://127.0.0.1:1234',
+            '--tools',
+            'change_title,display_image,skill_lookup'
+        ])
+        expect(harness.newSessionOptions).toMatchObject({
+            cwd: '/tmp/project',
+            mcpServers: [{
+                name: 'happy',
+                command: 'hapi',
+                args: harness.bridgeArgs
+            }]
+        })
+
+        const firstPrompt = JSON.stringify(harness.prompts[0])
+        const secondPrompt = JSON.stringify(harness.prompts[1])
+        expect(firstPrompt).toContain('$name')
+        expect(firstPrompt).toContain('skill_lookup')
+        expect(secondPrompt).not.toContain('skill_lookup')
     })
 })

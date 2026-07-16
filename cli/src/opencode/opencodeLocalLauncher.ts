@@ -266,7 +266,9 @@ export async function opencodeLocalLauncher(
     let happyServer: { url: string; stop: () => void } | null = null;
     let opencodeConfigPath: string | null = null;
     try {
-        const bridge = await buildHapiMcpBridge(session.client);
+        const bridge = await buildHapiMcpBridge(session.client, {
+            skillLookup: { workingDirectory: session.path, flavor: 'opencode' }
+        });
         happyServer = bridge.server;
         logger.debug(`[opencode-local]: Started hapi MCP server at ${happyServer.url}`);
 

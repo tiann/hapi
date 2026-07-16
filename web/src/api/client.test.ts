@@ -79,4 +79,17 @@ describe('ApiClient error mapping', () => {
             expect(apiError.body).toContain('cursorSessionId')
         }
     })
+
+    it('loads the Cursor chat store status for the selected session', async () => {
+        fetchMock.mockResolvedValueOnce(
+            new Response(JSON.stringify({ onDisk: false, store: null }), { status: 200 })
+        )
+
+        const api = new ApiClient('test-token')
+        await expect(api.getCursorChatStoreStatus('session cursor')).resolves.toEqual({
+            onDisk: false,
+            store: null
+        })
+        expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/sessions/session%20cursor/cursor-chat-store')
+    })
 })

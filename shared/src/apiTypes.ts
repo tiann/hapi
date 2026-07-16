@@ -119,6 +119,13 @@ export const ReopenSessionMissingMetadataResponseSchema = z.object({
 
 export type ReopenSessionMissingMetadataResponse = z.infer<typeof ReopenSessionMissingMetadataResponseSchema>
 
+export const CursorChatStoreStatusSchema = z.object({
+    onDisk: z.boolean(),
+    store: z.enum(['legacy', 'acp']).nullable()
+})
+
+export type CursorChatStoreStatus = z.infer<typeof CursorChatStoreStatusSchema>
+
 export const SessionCollaborationModeRequestSchema = z.object({
     mode: CodexCollaborationModeSchema
 })

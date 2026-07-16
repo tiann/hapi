@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { isBunCompiled, projectPath } from '@/projectPath';
 import { isProcessAlive, isHapiRunnerProcess, killProcess } from '@/utils/process';
 import { configuration } from '@/configuration';
-import { hashRunnerCliApiToken, isRunnerStateCompatibleWithIdentity } from './runnerIdentity';
+import { hashRunnerCliApiToken, hashRunnerExtraHeaders, isRunnerStateCompatibleWithIdentity } from './runnerIdentity';
 
 export function getInstalledCliMtimeMs(): number | undefined {
   if (isBunCompiled()) {
@@ -219,7 +219,8 @@ export async function isRunnerRunningCurrentlyInstalledHappyVersion(): Promise<b
     const currentIdentityMatches = isRunnerStateCompatibleWithIdentity(state, {
       apiUrl: currentApiUrl,
       machineId: currentMachineId,
-      cliApiTokenHash: hashRunnerCliApiToken(currentCliApiToken)
+      cliApiTokenHash: hashRunnerCliApiToken(currentCliApiToken),
+      extraHeadersHash: hashRunnerExtraHeaders(configuration.extraHeaders)
     });
     logger.debug(`[RUNNER CONTROL] Runner identity match: ${currentIdentityMatches}`, {
       currentApiUrl,

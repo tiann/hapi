@@ -181,6 +181,8 @@ describe('dialog result formatting', () => {
                 createdAt: 0,
                 startedAt: null,
                 completedAt: 0,
+                execStartedAt: null,
+                execCompletedAt: null,
                 description: null
             }
         }
@@ -238,6 +240,8 @@ describe('Codex agent result formatting', () => {
                 createdAt: 0,
                 startedAt: null,
                 completedAt: 0,
+                execStartedAt: null,
+                execCompletedAt: null,
                 description: null
             }
         }
@@ -332,6 +336,8 @@ describe('Codex agent result formatting', () => {
                 createdAt: 0,
                 startedAt: 0,
                 completedAt: null,
+                execStartedAt: null,
+                execCompletedAt: null,
                 description: null
             }
         }
@@ -365,6 +371,8 @@ describe('read file result formatting', () => {
                 createdAt: 0,
                 startedAt: null,
                 completedAt: 0,
+                execStartedAt: null,
+                execCompletedAt: null,
                 description: null
             }
         }

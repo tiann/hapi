@@ -17,6 +17,7 @@ export const queryKeys = {
     slashCommands: (sessionId: string) => ['slash-commands', sessionId] as const,
     sessionCodexModels: (sessionId: string) => ['session-codex-models', sessionId] as const,
     sessionCursorModels: (sessionId: string) => ['session-cursor-models', sessionId] as const,
+    sessionCursorChatStore: (sessionId: string) => ['session-cursor-chat-store', sessionId] as const,
     sessionPiModels: (sessionId: string) => ['session-pi-models', sessionId] as const,
     machineCursorModels: (machineId: string) => ['machine-cursor-models', machineId] as const,
     sessionOpencodeModels: (sessionId: string) => ['session-opencode-models', sessionId] as const,

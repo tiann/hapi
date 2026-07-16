@@ -98,6 +98,7 @@ const TRUSTED_ACCESS_FOR_CYBER_URL = 'https://chatgpt.com/cyber';
 const CYBER_POLICY_TRUSTED_ACCESS_URL = 'https://openai.com/form/enterprise-trusted-access-for-cyber/';
 const CODEX_GOALS_UNSUPPORTED_MESSAGE = 'Codex goals are not supported by this Codex runtime. Upgrade Codex or enable features.goals.';
 const MAX_CODEX_GOAL_OBJECTIVE_CHARS = 4_000;
+const HAPI_TOP_LEVEL_THREAD_SOURCE = 'user';
 
 type GoalForwardSignature = {
     objective: string | null;
@@ -1827,6 +1828,16 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             message: QueuedMessage;
             timeout: ReturnType<typeof setTimeout> | null;
         } | null = null;
+        let manualCompact: {
+            threadId: string;
+            turnId: string | null;
+            compacted: boolean;
+            terminal: { type: 'complete' | 'failed'; turnId: string; error?: string } | null;
+            timeout: ReturnType<typeof setTimeout> | null;
+            abortHandler: (() => void) | null;
+            resolve: () => void;
+            reject: (error: Error) => void;
+        } | null = null;
         let loopWakeWaiter: (() => void) | null = null;
 
         const wakeLoop = () => {
@@ -1928,6 +1939,132 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         'Task failed: context window overflow and same-conversation compact failed'
                     );
                 });
+        };
+
+        const clearManualCompact = (compact: typeof manualCompact) => {
+            if (!compact) {
+                return;
+            }
+            if (compact.timeout) {
+                clearTimeout(compact.timeout);
+                compact.timeout = null;
+            }
+            if (compact.abortHandler) {
+                this.abortController.signal.removeEventListener('abort', compact.abortHandler);
+                compact.abortHandler = null;
+            }
+            if (manualCompact === compact) {
+                manualCompact = null;
+            }
+        };
+
+        const settleManualCompact = (
+            compact: typeof manualCompact,
+            error?: Error
+        ) => {
+            if (!compact || manualCompact !== compact) {
+                return;
+            }
+            clearManualCompact(compact);
+            if (error) {
+                compact.reject(error);
+            } else {
+                compact.resolve();
+            }
+        };
+
+        const beginManualCompact = (threadId: string): Promise<void> => {
+            if (manualCompact) {
+                settleManualCompact(manualCompact, new Error('Compaction superseded'));
+            }
+
+            return new Promise<void>((resolve, reject) => {
+                const compact = {
+                    threadId,
+                    turnId: null as string | null,
+                    compacted: false,
+                    terminal: null as { type: 'complete' | 'failed'; turnId: string; error?: string } | null,
+                    timeout: null as ReturnType<typeof setTimeout> | null,
+                    abortHandler: null as (() => void) | null,
+                    resolve,
+                    reject
+                };
+                manualCompact = compact;
+                compact.timeout = setTimeout(() => {
+                    settleManualCompact(compact, new Error('timed out waiting for Codex compaction to finish'));
+                }, SAME_THREAD_COMPACT_TIMEOUT_MS);
+                compact.timeout.unref?.();
+                compact.abortHandler = () => {
+                    settleManualCompact(compact, new Error('compaction interrupted'));
+                };
+                this.abortController.signal.addEventListener('abort', compact.abortHandler, { once: true });
+            });
+        };
+
+        const recordManualCompactStarted = (threadId: string | null, turnId: string | null) => {
+            const compact = manualCompact;
+            if (!compact || !turnId || (threadId && threadId !== compact.threadId)) {
+                return;
+            }
+            compact.turnId ??= turnId;
+        };
+
+        const recordManualCompactCompleted = (
+            threadId: string | null,
+            turnId: string | null,
+            awaitTurnCompletion: boolean
+        ) => {
+            const compact = manualCompact;
+            if (!compact || threadId !== compact.threadId) {
+                return;
+            }
+            if (!awaitTurnCompletion) {
+                settleManualCompact(compact);
+                return;
+            }
+            if (!turnId && !compact.turnId) {
+                settleManualCompact(compact);
+                return;
+            }
+            if (turnId && compact.turnId && turnId !== compact.turnId) {
+                return;
+            }
+            compact.turnId ??= turnId;
+            compact.compacted = true;
+            if (!compact.turnId) {
+                settleManualCompact(compact);
+                return;
+            }
+            if (compact.terminal?.turnId === compact.turnId) {
+                settleManualCompact(
+                    compact,
+                    compact.terminal.type === 'failed'
+                        ? new Error(compact.terminal.error ?? 'Codex compaction failed')
+                        : undefined
+                );
+            }
+        };
+
+        const recordManualCompactTerminal = (
+            type: 'complete' | 'failed',
+            threadId: string | null,
+            turnId: string | null,
+            error?: string
+        ) => {
+            const compact = manualCompact;
+            if (!compact || !turnId || (threadId && threadId !== compact.threadId)) {
+                return;
+            }
+            if (!compact.turnId || turnId !== compact.turnId) {
+                return;
+            }
+            compact.terminal = { type, turnId, ...(error ? { error } : {}) };
+            if (type === 'failed' || compact.compacted) {
+                settleManualCompact(
+                    compact,
+                    type === 'failed' ? new Error(error ?? 'Codex compaction failed') : undefined
+                );
+            }
         };
 
         const forwardedGoalSignaturesByThreadId = new Map<string, string>();
@@ -2208,8 +2345,30 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
 
             if (msgType === 'thread_compacted') {
+                recordManualCompactCompleted(
+                    eventThreadId,
+                    eventTurnId,
+                    msg.await_turn_completion === true
+                );
                 completeCompactRecovery(eventThreadId);
                 return;
+            }
+
+            if (msgType === 'task_started') {
+                recordManualCompactStarted(eventThreadId ?? this.currentThreadId, eventTurnId);
+            } else if (msgType === 'task_complete') {
+                recordManualCompactTerminal(
+                    'complete',
+                    eventThreadId ?? this.currentThreadId,
+                    eventTurnId
+                );
+            } else if (msgType === 'task_failed' || msgType === 'turn_aborted') {
+                recordManualCompactTerminal(
+                    'failed',
+                    eventThreadId ?? this.currentThreadId,
+                    eventTurnId,
+                    asString(msg.error) ?? (msgType === 'turn_aborted' ? 'Codex compaction was aborted' : undefined)
+                );
             }
 
             if (eventThreadId && this.currentThreadId && eventThreadId !== this.currentThreadId) {
@@ -3180,7 +3339,10 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     mcpServers,
                     cliOverrides: session.codexCliOverrides
                 });
-                const threadResponse = await appServerClient.startThread(threadParams, {
+                const threadResponse = await appServerClient.startThread({
+                    ...threadParams,
+                    threadSource: HAPI_TOP_LEVEL_THREAD_SOURCE
+                }, {
                     signal: this.abortController.signal
                 });
                 const threadRecord = asRecord(threadResponse);
@@ -3328,14 +3490,23 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
 
             sendVisibleStatus('Compaction started');
+            const compactCompletion = beginManualCompact(threadId);
+            void compactCompletion.catch(() => {});
             try {
                 await appServerClient.compactThread({ threadId }, {
                     signal: this.abortController.signal
                 });
+                await compactCompletion;
                 sendVisibleStatus('Compaction completed');
             } catch (error) {
                 const detail = error instanceof Error ? error.message : String(error);
                 sendVisibleStatus(`Compaction failed: ${detail}`);
+            } finally {
+                if (manualCompact?.threadId === threadId) {
+                    const compact = manualCompact;
+                    clearManualCompact(compact);
+                    compact.resolve();
+                }
             }
             return true;
         };
@@ -3430,7 +3601,10 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     }
 
                     if (!threadId) {
-                        const threadResponse = await appServerClient.startThread(threadParams, {
+                        const threadResponse = await appServerClient.startThread({
+                            ...threadParams,
+                            threadSource: HAPI_TOP_LEVEL_THREAD_SOURCE
+                        }, {
                             signal: this.abortController.signal
                         });
                         const threadRecord = asRecord(threadResponse);

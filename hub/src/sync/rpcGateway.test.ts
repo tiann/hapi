@@ -5,11 +5,16 @@ import { RpcGateway, RpcTargetMissingError } from './rpcGateway'
 
 function createGateway() {
     const timeouts: number[] = []
+    const calls: Array<{ method: string; params: string }> = []
     const socket = {
         timeout(timeoutMs: number) {
             timeouts.push(timeoutMs)
             return {
                 async emitWithAck(_event: string, payload: { method: string; params: string }) {
+                    calls.push(payload)
+                    if (payload.method.endsWith(':cursor-chat-store-status')) {
+                        return JSON.stringify({ onDisk: false, store: null })
+                    }
                     return JSON.stringify({
                         success: true,
                         method: payload.method,
@@ -40,7 +45,8 @@ function createGateway() {
 
     return {
         gateway: new RpcGateway(io, rpcRegistry),
-        timeouts
+        timeouts,
+        calls
     }
 }
 
@@ -67,6 +73,26 @@ describe('RpcGateway RPC timeouts', () => {
         await gateway.listCursorModelsForMachine('machine-1')
 
         expect(timeouts).toEqual([120_000])
+    })
+
+    it('forwards the recorded session owner home to the Cursor store probe', async () => {
+        const { gateway, calls } = createGateway()
+
+        await gateway.getCursorChatStoreStatus(
+            'machine-1',
+            '/workspace/project',
+            'cursor-session',
+            '/home/recorded-owner'
+        )
+
+        expect(calls).toEqual([{
+            method: 'machine-1:cursor-chat-store-status',
+            params: JSON.stringify({
+                workspacePath: '/workspace/project',
+                cursorSessionId: 'cursor-session',
+                homeDir: '/home/recorded-owner'
+            })
+        }])
     })
 })
 
@@ -114,4 +140,3 @@ describe('RpcGateway no-target diagnostics (tiann/hapi#916)', () => {
         expect((error as RpcTargetMissingError).code).toBe('socket-disconnected')
     })
 })
-

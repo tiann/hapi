@@ -43,6 +43,13 @@ export function parseRemoteAgentCommandOptions<TPermissionMode extends Permissio
                 throw new Error('Missing --resume value')
             }
             options.resumeSessionId = sessionId
+        } else if (arg === '-s' || arg === '--session') {
+            // OpenCode-native resume flags (hapi opencode -s / --session <id>)
+            const sessionId = args[++i]
+            if (!sessionId) {
+                throw new Error(`Missing ${arg} value`)
+            }
+            options.resumeSessionId = sessionId
         } else if (arg === '--session-id') {
             // Pi uses --session-id for exact session resume (RPC mode)
             const sessionId = args[++i]

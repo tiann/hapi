@@ -27,6 +27,7 @@ import type {
     CodexModelsResponse,
     CursorMigrateOutcome,
     CursorMigrateToAcpRequest,
+    CursorChatStoreStatus,
     CursorModelsResponse,
     DeleteUploadResponse,
     FileReadResponse,
@@ -387,6 +388,12 @@ export class ApiClient {
             }
         )
         return response.sessionId
+    }
+
+    async getCursorChatStoreStatus(sessionId: string): Promise<CursorChatStoreStatus> {
+        return await this.request<CursorChatStoreStatus>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/cursor-chat-store`
+        )
     }
 
     async sendMessage(sessionId: string, text: string, localId?: string | null, attachments?: AttachmentMetadata[], scheduledAt?: number | null): Promise<void> {
