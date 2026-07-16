@@ -17,7 +17,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { z } from 'zod';
 
-const DEFAULT_TOOL_NAMES = ['change_title', 'display_image'];
+const DEFAULT_TOOL_NAMES = ['change_title', 'display_image', 'display_video'];
 
 function parseArgs(argv: string[]): { url: string | null; toolNames: Set<string> } {
   let url: string | null = null;
@@ -133,6 +133,36 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       );
     }
 
+    const displayVideoInputSchema: z.ZodTypeAny = z.object({
+      path: z.string().describe('Local filesystem path of the video to display inline (mp4 or webm)'),
+      title: z.string().optional().describe('Optional display title or filename for the video'),
+    });
+
+    if (toolNames.has('display_video')) {
+      server.registerTool<any, any>(
+        'display_video',
+        {
+          description: 'Display a local mp4 or webm file inline in the current HAPI chat session',
+          title: 'Display Video',
+          inputSchema: displayVideoInputSchema,
+        },
+        async (args: Record<string, unknown>) => {
+          try {
+            const client = await ensureHttpClient();
+            const response = await client.callTool({ name: 'display_video', arguments: args });
+            return response as any;
+          } catch (error) {
+            return {
+              content: [
+                { type: 'text' as const, text: `Failed to display video: ${error instanceof Error ? error.message : String(error)}` },
+              ],
+              isError: true,
+            };
+          }
+        }
+      );
+    }
+
     const skillLookupInputSchema: z.ZodTypeAny = z.object({
       name: z.string().trim().min(1).max(128).describe('Exact skill name shown by HAPI skill autocomplete'),
     });
@@ -161,34 +191,6 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
         }
       );
     }
-
-    const displayVideoInputSchema: z.ZodTypeAny = z.object({
-      path: z.string().describe('Local filesystem path of the video to display inline (mp4 or webm)'),
-      title: z.string().optional().describe('Optional display title or filename for the video'),
-    });
-
-    server.registerTool<any, any>(
-      'display_video',
-      {
-        description: 'Display a local mp4 or webm file inline in the current HAPI chat session',
-        title: 'Display Video',
-        inputSchema: displayVideoInputSchema,
-      },
-      async (args: Record<string, unknown>) => {
-        try {
-          const client = await ensureHttpClient();
-          const response = await client.callTool({ name: 'display_video', arguments: args });
-          return response as any;
-        } catch (error) {
-          return {
-            content: [
-              { type: 'text' as const, text: `Failed to display video: ${error instanceof Error ? error.message : String(error)}` },
-            ],
-            isError: true,
-          };
-        }
-      }
-    );
 
     // Start STDIO transport
     const stdio = new StdioServerTransport();

@@ -107,7 +107,8 @@ describe('startHappyServer skill_lookup', () => {
 
         expect(tools.tools.map((tool) => tool.name)).toEqual([
             'change_title',
-            'display_image'
+            'display_image',
+            'display_video'
         ])
     })
 
