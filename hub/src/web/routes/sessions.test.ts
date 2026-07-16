@@ -63,6 +63,7 @@ function createApp(session: Session, opts?: {
     getSessionExport?: (sessionId: string, session: Session) => unknown
     sessionExists?: boolean
     archiveSession?: (sessionId: string) => Promise<void>
+    acknowledgeModelError?: (sessionId: string, atTs: number) => Promise<void>
     getCursorChatStoreStatus?: SyncEngine['getCursorChatStoreStatus']
     forkConversation?: SyncEngine['forkConversation']
     rewindConversation?: SyncEngine['rewindConversation']
@@ -121,6 +122,7 @@ function createApp(session: Session, opts?: {
     }))
     const sessionExists = opts?.sessionExists !== false
     const archiveSessionMock = opts?.archiveSession ?? (async () => {})
+    const acknowledgeModelErrorMock = opts?.acknowledgeModelError ?? (async () => {})
     const engine = {
         resolveSessionAccess: () => sessionExists
             ? { ok: true, sessionId: session.id, session }
@@ -140,6 +142,7 @@ function createApp(session: Session, opts?: {
         archiveSession: archiveSessionMock,
         setSessionPinned: opts?.setSessionPinned ?? (() => {}),
         setSessionPinMode: opts?.setSessionPinMode ?? (() => {}),
+        acknowledgeModelError: acknowledgeModelErrorMock,
         getSessionExport: opts?.getSessionExport ?? (() => ({
             type: 'success',
             payload: {
@@ -1434,6 +1437,62 @@ describe('sessions routes', () => {
         expect(response.status).toBe(200)
         const body = await response.json() as { sessions: Array<{ id: string }> }
         expect(body.sessions.map((s) => s.id)).toEqual(['new-inactive'])
+    })
+
+    describe('POST /sessions/:id/model-error/acknowledge', () => {
+        it('forwards atTs to the engine when body is valid', async () => {
+            const calls: Array<[string, number]> = []
+            const { app } = createApp(createSession(), {
+                acknowledgeModelError: async (sessionId, atTs) => {
+                    calls.push([sessionId, atTs])
+                }
+            })
+
+            const response = await app.request('/api/sessions/session-1/model-error/acknowledge', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ atTs: 1_700_000_000_123 })
+            })
+
+            expect(response.status).toBe(200)
+            expect(await response.json()).toEqual({ ok: true })
+            expect(calls).toEqual([['session-1', 1_700_000_000_123]])
+        })
+
+        it('returns 400 when atTs is missing', async () => {
+            let called = false
+            const { app } = createApp(createSession(), {
+                acknowledgeModelError: async () => { called = true }
+            })
+
+            const response = await app.request('/api/sessions/session-1/model-error/acknowledge', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({})
+            })
+
+            expect(response.status).toBe(400)
+            expect(called).toBe(false)
+        })
+
+        it('returns 409 when the displayed error no longer matches', async () => {
+            const { app } = createApp(createSession(), {
+                acknowledgeModelError: async () => {
+                    throw new Error('Model error changed; refresh before acknowledging.')
+                }
+            })
+
+            const response = await app.request('/api/sessions/session-1/model-error/acknowledge', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ atTs: 111 })
+            })
+
+            expect(response.status).toBe(409)
+            expect(await response.json()).toEqual({
+                error: 'Model error changed; refresh before acknowledging.'
+            })
+        })
     })
 
 })
