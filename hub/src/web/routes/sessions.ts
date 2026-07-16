@@ -1,4 +1,5 @@
 import {
+    AcknowledgeModelErrorRequestSchema,
     CursorMigrateToAcpRequestSchema,
     DeleteUploadRequestSchema,
     getPermissionModesForFlavor,
@@ -362,12 +363,22 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return sessionResult
         }
 
+        const body = await c.req.json().catch(() => null)
+        const parsed = AcknowledgeModelErrorRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body', issues: parsed.error.issues }, 400)
+        }
+
         try {
-            await engine.acknowledgeModelError(sessionResult.sessionId)
+            await engine.acknowledgeModelError(sessionResult.sessionId, parsed.data.atTs)
             return c.json({ ok: true })
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to acknowledge model error'
-            if (message.includes('concurrently') || message.includes('version')) {
+            if (
+                message.includes('concurrently')
+                || message.includes('version')
+                || message.includes('changed')
+            ) {
                 return c.json({ error: message }, 409)
             }
             return c.json({ error: message }, 500)

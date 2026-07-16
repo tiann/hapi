@@ -765,9 +765,14 @@ function SessionChatInner(props: SessionChatProps) {
     )
 
     const handleAcknowledgeModelError = useCallback(async () => {
-        await props.api.acknowledgeModelError(props.session.id).catch(() => {})
+        const atTs = props.session.metadata?.lastModelError?.atTs
+        if (typeof atTs !== 'number') {
+            props.onRefresh()
+            return
+        }
+        await props.api.acknowledgeModelError(props.session.id, atTs).catch(() => {})
         props.onRefresh()
-    }, [props.api, props.session.id, props.onRefresh])
+    }, [props.api, props.session.id, props.session.metadata?.lastModelError?.atTs, props.onRefresh])
 
     // Voice assistant integration
     const voice = useVoiceOptional()

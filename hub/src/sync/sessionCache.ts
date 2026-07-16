@@ -672,7 +672,7 @@ export class SessionCache {
         throw new Error('Session was modified concurrently. Please try again.')
     }
 
-    async acknowledgeModelError(sessionId: string): Promise<void> {
+    async acknowledgeModelError(sessionId: string, atTs: number): Promise<void> {
         const session = this.sessions.get(sessionId)
         if (!session) {
             throw new Error('Session not found')
@@ -681,6 +681,13 @@ export class SessionCache {
         const currentMetadata = session.metadata ?? { path: '', host: '' }
         if (!currentMetadata.lastModelError) {
             return
+        }
+
+        // Bind dismiss to the error the client actually showed. If a newer
+        // lastModelError replaced it between render and click, refuse so we
+        // don't silently ack the unseen error (banner/dot would vanish).
+        if (currentMetadata.lastModelError.atTs !== atTs) {
+            throw new Error('Model error changed; refresh before acknowledging.')
         }
 
         const newMetadata = {

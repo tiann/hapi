@@ -453,10 +453,10 @@ export class ApiClient {
         })
     }
 
-    async acknowledgeModelError(sessionId: string): Promise<void> {
+    async acknowledgeModelError(sessionId: string, atTs: number): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/model-error/acknowledge`, {
             method: 'POST',
-            body: JSON.stringify({})
+            body: JSON.stringify({ atTs })
         })
     }
 
