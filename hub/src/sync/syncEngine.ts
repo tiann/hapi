@@ -1939,8 +1939,8 @@ export class SyncEngine {
         await this.sessionCache.updateSessionSummary(sessionId, text)
     }
 
-    async acknowledgeModelError(sessionId: string): Promise<void> {
-        await this.sessionCache.acknowledgeModelError(sessionId)
+    async acknowledgeModelError(sessionId: string, atTs: number): Promise<void> {
+        await this.sessionCache.acknowledgeModelError(sessionId, atTs)
     }
 
     async deleteSession(sessionId: string): Promise<void> {
