@@ -11,6 +11,18 @@ export default {
   'message.copy': '复制',
   'message.copied': '已复制',
   'message.info': '消息详情',
+  'message.shareTurn': '将本轮对话分享为图片',
+  'shareTurn.title': '将本轮对话分享为图片',
+  'shareTurn.badge': '分享的对话',
+  'shareTurn.generated': '由 HAPI 生成',
+  'shareTurn.cancel': '取消',
+  'shareTurn.copy': '复制图片',
+  'shareTurn.copying': '复制中…',
+  'shareTurn.copied': '已复制',
+  'shareTurn.share': '分享文件',
+  'shareTurn.sharing': '分享中…',
+  'shareTurn.download': '下载 PNG',
+  'shareTurn.saving': '保存中…',
 
   // Login / Auth
   'login.title': 'HAPI',

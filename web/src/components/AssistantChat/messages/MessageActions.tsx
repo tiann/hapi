@@ -5,14 +5,16 @@ import { useTranslation } from '@/lib/use-translation'
 import { MessageMetadata, buildMessageMetadataLabels, type MessageMetadataProps } from './MessageMetadata'
 import { MessageTimestamp } from './MessageTimestamp'
 import { cn } from '@/lib/utils'
+import { ShareTurnButton } from './ShareTurnButton'
 
 type MessageActionsProps = {
     align: 'start' | 'end'
     copyText?: string
     metadata?: Omit<MessageMetadataProps, 'className'>
+    messageElementId?: string
 }
 
-export function MessageActions({ align, copyText, metadata }: MessageActionsProps) {
+export function MessageActions({ align, copyText, metadata, messageElementId }: MessageActionsProps) {
     const { copied, copy } = useCopyToClipboard()
     const { t } = useTranslation()
     const canCopy = Boolean(copyText)
@@ -39,6 +41,13 @@ export function MessageActions({ align, copyText, metadata }: MessageActionsProp
                 </button>
             ) : null}
             {hasMetadata && metadata ? <MessageInfoPopover metadata={metadata} /> : null}
+            {messageElementId ? (
+                <ShareTurnButton
+                    messageElementId={messageElementId}
+                    fallbackText={copyText}
+                    className="flex h-5 w-5 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]"
+                />
+            ) : null}
             {align === 'start' ? <DesktopTimestamp /> : null}
         </div>
     )

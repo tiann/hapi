@@ -12,6 +12,7 @@ export function HappyUserMessage() {
     const ctx = useHappyChatContext()
     const role = useAssistantState(({ message }) => message.role)
     const messageId = useAssistantState(({ message }) => message.id)
+    const elementId = getConversationMessageAnchorId(messageId)
     const text = useAssistantState(({ message }) => {
         if (message.role !== 'user') return ''
         return message.content.find((part) => part.type === 'text')?.text ?? ''
@@ -48,12 +49,13 @@ export function HappyUserMessage() {
     if (isCliOutput) {
         return (
             <MessagePrimitive.Root
-                id={getConversationMessageAnchorId(messageId)}
+                id={elementId}
+                data-hapi-message-role="user"
                 className="happy-message scroll-mt-4 px-1 min-w-0 max-w-full overflow-x-hidden"
             >
                 <div className="ml-auto w-full max-w-[92%]">
                     <CliOutputBlock text={cliText} />
-                    <MessageActions align="end" copyText={cliText} />
+                    <MessageActions align="end" copyText={cliText} messageElementId={elementId} />
                 </div>
             </MessagePrimitive.Root>
         )
@@ -64,7 +66,8 @@ export function HappyUserMessage() {
 
     return (
         <MessagePrimitive.Root
-            id={getConversationMessageAnchorId(messageId)}
+            id={elementId}
+            data-hapi-message-role="user"
             className="happy-message flex flex-col items-end scroll-mt-4"
         >
             <div className={getUserBubbleClassName(status)}>
@@ -80,7 +83,7 @@ export function HappyUserMessage() {
                     )}
                 </div>
             </div>
-            <MessageActions align="end" copyText={hasText ? text : undefined} />
+            <MessageActions align="end" copyText={hasText ? text : undefined} messageElementId={elementId} />
         </MessagePrimitive.Root>
     )
 }
