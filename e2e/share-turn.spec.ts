@@ -94,3 +94,24 @@ test('exports a text-only user fallback alongside assistant DOM', async ({ page 
     expect(size.width).toBe(1920)
     expect(size.height).toBeGreaterThan(1_000)
 })
+
+test('keeps a stripped tool-only assistant snapshot out of the export', async ({ page }, testInfo) => {
+    await page.goto('/e2e-fixtures/share-turn-fixture.html?toolOnly=assistant')
+    await page.getByRole('button', { name: 'Open share preview' }).click()
+
+    const dialog = page.getByRole('dialog')
+    await expect(dialog.getByText('Complex response fixture')).toBeVisible()
+    await expect(dialog.getByText('TOOL_ONLY_SECRET_SHOULD_NOT_EXPORT')).toHaveCount(0)
+
+    const downloadPromise = page.waitForEvent('download')
+    await dialog.getByRole('button', { name: /Download PNG|下载 PNG/ }).click()
+    const download = await downloadPromise
+    const path = testInfo.outputPath('tool-only-excluded-export.png')
+    await download.saveAs(path)
+
+    const bytes = await readFile(path)
+    const size = pngSize(bytes)
+    expect(bytes.byteLength).toBeGreaterThan(80_000)
+    expect(size.width).toBe(1920)
+    expect(size.height).toBeGreaterThan(1_000)
+})

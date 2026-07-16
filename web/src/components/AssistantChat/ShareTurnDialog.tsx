@@ -417,6 +417,7 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
         const fragment = document.createDocumentFragment()
         let textLength = 0
         for (const snapshot of props.sourceSnapshots) {
+            const isTextOnlySnapshot = snapshot.html.trim().length === 0
             const template = document.createElement('template')
             template.innerHTML = snapshot.html
             textLength += snapshot.text.length
@@ -431,13 +432,13 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
                 fragment.appendChild(node)
                 appendedSnapshot = true
             }
-            if (!appendedSnapshot) appendTextFallback(fragment, snapshot)
+            if (!appendedSnapshot && isTextOnlySnapshot) appendTextFallback(fragment, snapshot)
         }
         body.replaceChildren(fragment)
 
         if ((body.innerText || body.textContent || '').trim().length === 0 && textLength > 0) {
             for (const snapshot of props.sourceSnapshots) {
-                appendTextFallback(body, snapshot)
+                if (snapshot.html.trim().length === 0) appendTextFallback(body, snapshot)
             }
         }
         setReady(true)

@@ -60,7 +60,9 @@ function App() {
     const [open, setOpen] = useState(false)
 
     const openShare = () => {
-        const textOnlyUserFallback = new URLSearchParams(window.location.search).get('fallback') === 'user'
+        const searchParams = new URLSearchParams(window.location.search)
+        const textOnlyUserFallback = searchParams.get('fallback') === 'user'
+        const includeToolOnlySnapshot = searchParams.get('toolOnly') === 'assistant'
         const messages = Array.from(sourceRef.current?.children ?? [])
             .filter((node): node is HTMLElement => node instanceof HTMLElement)
             .map((node, index) => ({
@@ -68,6 +70,13 @@ function App() {
                 text: node.innerText,
                 role: index === 0 ? 'user' as const : 'assistant' as const
             }))
+        if (includeToolOnlySnapshot) {
+            messages.push({
+                html: '<div data-hapi-message-role="assistant"><div data-hapi-share-exclude="true">TOOL_ONLY_SECRET_SHOULD_NOT_EXPORT</div></div>',
+                text: 'TOOL_ONLY_SECRET_SHOULD_NOT_EXPORT',
+                role: 'assistant'
+            })
+        }
         setSnapshots(messages)
         setOpen(true)
     }
