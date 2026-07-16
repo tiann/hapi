@@ -35,6 +35,7 @@ for (const viewport of [
         await page.getByRole('button', { name: 'Open share preview' }).click()
         await expect(page.getByRole('dialog')).toBeVisible()
         await expect(page.getByRole('dialog').getByText('Excluded tool output')).toHaveCount(0)
+        await expect(page.getByRole('dialog').locator('.happy-message-actions')).toHaveCount(0)
         if (viewport.name === 'desktop') {
             const styles = await page.evaluate(() => {
                 const source = document.querySelector<HTMLElement>('[data-testid="source-turn"]')

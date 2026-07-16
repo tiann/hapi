@@ -30,7 +30,7 @@ function stripCaptureOnlyControls(root: HTMLElement): void {
     for (const element of Array.from(root.querySelectorAll('[data-hapi-share-exclude="true"], .aui-reasoning-group'))) {
         element.remove()
     }
-    for (const element of Array.from(root.querySelectorAll('.happy-message-actions-first-line, [data-hapi-share-action="true"], button[aria-expanded], button[title="Copy"], input, textarea, select'))) {
+    for (const element of Array.from(root.querySelectorAll('.happy-message-actions, .happy-message-actions-first-line, [data-hapi-share-action="true"], button[aria-expanded], input, textarea, select'))) {
         element.remove()
     }
     for (const anchor of Array.from(root.querySelectorAll('a'))) {

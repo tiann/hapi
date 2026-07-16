@@ -97,6 +97,9 @@ function App() {
                     <div data-hapi-message-role="assistant" className="happy-message share-turn-network-style px-1 min-w-0 max-w-full overflow-x-hidden">
                         <MarkdownRenderer content={markdown} standalone />
                         <div data-hapi-share-exclude="true" className="mt-3 rounded-xl border p-3">Excluded tool output</div>
+                        <div className="happy-message-actions mt-1 flex h-5 items-center gap-1" data-testid="localized-message-actions">
+                            <button type="button" title="已复制" aria-label="已复制">Copied state control</button>
+                        </div>
                     </div>
                 </div>
                 <button type="button" className="mt-6 rounded-md bg-[var(--app-button)] px-4 py-2 text-[var(--app-button-text)]" onClick={openShare}>
