@@ -1,5 +1,5 @@
-import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
 import type { Machine } from '@/types/api'
 import { MachineGroupHeader } from './MachineGroupHeader'
 import { I18nProvider } from '@/lib/i18n-context'
@@ -23,14 +23,15 @@ const machine: Machine = {
 }
 
 describe('MachineGroupHeader', () => {
-    it('renders a single-row machine tile with os label and compact health', () => {
+    it('renders a single-row machine tile with machine name and compact health', () => {
+        const onToggle = vi.fn()
         render(
             <I18nProvider>
                 <MachineGroupHeader
                     label="Teemo"
                     sessionCount={4}
                     collapsed={false}
-                    onToggle={() => {}}
+                    onToggle={onToggle}
                     machine={machine}
                     healthPresentation={{
                         metrics: [
@@ -45,12 +46,17 @@ describe('MachineGroupHeader', () => {
         )
 
         expect(screen.getByRole('button', { name: /Teemo/i })).toBeTruthy()
-        expect(screen.getByText('Windows')).toBeTruthy()
+        expect(screen.queryByText('Windows')).toBeNull()
         expect(screen.getByText('(4)')).toBeTruthy()
         expect(screen.getByLabelText(/CPU 12 percent; RAM 88 percent/i)).toBeTruthy()
+
+        const healthButton = screen.getByRole('button', { name: /CPU 12 percent; RAM 88 percent/i })
+        fireEvent.click(healthButton)
+        expect(healthButton.getAttribute('aria-expanded')).toBe('true')
+        expect(onToggle).not.toHaveBeenCalled()
     })
 
-    it('shows compact uptime in the machine meta row', () => {
+    it('keeps uptime in the health tooltip instead of replacing the machine name', () => {
         render(
             <I18nProvider>
                 <MachineGroupHeader
@@ -75,6 +81,7 @@ describe('MachineGroupHeader', () => {
             </I18nProvider>
         )
 
-        expect(screen.getByTitle('Linux · up 1h 54m')).toBeTruthy()
+        expect(screen.getByTitle('proxmox')).toBeTruthy()
+        expect(screen.getByText('1h 54m')).toBeTruthy()
     })
 })
