@@ -72,3 +72,12 @@ for (const viewport of [
         expect(stylesheetRequests).toBe(1)
     })
 }
+
+test('renders a text-only user fallback alongside assistant DOM', async ({ page }) => {
+    await page.goto('/e2e-fixtures/share-turn-fixture.html?fallback=user')
+    await page.getByRole('button', { name: 'Open share preview' }).click()
+
+    const dialog = page.getByRole('dialog')
+    await expect(dialog.getByText(/请导出这一轮复杂对话/)).toBeVisible()
+    await expect(dialog.getByText('Complex response fixture')).toBeVisible()
+})

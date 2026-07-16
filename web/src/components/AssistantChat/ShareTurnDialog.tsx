@@ -14,6 +14,8 @@ type ShareTurnDialogProps = {
     onClose: () => void
 }
 
+type ShareTurnSnapshot = ShareTurnDialogProps['sourceSnapshots'][number]
+
 const SHARE_EXPORT_WIDTH = 960
 const SHARE_EXPORT_SCALE = 2
 const MAX_EXPORT_PIXELS = 24_000_000
@@ -180,6 +182,17 @@ function waitForStyleSheets(document: Document): Promise<void> {
             window.setTimeout(() => resolve(), 2500)
         })
     })).then(() => undefined)
+}
+
+function appendTextFallback(target: DocumentFragment | HTMLElement, snapshot: ShareTurnSnapshot): void {
+    if (snapshot.text.trim().length === 0) return
+    const fallback = document.createElement('div')
+    fallback.className = snapshot.role === 'user'
+        ? 'happy-user-bubble happy-chat-text ml-auto w-fit min-w-0 max-w-[92%] whitespace-pre-wrap break-words rounded-2xl bg-[var(--app-chat-user-surface-bg)] px-4 py-2.5 text-[var(--app-chat-user-fg)] shadow-none'
+        : 'whitespace-pre-wrap break-words rounded-2xl border border-[var(--app-border)] px-4 py-2.5 text-sm leading-6 text-[var(--app-fg)]'
+    if (snapshot.role) fallback.dataset.hapiMessageRole = snapshot.role
+    fallback.textContent = snapshot.text
+    target.appendChild(fallback)
 }
 
 function resolveCssUrls(cssText: string, styleSheetUrl: string | null): string {
@@ -407,6 +420,7 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
             const template = document.createElement('template')
             template.innerHTML = snapshot.html
             textLength += snapshot.text.length
+            let appendedSnapshot = false
             for (const node of Array.from(template.content.children)) {
                 if (!(node instanceof HTMLElement)) continue
                 node.removeAttribute('id')
@@ -415,20 +429,15 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
                 stripCaptureOnlyControls(node)
                 if ((node.innerText || node.textContent || '').trim().length === 0 && node.querySelector('img, video, canvas, svg') == null) continue
                 fragment.appendChild(node)
+                appendedSnapshot = true
             }
+            if (!appendedSnapshot) appendTextFallback(fragment, snapshot)
         }
         body.replaceChildren(fragment)
 
         if ((body.innerText || body.textContent || '').trim().length === 0 && textLength > 0) {
             for (const snapshot of props.sourceSnapshots) {
-                if (snapshot.text.trim().length === 0) continue
-                const fallback = document.createElement('div')
-                fallback.className = snapshot.role === 'user'
-                    ? 'happy-user-bubble happy-chat-text ml-auto w-fit min-w-0 max-w-[92%] whitespace-pre-wrap break-words rounded-2xl bg-[var(--app-chat-user-surface-bg)] px-4 py-2.5 text-[var(--app-chat-user-fg)] shadow-none'
-                    : 'whitespace-pre-wrap break-words rounded-2xl border border-[var(--app-border)] px-4 py-2.5 text-sm leading-6 text-[var(--app-fg)]'
-                if (snapshot.role) fallback.dataset.hapiMessageRole = snapshot.role
-                fallback.textContent = snapshot.text
-                body.appendChild(fallback)
+                appendTextFallback(body, snapshot)
             }
         }
         setReady(true)

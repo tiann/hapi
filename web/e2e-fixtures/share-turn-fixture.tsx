@@ -60,9 +60,14 @@ function App() {
     const [open, setOpen] = useState(false)
 
     const openShare = () => {
+        const textOnlyUserFallback = new URLSearchParams(window.location.search).get('fallback') === 'user'
         const messages = Array.from(sourceRef.current?.children ?? [])
             .filter((node): node is HTMLElement => node instanceof HTMLElement)
-            .map((node) => ({ html: node.outerHTML, text: node.innerText }))
+            .map((node, index) => ({
+                html: textOnlyUserFallback && index === 0 ? '' : node.outerHTML,
+                text: node.innerText,
+                role: index === 0 ? 'user' as const : 'assistant' as const
+            }))
         setSnapshots(messages)
         setOpen(true)
     }
