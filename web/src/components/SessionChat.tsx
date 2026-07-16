@@ -583,12 +583,13 @@ function SessionChatInner(props: SessionChatProps) {
     const opencodeModelsState = useOpencodeModels({
         api: props.api,
         sessionId: props.session.id,
-        enabled: agentFlavor === 'opencode' && props.session.active
+        // Local mode has no session RPC handlers for models/effort lists.
+        enabled: agentFlavor === 'opencode' && props.session.active && !controlledByUser
     })
     const opencodeReasoningEffortState = useOpencodeReasoningEffortOptions({
         api: props.api,
         sessionId: props.session.id,
-        enabled: agentFlavor === 'opencode' && props.session.active
+        enabled: agentFlavor === 'opencode' && props.session.active && !controlledByUser
     })
     const opencodeModelOptions = useMemo(() => {
         if (agentFlavor !== 'opencode') {
