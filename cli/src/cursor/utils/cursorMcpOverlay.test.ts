@@ -25,7 +25,7 @@ describe('installCursorMcpOverlay', () => {
         return root;
     }
 
-    it('writes hapi bridge into .cursor/mcp.json and restores on cleanup', () => {
+    it('writes hapi bridge into .cursor/mcp.json and removes only hapi on cleanup', () => {
         const cwd = makeProjectDir(JSON.stringify({
             mcpServers: {
                 other: { command: 'echo', args: ['x'] },
@@ -33,7 +33,6 @@ describe('installCursorMcpOverlay', () => {
         }, null, 2));
 
         const mcpPath = join(cwd, '.cursor', 'mcp.json');
-        const before = readFileSync(mcpPath, 'utf-8');
 
         const handle = installCursorMcpOverlay(cwd, {
             command: '/bin/hapi',
@@ -50,10 +49,70 @@ describe('installCursorMcpOverlay', () => {
         });
 
         handle.cleanup();
-        expect(readFileSync(mcpPath, 'utf-8')).toBe(before);
+        const after = JSON.parse(readFileSync(mcpPath, 'utf-8')) as {
+            mcpServers: Record<string, { command: string; args: string[] }>;
+        };
+        expect(after.mcpServers.other).toEqual({ command: 'echo', args: ['x'] });
+        expect(after.mcpServers[CURSOR_HAPI_MCP_SERVER_ID]).toBeUndefined();
     });
 
-    it('creates .cursor/mcp.json when missing and removes hapi entry on cleanup', () => {
+    it('preserves mcpServers keys added during the session on cleanup', () => {
+        const cwd = makeProjectDir(JSON.stringify({
+            mcpServers: {
+                other: { command: 'echo', args: ['x'] },
+            },
+        }, null, 2));
+
+        const mcpPath = join(cwd, '.cursor', 'mcp.json');
+        const handle = installCursorMcpOverlay(cwd, {
+            command: '/bin/hapi',
+            args: ['mcp', '--url', 'http://127.0.0.1:12345/'],
+        });
+
+        writeFileSync(mcpPath, JSON.stringify({
+            mcpServers: {
+                other: { command: 'echo', args: ['x'] },
+                [CURSOR_HAPI_MCP_SERVER_ID]: {
+                    command: '/bin/hapi',
+                    args: ['mcp', '--url', 'http://127.0.0.1:12345/'],
+                },
+                concurrent: { command: 'npx', args: ['-y', 'some-mcp'] },
+            },
+        }, null, 2) + '\n', 'utf-8');
+
+        handle.cleanup();
+
+        const after = JSON.parse(readFileSync(mcpPath, 'utf-8')) as {
+            mcpServers: Record<string, { command: string; args: string[] }>;
+        };
+        expect(after.mcpServers.other).toEqual({ command: 'echo', args: ['x'] });
+        expect(after.mcpServers.concurrent).toEqual({ command: 'npx', args: ['-y', 'some-mcp'] });
+        expect(after.mcpServers[CURSOR_HAPI_MCP_SERVER_ID]).toBeUndefined();
+    });
+
+    it('restores a pre-existing hapi entry instead of deleting it', () => {
+        const priorHapi = { command: 'old-hapi', args: ['mcp'] };
+        const cwd = makeProjectDir(JSON.stringify({
+            mcpServers: {
+                [CURSOR_HAPI_MCP_SERVER_ID]: priorHapi,
+            },
+        }, null, 2));
+
+        const mcpPath = join(cwd, '.cursor', 'mcp.json');
+        const handle = installCursorMcpOverlay(cwd, {
+            command: '/bin/hapi',
+            args: ['mcp', '--url', 'http://127.0.0.1:12345/'],
+        });
+
+        handle.cleanup();
+
+        const after = JSON.parse(readFileSync(mcpPath, 'utf-8')) as {
+            mcpServers: Record<string, { command: string; args: string[] }>;
+        };
+        expect(after.mcpServers[CURSOR_HAPI_MCP_SERVER_ID]).toEqual(priorHapi);
+    });
+
+    it('creates .cursor/mcp.json when missing and removes file when only hapi was present', () => {
         const cwd = makeProjectDir();
         expect(existsSync(join(cwd, '.cursor', 'mcp.json'))).toBe(false);
 
@@ -66,12 +125,6 @@ describe('installCursorMcpOverlay', () => {
         expect(existsSync(mcpPath)).toBe(true);
 
         handle.cleanup();
-
-        if (existsSync(mcpPath)) {
-            const after = JSON.parse(readFileSync(mcpPath, 'utf-8')) as {
-                mcpServers?: Record<string, unknown>;
-            };
-            expect(after.mcpServers?.[CURSOR_HAPI_MCP_SERVER_ID]).toBeUndefined();
-        }
+        expect(existsSync(mcpPath)).toBe(false);
     });
 });

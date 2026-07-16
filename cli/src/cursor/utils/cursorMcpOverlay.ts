@@ -46,7 +46,11 @@ function writeMcpJson(path: string, config: CursorMcpJson): void {
 
 /**
  * Merge the per-session HAPI stdio bridge into `<cwd>/.cursor/mcp.json` and approve it
- * for Cursor's native MCP loader. Restores prior file contents on cleanup.
+ * for Cursor's native MCP loader.
+ *
+ * Cleanup removes only the HAPI entry (or restores a pre-existing one). It never
+ * rewrites the whole file from a pre-session snapshot, so concurrent edits to
+ * other mcpServers keys survive the session.
  */
 export function installCursorMcpOverlay(
     cwd: string,
@@ -57,16 +61,20 @@ export function installCursorMcpOverlay(
     mkdirSync(cursorDir, { recursive: true });
 
     const hadFile = existsSync(mcpJsonPath);
-    const previousContent = hadFile ? readFileSync(mcpJsonPath, 'utf-8') : null;
+    const previous = hadFile ? readMcpJson(mcpJsonPath) : { mcpServers: {} as Record<string, McpServerEntry> };
+    previous.mcpServers ??= {};
+    const hadHapi = Object.prototype.hasOwnProperty.call(previous.mcpServers, CURSOR_HAPI_MCP_SERVER_ID);
+    const previousHapi = hadHapi ? previous.mcpServers[CURSOR_HAPI_MCP_SERVER_ID] : undefined;
 
-    const config = hadFile && previousContent
-        ? parseMcpJson(previousContent)
-        : { mcpServers: {} };
-    config.mcpServers ??= {};
-
-    config.mcpServers[CURSOR_HAPI_MCP_SERVER_ID] = {
-        command: bridge.command,
-        args: [...bridge.args],
+    const config: CursorMcpJson = {
+        ...previous,
+        mcpServers: {
+            ...previous.mcpServers,
+            [CURSOR_HAPI_MCP_SERVER_ID]: {
+                command: bridge.command,
+                args: [...bridge.args],
+            },
+        },
     };
 
     writeMcpJson(mcpJsonPath, config);
@@ -89,23 +97,25 @@ export function installCursorMcpOverlay(
     return {
         cleanup: () => {
             try {
-                if (previousContent !== null) {
-                    writeFileSync(mcpJsonPath, previousContent, 'utf-8');
-                    return;
-                }
-
                 if (!existsSync(mcpJsonPath)) {
                     return;
                 }
 
                 const current = readMcpJson(mcpJsonPath);
-                if (current.mcpServers) {
+                current.mcpServers ??= {};
+
+                if (hadHapi && previousHapi) {
+                    current.mcpServers[CURSOR_HAPI_MCP_SERVER_ID] = previousHapi;
+                } else {
                     delete current.mcpServers[CURSOR_HAPI_MCP_SERVER_ID];
                 }
-                if (!current.mcpServers || Object.keys(current.mcpServers).length === 0) {
+
+                const remaining = Object.keys(current.mcpServers);
+                if (!hadFile && remaining.length === 0) {
                     rmSync(mcpJsonPath, { force: true });
                     return;
                 }
+
                 writeMcpJson(mcpJsonPath, current);
             } catch (error) {
                 logger.debug('[cursor-acp] cursor MCP overlay cleanup failed', error);
