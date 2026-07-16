@@ -59,7 +59,7 @@ export function HoverTooltip(props: {
             ref={props.containerRef}
             className={cn(
                 spansRow ? 'static' : 'relative',
-                'inline-flex',
+                'inline-flex group',
                 isHelpGroup ? 'group/help-tooltip' : 'group/hover-tooltip',
                 props.className
             )}
