@@ -9,6 +9,7 @@ import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
 import type { OpencodeHookEvent } from './types';
 import type { OpencodeHookServer } from './utils/startOpencodeHookServer';
 import { createOpencodeStorageScanner, type OpencodeStorageScannerHandle } from './utils/opencodeStorageScanner';
+import { isUsableToolInput, parseToolCall, parseToolResult } from './utils/opencodeLocalToolParse';
 import { randomUUID } from 'node:crypto';
 import { isObject } from '@hapi/protocol';
 import { join } from 'node:path';
@@ -20,17 +21,6 @@ import { BaseLocalLauncher } from '@/modules/common/launcher/BaseLocalLauncher';
 type OpencodeLocalLauncherOptions = {
     hookServer: OpencodeHookServer;
     hookUrl: string;
-};
-
-type ParsedToolCall = {
-    callId: string;
-    name: string;
-    input: unknown;
-};
-
-type ParsedToolResult = {
-    callId: string;
-    output: unknown;
 };
 
 type PermissionDecision = PermissionCompletion['decision'];
@@ -159,75 +149,6 @@ function unwrapPart(payload: unknown): Record<string, unknown> | null {
         return record;
     }
     return null;
-}
-
-function parseToolCall(part: unknown): ParsedToolCall | null {
-    if (!isObject(part)) {
-        return null;
-    }
-    const record = part as Record<string, unknown>;
-    const name = getString(record.tool) || getString(record.name);
-    const callId = getString(record.callID)
-        || getString(record.callId)
-        || getString(record.id)
-        || getString(record.tool_call_id)
-        || getString(record.toolCallId);
-    if (!name || !callId) {
-        return null;
-    }
-    if (getString(record.type) === 'tool' && isObject(record.state)) {
-        const state = record.state as Record<string, unknown>;
-        const status = getString(state.status);
-        if (status !== 'pending' && status !== 'running') {
-            return null;
-        }
-        const input = parseMaybeJson(state.input ?? state.raw ?? record.input ?? record.args ?? record.arguments);
-        return { callId, name, input };
-    }
-    const input = parseMaybeJson(record.input ?? record.args ?? record.arguments ?? record.raw);
-    return { callId, name, input };
-}
-
-function parseToolResult(part: unknown): ParsedToolResult | null {
-    if (!isObject(part)) {
-        return null;
-    }
-    const record = part as Record<string, unknown>;
-    const callId = getString(record.callID)
-        || getString(record.callId)
-        || getString(record.tool_call_id)
-        || getString(record.toolCallId)
-        || getString(record.id);
-    if (!callId) {
-        return null;
-    }
-    if (getString(record.type) === 'tool' && isObject(record.state)) {
-        const state = record.state as Record<string, unknown>;
-        const status = getString(state.status);
-        if (status === 'completed') {
-            const output = {
-                content: state.output ?? state.title,
-                metadata: state.metadata,
-                title: state.title,
-                attachments: state.attachments
-            };
-            return { callId, output };
-        }
-        if (status === 'error') {
-            const output = {
-                content: state.error,
-                isError: true
-            };
-            return { callId, output };
-        }
-        return null;
-    }
-    const output = {
-        content: record.content,
-        metadata: record.metadata,
-        isError: record.is_error
-    };
-    return { callId, output };
 }
 
 function normalizeDecision(response: string | null, approved: boolean): PermissionDecision {
@@ -407,7 +328,8 @@ export async function opencodeLocalLauncher(
             }
 
             const toolCall = parseToolCall(part);
-            if (toolCall && !sentToolCalls.has(toolCall.callId)) {
+            if (toolCall && isUsableToolInput(toolCall.input) && !sentToolCalls.has(toolCall.callId)) {
+                // Wait for non-empty input (OpenCode pending often has input:{}).
                 sentToolCalls.add(toolCall.callId);
                 session.sendAgentMessage({
                     type: 'tool-call',
@@ -419,6 +341,17 @@ export async function opencodeLocalLauncher(
 
             const toolResult = parseToolResult(part);
             if (toolResult && !sentToolResults.has(toolResult.callId)) {
+                // If we skipped the empty pending call, emit the call now with
+                // whatever input is on this completed part before the result.
+                if (!sentToolCalls.has(toolResult.callId) && toolCall) {
+                    sentToolCalls.add(toolResult.callId);
+                    session.sendAgentMessage({
+                        type: 'tool-call',
+                        name: toolCall.name,
+                        callId: toolCall.callId,
+                        input: toolCall.input
+                    });
+                }
                 sentToolResults.add(toolResult.callId);
                 session.sendAgentMessage({
                     type: 'tool-call-result',
@@ -468,6 +401,10 @@ export async function opencodeLocalLauncher(
                 }
             }
             if (eventType === 'tool.execute.before' && !sentToolCalls.has(callId)) {
+                // Match message.part.updated path: skip empty placeholder args.
+                if (!isUsableToolInput(toolInput)) {
+                    return;
+                }
                 sentToolCalls.add(callId);
                 session.sendAgentMessage({
                     type: 'tool-call',
