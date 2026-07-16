@@ -578,6 +578,37 @@ describe('AcpMessageHandler', () => {
     });
 
     describe('OpenCode rawInput lifecycle (empty {} is not usable input)', () => {
+        it('ignores empty content JSON {} on initial tool_call when rawInput is missing', () => {
+            // Kimi-style content JSON can be `{}`; initial path must not lock that as input.
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'oc-empty-content-1',
+                title: 'other',
+                kind: 'other',
+                status: 'pending',
+                content: [{ type: 'content', content: { type: 'text', text: '{}' } }]
+            });
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                toolCallId: 'oc-empty-content-1',
+                title: 'other',
+                kind: 'other',
+                status: 'in_progress',
+                rawInput: { url: 'https://example.com' }
+            });
+
+            const calls = messages.filter(
+                (m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call'
+            );
+            expect(calls).toHaveLength(2);
+            expect(calls[0].input).toBeNull();
+            expect(calls[1].input).toEqual({ url: 'https://example.com' });
+        });
+
         it('ignores rawInput: {} on tool start and accepts real args on update', () => {
             // OpenCode toolStart emits rawInput: {} with title=tool name, then a
             // running update carries part.state.input.

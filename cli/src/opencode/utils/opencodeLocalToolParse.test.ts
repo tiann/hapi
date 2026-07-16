@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { isUsableToolInput, parseToolCall, parseToolResult } from './opencodeLocalToolParse';
 
@@ -110,5 +111,119 @@ describe('OpenCode local tool part parsing', () => {
         ]);
         expect(messages.map((m) => m.type)).toEqual(['tool-call', 'tool-call-result']);
         expect(messages[0].input).toEqual({ command: 'echo hi' });
+    });
+});
+
+function hashObject(obj: unknown): string {
+    return createHash('sha256').update(JSON.stringify(obj)).digest('hex');
+}
+
+function buildToolSignature(name: string, input: unknown): string {
+    return `${name}:${hashObject(input ?? null)}`;
+}
+
+function pushQueue(map: Map<string, string[]>, key: string, value: string): void {
+    const queue = map.get(key) ?? [];
+    queue.push(value);
+    map.set(key, queue);
+}
+
+function shiftQueue(map: Map<string, string[]>, key: string): string | null {
+    const queue = map.get(key);
+    if (!queue || queue.length === 0) return null;
+    const value = queue.shift() ?? null;
+    if (!queue.length) map.delete(key);
+    else map.set(key, queue);
+    return value;
+}
+
+function removeFromQueue(map: Map<string, string[]>, key: string, value: string): void {
+    const queue = map.get(key);
+    if (!queue || queue.length === 0) return;
+    const nextQueue = queue.filter((entry) => entry !== value);
+    if (!nextQueue.length) map.delete(key);
+    else map.set(key, nextQueue);
+}
+
+/** Simulate execute-hook emit policy used by opencodeLocalLauncher. */
+function collectExecuteHookMessages(
+    events: Array<{ type: 'before' | 'after'; name: string; input?: unknown; id?: string; output?: unknown }>
+): Array<{ type: string; name?: string; callId: string; input?: unknown; output?: unknown }> {
+    const sentToolCalls = new Set<string>();
+    const sentToolResults = new Set<string>();
+    const toolExecutionQueues = new Map<string, string[]>();
+    const out: Array<{ type: string; name?: string; callId: string; input?: unknown; output?: unknown }> = [];
+    let nextId = 0;
+
+    for (const event of events) {
+        const toolInput = event.input;
+        const signature = buildToolSignature(event.name, toolInput);
+        const fallbackSignature = buildToolSignature(event.name, null);
+        const existingId = event.id ?? null;
+        const isBefore = event.type === 'before';
+        const usableInput = isUsableToolInput(toolInput);
+        let callId = existingId;
+
+        if (!callId) {
+            callId = isBefore
+                ? `gen-${nextId++}`
+                : shiftQueue(toolExecutionQueues, signature)
+                    ?? shiftQueue(toolExecutionQueues, fallbackSignature)
+                    ?? `gen-${nextId++}`;
+        }
+
+        if (isBefore) {
+            if (usableInput) {
+                pushQueue(toolExecutionQueues, signature, callId);
+                if (fallbackSignature !== signature) {
+                    pushQueue(toolExecutionQueues, fallbackSignature, callId);
+                }
+            } else {
+                pushQueue(toolExecutionQueues, fallbackSignature, callId);
+            }
+            if (!sentToolCalls.has(callId)) {
+                if (!usableInput) continue;
+                sentToolCalls.add(callId);
+                out.push({ type: 'tool-call', name: event.name, callId, input: toolInput });
+            }
+            continue;
+        }
+
+        removeFromQueue(toolExecutionQueues, signature, callId);
+        if (fallbackSignature !== signature) {
+            removeFromQueue(toolExecutionQueues, fallbackSignature, callId);
+        }
+        if (!sentToolResults.has(callId)) {
+            if (!sentToolCalls.has(callId)) {
+                sentToolCalls.add(callId);
+                out.push({ type: 'tool-call', name: event.name, callId, input: toolInput });
+            }
+            sentToolResults.add(callId);
+            out.push({ type: 'tool-call-result', callId, output: event.output });
+        }
+    }
+    return out;
+}
+
+describe('OpenCode local execute-hook tool emit policy', () => {
+    it('pairs empty before with real after via fallback signature and late tool-call', () => {
+        const messages = collectExecuteHookMessages([
+            { type: 'before', name: 'bash', input: {} },
+            { type: 'after', name: 'bash', input: { command: 'echo hi' }, output: 'hi' }
+        ]);
+        expect(messages.map((m) => m.type)).toEqual(['tool-call', 'tool-call-result']);
+        expect(messages[0].callId).toEqual(messages[1].callId);
+        expect(messages[0].input).toEqual({ command: 'echo hi' });
+    });
+
+    it('does not orphan after when before skipped empty input with stable id', () => {
+        const messages = collectExecuteHookMessages([
+            { type: 'before', name: 'bash', id: 'stable-1', input: {} },
+            { type: 'after', name: 'bash', id: 'stable-1', input: { command: 'ls' }, output: 'ok' }
+        ]);
+        expect(messages).toEqual([
+            { type: 'tool-call', name: 'bash', callId: 'stable-1', input: { command: 'ls' } },
+            { type: 'tool-call-result', callId: 'stable-1', output: 'ok' }
+        ]);
     });
 });

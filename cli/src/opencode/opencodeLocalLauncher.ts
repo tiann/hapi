@@ -379,6 +379,7 @@ export async function opencodeLocalLauncher(
                 || getString(tool.tool_call_id)
                 || getString(tool.toolCallId);
             const isBefore = eventType === 'tool.execute.before';
+            const usableInput = isUsableToolInput(toolInput);
             let callId = existingId;
 
             if (!callId) {
@@ -390,8 +391,15 @@ export async function opencodeLocalLauncher(
             }
 
             if (isBefore) {
-                pushQueue(toolExecutionQueues, signature, callId);
-                if (fallbackSignature !== signature) {
+                // Empty `{}` before must not enqueue under the empty-input
+                // signature: after usually carries real args and would miss.
+                // Name-only fallback keeps pairing when tool ids are absent.
+                if (usableInput) {
+                    pushQueue(toolExecutionQueues, signature, callId);
+                    if (fallbackSignature !== signature) {
+                        pushQueue(toolExecutionQueues, fallbackSignature, callId);
+                    }
+                } else {
                     pushQueue(toolExecutionQueues, fallbackSignature, callId);
                 }
             } else {
@@ -402,7 +410,7 @@ export async function opencodeLocalLauncher(
             }
             if (eventType === 'tool.execute.before' && !sentToolCalls.has(callId)) {
                 // Match message.part.updated path: skip empty placeholder args.
-                if (!isUsableToolInput(toolInput)) {
+                if (!usableInput) {
                     return;
                 }
                 sentToolCalls.add(callId);
@@ -415,6 +423,17 @@ export async function opencodeLocalLauncher(
                 return;
             }
             if (eventType === 'tool.execute.after' && !sentToolResults.has(callId)) {
+                // Late tool-call recovery: before may have skipped empty `{}`.
+                // Mirror message.part.updated so result is never unpaired.
+                if (!sentToolCalls.has(callId)) {
+                    sentToolCalls.add(callId);
+                    session.sendAgentMessage({
+                        type: 'tool-call',
+                        name,
+                        callId,
+                        input: toolInput
+                    });
+                }
                 sentToolResults.add(callId);
                 session.sendAgentMessage({
                     type: 'tool-call-result',

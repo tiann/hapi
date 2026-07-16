@@ -685,7 +685,7 @@ export class AcpMessageHandler {
         // Empty `{}` is treated as missing (OpenCode tool-start / permission clobber).
         // Kimi ACP streams tool arguments as JSON text in the content array
         // instead of rawInput/kind. Try all three sources.
-        const input = isUsableRawInput(update.rawInput)
+        const candidate = isUsableRawInput(update.rawInput)
             ? update.rawInput
             : resolveToolInputFallbacks(
                 asString(update.kind),
@@ -693,6 +693,8 @@ export class AcpMessageHandler {
                 update.locations,
                 update.content
             );
+        // Content JSON can be `{}` (same as unusable rawInput); never lock that in.
+        const input = isUsableRawInput(candidate) ? candidate : null;
         const status = normalizeStatus(update.status);
 
         this.toolCalls.set(toolCallId, { name, input });
