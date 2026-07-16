@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { createSessionScanner } from './sessionScanner'
+import { createSessionScanner, readSessionLog } from './sessionScanner'
 import { RawJSONLines } from '../types'
 import { mkdir, writeFile, appendFile, rm, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -142,6 +142,56 @@ describe('sessionScanner', () => {
       const content = (lastAssistantMsg.message.content as any)[0].text
       expect(content).toContain('0-say-lol-session.jsonl')
       expect(content).toContain('readme.md')
+    }
+  })
+
+  it('reads only new bytes on a subsequent scan (incremental, no reparse of prior region)', async () => {
+    const filePath = join(testDir, 'incremental.jsonl')
+    const line1 = JSON.stringify({ type: 'user', uuid: 'u1', message: { content: 'first' } })
+    const line2 = JSON.stringify({ type: 'user', uuid: 'u2', message: { content: 'second' } })
+    await writeFile(filePath, line1 + '\n')
+
+    const first = await readSessionLog(filePath, 0)
+    expect(first.events).toHaveLength(1)
+    expect(first.nextCursor).toBe(Buffer.byteLength(line1 + '\n'))
+
+    await appendFile(filePath, line2 + '\n')
+    const second = await readSessionLog(filePath, first.nextCursor)
+
+    // Starting from the cursor returned by the first scan, only the newly
+    // appended line comes back — the already-seen line is not re-parsed.
+    expect(second.events).toHaveLength(1)
+    expect(second.events[0].event.type).toBe('user')
+    if (second.events[0].event.type === 'user') {
+      expect(second.events[0].event.uuid).toBe('u2')
+    }
+    expect(second.nextCursor).toBe(Buffer.byteLength(line1 + '\n' + line2 + '\n'))
+  })
+
+  it('holds back an unterminated trailing line until its newline arrives', async () => {
+    const filePath = join(testDir, 'partial.jsonl')
+    const complete = JSON.stringify({ type: 'user', uuid: 'u1', message: { content: 'complete' } })
+    const partial = JSON.stringify({ type: 'user', uuid: 'u2', message: { content: 'partial' } })
+
+    // Simulate a write in progress: a full line followed by a truncated one
+    // with no trailing newline yet.
+    await writeFile(filePath, complete + '\n' + partial.slice(0, 10))
+
+    const result = await readSessionLog(filePath, 0)
+    expect(result.events).toHaveLength(1)
+    if (result.events[0].event.type === 'user') {
+      expect(result.events[0].event.uuid).toBe('u1')
+    }
+    // Cursor sits right after the complete line's newline, not at EOF — the
+    // partial trailing bytes are left unconsumed.
+    expect(result.nextCursor).toBe(Buffer.byteLength(complete + '\n'))
+
+    // Completing the line makes it available on the next scan.
+    await appendFile(filePath, partial.slice(10) + '\n')
+    const followUp = await readSessionLog(filePath, result.nextCursor)
+    expect(followUp.events).toHaveLength(1)
+    if (followUp.events[0].event.type === 'user') {
+      expect(followUp.events[0].event.uuid).toBe('u2')
     }
   })
 })
