@@ -44,13 +44,17 @@ function writeMcpJson(path: string, config: CursorMcpJson): void {
     writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`, 'utf-8');
 }
 
+function sameMcpEntry(a: McpServerEntry | undefined, b: McpServerEntry | undefined): boolean {
+    return JSON.stringify(a) === JSON.stringify(b);
+}
+
 /**
  * Merge the per-session HAPI stdio bridge into `<cwd>/.cursor/mcp.json` and approve it
  * for Cursor's native MCP loader.
  *
- * Cleanup removes only the HAPI entry (or restores a pre-existing one). It never
- * rewrites the whole file from a pre-session snapshot, so concurrent edits to
- * other mcpServers keys survive the session.
+ * Cleanup undoes only the exact HAPI entry this session installed (or restores a
+ * pre-existing one). Concurrent edits to other mcpServers keys — and to `hapi`
+ * itself when it no longer matches the installed overlay — survive the session.
  */
 export function installCursorMcpOverlay(
     cwd: string,
@@ -66,14 +70,16 @@ export function installCursorMcpOverlay(
     const hadHapi = Object.prototype.hasOwnProperty.call(previous.mcpServers, CURSOR_HAPI_MCP_SERVER_ID);
     const previousHapi = hadHapi ? previous.mcpServers[CURSOR_HAPI_MCP_SERVER_ID] : undefined;
 
+    const installedHapi: McpServerEntry = {
+        command: bridge.command,
+        args: [...bridge.args],
+    };
+
     const config: CursorMcpJson = {
         ...previous,
         mcpServers: {
             ...previous.mcpServers,
-            [CURSOR_HAPI_MCP_SERVER_ID]: {
-                command: bridge.command,
-                args: [...bridge.args],
-            },
+            [CURSOR_HAPI_MCP_SERVER_ID]: installedHapi,
         },
     };
 
@@ -103,6 +109,12 @@ export function installCursorMcpOverlay(
 
                 const current = readMcpJson(mcpJsonPath);
                 current.mcpServers ??= {};
+
+                const currentHapi = current.mcpServers[CURSOR_HAPI_MCP_SERVER_ID];
+                if (!sameMcpEntry(currentHapi, installedHapi)) {
+                    // User/Cursor replaced or removed our overlay entry — leave alone.
+                    return;
+                }
 
                 if (hadHapi && previousHapi) {
                     current.mcpServers[CURSOR_HAPI_MCP_SERVER_ID] = previousHapi;

@@ -112,6 +112,36 @@ describe('installCursorMcpOverlay', () => {
         expect(after.mcpServers[CURSOR_HAPI_MCP_SERVER_ID]).toEqual(priorHapi);
     });
 
+    it('preserves a mid-session replacement of the hapi entry on cleanup', () => {
+        const cwd = makeProjectDir(JSON.stringify({
+            mcpServers: {
+                other: { command: 'echo', args: ['x'] },
+            },
+        }, null, 2));
+
+        const mcpPath = join(cwd, '.cursor', 'mcp.json');
+        const handle = installCursorMcpOverlay(cwd, {
+            command: '/bin/hapi',
+            args: ['mcp', '--url', 'http://127.0.0.1:12345/'],
+        });
+
+        const userOwnedHapi = { command: 'user-hapi', args: ['mcp', '--custom'] };
+        writeFileSync(mcpPath, JSON.stringify({
+            mcpServers: {
+                other: { command: 'echo', args: ['x'] },
+                [CURSOR_HAPI_MCP_SERVER_ID]: userOwnedHapi,
+            },
+        }, null, 2) + '\n', 'utf-8');
+
+        handle.cleanup();
+
+        const after = JSON.parse(readFileSync(mcpPath, 'utf-8')) as {
+            mcpServers: Record<string, { command: string; args: string[] }>;
+        };
+        expect(after.mcpServers[CURSOR_HAPI_MCP_SERVER_ID]).toEqual(userOwnedHapi);
+        expect(after.mcpServers.other).toEqual({ command: 'echo', args: ['x'] });
+    });
+
     it('creates .cursor/mcp.json when missing and removes file when only hapi was present', () => {
         const cwd = makeProjectDir();
         expect(existsSync(join(cwd, '.cursor', 'mcp.json'))).toBe(false);
