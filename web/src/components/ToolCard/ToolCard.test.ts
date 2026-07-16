@@ -29,6 +29,8 @@ function makeToolCallChild(overrides: Partial<ToolCallBlock> = {}): ToolCallBloc
             createdAt: 0,
             startedAt: 0,
             completedAt: 0,
+            execStartedAt: null,
+            execCompletedAt: null,
             description: null
         },
         children: [],
