@@ -73,11 +73,24 @@ for (const viewport of [
     })
 }
 
-test('renders a text-only user fallback alongside assistant DOM', async ({ page }) => {
+test('exports a text-only user fallback alongside assistant DOM', async ({ page }, testInfo) => {
     await page.goto('/e2e-fixtures/share-turn-fixture.html?fallback=user')
     await page.getByRole('button', { name: 'Open share preview' }).click()
 
     const dialog = page.getByRole('dialog')
     await expect(dialog.getByText(/请导出这一轮复杂对话/)).toBeVisible()
     await expect(dialog.getByText('Complex response fixture')).toBeVisible()
+    await dialog.screenshot({ path: testInfo.outputPath('fallback-preview.png') })
+
+    const downloadPromise = page.waitForEvent('download')
+    await dialog.getByRole('button', { name: /Download PNG|下载 PNG/ }).click()
+    const download = await downloadPromise
+    const path = testInfo.outputPath('fallback-export.png')
+    await download.saveAs(path)
+
+    const bytes = await readFile(path)
+    const size = pngSize(bytes)
+    expect(bytes.byteLength).toBeGreaterThan(80_000)
+    expect(size.width).toBe(1920)
+    expect(size.height).toBeGreaterThan(1_000)
 })
