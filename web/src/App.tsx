@@ -445,7 +445,10 @@ function AppInner() {
                     reason={sseDisconnectReason}
                 />
                 <VoiceErrorBanner />
-                <OfflineBanner />
+                <OfflineBanner
+                    isHubConnected={globalSubscriptionId !== null}
+                    isReconnecting={sseDisconnected}
+                />
                 <div className="h-full min-h-0 flex flex-col">
                     <Outlet />
                 </div>
