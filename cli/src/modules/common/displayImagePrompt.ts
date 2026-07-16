@@ -13,7 +13,7 @@ export const DISPLAY_IMAGE_PROMPT_CODEX = trimIdent(`
 `);
 
 export const DISPLAY_IMAGE_PROMPT_HAPI_MCP = trimIdent(`
-    When you create or find a local image file that the user should see, call the tool "hapi_display_image" with the image path so HAPI can show it inline.
+    When you create or find a local image file that the user should see, call the tool "hapi_display_image" with the image path so HAPI can show it inline. If that exact tool name is unavailable, use an equivalent alias such as display_image or mcp__hapi__display_image.
 `);
 
 export const DISPLAY_VIDEO_PROMPT_CLAUDE = trimIdent(`
@@ -25,5 +25,13 @@ export const DISPLAY_VIDEO_PROMPT_CODEX = trimIdent(`
 `);
 
 export const DISPLAY_VIDEO_PROMPT_HAPI_MCP = trimIdent(`
-    When you create or find a local mp4 or webm recording the user should see, call the tool "hapi_display_video" with the file path so HAPI can show it inline.
+    When you create or find a local mp4 or webm recording the user should see, call the tool "hapi_display_video" with the file path so HAPI can show it inline. If that exact tool name is unavailable, use an equivalent alias such as display_video or mcp__hapi__display_video.
+`);
+
+export const DISPLAY_IMAGE_PROMPT_CURSOR = trimIdent(`
+    When you create or find a local image file that the user should see, call the tool "display_image" with the absolute filesystem path so HAPI can show it inline.
+`);
+
+export const DISPLAY_VIDEO_PROMPT_CURSOR = trimIdent(`
+    When you create or find a local mp4 or webm recording the user should see, call the tool "display_video" with the absolute filesystem path so HAPI can show it inline.
 `);
