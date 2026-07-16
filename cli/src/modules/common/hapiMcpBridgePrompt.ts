@@ -2,8 +2,6 @@ import { trimIdent } from '@/utils/trimIdent';
 import {
     DISPLAY_IMAGE_PROMPT_HAPI_MCP,
     DISPLAY_VIDEO_PROMPT_HAPI_MCP,
-    DISPLAY_IMAGE_PROMPT_CURSOR,
-    DISPLAY_VIDEO_PROMPT_CURSOR,
 } from './displayImagePrompt';
 
 /** Shell fallback for `hapi doctor inline-media` only — not injected into agent prompts. */
@@ -15,8 +13,9 @@ export const INLINE_MEDIA_SHELL_FALLBACK = trimIdent(`
 `);
 
 /**
- * Title + display_image / display_video instructions for OpenCode local config
- * (written to hapi-instructions.md — not prepended to user turns).
+ * Title + display_image / display_video instructions for OpenCode first-prompt /
+ * hapi-instructions.md. Cursor uses native MCP overlay + tool descriptions instead
+ * (no user-turn prepend — that path was prompt-taint).
  */
 export const HAPI_MCP_TITLE_INSTRUCTION = trimIdent(`
     Use the title tool sparingly. For a new chat, call the tool "hapi_change_title" once after the user's initial request is clear, and set a concise task title. Do not rename the chat for routine progress, substeps, implementation details, or a slightly better wording. Rename only when the user's primary objective changes substantially and the existing title would be misleading.
@@ -26,11 +25,4 @@ export const HAPI_MCP_BRIDGE_PROMPT = trimIdent(`
     ${HAPI_MCP_TITLE_INSTRUCTION}
     ${DISPLAY_IMAGE_PROMPT_HAPI_MCP}
     ${DISPLAY_VIDEO_PROMPT_HAPI_MCP}
-`);
-
-/** Cursor native MCP exposes bare tool names (display_image, not hapi_display_image). */
-export const HAPI_MCP_BRIDGE_PROMPT_CURSOR = trimIdent(`
-    Use change_title sparingly — once when the user's primary objective is clear.
-    ${DISPLAY_IMAGE_PROMPT_CURSOR}
-    ${DISPLAY_VIDEO_PROMPT_CURSOR}
 `);

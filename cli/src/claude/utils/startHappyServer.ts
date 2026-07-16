@@ -14,6 +14,7 @@ import { ApiSessionClient } from "@/api/apiSession";
 import { randomUUID } from "node:crypto";
 import { detectImageMimeType, detectVideoMimeType, registerGeneratedImage } from "@/modules/common/generatedImages";
 import type { InlineMediaSource } from "@/modules/common/inlineMediaSource";
+import { DISPLAY_IMAGE_PROMPT_CURSOR, DISPLAY_VIDEO_PROMPT_CURSOR } from "@/modules/common/displayImagePrompt";
 import { resolveSkill } from "@/modules/common/skills";
 
 type StartHappyServerOptions = {
@@ -153,7 +154,7 @@ function createHapiMcpServer(
     }
 
     mcp.registerTool<any, any>('display_image', {
-        description: 'Display a local image file inline in the current HAPI chat session. Call with the absolute filesystem path when the user should see a screenshot, diagram, or generated image.',
+        description: `Display a local image file inline in the current HAPI chat session. ${DISPLAY_IMAGE_PROMPT_CURSOR}`,
         title: 'Display Image',
         inputSchema: displayImageInputSchema,
     }, async (args: { path: string; title?: string }) => {
@@ -187,7 +188,7 @@ function createHapiMcpServer(
     });
 
     mcp.registerTool<any, any>('display_video', {
-        description: 'Display a local mp4 or webm file inline in the current HAPI chat session. Call with the absolute filesystem path when the user should see a screen recording or video artifact.',
+        description: `Display a local mp4 or webm file inline in the current HAPI chat session. ${DISPLAY_VIDEO_PROMPT_CURSOR}`,
         title: 'Display Video',
         inputSchema: displayVideoInputSchema,
     }, async (args: { path: string; title?: string }) => {
