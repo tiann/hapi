@@ -261,6 +261,7 @@ type ToolCardProps = {
     metadata: SessionMetadataSummary | null
     terminalToolDisplayMode: TerminalToolDisplayMode
     disabled: boolean
+    controlledByUser?: boolean
     onDone: () => void
     block: ToolCallBlock
 }
@@ -492,6 +493,7 @@ function ToolCardInner(props: ToolCardProps) {
                             sessionId={props.sessionId}
                             tool={props.block.tool}
                             disabled={props.disabled}
+                            controlledByUser={props.controlledByUser === true}
                             onDone={props.onDone}
                         />
                     ) : isRequestUserInput && permission?.status === 'pending' ? (
@@ -500,6 +502,7 @@ function ToolCardInner(props: ToolCardProps) {
                             sessionId={props.sessionId}
                             tool={props.block.tool}
                             disabled={props.disabled}
+                            controlledByUser={props.controlledByUser === true}
                             onDone={props.onDone}
                         />
                     ) : (
@@ -509,6 +512,7 @@ function ToolCardInner(props: ToolCardProps) {
                             metadata={props.metadata}
                             tool={props.block.tool}
                             disabled={props.disabled}
+                            controlledByUser={props.controlledByUser === true}
                             onDone={props.onDone}
                         />
                     )}
