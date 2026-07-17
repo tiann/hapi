@@ -37,14 +37,9 @@ export function buildMessageMetadataLabels({ durationMs, usage, model, turnCount
     }
 
     if (usage) {
-        // "Billable" because cache_read tokens are not part of the input
-        // figure used for billing; surfacing only input + output here is
-        // intentional. If we ever surface cache I/O, keep this label and
-        // add a separate `Cache:` line.
         const total = usage.input_tokens + usage.output_tokens
         const formatToken = (n: number) => n.toLocaleString()
-        const usageLabel = isAggregated ? 'Total' : 'Usage'
-        parts.push(`${usageLabel}: ${formatToken(total)} billable tokens (${formatToken(usage.input_tokens)} in / ${formatToken(usage.output_tokens)} out)`)
+        parts.push(`Tokens: ${formatToken(total)} total (${formatToken(usage.input_tokens)} in / ${formatToken(usage.output_tokens)} out)`)
     }
 
     if (isAggregated) {
