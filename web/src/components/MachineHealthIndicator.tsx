@@ -140,12 +140,12 @@ function MachineHealthTooltipBody(props: {
 
     return (
         <span className="block space-y-1.5">
-            <span className="inline-flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+            <span className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
                 <span className="inline-flex items-center gap-1 font-medium">
                     {t('machine.health.tooltip.title')}
                     <MachineHealthHint />
                 </span>
-                <span className="text-[var(--app-fg)]">{t(statusKey)}</span>
+                <span className="text-right text-[var(--app-fg)]">{t(statusKey)}</span>
             </span>
             <span className="block space-y-1">
                 {presentation.metrics.map((metric) => (
