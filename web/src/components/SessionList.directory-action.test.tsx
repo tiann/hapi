@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import type { SessionSummary } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
+import { ToastProvider } from '@/lib/toast-context'
 import { SessionList } from './SessionList'
 
 afterEach(() => cleanup())
@@ -38,9 +39,11 @@ function renderWithProviders(children: ReactNode) {
 
     return render(
         <QueryClientProvider client={queryClient}>
-            <I18nProvider>
-                {children}
-            </I18nProvider>
+            <ToastProvider>
+                <I18nProvider>
+                    {children}
+                </I18nProvider>
+            </ToastProvider>
         </QueryClientProvider>
     )
 }
@@ -98,6 +101,44 @@ describe('SessionList directory action', () => {
         )
 
         expect(screen.queryByRole('button', { name: 'New session in this directory' })).toBeNull()
+    })
+})
+
+describe('SessionList action menu parity', () => {
+    it.each([
+        ['running', true],
+        ['closed', false]
+    ] as const)('offers conversation export for a %s session', (_label, active) => {
+        const session = makeSession({
+            id: `session-${active ? 'running' : 'closed'}`,
+            active,
+            updatedAt: Date.now(),
+            metadata: {
+                path: '/home/ubuntu',
+                machineId: 'machine-1',
+                name: active ? 'Running session' : 'Closed session',
+                flavor: 'codex'
+            }
+        })
+
+        renderWithProviders(
+            <SessionList
+                sessions={[session]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={null}
+            />
+        )
+
+        fireEvent.contextMenu(screen.getByRole('button', { name: new RegExp(active ? 'Running session' : 'Closed session') }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Export conversation' }))
+
+        expect(screen.getByRole('dialog')).toBeInTheDocument()
+        expect(screen.getByRole('heading', { name: 'Export conversation' })).toBeInTheDocument()
     })
 })
 

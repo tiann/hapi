@@ -5,6 +5,7 @@ import { useLongPress } from '@/hooks/useLongPress'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
+import { SessionExportDialog } from '@/components/SessionExportDialog'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { CopyIcon, CheckIcon, ScheduleIcon } from '@/components/icons'
@@ -595,6 +596,7 @@ function SessionItem(props: {
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
     const [renameOpen, setRenameOpen] = useState(false)
+    const [exportOpen, setExportOpen] = useState(false)
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
     const {
@@ -748,6 +750,7 @@ function SessionItem(props: {
                 onClose={() => setMenuOpen(false)}
                 sessionActive={s.active}
                 onRename={() => setRenameOpen(true)}
+                onExport={() => setExportOpen(true)}
                 onArchive={() => setArchiveOpen(true)}
                 onReopen={cursorReopenDisabledReason ? undefined : handleReopen}
                 reopenDisabledReason={cursorReopenDisabledReason}
@@ -775,6 +778,15 @@ function SessionItem(props: {
                 onRename={renameSession}
                 isPending={isPending}
             />
+
+            {exportOpen ? (
+                <SessionExportDialog
+                    isOpen={true}
+                    onClose={() => setExportOpen(false)}
+                    sessionId={s.id}
+                    api={api}
+                />
+            ) : null}
 
             <ConfirmDialog
                 isOpen={archiveOpen}
