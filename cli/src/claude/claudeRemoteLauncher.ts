@@ -350,6 +350,13 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         },
                         onSessionFound: (sessionId) => {
                             session.onSessionFound(sessionId);
+                            // The one-time --resume flag must only be dropped once we know
+                            // Claude actually captured a session id from it. If claudeRemote()
+                            // bails out before this fires (e.g. the initial nextMessage() came
+                            // back null because a relaunch trigger arrived before any turn was
+                            // ever processed), the flag stays in session.claudeArgs so the next
+                            // launch attempt can still resume the original session.
+                            session.consumeOneTimeFlags();
                         },
                         onThinkingChange: session.onThinkingChange,
                         claudeEnvVars: session.claudeEnvVars,
@@ -362,6 +369,13 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         onSessionReset: () => {
                             logger.debug('[remote]: Session reset');
                             session.clearSessionId();
+                            // /clear discards the resume anchor along with the
+                            // context. Without this, the flag would outlive the
+                            // reset (claudeRemote() returns before spawning
+                            // Claude, so onSessionFound never fires) and the
+                            // next launch would resume the session the user
+                            // just asked to clear.
+                            session.consumeOneTimeFlags();
                         },
                         onReady: () => {
                             logger.debug(
@@ -377,8 +391,6 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         },
                         signal: controller.signal,
                     });
-
-                    session.consumeOneTimeFlags();
 
                     if (!this.exitReason && controller.signal.aborted) {
                         session.client.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
