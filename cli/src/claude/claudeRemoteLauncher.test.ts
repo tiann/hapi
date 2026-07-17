@@ -138,6 +138,54 @@ describe('claudeRemoteLauncher', () => {
         expect(restoredMessageText).toBe('hello');
     });
 
+    it('restores a joined batch as separate items with each original localId and order preserved', async () => {
+        // MessageQueue2.collectBatch() joins same-mode messages into a single
+        // `message` string for the SDK (`sameModeMessages.join('\n')`), but
+        // still tracks each original item's localId for the ack it fires.
+        // Restoring the joined string as one new queue item would silently
+        // drop both original localIds, orphaning the retried prompt from its
+        // hub row (and from cancel-by-localId). The restore must unshift each
+        // original item individually, in reverse order, so the queue ends up
+        // with the same two items in the same order with their own localIds
+        // intact.
+        const queue = new MessageQueue2<EnhancedMode>((mode) => JSON.stringify(mode));
+        queue.push('first', { permissionMode: 'default' }, 'local-id-1');
+        queue.push('second', { permissionMode: 'default' }, 'local-id-2');
+
+        const client = makeClient();
+        const session = makeSession(queue, client);
+
+        let callCount = 0;
+        let queueItemsOnSecondAttempt: Array<{ message: string; localId: string | undefined }> | undefined;
+
+        claudeRemoteMock.mockImplementation(async (opts: any) => {
+            callCount += 1;
+            if (callCount === 1) {
+                const msg = await opts.nextMessage();
+                // Joined for the SDK, as before -- this part of the contract
+                // does not change.
+                expect(msg?.message).toBe('first\nsecond');
+                throw new Error('spawn failed');
+            }
+
+            queueItemsOnSecondAttempt = session.queue.queue.map((item) => ({
+                message: item.message,
+                localId: item.localId
+            }));
+            triggerSwitch(client);
+            throw new Error('spawn failed again');
+        });
+
+        const { claudeRemoteLauncher } = await import('./claudeRemoteLauncher');
+        await claudeRemoteLauncher(session);
+
+        expect(callCount).toBe(2);
+        expect(queueItemsOnSecondAttempt).toEqual([
+            { message: 'first', localId: 'local-id-1' },
+            { message: 'second', localId: 'local-id-2' }
+        ]);
+    });
+
     it('applies backoff between immediate failures and drops the message after repeated immediate failures instead of spinning forever', async () => {
         const queue = new MessageQueue2<EnhancedMode>((mode) => JSON.stringify(mode));
         const client = makeClient();

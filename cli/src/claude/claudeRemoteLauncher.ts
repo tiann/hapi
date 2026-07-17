@@ -313,6 +313,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 message: string;
                 mode: EnhancedMode;
                 isolate: boolean;
+                items: Array<{ message: string; localId?: string }>;
             } | null = null;
 
             let previousSessionId: string | null = null;
@@ -343,14 +344,19 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 // failure (never reached ready) from a failure after real
                 // progress was made, for the respawn-storm guard below.
                 let reachedReadyThisAttempt = false;
-                // Tracks the most recent message handed to the SDK via
+                // Tracks the most recent message batch handed to the SDK via
                 // nextMessage() that has not yet been confirmed complete by a
                 // following onReady(). If claudeRemote() throws while a
                 // message is in flight, it is dequeued+acked already (see
                 // MessageQueue2.collectBatch) but never delivered -- the catch
-                // block below restores it with queue.unshift() so it is not
-                // silently dropped.
-                type InFlightMessage = { message: string; mode: EnhancedMode; isolate: boolean };
+                // block below restores it with queue.unshift()/unshiftIsolated()
+                // (per original item, preserving each item's localId) so it is
+                // not silently dropped.
+                type InFlightMessage = {
+                    items: Array<{ message: string; localId?: string }>;
+                    mode: EnhancedMode;
+                    isolate: boolean;
+                };
                 // The `as InFlightMessage | null` (rather than plain `= null`)
                 // is required, not decorative: the only assignments of a
                 // non-null value happen inside the nextMessage()/onReady()
@@ -391,7 +397,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 // mid-session model switch), so a construction-time snapshot
                                 // would go stale. See SDKToLogConverter.updateSelectedModel.
                                 sdkToLogConverter.updateSelectedModel(p.mode.model ?? null);
-                                inFlightMessage = { message: p.message, mode: p.mode, isolate: p.isolate };
+                                inFlightMessage = { items: p.items, mode: p.mode, isolate: p.isolate };
                                 return p;
                             }
 
@@ -420,7 +426,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 mode = msg.mode;
                                 permissionHandler.handleModeChange(mode.permissionMode);
                                 sdkToLogConverter.updateSelectedModel(mode.model ?? null);
-                                inFlightMessage = { message: msg.message, mode: msg.mode, isolate: msg.isolate };
+                                inFlightMessage = { items: msg.items, mode: msg.mode, isolate: msg.isolate };
                                 return {
                                     message: msg.message,
                                     mode: msg.mode
@@ -488,17 +494,27 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 } catch (e) {
                     logger.debug('[remote]: launch error', e);
 
-                    // Restores a message that was already dequeued+acked from
-                    // the queue (see MessageQueue2.collectBatch: the ack
-                    // fires at dequeue time, before the SDK ever sees the
-                    // message) but never got a chance to be processed, so it
-                    // is retried instead of lost.
+                    // Restores a message batch that was already
+                    // dequeued+acked from the queue (see
+                    // MessageQueue2.collectBatch: the ack fires at dequeue
+                    // time, before the SDK ever sees the message) but never
+                    // got a chance to be processed, so it is retried instead
+                    // of lost. Each original item is unshifted individually,
+                    // in reverse order, so per-item localId is preserved
+                    // (reconnecting the retried prompt to its hub row instead
+                    // of a localId-less orphan) and the original relative
+                    // order is restored -- collectBatch() joins same-mode
+                    // items into a single `message` string for the SDK, but
+                    // still returns the pre-join `items` breakdown for this.
                     const restoreInFlightMessage = () => {
                         if (!inFlightMessage) return;
-                        if (inFlightMessage.isolate) {
-                            session.queue.unshiftIsolated(inFlightMessage.message, inFlightMessage.mode);
-                        } else {
-                            session.queue.unshift(inFlightMessage.message, inFlightMessage.mode);
+                        const { items, mode, isolate } = inFlightMessage;
+                        for (const item of [...items].reverse()) {
+                            if (isolate) {
+                                session.queue.unshiftIsolated(item.message, mode, item.localId);
+                            } else {
+                                session.queue.unshift(item.message, mode, item.localId);
+                            }
                         }
                         inFlightMessage = null;
                     };
