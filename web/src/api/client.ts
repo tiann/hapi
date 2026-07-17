@@ -39,6 +39,7 @@ import type {
     MachinePathsExistsResponse,
     OpencodeModelsResponse,
     OpencodeReasoningEffortResponse,
+    QueuedStateResponse,
     ReopenSessionResponse,
     UploadFileResponse
 } from '@hapi/protocol/apiTypes'
@@ -406,6 +407,16 @@ export class ApiClient {
                 scheduledAt: scheduledAt ?? undefined
             })
         })
+    }
+
+    async getQueuedState(sessionId: string, localIds: string[]): Promise<QueuedStateResponse> {
+        return await this.request<QueuedStateResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/messages/queued-state`,
+            {
+                method: 'POST',
+                body: JSON.stringify({ localIds })
+            }
+        )
     }
 
     async cancelMessage(sessionId: string, messageId: string): Promise<CancelMessageResponse> {

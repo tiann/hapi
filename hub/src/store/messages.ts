@@ -258,6 +258,35 @@ export function getUninvokedLocalMessages(
     return rows.map(toStoredMessage)
 }
 
+export type LocalMessageState = {
+    localId: string
+    invokedAt: number | null
+}
+
+export function getLocalMessageStates(
+    db: Database,
+    sessionId: string,
+    localIds: string[]
+): LocalMessageState[] {
+    if (localIds.length === 0) {
+        return []
+    }
+    const placeholders = localIds.map(() => '?').join(', ')
+    const rows = db.prepare(`
+        SELECT local_id, invoked_at
+        FROM messages
+        WHERE session_id = ? AND local_id IN (${placeholders})
+        ORDER BY seq ASC
+    `).all(sessionId, ...localIds) as Array<{
+        local_id: string
+        invoked_at: number | null
+    }>
+    return rows.map((row) => ({
+        localId: row.local_id,
+        invokedAt: row.invoked_at
+    }))
+}
+
 /** Returns scheduled messages across all sessions whose scheduled_at <= beforeTime
  *  and have not yet been invoked.  Used by the hub tick to emit mature messages to CLI.
  *  Ordered by scheduled_at ASC (oldest first). */
