@@ -38,7 +38,6 @@ import { getDisplayedCodexServiceTier } from './codexFastMode'
 import { getPiThinkingLevelOptions, getHighestThinkingLevel, isThinkingLevelSupported } from './piThinkingLevelOptions'
 import { groupModelsByProvider } from './piModelGroups'
 
-
 export interface TextInputState {
     text: string
     selection: { start: number; end: number }
@@ -290,7 +289,6 @@ export function HappyComposer(props: {
         selection: { start: 0, end: 0 }
     })
     const [showSettings, setShowSettings] = useState(false)
-
     const [isAborting, setIsAborting] = useState(false)
     const [isSwitching, setIsSwitching] = useState(false)
     const [showContinueHint, setShowContinueHint] = useState(false)
@@ -893,9 +891,11 @@ export function HappyComposer(props: {
                                             <div className="px-3 pt-2 pb-0.5 text-xs font-medium text-[var(--app-hint)]">
                                                 {group.label}
                                             </div>
-                                            {group.models.map((piModel) => (
+                                            {group.models.map((piModel) => {
+                                                const selected = selectedPiModel?.provider === piModel.provider && selectedPiModel?.modelId === piModel.modelId
+                                                return (
                                                 <button
-                                                    key={piModel.modelId}
+                                                    key={`${piModel.provider}:${piModel.modelId}`}
                                                     type="button"
                                                     disabled={controlsDisabled}
                                                     className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
@@ -908,20 +908,21 @@ export function HappyComposer(props: {
                                                 >
                                                     <div
                                                         className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
-                                                            model === piModel.modelId
+                                                            selected
                                                                 ? 'border-[var(--app-link)]'
                                                                 : 'border-[var(--app-hint)]'
                                                     }`}
                                                     >
-                                                        {model === piModel.modelId && (
+                                                        {selected && (
                                                             <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
                                                         )}
                                                     </div>
-                                                    <span className={model === piModel.modelId ? 'text-[var(--app-link)]' : ''}>
+                                                    <span className={selected ? 'text-[var(--app-link)]' : ''}>
                                                         {piModel.name ?? piModel.modelId}
                                                     </span>
                                                 </button>
-                                            ))}
+                                                )
+                                            })}
                                         </div>
                                     ))
                                 ) : (
@@ -1265,7 +1266,6 @@ export function HappyComposer(props: {
                             onSchedule={setPendingSchedule}
                             onClearSchedule={isControlled ? onClearScheduleProp : () => setPendingScheduleLocal(null)}
                             hasAttachments={hasAttachments}
-
                             scratchlistMode={props.scratchlistMode}
                             scratchlistCount={props.scratchlistCount}
                             onScratchlistToggle={props.onScratchlistToggle}
