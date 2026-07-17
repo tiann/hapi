@@ -53,6 +53,13 @@ export interface SDKSystemMessage extends SDKMessage {
     cwd?: string
     tools?: string[]
     slash_commands?: string[]
+    /**
+     * Present on `subtype: 'status'` messages that report a /compact outcome.
+     * Claude emits a `status: 'compacting'` message first, then a second one
+     * carrying the result.
+     */
+    compact_result?: string
+    compact_error?: string
 }
 
 export interface SDKResultMessage extends SDKMessage {
