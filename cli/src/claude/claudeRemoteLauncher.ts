@@ -25,6 +25,25 @@ interface PermissionsField {
     allowedTools?: string[];
 }
 
+// If claudeRemote() throws before it ever reaches onReady (spawn failure,
+// invalid model/args, auth failure, resume-anchor rejection, ...), the failure
+// is almost certainly deterministic: respawning immediately just repeats the
+// same failure. MAX_IMMEDIATE_RESPAWN_FAILURES caps consecutive such failures
+// before this loop drops the message that keeps triggering them instead of
+// respawning forever, and getRespawnBackoffMs() paces the retries in between.
+// The streak resets whenever an attempt reaches onReady, or once the message
+// is dropped, so a later unrelated failure gets its own fresh budget. Only
+// the one message is given up on -- the session/process itself is not ended.
+const MAX_IMMEDIATE_RESPAWN_FAILURES = 3;
+
+function getRespawnBackoffMs(): number {
+    const raw = process.env.CLAUDE_REMOTE_RESPAWN_BACKOFF_MS;
+    if (raw === undefined) return 1000;
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isNaN(parsed) || parsed < 0) return 1000;
+    return parsed;
+}
+
 class ClaudeRemoteLauncher extends RemoteLauncherBase {
     private readonly session: Session;
     private abortController: AbortController | null = null;
@@ -46,6 +65,28 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
             this.abortController.abort();
         }
         await this.abortFuture?.promise;
+    }
+
+    // Waits for `ms`, but resolves early if `signal` aborts -- mirrors
+    // cursorLegacyRemoteLauncher.transientBackoff (single completion path so
+    // the abort listener is always removed, whether the timer or the abort
+    // wins) so a user-initiated switch/exit during the respawn backoff isn't
+    // stuck waiting out the full delay.
+    private async respawnBackoff(ms: number, signal: AbortSignal): Promise<void> {
+        if (ms <= 0 || signal.aborted) return;
+        await new Promise<void>((resolve) => {
+            let timer: ReturnType<typeof setTimeout> | null = null;
+            const finish = () => {
+                if (timer !== null) {
+                    clearTimeout(timer);
+                    timer = null;
+                }
+                signal.removeEventListener('abort', finish);
+                resolve();
+            };
+            timer = setTimeout(finish, ms);
+            signal.addEventListener('abort', finish, { once: true });
+        });
     }
 
     private async handleAbortRequest(): Promise<void> {
@@ -274,6 +315,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
             } | null = null;
 
             let previousSessionId: string | null = null;
+            let immediateFailureCount = 0;
             while (!this.exitReason) {
                 logger.debug('[remote]: launch');
                 messageBuffer.addMessage('═'.repeat(40), 'status');
@@ -295,6 +337,11 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 this.abortFuture = new Future<void>();
                 let modeHash: string | null = null;
                 let mode: EnhancedMode | null = null;
+                // True once onReady() has fired at least once during this
+                // attempt. Used to distinguish an immediate/deterministic
+                // failure (never reached ready) from a failure after real
+                // progress was made, for the respawn-storm guard below.
+                let reachedReadyThisAttempt = false;
                 try {
                     await claudeRemote({
                         sessionId: session.sessionId,
@@ -364,6 +411,11 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             session.clearSessionId();
                         },
                         onReady: () => {
+                            // Reaching ready at all means this attempt is not an
+                            // immediate/deterministic failure -- reset the
+                            // respawn-storm guard.
+                            reachedReadyThisAttempt = true;
+
                             logger.debug(
                                 `[claudeRemoteLauncher][async-debug] onReady callback ` +
                                 `(hasPending=${Boolean(pending)}, queueSize=${session.queue.size()})`
@@ -383,12 +435,47 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     if (!this.exitReason && controller.signal.aborted) {
                         session.client.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
                     }
+
+                    // A full attempt completed without throwing. Only clear
+                    // the immediate-failure streak if this attempt actually
+                    // reached onReady -- otherwise a trivial no-op completion
+                    // (e.g. the initial nextMessage() returning null because
+                    // the only queued message was parked into `pending` for a
+                    // later attempt, per claudeRemote.ts's "initial
+                    // nextMessage returned null; exiting") would reset the
+                    // streak every other attempt while the underlying
+                    // deterministic failure keeps recurring on alternating
+                    // attempts, and the cap would never fire (livelock).
+                    if (reachedReadyThisAttempt) {
+                        immediateFailureCount = 0;
+                    }
                 } catch (e) {
                     logger.debug('[remote]: launch error', e);
                     if (!this.exitReason) {
                         const detail = e instanceof Error ? e.message : String(e);
-                        session.client.sendSessionEvent({ type: 'message', message: `Process exited unexpectedly: ${detail}` });
-                        continue;
+
+                        if (reachedReadyThisAttempt) {
+                            immediateFailureCount = 0;
+                        } else {
+                            immediateFailureCount += 1;
+                        }
+
+                        if (immediateFailureCount >= MAX_IMMEDIATE_RESPAWN_FAILURES) {
+                            // Give up on this message rather than the whole
+                            // session: reset the streak and keep the loop
+                            // (and this OS process) alive so a later,
+                            // unrelated message gets its own fresh budget
+                            // instead of respawning forever.
+                            session.client.sendSessionEvent({
+                                type: 'message',
+                                message: `Process exited unexpectedly ${MAX_IMMEDIATE_RESPAWN_FAILURES} times in a row: ${detail}. Dropping the queued message; resolve the issue and resend it.`
+                            });
+                            immediateFailureCount = 0;
+                        } else {
+                            session.client.sendSessionEvent({ type: 'message', message: `Process exited unexpectedly: ${detail}` });
+                            await this.respawnBackoff(getRespawnBackoffMs(), controller.signal);
+                            continue;
+                        }
                     }
                 } finally {
                     logger.debug('[remote]: launch finally');

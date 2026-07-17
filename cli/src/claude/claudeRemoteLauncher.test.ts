@@ -1,0 +1,195 @@
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+import { MessageQueue2 } from '@/utils/MessageQueue2';
+import { Session } from './session';
+import type { EnhancedMode } from './loop';
+
+// claudeRemote() wraps the actual Claude Agent SDK subprocess spawn (the
+// external-process boundary for this launcher) -- mock it the same way
+// cursorLegacyRemoteLauncher.test.ts mocks `spawn`, rather than mocking any
+// internal collaborator.
+const claudeRemoteMock = vi.fn();
+
+vi.mock('./claudeRemote', () => ({
+    claudeRemote: (opts: unknown) => claudeRemoteMock(opts)
+}));
+
+vi.mock('@/ui/logger', () => ({
+    logger: {
+        debug: vi.fn(),
+        debugLargeJson: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn()
+    }
+}));
+
+type RpcHandler = (params: unknown) => Promise<unknown> | unknown;
+
+function makeClient() {
+    const handlers = new Map<string, RpcHandler>();
+    let agentState: Record<string, unknown> = {};
+    return {
+        handlers,
+        rpcHandlerManager: {
+            registerHandler: vi.fn((method: string, handler: RpcHandler) => {
+                handlers.set(method, handler);
+            })
+        },
+        updateMetadata: vi.fn(),
+        updateAgentState: vi.fn((handler: (state: any) => any) => {
+            agentState = handler(agentState);
+        }),
+        sendSessionEvent: vi.fn(),
+        sendClaudeSessionMessage: vi.fn(),
+        sendAgentMessage: vi.fn(),
+        keepAlive: vi.fn(),
+        emitMessagesConsumed: vi.fn()
+    };
+}
+
+function makeSession(queue: MessageQueue2<EnhancedMode>, client: ReturnType<typeof makeClient>): Session {
+    return new Session({
+        api: {} as never,
+        client: client as never,
+        path: '/tmp/project',
+        logPath: '/tmp/log',
+        sessionId: null,
+        mcpServers: {},
+        messageQueue: queue,
+        onModeChange: vi.fn(),
+        mode: 'remote',
+        startedBy: 'runner',
+        startingMode: 'remote',
+        hookSettingsPath: '/tmp/hooks.json'
+    });
+}
+
+// Fires the RPC handler registered for `switch` (mirrors a UI-triggered
+// switch-to-local request). ClaudeRemoteLauncher.requestExit() sets
+// `exitReason` synchronously before awaiting the abort, so calling this
+// without awaiting it lets a test deterministically terminate the launcher's
+// respawn loop from inside a claudeRemote() mock implementation.
+function triggerSwitch(client: ReturnType<typeof makeClient>): void {
+    const handler = client.handlers.get(RPC_METHODS.Switch);
+    void handler?.(undefined);
+}
+
+// True once the launcher has sent the "give up on this message, drop it"
+// banner (i.e. the immediate-failure cap fired at least once). Used as an
+// *outcome-based* stop condition below, instead of a hardcoded call number --
+// if a mutation changes when/whether the cap fires, the number of mock
+// invocations before this becomes true changes too, so tests asserting an
+// exact call count actually fail under that mutation rather than happening to
+// reach the same hardcoded checkpoint regardless of production behavior.
+function hasDropBanner(client: ReturnType<typeof makeClient>): boolean {
+    return client.sendSessionEvent.mock.calls.some(
+        ([event]: any[]) => typeof event?.message === 'string' && event.message.includes('Dropping the queued message')
+    );
+}
+
+describe('claudeRemoteLauncher', () => {
+    beforeEach(() => {
+        claudeRemoteMock.mockReset();
+        process.stdin.isTTY = false;
+        process.stdout.isTTY = false;
+        process.env.CLAUDE_REMOTE_RESPAWN_BACKOFF_MS = '0';
+    });
+
+    afterEach(() => {
+        delete process.env.CLAUDE_REMOTE_RESPAWN_BACKOFF_MS;
+    });
+
+    it('applies backoff between immediate failures and drops the message after repeated immediate failures instead of spinning forever', async () => {
+        const queue = new MessageQueue2<EnhancedMode>((mode) => JSON.stringify(mode));
+        const client = makeClient();
+        const session = makeSession(queue, client);
+
+        const BACKOFF_MS = 50;
+        process.env.CLAUDE_REMOTE_RESPAWN_BACKOFF_MS = String(BACKOFF_MS);
+
+        let callCount = 0;
+        const SAFETY_CUTOFF = 20;
+
+        claudeRemoteMock.mockImplementation(async () => {
+            callCount += 1;
+            if (hasDropBanner(client) || callCount > SAFETY_CUTOFF) {
+                // Outcome-based stop: the cap already fired on a previous
+                // attempt (proven by the drop banner), or the safety valve
+                // tripped because it never did.
+                triggerSwitch(client);
+            }
+            throw new Error('deterministic launch failure');
+        });
+
+        const start = Date.now();
+        const { claudeRemoteLauncher } = await import('./claudeRemoteLauncher');
+        await claudeRemoteLauncher(session);
+        const elapsed = Date.now() - start;
+
+        // 3 consecutive immediate failures hit the cap and drop the message
+        // on call 3 (2 backoff waits happen first, between calls 1->2 and
+        // 2->3; the cap-triggered drop on call 3 does not itself back off).
+        // Call 4 observes the drop banner and ends the test. This is an
+        // exact count, not a loose upper bound -- if the cap value or the
+        // reachedReadyThisAttempt gating regresses, this number changes.
+        expect(callCount).toBe(4);
+        expect(elapsed).toBeGreaterThanOrEqual(2 * BACKOFF_MS);
+        expect(elapsed).toBeLessThan(5_000);
+
+        const messages = client.sendSessionEvent.mock.calls.map(([event]: any[]) => event);
+        const dropBanner = messages.find(
+            (event: any) => typeof event.message === 'string' && event.message.includes('Dropping the queued message')
+        );
+        expect(dropBanner).toBeDefined();
+        expect(dropBanner!.message).toContain('3 times in a row');
+    });
+
+    it('resets the immediate-failure streak once onReady fires even if that same attempt later throws', async () => {
+        const queue = new MessageQueue2<EnhancedMode>((mode) => JSON.stringify(mode));
+        const client = makeClient();
+        const session = makeSession(queue, client);
+
+        let callCount = 0;
+        const SAFETY_CUTOFF = 20;
+
+        claudeRemoteMock.mockImplementation(async (opts: any) => {
+            callCount += 1;
+
+            if (hasDropBanner(client) || callCount > SAFETY_CUTOFF) {
+                triggerSwitch(client);
+                throw new Error('ending test');
+            }
+
+            if (callCount === 1) {
+                // Immediate failure, never reaches ready.
+                throw new Error('first attempt failure');
+            }
+            if (callCount === 2) {
+                // Reaches onReady this attempt (a real turn happened), then
+                // still throws -- this must reset the immediate-failure
+                // streak, because the failure is no longer "immediate".
+                opts.onReady();
+                throw new Error('second attempt failure post-ready');
+            }
+
+            // A brand new streak of deterministic immediate failures begins
+            // here. If call 2's reset did not happen, the streak would
+            // already be at 2 after call 2 and the cap would fire one call
+            // sooner.
+            throw new Error('post-reset streak failure');
+        });
+
+        const { claudeRemoteLauncher } = await import('./claudeRemoteLauncher');
+        await claudeRemoteLauncher(session);
+
+        // call 1 = 1 immediate failure (streak -> 1)
+        // call 2 = reaches onReady, then throws -> streak resets to 0 (NOT
+        //   counted as an immediate failure despite throwing)
+        // calls 3-5 = a fresh streak of 3 immediate failures -> cap fires on
+        //   call 5, drop banner sent
+        // call 6 = observes the drop banner and ends the test
+        // This is an exact count: if the reset in call 2 did not happen, the
+        // cap would fire on call 4 instead (5 total calls, not 6).
+        expect(callCount).toBe(6);
+    });
+});
