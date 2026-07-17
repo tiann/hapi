@@ -89,3 +89,39 @@ describe('SessionActionMenu - Reopen action', () => {
         expect(screen.queryByRole('menuitem', { name: /Archive/ })).toBeNull()
     })
 })
+
+describe('SessionActionMenu - Copy resume command action', () => {
+    it('renders the item only when a resume command can be copied', () => {
+        const { rerender } = renderMenu()
+
+        expect(screen.queryByRole('menuitem', { name: 'Copy resume command' })).toBeNull()
+
+        rerender(
+            <I18nProvider>
+                <SessionActionMenu
+                    isOpen={true}
+                    onClose={vi.fn()}
+                    sessionActive={true}
+                    onRename={vi.fn()}
+                    onCopyResumeCommand={vi.fn()}
+                    onArchive={vi.fn()}
+                    onDelete={vi.fn()}
+                    anchorPoint={{ x: 0, y: 0 }}
+                />
+            </I18nProvider>
+        )
+
+        expect(screen.getByRole('menuitem', { name: 'Copy resume command' })).toBeInTheDocument()
+    })
+
+    it('copies through the provided callback and closes the menu', () => {
+        const onCopyResumeCommand = vi.fn()
+        const onClose = vi.fn()
+        renderMenu({ onCopyResumeCommand, onClose })
+
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Copy resume command' }))
+
+        expect(onCopyResumeCommand).toHaveBeenCalledTimes(1)
+        expect(onClose).toHaveBeenCalledTimes(1)
+    })
+})

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import type { SessionSummary } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
+import { ToastProvider, useToast } from '@/lib/toast-context'
 import { SessionList } from './SessionList'
 
 afterEach(() => cleanup())
@@ -38,11 +39,19 @@ function renderWithProviders(children: ReactNode) {
 
     return render(
         <QueryClientProvider client={queryClient}>
-            <I18nProvider>
-                {children}
-            </I18nProvider>
+            <ToastProvider>
+                <I18nProvider>
+                    {children}
+                    <ToastProbe />
+                </I18nProvider>
+            </ToastProvider>
         </QueryClientProvider>
     )
+}
+
+function ToastProbe() {
+    const { toasts } = useToast()
+    return <>{toasts.map((toast) => <div key={toast.id}>{toast.title}</div>)}</>
 }
 
 describe('SessionList directory action', () => {
@@ -101,6 +110,86 @@ describe('SessionList directory action', () => {
     })
 })
 
+describe('SessionList resume command action', () => {
+    it('copies the native resume command from the session row menu', async () => {
+        const writeText = vi.fn().mockResolvedValue(undefined)
+        Object.defineProperty(navigator, 'clipboard', {
+            configurable: true,
+            value: { writeText }
+        })
+        const session = makeSession({
+            id: 'session-codex',
+            updatedAt: Date.now(),
+            metadata: {
+                path: '/home/ubuntu',
+                machineId: 'machine-1',
+                name: 'Codex session',
+                flavor: 'codex',
+                agentSessionId: 'thread-123'
+            }
+        })
+
+        renderWithProviders(
+            <SessionList
+                sessions={[session]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={null}
+            />
+        )
+
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Codex session/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Copy resume command' }))
+
+        await waitFor(() => expect(writeText).toHaveBeenCalledWith('codex resume thread-123'))
+        expect(await screen.findByText('Resume command copied')).toBeInTheDocument()
+    })
+
+    it('shows an error toast when clipboard access fails', async () => {
+        Object.defineProperty(navigator, 'clipboard', {
+            configurable: true,
+            value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) }
+        })
+        Object.defineProperty(document, 'execCommand', {
+            configurable: true,
+            value: vi.fn().mockReturnValue(false)
+        })
+        const session = makeSession({
+            id: 'session-codex',
+            updatedAt: Date.now(),
+            metadata: {
+                path: '/home/ubuntu',
+                machineId: 'machine-1',
+                name: 'Codex session',
+                flavor: 'codex',
+                agentSessionId: 'thread-123'
+            }
+        })
+
+        renderWithProviders(
+            <SessionList
+                sessions={[session]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={null}
+            />
+        )
+
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Codex session/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Copy resume command' }))
+
+        expect(await screen.findByText('Could not copy resume command')).toBeInTheDocument()
+    })
+})
+
 describe('SessionList collapse behavior', () => {
     function renderSessionList(sessions: SessionSummary[], selectedSessionId = 'session-running') {
         return (
@@ -110,18 +199,20 @@ describe('SessionList collapse behavior', () => {
                     mutations: { retry: false },
                 }
             })}>
-                <I18nProvider>
-                    <SessionList
-                        sessions={sessions}
-                        selectedSessionId={selectedSessionId}
-                        onSelect={vi.fn()}
-                        onNewSession={vi.fn()}
-                        onRefresh={vi.fn()}
-                        isLoading={false}
-                        renderHeader={false}
-                        api={null}
-                    />
-                </I18nProvider>
+                <ToastProvider>
+                    <I18nProvider>
+                        <SessionList
+                            sessions={sessions}
+                            selectedSessionId={selectedSessionId}
+                            onSelect={vi.fn()}
+                            onNewSession={vi.fn()}
+                            onRefresh={vi.fn()}
+                            isLoading={false}
+                            renderHeader={false}
+                            api={null}
+                        />
+                    </I18nProvider>
+                </ToastProvider>
             </QueryClientProvider>
         )
     }

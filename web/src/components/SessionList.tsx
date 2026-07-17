@@ -27,6 +27,9 @@ import type { Machine } from '@/types/api'
 import { getMachinePlatform, presentMachineHealth } from '@/lib/machineHealth'
 import { MachineGroupHeader } from '@/components/MachineGroupHeader'
 import { useCursorChatStoreStatus } from '@/hooks/queries/useCursorChatStoreStatus'
+import { getResumeCommand } from '@/lib/agentSessionId'
+import { safeCopyToClipboard } from '@/lib/clipboard'
+import { useToast } from '@/lib/toast-context'
 
 type SessionGroup = {
     key: string
@@ -590,6 +593,7 @@ function SessionItem(props: {
     showDetailedStatus?: boolean
 }) {
     const { t } = useTranslation()
+    const toast = useToast()
     const { session: s, onSelect, showPath = true, api, selected = false, showDetailedStatus = false } = props
     const { haptic } = usePlatform()
     const [menuOpen, setMenuOpen] = useState(false)
@@ -650,6 +654,27 @@ function SessionItem(props: {
     })
 
     const sessionName = getSessionTitle(s)
+    const resumeCommand = getResumeCommand(s.metadata?.flavor, s.metadata?.agentSessionId)
+    const handleCopyResumeCommand = async () => {
+        if (!resumeCommand) return
+
+        try {
+            await safeCopyToClipboard(resumeCommand)
+            toast.addToast({
+                title: t('session.copyResumeCommand.toast.success.title'),
+                body: t('session.copyResumeCommand.toast.success.body'),
+                sessionId: s.id,
+                url: `/sessions/${s.id}`
+            })
+        } catch {
+            toast.addToast({
+                title: t('session.copyResumeCommand.toast.error.title'),
+                body: t('session.copyResumeCommand.toast.error.body'),
+                sessionId: s.id,
+                url: `/sessions/${s.id}`
+            })
+        }
+    }
     const worktreeLabel = getWorktreeSessionLabel(s)
     const todoProgress = getTodoProgress(s)
     const attention = useMemo(
@@ -748,6 +773,7 @@ function SessionItem(props: {
                 onClose={() => setMenuOpen(false)}
                 sessionActive={s.active}
                 onRename={() => setRenameOpen(true)}
+                onCopyResumeCommand={resumeCommand ? handleCopyResumeCommand : undefined}
                 onArchive={() => setArchiveOpen(true)}
                 onReopen={cursorReopenDisabledReason ? undefined : handleReopen}
                 reopenDisabledReason={cursorReopenDisabledReason}

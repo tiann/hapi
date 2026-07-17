@@ -157,6 +157,7 @@ export default {
   // Session actions
   'session.action.rename': '重命名',
   'session.action.export': '导出对话',
+  'session.action.copyResumeCommand': '复制恢复命令',
   'session.action.archive': '归档',
   'session.action.reopen': '重新打开',
   'session.action.reopenCursorChecking': '正在检查记录设备上的 Cursor 聊天数据是否仍然可用。',
@@ -164,6 +165,10 @@ export default {
   'session.action.reopenCursorCheckFailed': '无法验证记录设备上的 Cursor 聊天数据。',
   'session.action.delete': '删除',
   'session.action.copy': '复制',
+  'session.copyResumeCommand.toast.success.title': '已复制恢复命令',
+  'session.copyResumeCommand.toast.success.body': 'Agent 恢复命令已复制到剪贴板。',
+  'session.copyResumeCommand.toast.error.title': '无法复制恢复命令',
+  'session.copyResumeCommand.toast.error.body': '剪贴板当前不可用，请重试。',
 
   // Dialogs
   'dialog.uri.title': '打开此链接？',

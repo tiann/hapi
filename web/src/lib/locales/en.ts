@@ -157,6 +157,7 @@ export default {
   // Session actions
   'session.action.rename': 'Rename',
   'session.action.export': 'Export conversation',
+  'session.action.copyResumeCommand': 'Copy resume command',
   'session.action.archive': 'Archive',
   'session.action.reopen': 'Reopen',
   'session.action.reopenCursorChecking': 'Checking whether Cursor chat data is still available on the recorded machine.',
@@ -164,6 +165,10 @@ export default {
   'session.action.reopenCursorCheckFailed': 'Could not verify Cursor chat data on the recorded machine.',
   'session.action.delete': 'Delete',
   'session.action.copy': 'Copy',
+  'session.copyResumeCommand.toast.success.title': 'Resume command copied',
+  'session.copyResumeCommand.toast.success.body': 'The agent resume command is now on your clipboard.',
+  'session.copyResumeCommand.toast.error.title': 'Could not copy resume command',
+  'session.copyResumeCommand.toast.error.body': 'Clipboard access was unavailable. Please try again.',
 
   // Dialogs
   'dialog.uri.title': 'Open this link?',
