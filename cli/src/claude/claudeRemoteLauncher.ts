@@ -312,6 +312,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
             let pending: {
                 message: string;
                 mode: EnhancedMode;
+                isolate: boolean;
             } | null = null;
 
             let previousSessionId: string | null = null;
@@ -342,6 +343,24 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 // failure (never reached ready) from a failure after real
                 // progress was made, for the respawn-storm guard below.
                 let reachedReadyThisAttempt = false;
+                // Tracks the most recent message handed to the SDK via
+                // nextMessage() that has not yet been confirmed complete by a
+                // following onReady(). If claudeRemote() throws while a
+                // message is in flight, it is dequeued+acked already (see
+                // MessageQueue2.collectBatch) but never delivered -- the catch
+                // block below restores it with queue.unshift() so it is not
+                // silently dropped.
+                type InFlightMessage = { message: string; mode: EnhancedMode; isolate: boolean };
+                // The `as InFlightMessage | null` (rather than plain `= null`)
+                // is required, not decorative: the only assignments of a
+                // non-null value happen inside the nextMessage()/onReady()
+                // closures below, which TS's control-flow narrowing does not
+                // see from this function body. Without the cast, TS narrows
+                // this declaration to the `null` literal type, and the
+                // `if (inFlightMessage)` checks further down then fail
+                // typecheck with "Property 'isolate' does not exist on type
+                // 'never'" (verified against `bun run typecheck`).
+                let inFlightMessage: InFlightMessage | null = null as InFlightMessage | null;
                 try {
                     await claudeRemote({
                         sessionId: session.sessionId,
@@ -372,6 +391,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 // mid-session model switch), so a construction-time snapshot
                                 // would go stale. See SDKToLogConverter.updateSelectedModel.
                                 sdkToLogConverter.updateSelectedModel(p.mode.model ?? null);
+                                inFlightMessage = { message: p.message, mode: p.mode, isolate: p.isolate };
                                 return p;
                             }
 
@@ -379,6 +399,19 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
 
                             if (msg) {
                                 if ((modeHash && msg.hash !== modeHash) || msg.isolate) {
+                                    // Parked into `pending`, not handed to the
+                                    // SDK -- deliberately NOT tracked as
+                                    // inFlightMessage. `pending` is declared
+                                    // outside the while loop and is only ever
+                                    // cleared when actually consumed (the
+                                    // `if (pending)` branch above), so it
+                                    // already survives a throw in this or any
+                                    // later attempt without help from the
+                                    // restore-on-catch logic below. Tracking
+                                    // it here too would restore a second copy
+                                    // via queue.unshift() on top of the one
+                                    // still safely held in `pending`,
+                                    // delivering it twice.
                                     logger.debug('[remote]: mode has changed, pending message');
                                     pending = msg;
                                     return null;
@@ -387,6 +420,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 mode = msg.mode;
                                 permissionHandler.handleModeChange(mode.permissionMode);
                                 sdkToLogConverter.updateSelectedModel(mode.model ?? null);
+                                inFlightMessage = { message: msg.message, mode: msg.mode, isolate: msg.isolate };
                                 return {
                                     message: msg.message,
                                     mode: msg.mode
@@ -413,8 +447,10 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         onReady: () => {
                             // Reaching ready at all means this attempt is not an
                             // immediate/deterministic failure -- reset the
-                            // respawn-storm guard.
+                            // respawn-storm guard. The turn that led here is no
+                            // longer "in flight" either.
                             reachedReadyThisAttempt = true;
+                            inFlightMessage = null;
 
                             logger.debug(
                                 `[claudeRemoteLauncher][async-debug] onReady callback ` +
@@ -451,6 +487,22 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     }
                 } catch (e) {
                     logger.debug('[remote]: launch error', e);
+
+                    // Restores a message that was already dequeued+acked from
+                    // the queue (see MessageQueue2.collectBatch: the ack
+                    // fires at dequeue time, before the SDK ever sees the
+                    // message) but never got a chance to be processed, so it
+                    // is retried instead of lost.
+                    const restoreInFlightMessage = () => {
+                        if (!inFlightMessage) return;
+                        if (inFlightMessage.isolate) {
+                            session.queue.unshiftIsolated(inFlightMessage.message, inFlightMessage.mode);
+                        } else {
+                            session.queue.unshift(inFlightMessage.message, inFlightMessage.mode);
+                        }
+                        inFlightMessage = null;
+                    };
+
                     if (!this.exitReason) {
                         const detail = e instanceof Error ? e.message : String(e);
 
@@ -461,21 +513,34 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         }
 
                         if (immediateFailureCount >= MAX_IMMEDIATE_RESPAWN_FAILURES) {
-                            // Give up on this message rather than the whole
-                            // session: reset the streak and keep the loop
-                            // (and this OS process) alive so a later,
-                            // unrelated message gets its own fresh budget
-                            // instead of respawning forever.
+                            // Give up on retrying *this message*, not the
+                            // whole session. Restoring it here would feed it
+                            // straight back into another immediate failure on
+                            // the very next attempt (unshift -> re-dequeue ->
+                            // re-throw), storming again -- matches
+                            // cursorLegacyRemoteLauncher's drop-and-reset
+                            // policy on its own consecutive-failure cap.
+                            // Reset the streak and keep the loop (and this OS
+                            // process) alive so an unrelated later message
+                            // gets its own fresh budget.
+                            inFlightMessage = null;
                             session.client.sendSessionEvent({
                                 type: 'message',
                                 message: `Process exited unexpectedly ${MAX_IMMEDIATE_RESPAWN_FAILURES} times in a row: ${detail}. Dropping the queued message; resolve the issue and resend it.`
                             });
                             immediateFailureCount = 0;
                         } else {
+                            restoreInFlightMessage();
                             session.client.sendSessionEvent({ type: 'message', message: `Process exited unexpectedly: ${detail}` });
                             await this.respawnBackoff(getRespawnBackoffMs(), controller.signal);
                             continue;
                         }
+                    } else {
+                        // exitReason already set by something else (e.g. a
+                        // user-initiated switch/exit racing this throw) --
+                        // still restore any in-flight message so it isn't
+                        // silently dropped by that unrelated shutdown.
+                        restoreInFlightMessage();
                     }
                 } finally {
                     logger.debug('[remote]: launch finally');

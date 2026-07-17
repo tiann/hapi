@@ -99,6 +99,45 @@ describe('claudeRemoteLauncher', () => {
         delete process.env.CLAUDE_REMOTE_RESPAWN_BACKOFF_MS;
     });
 
+    it('restores the dequeued message into the queue when claudeRemote throws before onReady', async () => {
+        const queue = new MessageQueue2<EnhancedMode>((mode) => JSON.stringify(mode));
+        queue.push('hello', { permissionMode: 'default' });
+
+        const client = makeClient();
+        const session = makeSession(queue, client);
+
+        let callCount = 0;
+        let queueSizeOnSecondAttempt: number | undefined;
+        let restoredMessageText: string | undefined;
+
+        claudeRemoteMock.mockImplementation(async (opts: any) => {
+            callCount += 1;
+            if (callCount === 1) {
+                const msg = await opts.nextMessage();
+                expect(msg?.message).toBe('hello');
+                throw new Error('spawn failed');
+            }
+
+            // Second attempt: inspect queue state directly rather than
+            // dequeuing again -- calling nextMessage() here would hang
+            // forever under the pre-fix behavior, where the message was
+            // silently dropped and nothing will ever push a new one.
+            queueSizeOnSecondAttempt = session.queue.size();
+            restoredMessageText = session.queue.queue[0]?.message;
+            triggerSwitch(client);
+            throw new Error('spawn failed again');
+        });
+
+        const { claudeRemoteLauncher } = await import('./claudeRemoteLauncher');
+        await claudeRemoteLauncher(session);
+
+        expect(callCount).toBe(2);
+        // The message that was already dequeued+acked on attempt 1 must be
+        // restored to the queue before attempt 2, not silently dropped.
+        expect(queueSizeOnSecondAttempt).toBe(1);
+        expect(restoredMessageText).toBe('hello');
+    });
+
     it('applies backoff between immediate failures and drops the message after repeated immediate failures instead of spinning forever', async () => {
         const queue = new MessageQueue2<EnhancedMode>((mode) => JSON.stringify(mode));
         const client = makeClient();
@@ -191,5 +230,60 @@ describe('claudeRemoteLauncher', () => {
         // This is an exact count: if the reset in call 2 did not happen, the
         // cap would fire on call 4 instead (5 total calls, not 6).
         expect(callCount).toBe(6);
+    });
+
+    it('does not livelock when an isolated message repeatedly hits a deterministic launch failure', async () => {
+        // Reproduces the hostile-review probe: an isolated message (e.g.
+        // /compact, /clear) that keeps hitting a deterministic launch
+        // failure oscillates between two nextMessage() shapes every other
+        // attempt -- parked into `pending` (returns null, attempt ends
+        // without throwing) vs. handed to the SDK from `pending` (attempt
+        // throws). If the immediate-failure streak were reset on every
+        // non-throwing attempt (rather than gated on reachedReadyThisAttempt),
+        // this oscillation would reset the streak every other attempt and the
+        // cap would never fire.
+        const queue = new MessageQueue2<EnhancedMode>((mode) => JSON.stringify(mode));
+        queue.pushIsolateAndClear('/compact', { permissionMode: 'default' });
+
+        const client = makeClient();
+        const session = makeSession(queue, client);
+
+        let callCount = 0;
+        const SAFETY_CUTOFF = 20;
+
+        claudeRemoteMock.mockImplementation(async (opts: any) => {
+            callCount += 1;
+
+            if (hasDropBanner(client) || callCount > SAFETY_CUTOFF) {
+                // Outcome-based stop: cap already fired (or the safety valve
+                // tripped because it never did) -- stop here instead of
+                // hanging on session.queue.waitForMessagesAndGetAsString()
+                // blocking forever on the now-empty, non-closed queue.
+                triggerSwitch(client);
+                throw new Error('ending test');
+            }
+
+            // Mirror claudeRemote.ts's real "get initial message" step
+            // (`initial = await opts.nextMessage(); if (!initial) return;`)
+            // instead of a scripted per-call script, so the actual
+            // pending/isolate parking logic in claudeRemoteLauncher.ts's
+            // nextMessage() drives the oscillation, exactly as it does live.
+            const initial = await opts.nextMessage();
+            if (!initial) {
+                return;
+            }
+            throw new Error('deterministic launch failure');
+        });
+
+        const { claudeRemoteLauncher } = await import('./claudeRemoteLauncher');
+        await claudeRemoteLauncher(session);
+
+        // Must terminate via the cap+drop path well under the safety cutoff
+        // -- if the reset gating regresses, this livelocks the
+        // immediate-failure counter at 1<->0 forever and hits the cutoff
+        // instead (the probe that found this bug observed 25 attempts with
+        // the cap never firing).
+        expect(callCount).toBeLessThan(SAFETY_CUTOFF);
+        expect(hasDropBanner(client)).toBe(true);
     });
 });
