@@ -344,6 +344,16 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 // failure (never reached ready) from a failure after real
                 // progress was made, for the respawn-storm guard below.
                 let reachedReadyThisAttempt = false;
+                // True once nextMessage() has actually handed a message to the
+                // SDK during this attempt (as opposed to parking it into
+                // `pending` and returning null). Some commands complete and
+                // return successfully without ever calling onReady -- e.g.
+                // claudeRemote.ts's /clear handling calls onSessionReset() and
+                // returns directly -- so onReady alone cannot tell "a real
+                // message was processed" apart from "nothing was delivered
+                // this attempt" (e.g. the livelock-prone park-then-return-null
+                // case). See the success-path reset below.
+                let deliveredMessageThisAttempt = false;
                 // Tracks the most recent message batch handed to the SDK via
                 // nextMessage() that has not yet been confirmed complete by a
                 // following onReady(). If claudeRemote() throws while a
@@ -398,6 +408,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 // would go stale. See SDKToLogConverter.updateSelectedModel.
                                 sdkToLogConverter.updateSelectedModel(p.mode.model ?? null);
                                 inFlightMessage = { items: p.items, mode: p.mode, isolate: p.isolate };
+                                deliveredMessageThisAttempt = true;
                                 return p;
                             }
 
@@ -427,6 +438,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 permissionHandler.handleModeChange(mode.permissionMode);
                                 sdkToLogConverter.updateSelectedModel(mode.model ?? null);
                                 inFlightMessage = { items: msg.items, mode: msg.mode, isolate: msg.isolate };
+                                deliveredMessageThisAttempt = true;
                                 return {
                                     message: msg.message,
                                     mode: msg.mode
@@ -478,17 +490,29 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         session.client.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
                     }
 
-                    // A full attempt completed without throwing. Only clear
-                    // the immediate-failure streak if this attempt actually
-                    // reached onReady -- otherwise a trivial no-op completion
-                    // (e.g. the initial nextMessage() returning null because
-                    // the only queued message was parked into `pending` for a
+                    // A full attempt completed without throwing. Clear the
+                    // immediate-failure streak if this attempt either reached
+                    // onReady, or actually delivered a message to the SDK
+                    // (deliveredMessageThisAttempt) -- some commands complete
+                    // successfully without ever calling onReady (e.g.
+                    // claudeRemote.ts's /clear handling calls onSessionReset()
+                    // and returns directly), and that is still real progress,
+                    // not an immediate/deterministic failure. Without the
+                    // deliveredMessageThisAttempt half of this condition, a
+                    // successful /clear between two unrelated launch failures
+                    // would not reset the streak and the cap could fire after
+                    // just one more failure instead of a fresh budget of 3.
+                    //
+                    // Neither flag is set for a trivial no-op completion (e.g.
+                    // the initial nextMessage() returning null because the
+                    // only queued message was parked into `pending` for a
                     // later attempt, per claudeRemote.ts's "initial
-                    // nextMessage returned null; exiting") would reset the
-                    // streak every other attempt while the underlying
-                    // deterministic failure keeps recurring on alternating
-                    // attempts, and the cap would never fire (livelock).
-                    if (reachedReadyThisAttempt) {
+                    // nextMessage returned null; exiting") -- resetting on
+                    // that case would clear the streak every other attempt
+                    // while the underlying deterministic failure keeps
+                    // recurring on alternating attempts, and the cap would
+                    // never fire (livelock).
+                    if (reachedReadyThisAttempt || deliveredMessageThisAttempt) {
                         immediateFailureCount = 0;
                     }
                 } catch (e) {

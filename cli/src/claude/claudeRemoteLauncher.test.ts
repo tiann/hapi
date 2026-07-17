@@ -280,6 +280,72 @@ describe('claudeRemoteLauncher', () => {
         expect(callCount).toBe(6);
     });
 
+    it('resets the immediate-failure streak on a successful attempt that delivers a message but never reaches onReady', async () => {
+        // claudeRemote.ts's /clear handling delivers the queued message to
+        // the SDK (a real nextMessage() call, not a no-op park), then calls
+        // onSessionReset()/onCompletionEvent() and returns successfully --
+        // WITHOUT ever calling onReady(). onReady alone can't tell that apart
+        // from a trivial no-op completion (the park-then-return-null case the
+        // livelock fix guards against), so the reset must also fire on
+        // "a message was actually delivered this attempt", not only on
+        // "onReady fired this attempt".
+        const queue = new MessageQueue2<EnhancedMode>((mode) => JSON.stringify(mode));
+        queue.push('/clear', { permissionMode: 'default' });
+
+        const client = makeClient();
+        const session = makeSession(queue, client);
+
+        let callCount = 0;
+        const SAFETY_CUTOFF = 20;
+
+        claudeRemoteMock.mockImplementation(async (opts: any) => {
+            callCount += 1;
+
+            if (hasDropBanner(client) || callCount > SAFETY_CUTOFF) {
+                triggerSwitch(client);
+                throw new Error('ending test');
+            }
+
+            if (callCount === 1) {
+                // Immediate failure, never reaches ready.
+                throw new Error('first attempt failure');
+            }
+            if (callCount === 2) {
+                // Immediate failure again -- streak is now 2, one away from
+                // the cap.
+                throw new Error('second attempt failure');
+            }
+            if (callCount === 3) {
+                // Mirrors claudeRemote.ts's /clear handling: the message is
+                // delivered (a real nextMessage() call), then the attempt
+                // returns successfully without calling onReady.
+                await opts.nextMessage();
+                return;
+            }
+
+            // A brand new streak of deterministic immediate failures begins
+            // here. If call 3's successful /clear did not reset the streak,
+            // it would still be at 2 and this single failure would already
+            // hit the cap.
+            throw new Error('post-clear streak failure');
+        });
+
+        const { claudeRemoteLauncher } = await import('./claudeRemoteLauncher');
+        await claudeRemoteLauncher(session);
+
+        // call 1, 2 = 2 immediate failures (streak -> 2)
+        // call 3 = delivers /clear, completes successfully without onReady ->
+        //   streak resets to 0
+        // calls 4-6 = a fresh streak of 3 immediate failures -> cap fires on
+        //   call 6, drop banner sent
+        // call 7 = observes the drop banner and ends the test
+        // This is an exact count: if call 3 did not reset the streak, the cap
+        // would fire on call 4 instead (5 total calls, not 7), and the drop
+        // banner would falsely claim "3 times in a row" after just 1 failure
+        // past the successful /clear.
+        expect(callCount).toBe(7);
+    });
+
     it('does not livelock when an isolated message repeatedly hits a deterministic launch failure', async () => {
         // Reproduces the hostile-review probe: an isolated message (e.g.
         // /compact, /clear) that keeps hitting a deterministic launch
