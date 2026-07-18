@@ -18,6 +18,7 @@ export type NewSessionFormDraft = {
     grokPermissionMode: GrokPermissionMode
     sessionType: SessionType
     worktreeName: string
+    startingMode?: 'remote' | 'pty'
 }
 
 export function saveNewSessionFormDraft(draft: NewSessionFormDraft): void {
@@ -63,7 +64,8 @@ export function loadNewSessionFormDraft(): NewSessionFormDraft | null {
                 ? parsed.grokPermissionMode as GrokPermissionMode
                 : 'default',
             sessionType: (parsed.sessionType as SessionType | undefined) ?? 'simple',
-            worktreeName: typeof parsed.worktreeName === 'string' ? parsed.worktreeName : ''
+            worktreeName: typeof parsed.worktreeName === 'string' ? parsed.worktreeName : '',
+            startingMode: parsed.startingMode === 'pty' ? 'pty' : undefined
         }
     } catch {
         return null

@@ -21,6 +21,11 @@ export class Session extends AgentSessionBase<EnhancedMode> {
     readonly startedBy: 'runner' | 'terminal';
     readonly startingMode: 'local' | 'remote';
     localLaunchFailure: LocalLaunchFailure | null = null;
+    /** Function to write data to the local Claude process's stdin. */
+    writeStdin: ((data: string) => void) | null = null;
+    /** Texts of messages that were forwarded to local Claude via stdin.
+     *  Used by the sessionScanner to skip duplicate user messages. */
+    readonly stdinMessageTexts: Set<string> = new Set();
 
     constructor(opts: {
         api: ApiClient;
@@ -74,8 +79,29 @@ export class Session extends AgentSessionBase<EnhancedMode> {
         this.effort = opts.effort;
     }
 
-    setPermissionMode = (mode: PermissionMode): void => {
+    // Mirrors setModel/setEffort below: dedupe on no-op writes and notify the
+    // PTY launcher's configChangeHandler on real changes so a mid-session
+    // permission-mode change (SetSessionConfig RPC, /plan command, web
+    // approval-and-switch) is actually applied to the live PTY — the launcher
+    // converges on it by respawning the claude process with the new
+    // --permission-mode (a running claude fixes its mode at spawn; there is no
+    // live command to change it in place) — instead of only updating HAPI's own
+    // bookkeeping (issue: web showed the new mode while the running claude TUI
+    // silently kept the old one — a "false ack").
+    //
+    // `{ notify: false }` (default true) updates the bookkeeping WITHOUT
+    // notifying the launcher. Used by claude's own back-sync (the PreToolUse
+    // hook reports claude's actual live mode, e.g. the user pressed Shift+Tab
+    // directly in the terminal, or claude auto-exited plan mode on its own): the
+    // process is already running in that mode, so respawning to "reach" it would
+    // be pointless — and if the back-sync path notified like any other caller,
+    // it would re-enter the respawn path it is merely reporting on.
+    setPermissionMode = (mode: PermissionMode, opts?: { notify?: boolean }): void => {
+        if (mode === this.permissionMode) return;
         this.permissionMode = mode;
+        if (opts?.notify ?? true) {
+            this.configChangeHandler?.();
+        }
     };
 
     // Override base getPermissionMode to return the Claude-narrow type. Safe
@@ -85,13 +111,34 @@ export class Session extends AgentSessionBase<EnhancedMode> {
         return this.permissionMode as PermissionMode | undefined;
     }
 
+    // Fired when the model or effort actually changes mid-session. The PTY
+    // launcher uses this to re-spawn Claude with --resume + the new --model /
+    // --effort (the interactive CLI fixes its model at spawn, so a live change
+    // can only take effect on a fresh, conversation-preserving re-spawn).
+    private configChangeHandler: (() => void) | null = null;
+    setConfigChangeHandler = (handler: (() => void) | null): void => {
+        this.configChangeHandler = handler;
+    };
+
     setModel = (model: SessionModel): void => {
+        if (model === this.model) return;
         this.model = model;
+        this.configChangeHandler?.();
     };
 
     setEffort = (effort: SessionEffort): void => {
+        if (effort === this.effort) return;
         this.effort = effort;
+        this.configChangeHandler?.();
     };
+
+    getModel(): SessionModel {
+        return this.model ?? null;
+    }
+
+    getEffort(): SessionEffort {
+        return this.effort ?? null;
+    }
 
     recordLocalLaunchFailure = (message: string, exitReason: LocalLaunchExitReason): void => {
         this.localLaunchFailure = { message, exitReason };

@@ -66,6 +66,52 @@ describe('buildCliArgs', () => {
 
 
 
+    it('passes --model and --effort through for claude in PTY mode (model/effort at start)', () => {
+        const args = buildCliArgs('claude', {
+            directory: '/tmp',
+            startingMode: 'pty',
+            model: 'opus',
+            effort: 'high',
+        })
+        expect(args).toContain('--model')
+        expect(args[args.indexOf('--model') + 1]).toBe('opus')
+        expect(args).toContain('--effort')
+        expect(args[args.indexOf('--effort') + 1]).toBe('high')
+        expect(args).toContain('--hapi-starting-mode')
+        expect(args[args.indexOf('--hapi-starting-mode') + 1]).toBe('pty')
+    })
+
+    it('does NOT force --yolo for PTY mode (tool approvals are bridged via the PreToolUse hook)', () => {
+        const args = buildCliArgs('claude', { directory: '/tmp', startingMode: 'pty' })
+        expect(args).not.toContain('--yolo')
+    })
+
+    it('still honors explicit yolo (the new-session toggle) in PTY mode', () => {
+        const args = buildCliArgs('claude', { directory: '/tmp', startingMode: 'pty' }, true)
+        expect(args).toContain('--yolo')
+    })
+
+    it('prefers an explicit --permission-mode over yolo in PTY mode', () => {
+        const args = buildCliArgs('claude', { directory: '/tmp', startingMode: 'pty', permissionMode: 'plan' }, true)
+        expect(args).toContain('--permission-mode')
+        expect(args[args.indexOf('--permission-mode') + 1]).toBe('plan')
+        expect(args).not.toContain('--yolo')
+    })
+
+    it('does not add --effort for non-claude agents (claude-only flag)', () => {
+        const args = buildCliArgs('opencode', {
+            directory: '/tmp',
+            effort: 'high',
+        })
+        expect(args).not.toContain('--effort')
+    })
+
+    it('omits --model/--effort when not specified', () => {
+        const args = buildCliArgs('claude', { directory: '/tmp', startingMode: 'pty' })
+        expect(args).not.toContain('--model')
+        expect(args).not.toContain('--effort')
+    })
+
     it('passes --model-reasoning-effort through for opencode', () => {
         const args = buildCliArgs('opencode', {
             directory: '/tmp',
@@ -189,5 +235,42 @@ describe('buildCliArgs', () => {
             '--effort', 'low',
             '--permission-mode', 'plan'
         ])
+    })
+
+    it('passes --hapi-session-id when reusing an existing hub session id (reopen/resume)', () => {
+        const args = buildCliArgs('claude', {
+            directory: '/tmp',
+            existingSessionId: 'existing-hub-id',
+            startingMode: 'pty',
+        })
+        const idx = args.indexOf('--hapi-session-id')
+        expect(idx).toBeGreaterThanOrEqual(0)
+        expect(args[idx + 1]).toBe('existing-hub-id')
+    })
+
+    it('does not emit --hapi-session-id from the legacy (reserved) sessionId field', () => {
+        // The runner's `sessionId` option is reserved/unused by spawn; some
+        // callers pass an arbitrary tag. Only `existingSessionId` (hub reopen)
+        // may drive --hapi-session-id, else the child would try to reuse a
+        // non-existent hub row.
+        const args = buildCliArgs('claude', { directory: '/tmp', sessionId: 'arbitrary-tag' })
+        expect(args).not.toContain('--hapi-session-id')
+    })
+
+    it('omits --hapi-session-id for a fresh spawn (no existing hub session id)', () => {
+        const args = buildCliArgs('claude', { directory: '/tmp' })
+        expect(args).not.toContain('--hapi-session-id')
+    })
+    it('does not emit --hapi-session-id for a non-claude flavor (only claude parses it)', () => {
+        // The pty gate + this emit are flavor-agnostic, but ONLY claude's parser
+        // consumes --hapi-session-id. A non-claude pty flavor would silently
+        // swallow it (parseRemoteAgentCommandOptions ignores unknown flags) →
+        // child mints a new hub id → merge/404 recurs. Guard the emit to claude.
+        const args = buildCliArgs('opencode', {
+            directory: '/tmp',
+            existingSessionId: 'existing-hub-id',
+            startingMode: 'pty',
+        })
+        expect(args).not.toContain('--hapi-session-id')
     })
 })

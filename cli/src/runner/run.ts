@@ -1114,7 +1114,22 @@ export function buildCliArgs(
       args.push('--resume', options.resumeSessionId);
     }
   }
-  args.push('--hapi-starting-mode', 'remote', '--started-by', 'runner');
+  // Reuse an existing hub session id (reopen/resume) instead of minting a new
+  // one. The child boots via bootstrapExistingSession so the hub row — and its
+  // id — stays stable. Only the reopen/resume path sets this; fresh spawns omit
+  // it and mint a new id as before.
+  // Reuse an existing hub session id on reopen/resume (avoids spawn-new-id +
+  // merge-delete, and the 404 flash on the old id). Emitted ONLY for claude:
+  // it is the only flavor whose parser consumes --hapi-session-id. The pty gate
+  // that sets existingSessionId is flavor-agnostic, but a non-claude flavor would
+  // silently swallow the flag (parseRemoteAgentCommandOptions ignores unknown
+  // args) → new id → merge/404 recurs. When a non-claude pty flavor is added,
+  // wire its parser to existingSessionId AND relax this guard together.
+  if (options.existingSessionId && agent === 'claude') {
+    args.push('--hapi-session-id', options.existingSessionId);
+  }
+  const startingMode = options.startingMode || 'remote';
+  args.push('--hapi-starting-mode', startingMode, '--started-by', 'runner');
   if (options.model) {
     args.push('--model', options.model);
   }
@@ -1143,5 +1158,9 @@ export function buildCliArgs(
       args.push(name);
     }
   }
+  // PTY tool approvals are bridged from a PreToolUse hook to the web (see
+  // ptyPermissionHandler + generateHookSettings), so a default-mode PTY session
+  // prompts for permission just like the SDK path — no implicit bypass. Explicit
+  // YOLO (the new-session toggle) opts into --yolo via `yolo`.
   return args;
 }

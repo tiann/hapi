@@ -31,6 +31,8 @@ export type SpawnWithAbortOptions = {
     shell?: SpawnOptions['shell'];
     stdio?: StdioOptions;
     windowsHide?: SpawnOptions['windowsHide'];
+    /** Called after the child process is spawned with a function to write to stdin. */
+    onSpawned?: (writeStdin: (data: string) => void) => void;
 };
 
 export async function spawnWithAbort(options: SpawnWithAbortOptions): Promise<void> {
@@ -56,6 +58,14 @@ export async function spawnWithAbort(options: SpawnWithAbortOptions): Promise<vo
             shell: options.shell,
             windowsHide: options.windowsHide ?? process.platform === 'win32'
         });
+
+        if (options.onSpawned) {
+            options.onSpawned((data: string) => {
+                if (child.stdin && !child.stdin.destroyed) {
+                    child.stdin.write(data);
+                }
+            });
+        }
 
         let abortKillTimeout: NodeJS.Timeout | null = null;
 

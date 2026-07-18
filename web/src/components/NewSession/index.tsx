@@ -83,6 +83,9 @@ export function NewSession(props: {
     const [modelReasoningEffort, setModelReasoningEffort] = useState<CodexReasoningEffort>('default')
     const [yoloMode, setYoloMode] = useState(loadPreferredYoloMode)
     const [grokPermissionMode, setGrokPermissionMode] = useState<GrokPermissionMode>('default')
+    // Default to 'remote' (the stable SDK path); PTY is an explicit opt-in via the
+    // checkbox below.
+    const [startingMode, setStartingMode] = useState<'remote' | 'pty'>('remote')
     const [sessionType, setSessionType] = useState<SessionType>('simple')
     const [worktreeName, setWorktreeName] = useState('')
     const [directoryCreationConfirmed, setDirectoryCreationConfirmed] = useState(false)
@@ -107,6 +110,12 @@ export function NewSession(props: {
 
     useEffect(() => {
         savePreferredAgent(agent)
+    }, [agent])
+
+    useEffect(() => {
+        // Reset to the stable 'remote' path when switching agents; PTY stays an
+        // explicit opt-in via the checkbox.
+        setStartingMode('remote')
     }, [agent])
 
     useEffect(() => {
@@ -155,6 +164,7 @@ export function NewSession(props: {
         setGrokPermissionMode(draft.grokPermissionMode)
         setSessionType(draft.sessionType)
         setWorktreeName(draft.worktreeName)
+        setStartingMode(draft.startingMode ?? 'remote')
         clearNewSessionFormDraft()
     }, [
         props.initialDirectory,
@@ -517,7 +527,8 @@ export function NewSession(props: {
             yoloMode,
             grokPermissionMode,
             sessionType,
-            worktreeName
+            worktreeName,
+            startingMode: agent === 'claude' ? startingMode : undefined
         })
         props.onChooseFolder({ machineId, directory: trimmedDirectory })
     }, [
@@ -532,7 +543,8 @@ export function NewSession(props: {
         grokPermissionMode,
         sessionType,
         worktreeName,
-        trimmedDirectory
+        trimmedDirectory,
+        startingMode
     ])
 
     const handlePathClick = useCallback((path: string) => {
@@ -637,8 +649,10 @@ export function NewSession(props: {
                 yolo: agent === 'grok' ? undefined : yoloMode,
                 permissionMode: agent === 'grok' ? grokPermissionMode : undefined,
                 sessionType,
-                worktreeName: sessionType === 'worktree' ? (worktreeName.trim() || undefined) : undefined
+                worktreeName: sessionType === 'worktree' ? (worktreeName.trim() || undefined) : undefined,
+                startingMode: agent === 'claude' ? startingMode : undefined
             })
+
 
             if (result.type === 'success') {
                 haptic.notification('success')
@@ -788,6 +802,23 @@ export function NewSession(props: {
                 onEffortChange={setEffort}
                 grokOptions={agent === 'grok' ? grokEffortOptions : undefined}
             />
+            {agent === 'claude' && (
+                <div className="flex flex-col gap-1 px-3 py-3">
+                    <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input
+                            type="checkbox"
+                            checked={startingMode === 'pty'}
+                            onChange={(e) => setStartingMode(e.target.checked ? 'pty' : 'remote')}
+                            disabled={isFormDisabled}
+                            className="accent-[var(--app-link)]"
+                        />
+                        <span className="text-sm text-[var(--app-fg)]">{t('newSession.pty.title')}</span>
+                    </label>
+                    <span className="text-xs text-[var(--app-hint)] pl-5">
+                        {t('newSession.pty.desc')}
+                    </span>
+                </div>
+            )}
             <ReasoningEffortSelector
                 agent={agent}
                 value={modelReasoningEffort}

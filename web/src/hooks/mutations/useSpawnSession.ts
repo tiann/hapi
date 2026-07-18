@@ -15,6 +15,7 @@ type SpawnInput = {
     permissionMode?: PermissionMode
     sessionType?: 'simple' | 'worktree'
     worktreeName?: string
+    startingMode?: 'remote' | 'pty'
 }
 
 export function useSpawnSession(api: ApiClient | null): {
@@ -39,7 +40,8 @@ export function useSpawnSession(api: ApiClient | null): {
                 input.sessionType,
                 input.worktreeName,
                 input.effort,
-                input.permissionMode
+                input.permissionMode,
+                input.startingMode
             )
         },
         onSuccess: () => {

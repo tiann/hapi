@@ -1,4 +1,4 @@
-import { getCodexCollaborationModeOptions, getPermissionModeOptionsForFlavor } from '@hapi/protocol'
+import { getCodexCollaborationModeOptions, getPermissionModeOptionsForFlavor, type PermissionModeOption } from '@hapi/protocol'
 import { ComposerPrimitive, useAssistantApi, useAssistantState } from '@assistant-ui/react'
 import {
     type ChangeEvent as ReactChangeEvent,
@@ -82,6 +82,21 @@ export type ComposerSendError = {
 
 const defaultSuggestionHandler = async (): Promise<Suggestion[]> => []
 
+// PTY (interactive terminal) sessions bridge EVERY tool approval through a
+// PreToolUse hook to the web (see cli's ptyPermissionHandler.ts). claude's
+// bypassPermissions makes claude skip that hook entirely — the same effect as
+// --dangerously-skip-permissions — so approvals (and AskUserQuestion prompts)
+// would stop reaching the web chat. Never offer it as a live target for a PTY
+// session; other flavors/modes are unaffected.
+export function getComposerPermissionModeOptions(
+    agentFlavor: string | null | undefined,
+    isPtySession: boolean
+): PermissionModeOption[] {
+    const options = getPermissionModeOptionsForFlavor(agentFlavor)
+    if (!isPtySession) return options
+    return options.filter((option) => option.mode !== 'bypassPermissions')
+}
+
 export function ModelEffortSettingsSection(props: {
     agentFlavor?: string | null
     options: Array<{ value: string; label: string }>
@@ -152,6 +167,9 @@ export function HappyComposer(props: {
     contextWindow?: number | null
     controlledByUser?: boolean
     agentFlavor?: string | null
+    /** Interactive PTY (agent-terminal) session — excludes bypassPermissions
+     *  from the permission-mode selector (see getComposerPermissionModeOptions). */
+    isPtySession?: boolean
     availableModelOptions?: Array<{ value: string | null; label: string }>
     /** Full Pi model data with thinkingLevelMap for provider grouping + thinking level filtering */
     piModels?: PiModelSummary[]
@@ -223,6 +241,7 @@ export function HappyComposer(props: {
         contextWindow,
         controlledByUser = false,
         agentFlavor,
+        isPtySession = false,
         availableModelOptions,
         piModels,
         piSelectedModel,
@@ -457,8 +476,8 @@ export function HappyComposer(props: {
     }, [switchDisabled, onSwitchToRemote, haptic])
 
     const permissionModeOptions = useMemo(
-        () => getPermissionModeOptionsForFlavor(agentFlavor),
-        [agentFlavor]
+        () => getComposerPermissionModeOptions(agentFlavor, isPtySession),
+        [agentFlavor, isPtySession]
     )
     const collaborationModeOptions = useMemo(
         () => agentFlavor === 'codex' ? getCodexCollaborationModeOptions() : [],

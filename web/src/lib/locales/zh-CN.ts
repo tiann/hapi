@@ -247,6 +247,8 @@ export default {
   'newSession.opencodeModel.empty': '未在此目录发现 OpenCode 模型',
   'newSession.opencodeModel.default': '默认',
   'newSession.reasoningEffort': '推理强度',
+  'newSession.pty.title': 'PTY 模式（实验性）',
+  'newSession.pty.desc': '以 Claude 的交互式 CLI 运行（而非 Agent SDK），并在聊天旁提供实时终端。',
   'newSession.yolo': 'YOLO 模式',
   'newSession.yolo.title': '跳过审批和沙箱',
   'newSession.yolo.desc': '启动时使用危险的代理标志。',
@@ -293,6 +295,7 @@ export default {
   'chat.terminal': '终端',
   'chat.switchRemote': '切换到远程模式',
   'chat.sendError.fallback': '消息未能发送。请修改后重试。',
+  'chat.sendError.aborted': '操作已中止。如需要，请编辑后重新发送。',
   'chat.sendError.sessionInactive': '此会话已归档。请先重新打开再发送消息。',
   'chat.sendError.sessionInactive.action': '重新打开',
 

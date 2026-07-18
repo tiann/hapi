@@ -15,6 +15,7 @@ import type { Server } from 'socket.io'
 import type { Store, CancelQueuedMessageResult } from '../store'
 import type { HapiSessionExportResult } from '@hapi/protocol/sessionExport'
 import type { RpcRegistry } from '../socket/rpcRegistry'
+import { clearAgentTerminalBuffer } from '../socket/agentTerminalBuffer'
 import type { SSEManager } from '../sse/sseManager'
 import { CursorLegacyMigrator, type CursorLegacyMigratorOptions } from '../cursor/cursorLegacyMigrator'
 
@@ -149,7 +150,7 @@ export class SyncEngine {
 
     constructor(
         private readonly store: Store,
-        io: Server,
+        private readonly io: Server,
         rpcRegistry: RpcRegistry,
         sseManager: SSEManager
     ) {
@@ -421,6 +422,23 @@ export class SyncEngine {
             this.triggerDedupIfNeeded(payload.sid)
         }
         this.sessionReadyIds.delete(payload.sid)
+
+        // Notify agent-terminal subscribers so the web UI shows a clear
+        // termination message instead of staying "connected" with stale output.
+        // Targets the dedicated agent-terminal room (NOT the user-terminal
+        // `session:${id}` room), matching where agent viewers actually subscribe.
+        if (typeof this.io.of === 'function') {
+            this.io.of('/terminal').to(`agent-session:${payload.sid}`).emit('agent-terminal:output', {
+                sessionId: payload.sid,
+                terminalId: 'agent',
+                data: '\r\n[Session terminated]\r\n'
+            })
+        }
+        // Release the PTY scrollback for a session that has ended (mirrors the
+        // userTerminalBuffer clear-on-`terminal:exit`); a fresh spawn would also
+        // reset it, but an ended-and-never-reopened session would otherwise leak
+        // its buffer for the hub process's lifetime.
+        clearAgentTerminalBuffer(payload.sid)
     }
 
     handleBackgroundTaskDelta(sessionId: string, delta: { started: number; completed: number }): void {
@@ -807,9 +825,10 @@ export class SyncEngine {
         resumeSessionId?: string,
         effort?: string,
         permissionMode?: PermissionMode,
-        serviceTier?: string
+        serviceTier?: string,
+        startingMode?: 'remote' | 'pty'
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
-        return await this.rpcGateway.spawnSession(
+        const result = await this.rpcGateway.spawnSession(
             machineId,
             directory,
             agent,
@@ -821,8 +840,34 @@ export class SyncEngine {
             resumeSessionId,
             effort,
             permissionMode,
-            serviceTier
+            serviceTier,
+            startingMode
         )
+        // PTY sessions need the runner to attach the interactive terminal before
+        // the web client can connect; wait for the session to register active so a
+        // failed PTY spawn surfaces as an error instead of an empty terminal. Other
+        // start modes return as soon as the spawn RPC succeeds (legacy behavior).
+        if (result.type === 'success' && startingMode === 'pty') {
+            const becameActive = await this.waitForSessionActive(result.sessionId)
+            if (!becameActive) {
+                return { type: 'error', message: 'Session spawned but failed to become active' }
+            }
+            // `active` only means the runner registered the session — session-alive
+            // fires at AgentSessionBase construction, before the PTY launcher has
+            // spawned claude or reached a usable prompt. Wait for session-ready
+            // (emitted from the launcher's onReady) so a missing-claude / auth /
+            // early-exit failure surfaces as a spawn error, not an empty terminal.
+            const readyResult = await this.waitForSessionReady(result.sessionId)
+            if (readyResult !== 'ready') {
+                return {
+                    type: 'error',
+                    message: readyResult === 'ended'
+                        ? 'Session ended before the Claude PTY became ready'
+                        : 'Session spawned but failed to become ready'
+                }
+            }
+        }
+        return result
     }
 
     private resolveFlavor(session: Session): AgentFlavor {
@@ -1277,6 +1322,19 @@ export class SyncEngine {
         const preferredPermissionMode = opts?.permissionMode
             ?? session.permissionMode
             ?? session.metadata?.preferredPermissionMode
+        // Restore the original launch mode. Without this a reopened PTY session
+        // would re-spawn in the default 'remote' (SDK) mode — no agent terminal,
+        // so the terminal view renders black.
+        const resumedStartingMode =
+            (session.agentState as { startingMode?: 'local' | 'remote' | 'pty' } | null)?.startingMode === 'pty'
+                ? 'pty'
+                : undefined
+        // Preserve the hub session id for the PTY reopen/resume path. Passing the
+        // existing id makes the runner boot the CLI with `--hapi-session-id`, so
+        // the child reuses this row (same id) instead of spawning a new id that
+        // then gets merged and deletes the old row (the reopen 404 / new-row bug).
+        // Non-PTY resume keeps the legacy fresh-id + merge path unchanged.
+        const existingSessionId = resumedStartingMode === 'pty' ? access.sessionId : undefined
         const spawnResult = await this.rpcGateway.spawnSession(
             targetMachine.id,
             directory,
@@ -1289,7 +1347,9 @@ export class SyncEngine {
             resumeToken,
             session.effort ?? undefined,
             preferredPermissionMode,
-            session.serviceTier ?? undefined
+            session.serviceTier ?? undefined,
+            resumedStartingMode,
+            existingSessionId
         )
 
         if (spawnResult.type !== 'success') {
@@ -1299,6 +1359,23 @@ export class SyncEngine {
         const becameActive = await this.waitForSessionActive(spawnResult.sessionId)
         if (!becameActive) {
             return { type: 'error', message: 'Session failed to become active', code: 'resume_failed' }
+        }
+
+        // PTY resume: like the spawn path, `active` (session-alive) only means the
+        // runner registered the session, not that the claude PTY reached a usable
+        // prompt. Wait for session-ready so a failed/auth-blocked PTY resume
+        // surfaces as resume_failed instead of a black terminal.
+        if (resumedStartingMode === 'pty') {
+            const readyResult = await this.waitForSessionReady(spawnResult.sessionId)
+            if (readyResult !== 'ready') {
+                return {
+                    type: 'error',
+                    message: readyResult === 'ended'
+                        ? 'Session ended before the Claude PTY became ready'
+                        : 'Session failed to become ready',
+                    code: 'resume_failed'
+                }
+            }
         }
 
         // permissionMode is passed to spawnSession above; do not call set-session-config here.
