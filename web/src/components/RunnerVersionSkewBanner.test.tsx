@@ -16,8 +16,12 @@ import {
 
 const useMachinesMock = vi.fn()
 const restartMachineRunnerMock = vi.fn(async () => ({ message: 'ok' }))
+const upgradeMachineRunnerMock = vi.fn(async () => ({ message: 'ok' }))
 const useAppContextMock = vi.fn(() => ({
-    api: { restartMachineRunner: restartMachineRunnerMock } as never,
+    api: {
+        restartMachineRunner: restartMachineRunnerMock,
+        upgradeMachineRunner: upgradeMachineRunnerMock,
+    } as never,
     token: 't',
     baseUrl: 'http://localhost',
 }))
@@ -104,6 +108,7 @@ describe('RunnerVersionSkewBanner', () => {
         setRunnerSkewMinimized(false)
         clearRunnerSkewTempDismiss()
         restartMachineRunnerMock.mockClear()
+        upgradeMachineRunnerMock.mockClear()
     })
 
     afterEach(() => {
@@ -131,6 +136,7 @@ describe('RunnerVersionSkewBanner', () => {
         expect(screen.getByTestId('runner-version-skew-minimize')).toBeInTheDocument()
         expect(screen.getByTestId('runner-version-skew-dismiss')).toBeInTheDocument()
         expect(screen.getByTestId('runner-version-skew-restart-old')).toBeInTheDocument()
+        expect(screen.getByTestId('runner-version-skew-upgrade-old')).toBeInTheDocument()
     })
 
     it('minimizes so the strip stays small', () => {
@@ -189,7 +195,28 @@ describe('RunnerVersionSkewBanner', () => {
 
         const restart = screen.getByTestId('runner-version-skew-restart-old')
         expect(restart).toBeDisabled()
-        expect(restart).toHaveTextContent(/Upgrade CLI first/)
+        expect(screen.getByTestId('runner-version-skew-upgrade-old')).toBeEnabled()
+    })
+
+    it('calls upgradeMachineRunner when Upgrade is clicked', async () => {
+        useMachinesMock.mockReturnValue({
+            machines: [
+                makeMachine({ id: 'old', metadata: { host: 'proxmox', platform: 'linux', happyCliVersion: '0.20.0' } }),
+            ],
+            isLoading: false,
+            error: null,
+        })
+
+        render(
+            <I18nProvider>
+                <RunnerVersionSkewBanner />
+            </I18nProvider>,
+        )
+
+        fireEvent.click(screen.getByTestId('runner-version-skew-upgrade-old'))
+        await waitFor(() => {
+            expect(upgradeMachineRunnerMock).toHaveBeenCalledWith('old')
+        })
     })
 
     it('calls restartMachineRunner when Restart is clicked and newer CLI is on disk', async () => {

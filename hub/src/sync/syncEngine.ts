@@ -8,6 +8,8 @@
  */
 
 import { isKnownFlavor, type LocalResumeTarget, type ResumableSession } from '@hapi/protocol'
+import { isMachineCapabilitySkewed } from '@hapi/protocol/runnerCapabilities'
+import type { HubUpgradeOffer, RunnerSelfUpgradeResponse } from '@hapi/protocol/upgradeChannel'
 import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, QueuedStateResponse, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, CodexCollaborationMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
@@ -137,6 +139,14 @@ function extractClaudeUserMessageTextFromAgentOutput(content: unknown): string |
     return extractUserMessageText(message.content)
 }
 
+export type SyncEngineOptions = {
+    /** Resolve the current hub upgrade offer (channel + version + optional artifact). */
+    getUpgradeOffer?: () => HubUpgradeOffer
+    /** Ensure hub-artifact bytes exist; returns offer with sha256 filled. */
+    prepareArtifactOffer?: (offer: HubUpgradeOffer, platform: string, arch: string) => Promise<HubUpgradeOffer>
+    /** Data dir for cooldowns only — optional. */
+}
+
 export class SyncEngine {
     private readonly eventPublisher: EventPublisher
     private readonly sessionCache: SessionCache
@@ -146,13 +156,20 @@ export class SyncEngine {
     private inactivityTimer: NodeJS.Timeout | null = null
     /** Sessions that emitted `session-ready` (Cursor ACP load/newSession complete). */
     private readonly sessionReadyIds = new Set<string>()
+    private readonly fleetUpgradeAttemptAt = new Map<string, number>()
+    private static readonly FLEET_UPGRADE_COOLDOWN_MS = 15 * 60_000
+    private readonly getUpgradeOffer: (() => HubUpgradeOffer) | null
+    private readonly prepareArtifactOffer: SyncEngineOptions['prepareArtifactOffer']
 
     constructor(
         private readonly store: Store,
         io: Server,
         rpcRegistry: RpcRegistry,
         sseManager: SSEManager,
+        options?: SyncEngineOptions,
     ) {
+        this.getUpgradeOffer = options?.getUpgradeOffer ?? null
+        this.prepareArtifactOffer = options?.prepareArtifactOffer
         this.eventPublisher = new EventPublisher(sseManager, (event) => this.resolveNamespace(event))
         this.sessionCache = new SessionCache(store, this.eventPublisher)
         this.machineCache = new MachineCache(store, this.eventPublisher)
@@ -365,6 +382,7 @@ export class SyncEngine {
 
         if (event.type === 'machine-updated' && event.machineId) {
             this.machineCache.refreshMachine(event.machineId)
+            void this.maybeFleetUpgradeMachine(event.machineId)
             return
         }
 
@@ -433,12 +451,52 @@ export class SyncEngine {
 
     handleMachineAlive(payload: { machineId: string; time: number; health?: unknown }): void {
         this.machineCache.handleMachineAlive(payload)
+        void this.maybeFleetUpgradeMachine(payload.machineId)
     }
 
     /**
-     * Manual stop-runner (banner Restart). Normally unnecessary: runners already
-     * self-restart on CLI mtime drift via version handoff. Use when handoff is
-     * disabled (HAPI_DISABLE_VERSION_HANDOFF=1) or stuck.
+     * When a connected runner is missing required capabilities, ask it to
+     * self-upgrade to the hub's generation (npm or hub-artifact).
+     */
+    private async maybeFleetUpgradeMachine(machineId: string): Promise<void> {
+        if (!this.getUpgradeOffer) {
+            return
+        }
+        const offer = this.getUpgradeOffer()
+        if (offer.channel === 'off') {
+            return
+        }
+        const machine = this.machineCache.getMachine(machineId)
+        if (!machine?.active || !machine.metadata) {
+            return
+        }
+        if (!isMachineCapabilitySkewed(machine.metadata.capabilities)) {
+            return
+        }
+        const last = this.fleetUpgradeAttemptAt.get(machineId) ?? 0
+        if (Date.now() - last < SyncEngine.FLEET_UPGRADE_COOLDOWN_MS) {
+            return
+        }
+        this.fleetUpgradeAttemptAt.set(machineId, Date.now())
+        try {
+            const result = await this.upgradeMachineRunner(machineId, machine.namespace)
+            console.warn('[fleet-upgrade] auto attempt', {
+                machineId,
+                host: machine.metadata.host,
+                channel: offer.channel,
+                result,
+            })
+        } catch (error) {
+            console.warn('[fleet-upgrade] auto attempt failed', {
+                machineId,
+                message: error instanceof Error ? error.message : String(error),
+            })
+        }
+    }
+
+    /**
+     * Manual stop-runner (banner Restart). Escape hatch when version handoff
+     * is stuck or HAPI_DISABLE_VERSION_HANDOFF=1.
      */
     async restartMachineRunner(machineId: string, namespace: string): Promise<
         | { type: 'success'; message: string }
@@ -462,6 +520,80 @@ export class SyncEngine {
                 code: 'restart_failed',
             }
         }
+    }
+
+    /**
+     * Ask a remote runner to upgrade to the hub's offered generation.
+     */
+    async upgradeMachineRunner(machineId: string, namespace: string): Promise<
+        | { type: 'success'; message: string; response: RunnerSelfUpgradeResponse }
+        | { type: 'error'; message: string; code: 'machine_not_found' | 'machine_offline' | 'upgrade_unavailable' | 'upgrade_failed' }
+    > {
+        if (!this.getUpgradeOffer) {
+            return { type: 'error', message: 'Upgrade offer not configured', code: 'upgrade_unavailable' }
+        }
+        const machine = this.machineCache.getMachineByNamespace(machineId, namespace)
+            ?? this.machineCache.refreshMachine(machineId)
+        if (!machine || machine.namespace !== namespace) {
+            return { type: 'error', message: 'Machine not found', code: 'machine_not_found' }
+        }
+        if (!machine.active) {
+            return { type: 'error', message: 'Machine is offline', code: 'machine_offline' }
+        }
+
+        let offer = this.getUpgradeOffer()
+        if (offer.channel === 'off') {
+            return { type: 'error', message: 'Fleet upgrade disabled (HAPI_UPGRADE_CHANNEL=off)', code: 'upgrade_unavailable' }
+        }
+
+        if (offer.channel === 'hub-artifact') {
+            if (!this.prepareArtifactOffer) {
+                return { type: 'error', message: 'Artifact builder not configured', code: 'upgrade_unavailable' }
+            }
+            try {
+                offer = await this.prepareArtifactOffer(
+                    offer,
+                    process.platform,
+                    process.arch,
+                )
+            } catch (error) {
+                return {
+                    type: 'error',
+                    message: error instanceof Error ? error.message : 'Failed to prepare CLI artifact',
+                    code: 'upgrade_unavailable',
+                }
+            }
+            if (!offer.artifact?.sha256) {
+                return { type: 'error', message: 'Artifact missing sha256', code: 'upgrade_unavailable' }
+            }
+        }
+
+        try {
+            const raw = await this.rpcGateway.runnerSelfUpgrade(machineId, offer)
+            const response = raw as RunnerSelfUpgradeResponse
+            if (response?.status === 'failed' || response?.status === 'unsupported') {
+                return {
+                    type: 'error',
+                    message: response.message || `Upgrade ${response.status}`,
+                    code: 'upgrade_failed',
+                }
+            }
+            return {
+                type: 'success',
+                message: response?.message || 'Upgrade started',
+                response,
+            }
+        } catch (error) {
+            return {
+                type: 'error',
+                message: error instanceof Error ? error.message : 'Fleet upgrade RPC failed',
+                code: 'upgrade_failed',
+            }
+        }
+    }
+
+    getHubUpgradeOffer(): HubUpgradeOffer | null {
+        return this.getUpgradeOffer?.() ?? null
     }
 
     private expireInactive(): void {

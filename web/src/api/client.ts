@@ -588,6 +588,13 @@ export class ApiClient {
         )
     }
 
+    async upgradeMachineRunner(machineId: string): Promise<{ message: string; response?: unknown }> {
+        return await this.request<{ message: string; response?: unknown }>(
+            `/api/machines/${encodeURIComponent(machineId)}/upgrade-runner`,
+            { method: 'POST', body: '{}' }
+        )
+    }
+
     async listMachineDirectory(
         machineId: string,
         path: string

@@ -15,6 +15,8 @@ import { VisibilityTracker } from './visibility/visibilityTracker'
 import { TunnelManager } from './tunnel'
 import { waitForTunnelTlsReady } from './tunnel/tlsGate'
 import { ServerChanChannel } from './serverchan/channel'
+import { defaultHubPackageRoot, resolveUpgradeOffer } from './upgrade/resolveUpgradeOffer'
+import { ensureCliArtifact } from './upgrade/cliArtifact'
 import QRCode from 'qrcode'
 import type { Server as BunServer } from 'bun'
 import type { WebSocketData } from '@socket.io/bun-engine'
@@ -194,7 +196,38 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
         onMessagesConsumed: (sessionId) => syncEngine?.clearQueuedThinkingGrace(sessionId)
     })
 
-    syncEngine = new SyncEngine(store, socketServer.io, socketServer.rpcRegistry, sseManager)
+    syncEngine = new SyncEngine(store, socketServer.io, socketServer.rpcRegistry, sseManager, {
+        getUpgradeOffer: () => resolveUpgradeOffer({
+            hubPackageRoot: defaultHubPackageRoot(),
+            execPath: process.execPath,
+        }),
+        prepareArtifactOffer: async (offer, platform, arch) => {
+            const meta = await ensureCliArtifact({
+                version: offer.targetVersion,
+                platform,
+                arch,
+                dataDir: config.dataDir,
+                hubPackageRoot: defaultHubPackageRoot(),
+            })
+            return {
+                ...offer,
+                artifact: {
+                    url: '/cli/upgrade/cli-artifact',
+                    sha256: meta.sha256,
+                    platform: meta.platform,
+                    arch: meta.arch,
+                    sizeBytes: meta.sizeBytes,
+                },
+            }
+        },
+    })
+    {
+        const offer = resolveUpgradeOffer({
+            hubPackageRoot: defaultHubPackageRoot(),
+            execPath: process.execPath,
+        })
+        console.log(`[Hub] fleet upgrade channel=${offer.channel} target=${offer.targetVersion}`)
+    }
 
     const notificationChannels: NotificationChannel[] = [
         new PushNotificationChannel(pushService, sseManager, visibilityTracker, config.publicUrl)

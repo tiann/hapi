@@ -553,7 +553,7 @@ WantedBy=default.target
 
 ### Multi-machine hubs
 
-You can run **one hub** and **runners on many machines** (each machine installs its own CLI). When you upgrade the hub, upgrade the HAPI CLI on every machine that parents sessions. After the CLI binary on disk changes, that machine’s runner normally **self-restarts** via version handoff (unless `HAPI_DISABLE_VERSION_HANDOFF=1`). Until a runner reports the capabilities the hub requires, the web UI shows a **Runner out of date** banner (minimizable / snoozeable) with the host name and upgrade steps. The banner’s per-host **Restart** is only an escape hatch when handoff is stuck or disabled — the hub never downloads or installs packages on remotes.
+You can run **one hub** and **runners on many machines** (each machine installs its own CLI). When you upgrade the hub, connected runners that are missing required capabilities are offered a **fleet upgrade**: the hub detects whether it is a published install (`npm`) or a source/soup tree (`hub-artifact`), then asks each skewed runner to install the matching CLI and restart. The web UI shows a dismissible **Runner out of date** banner with per-host **Upgrade**. Set `HAPI_UPGRADE_CHANNEL=off` to disable. Soft-fail reopen remains the safety net while upgrades are in flight.
 
 Enable and start:
 
