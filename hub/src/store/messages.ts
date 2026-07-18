@@ -75,9 +75,14 @@ export function getMessages(
     db: Database,
     sessionId: string,
     limit: number = 200,
-    beforeSeq?: number
+    beforeSeq?: number,
+    options?: { maxLimit?: number }
 ): StoredMessage[] {
-    const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, limit)) : 200
+    const requestedMaxLimit = options?.maxLimit
+    const maxLimit = typeof requestedMaxLimit === 'number' && Number.isFinite(requestedMaxLimit)
+        ? Math.max(1, requestedMaxLimit)
+        : 200
+    const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(maxLimit, limit)) : Math.min(200, maxLimit)
 
     const rows = (beforeSeq !== undefined && beforeSeq !== null && Number.isFinite(beforeSeq))
         ? db.prepare(
@@ -94,9 +99,16 @@ export function getMessagesAfter(
     db: Database,
     sessionId: string,
     afterSeq: number,
-    limit: number = 200
+    limit: number = 200,
+    options?: { maxLimit?: number }
 ): StoredMessage[] {
-    const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, limit)) : 200
+    const requestedMaxLimit = options?.maxLimit
+    const maxLimit = typeof requestedMaxLimit === 'number' && Number.isFinite(requestedMaxLimit)
+        ? Math.max(1, requestedMaxLimit)
+        : 200
+    const safeLimit = Number.isFinite(limit)
+        ? Math.max(1, Math.min(maxLimit, limit))
+        : Math.min(200, maxLimit)
     const safeAfterSeq = Number.isFinite(afterSeq) ? afterSeq : 0
 
     const rows = db.prepare(
@@ -113,7 +125,7 @@ export function getMaxSeq(db: Database, sessionId: string): number {
     return row?.maxSeq ?? 0
 }
 
-export function mergeSessionMessages(
+export function mergeSessionMessagesInTransaction(
     db: Database,
     fromSessionId: string,
     toSessionId: string
@@ -125,39 +137,39 @@ export function mergeSessionMessages(
     const oldMaxSeq = getMaxSeq(db, fromSessionId)
     const newMaxSeq = getMaxSeq(db, toSessionId)
 
-    try {
-        db.exec('BEGIN')
-
-        if (newMaxSeq > 0 && oldMaxSeq > 0) {
-            db.prepare(
-                'UPDATE messages SET seq = seq + ? WHERE session_id = ?'
-            ).run(oldMaxSeq, toSessionId)
-        }
-
-        const collisions = db.prepare(`
-            SELECT local_id FROM messages
-            WHERE session_id = ? AND local_id IS NOT NULL
-            INTERSECT
-            SELECT local_id FROM messages
-            WHERE session_id = ? AND local_id IS NOT NULL
-        `).all(toSessionId, fromSessionId) as Array<{ local_id: string }>
-
-        if (collisions.length > 0) {
-            const localIds = collisions.map((row) => row.local_id)
-            const placeholders = localIds.map(() => '?').join(', ')
-            db.prepare(
-                `UPDATE messages SET local_id = NULL WHERE session_id = ? AND local_id IN (${placeholders})`
-            ).run(fromSessionId, ...localIds)
-        }
-
-        const result = db.prepare(
-            'UPDATE messages SET session_id = ? WHERE session_id = ?'
-        ).run(toSessionId, fromSessionId)
-
-        db.exec('COMMIT')
-        return { moved: result.changes, oldMaxSeq, newMaxSeq }
-    } catch (error) {
-        db.exec('ROLLBACK')
-        throw error
+    if (newMaxSeq > 0 && oldMaxSeq > 0) {
+        db.prepare(
+            'UPDATE messages SET seq = seq + ? WHERE session_id = ?'
+        ).run(oldMaxSeq, toSessionId)
     }
+
+    const collisions = db.prepare(`
+        SELECT local_id FROM messages
+        WHERE session_id = ? AND local_id IS NOT NULL
+        INTERSECT
+        SELECT local_id FROM messages
+        WHERE session_id = ? AND local_id IS NOT NULL
+    `).all(toSessionId, fromSessionId) as Array<{ local_id: string }>
+
+    if (collisions.length > 0) {
+        const localIds = collisions.map((row) => row.local_id)
+        const placeholders = localIds.map(() => '?').join(', ')
+        db.prepare(
+            `UPDATE messages SET local_id = NULL WHERE session_id = ? AND local_id IN (${placeholders})`
+        ).run(fromSessionId, ...localIds)
+    }
+
+    const result = db.prepare(
+        'UPDATE messages SET session_id = ? WHERE session_id = ?'
+    ).run(toSessionId, fromSessionId)
+
+    return { moved: result.changes, oldMaxSeq, newMaxSeq }
+}
+
+export function mergeSessionMessages(
+    db: Database,
+    fromSessionId: string,
+    toSessionId: string
+): { moved: number; oldMaxSeq: number; newMaxSeq: number } {
+    return db.transaction(() => mergeSessionMessagesInTransaction(db, fromSessionId, toSessionId))()
 }

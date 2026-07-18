@@ -19,6 +19,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private abortController = new AbortController();
     private displayPermissionMode: PermissionMode | null = null;
     private instructionsSent = false;
+    private transportTerminalReported = false;
 
     constructor(session: OpencodeSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
@@ -48,6 +49,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         });
         this.backend = backend;
 
+        backend.onTerminalError((error) => {
+            logger.warn('[opencode-remote] transport terminated', error);
+            this.terminalizeClosedTransport(`OpenCode transport terminated: ${error.message}. Session stopped.`);
+        });
         backend.onStderrError((error) => {
             logger.debug('[opencode-remote] stderr error', error);
             session.sendSessionEvent({ type: 'message', message: error.message });
@@ -83,7 +88,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 mcpServers: mcpServerList
             });
         }
-        session.onSessionFound(acpSessionId);
+        await session.onSessionFound(acpSessionId);
 
         this.permissionHandler = new OpencodePermissionHandler(
             session.client,
@@ -127,6 +132,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             }];
 
             session.onThinkingChange(true);
+            const turnStartedAt = Date.now();
 
             try {
                 await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
@@ -134,15 +140,23 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 });
             } catch (error) {
                 logger.warn('[opencode-remote] prompt failed', error);
-                session.sendSessionEvent({
-                    type: 'message',
-                    message: 'OpenCode prompt failed. Check logs for details.'
-                });
-                messageBuffer.addMessage('OpenCode prompt failed', 'status');
+                if (!backend.isConnected()) {
+                    this.terminalizeClosedTransport('OpenCode transport closed while processing the prompt. Session stopped.');
+                } else {
+                    session.sendSessionEvent({
+                        type: 'message',
+                        message: 'OpenCode prompt failed. Check logs for details.'
+                    });
+                    messageBuffer.addMessage('OpenCode prompt failed', 'status');
+                }
             } finally {
+                session.sendSessionEvent({
+                    type: 'turn-duration',
+                    durationMs: Math.max(0, Date.now() - turnStartedAt)
+                });
                 session.onThinkingChange(false);
                 await this.permissionHandler?.cancelAll('Prompt finished');
-                if (session.queue.size() === 0 && !this.shouldExit) {
+                if (session.queue.size() === 0 && !this.shouldExit && backend.isConnected()) {
                     sendReady();
                 }
             }
@@ -178,6 +192,18 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             case 'text':
                 this.messageBuffer.addMessage(message.text, 'assistant');
                 break;
+            case 'reasoning':
+                this.messageBuffer.addMessage(message.text, 'status');
+                break;
+            case 'user_message':
+                this.messageBuffer.addMessage(message.text, 'user');
+                break;
+            case 'moa_reference':
+                this.messageBuffer.addMessage(`MoA reference: ${message.label}`, 'status');
+                break;
+            case 'moa_aggregating':
+                this.messageBuffer.addMessage(`MoA aggregating${message.aggregator ? `: ${message.aggregator}` : ''}`, 'status');
+                break;
             case 'tool_call':
                 this.messageBuffer.addMessage(`Tool call: ${message.name}`, 'tool');
                 break;
@@ -192,6 +218,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 break;
             case 'turn_complete':
                 this.messageBuffer.addMessage('Turn complete', 'status');
+                break;
+            case 'title':
                 break;
             default: {
                 const _exhaustive: never = message;
@@ -230,6 +258,16 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
 
     private async handleSwitchRequest(): Promise<void> {
         await this.requestExit('switch', () => this.handleAbort());
+    }
+
+    private terminalizeClosedTransport(message: string): void {
+        if (!this.exitReason) this.exitReason = 'exit';
+        this.shouldExit = true;
+        this.abortController.abort();
+        if (this.transportTerminalReported) return;
+        this.transportTerminalReported = true;
+        this.session.sendSessionEvent({ type: 'message', message });
+        this.messageBuffer.addMessage(message, 'status');
     }
 }
 

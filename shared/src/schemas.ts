@@ -1,8 +1,96 @@
 import { z } from 'zod'
-import { CODEX_COLLABORATION_MODES, PERMISSION_MODES } from './modes'
+import { AGENT_FLAVORS, CODEX_COLLABORATION_MODES, CODEX_SERVICE_TIERS, PERMISSION_MODES } from './modes'
 
 export const PermissionModeSchema = z.enum(PERMISSION_MODES)
 export const CodexCollaborationModeSchema = z.enum(CODEX_COLLABORATION_MODES)
+export const CodexServiceTierSchema = z.enum(CODEX_SERVICE_TIERS)
+
+export const ProviderReadinessStatusSchema = z.enum([
+    'ready',
+    'not-installed',
+    'not-authenticated',
+    'unsupported-version',
+    'probe-failed'
+])
+
+export const ProviderAuthCheckSchema = z.enum(['command', 'credential-file', 'unavailable'])
+
+export const ProviderReadinessSchema = z.object({
+    status: ProviderReadinessStatusSchema,
+    installed: z.boolean(),
+    authenticated: z.boolean().nullable(),
+    authCheck: ProviderAuthCheckSchema,
+    version: z.string().min(1).nullable(),
+    minimumVersion: z.string().min(1).nullable(),
+    modes: z.array(PermissionModeSchema),
+    models: z.array(z.string().min(1)),
+    efforts: z.record(z.string(), z.array(z.string().min(1))),
+    attachments: z.boolean(),
+    resume: z.boolean(),
+    experimental: z.boolean(),
+    checkedAt: z.number().nonnegative()
+}).strict().superRefine((entry, ctx) => {
+    const issue = (message: string, path: (string | number)[]) => {
+        ctx.addIssue({ code: 'custom', message, path })
+    }
+
+    if (entry.status === 'ready') {
+        if (!entry.installed) issue('ready providers must be installed', ['installed'])
+        if (entry.version === null) issue('ready providers must report a version', ['version'])
+        if (entry.authenticated === false) issue('ready providers cannot report failed authentication', ['authenticated'])
+        if (entry.authenticated === null && entry.authCheck !== 'unavailable') {
+            issue('ready providers may omit authentication only when no safe auth check exists', ['authCheck'])
+        }
+    }
+
+    if (entry.status === 'not-installed') {
+        if (entry.installed) issue('not-installed providers cannot be installed', ['installed'])
+        if (entry.version !== null) issue('not-installed providers cannot report a version', ['version'])
+        if (entry.authenticated === true) issue('not-installed providers cannot be authenticated', ['authenticated'])
+    } else if (!entry.installed) {
+        issue('only not-installed providers may report installed=false', ['installed'])
+    }
+
+    if (entry.status === 'not-authenticated') {
+        if (!entry.installed) issue('not-authenticated providers must be installed', ['installed'])
+        if (entry.authenticated !== false) issue('not-authenticated providers must report authenticated=false', ['authenticated'])
+        if (entry.version === null) issue('not-authenticated providers must report a version', ['version'])
+        if (entry.authCheck === 'unavailable') issue('not-authenticated requires an explicit authentication check', ['authCheck'])
+    }
+
+    if (entry.status === 'unsupported-version') {
+        if (!entry.installed) issue('unsupported-version providers must be installed', ['installed'])
+        if (entry.version === null) issue('unsupported-version providers must report a version', ['version'])
+    }
+
+    if (entry.authCheck === 'unavailable' && entry.authenticated !== null) {
+        issue('unavailable auth checks must report authenticated=null', ['authenticated'])
+    }
+})
+
+export type ProviderReadinessStatus = z.infer<typeof ProviderReadinessStatusSchema>
+export type ProviderAuthCheck = z.infer<typeof ProviderAuthCheckSchema>
+export type ProviderReadiness = z.infer<typeof ProviderReadinessSchema>
+
+const providerReadinessShape = Object.fromEntries(
+    AGENT_FLAVORS.map((flavor) => [flavor, ProviderReadinessSchema.optional()])
+) as Record<typeof AGENT_FLAVORS[number], z.ZodOptional<typeof ProviderReadinessSchema>>
+
+export const ProviderReadinessMapSchema = z.object(providerReadinessShape).strict()
+export type ProviderReadinessMap = z.infer<typeof ProviderReadinessMapSchema>
+
+export const MachineMetadataSchema = z.object({
+    host: z.string(),
+    platform: z.string(),
+    happyCliVersion: z.string(),
+    displayName: z.string().optional(),
+    homeDir: z.string().optional(),
+    happyHomeDir: z.string().optional(),
+    happyLibDir: z.string().optional(),
+    providerReadiness: ProviderReadinessMapSchema.optional()
+}).strict()
+
+export type MachineMetadata = z.infer<typeof MachineMetadataSchema>
 
 const MetadataSummarySchema = z.object({
     text: z.string(),
@@ -19,19 +107,82 @@ export const WorktreeMetadataSchema = z.object({
 
 export type WorktreeMetadata = z.infer<typeof WorktreeMetadataSchema>
 
+export const ExecutionControlOwnerSchema = z.enum(['desktop-sync', 'hapi-runner'])
+
+export const ManagedLifecycleStateSchema = z.enum(['running', 'archived', 'stopped', 'unhealthy'])
+export type ManagedLifecycleState = z.infer<typeof ManagedLifecycleStateSchema>
+
+export const ManagedStoppedBySchema = z.enum(['runner-recycle', 'runner-forced'])
+export type ManagedStoppedBy = z.infer<typeof ManagedStoppedBySchema>
+
+export const ManagedStopReasonSchema = z.enum([
+    'runner-recycle',
+    'runner-recycle-sigkill',
+    'stale-owner-term',
+    'stale-owner-sigkill',
+    'ambiguous-turn-delivery'
+])
+export type ManagedStopReason = z.infer<typeof ManagedStopReasonSchema>
+
+export const DeliveryAttemptStateSchema = z.enum([
+    'prepared',
+    'written',
+    'accepted',
+    'definitive-rejected',
+    'definitive-no-write',
+    'ambiguous',
+    'canceled',
+    'superseded'
+])
+export type DeliveryAttemptState = z.infer<typeof DeliveryAttemptStateSchema>
+
+export const ExecutionControlSchema = z.object({
+    owner: ExecutionControlOwnerSchema,
+    generation: z.number().int().min(1),
+    leaseExpiresAt: z.number().nullable(),
+    runnerSessionId: z.string().nullable(),
+    updatedAt: z.number()
+})
+
+export type ExecutionControl = z.infer<typeof ExecutionControlSchema>
+
 export const MetadataSchema = z.object({
     path: z.string(),
     host: z.string(),
     version: z.string().optional(),
     name: z.string().optional(),
+    title: z.string().optional(),
+    titleUpdatedAt: z.number().optional(),
     os: z.string().optional(),
     summary: MetadataSummarySchema.optional(),
     machineId: z.string().optional(),
     claudeSessionId: z.string().optional(),
     codexSessionId: z.string().optional(),
-    geminiSessionId: z.string().optional(),
+    agySessionId: z.string().optional(),
+    grokSessionId: z.string().optional(),
+    grokCapabilities: z.object({
+        version: z.string().nullable(),
+        loadSession: z.boolean(),
+        image: z.boolean(),
+        currentModel: z.string().nullable(),
+        currentEffort: z.string().nullable(),
+        models: z.array(z.object({
+            id: z.string(),
+            name: z.string(),
+            description: z.string().optional(),
+            efforts: z.array(z.object({
+                id: z.string(),
+                label: z.string(),
+                description: z.string().optional(),
+                isDefault: z.boolean()
+            }))
+        })),
+        commands: z.array(z.object({ name: z.string(), description: z.string().optional() }))
+    }).optional(),
     opencodeSessionId: z.string().optional(),
     cursorSessionId: z.string().optional(),
+    hermesSessionId: z.string().optional(),
+    mirrorSource: z.string().optional(),
     tools: z.array(z.string()).optional(),
     slashCommands: z.array(z.string()).optional(),
     homeDir: z.string().optional(),
@@ -41,11 +192,16 @@ export const MetadataSchema = z.object({
     startedFromRunner: z.boolean().optional(),
     hostPid: z.number().optional(),
     startedBy: z.enum(['runner', 'terminal']).optional(),
-    lifecycleState: z.string().optional(),
+    launchNonce: z.string().optional(),
+    runnerInstanceId: z.string().optional(),
+    lifecycleState: ManagedLifecycleStateSchema.optional(),
     lifecycleStateSince: z.number().optional(),
+    stoppedBy: ManagedStoppedBySchema.optional(),
+    stopReasonCode: ManagedStopReasonSchema.optional(),
     archivedBy: z.string().optional(),
     archiveReason: z.string().optional(),
     flavor: z.string().nullish(),
+    executionControl: ExecutionControlSchema.optional(),
     worktree: WorktreeMetadataSchema.optional()
 })
 
@@ -177,6 +333,7 @@ export const SessionSchema = z.object({
     teamState: TeamStateSchema.optional(),
     model: z.string().nullable().optional().default(null),
     modelReasoningEffort: z.string().nullable().optional().default(null),
+    serviceTier: CodexServiceTierSchema.nullable().optional(),
     effort: z.string().nullable().optional().default(null),
     permissionMode: PermissionModeSchema.optional(),
     collaborationMode: CodexCollaborationModeSchema.optional()
@@ -236,7 +393,8 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
         type: z.literal('connection-changed'),
         data: z.object({
             status: z.string(),
-            subscriptionId: z.string().optional()
+            subscriptionId: z.string().optional(),
+            reason: z.string().optional()
         }).optional()
     })
 ])

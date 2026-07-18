@@ -1,5 +1,17 @@
-import { getPermissionModesForFlavor, isPermissionModeAllowedForFlavor, toSessionSummary } from '@hapi/protocol'
-import { CodexCollaborationModeSchema, PermissionModeSchema } from '@hapi/protocol/schemas'
+import {
+    getPermissionModesForFlavor,
+    isAgyModelPreset,
+    isCcApiEffortAllowedForModel,
+    isClaudeDeepSeekEffortAllowedForModel,
+    isClaudeDeepSeekModelPreset,
+    isHermesMoaPreset,
+    isKnownCcApiModel,
+    isPermissionModeAllowedForFlavor,
+    supportsEffort,
+    supportsModelChange,
+    toSessionSummary
+} from '@hapi/protocol'
+import { CodexCollaborationModeSchema, CodexServiceTierSchema, PermissionModeSchema } from '@hapi/protocol/schemas'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import type { SyncEngine, Session } from '../../sync/syncEngine'
@@ -22,6 +34,10 @@ const modelReasoningEffortSchema = z.object({
     modelReasoningEffort: z.string().trim().min(1).nullable()
 })
 
+const serviceTierSchema = z.object({
+    serviceTier: CodexServiceTierSchema.nullable()
+})
+
 const effortSchema = z.object({
     effort: z.string().trim().min(1).nullable()
 })
@@ -42,6 +58,38 @@ const uploadDeleteSchema = z.object({
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
+
+const CODEX_AUTO_REASONING_EFFORTS = new Set(['none', 'low', 'medium', 'high', 'xhigh'])
+const CODEX_GPT_56_REASONING_EFFORTS = new Set(['none', 'low', 'medium', 'high', 'xhigh', 'max'])
+const CODEX_GPT_56_ULTRA_REASONING_EFFORTS = new Set(['none', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'])
+const CODEX_GPT_55_54_REASONING_EFFORTS = new Set(['none', 'low', 'medium', 'high', 'xhigh'])
+const CODEX_SPARK_REASONING_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh'])
+
+function getCodexReasoningEffortsForModel(model: string | null | undefined): ReadonlySet<string> {
+    switch (model?.trim().toLowerCase() || 'auto') {
+        case 'gpt-5.6':
+        case 'gpt-5.6-sol':
+        case 'gpt-5.6-terra':
+            return CODEX_GPT_56_ULTRA_REASONING_EFFORTS
+        case 'gpt-5.6-luna':
+            return CODEX_GPT_56_REASONING_EFFORTS
+        case 'gpt-5.5':
+        case 'gpt-5.4':
+        case 'gpt-5.4-mini':
+            return CODEX_GPT_55_54_REASONING_EFFORTS
+        case 'gpt-5.3-codex-spark':
+            return CODEX_SPARK_REASONING_EFFORTS
+        default:
+            return CODEX_AUTO_REASONING_EFFORTS
+    }
+}
+
+function isCodexReasoningEffortAllowedForModel(model: string | null | undefined, effort: string | null | undefined): boolean {
+    const normalizedEffort = effort?.trim().toLowerCase()
+    if (!normalizedEffort) return true
+    return getCodexReasoningEffortsForModel(model).has(normalizedEffort)
+}
+
 function estimateBase64Bytes(base64: string): number {
     const len = base64.length
     if (len === 0) return 0
@@ -61,6 +109,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const getPendingCount = (s: Session) => s.agentState?.requests ? Object.keys(s.agentState.requests).length : 0
 
         const namespace = c.get('namespace')
+        const unreadCounts = engine.getSessionUnreadCounts(namespace)
         const sessions = engine.getSessionsByNamespace(namespace)
             .sort((a, b) => {
                 // Active sessions first
@@ -76,7 +125,9 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                 // Then by updatedAt
                 return b.updatedAt - a.updatedAt
             })
-            .map(toSessionSummary)
+            .map((session) => toSessionSummary(session, {
+                unreadCount: unreadCounts.get(session.id) ?? 0
+            }))
 
         return c.json({ sessions })
     })
@@ -93,6 +144,21 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         return c.json({ session: sessionResult.session })
+    })
+
+    app.post('/sessions/:id/read', (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        engine.markSessionRead(sessionResult.sessionId, c.get('namespace'))
+        return c.json({ ok: true })
     })
 
     app.post('/sessions/:id/resume', async (c) => {
@@ -112,11 +178,37 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             const status = result.code === 'no_machine_online' ? 503
                 : result.code === 'access_denied' ? 403
                     : result.code === 'session_not_found' ? 404
-                        : 500
+                        : result.code === 'resume_unavailable' ? 409
+                            : 500
             return c.json({ error: result.message, code: result.code }, status)
         }
 
         return c.json({ type: 'success', sessionId: result.sessionId })
+    })
+
+    app.post('/sessions/:id/takeover', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const result = await engine.takeoverSession(sessionResult.sessionId, c.get('namespace'))
+        if (result.type === 'error') {
+            const status = result.code === 'takeover_busy' ? 409
+                : result.code === 'no_machine_online' ? 503
+                    : result.code === 'access_denied' ? 403
+                        : result.code === 'session_not_found' ? 404
+                            : result.code === 'resume_unavailable' ? 409
+                                : 500
+            return c.json({ error: result.message, code: result.code }, status)
+        }
+
+        return c.json(result)
     })
 
     app.post('/sessions/:id/upload', async (c) => {
@@ -129,7 +221,6 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (sessionResult instanceof Response) {
             return sessionResult
         }
-
         const body = await c.req.json().catch(() => null)
         const parsed = uploadSchema.safeParse(body)
         if (!parsed.success) {
@@ -196,8 +287,15 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return sessionResult
         }
 
-        await engine.abortSession(sessionResult.sessionId)
-        return c.json({ ok: true })
+        try {
+            await engine.abortSession(sessionResult.sessionId)
+            return c.json({ ok: true })
+        } catch (error) {
+            return c.json({
+                ok: false,
+                error: error instanceof Error ? error.message : 'Failed to abort session'
+            }, 500)
+        }
     })
 
     app.post('/sessions/:id/archive', async (c) => {
@@ -239,6 +337,9 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
         if (sessionResult instanceof Response) {
             return sessionResult
+        }
+        if (sessionResult.session.agentState?.controlledByUser === true) {
+            return c.json({ error: 'Permission mode can only be changed for remote sessions' }, 409)
         }
 
         const body = await c.req.json().catch(() => null)
@@ -320,12 +421,37 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'claude' && flavor !== 'gemini') {
-            return c.json({ error: 'Model selection is only supported for Claude and Gemini sessions' }, 400)
+        if (!supportsModelChange(flavor)) {
+            return c.json({ error: 'Model selection is not supported for this session flavor' }, 400)
+        }
+        if (flavor === 'agy' && parsed.data.model !== null && !isAgyModelPreset(parsed.data.model)) {
+            return c.json({ error: `Unknown Antigravity agy model: ${parsed.data.model}` }, 400)
+        }
+        if (flavor === 'claude-deepseek' && !isClaudeDeepSeekModelPreset(parsed.data.model)) {
+            return c.json({ error: `Unknown CC-deepseek model: ${parsed.data.model ?? 'null'}` }, 400)
+        }
+        if (flavor === 'cc-api' && parsed.data.model !== null && !isKnownCcApiModel(parsed.data.model)) {
+            return c.json({ error: `Unknown CC-api model: ${parsed.data.model}` }, 400)
+        }
+        if (flavor === 'hermes-moa' && parsed.data.model === null) {
+            return c.json({ error: 'Hermes MoA preset is required' }, 400)
+        }
+        if (flavor === 'hermes-moa' && !isHermesMoaPreset(parsed.data.model)) {
+            return c.json({ error: `Unknown Hermes MoA preset: ${parsed.data.model}` }, 400)
+        }
+        const nextConfig: { model: string | null; effort?: string | null; modelReasoningEffort?: string | null } = { model: parsed.data.model }
+        if (flavor === 'cc-api' && !isCcApiEffortAllowedForModel(parsed.data.model, sessionResult.session.effort)) {
+            nextConfig.effort = null
+        }
+        if (flavor === 'claude-deepseek' && !isClaudeDeepSeekEffortAllowedForModel(parsed.data.model, sessionResult.session.effort)) {
+            nextConfig.effort = null
+        }
+        if (flavor === 'codex' && !isCodexReasoningEffortAllowedForModel(parsed.data.model, sessionResult.session.modelReasoningEffort)) {
+            nextConfig.modelReasoningEffort = null
         }
 
         try {
-            await engine.applySessionConfig(sessionResult.sessionId, { model: parsed.data.model })
+            await engine.applySessionConfig(sessionResult.sessionId, nextConfig)
             return c.json({ ok: true })
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to apply model'
@@ -369,6 +495,42 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
     })
 
+    app.post('/sessions/:id/service-tier', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (flavor !== 'codex') {
+            return c.json({ error: 'Service tier is only supported for Codex sessions' }, 400)
+        }
+        if (sessionResult.session.agentState?.controlledByUser === true) {
+            return c.json({ error: 'Service tier can only be changed for remote Codex sessions' }, 409)
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = serviceTierSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body' }, 400)
+        }
+
+        try {
+            await engine.applySessionConfig(sessionResult.sessionId, {
+                serviceTier: parsed.data.serviceTier
+            })
+            return c.json({ ok: true })
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to apply service tier'
+            return c.json({ error: message }, 409)
+        }
+    })
+
     app.post('/sessions/:id/effort', async (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {
@@ -387,8 +549,14 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'claude') {
-            return c.json({ error: 'Effort selection is only supported for Claude sessions' }, 400)
+        if (!supportsEffort(flavor)) {
+            return c.json({ error: 'Effort selection is not supported for this session flavor' }, 400)
+        }
+        if (flavor === 'cc-api' && !isCcApiEffortAllowedForModel(sessionResult.session.model, parsed.data.effort)) {
+            return c.json({ error: 'Effort selection is not supported for the current CC-api model' }, 400)
+        }
+        if (flavor === 'claude-deepseek' && !isClaudeDeepSeekEffortAllowedForModel(sessionResult.session.model, parsed.data.effort)) {
+            return c.json({ error: 'Effort selection is not supported for the current CC-deepseek model' }, 400)
         }
 
         try {
@@ -473,6 +641,15 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         // Get agent type from session metadata, default to 'claude'
         const agent = sessionResult.session.metadata?.flavor ?? 'claude'
 
+        if (agent === 'grok' && sessionResult.session.metadata?.slashCommands) {
+            return c.json({
+                success: true,
+                commands: sessionResult.session.metadata.slashCommands.map((name) => ({
+                    name: name.replace(/^\//u, ''), source: 'builtin' as const
+                }))
+            })
+        }
+
         try {
             const result = await engine.listSlashCommands(sessionResult.sessionId, agent)
             return c.json(result)
@@ -480,6 +657,35 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to list slash commands'
+            })
+        }
+    })
+
+
+    app.get('/sessions/:id/mentions', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const agent = sessionResult.session.metadata?.flavor ?? 'claude'
+        const machineId = sessionResult.session.metadata?.machineId
+        if (!machineId) {
+            return c.json({ success: false, error: 'Session missing machine ID' })
+        }
+
+        try {
+            const result = await engine.listMentions(machineId, agent)
+            return c.json(result)
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to list mentions'
             })
         }
     })
@@ -496,8 +702,10 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return sessionResult
         }
 
+        const agent = sessionResult.session.metadata?.flavor ?? 'claude'
+
         try {
-            const result = await engine.listSkills(sessionResult.sessionId)
+            const result = await engine.listSkills(sessionResult.sessionId, agent)
             return c.json(result)
         } catch (error) {
             return c.json({

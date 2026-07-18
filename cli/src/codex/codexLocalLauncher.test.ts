@@ -3,12 +3,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const harness = vi.hoisted(() => ({
     launches: [] as Array<Record<string, unknown>>,
     sessionScannerCalls: [] as Array<Record<string, unknown>>,
-    scannerFailureMessage: 'No Codex session found within 120000ms for cwd c:\\workspace\\project; refusing fallback.'
+    scannerFailureMessage: 'No Codex session found within 120000ms for cwd c:\\workspace\\project; refusing fallback.',
+    localSessionIdToEmit: null as string | null,
+    titleSyncCalls: [] as string[]
 }));
 
 vi.mock('./codexLocal', () => ({
     codexLocal: async (opts: Record<string, unknown>) => {
         harness.launches.push(opts);
+        if (harness.localSessionIdToEmit) {
+            (opts.onSessionFound as ((sessionId: string) => void) | undefined)?.(harness.localSessionIdToEmit);
+        }
     }
 }));
 
@@ -37,6 +42,14 @@ vi.mock('./utils/codexSessionScanner', () => ({
     }
 }));
 
+vi.mock('./utils/codexThreadTitle', () => ({
+    createCodexThreadTitlePoller: () => ({ stop: () => {} }),
+    syncCodexThreadTitleToMetadata: async (_client: unknown, threadId: string) => {
+        harness.titleSyncCalls.push(threadId);
+        return true;
+    }
+}));
+
 vi.mock('@/modules/common/launcher/BaseLocalLauncher', () => ({
     BaseLocalLauncher: class {
         readonly control = {
@@ -62,7 +75,12 @@ function createQueueStub() {
     };
 }
 
-function createSessionStub(permissionMode: 'default' | 'read-only' | 'safe-yolo' | 'yolo', codexArgs?: string[], path = '/tmp/worktree') {
+function createSessionStub(
+    permissionMode: 'default' | 'read-only' | 'safe-yolo' | 'yolo',
+    codexArgs?: string[],
+    path = '/tmp/worktree',
+    serviceTier?: 'standard' | 'fast'
+) {
     const sessionEvents: Array<{ type: string; message?: string }> = [];
     let localLaunchFailure: { message: string; exitReason: 'switch' | 'exit' } | null = null;
 
@@ -76,10 +94,12 @@ function createSessionStub(permissionMode: 'default' | 'read-only' | 'safe-yolo'
             client: {
                 rpcHandlerManager: {
                     registerHandler: () => {}
-                }
+                },
+                updateMetadata: () => {}
             },
             getPermissionMode: () => permissionMode,
             getModelReasoningEffort: () => null,
+            getServiceTier: () => serviceTier ?? null,
             onSessionFound: () => {},
             sendSessionEvent: (event: { type: string; message?: string }) => {
                 sessionEvents.push(event);
@@ -100,6 +120,8 @@ describe('codexLocalLauncher', () => {
     afterEach(() => {
         harness.launches = [];
         harness.sessionScannerCalls = [];
+        harness.localSessionIdToEmit = null;
+        harness.titleSyncCalls = [];
     });
 
     it('rebuilds approval and sandbox args from yolo mode', async () => {
@@ -124,6 +146,24 @@ describe('codexLocalLauncher', () => {
             '--model',
             'o3'
         ]);
+    });
+
+    it('syncs the Codex desktop title after the local Codex session id is discovered', async () => {
+        harness.localSessionIdToEmit = 'thread-local';
+        const { session } = createSessionStub('default');
+
+        await codexLocalLauncher(session as never);
+
+        expect(harness.titleSyncCalls).toContain('thread-local');
+    });
+
+    it('passes the selected service tier into local Codex launch options', async () => {
+        const { session } = createSessionStub('default', undefined, '/tmp/worktree', 'fast');
+
+        await codexLocalLauncher(session as never);
+
+        expect(harness.launches).toHaveLength(1);
+        expect(harness.launches[0]?.serviceTier).toBe('fast');
     });
 
     it('preserves raw Codex approval flags in default mode', async () => {

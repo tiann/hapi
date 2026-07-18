@@ -157,15 +157,42 @@ export function useSendMessage(
 
         const message = findMessageByLocalId(sessionId, localId)
         if (!message?.originalText) return
+        const originalText = message.originalText
+        const createdAt = message.createdAt
 
-        updateMessageStatus(sessionId, localId, 'sending')
+        void (async () => {
+            let targetSessionId = sessionId
+            if (options?.resolveSessionId) {
+                resolveGuardRef.current = true
+                setIsResolving(true)
+                try {
+                    const resolved = await options.resolveSessionId(sessionId)
+                    if (resolved && resolved !== sessionId) {
+                        options.onSessionResolved?.(resolved)
+                        targetSessionId = resolved
+                    }
+                } catch (error) {
+                    updateMessageStatus(sessionId, localId, 'failed')
+                    haptic.notification('error')
+                    console.error('Failed to resolve session before retry:', error)
+                    return
+                } finally {
+                    resolveGuardRef.current = false
+                    setIsResolving(false)
+                }
+            }
 
-        mutation.mutate({
-            sessionId,
-            text: message.originalText,
-            localId,
-            createdAt: message.createdAt,
-        })
+            if (targetSessionId === sessionId) {
+                updateMessageStatus(sessionId, localId, 'sending')
+            }
+
+            mutation.mutate({
+                sessionId: targetSessionId,
+                text: originalText,
+                localId,
+                createdAt,
+            })
+        })()
     }
 
     return {

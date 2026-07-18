@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionSummary } from '@/types/api'
-import { deduplicateSessionsByAgentId } from './SessionList'
+import { CODEX_DESKTOP_SYNC_SOURCE, getSessionDisplayTitle, toSessionSummary } from '@hapi/protocol'
+import { deduplicateSessionsByAgentId, getFlavorBadge } from './SessionList'
 
 function makeSession(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
     return {
@@ -11,6 +12,7 @@ function makeSession(overrides: Partial<SessionSummary> & { id: string }): Sessi
         metadata: null,
         todoProgress: null,
         pendingRequestsCount: 0,
+        unreadCount: 0,
         model: null,
         effort: null,
         ...overrides
@@ -78,5 +80,98 @@ describe('deduplicateSessionsByAgentId', () => {
         const result = deduplicateSessionsByAgentId(sessions)
         expect(result).toHaveLength(2)
         expect(result.map(s => s.id).sort()).toEqual(['b', 'd'])
+    })
+})
+
+describe('flavor badges', () => {
+    it('shows DeepSeek-specific initials for CC-deepseek sessions', () => {
+        expect(getFlavorBadge('claude-deepseek').label).toBe('DS')
+        expect(getFlavorBadge('claude').label).toBe('Cl')
+    })
+
+    it('shows Ark-specific initials for CC-ark sessions', () => {
+        expect(getFlavorBadge('claude-ark').label).toBe('ARK')
+        expect(getFlavorBadge('claude').label).toBe('Cl')
+    })
+
+    it('shows a dedicated API glyph for CC-api sessions', () => {
+        expect(getFlavorBadge('cc-api')).toMatchObject({
+            label: 'API',
+            icon: 'api',
+        })
+        expect(getFlavorBadge('claude').label).toBe('Cl')
+        expect(getFlavorBadge('claude').icon).toBeUndefined()
+    })
+
+    it('shows a dedicated MoA badge for Hermes MoA sessions', () => {
+        expect(getFlavorBadge('hermes-moa')).toMatchObject({
+            label: 'MoA',
+        })
+        expect(getFlavorBadge('claude').label).toBe('Cl')
+    })
+
+    it('uses an exclusive electric-magenta color for Grok sessions', () => {
+        expect(getFlavorBadge('grok').colors).toBe('bg-[#c026d3] text-white')
+        expect(getFlavorBadge('grok').colors).not.toBe(getFlavorBadge('claude').colors)
+    })
+})
+
+describe('session summary titles', () => {
+    it('preserves desktop mirror source so summaries do not rename mirrored sessions', () => {
+        const summary = toSessionSummary({
+            id: 'session-1',
+            namespace: 'default',
+            seq: 1,
+            createdAt: 0,
+            updatedAt: 0,
+            active: false,
+            activeAt: 0,
+            metadata: {
+                path: '/Users/example/Documents/Playground',
+                host: 'mac',
+                mirrorSource: CODEX_DESKTOP_SYNC_SOURCE,
+                summary: { text: 'Changing task title', updatedAt: 1 }
+            },
+            metadataVersion: 1,
+            agentState: null,
+            agentStateVersion: 0,
+            thinking: false,
+            thinkingAt: 0,
+            model: null,
+            modelReasoningEffort: null,
+            effort: null
+        })
+
+        expect(summary.metadata?.mirrorSource).toBe(CODEX_DESKTOP_SYNC_SOURCE)
+        expect(getSessionDisplayTitle(summary)).toBe('Playground')
+    })
+
+    it('does not fall back to changing summaries for Codex session-list items', () => {
+        const summary = toSessionSummary({
+            id: 'session-1',
+            namespace: 'default',
+            seq: 1,
+            createdAt: 0,
+            updatedAt: 0,
+            active: false,
+            activeAt: 0,
+            metadata: {
+                path: '/Users/example/Documents/Playground',
+                host: 'mac',
+                flavor: 'codex',
+                codexSessionId: 'codex-thread-1',
+                summary: { text: 'Changing HAPI task title', updatedAt: 1 }
+            },
+            metadataVersion: 1,
+            agentState: null,
+            agentStateVersion: 0,
+            thinking: false,
+            thinkingAt: 0,
+            model: null,
+            modelReasoningEffort: null,
+            effort: null
+        })
+
+        expect(getSessionDisplayTitle(summary)).toBe('Playground')
     })
 })

@@ -35,6 +35,7 @@
   "scripts": {
     "postinstall": "node -e \"try{require('fs').chmodSync(require('path').join(__dirname,'bin','hapi.cjs'),0o755)}catch(e){}\"",
     "typecheck": "tsc --noEmit",
+    "build": "bun run build:exe",
     "build:exe": "bun run scripts/build-executable.ts",
     "build:exe:all": "bun run scripts/build-executable.ts --all",
     "build:exe:allinone": "bun run scripts/build-executable.ts --with-web-assets",
@@ -44,6 +45,7 @@
     "tools:unpack": "bun run scripts/unpack-tools.ts",
     "update-homebrew-formula": "bun run scripts/update-homebrew-formula.ts",
     "test": "bun run tools:unpack && vitest run",
+    "test:runner-integration": "HAPI_RUNNER_INTEGRATION=1 vitest run --reporter=verbose",
     "test:win": "vitest run",
     "dev": "bun src/index.ts",
     "dev:local-server": "bun --env-file .env.dev-local-server src/index.ts",
@@ -52,21 +54,21 @@
   },
   "dependencies": {
     "@hapi/protocol": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.25.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/cross-spawn": "^6.0.6",
     "@types/ps-list": "^6.2.1",
     "@types/react": "^19.2.7",
-    "axios": "^1.13.2",
+    "axios": "^1.18.1",
     "chalk": "^5.6.2",
     "cross-spawn": "^7.0.6",
-    "fastify": "^5.6.2",
+    "fastify": "^5.10.0",
     "fastify-type-provider-zod": "6.1.0",
     "ink": "^6.6.0",
     "ps-list": "^9.0.0",
     "react": "^19.2.3",
     "socket.io-client": "^4.8.3",
-    "tar": "^7.5.2",
-    "yaml": "^2.8.2",
+    "tar": "^7.5.20",
+    "yaml": "^2.9.0",
     "zod": "^4.2.1"
   },
   "devDependencies": {
@@ -74,12 +76,12 @@
     "bun-types": "^1.3.5",
     "dotenv": "^17.2.3",
     "typescript": "^5",
-    "vitest": "^4.0.16"
+    "vitest": "^4.1.10"
   },
   "resolutions": {
     "whatwg-url": "14.2.0",
     "parse-path": "7.0.3",
     "@types/parse-path": "7.0.3"
   },
-  "packageManager": "bun@1.3.5"
+  "packageManager": "bun@1.3.11"
 }

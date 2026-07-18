@@ -7,6 +7,7 @@ import {
 } from '@assistant-ui/react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
+import remarkBreaks from 'remark-breaks'
 import rehypeKatex from 'rehype-katex'
 import remarkDisableIndentedCode from '@/lib/remark-disable-indented-code'
 import remarkStripCjkAutolink from '@/lib/remark-strip-cjk-autolink'
@@ -19,6 +20,12 @@ import type { MarkdownTextPrimitiveProps } from '@assistant-ui/react-markdown'
 
 export const MARKDOWN_PLUGINS = [remarkGfm, remarkStripCjkAutolink, remarkMath, remarkDisableIndentedCode] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>
 export const MARKDOWN_REHYPE_PLUGINS = [rehypeKatex] satisfies NonNullable<MarkdownTextPrimitiveProps['rehypePlugins']>
+
+// User-typed messages preserve their literal newlines (iOS soft keyboards rely on this).
+// CommonMark collapses single \n to a space; remark-breaks turns each into a hard <br>.
+export function buildRemarkPlugins(opts: { breakSingleNewlines?: boolean }): NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']> {
+    return opts.breakSingleNewlines ? [...MARKDOWN_PLUGINS, remarkBreaks] : MARKDOWN_PLUGINS
+}
 
 function CodeHeader(props: CodeHeaderProps) {
     const { copied, copy } = useCopyToClipboard()

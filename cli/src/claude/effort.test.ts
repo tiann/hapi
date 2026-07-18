@@ -14,8 +14,10 @@ describe('normalizeClaudeSessionEffort', () => {
     })
 
     it('normalizes supported effort values', () => {
+        expect(normalizeClaudeSessionEffort('low')).toBe('low')
         expect(normalizeClaudeSessionEffort('medium')).toBe('medium')
         expect(normalizeClaudeSessionEffort('high')).toBe('high')
+        expect(normalizeClaudeSessionEffort('xhigh')).toBe('xhigh')
         expect(normalizeClaudeSessionEffort('max')).toBe('max')
         expect(normalizeClaudeSessionEffort('  High ')).toBe('high')
     })

@@ -1,85 +1,155 @@
 /**
- * Download tunwg binaries for all platforms
+ * Download pinned tunwg binaries for all platforms, or only the host with --host.
  *
- * Downloads pre-built tunwg binaries from GitHub releases.
- * Output directory: hub/tools/tunwg/
+ * Every existing and downloaded artifact is SHA-256 verified before use. New
+ * bytes are installed through a same-directory atomic rename so a failed
+ * download cannot replace the last known file.
  */
 
-import { existsSync, mkdirSync, writeFileSync, chmodSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
+import { chmod, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { TUNWG_LICENSE, selectTunwgReleases } from './tunwgTargets';
 
-const isWindows = process.platform === 'win32';
+type FetchImplementation = (input: string, init?: RequestInit) => Promise<Response>;
 
-const TUNWG_RELEASES: Record<string, string> = {
-    'x64-linux': 'https://github.com/tiann/tunwg/releases/latest/download/tunwg',
-    'arm64-linux': 'https://github.com/tiann/tunwg/releases/latest/download/tunwg-arm64',
-    'x64-darwin': 'https://github.com/tiann/tunwg/releases/latest/download/tunwg-darwin',
-    'arm64-darwin': 'https://github.com/tiann/tunwg/releases/latest/download/tunwg-darwin-arm64',
-    'x64-win32': 'https://github.com/tiann/tunwg/releases/latest/download/tunwg.exe'
+export type InstallVerifiedArtifactOptions = {
+    url: string;
+    sha256: string;
+    destPath: string;
+    executable: boolean;
+    fetchImpl?: FetchImplementation;
+    renameImpl?: (oldPath: string, newPath: string) => Promise<void>;
+    log?: (message: string) => void;
 };
 
-const LICENSE_URL = 'https://raw.githubusercontent.com/tiann/tunwg/refs/heads/main/LICENSE';
+function digestSha256(bytes: Uint8Array): string {
+    return createHash('sha256').update(bytes).digest('hex');
+}
 
-async function downloadFile(url: string, destPath: string): Promise<void> {
-    console.log(`Downloading ${url}...`);
+async function readSha256(path: string): Promise<string | null> {
+    try {
+        return digestSha256(await readFile(path));
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+        throw error;
+    }
+}
 
-    const response = await fetch(url, { redirect: 'follow' });
-    if (!response.ok) {
-        throw new Error(`Failed to download ${url}: ${response.status} ${response.statusText}`);
+function assertSha256(value: string): void {
+    if (!/^[a-f0-9]{64}$/.test(value)) {
+        throw new Error(`Invalid SHA-256 digest: ${value}`);
+    }
+}
+
+export function getTunwgToolsDir(moduleUrl = import.meta.url): string {
+    const scriptDir = dirname(fileURLToPath(moduleUrl));
+    return join(scriptDir, '..', 'tools', 'tunwg');
+}
+
+export function getTunwgArtifactFilename(target: string): string {
+    return `tunwg-${target}${target.includes('win32') ? '.exe' : ''}`;
+}
+
+export async function installVerifiedArtifact(
+    options: InstallVerifiedArtifactOptions,
+): Promise<'reused' | 'installed'> {
+    assertSha256(options.sha256);
+    const log = options.log ?? console.log;
+    const mode = options.executable ? 0o755 : 0o644;
+    const existingSha256 = await readSha256(options.destPath);
+    if (existingSha256 === options.sha256) {
+        await chmod(options.destPath, mode);
+        log(`Reusing ${basename(options.destPath)} (SHA-256 verified)`);
+        return 'reused';
     }
 
-    const buffer = await response.arrayBuffer();
-	const dirName = dirname(destPath);
-	console.log(`  ->mkdirDir ${dirName}`);
-    mkdirSync(dirName, { recursive: true });
-    writeFileSync(destPath, Buffer.from(buffer));
+    log(`Downloading ${options.url}...`);
+    const fetchImpl = options.fetchImpl ?? fetch;
+    const response = await fetchImpl(options.url, { redirect: 'follow' });
+    if (!response.ok) {
+        throw new Error(`Failed to download ${options.url}: ${response.status} ${response.statusText}`);
+    }
 
-    console.log(`  -> ${destPath} (${(buffer.byteLength / 1024 / 1024).toFixed(2)} MB)`);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    const actualSha256 = digestSha256(bytes);
+    if (actualSha256 !== options.sha256) {
+        throw new Error(
+            `Checksum mismatch for ${options.url}: expected ${options.sha256}, actual ${actualSha256}`,
+        );
+    }
+
+    const directory = dirname(options.destPath);
+    await mkdir(directory, { recursive: true });
+    const temporary = join(
+        directory,
+        `.${basename(options.destPath)}.${process.pid}.${randomUUID()}.tmp`,
+    );
+    let handle: Awaited<ReturnType<typeof open>> | null = null;
+    try {
+        handle = await open(temporary, 'wx', mode);
+        await handle.writeFile(bytes);
+        await handle.chmod(mode);
+        await handle.sync();
+        await handle.close();
+        handle = null;
+        // Node/libuv maps rename to MoveFileExW(..., MOVEFILE_REPLACE_EXISTING)
+        // on Windows, preserving replace-by-rename semantics without an unsafe
+        // remove-then-rename gap.
+        await (options.renameImpl ?? rename)(temporary, options.destPath);
+    } finally {
+        if (handle) await handle.close();
+        await rm(temporary, { force: true });
+    }
+
+    log(`  -> ${options.destPath} (${(bytes.byteLength / 1024 / 1024).toFixed(2)} MB, SHA-256 verified)`);
+    return 'installed';
+}
+
+export async function downloadTunwgArtifacts(options: {
+    args?: string[];
+    platform?: NodeJS.Platform;
+    arch?: NodeJS.Architecture;
+    toolsDir?: string;
+    fetchImpl?: FetchImplementation;
+    log?: (message: string) => void;
+} = {}): Promise<void> {
+    const args = options.args ?? process.argv.slice(2);
+    const platform = options.platform ?? process.platform;
+    const arch = options.arch ?? process.arch;
+    const toolsDir = options.toolsDir ?? getTunwgToolsDir();
+    const log = options.log ?? console.log;
+
+    for (const [target, release] of selectTunwgReleases(args, platform, arch)) {
+        const filename = getTunwgArtifactFilename(target);
+        await installVerifiedArtifact({
+            ...release,
+            destPath: join(toolsDir, filename),
+            executable: !target.includes('win32'),
+            fetchImpl: options.fetchImpl,
+            log,
+        });
+    }
+
+    await installVerifiedArtifact({
+        ...TUNWG_LICENSE,
+        destPath: join(toolsDir, 'LICENSE'),
+        executable: false,
+        fetchImpl: options.fetchImpl,
+        log,
+    });
 }
 
 async function main(): Promise<void> {
-    let scriptDir: string;
-    if (isWindows) {
-        const __filename = fileURLToPath(import.meta.url);
-        scriptDir = dirname(__filename);
-    } else {
-        scriptDir = dirname(new URL(import.meta.url).pathname);
-    }
-    const toolsDir = join(scriptDir, '..', 'tools', 'tunwg');
-
-    console.log('Downloading tunwg binaries...\n');
-
-    // Download all platform binaries
-    for (const [platform, url] of Object.entries(TUNWG_RELEASES)) {
-        const filename = `tunwg-${platform}${platform.includes('win32') ? '.exe' : ''}`;
-        const destPath = join(toolsDir, filename);
-
-        if (existsSync(destPath)) {
-            console.log(`Skipping ${filename} (already exists)`);
-            continue;
-        }
-
-        await downloadFile(url, destPath);
-
-        // Make executable on Unix
-        if (!platform.includes('win32')) {
-            chmodSync(destPath, 0o755);
-        }
-    }
-
-    // Download LICENSE
-    const licensePath = join(toolsDir, 'LICENSE');
-    if (!existsSync(licensePath)) {
-        await downloadFile(LICENSE_URL, licensePath);
-    } else {
-        console.log('Skipping LICENSE (already exists)');
-    }
-
+    console.log('Preparing pinned tunwg artifacts...\n');
+    await downloadTunwgArtifacts();
     console.log('\nDone!');
 }
 
-main().catch((error) => {
-    console.error('Error:', error);
-    process.exit(1);
-});
+if (import.meta.main) {
+    main().catch((error) => {
+        console.error('Error:', error);
+        process.exitCode = 1;
+    });
+}

@@ -100,8 +100,9 @@ function formatAskUserQuestionAnswers(answers: Record<string, string[]> | Record
         : `User answered:\n${body}`;
 }
 
-function buildAskUserQuestionUpdatedInput(input: unknown, answers: Record<string, string[]> | Record<string, { answers: string[] }>): Record<string, unknown> {
-    // Normalize to flat format for AskUserQuestion
+export function buildAskUserQuestionUpdatedInput(input: unknown, answers: Record<string, string[]> | Record<string, { answers: string[] }>): Record<string, unknown> {
+    // Step 1: normalize HAPI's two internal wire formats (flat `string[]` or nested
+    // `{ answers: string[] }`), both keyed by question index, into index -> string[].
     const flatAnswers: Record<string, string[]> = {};
     for (const [key, value] of Object.entries(answers)) {
         if (Array.isArray(value)) {
@@ -111,13 +112,34 @@ function buildAskUserQuestionUpdatedInput(input: unknown, answers: Record<string
         }
     }
 
+    // Step 2: translate into the shape Claude Code's AskUserQuestion tool actually
+    // reads from `input.answers` to build the tool result the model sees:
+    //   { [questionText: string]: string }   // value is a single string; multi-select comma-joined
+    // (See @anthropic-ai/claude-code sdk-tools.d.ts AskUserQuestionOutput.answers:
+    //  "question text -> answer string; multi-select answers are comma-separated".)
+    // HAPI's index-keyed / array-valued format makes the tool emit an EMPTY answer
+    // ("...have been answered: ."), so the model never sees the user's selection.
+    const questions = isObject(input) && Array.isArray(input.questions) ? input.questions : [];
+    const answersByQuestion: Record<string, string> = {};
+    for (const [key, values] of Object.entries(flatAnswers)) {
+        const idx = Number.parseInt(key, 10);
+        const question = Number.isFinite(idx) ? questions[idx] : undefined;
+        const questionText = isObject(question) && typeof question.question === 'string' && question.question.trim().length > 0
+            ? question.question
+            : key; // fall back to the original key if the question text can't be resolved
+        answersByQuestion[questionText] = (Array.isArray(values) ? values : [values])
+            .map((v) => String(v).trim())
+            .filter((v) => v.length > 0)
+            .join(', ');
+    }
+
     if (!isObject(input)) {
-        return { answers: flatAnswers };
+        return { answers: answersByQuestion };
     }
 
     return {
         ...input,
-        answers: flatAnswers
+        answers: answersByQuestion
     };
 }
 

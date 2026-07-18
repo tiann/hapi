@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react'
+import { Suspense, lazy, useCallback, useMemo, type ComponentType } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
     Navigate,
@@ -12,20 +12,20 @@ import {
     useParams,
 } from '@tanstack/react-router'
 import { App } from '@/App'
-import { SessionChat } from '@/components/SessionChat'
 import { SessionList } from '@/components/SessionList'
-import { NewSession } from '@/components/NewSession'
 import { LoadingState } from '@/components/LoadingState'
 import { useAppContext } from '@/lib/app-context'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { isTelegramApp } from '@/hooks/useTelegram'
 import { useSidebarResize } from '@/hooks/useSidebarResize'
+import { getResolveSendTargetSessionFailureToast, useResolveSendTargetSession, describeResolveSendTargetSession } from '@/hooks/useResolveSendTargetSession'
 import { useMessages } from '@/hooks/queries/useMessages'
 import { useMachines } from '@/hooks/queries/useMachines'
 import { useSession } from '@/hooks/queries/useSession'
 import { useSessions } from '@/hooks/queries/useSessions'
 import { useSlashCommands } from '@/hooks/queries/useSlashCommands'
 import { useSkills } from '@/hooks/queries/useSkills'
+import { useMentions } from '@/hooks/queries/useMentions'
 import { useSendMessage } from '@/hooks/mutations/useSendMessage'
 import { queryKeys } from '@/lib/query-keys'
 import { useToast } from '@/lib/toast-context'
@@ -33,10 +33,31 @@ import { useTranslation } from '@/lib/use-translation'
 import { fetchLatestMessages, seedMessageWindowFromSession } from '@/lib/message-window-store'
 import { clearDraftsAfterSend } from '@/lib/clearDraftsAfterSend'
 import type { Machine } from '@/types/api'
-import FilesPage from '@/routes/sessions/files'
-import FilePage from '@/routes/sessions/file'
-import TerminalPage from '@/routes/sessions/terminal'
-import SettingsPage from '@/routes/settings'
+
+const LazySessionChat = lazy(() => import('@/components/SessionChat').then((mod) => ({ default: mod.SessionChat })))
+const LazyNewSession = lazy(() => import('@/components/NewSession').then((mod) => ({ default: mod.NewSession })))
+const LazyFilesPage = lazy(() => import('@/routes/sessions/files'))
+const LazyFilePage = lazy(() => import('@/routes/sessions/file'))
+const LazyTerminalPage = lazy(() => import('@/routes/sessions/terminal'))
+const LazySettingsPage = lazy(() => import('@/routes/settings'))
+
+function RouteLoadingState() {
+    return (
+        <div className="flex h-full items-center justify-center p-4">
+            <LoadingState label="Loading…" className="text-sm" />
+        </div>
+    )
+}
+
+function withRouteSuspense(Component: ComponentType) {
+    return function SuspendedRoute() {
+        return (
+            <Suspense fallback={<RouteLoadingState />}>
+                <Component />
+            </Suspense>
+        )
+    }
+}
 
 function BackIcon(props: { className?: string }) {
     return (
@@ -224,15 +245,21 @@ function SessionPage() {
         messages,
         warning: messagesWarning,
         isLoading: messagesLoading,
-        isLoadingMore: messagesLoadingMore,
-        hasMore: messagesHasMore,
-        loadMore: loadMoreMessages,
+        isLoadingOlder: messagesLoadingOlder,
+        isLoadingNewer: messagesLoadingNewer,
+        hasOlder: messagesHasOlder,
+        hasNewer: messagesHasNewer,
+        loadOlder: loadOlderMessages,
+        loadNewer: loadNewerMessages,
+        returnToLatest: returnToLatestMessages,
         refetch: refetchMessages,
         pendingCount,
         messagesVersion,
         flushPending,
         setAtBottom,
     } = useMessages(api, sessionId)
+    const { action: sendTargetResolutionAction } = describeResolveSendTargetSession(session, messages)
+    const { resolve: resolveSendTargetSession } = useResolveSendTargetSession(api, session, messages)
     const {
         sendMessage,
         retryMessage,
@@ -242,47 +269,47 @@ function SessionPage() {
             clearDraftsAfterSend(sentSessionId, sessionId)
         },
         resolveSessionId: async (currentSessionId) => {
-            if (!api || !session || session.active) {
-                return currentSessionId
-            }
             try {
-                return await api.resumeSession(currentSessionId)
+                return await resolveSendTargetSession(currentSessionId)
             } catch (error) {
-                const message = error instanceof Error ? error.message : 'Resume failed'
-                addToast({
-                    title: 'Resume failed',
-                    body: message,
-                    sessionId: currentSessionId,
-                    url: ''
-                })
+                if (sendTargetResolutionAction !== 'none') {
+                    const toast = getResolveSendTargetSessionFailureToast(sendTargetResolutionAction, error)
+                    addToast({
+                        title: toast.title,
+                        body: toast.body,
+                        sessionId: currentSessionId,
+                        url: ''
+                    })
+                }
                 throw error
             }
         },
         onSessionResolved: (resolvedSessionId) => {
-            void (async () => {
-                if (api) {
-                    if (session && resolvedSessionId !== session.id) {
-                        seedMessageWindowFromSession(session.id, resolvedSessionId)
-                        queryClient.setQueryData(queryKeys.session(resolvedSessionId), {
-                            session: { ...session, id: resolvedSessionId, active: true }
-                        })
-                    }
-                    try {
-                        await Promise.all([
-                            queryClient.prefetchQuery({
-                                queryKey: queryKeys.session(resolvedSessionId),
-                                queryFn: () => api.getSession(resolvedSessionId),
-                            }),
-                            fetchLatestMessages(api, resolvedSessionId),
-                        ])
-                    } catch {
-                    }
-                }
-                navigate({
-                    to: '/sessions/$sessionId',
-                    params: { sessionId: resolvedSessionId },
-                    replace: true
+            if (api && session && resolvedSessionId !== session.id) {
+                seedMessageWindowFromSession(session.id, resolvedSessionId)
+                queryClient.setQueryData(queryKeys.session(resolvedSessionId), {
+                    session: { ...session, id: resolvedSessionId, active: true }
                 })
+            }
+            navigate({
+                to: '/sessions/$sessionId',
+                params: { sessionId: resolvedSessionId },
+                replace: true
+            })
+            void (async () => {
+                if (!api) {
+                    return
+                }
+                try {
+                    await Promise.all([
+                        queryClient.prefetchQuery({
+                            queryKey: queryKeys.session(resolvedSessionId),
+                            queryFn: () => api.getSession(resolvedSessionId),
+                        }),
+                        fetchLatestMessages(api, resolvedSessionId),
+                    ])
+                } catch {
+                }
             })()
         },
         onBlocked: (reason) => {
@@ -302,18 +329,30 @@ function SessionPage() {
     const agentType = session?.metadata?.flavor ?? 'claude'
     const {
         commands: slashCommands,
+        ensureCommands: ensureSlashCommands,
         getSuggestions: getSlashSuggestions,
-    } = useSlashCommands(api, sessionId, agentType)
+        suggestionsVersion: slashSuggestionsVersion,
+    } = useSlashCommands(api, sessionId, agentType, { enabled: false })
     const {
         getSuggestions: getSkillSuggestions,
-    } = useSkills(api, sessionId)
+        suggestionsVersion: skillSuggestionsVersion,
+    } = useSkills(api, sessionId, { enabled: false })
+    const {
+        getSuggestions: getMentionSuggestions,
+        suggestionsVersion: mentionSuggestionsVersion,
+    } = useMentions(api, sessionId, { enabled: false })
+
+    const autocompleteSuggestionsVersion = `${agentType}:${mentionSuggestionsVersion}:${skillSuggestionsVersion}:${slashSuggestionsVersion}`
 
     const getAutocompleteSuggestions = useCallback(async (query: string) => {
+        if (query.startsWith('@')) {
+            return await getMentionSuggestions(query)
+        }
         if (query.startsWith('$')) {
             return await getSkillSuggestions(query)
         }
         return await getSlashSuggestions(query)
-    }, [getSkillSuggestions, getSlashSuggestions])
+    }, [getMentionSuggestions, getSkillSuggestions, getSlashSuggestions])
 
     const refreshSelectedSession = useCallback(() => {
         void refetchSession()
@@ -329,27 +368,35 @@ function SessionPage() {
     }
 
     return (
-        <SessionChat
-            api={api}
-            session={session}
-            messages={messages}
-            messagesWarning={messagesWarning}
-            hasMoreMessages={messagesHasMore}
-            isLoadingMessages={messagesLoading}
-            isLoadingMoreMessages={messagesLoadingMore}
-            isSending={isSending}
-            pendingCount={pendingCount}
-            messagesVersion={messagesVersion}
-            onBack={goBack}
-            onRefresh={refreshSelectedSession}
-            onLoadMore={loadMoreMessages}
-            onSend={sendMessage}
-            onFlushPending={flushPending}
-            onAtBottomChange={setAtBottom}
-            onRetryMessage={retryMessage}
-            autocompleteSuggestions={getAutocompleteSuggestions}
-            availableSlashCommands={slashCommands}
-        />
+        <Suspense fallback={<RouteLoadingState />}>
+            <LazySessionChat
+                api={api}
+                session={session}
+                messages={messages}
+                messagesWarning={messagesWarning}
+                hasMoreMessages={messagesHasOlder}
+                hasNewerMessages={messagesHasNewer}
+                isLoadingMessages={messagesLoading}
+                isLoadingMoreMessages={messagesLoadingOlder}
+                isLoadingNewerMessages={messagesLoadingNewer}
+                isSending={isSending}
+                pendingCount={pendingCount}
+                messagesVersion={messagesVersion}
+                onBack={goBack}
+                onRefresh={refreshSelectedSession}
+                onLoadMore={loadOlderMessages}
+                onLoadNewer={loadNewerMessages}
+                onReturnToLatest={returnToLatestMessages}
+                onSend={sendMessage}
+                onFlushPending={flushPending}
+                onAtBottomChange={setAtBottom}
+                onRetryMessage={retryMessage}
+                autocompleteSuggestions={getAutocompleteSuggestions}
+                autocompleteSuggestionsVersion={autocompleteSuggestionsVersion}
+                availableSlashCommands={slashCommands}
+                resolveAvailableSlashCommands={ensureSlashCommands}
+            />
+        </Suspense>
     )
 }
 
@@ -367,7 +414,14 @@ function NewSessionPage() {
     const navigate = useNavigate()
     const goBack = useAppGoBack()
     const queryClient = useQueryClient()
-    const { machines, isLoading: machinesLoading, error: machinesError } = useMachines(api, true)
+    const {
+        machines,
+        knownMachinesCount,
+        offlineMachinesCount,
+        serverTimeOffsetMs,
+        isLoading: machinesLoading,
+        error: machinesError
+    } = useMachines(api, true)
     const { t } = useTranslation()
 
     const handleCancel = useCallback(() => {
@@ -412,13 +466,18 @@ function NewSessionPage() {
                     </div>
                 ) : null}
 
-                <NewSession
-                    api={api}
-                    machines={machines}
-                    isLoading={machinesLoading}
-                    onCancel={handleCancel}
-                    onSuccess={handleSuccess}
-                />
+                <Suspense fallback={<RouteLoadingState />}>
+                    <LazyNewSession
+                        api={api}
+                        machines={machines}
+                        knownMachinesCount={knownMachinesCount}
+                        offlineMachinesCount={offlineMachinesCount}
+                        serverTimeOffsetMs={serverTimeOffsetMs}
+                        isLoading={machinesLoading}
+                        onCancel={handleCancel}
+                        onSuccess={handleSuccess}
+                    />
+                </Suspense>
             </div>
         </div>
     )
@@ -465,13 +524,13 @@ const sessionFilesRoute = createRoute({
 
         return tab ? { tab } : {}
     },
-    component: FilesPage,
+    component: withRouteSuspense(LazyFilesPage),
 })
 
 const sessionTerminalRoute = createRoute({
     getParentRoute: () => sessionDetailRoute,
     path: 'terminal',
-    component: TerminalPage,
+    component: withRouteSuspense(LazyTerminalPage),
 })
 
 type SessionFileSearch = {
@@ -507,7 +566,7 @@ const sessionFileRoute = createRoute({
         }
         return result
     },
-    component: FilePage,
+    component: withRouteSuspense(LazyFilePage),
 })
 
 const newSessionRoute = createRoute({
@@ -519,7 +578,7 @@ const newSessionRoute = createRoute({
 const settingsRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/settings',
-    component: SettingsPage,
+    component: withRouteSuspense(LazySettingsPage),
 })
 
 export const routeTree = rootRoute.addChildren([

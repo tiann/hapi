@@ -2,7 +2,14 @@ import type { AgentState } from '@/types/api'
 import type { ChatBlock, NormalizedMessage, UsageData } from '@/chat/types'
 import { traceMessages, type TracedMessage } from '@/chat/tracer'
 import { dedupeAgentEvents, foldApiErrorEvents } from '@/chat/reducerEvents'
-import { collectTitleChanges, collectToolIdsFromMessages, ensureToolBlock, getPermissions } from '@/chat/reducerTools'
+import {
+    collectSendAttachmentToolIds,
+    collectTitleChanges,
+    collectToolIdsFromMessages,
+    ensureToolBlock,
+    getPermissions,
+    isSendAttachmentToolName
+} from '@/chat/reducerTools'
 import { reduceTimeline } from '@/chat/reducerTimeline'
 
 // Calculate context size from usage data
@@ -26,6 +33,7 @@ export function reduceChatBlocks(
     const permissionsById = getPermissions(agentState)
     const toolIdsInMessages = collectToolIdsFromMessages(normalized)
     const titleChangesByToolUseId = collectTitleChanges(normalized)
+    const sendAttachmentToolUseIds = collectSendAttachmentToolIds(normalized)
 
     const traced = traceMessages(normalized)
     const groups = new Map<string, TracedMessage[]>()
@@ -43,7 +51,7 @@ export function reduceChatBlocks(
 
     const consumedGroupIds = new Set<string>()
     const emittedTitleChangeToolUseIds = new Set<string>()
-    const reducerContext = { permissionsById, groups, consumedGroupIds, titleChangesByToolUseId, emittedTitleChangeToolUseIds }
+    const reducerContext = { permissionsById, groups, consumedGroupIds, titleChangesByToolUseId, emittedTitleChangeToolUseIds, sendAttachmentToolUseIds }
     const rootResult = reduceTimeline(root, reducerContext)
     let hasReadyEvent = rootResult.hasReadyEvent
 
@@ -57,6 +65,7 @@ export function reduceChatBlocks(
     for (const [id, entry] of permissionsById) {
         if (toolIdsInMessages.has(id)) continue
         if (rootResult.toolBlocksById.has(id)) continue
+        if (isSendAttachmentToolName(entry.toolName)) continue
 
         const createdAt = entry.permission.createdAt ?? Date.now()
 

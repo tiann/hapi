@@ -1,4 +1,5 @@
 import type { UploadFileResponse } from '@/types/api'
+import { randomId } from '@/lib/randomId'
 
 export type FileAttachment = {
     id: string
@@ -12,7 +13,7 @@ export type UploadFunction = (file: File) => Promise<UploadFileResponse>
 
 export function createFileAttachment(file: File): FileAttachment {
     return {
-        id: crypto.randomUUID(),
+        id: randomId(),
         file,
         status: 'uploading'
     }

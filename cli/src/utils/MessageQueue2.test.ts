@@ -3,6 +3,56 @@ import { MessageQueue2 } from './MessageQueue2';
 import { hashObject } from './deterministicJson';
 
 describe('MessageQueue2', () => {
+    it('reserves FIFO items before notifying a waiter and commits exactly once', async () => {
+        const queue = new MessageQueue2<string>(mode => mode)
+        const waiting = queue.waitForMessagesAndReserve()
+        queue.push('first', 'mode', { messageId: 'message-1', seq: 10 })
+        const reservation = await waiting
+        expect(reservation?.items[0]).toMatchObject({ messageId: 'message-1', seq: 10, state: 'reserved' })
+        expect(queue.size()).toBe(1)
+        expect(queue.commit(reservation!)).toBe(true)
+        expect(queue.commit(reservation!)).toBe(false)
+        expect(queue.size()).toBe(0)
+    })
+
+    it('keeps a reserved FIFO barrier and re-waits until it is restored', async () => {
+        const queue = new MessageQueue2<string>(mode => mode)
+        queue.push('first', 'mode')
+        queue.push('second', 'mode')
+        const first = await queue.waitForMessagesAndReserve()
+        let resolved = false
+        const secondWait = queue.waitForMessagesAndReserve().then((value) => { resolved = true; return value })
+        await new Promise(resolve => setTimeout(resolve, 0))
+        expect(resolved).toBe(false)
+        expect(queue.restore(first!)).toBe(true)
+        expect((await secondWait)?.message).toBe('first\nsecond')
+    })
+
+    it('invalidates stale generations only after terminalizing every queued or reserved item', async () => {
+        const queue = new MessageQueue2<string>(mode => mode)
+        queue.push('first', 'mode')
+        queue.push('second', 'mode')
+        const reservation = await queue.waitForMessagesAndReserve()
+        const terminalized: string[] = []
+        await queue.invalidateAll('reset', async (item) => { terminalized.push(`${item.message}:${item.state}`) })
+        expect(terminalized).toEqual(['first:reserved', 'second:reserved'])
+        expect(queue.commit(reservation!)).toBe(false)
+        expect(queue.size()).toBe(0)
+    })
+
+    it('seals a durable-delivery reservation so later pushes cannot bypass its barrier', async () => {
+        const queue = new MessageQueue2<string>(mode => mode)
+        queue.push('barrier-covered', 'mode', { messageId: 'message-1', seq: 1 })
+        const reservation = await queue.waitForMessagesAndReserve()
+        expect(queue.seal(reservation!)).toBe(true)
+
+        queue.push('must-wait-for-next-barrier', 'mode', { messageId: 'message-2', seq: 2 })
+
+        expect(reservation?.items.map(item => item.messageId)).toEqual(['message-1'])
+        expect(queue.commit(reservation!)).toBe(true)
+        const next = await queue.waitForMessagesAndReserve()
+        expect(next?.items.map(item => item.messageId)).toEqual(['message-2'])
+    })
     it('should create a queue', () => {
         const queue = new MessageQueue2<string>(mode => mode);
         expect(queue.size()).toBe(0);
@@ -131,6 +181,20 @@ describe('MessageQueue2', () => {
         
         const result = await queue.waitForMessagesAndGetAsString(abortController.signal);
         expect(result).toBeNull();
+    });
+
+    it('does not reserve existing messages when the signal is already aborted', async () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        const abortController = new AbortController();
+        queue.push('must remain queued', 'local');
+        abortController.abort();
+
+        const reservation = await queue.waitForMessagesAndReserve(abortController.signal);
+
+        expect(reservation).toBeNull();
+        expect(queue.snapshotAll()).toEqual([
+            expect.objectContaining({ message: 'must remain queued', state: 'queued' })
+        ]);
     });
 
     it('should handle abort signal with existing messages', async () => {
@@ -401,10 +465,12 @@ describe('MessageQueue2', () => {
         
         // Manually add an isolated message without clearing (simulating edge case)
         queue.queue.push({
+            id: 999,
             message: 'isolated',
             mode: { type: 'A' },
             modeHash: 'A',
-            isolate: true
+            isolate: true,
+            origin: 'pushIsolateAndClear'
         });
         
         // Add more regular messages
@@ -455,5 +521,33 @@ describe('MessageQueue2', () => {
         const batch3 = await queue.waitForMessagesAndGetAsString();
         expect(batch3?.message).toBe('after-isolated');
         expect(batch3?.mode.type).toBe('B');
+    });
+
+    it('should remove and return the first queued item that matches a predicate', async () => {
+        const queue = new MessageQueue2<{ type: string }>((mode) => mode.type);
+
+        queue.push('first', { type: 'A' });
+        queue.push('second', { type: 'B' });
+        queue.push('third', { type: 'A' });
+
+        const removed = queue.takeFirstMatching((item) =>
+            item.message === 'second'
+            && item.hash === 'B'
+            && item.isolate === false
+        );
+
+        expect(removed).toMatchObject({
+            id: 2,
+            message: 'second',
+            mode: { type: 'B' },
+            hash: 'B',
+            isolate: false,
+            origin: 'push',
+            state: 'committed'
+        });
+
+        const batch = await queue.waitForMessagesAndGetAsString();
+        expect(batch?.message).toBe('first\nthird');
+        expect(batch?.mode.type).toBe('A');
     });
 });

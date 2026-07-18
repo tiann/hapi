@@ -97,6 +97,20 @@ describe('spawnHappyCLI windowsHide behavior', () => {
     expect('windowsHide' in options).toBe(false);
   });
 
+  it('does not re-merge parent credentials when replaceEnv is requested', async () => {
+    setPlatform('linux');
+    const { spawnHappyCLI } = await import('./spawnHappyCLI');
+    process.env.GEMINI_API_KEY = 'parent-secret';
+    spawnHappyCLI(['runner', 'start-sync'], {
+      env: { PATH: '/usr/bin' },
+      replaceEnv: true
+    });
+    const options = getSpawnOptionsOrThrow();
+    expect(options.env).toMatchObject({ PATH: '/usr/bin' });
+    expect(options.env).not.toHaveProperty('GEMINI_API_KEY');
+    delete process.env.GEMINI_API_KEY;
+  });
+
   it('forces Bun child processes to run with the cli project root as cwd', async () => {
     const { getHappyCliCommand } = await import('./spawnHappyCLI');
 

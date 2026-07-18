@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'bun:test'
 import type { SyncEvent } from '@hapi/protocol/types'
 import { Store } from '../store'
+import { RpcRegistry } from '../socket/rpcRegistry'
 import type { EventPublisher } from './eventPublisher'
 import { MachineCache } from './machineCache'
 import { SessionCache } from './sessionCache'
+import { SyncEngine } from './syncEngine'
 
 function createPublisher(events: SyncEvent[]): EventPublisher {
     return {
@@ -60,5 +62,50 @@ describe('alive incremental events', () => {
         }
 
         expect(update.data).toEqual(expect.objectContaining({ id: machine.id, active: true }))
+    })
+
+    it('ignores passive Codex transcript socket lifecycle for session active state', () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            null as never,
+            new RpcRegistry(),
+            { broadcast: () => undefined } as never
+        )
+
+        const session = engine.getOrCreateSession(
+            'native-hapi-runner',
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'codex',
+                startedFromRunner: true,
+                startedBy: 'runner'
+            },
+            null,
+            'default'
+        )
+
+        try {
+            engine.handleSessionAlive({
+                sid: session.id,
+                time: Date.now(),
+                thinking: false,
+                source: 'codex-desktop-sync'
+            } as Parameters<typeof engine.handleSessionAlive>[0] & { source: 'codex-desktop-sync' })
+            expect(engine.getSession(session.id)?.active).toBe(false)
+
+            engine.handleSessionAlive({ sid: session.id, time: Date.now(), thinking: true })
+            expect(engine.getSession(session.id)).toMatchObject({ active: true, thinking: true })
+
+            engine.handleSessionEnd({
+                sid: session.id,
+                time: Date.now(),
+                source: 'codex-desktop-sync'
+            } as Parameters<typeof engine.handleSessionEnd>[0] & { source: 'codex-desktop-sync' })
+            expect(engine.getSession(session.id)).toMatchObject({ active: true, thinking: true })
+        } finally {
+            engine.stop()
+        }
     })
 })

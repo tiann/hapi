@@ -1,6 +1,9 @@
-import type { AgentEvent, NormalizedAgentContent, NormalizedMessage, ToolResultPermission } from '@/chat/types'
+import type { AgentEvent, InternalMessageKind, NormalizedAgentContent, NormalizedMessage, ToolResultPermission } from '@/chat/types'
 import { AGENT_MESSAGE_PAYLOAD_TYPE, asNumber, asString, isObject } from '@hapi/protocol'
 import { isClaudeChatVisibleMessage } from '@hapi/protocol/messages'
+import type { AttachmentMetadata } from '@/types/api'
+import { isSafeAttachmentPreviewUrl } from '@/lib/safeAttachmentPreviewUrl'
+import { classifyGrokExtensionForDisplay, shouldHideGrokSessionEventMessage } from './grokExtensions'
 
 function normalizeToolResultPermissions(value: unknown): ToolResultPermission | undefined {
     if (!isObject(value)) return undefined
@@ -30,6 +33,83 @@ function normalizeToolResultPermissions(value: unknown): ToolResultPermission | 
 function normalizeAgentEvent(value: unknown): AgentEvent | null {
     if (!isObject(value) || typeof value.type !== 'string') return null
     return value as AgentEvent
+}
+
+function tokenDelta(preTokens: number | null, postTokens: number | null): number | undefined {
+    if (preTokens === null || postTokens === null) return undefined
+    const saved = preTokens - postTokens
+    return saved > 0 ? saved : undefined
+}
+
+const INTERNAL_MESSAGE_KINDS: ReadonlySet<string> = new Set([
+    'background_notification',
+    'internal_tool_result',
+    'internal_sidechain',
+    'internal_meta',
+    'internal_plan_restart',
+    'internal_command_name',
+    'internal_local_command_caveat',
+    'internal_system_reminder'
+])
+
+const PLAN_FAKE_RESTART = 'PlEaZe Continue with plan.'
+
+function asInternalMessageKind(value: unknown): InternalMessageKind | undefined {
+    return typeof value === 'string' && INTERNAL_MESSAGE_KINDS.has(value)
+        ? value as InternalMessageKind
+        : undefined
+}
+
+function classifyInternalUserPrompt(prompt: string): InternalMessageKind | undefined {
+    const trimmed = prompt.trimStart()
+    if (trimmed.trimEnd() === PLAN_FAKE_RESTART) return 'internal_plan_restart'
+    if (trimmed.startsWith('<task-notification>')) return 'background_notification'
+    if (trimmed.startsWith('<command-name>')) return 'internal_command_name'
+    if (trimmed.startsWith('<local-command-caveat>')) return 'internal_local_command_caveat'
+    if (trimmed.startsWith('<system-reminder>')) return 'internal_system_reminder'
+    return undefined
+}
+
+function sidechainContent(
+    uuid: string,
+    parentUUID: string | null,
+    prompt: string,
+    kind?: InternalMessageKind
+): NormalizedAgentContent {
+    return {
+        type: 'sidechain',
+        uuid,
+        parentUUID,
+        prompt,
+        ...(kind ? { kind } : {})
+    }
+}
+
+function parseAttachmentMetadata(raw: unknown): AttachmentMetadata[] {
+    if (!Array.isArray(raw)) return []
+    const attachments: AttachmentMetadata[] = []
+    for (const item of raw) {
+        if (
+            isObject(item)
+            && typeof item.id === 'string'
+            && typeof item.filename === 'string'
+            && typeof item.mimeType === 'string'
+            && typeof item.size === 'number'
+            && typeof item.path === 'string'
+        ) {
+            const previewUrl = typeof item.previewUrl === 'string' ? item.previewUrl : undefined
+            if (previewUrl && !isSafeAttachmentPreviewUrl(previewUrl, item.mimeType)) continue
+            attachments.push({
+                id: item.id,
+                filename: item.filename,
+                mimeType: item.mimeType,
+                size: item.size,
+                path: item.path,
+                previewUrl
+            })
+        }
+    }
+    return attachments
 }
 
 function normalizeAssistantOutput(
@@ -103,6 +183,7 @@ function normalizeUserOutput(
     const uuid = asString(data.uuid) ?? messageId
     const parentUUID = asString(data.parentUuid) ?? null
     const isSidechain = Boolean(data.isSidechain)
+    const metaMessageKind = asInternalMessageKind(isObject(meta) ? meta.messageKind : undefined)
 
     const message = isObject(data.message) ? data.message : null
     if (!message) return null
@@ -116,7 +197,13 @@ function normalizeUserOutput(
             createdAt,
             role: 'agent',
             isSidechain: true,
-            content: [{ type: 'sidechain', uuid, parentUUID, prompt: messageContent }]
+            content: [sidechainContent(
+                uuid,
+                parentUUID,
+                messageContent,
+                metaMessageKind ?? classifyInternalUserPrompt(messageContent) ?? 'internal_sidechain'
+            )],
+            meta
         }
     }
 
@@ -135,7 +222,13 @@ function normalizeUserOutput(
             createdAt,
             role: 'agent',
             isSidechain: true,
-            content: [{ type: 'sidechain', uuid, parentUUID, prompt: messageContent }]
+            content: [sidechainContent(
+                uuid,
+                parentUUID,
+                messageContent,
+                metaMessageKind ?? classifyInternalUserPrompt(messageContent)
+            )],
+            meta
         }
     }
 
@@ -154,7 +247,13 @@ function normalizeUserOutput(
                 createdAt,
                 role: 'agent',
                 isSidechain: true,
-                content: [{ type: 'sidechain', uuid, parentUUID, prompt: textParts.join('\n\n') }]
+                content: [sidechainContent(
+                    uuid,
+                    parentUUID,
+                    textParts.join('\n\n'),
+                    metaMessageKind ?? 'internal_sidechain'
+                )],
+                meta
             }
         }
     }
@@ -221,7 +320,14 @@ function normalizeUserOutput(
 }
 
 export function isSkippableAgentContent(content: unknown): boolean {
-    if (!isObject(content) || content.type !== 'output') return false
+    if (!isObject(content)) return false
+    if (content.type === 'event') {
+        const event = isObject(content.data) ? content.data : null
+        return event?.type === 'message'
+            && typeof event.message === 'string'
+            && shouldHideGrokSessionEventMessage(event.message)
+    }
+    if (content.type !== 'output') return false
     const data = isObject(content.data) ? content.data : null
     if (!data) return false
     if (Boolean(data.isMeta) || Boolean(data.isCompactSummary)) return true
@@ -316,6 +422,10 @@ export function normalizeAgentRecord(
         }
         if (data.type === 'system' && data.subtype === 'compact_boundary') {
             const metadata = isObject(data.compactMetadata) ? data.compactMetadata : null
+            const preTokens = asNumber(metadata?.preTokens)
+            const postTokens = asNumber(metadata?.postTokens)
+            const durationMs = asNumber(metadata?.durationMs)
+            const tokensSaved = asNumber(metadata?.tokensSaved) ?? tokenDelta(preTokens, postTokens)
             return {
                 id: messageId,
                 localId,
@@ -323,8 +433,12 @@ export function normalizeAgentRecord(
                 role: 'event',
                 content: {
                     type: 'compact',
+                    source: 'claude',
                     trigger: asString(metadata?.trigger) ?? 'auto',
-                    preTokens: asNumber(metadata?.preTokens) ?? 0
+                    ...(preTokens !== null ? { preTokens } : {}),
+                    ...(postTokens !== null ? { postTokens } : {}),
+                    ...(tokensSaved !== undefined ? { tokensSaved } : {}),
+                    ...(durationMs !== null ? { durationMs } : {})
                 },
                 isSidechain: false,
                 meta
@@ -336,6 +450,9 @@ export function normalizeAgentRecord(
     if (content.type === 'event') {
         const event = normalizeAgentEvent(content.data)
         if (!event) return null
+        if (event.type === 'message'
+            && typeof event.message === 'string'
+            && shouldHideGrokSessionEventMessage(event.message)) return null
         return {
             id: messageId,
             localId,
@@ -350,6 +467,34 @@ export function normalizeAgentRecord(
     if (content.type === AGENT_MESSAGE_PAYLOAD_TYPE) {
         const data = isObject(content.data) ? content.data : null
         if (!data || typeof data.type !== 'string') return null
+
+        if (data.type === 'context_compacted') {
+            const preTokens = asNumber(
+                data.previousTokens
+                ?? data.previous_tokens
+                ?? data.previousTokenCount
+                ?? data.previous_token_count
+            )
+            const postTokens = asNumber(data.tokens ?? data.tokenCount ?? data.token_count)
+            const tokensSaved = asNumber(data.tokensSaved ?? data.tokens_saved) ?? tokenDelta(preTokens, postTokens)
+            const trigger = asString(data.trigger)
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'event',
+                content: {
+                    type: 'compact',
+                    source: 'codex',
+                    ...(trigger ? { trigger } : {}),
+                    ...(preTokens !== null ? { preTokens } : {}),
+                    ...(postTokens !== null ? { postTokens } : {}),
+                    ...(tokensSaved !== undefined ? { tokensSaved } : {})
+                },
+                isSidechain: false,
+                meta
+            }
+        }
 
         if (data.type === 'message' && typeof data.message === 'string') {
             return {
@@ -371,6 +516,114 @@ export function normalizeAgentRecord(
                 role: 'agent',
                 isSidechain: false,
                 content: [{ type: 'reasoning', text: data.message, uuid: messageId, parentUUID: null }],
+                meta
+            }
+        }
+
+        if (data.type === 'plan' && Array.isArray(data.entries)) {
+            const lines = data.entries.flatMap((entry) => {
+                if (!isObject(entry) || typeof entry.content !== 'string') return []
+                const marker = entry.status === 'completed' ? 'x' : ' '
+                return [`- [${marker}] ${entry.content}`]
+            })
+            if (lines.length === 0) return null
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'agent',
+                isSidechain: false,
+                content: [{ type: 'text', text: `Plan updated:\n${lines.join('\n')}`, uuid: messageId, parentUUID: null }],
+                meta
+            }
+        }
+
+        if (data.type === 'error' && typeof data.message === 'string') {
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'agent',
+                isSidechain: false,
+                content: [{ type: 'text', text: `Grok error: ${data.message}`, uuid: messageId, parentUUID: null }],
+                meta
+            }
+        }
+
+        if (data.type === 'grok-extension' && typeof data.method === 'string') {
+            const display = classifyGrokExtensionForDisplay(data.method, data.params)
+            if (display.type === 'hidden') return null
+            if (display.type === 'message') {
+                return {
+                    id: messageId,
+                    localId,
+                    createdAt,
+                    role: 'agent',
+                    content: [{ type: 'text', text: display.message, uuid: messageId, parentUUID: null }],
+                    isSidechain: false,
+                    meta
+                }
+            }
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'event',
+                content: { type: 'grok-extension', method: data.method, params: data.params },
+                isSidechain: false,
+                meta
+            }
+        }
+
+        if (data.type === 'moa-reference' && typeof data.message === 'string') {
+            const label = asString(data.label) ?? 'reference'
+            const index = asNumber(data.index)
+            const count = asNumber(data.count)
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'agent',
+                isSidechain: false,
+                content: [{
+                    type: 'moa-reference',
+                    label,
+                    text: data.message,
+                    ...(index !== null ? { index } : {}),
+                    ...(count !== null ? { count } : {}),
+                    uuid: messageId,
+                    parentUUID: null
+                }],
+                meta
+            }
+        }
+
+        if (data.type === 'moa-aggregating') {
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'event',
+                content: {
+                    type: 'moa-aggregating',
+                    ...(asString(data.aggregator) ? { aggregator: asString(data.aggregator) } : {})
+                },
+                isSidechain: false,
+                meta
+            }
+        }
+
+        if (data.type === 'attachments') {
+            const attachments = parseAttachmentMetadata(data.attachments)
+            if (attachments.length === 0) return null
+            const uuid = asString(data.id) ?? messageId
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'agent',
+                isSidechain: false,
+                content: [{ type: 'attachments', attachments, uuid, parentUUID: null }],
                 meta
             }
         }
@@ -398,6 +651,11 @@ export function normalizeAgentRecord(
 
         if (data.type === 'tool-call-result' && typeof data.callId === 'string') {
             const uuid = asString(data.id) ?? messageId
+            const output = isObject(data.output) ? data.output : null
+            const isError = data.is_error === true
+                || data.isError === true
+                || output?.is_error === true
+                || output?.isError === true
             return {
                 id: messageId,
                 localId,
@@ -408,7 +666,7 @@ export function normalizeAgentRecord(
                     type: 'tool-result',
                     tool_use_id: data.callId,
                     content: data.output,
-                    is_error: false,
+                    is_error: isError,
                     uuid,
                     parentUUID: null
                 }],

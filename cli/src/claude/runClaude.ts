@@ -14,12 +14,20 @@ import { registerKillSessionHandler } from './registerKillSessionHandler';
 import type { Session } from './session';
 import { bootstrapSession } from '@/agent/sessionFactory';
 import { createModeChangeHandler, createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle';
-import { isPermissionModeAllowedForFlavor } from '@hapi/protocol';
+import {
+    DEFAULT_CLAUDE_DEEPSEEK_MODEL,
+    isCcApiEffortAllowedForModel,
+    isClaudeDeepSeekEffortAllowedForModel,
+    isClaudeDeepSeekModelPreset,
+    isKnownCcApiModel,
+    isPermissionModeAllowedForFlavor
+} from '@hapi/protocol';
 import { PermissionModeSchema } from '@hapi/protocol/schemas';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { normalizeClaudeSessionModel } from './model';
 import { normalizeClaudeSessionEffort } from './effort';
 import { getInvokedCwd } from '@/utils/invokedCwd';
+import { applyHapiSessionEnvironment } from '@/agent/sessionEnvironment';
 
 export interface StartOptions {
     model?: string
@@ -30,6 +38,69 @@ export interface StartOptions {
     claudeEnvVars?: Record<string, string>
     claudeArgs?: string[]
     startedBy?: 'runner' | 'terminal'
+    agentFlavor?: 'claude' | 'claude-deepseek' | 'claude-ark' | 'cc-api'
+}
+
+function hasResumeArgument(args: string[] | undefined): boolean {
+    return args?.some((arg) => arg === '--resume' || arg.startsWith('--resume=')) === true;
+}
+
+function readLastClaudeOption(
+    args: string[] | undefined,
+    option: string
+): { found: boolean; value: string | undefined } {
+    const values = args ?? [];
+    let found = false;
+    let value: string | undefined;
+
+    for (let i = 0; i < values.length; i += 1) {
+        const arg = values[i];
+        if (arg === option) {
+            found = true;
+            value = values[i + 1];
+            i += 1;
+        } else if (arg.startsWith(`${option}=`)) {
+            found = true;
+            value = arg.slice(option.length + 1);
+        }
+    }
+
+    return { found, value };
+}
+
+function removeInvalidEffortArgs(
+    args: string[] | undefined,
+    isAllowed: (effort: string | null) => boolean
+): string[] | undefined {
+    if (!args) {
+        return undefined;
+    }
+
+    let changed = false;
+    const sanitized: string[] = [];
+
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+
+        if (arg === '--effort') {
+            const value = args[i + 1];
+            if (value !== undefined && !isAllowed(normalizeClaudeSessionEffort(value))) {
+                changed = true;
+                i += 1;
+                continue;
+            }
+        } else if (arg.startsWith('--effort=')) {
+            const value = arg.slice('--effort='.length);
+            if (!isAllowed(normalizeClaudeSessionEffort(value))) {
+                changed = true;
+                continue;
+            }
+        }
+
+        sanitized.push(arg);
+    }
+
+    return changed ? sanitized : args;
 }
 
 export async function runClaude(options: StartOptions = {}): Promise<void> {
@@ -48,11 +119,54 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         // throw new Error('Runner-spawned sessions cannot use local/interactive mode');
     }
 
+    const agentFlavor = options.agentFlavor ?? 'claude';
+    const resumedFromPersistedSession = hasResumeArgument(options.claudeArgs);
     const initialState: AgentState = {};
-    const initialModel = normalizeClaudeSessionModel(options.model);
-    const initialEffort = normalizeClaudeSessionEffort(options.effort);
-    const { api, session, sessionInfo } = await bootstrapSession({
-        flavor: 'claude',
+    const rawModelOption = readLastClaudeOption(options.claudeArgs, '--model');
+    let initialModel = normalizeClaudeSessionModel(rawModelOption.found ? rawModelOption.value : options.model);
+    if (rawModelOption.found && initialModel === null) {
+        throw new Error('Missing --model value');
+    }
+    let initialEffort = normalizeClaudeSessionEffort(options.effort);
+    if (agentFlavor === 'claude-deepseek') {
+        if (initialModel === null) {
+            initialModel = DEFAULT_CLAUDE_DEEPSEEK_MODEL;
+        } else if (!isClaudeDeepSeekModelPreset(initialModel)) {
+            throw new Error(`Unknown CC-deepseek model: ${initialModel}`);
+        }
+        if (!isClaudeDeepSeekEffortAllowedForModel(initialModel, initialEffort)) {
+            initialEffort = null;
+        }
+    }
+    const unlistedCcApiResumeModel = agentFlavor === 'cc-api'
+        && initialModel !== null
+        && !isKnownCcApiModel(initialModel);
+    if (unlistedCcApiResumeModel && !resumedFromPersistedSession) {
+        throw new Error(`Unknown CC-api model: ${initialModel}`);
+    }
+    const persistedResumeEffortPassThrough = agentFlavor === 'cc-api'
+        && resumedFromPersistedSession
+        && unlistedCcApiResumeModel
+        && !isCcApiEffortAllowedForModel(initialModel, initialEffort)
+        && isCcApiEffortAllowedForModel(initialModel, initialEffort, { allowUnlistedModel: true });
+    if (agentFlavor === 'cc-api' && !isCcApiEffortAllowedForModel(
+        initialModel,
+        initialEffort,
+        { allowUnlistedModel: resumedFromPersistedSession }
+    )) {
+        initialEffort = null;
+    }
+    const claudeArgs = agentFlavor === 'cc-api'
+        ? removeInvalidEffortArgs(options.claudeArgs, (effort) => isCcApiEffortAllowedForModel(
+            initialModel,
+            effort,
+            { allowUnlistedModel: resumedFromPersistedSession }
+        ))
+        : agentFlavor === 'claude-deepseek'
+            ? removeInvalidEffortArgs(options.claudeArgs, (effort) => isClaudeDeepSeekEffortAllowedForModel(initialModel, effort))
+            : options.claudeArgs;
+    const { api, session, sessionInfo, reportStartedToRunner } = await bootstrapSession({
+        flavor: agentFlavor,
         startedBy,
         workingDirectory,
         agentState: initialState,
@@ -60,22 +174,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         effort: initialEffort ?? undefined
     });
     logger.debug(`Session created: ${sessionInfo.id}`);
-
-    // Extract SDK metadata in background and update session when ready
-    extractSDKMetadataAsync(async (sdkMetadata) => {
-        logger.debug('[start] SDK metadata extracted, updating session:', sdkMetadata);
-        try {
-            // Update session metadata with tools and slash commands
-            session.updateMetadata((currentMetadata) => ({
-                ...currentMetadata,
-                tools: sdkMetadata.tools,
-                slashCommands: sdkMetadata.slashCommands
-            }));
-            logger.debug('[start] Session metadata updated with SDK capabilities');
-        } catch (error) {
-            logger.debug('[start] Failed to update session metadata:', error);
-        }
-    });
+    applyHapiSessionEnvironment(sessionInfo.id);
 
     // Start HAPI MCP server
     const happyServer = await startHappyServer(session);
@@ -94,7 +193,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
 
     // Start Hook server for receiving Claude session notifications
     const hookServer = await startHookServer({
-        onSessionHook: (sessionId, data) => {
+        onSessionHook: async (sessionId, data) => {
             logger.debug(`[START] Session hook received: ${sessionId}`, data);
 
             const currentSession = currentSessionRef.current;
@@ -102,7 +201,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                 const previousSessionId = currentSession.sessionId;
                 if (previousSessionId !== sessionId) {
                     logger.debug(`[START] Claude session ID changed: ${previousSessionId} -> ${sessionId}`);
-                    currentSession.onSessionFound(sessionId);
+                    await currentSession.onSessionFound(sessionId);
                 }
             }
         }
@@ -132,6 +231,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     });
 
     lifecycle.registerProcessHandlers();
+    await reportStartedToRunner();
     registerKillSessionHandler(session.rpcHandlerManager, lifecycle.cleanupAndExit);
 
     // Set initial agent state
@@ -172,7 +272,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     };
     session.onUserMessage((message) => {
         const sessionPermissionMode = currentSessionRef.current?.getPermissionMode();
-        if (sessionPermissionMode && isPermissionModeAllowedForFlavor(sessionPermissionMode, 'claude')) {
+        if (sessionPermissionMode && isPermissionModeAllowedForFlavor(sessionPermissionMode, agentFlavor)) {
             currentPermissionMode = sessionPermissionMode as PermissionMode;
         }
         const sessionModel = currentSessionRef.current?.getModel();
@@ -282,6 +382,25 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             return;
         }
 
+        if (specialCommand.type === 'goal') {
+            logger.debug('[start] Detected /goal command');
+            const enhancedMode: EnhancedMode = {
+                permissionMode: messagePermissionMode ?? 'default',
+                model: messageModel,
+                effort: messageEffort,
+                fallbackModel: messageFallbackModel,
+                customSystemPrompt: messageCustomSystemPrompt,
+                appendSystemPrompt: messageAppendSystemPrompt,
+                allowedTools: messageAllowedTools,
+                disallowedTools: messageDisallowedTools
+            };
+            // Use raw text only, ignore attachments for special commands
+            const commandText = (specialCommand.originalMessage || message.content.text).trim();
+            messageQueue.pushIsolateAndClear(commandText, enhancedMode);
+            logger.debugLargeJson('[start] /goal command pushed to queue:', message);
+            return;
+        }
+
         // Push with resolved permission mode, model, system prompts, and tools
         const enhancedMode: EnhancedMode = {
             permissionMode: messagePermissionMode ?? 'default',
@@ -299,7 +418,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
 
     const resolvePermissionMode = (value: unknown): PermissionMode => {
         const parsed = PermissionModeSchema.safeParse(value);
-        if (!parsed.success || !isPermissionModeAllowedForFlavor(parsed.data, 'claude')) {
+        if (!parsed.success || !isPermissionModeAllowedForFlavor(parsed.data, agentFlavor)) {
             throw new Error('Invalid permission mode');
         }
         return parsed.data as PermissionMode;
@@ -334,19 +453,59 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             throw new Error('Invalid session config payload');
         }
         const config = payload as { permissionMode?: unknown; model?: unknown; effort?: unknown };
+        let nextPermissionMode = currentPermissionMode;
+        let nextModel = currentModel;
+        let nextEffort = currentEffort;
 
         if (config.permissionMode !== undefined) {
-            currentPermissionMode = resolvePermissionMode(config.permissionMode);
+            nextPermissionMode = resolvePermissionMode(config.permissionMode);
         }
 
         if (config.model !== undefined) {
-            currentModel = resolveModel(config.model);
+            nextModel = resolveModel(config.model);
         }
 
         if (config.effort !== undefined) {
-            currentEffort = resolveEffort(config.effort);
+            nextEffort = resolveEffort(config.effort);
         }
 
+        if (
+            agentFlavor === 'cc-api'
+            && config.model !== undefined
+            && nextModel !== null
+            && !isKnownCcApiModel(nextModel)
+        ) {
+            throw new Error(`Unknown CC-api model: ${nextModel}`);
+        }
+
+        const preservesPersistedResumeEffort = persistedResumeEffortPassThrough
+            && nextModel === currentModel
+            && nextEffort === currentEffort;
+        if (agentFlavor === 'claude-deepseek') {
+            if (!isClaudeDeepSeekModelPreset(nextModel)) {
+                throw new Error('Unknown CC-deepseek model');
+            }
+            if (!isClaudeDeepSeekEffortAllowedForModel(nextModel, nextEffort)) {
+                if (config.effort !== undefined) {
+                    throw new Error('Effort selection is not supported for the current CC-deepseek model');
+                }
+                nextEffort = null;
+            }
+        }
+        if (
+            agentFlavor === 'cc-api'
+            && !isCcApiEffortAllowedForModel(nextModel, nextEffort)
+            && !preservesPersistedResumeEffort
+        ) {
+            if (config.effort !== undefined) {
+                throw new Error('Effort selection is not supported for the current CC-api model');
+            }
+            nextEffort = null;
+        }
+
+        currentPermissionMode = nextPermissionMode;
+        currentModel = nextModel;
+        currentEffort = nextEffort;
         syncSessionModes();
         return { applied: { permissionMode: currentPermissionMode, model: currentModel, effort: currentEffort } };
     });
@@ -367,6 +526,23 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             onSessionReady: (sessionInstance) => {
                 currentSessionRef.current = sessionInstance;
                 syncSessionModes();
+                let metadataStarted = false;
+                sessionInstance.addSessionFoundCallback(() => {
+                    if (metadataStarted) return;
+                    metadataStarted = true;
+                    extractSDKMetadataAsync(async (sdkMetadata) => {
+                        logger.debug('[start] SDK metadata extracted, updating session:', sdkMetadata);
+                        try {
+                            session.updateMetadata((currentMetadata) => ({
+                                ...currentMetadata,
+                                tools: sdkMetadata.tools,
+                                slashCommands: sdkMetadata.slashCommands
+                            }));
+                        } catch (error) {
+                            logger.debug('[start] Failed to update session metadata:', error);
+                        }
+                    });
+                });
             },
             mcpServers: {
                 'hapi': {
@@ -376,7 +552,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             },
             session,
             claudeEnvVars: options.claudeEnvVars,
-            claudeArgs: options.claudeArgs,
+            claudeArgs,
             startedBy,
             hookSettingsPath
         });

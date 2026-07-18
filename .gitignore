@@ -26,6 +26,10 @@ npm-debug.log*
 # Coverage
 coverage/
 
+# Browser test artifacts
+**/test-results/
+**/playwright-report/
+
 # OS / IDE
 **/.DS_Store
 .idea/
@@ -38,6 +42,11 @@ coverage/
 localdocs/
 execplan/
 .worktrees/
+
+# Local agent/worktree hygiene artifacts
+/.tmp/
+/.hapi-work/
+/output/
 
 # Generated npm bundle output (local)
 cli/npm/main/

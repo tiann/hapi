@@ -1,11 +1,13 @@
 import type { Session } from '../sync/syncEngine'
-import type { AttentionReason, NotificationChannel } from '../notifications/notificationTypes'
+import type { AttentionReason, NotificationChannel, NotificationContext } from '../notifications/notificationTypes'
 import { getAgentName, getSessionName } from '../notifications/sessionInfo'
 import type { SSEManager } from '../sse/sseManager'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
 import type { PushPayload, PushService } from './pushService'
 
 export class PushNotificationChannel implements NotificationChannel {
+    private notificationSequence = 0
+
     constructor(
         private readonly pushService: PushService,
         private readonly sseManager: SSEManager,
@@ -13,7 +15,7 @@ export class PushNotificationChannel implements NotificationChannel {
         _appUrl: string
     ) {}
 
-    async sendPermissionRequest(session: Session): Promise<void> {
+    async sendPermissionRequest(session: Session, context?: NotificationContext): Promise<void> {
         if (!session.active) {
             return
         }
@@ -25,20 +27,22 @@ export class PushNotificationChannel implements NotificationChannel {
         const toolName = request?.tool ? ` (${request.tool})` : ''
 
         const payload: PushPayload = {
-            title: 'Permission Request',
+            title: this.withUnreadCount('Permission Request', context),
             body: `${name}${toolName}`,
             tag: `permission-${session.id}`,
             data: {
                 type: 'permission-request',
                 sessionId: session.id,
-                url: this.buildSessionPath(session.id)
+                url: this.buildSessionPath(session.id),
+                unreadCount: context?.unreadCount,
+                totalUnreadCount: context?.totalUnreadCount
             }
         }
 
         await this.deliver(session, payload)
     }
 
-    async sendReady(session: Session): Promise<void> {
+    async sendReady(session: Session, context?: NotificationContext): Promise<void> {
         if (!session.active) {
             return
         }
@@ -47,33 +51,37 @@ export class PushNotificationChannel implements NotificationChannel {
         const name = getSessionName(session)
 
         const payload: PushPayload = {
-            title: 'Ready for input',
+            title: this.withUnreadCount('Ready for input', context),
             body: `${agentName} is waiting in ${name}`,
-            tag: `ready-${session.id}`,
+            tag: this.buildReadyNotificationTag(session.id),
             data: {
                 type: 'ready',
                 sessionId: session.id,
-                url: this.buildSessionPath(session.id)
+                url: this.buildSessionPath(session.id),
+                unreadCount: context?.unreadCount,
+                totalUnreadCount: context?.totalUnreadCount
             }
         }
 
         await this.deliver(session, payload)
     }
 
-    async sendAttention(session: Session, _reason: AttentionReason): Promise<void> {
+    async sendAttention(session: Session, _reason: AttentionReason, context?: NotificationContext): Promise<void> {
         if (!session.active) {
             return
         }
 
         const name = getSessionName(session)
         const payload: PushPayload = {
-            title: 'Task needs attention',
+            title: this.withUnreadCount('Task needs attention', context),
             body: `${name} stopped or failed`,
             tag: `attention-${session.id}`,
             data: {
                 type: 'attention',
                 sessionId: session.id,
-                url: this.buildSessionPath(session.id)
+                url: this.buildSessionPath(session.id),
+                unreadCount: context?.unreadCount,
+                totalUnreadCount: context?.totalUnreadCount
             }
         }
 
@@ -82,7 +90,8 @@ export class PushNotificationChannel implements NotificationChannel {
 
     private async deliver(session: Session, payload: PushPayload): Promise<void> {
         const url = payload.data?.url ?? this.buildSessionPath(session.id)
-        if (this.visibilityTracker.hasVisibleConnection(session.namespace)) {
+        const hasVisibleConnection = this.visibilityTracker.hasVisibleConnection(session.namespace)
+        if (hasVisibleConnection) {
             const delivered = await this.sseManager.sendToast(session.namespace, {
                 type: 'toast',
                 data: {
@@ -92,9 +101,6 @@ export class PushNotificationChannel implements NotificationChannel {
                     url
                 }
             })
-            if (delivered > 0) {
-                return
-            }
         }
 
         await this.pushService.sendToNamespace(session.namespace, payload)
@@ -102,5 +108,15 @@ export class PushNotificationChannel implements NotificationChannel {
 
     private buildSessionPath(sessionId: string): string {
         return `/sessions/${sessionId}`
+    }
+
+    private buildReadyNotificationTag(sessionId: string): string {
+        this.notificationSequence += 1
+        return `ready-${sessionId}-${Date.now()}-${this.notificationSequence}`
+    }
+
+    private withUnreadCount(title: string, context?: NotificationContext): string {
+        const unreadCount = context?.unreadCount ?? 0
+        return unreadCount > 1 ? `${title} · ${unreadCount} unread` : title
     }
 }

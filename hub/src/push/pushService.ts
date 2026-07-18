@@ -10,6 +10,8 @@ export type PushPayload = {
         type: 'permission-request' | 'ready' | 'attention'
         sessionId: string
         url: string
+        unreadCount?: number
+        totalUnreadCount?: number
     }
 }
 
@@ -27,13 +29,42 @@ type PushSubscription = {
     }
 }
 
+type SendNotification = (subscription: PushSubscription, body: string) => Promise<unknown>
+
+type PushServiceOptions = {
+    maxConsecutiveFailures?: number
+}
+
+function subscriptionFailureKey(namespace: string, endpoint: string): string {
+    return `${namespace}:${endpoint}`
+}
+
+function getErrorStatusCode(error: unknown): number | null {
+    return typeof (error as { statusCode?: unknown }).statusCode === 'number'
+        ? (error as { statusCode: number }).statusCode
+        : null
+}
+
+function isPermanentPushFailure(error: unknown): boolean {
+    const statusCode = getErrorStatusCode(error)
+    return statusCode === 404 || statusCode === 410
+}
+
 export class PushService {
+    private readonly sendNotification: SendNotification
+    private readonly maxConsecutiveFailures: number
+    private readonly failuresBySubscription: Map<string, number> = new Map()
+
     constructor(
         private readonly vapidKeys: VapidKeys,
         private readonly subject: string,
-        private readonly store: Store
+        private readonly store: Store,
+        sendNotification?: SendNotification,
+        options?: PushServiceOptions
     ) {
         webPush.setVapidDetails(this.subject, this.vapidKeys.publicKey, this.vapidKeys.privateKey)
+        this.sendNotification = sendNotification ?? ((subscription, body) => webPush.sendNotification(subscription, body))
+        this.maxConsecutiveFailures = options?.maxConsecutiveFailures ?? 5
     }
 
     async sendToNamespace(namespace: string, payload: PushPayload): Promise<void> {
@@ -61,15 +92,22 @@ export class PushService {
             }
         }
 
+        const failureKey = subscriptionFailureKey(namespace, subscription.endpoint)
         try {
-            await webPush.sendNotification(pushSubscription, body)
+            await this.sendNotification(pushSubscription, body)
+            this.failuresBySubscription.delete(failureKey)
         } catch (error) {
-            const statusCode = typeof (error as { statusCode?: unknown }).statusCode === 'number'
-                ? (error as { statusCode: number }).statusCode
-                : null
-
-            if (statusCode === 410) {
+            if (isPermanentPushFailure(error)) {
                 this.store.push.removePushSubscription(namespace, subscription.endpoint)
+                this.failuresBySubscription.delete(failureKey)
+                return
+            }
+
+            const failures = (this.failuresBySubscription.get(failureKey) ?? 0) + 1
+            this.failuresBySubscription.set(failureKey, failures)
+            if (failures >= this.maxConsecutiveFailures) {
+                this.store.push.removePushSubscription(namespace, subscription.endpoint)
+                this.failuresBySubscription.delete(failureKey)
                 return
             }
 

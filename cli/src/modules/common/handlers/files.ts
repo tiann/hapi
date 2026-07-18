@@ -1,10 +1,12 @@
 import { logger } from '@/ui/logger'
-import { readFile, stat, writeFile } from 'fs/promises'
+import { constants } from 'node:fs'
+import { open } from 'node:fs/promises'
 import { createHash } from 'crypto'
-import { resolve } from 'path'
 import type { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager'
 import { validatePath } from '../pathSecurity'
 import { getErrorMessage, rpcError } from '../rpcResponses'
+
+const NOFOLLOW_FLAG = constants.O_NOFOLLOW ?? 0
 
 interface ReadFileRequest {
     path: string
@@ -32,14 +34,23 @@ export function registerFileHandlers(rpcHandlerManager: RpcHandlerManager, worki
     rpcHandlerManager.registerHandler<ReadFileRequest, ReadFileResponse>('readFile', async (data) => {
         logger.debug('Read file request:', data.path)
 
-        const validation = validatePath(data.path, workingDirectory)
+        const validation = await validatePath(data.path, workingDirectory)
         if (!validation.valid) {
             return rpcError(validation.error ?? 'Invalid file path')
         }
 
         try {
-            const resolvedPath = resolve(workingDirectory, data.path)
-            const buffer = await readFile(resolvedPath)
+            const handle = await open(validation.resolvedPath!, constants.O_RDONLY | NOFOLLOW_FLAG)
+            let buffer: Buffer
+            try {
+                const stats = await handle.stat()
+                if (!stats.isFile()) {
+                    return rpcError('Path is not a regular file')
+                }
+                buffer = await handle.readFile()
+            } finally {
+                await handle.close()
+            }
             const content = buffer.toString('base64')
             return { success: true, content }
         } catch (error) {
@@ -51,41 +62,63 @@ export function registerFileHandlers(rpcHandlerManager: RpcHandlerManager, worki
     rpcHandlerManager.registerHandler<WriteFileRequest, WriteFileResponse>('writeFile', async (data) => {
         logger.debug('Write file request:', data.path)
 
-        const validation = validatePath(data.path, workingDirectory)
+        const hasExpectedHash = data.expectedHash !== null && data.expectedHash !== undefined
+        const validation = await validatePath(data.path, workingDirectory, {
+            allowMissingLeaf: !hasExpectedHash,
+        })
         if (!validation.valid) {
             return rpcError(validation.error ?? 'Invalid file path')
         }
 
         try {
-            if (data.expectedHash !== null && data.expectedHash !== undefined) {
+            const buffer = Buffer.from(data.content, 'base64')
+            if (hasExpectedHash) {
+                let handle
                 try {
-                    const existingBuffer = await readFile(data.path)
+                    handle = await open(validation.resolvedPath!, constants.O_RDWR | NOFOLLOW_FLAG)
+                    const stats = await handle.stat()
+                    if (!stats.isFile()) {
+                        return rpcError('Path is not a regular file')
+                    }
+                    const existingBuffer = await handle.readFile()
                     const existingHash = createHash('sha256').update(existingBuffer).digest('hex')
 
                     if (existingHash !== data.expectedHash) {
                         return rpcError(`File hash mismatch. Expected: ${data.expectedHash}, Actual: ${existingHash}`)
                     }
+
+                    await handle.write(buffer, 0, buffer.length, 0)
+                    await handle.truncate(buffer.length)
+                    await handle.sync()
                 } catch (error) {
                     const nodeError = error as NodeJS.ErrnoException
                     if (nodeError.code !== 'ENOENT') {
                         throw error
                     }
                     return rpcError('File does not exist but hash was provided')
+                } finally {
+                    await handle?.close()
                 }
             } else {
+                let handle
                 try {
-                    await stat(data.path)
-                    return rpcError('File already exists but was expected to be new')
+                    handle = await open(
+                        validation.resolvedPath!,
+                        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW_FLAG,
+                        0o666,
+                    )
+                    await handle.writeFile(buffer)
+                    await handle.sync()
                 } catch (error) {
                     const nodeError = error as NodeJS.ErrnoException
-                    if (nodeError.code !== 'ENOENT') {
-                        throw error
+                    if (nodeError.code === 'EEXIST') {
+                        return rpcError('File already exists but was expected to be new')
                     }
+                    throw error
+                } finally {
+                    await handle?.close()
                 }
             }
-
-            const buffer = Buffer.from(data.content, 'base64')
-            await writeFile(data.path, buffer)
 
             const hash = createHash('sha256').update(buffer).digest('hex')
 

@@ -67,6 +67,8 @@ export const claudeCommand: CommandDefinition = {
                 unknownArgs.push('--effort', effort)
             } else if (arg === '--started-by') {
                 options.startedBy = args[++i] as 'runner' | 'terminal'
+            } else if (arg === '--hapi-agent') {
+                options.agentFlavor = z.enum(['claude', 'claude-deepseek', 'claude-ark', 'cc-api']).parse(args[++i])
             } else {
                 unknownArgs.push(arg)
                 if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
@@ -88,7 +90,8 @@ ${chalk.bold('Usage:')}
   hapi auth              Manage authentication
   hapi codex             Start Codex mode
   hapi cursor            Start Cursor Agent mode
-  hapi gemini            Start Gemini ACP mode
+  hapi agy            Start Antigravity agy mode
+  hapi grok              Start Grok CLI (native TUI / ACP)
   hapi opencode          Start OpenCode ACP mode
   hapi mcp               Start MCP stdio bridge
   hapi connect           (not available in direct-connect mode)

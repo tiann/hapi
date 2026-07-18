@@ -2,11 +2,14 @@ import {
     AgentStateSchema,
     AttachmentMetadataSchema,
     CodexCollaborationModeSchema,
+    CodexServiceTierSchema,
+    MachineMetadataSchema,
     MetadataSchema,
     PermissionModeSchema,
     TodosSchema
 } from '@hapi/protocol/schemas'
-import type { CodexCollaborationMode, PermissionMode } from '@hapi/protocol/types'
+import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
+import type { CodexCollaborationMode, CodexServiceTier, MachineMetadata as ProtocolMachineMetadata, PermissionMode } from '@hapi/protocol/types'
 import { z } from 'zod'
 import { UsageSchema } from '@/claude/types'
 
@@ -25,21 +28,12 @@ export type SessionPermissionMode = PermissionMode
 export type SessionCollaborationMode = CodexCollaborationMode
 export type SessionModel = string | null
 export type SessionModelReasoningEffort = string | null
+export type SessionServiceTier = CodexServiceTier | null
 export type SessionEffort = string | null
 
-export { AgentStateSchema, AttachmentMetadataSchema, MetadataSchema }
+export { AgentStateSchema, AttachmentMetadataSchema, MachineMetadataSchema, MetadataSchema }
 
-export const MachineMetadataSchema = z.object({
-    host: z.string(),
-    platform: z.string(),
-    happyCliVersion: z.string(),
-    displayName: z.string().optional(),
-    homeDir: z.string(),
-    happyHomeDir: z.string(),
-    happyLibDir: z.string()
-})
-
-export type MachineMetadata = z.infer<typeof MachineMetadataSchema>
+export type MachineMetadata = ProtocolMachineMetadata
 
 export const RunnerStateSchema = z.object({
     status: z.union([z.enum(['running', 'shutting-down']), z.string()]),
@@ -61,6 +55,7 @@ export type RunnerState = z.infer<typeof RunnerStateSchema>
 
 export type Machine = {
     id: string
+    namespace: string
     seq: number
     createdAt: number
     updatedAt: number
@@ -102,6 +97,7 @@ export const CreateSessionResponseSchema = z.object({
         todos: TodosSchema.optional(),
         model: z.string().nullable().optional().default(null),
         modelReasoningEffort: z.string().nullable().optional().default(null),
+        serviceTier: CodexServiceTierSchema.nullable().optional().default(null),
         effort: z.string().nullable().optional().default(null),
         permissionMode: PermissionModeSchema.optional(),
         collaborationMode: CodexCollaborationModeSchema.optional()
@@ -113,6 +109,7 @@ export type CreateSessionResponse = z.infer<typeof CreateSessionResponseSchema>
 export const CreateMachineResponseSchema = z.object({
     machine: z.object({
         id: z.string(),
+        namespace: z.string(),
         seq: z.number(),
         createdAt: z.number(),
         updatedAt: z.number(),
@@ -133,7 +130,17 @@ export const MessageMetaSchema = z.object({
     customSystemPrompt: z.string().nullable().optional(),
     appendSystemPrompt: z.string().nullable().optional(),
     allowedTools: z.array(z.string()).nullable().optional(),
-    disallowedTools: z.array(z.string()).nullable().optional()
+    disallowedTools: z.array(z.string()).nullable().optional(),
+    messageKind: z.enum([
+        'background_notification',
+        'internal_tool_result',
+        'internal_sidechain',
+        'internal_meta',
+        'internal_plan_restart',
+        'internal_command_name',
+        'internal_local_command_caveat',
+        'internal_system_reminder'
+    ]).optional()
 })
 
 export type MessageMeta = z.infer<typeof MessageMetaSchema>
@@ -153,10 +160,16 @@ export type UserMessage = z.infer<typeof UserMessageSchema>
 
 export const AgentMessageSchema = z.object({
     role: z.literal('agent'),
-    content: z.object({
-        type: z.literal('output'),
-        data: z.unknown()
-    }),
+    content: z.union([
+        z.object({
+            type: z.literal('output'),
+            data: z.unknown()
+        }),
+        z.object({
+            type: z.literal(AGENT_MESSAGE_PAYLOAD_TYPE),
+            data: z.unknown()
+        })
+    ]),
     meta: MessageMetaSchema.optional()
 })
 

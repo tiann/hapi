@@ -8,6 +8,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 class FakeSyncEngine {
     private readonly listeners: Set<SyncEventListener> = new Set()
     private readonly sessions: Map<string, Session> = new Map()
+    private readonly unreadBySession: Map<string, number> = new Map()
 
     subscribe(listener: SyncEventListener): () => void {
         this.listeners.add(listener)
@@ -27,23 +28,41 @@ class FakeSyncEngine {
             listener(event)
         }
     }
+
+    incrementSessionNotificationUnread(sessionId: string, _namespace: string): number {
+        const next = (this.unreadBySession.get(sessionId) ?? 0) + 1
+        this.unreadBySession.set(sessionId, next)
+        return next
+    }
+
+    getTotalNotificationUnread(_namespace: string): number {
+        return Array.from(this.unreadBySession.values()).reduce((sum, count) => sum + count, 0)
+    }
 }
 
 class StubChannel implements NotificationChannel {
-    readonly readySessions: Session[] = []
-    readonly permissionSessions: Session[] = []
-    readonly attentionNotifications: Array<{ session: Session; reason: 'failed' | 'interrupted' }> = []
+    readonly readyNotifications: Array<{ session: Session; context?: { unreadCount: number; totalUnreadCount?: number } }> = []
+    readonly permissionNotifications: Array<{ session: Session; context?: { unreadCount: number; totalUnreadCount?: number } }> = []
+    readonly attentionNotifications: Array<{ session: Session; reason: 'failed' | 'interrupted'; context?: { unreadCount: number; totalUnreadCount?: number } }> = []
 
-    async sendReady(session: Session): Promise<void> {
-        this.readySessions.push(session)
+    get readySessions(): Session[] {
+        return this.readyNotifications.map((notification) => notification.session)
     }
 
-    async sendPermissionRequest(session: Session): Promise<void> {
-        this.permissionSessions.push(session)
+    get permissionSessions(): Session[] {
+        return this.permissionNotifications.map((notification) => notification.session)
     }
 
-    async sendAttention(session: Session, reason: 'failed' | 'interrupted'): Promise<void> {
-        this.attentionNotifications.push({ session, reason })
+    async sendReady(session: Session, context?: { unreadCount: number; totalUnreadCount?: number }): Promise<void> {
+        this.readyNotifications.push({ session, context })
+    }
+
+    async sendPermissionRequest(session: Session, context?: { unreadCount: number; totalUnreadCount?: number }): Promise<void> {
+        this.permissionNotifications.push({ session, context })
+    }
+
+    async sendAttention(session: Session, reason: 'failed' | 'interrupted', context?: { unreadCount: number; totalUnreadCount?: number }): Promise<void> {
+        this.attentionNotifications.push({ session, reason, context })
     }
 }
 
@@ -162,6 +181,40 @@ describe('NotificationHub', () => {
         hub.stop()
     })
 
+    it('defers ready event notifications while the session is still thinking', async () => {
+        const engine = new FakeSyncEngine()
+        const channel = new StubChannel()
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [channel], {
+            permissionDebounceMs: 1,
+            readyCooldownMs: 0
+        })
+
+        engine.setSession(createSession({ thinking: true, thinkingAt: 1 }))
+        engine.emit({ type: 'session-updated', sessionId: 'session-1' })
+        engine.emit({
+            type: 'message-received',
+            sessionId: 'session-1',
+            message: {
+                id: 'ready-event',
+                seq: 2,
+                localId: null,
+                createdAt: 2,
+                content: { role: 'agent', content: { type: 'event', data: { type: 'ready' } } }
+            }
+        })
+        await sleep(5)
+
+        expect(channel.readySessions).toHaveLength(0)
+
+        engine.setSession(createSession({ thinking: false, thinkingAt: 3 }))
+        engine.emit({ type: 'session-updated', sessionId: 'session-1' })
+        await sleep(5)
+
+        expect(channel.readySessions).toHaveLength(1)
+        expect(channel.readyNotifications[0]?.context?.unreadCount).toBe(1)
+        hub.stop()
+    })
+
     it('sends ready when thinking stops after agent activity', async () => {
         const engine = new FakeSyncEngine()
         const channel = new StubChannel()
@@ -189,6 +242,53 @@ describe('NotificationHub', () => {
         await sleep(10)
 
         expect(channel.readySessions).toHaveLength(1)
+        hub.stop()
+    })
+
+
+    it('includes total unread count in notification context', async () => {
+        const engine = new FakeSyncEngine()
+        const channel = new StubChannel()
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [channel], {
+            permissionDebounceMs: 1,
+            readyCooldownMs: 0
+        })
+
+        const first = createSession({ id: 'session-1' })
+        const second = createSession({ id: 'session-2' })
+
+        engine.setSession(first)
+        engine.emit({
+            type: 'message-received',
+            sessionId: first.id,
+            message: {
+                id: 'ready-1',
+                seq: 1,
+                localId: null,
+                createdAt: 1,
+                content: { role: 'agent', content: { type: 'event', data: { type: 'ready' } } }
+            }
+        })
+        await sleep(5)
+
+        engine.setSession(second)
+        engine.emit({
+            type: 'message-received',
+            sessionId: second.id,
+            message: {
+                id: 'ready-2',
+                seq: 1,
+                localId: null,
+                createdAt: 2,
+                content: { role: 'agent', content: { type: 'event', data: { type: 'ready' } } }
+            }
+        })
+        await sleep(5)
+
+        expect(channel.readyNotifications[1]?.context).toMatchObject({
+            unreadCount: 1,
+            totalUnreadCount: 2
+        })
         hub.stop()
     })
 

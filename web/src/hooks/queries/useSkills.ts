@@ -24,12 +24,14 @@ function levenshteinDistance(a: string, b: string): number {
 
 export function useSkills(
     api: ApiClient | null,
-    sessionId: string | null
+    sessionId: string | null,
+    options?: { enabled?: boolean }
 ): {
     skills: SkillSummary[]
     isLoading: boolean
     error: string | null
     getSuggestions: (query: string) => Promise<Suggestion[]>
+    suggestionsVersion: number
 } {
     const resolvedSessionId = sessionId ?? 'unknown'
 
@@ -41,9 +43,12 @@ export function useSkills(
             }
             return await api.getSkills(sessionId)
         },
-        enabled: Boolean(api && sessionId),
-        staleTime: Infinity,
+        enabled: Boolean(api && sessionId) && (options?.enabled ?? true),
+        staleTime: 30_000,
         gcTime: 30 * 60 * 1000,
+        refetchOnMount: true,
+        refetchOnWindowFocus: true,
+        refetchOnReconnect: true,
         retry: false,
     })
 
@@ -61,9 +66,17 @@ export function useSkills(
             ? queryText.slice(1).toLowerCase()
             : queryText.toLowerCase()
 
+        let currentSkills = skills
+        if (api && sessionId && !query.isFetching && (!query.data || query.isStale)) {
+            const refreshed = await query.refetch()
+            if (refreshed.data?.success && refreshed.data.skills) {
+                currentSkills = refreshed.data.skills
+            }
+        }
+
         if (!searchTerm) {
-            return [...skills]
-                .sort((a, b) => getRecency(b.name) - getRecency(a.name) || a.name.localeCompare(b.name))
+            return [...currentSkills]
+                .sort((a, b) => a.name.localeCompare(b.name))
                 .map((skill) => ({
                     key: `$${skill.name}`,
                     text: `$${skill.name}`,
@@ -74,7 +87,7 @@ export function useSkills(
         }
 
         const maxDistance = Math.max(2, Math.floor(searchTerm.length / 2))
-        return skills
+        return currentSkills
             .map(skill => {
                 const name = skill.name.toLowerCase()
                 let score: number
@@ -96,12 +109,13 @@ export function useSkills(
                 description: skill.description,
                 source: 'builtin'
             }))
-    }, [skills])
+    }, [api, query, sessionId, skills])
 
     return {
         skills,
         isLoading: query.isLoading,
         error: query.error instanceof Error ? query.error.message : query.error ? 'Failed to load skills' : null,
         getSuggestions,
+        suggestionsVersion: query.dataUpdatedAt,
     }
 }

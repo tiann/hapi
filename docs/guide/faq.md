@@ -4,7 +4,7 @@
 
 ### What is HAPI?
 
-HAPI is a local-first, self-hosted platform for running and controlling AI coding agents (Claude Code, Codex, Gemini, OpenCode) remotely. It lets you start coding sessions on your computer and monitor/control them from your phone.
+HAPI is a local-first, self-hosted platform for running and controlling AI coding agents (Claude Code, Codex, Antigravity agy, OpenCode) remotely. It lets you start coding sessions on your computer and monitor/control them from your phone.
 
 ### What does HAPI stand for?
 
@@ -19,7 +19,7 @@ Yes, HAPI is open source and free to use under the AGPL-3.0-only license.
 - **Claude Code** (recommended)
 - **OpenAI Codex**
 - **Cursor Agent**
-- **Google Gemini**
+- **Antigravity agy**
 - **OpenCode**
 
 ## Setup & Installation
@@ -45,7 +45,7 @@ For internet access:
 
 ### What's the access token for?
 
-The `CLI_API_TOKEN` is a shared secret that authenticates:
+The `CLI_API_TOKEN` is the credential for the reserved `default` namespace. It authenticates:
 - CLI connections to the hub
 - Web app logins
 - Telegram account binding
@@ -54,7 +54,7 @@ It's auto-generated on first hub start and saved to `~/.hapi/settings.json`.
 
 ### Do you support multiple accounts?
 
-Yes. We support lightweight multi-account access via namespaces for shared team hubs. See [Namespace (Advanced)](./namespace.md).
+Yes. Shared team hubs use server-mapped namespaces with an independent credential per member. Client-selected `base:namespace` suffixes are rejected. See [Namespace (Advanced)](./namespace.md).
 
 ### Can I use HAPI without Telegram?
 
@@ -196,7 +196,11 @@ curl https://cursor.com/install -fsS | bash
 irm 'https://cursor.com/install?win32=true' | iex
 ```
 
-Ensure `agent` is on your PATH.
+Ensure `cursor-agent` is on your PATH. If it is installed elsewhere, set the explicit command path:
+
+```bash
+export HAPI_CURSOR_PATH=/path/to/cursor-agent
+```
 
 ### How do I run diagnostics?
 

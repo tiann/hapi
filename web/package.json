@@ -6,8 +6,8 @@
     "type": "module",
     "scripts": {
         "dev": "vite",
-        "build": "vite build && cp dist/index.html dist/404.html",
-        "typecheck": "tsc --noEmit",
+        "build": "vite build && bun run scripts/verify-katex-fonts.ts && cp dist/index.html dist/404.html",
+        "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.e2e.json",
         "preview": "vite preview",
         "test": "vitest run"
     },
@@ -16,7 +16,7 @@
         "@assistant-ui/react-markdown": "^0.11.9",
         "@elevenlabs/react": "^0.13.0",
         "@hapi/protocol": "workspace:*",
-        "@lobehub/icons": "^5.4.0",
+        "@lobehub/icons": "^5.13.0",
         "@radix-ui/react-dialog": "^1.1.15",
         "@radix-ui/react-slot": "^1.2.4",
         "@shikijs/langs": "^3.20.0",
@@ -24,6 +24,7 @@
         "@tanstack/react-query": "^5.90.12",
         "@tanstack/react-query-devtools": "^5.91.1",
         "@tanstack/react-router": "^1.143.6",
+        "@tanstack/react-virtual": "^3.14.6",
         "@xterm/addon-canvas": "^0.7.0",
         "@xterm/addon-fit": "^0.11.0",
         "@xterm/addon-web-links": "^0.12.0",
@@ -36,6 +37,7 @@
         "react": "^19.2.3",
         "react-dom": "^19.2.3",
         "rehype-katex": "^7.0.1",
+        "remark-breaks": "^4.0.0",
         "remark-gfm": "^4.0.1",
         "remark-math": "^6.0.0",
         "shiki": "^3.20.0",
@@ -48,6 +50,7 @@
         "workbox-window": "^7.4.0"
     },
     "devDependencies": {
+        "@playwright/test": "^1.61.1",
         "@testing-library/jest-dom": "^6.6.3",
         "@testing-library/react": "^16.3.0",
         "@types/react": "^19.2.7",
@@ -59,7 +62,7 @@
         "postcss": "^8.5.6",
         "tailwindcss": "^4.1.18",
         "typescript": "^5.9.3",
-        "vite": "^7.3.0",
-        "vitest": "^4.0.16"
+        "vite": "^7.3.6",
+        "vitest": "^4.1.10"
     }
 }

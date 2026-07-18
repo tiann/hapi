@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { listSkills } from './skills'
@@ -18,6 +18,7 @@ async function writeSkill(skillDir: string, name: string, description: string): 
 
 describe('listSkills', () => {
     const originalHome = process.env.HOME
+    const originalCodexHome = process.env.CODEX_HOME
     let sandboxDir: string
     let homeDir: string
 
@@ -25,6 +26,7 @@ describe('listSkills', () => {
         sandboxDir = await mkdtemp(join(tmpdir(), 'hapi-skills-'))
         homeDir = join(sandboxDir, 'home')
         process.env.HOME = homeDir
+        process.env.CODEX_HOME = join(homeDir, '.codex')
         await mkdir(homeDir, { recursive: true })
     })
 
@@ -33,6 +35,11 @@ describe('listSkills', () => {
             delete process.env.HOME
         } else {
             process.env.HOME = originalHome
+        }
+        if (originalCodexHome === undefined) {
+            delete process.env.CODEX_HOME
+        } else {
+            process.env.CODEX_HOME = originalCodexHome
         }
 
         await rm(sandboxDir, { recursive: true, force: true })
@@ -162,5 +169,77 @@ describe('listSkills', () => {
             name: 'shared',
             description: 'Local shared skill'
         })
+    })
+
+    it('lists enabled Codex plugin skills with plugin-prefixed names', async () => {
+        await mkdir(join(homeDir, '.codex'), { recursive: true })
+        await writeFile(join(homeDir, '.codex', 'config.toml'), [
+            '[plugins."superpowers@openai-curated"]',
+            'enabled = true',
+            '',
+            '[plugins."figma@openai-curated"]',
+            'enabled = false',
+        ].join('\n'))
+        await writeSkill(
+            join(homeDir, '.codex', 'plugins', 'cache', 'openai-curated', 'superpowers', '421657af', 'skills', 'using-superpowers'),
+            'using-superpowers',
+            'Superpowers bootstrap'
+        )
+        await writeSkill(
+            join(homeDir, '.codex', 'plugins', 'cache', 'openai-curated', 'figma', '421657af', 'skills', 'figma-design'),
+            'figma-design',
+            'Disabled plugin skill'
+        )
+
+        const skills = await listSkills(undefined, { agent: 'codex' })
+
+        expect(skills).toContainEqual({
+            name: 'superpowers:using-superpowers',
+            description: 'Superpowers bootstrap'
+        })
+        expect(skills.find((skill) => skill.name === 'figma:figma-design')).toBeUndefined()
+    })
+
+    it('does not list Codex plugin skills for non-Codex agents', async () => {
+        await mkdir(join(homeDir, '.codex'), { recursive: true })
+        await writeFile(join(homeDir, '.codex', 'config.toml'), [
+            '[plugins."superpowers@openai-curated"]',
+            'enabled = true',
+        ].join('\n'))
+        await writeSkill(
+            join(homeDir, '.codex', 'plugins', 'cache', 'openai-curated', 'superpowers', '421657af', 'skills', 'using-superpowers'),
+            'using-superpowers',
+            'Superpowers bootstrap'
+        )
+
+        const skills = await listSkills(undefined, { agent: 'claude' })
+
+        expect(skills.find((skill) => skill.name === 'superpowers:using-superpowers')).toBeUndefined()
+    })
+
+    it('does not read Codex plugin skill files that are symlinks outside the plugin installation directory', async () => {
+        await mkdir(join(homeDir, '.codex'), { recursive: true })
+        await writeFile(join(homeDir, '.codex', 'config.toml'), [
+            '[plugins."superpowers@openai-curated"]',
+            'enabled = true',
+        ].join('\n'))
+        const skillDir = join(homeDir, '.codex', 'plugins', 'cache', 'openai-curated', 'superpowers', '421657af', 'skills', 'using-superpowers')
+        const skillFile = join(skillDir, 'SKILL.md')
+        const outsideSkillFile = join(sandboxDir, 'outside-SKILL.md')
+        await writeSkill(skillDir, 'using-superpowers', 'Superpowers bootstrap')
+        await rm(skillFile)
+        await writeFile(outsideSkillFile, [
+            '---',
+            'name: using-superpowers',
+            'description: Escaped plugin skill',
+            '---',
+            '',
+            '# escaped',
+        ].join('\n'))
+        await symlink(outsideSkillFile, skillFile)
+
+        const skills = await listSkills(undefined, { agent: 'codex' })
+
+        expect(skills.find((skill) => skill.name === 'superpowers:using-superpowers')).toBeUndefined()
     })
 })

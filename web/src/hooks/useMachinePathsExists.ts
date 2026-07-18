@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ApiClient } from '@/api/client'
 
 export function useMachinePathsExists(
@@ -10,6 +10,14 @@ export function useMachinePathsExists(
     checkPathsExists: (pathsToCheck: string[]) => Promise<Record<string, boolean>>
 } {
     const [pathExistence, setPathExistence] = useState<Record<string, boolean>>({})
+    const machineIdentityRef = useRef({ machineId, generation: 0 })
+    if (machineIdentityRef.current.machineId !== machineId) {
+        machineIdentityRef.current = {
+            machineId,
+            generation: machineIdentityRef.current.generation + 1,
+        }
+    }
+    const imperativeRequestGenerationRef = useRef(0)
 
     useEffect(() => {
         setPathExistence({})
@@ -45,9 +53,17 @@ export function useMachinePathsExists(
             return {}
         }
 
+        const machineGeneration = machineIdentityRef.current.generation
+        const requestGeneration = ++imperativeRequestGenerationRef.current
         const result = await api.checkMachinePathsExists(machineId, pathsToCheck)
         const exists = result.exists ?? {}
-        setPathExistence((current) => ({ ...current, ...exists }))
+        if (
+            machineIdentityRef.current.machineId === machineId
+            && machineIdentityRef.current.generation === machineGeneration
+            && imperativeRequestGenerationRef.current === requestGeneration
+        ) {
+            setPathExistence((current) => ({ ...current, ...exists }))
+        }
         return exists
     }, [api, machineId])
 

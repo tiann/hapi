@@ -1,14 +1,74 @@
+import { CODEX_DESKTOP_SYNC_SOURCE, isCcApiEffortAllowedForModel, isClaudeDeepSeekEffortAllowedForModel } from '@hapi/protocol'
 import { AgentStateSchema, MetadataSchema, TeamStateSchema } from '@hapi/protocol/schemas'
-import type { CodexCollaborationMode, PermissionMode, Session } from '@hapi/protocol/types'
+import type { CodexCollaborationMode, CodexServiceTier, PermissionMode, Session } from '@hapi/protocol/types'
 import type { Store } from '../store'
-import { clampAliveTime } from './aliveTime'
+import { validateActivityEventTime } from '../utils/activityEventTime'
 import { EventPublisher } from './eventPublisher'
+import { mergeSessionMetadata } from './sessionMetadata'
 import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
 import { extractBackgroundTaskDelta } from './backgroundTasks'
+
+function isCodexBackedMetadata(metadata: Record<string, unknown>): boolean {
+    return metadata.mirrorSource === CODEX_DESKTOP_SYNC_SOURCE
+        || metadata.flavor === 'codex'
+        || typeof metadata.codexSessionId === 'string'
+}
+
+function metadataFlavor(metadata: unknown): string | null {
+    const parsed = MetadataSchema.safeParse(metadata)
+    return parsed.success ? parsed.data.flavor ?? null : null
+}
+
+/**
+ * Merge agent_state across a session fork (old session id → new session id).
+ *
+ * The old (forked-away) session's still-pending `requests` have no live permission handler
+ * in the resumed session, so carrying them into `requests` strands them as a permanent
+ * "pending" badge — they can never be answered or finalized again. Cancel those into
+ * `completedRequests` instead (preserving an audit trail); only the new session's own
+ * requests stay live. Requests already recorded as completed are never resurrected.
+ */
+export function mergeForkedAgentState(oldState: unknown | null, newState: unknown | null): unknown | null {
+    if (oldState === null) return newState
+    if (newState === null) return oldState
+
+    const oldObj = oldState as Record<string, unknown>
+    const newObj = newState as Record<string, unknown>
+
+    const completedRequests: Record<string, unknown> = {
+        ...((oldObj.completedRequests as Record<string, unknown> | undefined) ?? {}),
+        ...((newObj.completedRequests as Record<string, unknown> | undefined) ?? {})
+    }
+
+    // Old session's leftover pending requests → cancel into completedRequests (no live handler
+    // after the fork). Skip ids already recorded as completed, and ids the new session still has
+    // a live request for (don't cancel/override a genuine new-session pending on id collision).
+    const newRequests = (newObj.requests as Record<string, unknown> | undefined) ?? {}
+    const oldRequests = (oldObj.requests as Record<string, unknown> | undefined) ?? {}
+    for (const [id, request] of Object.entries(oldRequests)) {
+        if (id in completedRequests || id in newRequests) continue
+        completedRequests[id] = {
+            ...(request as Record<string, unknown>),
+            completedAt: Date.now(),
+            status: 'canceled',
+            reason: 'Canceled on session fork (no live handler in resumed session)'
+        }
+    }
+
+    // Only the new (active) session's requests remain live; drop any already completed.
+    const completedIds = new Set(Object.keys(completedRequests))
+    const requests = Object.fromEntries(
+        Object.entries(newRequests).filter(([id]) => !completedIds.has(id))
+    )
+
+    return { ...oldObj, ...newObj, requests, completedRequests }
+}
 
 export class SessionCache {
     private readonly sessions: Map<string, Session> = new Map()
     private readonly lastBroadcastAtBySessionId: Map<string, number> = new Map()
+    private readonly lastActivityPersistedAtBySessionId: Map<string, number> = new Map()
+    private readonly lastActivityEventAtBySessionId: Map<string, number> = new Map()
     private readonly todoBackfillAttemptedSessionIds: Set<string> = new Set()
     private readonly deduplicateInProgress: Set<string> = new Set()
 
@@ -42,12 +102,13 @@ export class SessionCache {
         sessionId: string,
         namespace: string
     ): { ok: true; sessionId: string; session: Session } | { ok: false; reason: 'not-found' | 'access-denied' } {
-        const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+        const canonicalSessionId = this.store.managedSessions.resolveCanonical(namespace, sessionId)
+        const session = this.sessions.get(canonicalSessionId) ?? this.refreshSession(canonicalSessionId)
         if (session) {
             if (session.namespace !== namespace) {
                 return { ok: false, reason: 'access-denied' }
             }
-            return { ok: true, sessionId, session }
+            return { ok: true, sessionId: canonicalSessionId, session }
         }
 
         return { ok: false, reason: 'not-found' }
@@ -64,9 +125,10 @@ export class SessionCache {
         namespace: string,
         model?: string,
         effort?: string,
-        modelReasoningEffort?: string
+        modelReasoningEffort?: string,
+        serviceTier?: string
     ): Session {
-        const stored = this.store.sessions.getOrCreateSession(tag, metadata, agentState, namespace, model, effort, modelReasoningEffort)
+        const stored = this.store.sessions.getOrCreateSession(tag, metadata, agentState, namespace, model, effort, modelReasoningEffort, serviceTier)
         return this.refreshSession(stored.id) ?? (() => { throw new Error('Failed to load session') })()
     }
 
@@ -75,12 +137,52 @@ export class SessionCache {
         if (!stored) {
             const existed = this.sessions.delete(sessionId)
             if (existed) {
+                this.lastBroadcastAtBySessionId.delete(sessionId)
+                this.lastActivityPersistedAtBySessionId.delete(sessionId)
+                this.lastActivityEventAtBySessionId.delete(sessionId)
+                this.todoBackfillAttemptedSessionIds.delete(sessionId)
                 this.publisher.emit({ type: 'session-removed', sessionId })
             }
             return null
         }
 
         const existing = this.sessions.get(sessionId)
+        const existingActivityEventAt = this.lastActivityEventAtBySessionId.get(sessionId)
+        // Heartbeats advance the in-memory watermark more often than the throttled
+        // SQLite write. A delayed durable outcome can therefore leave the row older
+        // than the live cache; never replace newer liveness with that stale row.
+        const existingActivityWins = existing !== undefined
+            && existingActivityEventAt !== undefined
+            && (
+                stored.activityEventAt === null
+                || stored.activityEventAt < existingActivityEventAt
+                || (
+                    stored.activityEventAt === existingActivityEventAt
+                    && !existing.active
+                    && stored.active
+                )
+            )
+        // A normal throttled heartbeat only advances the in-memory timestamp while
+        // both snapshots remain active. Preserve that newer cache value without
+        // turning every unrelated refresh into an SQLite activity write. Repair
+        // immediately only when a delayed durable transition changed active state.
+        const storedActivityNeedsRepair = existingActivityWins
+            && stored.active !== existing.active
+        if (storedActivityNeedsRepair) {
+            const repaired = this.store.sessions.setSessionActivity(
+                sessionId,
+                existing.active,
+                existing.activeAt,
+                existingActivityEventAt,
+                stored.namespace
+            )
+            if (repaired) {
+                this.lastActivityPersistedAtBySessionId.set(sessionId, existing.activeAt)
+            }
+        }
+        if (stored.activityEventAt !== null && (existingActivityEventAt === undefined || stored.activityEventAt > existingActivityEventAt)) {
+            this.lastActivityEventAtBySessionId.set(sessionId, stored.activityEventAt)
+        }
 
         if (stored.todos === null && !this.todoBackfillAttemptedSessionIds.has(sessionId)) {
             this.todoBackfillAttemptedSessionIds.add(sessionId)
@@ -120,27 +222,34 @@ export class SessionCache {
             return parsed.success ? parsed.data : undefined
         })()
 
+        const active = existingActivityWins ? existing.active : stored.active
+        const activeAt = existingActivityWins
+            ? existing.activeAt
+            : existing?.active && stored.active
+                ? Math.max(existing.activeAt, stored.activeAt ?? stored.createdAt)
+                : (stored.activeAt ?? stored.createdAt)
         const session: Session = {
             id: stored.id,
             namespace: stored.namespace,
             seq: stored.seq,
             createdAt: stored.createdAt,
             updatedAt: stored.updatedAt,
-            active: existing?.active ?? stored.active,
-            activeAt: existing?.activeAt ?? (stored.activeAt ?? stored.createdAt),
+            active,
+            activeAt,
             metadata,
             metadataVersion: stored.metadataVersion,
             agentState,
             agentStateVersion: stored.agentStateVersion,
-            thinking: existing?.thinking ?? false,
-            thinkingAt: existing?.thinkingAt ?? 0,
-            backgroundTaskCount: existing?.backgroundTaskCount ?? 0,
+            thinking: active ? (existing?.thinking ?? false) : false,
+            thinkingAt: active ? (existing?.thinkingAt ?? 0) : 0,
+            backgroundTaskCount: active ? (existing?.backgroundTaskCount ?? 0) : 0,
             todos,
             teamState,
             model: stored.model,
             modelReasoningEffort: stored.modelReasoningEffort,
+            serviceTier: stored.serviceTier as CodexServiceTier | null,
             effort: stored.effort,
-            permissionMode: existing?.permissionMode,
+            permissionMode: (stored.permissionMode as PermissionMode | null) ?? undefined,
             collaborationMode: existing?.collaborationMode
         }
 
@@ -164,28 +273,56 @@ export class SessionCache {
         permissionMode?: PermissionMode
         model?: string | null
         modelReasoningEffort?: string | null
+        serviceTier?: CodexServiceTier | null
         effort?: string | null
         collaborationMode?: CodexCollaborationMode
     }): void {
-        const t = clampAliveTime(payload.time)
-        if (!t) return
+        const eventAt = validateActivityEventTime(payload.time)
+        if (!eventAt) return
 
         const session = this.sessions.get(payload.sid) ?? this.refreshSession(payload.sid)
         if (!session) return
+        const lastActivityEventAt = this.lastActivityEventAtBySessionId.get(session.id)
+        if (lastActivityEventAt !== undefined && (
+            eventAt < lastActivityEventAt
+            || (eventAt === lastActivityEventAt && !session.active)
+        )) return
 
         const wasActive = session.active
         const wasThinking = session.thinking
         const previousPermissionMode = session.permissionMode
         const previousModel = session.model
         const previousModelReasoningEffort = session.modelReasoningEffort
+        const previousServiceTier = session.serviceTier
         const previousEffort = session.effort
         const previousCollaborationMode = session.collaborationMode
+        const now = Date.now()
+        const lastActivityPersistedAt = this.lastActivityPersistedAtBySessionId.get(session.id) ?? 0
+        if (!wasActive || now - lastActivityPersistedAt > 10_000) {
+            const persisted = this.store.sessions.setSessionActivity(session.id, true, now, eventAt, session.namespace)
+            if (persisted) {
+                this.lastActivityPersistedAtBySessionId.set(session.id, now)
+            } else {
+                const stored = this.store.sessions.getSession(session.id)
+                if (!wasActive) {
+                    if (!stored?.active || stored.activityEventAt === null || stored.activityEventAt < eventAt) return
+                } else if (stored && !stored.active) {
+                    this.refreshSession(session.id)
+                    return
+                }
+            }
+        }
 
         session.active = true
-        session.activeAt = Math.max(session.activeAt, t)
+        session.activeAt = now
         session.thinking = Boolean(payload.thinking)
-        session.thinkingAt = t
+        session.thinkingAt = session.activeAt
         if (payload.permissionMode !== undefined) {
+            if (payload.permissionMode !== session.permissionMode) {
+                this.store.sessions.setSessionPermissionMode(payload.sid, payload.permissionMode, session.namespace, {
+                    touchUpdatedAt: false
+                })
+            }
             session.permissionMode = payload.permissionMode
         }
         if (payload.model !== undefined) {
@@ -204,6 +341,14 @@ export class SessionCache {
             }
             session.modelReasoningEffort = payload.modelReasoningEffort
         }
+        if (payload.serviceTier !== undefined) {
+            if (payload.serviceTier !== session.serviceTier) {
+                this.store.sessions.setSessionServiceTier(payload.sid, payload.serviceTier, session.namespace, {
+                    touchUpdatedAt: false
+                })
+            }
+            session.serviceTier = payload.serviceTier
+        }
         if (payload.effort !== undefined) {
             if (payload.effort !== session.effort) {
                 this.store.sessions.setSessionEffort(payload.sid, payload.effort, session.namespace, {
@@ -216,11 +361,12 @@ export class SessionCache {
             session.collaborationMode = payload.collaborationMode
         }
 
-        const now = Date.now()
         const lastBroadcastAt = this.lastBroadcastAtBySessionId.get(session.id) ?? 0
+        this.lastActivityEventAtBySessionId.set(session.id, eventAt)
         const modeChanged = previousPermissionMode !== session.permissionMode
             || previousModel !== session.model
             || previousModelReasoningEffort !== session.modelReasoningEffort
+            || previousServiceTier !== session.serviceTier
             || previousEffort !== session.effort
             || previousCollaborationMode !== session.collaborationMode
         const shouldBroadcast = (!wasActive && session.active)
@@ -240,6 +386,7 @@ export class SessionCache {
                     permissionMode: session.permissionMode,
                     model: session.model,
                     modelReasoningEffort: session.modelReasoningEffort,
+                    serviceTier: session.serviceTier,
                     effort: session.effort,
                     collaborationMode: session.collaborationMode
                 }
@@ -263,22 +410,43 @@ export class SessionCache {
         })
     }
 
-    handleSessionEnd(payload: { sid: string; time: number }): void {
-        const t = clampAliveTime(payload.time) ?? Date.now()
+    handleSessionEnd(payload: { sid: string; time: number }): boolean {
+        const eventAt = validateActivityEventTime(payload.time)
+        if (!eventAt) return false
 
         const session = this.sessions.get(payload.sid) ?? this.refreshSession(payload.sid)
-        if (!session) return
+        if (!session) return false
+        const lastActivityEventAt = this.lastActivityEventAtBySessionId.get(session.id)
+        if (lastActivityEventAt !== undefined && eventAt < lastActivityEventAt) return false
+
+        const transitionAt = Date.now()
+        const persisted = this.store.sessions.setSessionActivity(session.id, false, transitionAt, eventAt, session.namespace)
+        let committedEventAt = eventAt
+        let committedActiveAt = transitionAt
+        if (!persisted) {
+            const stored = this.store.sessions.getSession(session.id)
+            if (!stored || stored.active || stored.activityEventAt !== eventAt) {
+                return false
+            }
+            committedEventAt = stored.activityEventAt
+            committedActiveAt = stored.activeAt ?? session.activeAt
+        }
+        this.lastActivityPersistedAtBySessionId.set(session.id, committedActiveAt)
+        this.lastActivityEventAtBySessionId.set(session.id, committedEventAt)
 
         if (!session.active && !session.thinking) {
-            return
+            session.activeAt = committedActiveAt
+            return true
         }
 
         session.active = false
+        session.activeAt = committedActiveAt
         session.thinking = false
-        session.thinkingAt = t
+        session.thinkingAt = committedActiveAt
         session.backgroundTaskCount = 0
 
         this.publisher.emit({ type: 'session-updated', sessionId: session.id, data: { active: false, thinking: false, backgroundTaskCount: 0 } })
+        return true
     }
 
     expireInactive(now: number = Date.now()): string[] {
@@ -288,10 +456,21 @@ export class SessionCache {
         for (const session of this.sessions.values()) {
             if (!session.active) continue
             if (now - session.activeAt <= sessionTimeoutMs) continue
+            const lastActivityEventAt = this.lastActivityEventAtBySessionId.get(session.id)
+            const eventAt = (lastActivityEventAt ?? 0) + 1
+            if (!this.store.sessions.setSessionActivity(session.id, false, now, eventAt, session.namespace)) continue
             session.active = false
+            session.activeAt = now
             session.thinking = false
+            session.backgroundTaskCount = 0
+            this.lastActivityPersistedAtBySessionId.set(session.id, now)
+            this.lastActivityEventAtBySessionId.set(session.id, eventAt)
             expired.push(session.id)
-            this.publisher.emit({ type: 'session-updated', sessionId: session.id, data: { active: false } })
+            this.publisher.emit({
+                type: 'session-updated',
+                sessionId: session.id,
+                data: { active: false, activeAt: now, thinking: false, backgroundTaskCount: 0 }
+            })
         }
 
         return expired
@@ -303,6 +482,7 @@ export class SessionCache {
             permissionMode?: PermissionMode
             model?: string | null
             modelReasoningEffort?: string | null
+            serviceTier?: CodexServiceTier | null
             effort?: string | null
             collaborationMode?: CodexCollaborationMode
         }
@@ -313,6 +493,14 @@ export class SessionCache {
         }
 
         if (config.permissionMode !== undefined) {
+            if (config.permissionMode !== session.permissionMode) {
+                const updated = this.store.sessions.setSessionPermissionMode(sessionId, config.permissionMode, session.namespace, {
+                    touchUpdatedAt: false
+                })
+                if (!updated) {
+                    throw new Error('Failed to update session permission mode')
+                }
+            }
             session.permissionMode = config.permissionMode
         }
         if (config.model !== undefined) {
@@ -336,6 +524,17 @@ export class SessionCache {
                 }
             }
             session.modelReasoningEffort = config.modelReasoningEffort
+        }
+        if (config.serviceTier !== undefined) {
+            if (config.serviceTier !== session.serviceTier) {
+                const updated = this.store.sessions.setSessionServiceTier(sessionId, config.serviceTier, session.namespace, {
+                    touchUpdatedAt: false
+                })
+                if (!updated) {
+                    throw new Error('Failed to update session service tier')
+                }
+            }
+            session.serviceTier = config.serviceTier
         }
         if (config.effort !== undefined) {
             if (config.effort !== session.effort) {
@@ -362,7 +561,14 @@ export class SessionCache {
         }
 
         const currentMetadata = session.metadata ?? { path: '', host: '' }
-        const newMetadata = { ...currentMetadata, name }
+        const newMetadata: Record<string, unknown> = isCodexBackedMetadata(currentMetadata as Record<string, unknown>)
+            ? {
+                ...currentMetadata,
+                name: undefined,
+                title: name,
+                titleUpdatedAt: Date.now()
+            }
+            : { ...currentMetadata, name }
 
         const result = this.store.sessions.updateSessionMetadata(
             sessionId,
@@ -378,6 +584,37 @@ export class SessionCache {
 
         if (result.result === 'version-mismatch') {
             throw new Error('Session was modified concurrently. Please try again.')
+        }
+
+        this.refreshSession(sessionId)
+    }
+
+    async patchSessionMetadata(
+        sessionId: string,
+        namespace: string,
+        updater: (metadata: Record<string, unknown>) => Record<string, unknown>
+    ): Promise<void> {
+        const session = this.resolveSessionAccess(sessionId, namespace)
+        if (!session.ok) {
+            throw new Error('Session not found')
+        }
+
+        const currentMetadata = (session.session.metadata ?? { path: '', host: '' }) as Record<string, unknown>
+        const nextMetadata = updater(currentMetadata)
+        const result = this.store.sessions.updateSessionMetadata(
+            sessionId,
+            nextMetadata,
+            session.session.metadataVersion,
+            namespace,
+            { touchUpdatedAt: false }
+        )
+
+        if (result.result !== 'success') {
+            throw new Error(
+                result.result === 'version-mismatch'
+                    ? 'Session was modified concurrently. Please try again.'
+                    : 'Failed to update session metadata'
+            )
         }
 
         this.refreshSession(sessionId)
@@ -400,6 +637,8 @@ export class SessionCache {
 
         this.sessions.delete(sessionId)
         this.lastBroadcastAtBySessionId.delete(sessionId)
+        this.lastActivityPersistedAtBySessionId.delete(sessionId)
+        this.lastActivityEventAtBySessionId.delete(sessionId)
         this.todoBackfillAttemptedSessionIds.delete(sessionId)
 
         this.publisher.emit({ type: 'session-removed', sessionId, namespace: session.namespace })
@@ -416,9 +655,12 @@ export class SessionCache {
             throw new Error('Session not found for merge')
         }
 
-        this.store.messages.mergeSessionMessages(oldSessionId, newSessionId)
+        // Alias publication, delivery-ledger rewrite, and message movement are
+        // one SQLite commit. No crash can expose the alias while messages still
+        // live only under the hidden old id.
+        this.store.mergeSessionIdentity(namespace, oldSessionId, newSessionId)
 
-        const mergedMetadata = this.mergeSessionMetadata(oldStored.metadata, newStored.metadata)
+        const mergedMetadata = mergeSessionMetadata(oldStored.metadata, newStored.metadata)
         if (mergedMetadata !== null && mergedMetadata !== newStored.metadata) {
             for (let attempt = 0; attempt < 2; attempt += 1) {
                 const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
@@ -457,12 +699,41 @@ export class SessionCache {
             }
         }
 
-        if (newStored.effort === null && oldStored.effort !== null) {
+        if (newStored.serviceTier === null && oldStored.serviceTier !== null) {
+            const updated = this.store.sessions.setSessionServiceTier(newSessionId, oldStored.serviceTier, namespace, {
+                touchUpdatedAt: false
+            })
+            if (!updated) {
+                throw new Error('Failed to preserve session service tier during merge')
+            }
+        }
+
+        const mergedFlavor = metadataFlavor(mergedMetadata) ?? metadataFlavor(newStored.metadata) ?? metadataFlavor(oldStored.metadata)
+        const mergedModel = newStored.model ?? oldStored.model
+        if (
+            newStored.effort === null
+            && oldStored.effort !== null
+            && (mergedFlavor !== 'cc-api' || isCcApiEffortAllowedForModel(
+                mergedModel,
+                oldStored.effort,
+                { allowUnlistedModel: true }
+            ))
+            && (mergedFlavor !== 'claude-deepseek' || isClaudeDeepSeekEffortAllowedForModel(mergedModel, oldStored.effort))
+        ) {
             const updated = this.store.sessions.setSessionEffort(newSessionId, oldStored.effort, namespace, {
                 touchUpdatedAt: false
             })
             if (!updated) {
                 throw new Error('Failed to preserve session effort during merge')
+            }
+        }
+
+        if (newStored.permissionMode === null && oldStored.permissionMode !== null) {
+            const updated = this.store.sessions.setSessionPermissionMode(newSessionId, oldStored.permissionMode, namespace, {
+                touchUpdatedAt: false
+            })
+            if (!updated) {
+                throw new Error('Failed to preserve session permission mode during merge')
             }
         }
 
@@ -515,86 +786,27 @@ export class SessionCache {
             this.publisher.emit({ type: 'session-removed', sessionId: oldSessionId, namespace })
         }
         this.lastBroadcastAtBySessionId.delete(oldSessionId)
+        this.lastActivityPersistedAtBySessionId.delete(oldSessionId)
+        this.lastActivityEventAtBySessionId.delete(oldSessionId)
         this.todoBackfillAttemptedSessionIds.delete(oldSessionId)
 
         this.refreshSession(newSessionId)
     }
 
-    private mergeSessionMetadata(oldMetadata: unknown | null, newMetadata: unknown | null): unknown | null {
-        if (!oldMetadata || typeof oldMetadata !== 'object') {
-            return newMetadata
-        }
-        if (!newMetadata || typeof newMetadata !== 'object') {
-            return oldMetadata
-        }
-
-        const oldObj = oldMetadata as Record<string, unknown>
-        const newObj = newMetadata as Record<string, unknown>
-        const merged: Record<string, unknown> = { ...newObj }
-        let changed = false
-
-        if (typeof oldObj.name === 'string' && typeof newObj.name !== 'string') {
-            merged.name = oldObj.name
-            changed = true
-        }
-
-        const oldSummary = oldObj.summary as { text?: unknown; updatedAt?: unknown } | undefined
-        const newSummary = newObj.summary as { text?: unknown; updatedAt?: unknown } | undefined
-        const oldUpdatedAt = typeof oldSummary?.updatedAt === 'number' ? oldSummary.updatedAt : null
-        const newUpdatedAt = typeof newSummary?.updatedAt === 'number' ? newSummary.updatedAt : null
-        if (oldUpdatedAt !== null && (newUpdatedAt === null || oldUpdatedAt > newUpdatedAt)) {
-            merged.summary = oldSummary
-            changed = true
-        }
-
-        if (oldObj.worktree && !newObj.worktree) {
-            merged.worktree = oldObj.worktree
-            changed = true
-        }
-
-        if (typeof oldObj.path === 'string' && typeof newObj.path !== 'string') {
-            merged.path = oldObj.path
-            changed = true
-        }
-        if (typeof oldObj.host === 'string' && typeof newObj.host !== 'string') {
-            merged.host = oldObj.host
-            changed = true
-        }
-
-        return changed ? merged : newMetadata
-    }
-
     private mergeAgentState(oldState: unknown | null, newState: unknown | null): unknown | null {
-        if (oldState === null) return newState
-        if (newState === null) return oldState
-
-        const oldObj = oldState as Record<string, unknown>
-        const newObj = newState as Record<string, unknown>
-
-        const completedRequests = {
-            ...((oldObj.completedRequests as Record<string, unknown> | undefined) ?? {}),
-            ...((newObj.completedRequests as Record<string, unknown> | undefined) ?? {})
-        }
-        // Filter out requests that are already completed to avoid resurrecting them as pending
-        const completedIds = new Set(Object.keys(completedRequests))
-        const requests = Object.fromEntries(
-            Object.entries({
-                ...((oldObj.requests as Record<string, unknown> | undefined) ?? {}),
-                ...((newObj.requests as Record<string, unknown> | undefined) ?? {})
-            }).filter(([id]) => !completedIds.has(id))
-        )
-
-        return { ...oldObj, ...newObj, requests, completedRequests }
+        return mergeForkedAgentState(oldState, newState)
     }
 
     private extractAgentSessionId(
         metadata: NonNullable<Session['metadata']>
-    ): { field: 'codexSessionId' | 'claudeSessionId' | 'geminiSessionId' | 'opencodeSessionId' | 'cursorSessionId'; value: string } | null {
+    ): { field: 'codexSessionId' | 'claudeSessionId' | 'agySessionId' | 'grokSessionId' | 'opencodeSessionId' | 'cursorSessionId' | 'hermesSessionId'; value: string } | null {
         if (metadata.codexSessionId) return { field: 'codexSessionId', value: metadata.codexSessionId }
         if (metadata.claudeSessionId) return { field: 'claudeSessionId', value: metadata.claudeSessionId }
-        if (metadata.geminiSessionId) return { field: 'geminiSessionId', value: metadata.geminiSessionId }
+        if (metadata.agySessionId) return { field: 'agySessionId', value: metadata.agySessionId }
+        if (metadata.grokSessionId) return { field: 'grokSessionId', value: metadata.grokSessionId }
         if (metadata.opencodeSessionId) return { field: 'opencodeSessionId', value: metadata.opencodeSessionId }
         if (metadata.cursorSessionId) return { field: 'cursorSessionId', value: metadata.cursorSessionId }
+        if (metadata.hermesSessionId) return { field: 'hermesSessionId', value: metadata.hermesSessionId }
         return null
     }
 

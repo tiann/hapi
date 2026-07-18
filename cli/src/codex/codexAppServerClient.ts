@@ -10,8 +10,18 @@ import type {
     ThreadResumeResponse,
     TurnStartParams,
     TurnStartResponse,
+    TurnSteerParams,
+    TurnSteerResponse,
     TurnInterruptParams,
-    TurnInterruptResponse
+    TurnInterruptResponse,
+    ThreadCompactStartParams,
+    ThreadCompactStartResponse,
+    ThreadGoalGetParams,
+    ThreadGoalGetResponse,
+    ThreadGoalSetParams,
+    ThreadGoalSetResponse,
+    ThreadGoalClearParams,
+    ThreadGoalClearResponse
 } from './appServerTypes';
 
 type JsonRpcLiteRequest = {
@@ -38,10 +48,100 @@ type JsonRpcLiteResponse = {
 type RequestHandler = (params: unknown) => Promise<unknown> | unknown;
 
 type PendingRequest = {
+    method: string;
+    writeState: 'not-written' | 'written';
     resolve: (value: unknown) => void;
     reject: (error: Error) => void;
     cleanup: () => void;
 };
+
+export class CodexAppServerError extends Error {
+    readonly method: string;
+    readonly code?: number;
+    readonly data?: unknown;
+    readonly childExit?: { code: number | null; signal: string | null };
+    readonly writeState: 'not-written' | 'written';
+
+    constructor(options: {
+        method: string;
+        message: string;
+        code?: number;
+        data?: unknown;
+        childExit?: { code: number | null; signal: string | null };
+        writeState: 'not-written' | 'written';
+        cause?: unknown;
+    }) {
+        super(sanitizeCodexErrorMessage(options.message, options.method, options.code, options.childExit));
+        this.name = 'CodexAppServerError';
+        this.method = options.method;
+        this.code = options.code;
+        this.data = sanitizeCodexErrorData(options.data);
+        this.childExit = options.childExit;
+        this.writeState = options.writeState;
+    }
+}
+
+function sanitizeCodexErrorData(value: unknown): unknown {
+    const record = asRecord(value);
+    if (!record) return undefined;
+    const safe: Record<string, string | number | boolean> = {};
+    for (const key of ['kind', 'type', 'status']) {
+        const item = record[key];
+        if (typeof item === 'string') safe[key] = redactCodexErrorText(item).slice(0, 100);
+        else if (typeof item === 'number' || typeof item === 'boolean') safe[key] = item;
+    }
+    return Object.keys(safe).length > 0 ? safe : undefined;
+}
+
+export function redactCodexErrorText(message: string): string {
+    return message
+        .replace(/\b(?:sk|rk|pk)-[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]')
+        .replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [REDACTED]')
+        .replace(/\b[A-Z][A-Z0-9_]*(?:API_KEY|API_TOKEN|OAUTH_TOKEN|ACCESS_TOKEN|AUTH_TOKEN|SECRET|PASSWORD|PRIVATE_KEY)\s*=\s*[^\s,;]+/gi, '[REDACTED_CREDENTIAL]')
+        .slice(0, 500);
+}
+
+function sanitizeCodexErrorMessage(
+    message: string,
+    method: string,
+    code?: number,
+    childExit?: { code: number | null; signal: string | null }
+): string {
+    if (childExit) return 'Codex app-server exited';
+    if (/request aborted|aborted by user/i.test(message)) return 'Request aborted';
+    if (/operation not permitted|permission denied|system policy/i.test(message)) return 'Permission denied';
+    if (/turn.*(?:active|in progress)|already.*turn/i.test(message)) return 'Turn already active';
+    if (method === 'thread/resume' && /not found|missing|unknown/i.test(message)) return 'Thread not found';
+    if (code === -32601 || /method not found/i.test(message)) return 'Method not found';
+    if (/timed out|timeout/i.test(message)) return 'Request timed out';
+    return 'Request failed';
+}
+
+export function formatCodexAppServerFailure(error: unknown): string {
+    if (error instanceof CodexAppServerError) {
+        if (error.childExit) return `Process exited unexpectedly (code=${error.childExit.code ?? 'null'}, signal=${error.childExit.signal ?? 'null'})`;
+        if (error.name === 'AbortError') return 'Aborted by user';
+        if (error.method === 'thread/resume') return `Native resume failed: ${error.message}`;
+        if (/operation not permitted|permission denied|system policy/i.test(error.message)) return `Codex could not access the workspace: ${error.message}`;
+        if (/turn.*(?:active|in progress)|already.*turn/i.test(error.message)) return `Codex already has an active turn: ${error.message}`;
+        return `Codex ${error.method} failed: ${error.message}`;
+    }
+    if (error instanceof Error && error.name === 'AbortError') return 'Aborted by user';
+    return 'Codex request failed';
+}
+
+export function getCodexAppServerEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+    const blockedPrefixes = ['ANTHROPIC_', 'CLAUDE_', 'AGY_', 'ANTIGRAVITY_', 'GOOGLE_', 'GEMINI_', 'GROK_', 'ARK_', 'VOLCENGINE_', 'HERMES_'];
+    const blockedManaged = new Set([
+        'HAPI_LAUNCH_NONCE', 'HAPI_RUNNER_INSTANCE_ID', 'HAPI_MANAGED_OUTCOME_FD',
+        'HAPI_RESUME_PROFILE_FINGERPRINT', 'HAPI_EXPECTED_NATIVE_RESUME_ID'
+    ]);
+    return Object.entries(env).reduce((acc, [key, value]) => {
+        if (blockedManaged.has(key) || blockedPrefixes.some((prefix) => key.startsWith(prefix))) return acc;
+        if (typeof value === 'string') acc[key] = value;
+        return acc;
+    }, {} as Record<string, string>);
+}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
     if (!value || typeof value !== 'object') {
@@ -50,10 +150,27 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     return value as Record<string, unknown>;
 }
 
-function createAbortError(): Error {
-    const error = new Error('Request aborted');
-    error.name = 'AbortError';
-    return error;
+export function buildCodexAppServerArgs(
+    env: Record<string, string | undefined> = process.env
+): string[] {
+    const args = ['app-server'];
+    const rawAutoCompactLimit = env.HAPI_CODEX_AUTO_COMPACT_TOKEN_LIMIT?.trim();
+
+    if (!rawAutoCompactLimit) {
+        return args;
+    }
+
+    const autoCompactLimit = Number(rawAutoCompactLimit);
+    if (
+        !Number.isSafeInteger(autoCompactLimit) ||
+        autoCompactLimit <= 0 ||
+        String(autoCompactLimit) !== rawAutoCompactLimit
+    ) {
+        throw new Error('HAPI_CODEX_AUTO_COMPACT_TOKEN_LIMIT must be a positive integer');
+    }
+
+    args.push('-c', `model_auto_compact_token_limit=${autoCompactLimit}`);
+    return args;
 }
 
 export class CodexAppServerClient {
@@ -73,12 +190,8 @@ export class CodexAppServerClient {
             return;
         }
 
-        this.process = spawn('codex', ['app-server'], {
-            env: Object.keys(process.env).reduce((acc, key) => {
-                const value = process.env[key];
-                if (typeof value === 'string') acc[key] = value;
-                return acc;
-            }, {} as Record<string, string>),
+        this.process = spawn('codex', buildCodexAppServerArgs(), {
+            env: getCodexAppServerEnv(process.env),
             stdio: ['pipe', 'pipe', 'pipe'],
             shell: process.platform === 'win32'
         });
@@ -90,14 +203,19 @@ export class CodexAppServerClient {
         this.process.stderr.on('data', (chunk) => {
             const text = chunk.toString().trim();
             if (text.length > 0) {
-                logger.debug(`[CodexAppServer][stderr] ${text}`);
+                logger.debug(`[CodexAppServer][stderr] ${Buffer.byteLength(text, 'utf8')} bytes suppressed`);
             }
         });
 
         this.process.on('exit', (code, signal) => {
             const message = `Codex app-server exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`;
             logger.debug(message);
-            this.rejectAllPending(new Error(message));
+            this.rejectAllPending((pending) => new CodexAppServerError({
+                method: pending.method,
+                message,
+                childExit: { code, signal },
+                writeState: pending.writeState
+            }));
             this.connected = false;
             this.resetParserState();
             this.process = null;
@@ -106,10 +224,12 @@ export class CodexAppServerClient {
         this.process.on('error', (error) => {
             logger.debug('[CodexAppServer] Process error', error);
             const message = error instanceof Error ? error.message : String(error);
-            this.rejectAllPending(new Error(
-                `Failed to spawn codex app-server: ${message}. Is it installed and on PATH?`,
-                { cause: error }
-            ));
+            this.rejectAllPending((pending) => new CodexAppServerError({
+                method: pending.method,
+                message: `Failed to spawn codex app-server: ${message}. Is it installed and on PATH?`,
+                writeState: pending.writeState,
+                cause: error
+            }));
             this.connected = false;
             this.resetParserState();
             this.process = null;
@@ -157,11 +277,59 @@ export class CodexAppServerClient {
         return response as TurnStartResponse;
     }
 
+    async steerTurn(params: TurnSteerParams, options?: { signal?: AbortSignal }): Promise<TurnSteerResponse> {
+        const response = await this.sendRequest('turn/steer', params, {
+            signal: options?.signal,
+            timeoutMs: CodexAppServerClient.DEFAULT_TIMEOUT_MS
+        });
+        const record = asRecord(response);
+        if (!record || typeof record.turnId !== 'string' || record.turnId.length === 0) {
+            throw new CodexAppServerError({
+                method: 'turn/steer',
+                message: 'Malformed turn steer response',
+                writeState: 'written'
+            });
+        }
+        return response as TurnSteerResponse;
+    }
+
     async interruptTurn(params: TurnInterruptParams): Promise<TurnInterruptResponse> {
         const response = await this.sendRequest('turn/interrupt', params, {
             timeoutMs: 30_000
         });
         return response as TurnInterruptResponse;
+    }
+
+    async compactThread(params: ThreadCompactStartParams, options?: { signal?: AbortSignal }): Promise<ThreadCompactStartResponse> {
+        const response = await this.sendRequest('thread/compact/start', params, {
+            signal: options?.signal,
+            timeoutMs: CodexAppServerClient.DEFAULT_TIMEOUT_MS
+        });
+        return response as ThreadCompactStartResponse;
+    }
+
+    async getThreadGoal(params: ThreadGoalGetParams, options?: { signal?: AbortSignal }): Promise<ThreadGoalGetResponse> {
+        const response = await this.sendRequest('thread/goal/get', params, {
+            signal: options?.signal,
+            timeoutMs: 30_000
+        });
+        return response as ThreadGoalGetResponse;
+    }
+
+    async setThreadGoal(params: ThreadGoalSetParams, options?: { signal?: AbortSignal }): Promise<ThreadGoalSetResponse> {
+        const response = await this.sendRequest('thread/goal/set', params, {
+            signal: options?.signal,
+            timeoutMs: 30_000
+        });
+        return response as ThreadGoalSetResponse;
+    }
+
+    async clearThreadGoal(params: ThreadGoalClearParams, options?: { signal?: AbortSignal }): Promise<ThreadGoalClearResponse> {
+        const response = await this.sendRequest('thread/goal/clear', params, {
+            signal: options?.signal,
+            timeoutMs: 30_000
+        });
+        return response as ThreadGoalClearResponse;
     }
 
     async disconnect(): Promise<void> {
@@ -180,7 +348,11 @@ export class CodexAppServerClient {
         } catch (error) {
             logger.debug('[CodexAppServer] Error while stopping process', error);
         } finally {
-            this.rejectAllPending(new Error('Codex app-server disconnected'));
+            this.rejectAllPending((pending) => new CodexAppServerError({
+                method: pending.method,
+                message: 'Codex app-server disconnected',
+                writeState: pending.writeState
+            }));
             this.connected = false;
             this.resetParserState();
         }
@@ -222,9 +394,12 @@ export class CodexAppServerClient {
             const onAbort = () => {
                 if (aborted) return;
                 aborted = true;
+                const writeState = this.pending.get(id)?.writeState ?? 'not-written';
                 this.pending.delete(id);
                 cleanup();
-                reject(createAbortError());
+                const error = new CodexAppServerError({ method, message: 'Request aborted', writeState });
+                error.name = 'AbortError';
+                reject(error);
             };
 
             if (options?.signal) {
@@ -240,13 +415,19 @@ export class CodexAppServerClient {
                     if (this.pending.has(id)) {
                         this.pending.delete(id);
                         cleanup();
-                        reject(new Error(`Codex app-server request '${method}' timed out after ${timeoutMs}ms`));
+                        reject(new CodexAppServerError({
+                            method,
+                            message: `Codex app-server request timed out after ${timeoutMs}ms`,
+                            writeState: 'written'
+                        }));
                     }
                 }, timeoutMs);
                 timeout.unref();
             }
 
             this.pending.set(id, {
+                method,
+                writeState: 'not-written',
                 resolve: (value) => {
                     cleanup();
                     resolve(value);
@@ -257,8 +438,15 @@ export class CodexAppServerClient {
                 },
                 cleanup
             });
-
-            this.writePayload(payload);
+            const pending = this.pending.get(id)!;
+            try {
+                this.writePayload(payload);
+                pending.writeState = 'written';
+            } catch (error) {
+                this.pending.delete(id);
+                cleanup();
+                reject(new CodexAppServerError({ method, message: error instanceof Error ? error.message : String(error), writeState: 'not-written', cause: error }));
+            }
         });
     }
 
@@ -293,14 +481,22 @@ export class CodexAppServerClient {
             const parsed = JSON.parse(line);
             message = asRecord(parsed);
             if (!message) {
-                logger.debug('[CodexAppServer] Ignoring non-object JSON from stdout', { line });
+                logger.debug('[CodexAppServer] Ignoring non-object JSON from stdout', { bytes: Buffer.byteLength(line, 'utf8') });
                 return;
             }
         } catch (error) {
             const protocolError = new Error('Failed to parse JSON from codex app-server');
             this.protocolError = protocolError;
-            logger.debug('[CodexAppServer] Failed to parse JSON line', { line, error });
-            this.rejectAllPending(protocolError);
+            logger.debug('[CodexAppServer] Failed to parse JSON line', {
+                bytes: Buffer.byteLength(line, 'utf8'),
+                error: error instanceof Error ? error.message : 'unknown parse error'
+            });
+            this.rejectAllPending((pending) => new CodexAppServerError({
+                method: pending.method,
+                message: protocolError.message,
+                writeState: pending.writeState,
+                cause: error
+            }));
             this.process?.stdin.end();
             return;
         }
@@ -382,7 +578,13 @@ export class CodexAppServerClient {
         this.pending.delete(response.id);
 
         if (response.error) {
-            pending.reject(new Error(response.error.message));
+            pending.reject(new CodexAppServerError({
+                method: pending.method,
+                message: response.error.message,
+                code: response.error.code,
+                data: response.error.data,
+                writeState: pending.writeState
+            }));
             return;
         }
 
@@ -399,10 +601,11 @@ export class CodexAppServerClient {
         this.protocolError = null;
     }
 
-    private rejectAllPending(error: Error): void {
-        for (const { reject, cleanup } of this.pending.values()) {
+    private rejectAllPending(error: Error | ((pending: PendingRequest) => Error)): void {
+        for (const pending of this.pending.values()) {
+            const { reject, cleanup } = pending;
             cleanup();
-            reject(error);
+            reject(typeof error === 'function' ? error(pending) : error);
         }
         this.pending.clear();
     }

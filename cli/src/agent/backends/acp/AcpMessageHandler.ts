@@ -103,8 +103,17 @@ function getSuffixPrefixOverlap(base: string, next: string): number {
 export class AcpMessageHandler {
     private readonly toolCalls = new Map<string, { name: string; input: unknown }>();
     private bufferedText = '';
+    private bufferedReasoning = '';
 
-    constructor(private readonly onMessage: (message: AgentMessage) => void) {}
+    constructor(
+        private readonly onMessage: (message: AgentMessage) => void,
+        private readonly options: { emitReasoning?: boolean; emitUserMessages?: boolean } = {}
+    ) {}
+
+    flush(): void {
+        this.flushReasoning();
+        this.flushText();
+    }
 
     flushText(): void {
         if (!this.bufferedText) {
@@ -150,6 +159,28 @@ export class AcpMessageHandler {
         this.bufferedText += text;
     }
 
+    private appendReasoningChunk(text: string): void {
+        if (!text) return;
+        if (!this.bufferedReasoning) {
+            this.bufferedReasoning = text;
+            return;
+        }
+        if (text === this.bufferedReasoning || this.bufferedReasoning.startsWith(text) || this.bufferedReasoning.endsWith(text)) return;
+        if (text.startsWith(this.bufferedReasoning) || text.endsWith(this.bufferedReasoning)) {
+            this.bufferedReasoning = text;
+            return;
+        }
+        const overlap = getSuffixPrefixOverlap(this.bufferedReasoning, text);
+        this.bufferedReasoning += text.slice(overlap);
+    }
+
+    private flushReasoning(): void {
+        if (!this.bufferedReasoning) return;
+        const text = this.bufferedReasoning;
+        this.bufferedReasoning = '';
+        this.onMessage({ type: 'reasoning', text });
+    }
+
     handleUpdate(update: unknown): void {
         if (!isObject(update)) return;
         const updateType = asString(update.sessionUpdate);
@@ -191,6 +222,18 @@ export class AcpMessageHandler {
         }
 
         if (updateType === ACP_SESSION_UPDATE_TYPES.agentThoughtChunk) {
+            if (this.options.emitReasoning) {
+                const text = extractTextContent(update.content);
+                if (text) this.appendReasoningChunk(text);
+            }
+            return;
+        }
+
+        if (updateType === ACP_SESSION_UPDATE_TYPES.userMessageChunk) {
+            if (this.options.emitUserMessages) {
+                const text = extractTextContent(update.content);
+                if (text) this.onMessage({ type: 'user_message', text });
+            }
             return;
         }
 

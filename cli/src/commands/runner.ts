@@ -10,13 +10,38 @@ import { getLatestRunnerLog } from '@/ui/logger'
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI'
 import { runDoctorCommand } from '@/ui/doctor'
 import { initializeToken } from '@/ui/tokenInit'
+import { isProcessAlive } from '@/utils/process'
+import { FOREGROUND_REPLACEMENT_READY, waitForOldRunnerThenStart } from '@/runner/foregroundReplacement'
 import type { CommandDefinition } from './types'
+
+const sleep = async (ms: number) => await new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+async function startDetachedRunner(): Promise<boolean> {
+    const child = spawnHappyCLI(['runner', 'start-sync'], {
+        detached: true,
+        stdio: 'ignore',
+        env: { ...process.env, HAPI_RUNNER_SUPERVISED: 'foreground' }
+    })
+    child.unref()
+
+    for (let i = 0; i < 50; i++) {
+        if (await checkIfRunnerRunningAndCleanupStaleState()) return true
+        await sleep(100)
+    }
+    return false
+}
 
 export const runnerCommand: CommandDefinition = {
     name: 'runner',
     requiresRuntimeAssets: true,
     run: async ({ commandArgs }) => {
         const runnerSubcommand = commandArgs[0]
+
+        if (runnerSubcommand === 'integration-fixture-agent') {
+            const { runIntegrationAgentFixture } = await import('@/runner/fixtures/integrationAgent')
+            await runIntegrationAgentFixture()
+            return
+        }
 
         if (runnerSubcommand === 'list') {
             try {
@@ -51,29 +76,31 @@ export const runnerCommand: CommandDefinition = {
         }
 
         if (runnerSubcommand === 'start') {
-            const child = spawnHappyCLI(['runner', 'start-sync'], {
-                detached: true,
-                stdio: 'ignore',
-                env: process.env
-            })
-            child.unref()
-
-            let started = false
-            for (let i = 0; i < 50; i++) {
-                if (await checkIfRunnerRunningAndCleanupStaleState()) {
-                    started = true
-                    break
-                }
-                await new Promise(resolve => setTimeout(resolve, 100))
-            }
-
-            if (started) {
+            if (await startDetachedRunner()) {
                 console.log('Runner started successfully')
             } else {
                 console.error('Failed to start runner')
                 process.exit(1)
             }
             process.exit(0)
+        }
+
+        if (runnerSubcommand === 'restart-after') {
+            const oldPid = Number(commandArgs[1])
+            if (!Number.isSafeInteger(oldPid) || oldPid <= 0 || oldPid === process.pid) {
+                process.exit(64)
+            }
+
+            process.stdout.write(`${FOREGROUND_REPLACEMENT_READY}\n`)
+            const restarted = await waitForOldRunnerThenStart({
+                oldPid,
+                isAlive: isProcessAlive,
+                startRunner: startDetachedRunner,
+                sleep,
+                waitTimeoutMs: 30_000,
+                maxStartAttempts: 3
+            })
+            process.exit(restarted ? 0 : 1)
         }
 
         if (runnerSubcommand === 'start-sync') {
@@ -88,7 +115,9 @@ export const runnerCommand: CommandDefinition = {
         }
 
         if (runnerSubcommand === 'status') {
-            await runDoctorCommand('runner')
+            await runDoctorCommand('runner', {
+                fullArgs: commandArgs.includes('--full-args') || commandArgs.includes('--verbose')
+            })
             process.exit(0)
         }
 
@@ -108,15 +137,16 @@ ${chalk.bold('hapi runner')} - Runner management
 ${chalk.bold('Usage:')}
   hapi runner start              Start the runner (detached)
   hapi runner stop               Stop the runner (sessions stay alive)
-  hapi runner status             Show runner status
+  hapi runner status             Show runner status (redacted process args by default)
+  hapi runner status --full-args Show runner status with full process argv
   hapi runner list               List active sessions
 
   If you want to kill all hapi related processes run 
-  ${chalk.cyan('hapi doctor clean')}
+  ${chalk.cyan('hapi doctor')} (report only; manually verify legacy identities before any signal)
 
 ${chalk.bold('Note:')} The runner runs in the background and manages Claude sessions.
 
-${chalk.bold('To clean up runaway processes:')} Use ${chalk.cyan('hapi doctor clean')}
+${chalk.bold('Legacy process cleanup:')} automatic PID/name-based cleanup is disabled; use the report and verify each identity manually.
 `)
     }
 }

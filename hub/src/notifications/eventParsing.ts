@@ -33,6 +33,9 @@ function extractContentEnvelope(content: unknown): EventEnvelope | null {
     if (content.type === AGENT_MESSAGE_PAYLOAD_TYPE || content.type === 'output') {
         const data = isObject(content.data) ? content.data : null
         if (data && typeof data.type === 'string') {
+            if (data.type === 'attachments') {
+                return null
+            }
             return { type: 'event', data }
         }
     }

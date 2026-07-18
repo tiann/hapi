@@ -2,6 +2,7 @@ import { readdir, readFile } from 'fs/promises';
 import { join } from 'path';
 import { homedir } from 'os';
 import { parse as parseYaml } from 'yaml';
+import { listEnabledCodexPluginInstallations, resolveRealDirectoryInside } from './codexPlugins';
 
 export interface SlashCommand {
     name: string;
@@ -30,14 +31,19 @@ const BUILTIN_COMMANDS: Record<string, SlashCommand[]> = {
         { name: 'compact', description: 'Compact conversation context', source: 'builtin' },
         { name: 'context', description: 'Show context information', source: 'builtin' },
         { name: 'cost', description: 'Show session cost', source: 'builtin' },
+        { name: 'goal', description: 'Set, view, or clear the conversation goal', source: 'builtin' },
         { name: 'plan', description: 'Toggle plan mode', source: 'builtin' },
     ],
-    codex: [],
-    gemini: [
-        { name: 'about', description: 'About Gemini', source: 'builtin' },
+    codex: [
+        { name: 'compact', description: 'Compact conversation context', source: 'builtin' },
+        { name: 'goal', description: 'Set, view, or clear the conversation goal', source: 'builtin' },
+    ],
+    agy: [
+        { name: 'about', description: 'About Antigravity agy', source: 'builtin' },
         { name: 'clear', description: 'Clear conversation', source: 'builtin' },
         { name: 'compress', description: 'Compress context', source: 'builtin' },
     ],
+    grok: [],
     opencode: [],
 };
 
@@ -94,7 +100,7 @@ function getUserCommandsDir(agent: string): string | null {
             return join(codexHome, 'prompts');
         }
         default:
-            // Gemini and other agents don't have user commands
+            // Antigravity agy and other agents don't have user commands
             return null;
     }
 }
@@ -110,7 +116,7 @@ function getProjectCommandsDir(agent: string, projectDir: string): string | null
         case 'codex':
             return join(projectDir, '.codex', 'prompts');
         default:
-            // Gemini and other agents don't have project commands
+            // Antigravity agy and other agents don't have project commands
             return null;
     }
 }
@@ -217,7 +223,24 @@ async function scanProjectCommands(agent: string, projectDir?: string): Promise<
  * then scans each plugin's commands directory.
  */
 async function scanPluginCommands(agent: string): Promise<SlashCommand[]> {
-    // Only Claude supports plugins for now
+    if (agent === 'codex') {
+        const installations = await listEnabledCodexPluginInstallations();
+        const allCommands: SlashCommand[] = [];
+
+        for (const installation of installations) {
+            const commandsPath = join(installation.installPath, 'commands');
+            const commandsDir = await resolveRealDirectoryInside(installation.installPath, commandsPath);
+            if (!commandsDir) {
+                continue;
+            }
+            const commands = await scanCommandsDir(commandsDir, 'plugin', installation.pluginName);
+            allCommands.push(...commands);
+        }
+
+        return allCommands.sort((a, b) => a.name.localeCompare(b.name));
+    }
+
+    // Only Claude supports Claude-style plugins for now
     if (agent !== 'claude') {
         return [];
     }
@@ -272,13 +295,14 @@ async function scanPluginCommands(agent: string): Promise<SlashCommand[]> {
  * built-in -> global user -> plugin -> project (project overrides same-name globals).
  */
 export async function listSlashCommands(agent: string, projectDir?: string): Promise<SlashCommand[]> {
-    const builtin = BUILTIN_COMMANDS[agent] ?? [];
+    const normalizedAgent = agent === 'claude-deepseek' || agent === 'claude-ark' || agent === 'cc-api' ? 'claude' : agent;
+    const builtin = BUILTIN_COMMANDS[normalizedAgent] ?? [];
 
     // Scan all command sources in parallel
     const [user, plugin, project] = await Promise.all([
-        scanUserCommands(agent),
-        scanPluginCommands(agent),
-        scanProjectCommands(agent, projectDir),
+        scanUserCommands(normalizedAgent),
+        scanPluginCommands(normalizedAgent),
+        scanProjectCommands(normalizedAgent, projectDir),
     ]);
 
     const allCommands = [...builtin, ...user, ...plugin, ...project];

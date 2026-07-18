@@ -5,7 +5,11 @@
  * bridge server and generating the MCP server configuration that Codex needs.
  */
 
-import { startHappyServer } from '@/claude/utils/startHappyServer';
+import {
+    startHappyServer,
+    type HapiMcpToolRegistration
+} from '@/claude/utils/startHappyServer';
+import { HAPI_GOAL_MCP_TOOL_NAMES } from '@/claude/utils/hapiMcpTools';
 import { getHappyCliCommand } from '@/utils/spawnHappyCLI';
 import type { ApiSessionClient } from '@/api/apiSession';
 
@@ -35,6 +39,10 @@ export interface HapiMcpBridge {
     mcpServers: McpServersConfig;
 }
 
+export interface BuildHapiMcpBridgeOptions {
+    extraTools?: HapiMcpToolRegistration[];
+}
+
 /**
  * Start the hapi MCP bridge server and return the configuration
  * needed to connect Codex to it.
@@ -42,9 +50,18 @@ export interface HapiMcpBridge {
  * This is the single source of truth for MCP bridge setup,
  * used by both local and remote launchers.
  */
-export async function buildHapiMcpBridge(client: ApiSessionClient): Promise<HapiMcpBridge> {
-    const happyServer = await startHappyServer(client);
-    const bridgeCommand = getHappyCliCommand(['mcp', '--url', happyServer.url]);
+export async function buildHapiMcpBridge(
+    client: ApiSessionClient,
+    options: BuildHapiMcpBridgeOptions = {}
+): Promise<HapiMcpBridge> {
+    const happyServer = await startHappyServer(client, { extraTools: options.extraTools });
+    const registeredToolNames = new Set((options.extraTools ?? []).map((tool) => tool.name));
+    const includeGoalTools = HAPI_GOAL_MCP_TOOL_NAMES.every((toolName) => registeredToolNames.has(toolName));
+    const bridgeArgs = ['mcp', '--url', happyServer.url];
+    if (includeGoalTools) {
+        bridgeArgs.push('--goal-tools');
+    }
+    const bridgeCommand = getHappyCliCommand(bridgeArgs);
 
     return {
         server: {

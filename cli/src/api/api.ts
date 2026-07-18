@@ -21,6 +21,7 @@ export class ApiClient {
         state: AgentState | null
         model?: string
         modelReasoningEffort?: string
+        serviceTier?: string
         effort?: string
     }): Promise<Session> {
         const response = await axios.post<CreateSessionResponse>(
@@ -31,6 +32,7 @@ export class ApiClient {
                 agentState: opts.state,
                 model: opts.model,
                 modelReasoningEffort: opts.modelReasoningEffort,
+                serviceTier: opts.serviceTier,
                 effort: opts.effort
             },
             {
@@ -78,6 +80,7 @@ export class ApiClient {
             todos: raw.todos,
             model: raw.model,
             modelReasoningEffort: raw.modelReasoningEffort,
+            serviceTier: raw.serviceTier,
             effort: raw.effort,
             permissionMode: raw.permissionMode,
             collaborationMode: raw.collaborationMode
@@ -126,6 +129,7 @@ export class ApiClient {
 
         return {
             id: raw.id,
+            namespace: raw.namespace,
             seq: raw.seq,
             createdAt: raw.createdAt,
             updatedAt: raw.updatedAt,

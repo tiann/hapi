@@ -1,0 +1,14 @@
+{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "cli": {
+      "name": "@fixture/cli",
+      "version": "1.0.0",
+      "dependencies": {
+        "missing-required-package": "1.0.0",
+      },
+    },
+  },
+  "packages": {},
+}

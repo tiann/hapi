@@ -92,3 +92,50 @@ describe('formatResetTime', () => {
         expect(result).toBeTruthy()
     })
 })
+
+describe('getEventPresentation — background notification', () => {
+    it('renders the notification summary without JSON fallback', () => {
+        expect(getEventPresentation({
+            type: 'background-notification',
+            message: 'Background command stopped',
+            internalKind: 'background_notification'
+        })).toEqual({ icon: null, text: 'Background command stopped' })
+    })
+})
+
+describe('getEventPresentation — compact', () => {
+    it('renders compact events with pre/post token savings when available', () => {
+        const result = getEventPresentation({
+            type: 'compact',
+            trigger: 'auto',
+            source: 'claude',
+            preTokens: 1_003_310,
+            postTokens: 20_011,
+            tokensSaved: 983_299,
+            durationMs: 146_000
+        })
+
+        expect(result.icon).toBe('📦')
+        expect(result.text).toBe('Conversation compacted (1M → 20K, saved 983K tokens)')
+    })
+
+    it('falls back to the existing compact text when token details are unavailable', () => {
+        expect(getEventPresentation({
+            type: 'compact',
+            trigger: 'auto',
+            source: 'codex'
+        }).text).toBe('Conversation compacted')
+    })
+})
+
+describe('getEventPresentation — Hermes MoA', () => {
+    it('renders MoA aggregation status without JSON fallback', () => {
+        expect(getEventPresentation({
+            type: 'moa-aggregating',
+            aggregator: 'agg-model'
+        })).toEqual({
+            icon: '🧩',
+            text: 'MoA aggregating with agg-model'
+        })
+    })
+})

@@ -1,7 +1,7 @@
 import React from 'react';
 import { randomUUID } from 'node:crypto';
 
-import { CodexAppServerClient } from './codexAppServerClient';
+import { CodexAppServerClient, CodexAppServerError, formatCodexAppServerFailure } from './codexAppServerClient';
 import { CodexPermissionHandler } from './utils/permissionHandler';
 import { ReasoningProcessor } from './utils/reasoningProcessor';
 import { DiffProcessor } from './utils/diffProcessor';
@@ -16,6 +16,20 @@ import { AppServerEventConverter } from './utils/appServerEventConverter';
 import { registerAppServerPermissionHandlers } from './utils/appServerPermissionAdapter';
 import { buildThreadStartParams, buildTurnStartParams } from './utils/appServerConfig';
 import { shouldIgnoreTerminalEvent } from './utils/terminalEventGuard';
+
+function deliveryFailureState(error: unknown): 'definitive-no-write' | 'ambiguous' {
+    if (error instanceof CodexAppServerError && error.writeState === 'not-written') return 'definitive-no-write';
+    return 'ambiguous';
+}
+import { createCodexThreadTitlePoller, syncCodexThreadTitleToMetadata } from './utils/codexThreadTitle';
+import { compactToolOutputForHapi } from './utils/toolOutputCompaction';
+import {
+    clearTerminalCodexGoal,
+    createCodexGoalMcpTools,
+    setCodexThreadGoalReplacingTerminal
+} from './utils/hapiGoalTools';
+import { parseSpecialCommand } from '@/parsers/specialCommands';
+import { createCodexLiveAppendQueueHandler } from './utils/liveAppendQueue';
 import {
     RemoteLauncherBase,
     type RemoteLauncherDisplayContext,
@@ -23,7 +37,13 @@ import {
 } from '@/modules/common/remote/RemoteLauncherBase';
 
 type HappyServer = Awaited<ReturnType<typeof buildHapiMcpBridge>>['server'];
-type QueuedMessage = { message: string; mode: EnhancedMode; isolate: boolean; hash: string };
+type QueuedMessage = {
+    message: string;
+    mode: EnhancedMode;
+    isolate: boolean;
+    hash: string;
+    delivery?: { items: Array<{ messageId: string; sequence: number }>; attemptId: string };
+};
 
 class CodexRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CodexSession;
@@ -33,8 +53,13 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
     private diffProcessor: DiffProcessor | null = null;
     private happyServer: HappyServer | null = null;
     private abortController: AbortController = new AbortController();
+    private abortGeneration = 0;
+    private abortOperation: Promise<void> | null = null;
     private currentThreadId: string | null = null;
     private currentTurnId: string | null = null;
+    private liveAppendTurnInFlight = false;
+    private liveAppendActiveModeHash: string | null = null;
+    private titlePoller: { stop: () => void } | null = null;
 
     constructor(session: CodexSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
@@ -46,9 +71,23 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         return React.createElement(CodexDisplay, context);
     }
 
-    private async handleAbort(): Promise<void> {
+    private handleAbort(): Promise<void> {
+        if (this.abortOperation) return this.abortOperation;
+        const operation = this.performAbort();
+        this.abortOperation = operation;
+        void operation.then(
+            () => { if (this.abortOperation === operation) this.abortOperation = null; },
+            () => { if (this.abortOperation === operation) this.abortOperation = null; }
+        );
+        return operation;
+    }
+
+    private async performAbort(): Promise<void> {
         logger.debug('[Codex] Abort requested - stopping current task');
+        this.abortGeneration += 1;
+        this.abortController.abort();
         try {
+            let interruptError: unknown = null;
             if (this.currentThreadId && this.currentTurnId) {
                 try {
                     await this.appServerClient.interruptTurn({
@@ -56,22 +95,48 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         turnId: this.currentTurnId
                     });
                 } catch (error) {
-                    logger.debug('[Codex] Error interrupting app-server turn:', error);
+                    interruptError = error;
+                    logger.warn('[Codex] Native turn interruption failed; quarantining the session', error);
                 }
             }
             this.currentTurnId = null;
+            this.resetLiveAppendState();
 
-            this.abortController.abort();
-            this.session.queue.reset();
+            await this.session.invalidateQueuedMessages('codex-abort', 'canceled');
+            if (interruptError) throw interruptError;
             this.permissionHandler?.reset();
             this.reasoningProcessor?.abort();
             this.diffProcessor?.reset();
             logger.debug('[Codex] Abort completed - session remains active');
         } catch (error) {
-            logger.debug('[Codex] Error during abort:', error);
+            this.session.onAmbiguousDelivery?.();
+            this.exitReason = 'exit';
+            this.shouldExit = true;
+            logger.warn('[Codex] Abort could not durably terminalize queued messages', error);
+            throw error;
         } finally {
-            this.abortController = new AbortController();
+            // A durable-cancel failure leaves a mixed/unknown queue. Keep the
+            // signal aborted and stop the launcher so no retained item can be
+            // reserved or committed through a later delivery-barrier failure.
+            if (!this.shouldExit) {
+                this.abortController = new AbortController();
+            }
         }
+    }
+
+    private async waitForAbortOperationToSettle(): Promise<void> {
+        const operation = this.abortOperation;
+        if (!operation) return;
+        try {
+            await operation;
+        } catch {
+            // performAbort already quarantines the session before rejecting.
+        }
+    }
+
+    private resetLiveAppendState(): void {
+        this.liveAppendTurnInFlight = false;
+        this.liveAppendActiveModeHash = null;
     }
 
     private async handleExitFromUi(): Promise<void> {
@@ -116,6 +181,18 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         const messageBuffer = this.messageBuffer;
         const appServerClient = this.appServerClient;
         const appServerEventConverter = new AppServerEventConverter();
+        const shouldAutoExitAfterIdleTurn = session.startedBy === 'runner' && session.client.isDesktopMirrorSession();
+
+        const syncThreadTitle = (threadId: string | null) => {
+            if (!threadId) {
+                return;
+            }
+            void syncCodexThreadTitleToMetadata(session.client, threadId);
+        };
+        this.titlePoller ??= createCodexThreadTitlePoller({
+            client: session.client,
+            getThreadId: () => this.currentThreadId
+        });
 
         const normalizeCommand = (value: unknown): string | undefined => {
             if (typeof value === 'string') {
@@ -138,6 +215,14 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
         const asString = (value: unknown): string | null => {
             return typeof value === 'string' && value.length > 0 ? value : null;
+        };
+
+        const asStringArray = (value: unknown): string[] | null => {
+            if (!Array.isArray(value)) {
+                return null;
+            }
+            const strings = value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0);
+            return strings.length > 0 ? strings : null;
         };
 
         const applyResolvedModel = (value: unknown): string | undefined => {
@@ -167,6 +252,12 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 return JSON.stringify(value);
             } catch {
                 return String(value);
+            }
+        };
+
+        const setIfDefined = (target: Record<string, unknown>, key: string, value: unknown) => {
+            if (value !== null && value !== undefined) {
+                target[key] = value;
             }
         };
 
@@ -241,24 +332,110 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         let clearReadyAfterTurnTimer: (() => void) | null = null;
         let turnInFlight = false;
         let allowAnonymousTerminalEvent = false;
+        let manualCompactionInFlight = false;
+        let goalCommandInFlight = false;
+        let goalNotificationSuppressionDepth = 0;
+        let resolveManualCompactionCompletion: (() => void) | null = null;
+        let clearManualCompactionAbortHandler: (() => void) | null = null;
+        const mcpToolNamesByCallId = new Map<string, string>();
+        let turnDurationStartedAt: number | null = null;
+        let turnDurationTurnId: string | null = null;
+
+        const finishManualCompaction = () => {
+            manualCompactionInFlight = false;
+            clearManualCompactionAbortHandler?.();
+            clearManualCompactionAbortHandler = null;
+            const resolve = resolveManualCompactionCompletion;
+            resolveManualCompactionCompletion = null;
+            resolve?.();
+        };
+
+        const beginManualCompaction = (signal: AbortSignal): Promise<void> => {
+            clearManualCompactionAbortHandler?.();
+            manualCompactionInFlight = true;
+            return new Promise((resolve) => {
+                resolveManualCompactionCompletion = resolve;
+                const abortHandler = () => finishManualCompaction();
+                signal.addEventListener('abort', abortHandler, { once: true });
+                clearManualCompactionAbortHandler = () => {
+                    signal.removeEventListener('abort', abortHandler);
+                };
+            });
+        };
+
+        const runWithGoalNotificationSuppression = async <T,>(action: () => Promise<T>): Promise<T> => {
+            goalNotificationSuppressionDepth += 1;
+            goalCommandInFlight = true;
+            try {
+                return await action();
+            } finally {
+                goalNotificationSuppressionDepth = Math.max(0, goalNotificationSuppressionDepth - 1);
+                goalCommandInFlight = goalNotificationSuppressionDepth > 0;
+            }
+        };
+
+        const startTurnDurationIfNeeded = (turnId?: string | null) => {
+            if (turnDurationStartedAt === null) {
+                turnDurationStartedAt = Date.now();
+                turnDurationTurnId = turnId ?? null;
+                return;
+            }
+            if (!turnDurationTurnId && turnId) {
+                turnDurationTurnId = turnId;
+            }
+        };
+
+        const bindTurnDurationTurnIdIfNeeded = (turnId: string | null) => {
+            if (turnDurationStartedAt !== null && !turnDurationTurnId && turnId) {
+                turnDurationTurnId = turnId;
+            }
+        };
+
+        const emitTurnDurationIfStarted = (turnId?: string | null) => {
+            if (turnDurationStartedAt === null) {
+                return false;
+            }
+            if (turnId && turnDurationTurnId && turnDurationTurnId !== turnId) {
+                return false;
+            }
+            const durationMs = Math.max(0, Date.now() - turnDurationStartedAt);
+            turnDurationStartedAt = null;
+            turnDurationTurnId = null;
+            session.sendSessionEvent({
+                type: 'turn-duration',
+                durationMs
+            });
+            return true;
+        };
+
+        const discardTurnDurationForTurn = (turnId?: string | null) => {
+            if (!turnId || turnDurationStartedAt === null || turnDurationTurnId !== turnId) {
+                return;
+            }
+            turnDurationStartedAt = null;
+            turnDurationTurnId = null;
+        };
 
         const handleCodexEvent = (msg: Record<string, unknown>) => {
             const msgType = asString(msg.type);
             if (!msgType) return;
             const eventTurnId = asString(msg.turn_id ?? msg.turnId);
-            const isTerminalEvent = msgType === 'task_complete' || msgType === 'turn_aborted' || msgType === 'task_failed';
+            const isManualContextCompacted = msgType === 'context_compacted' && manualCompactionInFlight;
+            const isTerminalEvent = msgType === 'task_complete' || msgType === 'turn_aborted' || msgType === 'task_failed' || isManualContextCompacted;
 
             if (msgType === 'thread_started') {
                 const threadId = asString(msg.thread_id ?? msg.threadId);
                 if (threadId) {
                     this.currentThreadId = threadId;
-                    session.onSessionFound(threadId);
+                    void session.onSessionFound(threadId);
+                    syncThreadTitle(threadId);
                 }
                 return;
             }
 
             if (msgType === 'task_started') {
                 const turnId = eventTurnId;
+                startTurnDurationIfNeeded(turnId);
                 if (turnId) {
                     this.currentTurnId = turnId;
                     allowAnonymousTerminalEvent = false;
@@ -268,12 +445,16 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
 
             if (isTerminalEvent) {
+                const currentTurnIdForGuard = manualCompactionInFlight && !eventTurnId
+                    ? null
+                    : this.currentTurnId;
                 if (shouldIgnoreTerminalEvent({
                     eventTurnId,
-                    currentTurnId: this.currentTurnId,
+                    currentTurnId: currentTurnIdForGuard,
                     turnInFlight,
-                    allowAnonymousTerminalEvent
+                    allowAnonymousTerminalEvent: manualCompactionInFlight || allowAnonymousTerminalEvent
                 })) {
+                    discardTurnDurationForTurn(eventTurnId);
                     logger.debug(
                         `[Codex] Ignoring terminal event ${msgType} without matching turn context; ` +
                         `eventTurnId=${eventTurnId ?? 'none'}, activeTurn=${this.currentTurnId ?? 'none'}, ` +
@@ -281,8 +462,16 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     );
                     return;
                 }
+                emitTurnDurationIfStarted(eventTurnId);
                 this.currentTurnId = null;
+                this.resetLiveAppendState();
                 allowAnonymousTerminalEvent = false;
+                if (
+                    isManualContextCompacted ||
+                    (manualCompactionInFlight && (msgType === 'task_failed' || msgType === 'turn_aborted'))
+                ) {
+                    finishManualCompaction();
+                }
             }
 
             if (msgType === 'turn_aborted' || msgType === 'task_failed') {
@@ -319,11 +508,16 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             } else if (msgType === 'task_failed') {
                 const error = asString(msg.error);
                 messageBuffer.addMessage(error ? `Task failed: ${error}` : 'Task failed', 'status');
+            } else if (msgType === 'context_compacted') {
+                messageBuffer.addMessage('Context compacted', 'status');
             }
 
             if (msgType === 'task_started') {
                 clearReadyAfterTurnTimer?.();
                 turnInFlight = true;
+                if (this.liveAppendActiveModeHash) {
+                    this.liveAppendTurnInFlight = true;
+                }
                 if (!eventTurnId && !this.currentTurnId) {
                     allowAnonymousTerminalEvent = true;
                 }
@@ -335,6 +529,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             if (isTerminalEvent) {
                 turnInFlight = false;
                 allowAnonymousTerminalEvent = false;
+                syncThreadTitle(this.currentThreadId);
                 if (session.thinking) {
                     logger.debug('thinking completed');
                     session.onThinkingChange(false);
@@ -343,7 +538,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 appServerEventConverter.reset();
             }
 
-            if (isTerminalEvent && !turnInFlight) {
+            if (isTerminalEvent && !turnInFlight && !manualCompactionInFlight) {
                 scheduleReadyAfterTurn?.();
             } else if (readyAfterTurnTimer && msgType !== 'task_started') {
                 scheduleReadyAfterTurn?.();
@@ -374,6 +569,97 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     });
                 }
             }
+            if (msgType === 'codex_subagent_spawned') {
+                const callId = asString(msg.call_id ?? msg.callId);
+                const agentId = asString(msg.agent_id ?? msg.agentId);
+                if (callId && agentId) {
+                    const input: Record<string, unknown> = { agent_id: agentId };
+                    setIfDefined(input, 'nickname', asString(msg.nickname));
+                    setIfDefined(input, 'agent_type', asString(msg.agent_type ?? msg.agentType));
+                    setIfDefined(input, 'message', asString(msg.message));
+
+                    session.sendAgentMessage({
+                        type: 'tool-call',
+                        name: 'spawn_agent',
+                        callId,
+                        input,
+                        id: randomUUID()
+                    });
+                    session.sendAgentMessage({
+                        type: 'tool-call-result',
+                        callId,
+                        output: compactToolOutputForHapi(input, {
+                            callId,
+                            toolName: 'spawn_agent'
+                        }),
+                        id: randomUUID()
+                    });
+                }
+            }
+            if (msgType === 'codex_subagent_waited') {
+                const callId = asString(msg.call_id ?? msg.callId);
+                if (callId) {
+                    const input: Record<string, unknown> = {};
+                    setIfDefined(input, 'target', asString(msg.target));
+                    const targets = asStringArray(msg.targets);
+                    if (targets) {
+                        input.targets = targets;
+                    }
+                    const status = asRecord(msg.status);
+                    if (status) {
+                        input.status = status;
+                    }
+
+                    session.sendAgentMessage({
+                        type: 'tool-call',
+                        name: 'wait_agent',
+                        callId,
+                        input,
+                        id: randomUUID()
+                    });
+                    session.sendAgentMessage({
+                        type: 'tool-call-result',
+                        callId,
+                        output: compactToolOutputForHapi(status ?? input, {
+                            callId,
+                            toolName: 'wait_agent'
+                        }),
+                        id: randomUUID()
+                    });
+                }
+            }
+            if (msgType === 'codex_subagent_closed') {
+                const callId = asString(msg.call_id ?? msg.callId);
+                const target = asString(msg.target);
+                if (callId && target) {
+                    const input: Record<string, unknown> = { target };
+                    if (msg.previous_status !== undefined) {
+                        input.previous_status = msg.previous_status;
+                    }
+                    session.sendAgentMessage({
+                        type: 'tool-call',
+                        name: 'close_agent',
+                        callId,
+                        input,
+                        id: randomUUID()
+                    });
+                    session.sendAgentMessage({
+                        type: 'tool-call-result',
+                        callId,
+                        output: compactToolOutputForHapi({ ...input, closed: true }, {
+                            callId,
+                            toolName: 'close_agent'
+                        }),
+                        id: randomUUID()
+                    });
+                }
+            }
+            if (msgType === 'context_compacted') {
+                session.sendAgentMessage({
+                    ...msg,
+                    id: randomUUID()
+                });
+            }
             if (msgType === 'exec_command_begin' || msgType === 'exec_approval_request') {
                 const callId = asString(msg.call_id ?? msg.callId);
                 if (callId) {
@@ -402,7 +688,10 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     session.sendAgentMessage({
                         type: 'tool-call-result',
                         callId: callId,
-                        output,
+                        output: compactToolOutputForHapi(output, {
+                            callId,
+                            toolName: 'CodexBash'
+                        }),
                         id: randomUUID()
                     });
                 }
@@ -451,11 +740,14 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     session.sendAgentMessage({
                         type: 'tool-call-result',
                         callId: callId,
-                        output: {
+                        output: compactToolOutputForHapi({
                             stdout,
                             stderr,
                             success
-                        },
+                        }, {
+                            callId,
+                            toolName: 'CodexPatch'
+                        }),
                         id: randomUUID()
                     });
                 }
@@ -468,6 +760,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     invocation.tool ?? invocation.tool_name ?? msg.tool
                 );
                 if (callId && name) {
+                    mcpToolNamesByCallId.set(callId, name);
                     session.sendAgentMessage({
                         type: 'tool-call',
                         name,
@@ -493,13 +786,18 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 }
 
                 if (callId) {
+                    const toolName = mcpToolNamesByCallId.get(callId) ?? 'mcp';
                     session.sendAgentMessage({
                         type: 'tool-call-result',
                         callId,
-                        output,
+                        output: compactToolOutputForHapi(output, {
+                            callId,
+                            toolName
+                        }),
                         is_error: isError,
                         id: randomUUID()
                     });
+                    mcpToolNamesByCallId.delete(callId);
                 }
             }
             if (msgType === 'turn_diff') {
@@ -531,6 +829,22 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         });
 
         appServerClient.setNotificationHandler((method, params) => {
+            if (
+                goalCommandInFlight &&
+                (
+                    method === 'thread/goal/updated' ||
+                    method === 'thread/goal/cleared' ||
+                    method === 'turn/started' ||
+                    method === 'turn/completed'
+                )
+            ) {
+                logger.debug('[Codex] Ignoring app-server notification emitted by native goal command', { method });
+                return;
+            }
+            if (method === 'turn/started' && !turnInFlight && !manualCompactionInFlight) {
+                logger.debug('[Codex] Ignoring app-server turn/started notification with no HAPI turn in flight');
+                return;
+            }
             const events = appServerEventConverter.handleNotification(method, params);
             for (const event of events) {
                 const eventRecord = asRecord(event) ?? { type: undefined };
@@ -538,7 +852,15 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
         });
 
-        const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client);
+        const goalTools = createCodexGoalMcpTools({
+            client: appServerClient,
+            getThreadId: () => this.currentThreadId,
+            getSignal: () => this.abortController.signal,
+            runWithGoalNotificationSuppression
+        });
+        const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client, {
+            extraTools: goalTools
+        });
         this.happyServer = happyServer;
 
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
@@ -598,22 +920,149 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             readyAfterTurnTimer.unref?.();
         };
 
+        session.queue.setOnMessage?.(session.deliveryOutcomes ? null : createCodexLiveAppendQueueHandler({
+            queue: session.queue,
+            getActiveModeHash: () => this.liveAppendActiveModeHash,
+            getThreadId: () => this.currentThreadId,
+            getTurnId: () => this.currentTurnId,
+            isTurnInFlight: () => this.liveAppendTurnInFlight,
+            hasPendingPermission: () => permissionHandler.hasPendingRequests(),
+            isManualCompactionInFlight: () => manualCompactionInFlight,
+            isGoalCommandInFlight: () => goalCommandInFlight,
+            getSteer: () => async ({ threadId, expectedTurnId, message: nextMessage }) => {
+                const response = await appServerClient.steerTurn({
+                    threadId,
+                    expectedTurnId,
+                    input: [{ type: 'text', text: nextMessage }]
+                });
+                return !response.turnId || response.turnId === expectedTurnId;
+            },
+            log: (logMessage) => logger.debug(logMessage),
+            onAccepted: (next) => {
+                messageBuffer.addMessage(next.message, 'user');
+                logger.debug('[codexRemoteLauncher] live appended queued user message into active Codex turn');
+            },
+            onAmbiguous: (reason) => {
+                session.sendSessionEvent({
+                    type: 'message',
+                    message: `A live-appended message may or may not have reached Codex and will not be replayed automatically: ${reason}`
+                });
+            }
+        }));
+
+        const persistAccepted = async (delivery: QueuedMessage['delivery']): Promise<boolean> => {
+            if (!delivery) return true;
+            let persisted = false;
+            try {
+                persisted = await session.deliveryOutcomes?.recordTerminal(delivery.items, delivery.attemptId, 'accepted') === true;
+            } catch (error) {
+                logger.warn('[Codex] Failed to persist accepted delivery boundary:', error);
+            }
+            if (persisted) return true;
+            session.sendSessionEvent({
+                type: 'message',
+                message: 'Codex accepted the message, but HAPI could not durably record acceptance. The session is quarantined to prevent replay.'
+            });
+            session.onAmbiguousDelivery?.();
+            this.exitReason = 'exit';
+            this.shouldExit = true;
+            return false;
+        };
+
         while (!this.shouldExit) {
             logActiveHandles('loop-top');
             let message: QueuedMessage | null = pending;
             pending = null;
             if (!message) {
                 const waitSignal = this.abortController.signal;
-                const batch = await session.queue.waitForMessagesAndGetAsString(waitSignal);
-                if (!batch) {
+                const dequeueGeneration = this.abortGeneration;
+                const dequeueInterrupted = () => waitSignal.aborted || dequeueGeneration !== this.abortGeneration;
+                const queueWithReservations = session.queue as typeof session.queue & {
+                    waitForMessagesAndReserve?: typeof session.queue.waitForMessagesAndReserve;
+                };
+                if (!queueWithReservations.waitForMessagesAndReserve) {
+                    const legacyBatch = await session.queue.waitForMessagesAndGetAsString(waitSignal);
+                    if (!legacyBatch) {
+                        if (waitSignal.aborted && !this.shouldExit) {
+                            await this.waitForAbortOperationToSettle();
+                            continue;
+                        }
+                        break;
+                    }
+                    pending = legacyBatch;
+                    continue;
+                }
+                const reservation = await queueWithReservations.waitForMessagesAndReserve(waitSignal);
+                if (!reservation) {
                     if (waitSignal.aborted && !this.shouldExit) {
                         logger.debug('[codex]: Wait aborted while idle; ignoring and continuing');
+                        await this.waitForAbortOperationToSettle();
                         continue;
                     }
-                    logger.debug(`[codex]: batch=${!!batch}, shouldExit=${this.shouldExit}`);
+                    logger.debug(`[codex]: batch=${!!reservation}, shouldExit=${this.shouldExit}`);
                     break;
                 }
-                message = batch;
+                if (dequeueInterrupted()) {
+                    session.queue.restore(reservation);
+                    await this.waitForAbortOperationToSettle();
+                    continue;
+                }
+                let delivery: QueuedMessage['delivery'];
+                if (session.deliveryOutcomes) {
+                    if (!session.queue.seal(reservation)) {
+                        throw new Error('Queued message reservation became stale before delivery barrier');
+                    }
+                    const items = reservation.items.map((item) => ({ messageId: item.messageId, sequence: item.seq }));
+                    const attemptId = randomUUID();
+                    const barrier = await session.deliveryOutcomes.prepareBatch(items, attemptId);
+                    if (dequeueInterrupted()) {
+                        session.queue.restore(reservation);
+                        if (barrier.written) {
+                            let canceled = false;
+                            try {
+                                canceled = await session.deliveryOutcomes.recordTerminal(items, attemptId, 'canceled');
+                            } catch (error) {
+                                logger.warn('[Codex] Failed to cancel an interrupted delivery reservation', error);
+                            }
+                            if (!canceled) {
+                                session.onAmbiguousDelivery?.();
+                                this.exitReason = 'exit';
+                                this.shouldExit = true;
+                            }
+                        }
+                        await this.waitForAbortOperationToSettle();
+                        continue;
+                    }
+                    if (!barrier.written) {
+                        if (barrier.reason === 'definitive-no-write') {
+                            session.queue.restore(reservation);
+                            session.sendSessionEvent({ type: 'message', message: 'Message delivery could not be durably prepared. It remains queued.' });
+                            this.shouldExit = true;
+                            this.abortController.abort();
+                            continue;
+                        }
+                        session.queue.commit(reservation);
+                        session.onAmbiguousDelivery?.();
+                        this.shouldExit = true;
+                        session.sendSessionEvent({ type: 'message', message: 'Message delivery state is ambiguous. The batch was quarantined and will not be replayed.' });
+                        this.abortController.abort();
+                        continue;
+                    }
+                    delivery = { items, attemptId };
+                }
+                if (!session.queue.commit(reservation)) {
+                    if (delivery) {
+                        await session.deliveryOutcomes?.recordTerminal(delivery.items, delivery.attemptId, 'canceled');
+                    }
+                    throw new Error('Queued message reservation became stale before delivery');
+                }
+                message = {
+                    message: reservation.message,
+                    mode: reservation.mode,
+                    isolate: reservation.isolate,
+                    hash: reservation.hash,
+                    delivery
+                };
             }
 
             if (!message) {
@@ -621,7 +1070,6 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
 
             messageBuffer.addMessage(message.message, 'user');
-
             try {
                 if (!hasThread) {
                     const threadParams = buildThreadStartParams({
@@ -648,6 +1096,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                             applyResolvedModel(resumeRecord?.model);
                             logger.debug(`[Codex] Resumed app-server thread ${threadId}`);
                         } catch (error) {
+                            if (session.startedBy === 'runner') throw error;
                             logger.warn(`[Codex] Failed to resume app-server thread ${resumeCandidate}, starting new thread`, error);
                         }
                     }
@@ -670,7 +1119,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     }
 
                     this.currentThreadId = threadId;
-                    session.onSessionFound(threadId);
+                    await session.onSessionFound(threadId);
+                    syncThreadTitle(threadId);
                     hasThread = true;
                 } else {
                     if (!this.currentThreadId) {
@@ -681,48 +1131,233 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     }
                 }
 
+                const specialCommand = parseSpecialCommand(message.message);
+                if (specialCommand.type === 'compact') {
+                    if (!this.currentThreadId) {
+                        session.sendAgentMessage({
+                            type: 'task_failed',
+                            error: 'No Codex thread is available to compact.',
+                            id: randomUUID()
+                        });
+                        sendReady();
+                        continue;
+                    }
+
+                    messageBuffer.addMessage('Compaction started', 'status');
+                    session.sendAgentMessage({
+                        type: 'message',
+                        message: 'Compaction started',
+                        id: randomUUID()
+                    });
+                    const manualCompactionCompletion = beginManualCompaction(this.abortController.signal);
+                    turnInFlight = true;
+                    allowAnonymousTerminalEvent = true;
+                    startTurnDurationIfNeeded();
+                    try {
+                        await appServerClient.compactThread({
+                            threadId: this.currentThreadId
+                        }, {
+                            signal: this.abortController.signal
+                        });
+                        syncThreadTitle(this.currentThreadId);
+                        if (manualCompactionInFlight) {
+                            await manualCompactionCompletion;
+                        }
+                        await persistAccepted(message.delivery);
+                    } catch (error) {
+                        const failureState = deliveryFailureState(error);
+                        if (message.delivery) {
+                            await session.deliveryOutcomes?.recordTerminal(message.delivery.items, message.delivery.attemptId, failureState);
+                        }
+                        finishManualCompaction();
+                        emitTurnDurationIfStarted();
+                        const messageText = `Compaction failed: ${formatCodexAppServerFailure(error)}`;
+                        logger.warn('[Codex] Failed to compact thread:', error);
+                        messageBuffer.addMessage(messageText, 'status');
+                        session.sendAgentMessage({
+                            type: 'task_failed',
+                            error: messageText,
+                            id: randomUUID()
+                        });
+                        if (failureState === 'ambiguous') {
+                            session.onAmbiguousDelivery?.();
+                            this.exitReason = 'exit';
+                            this.shouldExit = true;
+                        }
+                        sendReady();
+                    } finally {
+                        if (!manualCompactionInFlight) {
+                            turnInFlight = false;
+                            allowAnonymousTerminalEvent = false;
+                        }
+                    }
+                    continue;
+                }
+
+                if (specialCommand.type === 'goal') {
+                    const goalThreadId = this.currentThreadId;
+                    if (!goalThreadId) {
+                        session.sendAgentMessage({
+                            type: 'task_failed',
+                            error: 'No Codex thread is available to manage goals.',
+                            id: randomUUID()
+                        });
+                        sendReady();
+                        continue;
+                    }
+
+                    try {
+                        const responseText = await runWithGoalNotificationSuppression(async () => {
+                            if (specialCommand.goalAction === 'set' && specialCommand.goalText) {
+                                const result = await setCodexThreadGoalReplacingTerminal(appServerClient, {
+                                    threadId: goalThreadId,
+                                    objective: specialCommand.goalText
+                                }, { signal: this.abortController.signal });
+                                return `Goal set: ${result.goal?.objective ?? specialCommand.goalText}`;
+                            }
+                            if (specialCommand.goalAction === 'clear') {
+                                await appServerClient.clearThreadGoal({
+                                    threadId: goalThreadId
+                                }, { signal: this.abortController.signal });
+                                return `Goal cleared`;
+                            }
+                            const result = await appServerClient.getThreadGoal({
+                                threadId: goalThreadId
+                            }, { signal: this.abortController.signal });
+                            return result.goal?.objective ? `Current goal: ${result.goal.objective}` : 'No goal is currently set';
+                        });
+
+                        messageBuffer.addMessage(responseText, 'status');
+                        session.sendAgentMessage({
+                            type: 'message',
+                            message: responseText,
+                            id: randomUUID()
+                        });
+                        await persistAccepted(message.delivery);
+                    } catch (error) {
+                        const failureState = deliveryFailureState(error);
+                        if (message.delivery) {
+                            await session.deliveryOutcomes?.recordTerminal(message.delivery.items, message.delivery.attemptId, failureState);
+                        }
+                        let messageText = `Failed to manage goal: ${formatCodexAppServerFailure(error)}`;
+                        // Gracefully handle older app-server versions that don't support the goal RPC methods
+                        if ((error instanceof CodexAppServerError && error.code === -32601)
+                            || (error instanceof Error && /method not found/i.test(error.message))) {
+                            messageText = 'Your version of Codex does not support the native /goal command. Please update Codex.';
+                        }
+                        logger.warn('[Codex] Failed to manage goal:', error);
+                        messageBuffer.addMessage(messageText, 'status');
+                        session.sendAgentMessage({
+                            type: 'task_failed',
+                            error: messageText,
+                            id: randomUUID()
+                        });
+                        if (failureState === 'ambiguous') {
+                            session.onAmbiguousDelivery?.();
+                            this.exitReason = 'exit';
+                            this.shouldExit = true;
+                        }
+                    }
+                    continue;
+                }
+
+                const sessionModelReasoningEffort = session.getModelReasoningEffort();
+                const sessionServiceTier = session.getServiceTier();
+                const currentThreadId = this.currentThreadId;
+                if (!currentThreadId) {
+                    throw new Error('No Codex thread is available to start a turn.');
+                }
+                try {
+                    const clearedGoal = await runWithGoalNotificationSuppression(
+                        () => clearTerminalCodexGoal(
+                            appServerClient,
+                            currentThreadId,
+                            { signal: this.abortController.signal }
+                        )
+                    );
+                    if (clearedGoal) {
+                        logger.debug('[Codex] Cleared terminal goal before starting a normal turn', {
+                            threadId: this.currentThreadId,
+                            status: clearedGoal.status,
+                            objective: clearedGoal.objective
+                        });
+                    }
+                } catch (error) {
+                    logger.debug('[Codex] Skipping terminal goal cleanup before turn:', error);
+                }
                 const turnParams = buildTurnStartParams({
                     threadId: this.currentThreadId,
                     message: message.message,
                     cwd: session.path,
                     mode: {
                         ...message.mode,
-                        model: session.getModel() ?? message.mode.model
+                        model: session.getModel() ?? message.mode.model,
+                        modelReasoningEffort: sessionModelReasoningEffort !== undefined
+                            ? ((sessionModelReasoningEffort ?? undefined) as EnhancedMode['modelReasoningEffort'])
+                            : message.mode.modelReasoningEffort,
+                        serviceTier: sessionServiceTier !== undefined
+                            ? ((sessionServiceTier ?? undefined) as EnhancedMode['serviceTier'])
+                            : message.mode.serviceTier
                     },
                     cliOverrides: session.codexCliOverrides
                 });
+                this.liveAppendActiveModeHash = message.hash;
+                this.liveAppendTurnInFlight = true;
                 turnInFlight = true;
                 allowAnonymousTerminalEvent = false;
+                startTurnDurationIfNeeded();
                 const turnResponse = await appServerClient.startTurn(turnParams, {
                     signal: this.abortController.signal
                 });
+                syncThreadTitle(this.currentThreadId);
                 const turnRecord = asRecord(turnResponse);
                 const turn = turnRecord ? asRecord(turnRecord.turn) : null;
                 const turnId = asString(turn?.id);
-                if (turnId) {
-                    this.currentTurnId = turnId;
-                } else if (!this.currentTurnId) {
-                    allowAnonymousTerminalEvent = true;
+                await persistAccepted(message.delivery);
+                if (turnInFlight) {
+                    if (turnId) {
+                        bindTurnDurationTurnIdIfNeeded(turnId);
+                        this.currentTurnId = turnId;
+                    } else if (!this.currentTurnId) {
+                        allowAnonymousTerminalEvent = true;
+                    }
                 }
             } catch (error) {
                 logger.warn('Error in codex session:', error);
                 const isAbortError = error instanceof Error && error.name === 'AbortError';
+                const failureMessage = formatCodexAppServerFailure(error);
                 turnInFlight = false;
+                this.resetLiveAppendState();
                 allowAnonymousTerminalEvent = false;
                 this.currentTurnId = null;
+                if (message.delivery) {
+                    const failureState = deliveryFailureState(error);
+                    await session.deliveryOutcomes?.recordTerminal(
+                        message.delivery.items,
+                        message.delivery.attemptId,
+                        failureState
+                    );
+                }
 
                 if (isAbortError) {
                     messageBuffer.addMessage('Aborted by user', 'status');
                     session.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
                 } else {
-                    messageBuffer.addMessage('Process exited unexpectedly', 'status');
-                    session.sendSessionEvent({ type: 'message', message: 'Process exited unexpectedly' });
+                    messageBuffer.addMessage(failureMessage, 'status');
+                    session.sendSessionEvent({ type: 'message', message: failureMessage });
                     this.currentTurnId = null;
                     this.currentThreadId = null;
                     hasThread = false;
                 }
+                if (message.delivery && deliveryFailureState(error) === 'ambiguous') {
+                    session.onAmbiguousDelivery?.();
+                    this.exitReason = 'exit';
+                    this.shouldExit = true;
+                }
+                emitTurnDurationIfStarted();
             } finally {
                 if (!turnInFlight) {
+                    this.resetLiveAppendState();
                     permissionHandler.reset();
                     reasoningProcessor.abort();
                     diffProcessor.reset();
@@ -735,6 +1370,16 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         shouldExit: this.shouldExit,
                         sendReady
                     });
+                    if (
+                        shouldAutoExitAfterIdleTurn
+                        && !this.shouldExit
+                        && !pending
+                        && session.queue.size() === 0
+                    ) {
+                        logger.debug('[codex-remote]: desktop mirror takeover turn is idle; exiting runner to return ownership');
+                        this.exitReason = 'exit';
+                        this.shouldExit = true;
+                    }
                 }
                 logActiveHandles('after-turn');
             }
@@ -755,6 +1400,11 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             this.happyServer.stop();
             this.happyServer = null;
         }
+
+        this.titlePoller?.stop();
+        this.titlePoller = null;
+
+        this.session.queue.setOnMessage?.(null);
 
         this.permissionHandler?.reset();
         this.reasoningProcessor?.abort();

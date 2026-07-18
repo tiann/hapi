@@ -3,8 +3,14 @@ export type {
     AgentStateCompletedRequest,
     AgentStateRequest,
     AttachmentMetadata,
+    ExecutionControl,
     DecryptedMessage,
     Metadata,
+    MachineMetadata,
+    ProviderAuthCheck,
+    ProviderReadiness,
+    ProviderReadinessMap,
+    ProviderReadinessStatus,
     Session,
     SyncEvent,
     TeamMember,
@@ -15,6 +21,14 @@ export type {
     WorktreeMetadata
 } from './schemas'
 
+export type {
+    ProviderAvailability,
+    ProviderCapabilityDescriptor,
+    ProviderReadinessIssue,
+    ProviderReadinessIssueCode,
+    ProviderSelection
+} from './providerReadiness'
+
 export type { SessionSummary, SessionSummaryMetadata } from './sessionSummary'
 export { AGENT_MESSAGE_PAYLOAD_TYPE } from './modes'
 
@@ -24,12 +38,16 @@ export type {
     CodexCollaborationMode,
     CodexCollaborationModeOption,
     CodexPermissionMode,
+    CodexServiceTier,
+    CodexServiceTierOption,
     CursorPermissionMode,
-    GeminiPermissionMode,
+    AgyPermissionMode,
+    GrokPermissionMode,
     OpencodePermissionMode,
+    HermesMoaPermissionMode,
     PermissionMode,
     PermissionModeOption,
     PermissionModeTone
 } from './modes'
 
-export type { ClaudeModelPreset, GeminiModelPreset } from './models'
+export type { ArkModelPreset, CcApiModelPreset, ClaudeDeepSeekModelPreset, ClaudeModelPreset, AgyModelPreset, HermesMoaPreset } from './models'

@@ -5,9 +5,9 @@
  * Environment files should be loaded using Node's --env-file flag
  */
 
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import packageJson from '../package.json'
 import { getCliArgs } from '@/utils/cliArgs'
 
@@ -52,6 +52,11 @@ class Configuration {
     public readonly privateKeyFile: string
     public readonly runnerStateFile: string
     public readonly runnerLockFile: string
+    public readonly runnerJournalFile: string
+    public readonly runnerHandoffFile: string
+    public readonly runnerReconcileStateFile: string
+    public readonly runnerManagedOutboxDir: string
+    public readonly installationIdFile: string
     public readonly currentCliVersion: string
 
     public readonly isExperimentalEnabled: boolean
@@ -69,17 +74,25 @@ class Configuration {
         // Directory configuration - Priority: HAPI_HOME env > default home dir
         if (process.env.HAPI_HOME) {
             // Expand ~ to home directory if present
-            const expandedPath = process.env.HAPI_HOME.replace(/^~/, homedir())
-            this.happyHomeDir = expandedPath
+            const expandedPath = resolve(process.env.HAPI_HOME.replace(/^~/, homedir()))
+            mkdirSync(expandedPath, { recursive: true })
+            this.happyHomeDir = realpathSync.native(expandedPath)
         } else {
-            this.happyHomeDir = join(homedir(), '.hapi')
+            const defaultHome = resolve(homedir(), '.hapi')
+            mkdirSync(defaultHome, { recursive: true })
+            this.happyHomeDir = realpathSync.native(defaultHome)
         }
 
         this.logsDir = join(this.happyHomeDir, 'logs')
         this.settingsFile = join(this.happyHomeDir, 'settings.json')
         this.privateKeyFile = join(this.happyHomeDir, 'access.key')
         this.runnerStateFile = join(this.happyHomeDir, 'runner.state.json')
-        this.runnerLockFile = join(this.happyHomeDir, 'runner.state.json.lock')
+        this.runnerLockFile = join(this.happyHomeDir, 'runner.lock')
+        this.runnerJournalFile = join(this.happyHomeDir, 'runner-sessions.v1.json')
+        this.runnerHandoffFile = join(this.happyHomeDir, 'runner-handoff.v1.json')
+        this.runnerReconcileStateFile = join(this.happyHomeDir, 'runner-reconcile-state.v1.json')
+        this.runnerManagedOutboxDir = join(this.happyHomeDir, 'managed-outbox')
+        this.installationIdFile = join(this.happyHomeDir, 'installation-id')
 
         this.isExperimentalEnabled = ['true', '1', 'yes'].includes(process.env.HAPI_EXPERIMENTAL?.toLowerCase() || '')
 

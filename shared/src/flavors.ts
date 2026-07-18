@@ -11,19 +11,29 @@ export type Capability = typeof Capabilities[keyof typeof Capabilities]
 // --- Per-flavor capability sets ---
 const FLAVOR_CAPS: Record<AgentFlavor, ReadonlySet<Capability>> = {
     claude: new Set([Capabilities.ModelChange, Capabilities.Effort]),
-    gemini: new Set([Capabilities.ModelChange]),
-    codex: new Set([]),
+    'claude-deepseek': new Set([Capabilities.ModelChange, Capabilities.Effort]),
+    'claude-ark': new Set([Capabilities.ModelChange, Capabilities.Effort]),
+    'cc-api': new Set([Capabilities.ModelChange, Capabilities.Effort]),
+    agy: new Set([Capabilities.ModelChange]),
+    grok: new Set([Capabilities.ModelChange, Capabilities.Effort]),
+    codex: new Set([Capabilities.ModelChange]),
     cursor: new Set([]),
     opencode: new Set([]),
+    'hermes-moa': new Set([Capabilities.ModelChange]),
 }
 
 // --- Flavor display names ---
 const FLAVOR_LABELS: Record<AgentFlavor, string> = {
     claude: 'Claude',
-    gemini: 'Gemini',
+    'claude-deepseek': 'CC-deepseek',
+    'claude-ark': 'CC-ark',
+    'cc-api': 'CC-api',
+    agy: 'Antigravity agy',
+    grok: 'Grok',
     codex: 'Codex',
     cursor: 'Cursor',
     opencode: 'OpenCode',
+    'hermes-moa': 'Hermes MoA',
 }
 
 // --- Query functions ---

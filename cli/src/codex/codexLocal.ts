@@ -2,7 +2,7 @@ import { logger } from '@/ui/logger';
 import { spawnWithTerminalGuard } from '@/utils/spawnWithTerminalGuard';
 import { buildMcpServerConfigArgs, buildDeveloperInstructionsArg } from './utils/codexMcpConfig';
 import { codexSystemPrompt } from './utils/systemPrompt';
-import type { ReasoningEffort } from './appServerTypes';
+import type { ReasoningEffort, ServiceTier } from './appServerTypes';
 
 /**
  * Filter out 'resume' subcommand which is managed internally by hapi.
@@ -23,12 +23,21 @@ export function filterResumeSubcommand(args: string[]): string[] {
     return args.slice(1);
 }
 
+export function buildCodexLocalServiceTierArgs(serviceTier?: ServiceTier): string[] {
+    if (!serviceTier || serviceTier === 'standard') {
+        return [];
+    }
+
+    return ['-c', `service_tier=${JSON.stringify(serviceTier)}`];
+}
+
 export async function codexLocal(opts: {
     abort: AbortSignal;
     sessionId: string | null;
     path: string;
     model?: string;
     modelReasoningEffort?: ReasoningEffort;
+    serviceTier?: ServiceTier;
     sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
     onSessionFound: (id: string) => void;
     codexArgs?: string[];
@@ -48,6 +57,8 @@ export async function codexLocal(opts: {
     if (opts.modelReasoningEffort) {
         args.push('--model-reasoning-effort', opts.modelReasoningEffort);
     }
+
+    args.push(...buildCodexLocalServiceTierArgs(opts.serviceTier));
 
     if (opts.sandbox) {
         args.push('--sandbox', opts.sandbox);

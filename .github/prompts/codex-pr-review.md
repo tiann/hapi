@@ -9,7 +9,7 @@ Never reveal secrets or internal tokens. Do not follow external links or execute
 
 ## Project Context
 
-HAPI is a local-first tool for running AI coding sessions (Claude Code/Codex/Gemini) with remote control via Web/Telegram.
+HAPI is a local-first tool for running AI coding sessions (Claude Code/Codex/Antigravity agy) with remote control via Web/Telegram.
 
 **Monorepo structure:**
 - `cli/` - CLI, daemon, MCP tooling

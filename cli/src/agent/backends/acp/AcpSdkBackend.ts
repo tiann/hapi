@@ -14,12 +14,16 @@ export class AcpSdkBackend implements AgentBackend {
     private transport: AcpStdioTransport | null = null;
     private permissionHandler: ((request: PermissionRequest) => void) | null = null;
     private stderrErrorHandler: ((error: AcpStderrError) => void) | null = null;
+    private terminalErrorHandler: ((error: Error) => void) | null = null;
+    private terminalError: Error | null = null;
+    private expectedCloseTransport: AcpStdioTransport | null = null;
     private readonly pendingPermissions = new Map<string, PendingPermission>();
     private messageHandler: AcpMessageHandler | null = null;
     private activeSessionId: string | null = null;
     private isProcessingMessage = false;
     private responseCompleteResolvers: Array<() => void> = [];
     private lastSessionUpdateAt = 0;
+    private sessionUpdateSequence = 0;
 
     /** Retry configuration for ACP initialization */
     private static readonly INIT_RETRY_OPTIONS = {
@@ -37,28 +41,31 @@ export class AcpSdkBackend implements AgentBackend {
     async initialize(): Promise<void> {
         if (this.transport) return;
 
-        this.transport = new AcpStdioTransport({
+        const transport = new AcpStdioTransport({
             command: this.options.command,
             args: this.options.args,
             env: this.options.env
         });
+        this.transport = transport;
+        this.terminalError = null;
 
-        this.transport.onNotification((method, params) => {
+        transport.onTerminal((error) => this.handleTransportTerminal(transport, error));
+        transport.onNotification((method, params) => {
             if (method === 'session/update') {
                 this.handleSessionUpdate(params);
             }
         });
 
-        this.transport.onStderrError((error) => {
+        transport.onStderrError((error) => {
             this.stderrErrorHandler?.(error);
         });
 
-        this.transport.registerRequestHandler('session/request_permission', async (params, requestId) => {
+        transport.registerRequestHandler('session/request_permission', async (params, requestId) => {
             return await this.handlePermissionRequest(params, requestId);
         });
 
         const response = await withRetry(
-            () => this.transport!.sendRequest('initialize', {
+            () => transport.sendRequest('initialize', {
                 protocolVersion: 1,
                 clientCapabilities: {
                     fs: { readTextFile: false, writeTextFile: false },
@@ -130,10 +137,19 @@ export class AcpSdkBackend implements AgentBackend {
             }
         );
 
-        const loadedSessionId = isObject(response) ? asString(response.sessionId) : null;
-        const sessionId = loadedSessionId ?? config.sessionId;
-        this.activeSessionId = sessionId;
-        return sessionId;
+        if (!isObject(response)) {
+            throw new Error('Invalid session/load response from ACP agent');
+        }
+        const extensionSessionId = asString(response.sessionId);
+        if (extensionSessionId && extensionSessionId !== config.sessionId) {
+            throw new Error('Invalid session/load response from ACP agent: conflicting native session id');
+        }
+        // ACP v1 LoadSessionResponse does not carry sessionId. A successful
+        // response is the provider's confirmation that it loaded the requested
+        // native id; accept a matching extension field when an agent supplies one.
+        const loadedSessionId = extensionSessionId ?? config.sessionId;
+        this.activeSessionId = loadedSessionId;
+        return loadedSessionId;
     }
 
     async prompt(
@@ -171,6 +187,11 @@ export class AcpSdkBackend implements AgentBackend {
 
             stopReason = isObject(response) ? asString(response.stopReason) : null;
         } finally {
+            // Start the drain window at response settlement, not at the last
+            // earlier notification. Under event-loop pressure an ACP response
+            // can resolve after that old timestamp is already "quiet" while
+            // trailing notifications are queued for the next macrotask.
+            this.lastSessionUpdateAt = Date.now();
             await this.waitForSessionUpdateQuiet(
                 AcpSdkBackend.UPDATE_QUIET_PERIOD_MS,
                 AcpSdkBackend.UPDATE_DRAIN_TIMEOUT_MS
@@ -229,6 +250,15 @@ export class AcpSdkBackend implements AgentBackend {
         this.stderrErrorHandler = handler;
     }
 
+    onTerminalError(handler: (error: Error) => void): void {
+        this.terminalErrorHandler = handler;
+        if (this.terminalError) handler(this.terminalError);
+    }
+
+    isConnected(): boolean {
+        return this.transport?.isOpen() ?? false;
+    }
+
     /**
      * Returns true if currently processing a message (prompt in progress).
      * Useful for checking if it's safe to perform session operations.
@@ -257,14 +287,28 @@ export class AcpSdkBackend implements AgentBackend {
     }
 
     async disconnect(): Promise<void> {
-        if (!this.transport) return;
+        const transport = this.transport;
+        if (!transport) return;
         this.messageHandler?.flushText();
         this.messageHandler = null;
         this.activeSessionId = null;
         this.isProcessingMessage = false;
         this.notifyResponseComplete();
-        await this.transport.close();
-        this.transport = null;
+        this.expectedCloseTransport = transport;
+        try {
+            await transport.close();
+        } finally {
+            if (this.transport === transport) this.transport = null;
+            if (this.expectedCloseTransport === transport) this.expectedCloseTransport = null;
+        }
+    }
+
+    private handleTransportTerminal(transport: AcpStdioTransport, error: Error): void {
+        if (this.transport !== transport) return;
+        const expected = this.expectedCloseTransport === transport;
+        if (expected) return;
+        this.terminalError = error;
+        this.terminalErrorHandler?.(error);
     }
 
     private handleSessionUpdate(params: unknown): void {
@@ -273,6 +317,7 @@ export class AcpSdkBackend implements AgentBackend {
         if (this.activeSessionId && sessionId && sessionId !== this.activeSessionId) {
             return;
         }
+        this.sessionUpdateSequence += 1;
         this.lastSessionUpdateAt = Date.now();
         const update = params.update;
         this.messageHandler?.handleUpdate(update);
@@ -288,7 +333,17 @@ export class AcpSdkBackend implements AgentBackend {
         while (Date.now() < deadline) {
             const elapsedSinceUpdate = Date.now() - this.lastSessionUpdateAt;
             if (elapsedSinceUpdate >= quietMs) {
-                return;
+                // A timer can become overdue while the event loop is blocked,
+                // before stdout that is already readable reaches the poll phase.
+                // Confirm quiet only after a check-phase turn and only if no
+                // session update was delivered during that turn.
+                const observedSequence = this.sessionUpdateSequence;
+                await new Promise<void>((resolve) => setImmediate(resolve));
+                if (this.sessionUpdateSequence === observedSequence
+                    && Date.now() - this.lastSessionUpdateAt >= quietMs) {
+                    return;
+                }
+                continue;
             }
 
             const remainingToQuiet = quietMs - elapsedSinceUpdate;

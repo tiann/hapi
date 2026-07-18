@@ -20,13 +20,75 @@ const AUTO_APPROVE_TOOL_NAME_HINTS = [
     'change_title',
     'happy__change_title',
     'hapi_change_title',  // OpenCode MCP tool pattern
-    'geminireasoning',
+    'mcp__hapi__send_attachment',
+    'functions.hapi__send_attachment',
+    'hapi__send_attachment',
+    'hapi_send_attachment',
+    'happy__send_attachment',
+    'agyreasoning',
     'codexreasoning',
     'think',
     'save_memory'
 ];
-const AUTO_APPROVE_TOOL_ID_HINTS = ['change_title', 'save_memory'];
+const AUTO_APPROVE_TOOL_ID_HINTS = [
+    'change_title',
+    'mcp__hapi__send_attachment',
+    'functions.hapi__send_attachment',
+    'hapi__send_attachment',
+    'hapi_send_attachment',
+    'happy__send_attachment',
+    'save_memory'
+];
 const AUTO_APPROVE_WRITE_TOOL_HINTS = ['write', 'edit', 'create', 'delete', 'patch', 'fs-edit'];
+
+const HAPI_ATTACHMENT_TOOL_ALIASES = new Set([
+    'mcp__hapi__send_attachment',
+    'functions.hapi__send_attachment',
+    'hapi__send_attachment',
+    'hapi_send_attachment',
+    'happy__send_attachment'
+]);
+
+function isDelimitedToolCallIdAlias(toolCallId: string, alias: string): boolean {
+    return toolCallId === alias
+        || toolCallId.startsWith(`${alias}-`)
+        || toolCallId.startsWith(`${alias}:`)
+        || toolCallId.startsWith(`${alias}#`);
+}
+
+function matchesAlwaysToolName(toolName: string, hints: string[]): boolean {
+    for (const hint of hints) {
+        if (HAPI_ATTACHMENT_TOOL_ALIASES.has(hint)) {
+            if (toolName === hint) return true;
+            continue;
+        }
+        if (toolName.includes(hint)) return true;
+    }
+    return false;
+}
+
+function matchesAlwaysToolId(toolCallId: string, hints: string[]): boolean {
+    for (const hint of hints) {
+        if (HAPI_ATTACHMENT_TOOL_ALIASES.has(hint)) {
+            if (isDelimitedToolCallIdAlias(toolCallId, hint)) return true;
+            continue;
+        }
+        if (toolCallId.includes(hint)) return true;
+    }
+    return false;
+}
+
+function isHapiAttachmentToolName(toolName: string): boolean {
+    return HAPI_ATTACHMENT_TOOL_ALIASES.has(toolName);
+}
+
+function isHapiAttachmentToolId(toolCallId: string): boolean {
+    return Array.from(HAPI_ATTACHMENT_TOOL_ALIASES).some((alias) => isDelimitedToolCallIdAlias(toolCallId, alias));
+}
+
+function isAttachmentTransferTool(toolName: string, toolCallId: string): boolean {
+    return toolName.includes('send_attachment') || toolCallId.includes('send_attachment');
+}
 
 export function resolveToolAutoApprovalDecision(
     mode: PermissionMode | undefined,
@@ -44,11 +106,20 @@ export function resolveToolAutoApprovalDecision(
     const lowerId = toolCallId.toLowerCase();
     const decisionForMode: AutoApprovalDecision = mode === 'yolo' ? 'approved_for_session' : 'approved';
 
-    if (rules.alwaysToolNameHints.some((name) => lowerTool.includes(name))) {
+    const isHapiAttachmentTool = isHapiAttachmentToolName(lowerTool) || isHapiAttachmentToolId(lowerId);
+    if (isHapiAttachmentTool) {
         return decisionForMode;
     }
 
-    if (rules.alwaysToolIdHints.some((name) => lowerId.includes(name))) {
+    if (isAttachmentTransferTool(lowerTool, lowerId) && mode !== 'yolo' && mode !== 'safe-yolo') {
+        return null;
+    }
+
+    if (matchesAlwaysToolName(lowerTool, rules.alwaysToolNameHints)) {
+        return decisionForMode;
+    }
+
+    if (matchesAlwaysToolId(lowerId, rules.alwaysToolIdHints)) {
         return decisionForMode;
     }
 
@@ -61,7 +132,8 @@ export function resolveToolAutoApprovalDecision(
     }
 
     if (mode === 'read-only') {
-        const isWriteTool = rules.writeToolNameHints.some((name) => lowerTool.includes(name));
+        const isWriteTool = rules.writeToolNameHints.some((name) => lowerTool.includes(name))
+            || isAttachmentTransferTool(lowerTool, lowerId);
         return isWriteTool ? null : 'approved';
     }
 
@@ -145,6 +217,10 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
                 }
             }
         }));
+    }
+
+    hasPendingRequests(): boolean {
+        return this.pendingRequests.size > 0;
     }
 
     protected finalizeRequest(id: string, completion: PermissionCompletion): void {

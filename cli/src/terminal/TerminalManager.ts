@@ -35,7 +35,9 @@ const SENSITIVE_ENV_KEYS = new Set([
     'OPENAI_API_KEY',
     'ANTHROPIC_API_KEY',
     'GEMINI_API_KEY',
-    'GOOGLE_API_KEY'
+    'GOOGLE_API_KEY',
+    'AGY_API_KEY',
+    'ANTIGRAVITY_API_KEY'
 ])
 
 function resolveEnvNumber(name: string, fallback: number): number {

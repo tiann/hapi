@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { isObject, toSessionSummary } from '@hapi/protocol'
+import { MachineMetadataSchema } from '@hapi/protocol/schemas'
 import type {
     Machine,
     MachinesResponse,
@@ -30,7 +31,7 @@ const RECONNECT_MAX_DELAY_MS = 30_000
 const RECONNECT_JITTER_MS = 500
 const INVALIDATION_BATCH_MS = 16
 
-type SessionPatch = Partial<Pick<Session, 'active' | 'thinking' | 'activeAt' | 'updatedAt' | 'model' | 'modelReasoningEffort' | 'effort' | 'permissionMode' | 'collaborationMode'>>
+type SessionPatch = Partial<Pick<Session, 'active' | 'thinking' | 'activeAt' | 'updatedAt' | 'model' | 'modelReasoningEffort' | 'serviceTier' | 'effort' | 'permissionMode' | 'collaborationMode'>>
 
 function sortSessionSummaries(left: SessionSummary, right: SessionSummary): number {
     if (left.active !== right.active) {
@@ -89,6 +90,10 @@ function getSessionPatch(value: unknown): SessionPatch | null {
         patch.modelReasoningEffort = value.modelReasoningEffort
         hasKnownPatch = true
     }
+    if (value.serviceTier === null || typeof value.serviceTier === 'string') {
+        patch.serviceTier = value.serviceTier as Session['serviceTier']
+        hasKnownPatch = true
+    }
     if (value.effort === null || typeof value.effort === 'string') {
         patch.effort = value.effort
         hasKnownPatch = true
@@ -109,7 +114,7 @@ function hasUnknownSessionPatchKeys(value: unknown): boolean {
     if (!hasRecordShape(value)) {
         return false
     }
-    const knownKeys = new Set(['active', 'thinking', 'activeAt', 'updatedAt', 'model', 'modelReasoningEffort', 'effort', 'permissionMode', 'collaborationMode'])
+    const knownKeys = new Set(['active', 'thinking', 'activeAt', 'updatedAt', 'model', 'modelReasoningEffort', 'serviceTier', 'effort', 'permissionMode', 'collaborationMode'])
     return Object.keys(value).some((key) => !knownKeys.has(key))
 }
 
@@ -117,12 +122,7 @@ function isMachineMetadata(value: unknown): value is Machine['metadata'] {
     if (value === null) {
         return true
     }
-    if (!hasRecordShape(value)) {
-        return false
-    }
-    return typeof value.host === 'string'
-        && typeof value.platform === 'string'
-        && typeof value.happyCliVersion === 'string'
+    return MachineMetadataSchema.safeParse(value).success
 }
 
 function isMachineRecord(value: unknown): value is Machine {
@@ -295,6 +295,24 @@ export function useSSE(options: {
             scheduleReconnect()
         }
 
+        const closeWithoutReconnect = (reason: string) => {
+            if (reconnectRequested) {
+                return
+            }
+            reconnectRequested = true
+            notifyDisconnect(reason)
+            eventSource.close()
+            if (eventSourceRef.current === eventSource) {
+                eventSourceRef.current = null
+            }
+            if (reconnectTimerRef.current) {
+                clearTimeout(reconnectTimerRef.current)
+                reconnectTimerRef.current = null
+            }
+            reconnectAttemptRef.current = 0
+            setSubscriptionId(null)
+        }
+
         const flushInvalidations = () => {
             const pending = pendingInvalidationsRef.current
             if (!pending.sessions && !pending.machines && pending.sessionIds.size === 0) {
@@ -357,9 +375,13 @@ export function useSSE(options: {
                     return previous
                 }
 
-                const summary = toSessionSummary(session)
                 const nextSessions = previous.sessions.slice()
                 const existingIndex = nextSessions.findIndex((item) => item.id === session.id)
+                const summary = toSessionSummary(session, {
+                    unreadCount: existingIndex >= 0
+                        ? nextSessions[existingIndex]?.unreadCount ?? 0
+                        : 0
+                })
                 if (existingIndex >= 0) {
                     nextSessions[existingIndex] = summary
                 } else {
@@ -395,6 +417,7 @@ export function useSSE(options: {
                     activeAt: patch.activeAt ?? current.activeAt,
                     updatedAt: patch.updatedAt ?? current.updatedAt,
                     model: Object.prototype.hasOwnProperty.call(patch, 'model') ? patch.model ?? null : current.model,
+                    serviceTier: Object.prototype.hasOwnProperty.call(patch, 'serviceTier') ? patch.serviceTier ?? null : current.serviceTier ?? null,
                     effort: Object.prototype.hasOwnProperty.call(patch, 'effort') ? patch.effort ?? null : current.effort
                 }
 
@@ -437,6 +460,20 @@ export function useSSE(options: {
             })
         }
 
+        const withMachineCounts = (
+            previous: MachinesResponse,
+            machines: Machine[],
+            knownMachinesCount: number
+        ): MachinesResponse => {
+            const knownCount = Math.max(knownMachinesCount, machines.length)
+            return {
+                ...previous,
+                machines,
+                knownMachinesCount: knownCount,
+                offlineMachinesCount: Math.max(knownCount - machines.length, 0)
+            }
+        }
+
         const upsertMachine = (machine: Machine) => {
             queryClient.setQueryData<MachinesResponse | undefined>(queryKeys.machines, (previous) => {
                 if (!previous) {
@@ -445,10 +482,11 @@ export function useSSE(options: {
 
                 const nextMachines = previous.machines.slice()
                 const index = nextMachines.findIndex((item) => item.id === machine.id)
+                const previousKnownCount = previous.knownMachinesCount ?? previous.machines.length
                 if (!machine.active) {
                     if (index >= 0) {
                         nextMachines.splice(index, 1)
-                        return { ...previous, machines: nextMachines }
+                        return withMachineCounts(previous, nextMachines, Math.max(previousKnownCount, previous.machines.length))
                     }
                     return previous
                 }
@@ -458,7 +496,24 @@ export function useSSE(options: {
                 } else {
                     nextMachines.push(machine)
                 }
-                return { ...previous, machines: nextMachines }
+                return withMachineCounts(previous, nextMachines, Math.max(previousKnownCount, nextMachines.length))
+            })
+        }
+
+        const markMachineOffline = (machineId: string) => {
+            queryClient.setQueryData<MachinesResponse | undefined>(queryKeys.machines, (previous) => {
+                if (!previous) {
+                    return previous
+                }
+                const nextMachines = previous.machines.filter((item) => item.id !== machineId)
+                if (nextMachines.length === previous.machines.length) {
+                    return previous
+                }
+                return withMachineCounts(
+                    previous,
+                    nextMachines,
+                    Math.max(previous.knownMachinesCount ?? previous.machines.length, previous.machines.length)
+                )
             })
         }
 
@@ -468,10 +523,12 @@ export function useSSE(options: {
                     return previous
                 }
                 const nextMachines = previous.machines.filter((item) => item.id !== machineId)
-                if (nextMachines.length === previous.machines.length) {
-                    return previous
-                }
-                return { ...previous, machines: nextMachines }
+                const wasKnownOnline = nextMachines.length !== previous.machines.length
+                const nextKnownCount = Math.max(
+                    (previous.knownMachinesCount ?? previous.machines.length) - (wasKnownOnline ? 1 : 0),
+                    nextMachines.length
+                )
+                return withMachineCounts(previous, nextMachines, nextKnownCount)
             })
         }
 
@@ -484,6 +541,14 @@ export function useSSE(options: {
 
             if (event.type === 'connection-changed') {
                 const data = event.data
+                if (data && typeof data === 'object') {
+                    const status = (data as { status?: unknown }).status
+                    if (status === 'rejected') {
+                        const reason = (data as { reason?: unknown }).reason
+                        closeWithoutReconnect(`rejected:${typeof reason === 'string' && reason ? reason : 'unknown'}`)
+                        return
+                    }
+                }
                 if (data && typeof data === 'object' && 'subscriptionId' in data) {
                     const nextId = (data as { subscriptionId?: unknown }).subscriptionId
                     if (typeof nextId === 'string' && nextId.length > 0) {
@@ -535,8 +600,10 @@ export function useSSE(options: {
             if (event.type === 'machine-updated') {
                 if (isMachineRecord(event.data)) {
                     upsertMachine(event.data)
-                } else if (event.data === null || isInactiveMachinePatch(event.data)) {
+                } else if (event.data === null) {
                     removeMachine(event.machineId)
+                } else if (isInactiveMachinePatch(event.data)) {
+                    markMachineOffline(event.machineId)
                 } else if (!hasRecordShape(event.data) || typeof event.data.activeAt !== 'number') {
                     queueMachinesInvalidation()
                 }

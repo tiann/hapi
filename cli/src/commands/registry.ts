@@ -5,8 +5,10 @@ import { cursorCommand } from './cursor'
 import { connectCommand } from './connect'
 import { runnerCommand } from './runner'
 import { doctorCommand } from './doctor'
-import { geminiCommand } from './gemini'
+import { agyCommand } from './agy'
 import { opencodeCommand } from './opencode'
+import { grokCommand } from './grok'
+import { hermesMoaCommand } from './hermesMoa'
 import { hookForwarderCommand } from './hookForwarder'
 import { mcpCommand } from './mcp'
 import { notifyCommand } from './notify'
@@ -18,8 +20,10 @@ const COMMANDS: CommandDefinition[] = [
     connectCommand,
     codexCommand,
     cursorCommand,
-    geminiCommand,
+    agyCommand,
     opencodeCommand,
+    grokCommand,
+    hermesMoaCommand,
     mcpCommand,
     hubCommand,
     { ...hubCommand, name: 'server' },

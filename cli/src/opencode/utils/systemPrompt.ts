@@ -5,14 +5,13 @@
  * The hapi MCP server exposes `change_title`, so it's called as `hapi_change_title`.
  */
 
-import { trimIdent } from '@/utils/trimIdent';
+import { buildTitleInstruction } from '@/utils/titleInstruction';
 
 /**
- * Title instruction for OpenCode to call the hapi MCP tool.
+ * Title instruction for OpenCode.
+ * OpenCode exposes MCP tools as <server>_<tool> → hapi_change_title.
  */
-export const TITLE_INSTRUCTION = trimIdent(`
-    ALWAYS when you start a new chat - you must call the tool "hapi_change_title" to set a chat title. When you think chat title is not relevant anymore - call the tool again to change it. When chat name is too generic and you have a chance to make it more specific - call the tool again to change it. This title is needed to easily find the chat in the future. Help human.
-`);
+export const TITLE_INSTRUCTION = buildTitleInstruction('hapi_change_title');
 
 /**
  * The system prompt to inject for OpenCode sessions.

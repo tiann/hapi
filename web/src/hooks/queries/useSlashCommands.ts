@@ -25,12 +25,15 @@ function levenshteinDistance(a: string, b: string): number {
 export function useSlashCommands(
     api: ApiClient | null,
     sessionId: string | null,
-    agentType: string = 'claude'
+    agentType: string = 'claude',
+    options?: { enabled?: boolean }
 ): {
     commands: SlashCommand[]
     isLoading: boolean
     error: string | null
+    ensureCommands: () => Promise<SlashCommand[]>
     getSuggestions: (query: string) => Promise<Suggestion[]>
+    suggestionsVersion: number
 } {
     const resolvedSessionId = sessionId ?? 'unknown'
 
@@ -43,19 +46,21 @@ export function useSlashCommands(
             }
             return await api.getSlashCommands(sessionId)
         },
-        enabled: Boolean(api && sessionId),
-        staleTime: Infinity,
+        enabled: Boolean(api && sessionId) && (options?.enabled ?? true),
+        staleTime: 30_000,
         gcTime: 30 * 60 * 1000,
+        refetchOnMount: true,
+        refetchOnWindowFocus: true,
+        refetchOnReconnect: true,
         retry: false, // Don't retry RPC failures
     })
 
-    // Merge built-in commands with user-defined and plugin commands from API
-    const commands = useMemo(() => {
+    const mergeCommands = useCallback((data?: typeof query.data): SlashCommand[] => {
         const builtin = getBuiltinSlashCommands(agentType)
 
         // If API succeeded, add user-defined and plugin commands
-        if (query.data?.success && query.data.commands) {
-            const extraCommands = query.data.commands.filter(
+        if (data?.success && data.commands) {
+            const extraCommands = data.commands.filter(
                 cmd => cmd.source === 'user' || cmd.source === 'plugin' || cmd.source === 'project'
             )
             return [...builtin, ...extraCommands]
@@ -63,15 +68,29 @@ export function useSlashCommands(
 
         // Fallback to built-in commands only
         return builtin
-    }, [agentType, query.data])
+    }, [agentType])
+
+    // Merge built-in commands with user-defined and plugin commands from API
+    const commands = useMemo(() => mergeCommands(query.data), [mergeCommands, query.data])
+
+    const ensureCommands = useCallback(async (): Promise<SlashCommand[]> => {
+        let currentCommands = commands
+        if (api && sessionId && (!query.data || query.isStale)) {
+            const refreshed = await query.refetch()
+            currentCommands = mergeCommands(refreshed.data)
+        }
+        return currentCommands
+    }, [api, commands, mergeCommands, query, sessionId])
 
     const getSuggestions = useCallback(async (queryText: string): Promise<Suggestion[]> => {
         const searchTerm = queryText.startsWith('/')
             ? queryText.slice(1).toLowerCase()
             : queryText.toLowerCase()
 
+        const currentCommands = query.isFetching ? commands : await ensureCommands()
+
         if (!searchTerm) {
-            return commands.map(cmd => ({
+            return currentCommands.map(cmd => ({
                 key: `/${cmd.name}`,
                 text: `/${cmd.name}`,
                 label: `/${cmd.name}`,
@@ -82,7 +101,7 @@ export function useSlashCommands(
         }
 
         const maxDistance = Math.max(2, Math.floor(searchTerm.length / 2))
-        return commands
+        return currentCommands
             .map(cmd => {
                 const name = cmd.name.toLowerCase()
                 let score: number
@@ -105,12 +124,14 @@ export function useSlashCommands(
                 content: cmd.content,
                 source: cmd.source
             }))
-    }, [commands])
+    }, [commands, ensureCommands, query.isFetching])
 
     return {
         commands,
         isLoading: query.isLoading,
         error: query.error instanceof Error ? query.error.message : query.error ? 'Failed to load commands' : null,
+        ensureCommands,
         getSuggestions,
+        suggestionsVersion: query.dataUpdatedAt,
     }
 }

@@ -250,6 +250,64 @@ describe('PermissionAdapter', () => {
         });
     });
 
+    it('cancels a denied request when the backend offers no reject option', async () => {
+        const harness = createHarness();
+        harness.emitPermissionRequest(buildRequest({
+            id: 'perm-deny-without-reject',
+            toolCallId: 'perm-deny-without-reject',
+            title: 'Patch',
+            options: [{
+                optionId: 'allow-once',
+                name: 'Allow once',
+                kind: 'allow_once'
+            }]
+        }));
+
+        await harness.rpcHandlers.get('permission')?.({
+            id: 'perm-deny-without-reject',
+            approved: false,
+            decision: 'denied'
+        });
+
+        expect(harness.respondCalls.at(-1)?.response).toEqual({ outcome: 'cancelled' });
+        expect(harness.getAgentState().requests).toEqual({});
+        expect(harness.getAgentState().completedRequests).toMatchObject({
+            'perm-deny-without-reject': {
+                status: 'canceled',
+                decision: 'denied'
+            }
+        });
+    });
+
+    it('cancels an approved request when the backend offers no allow option', async () => {
+        const harness = createHarness();
+        harness.emitPermissionRequest(buildRequest({
+            id: 'perm-approve-without-allow',
+            toolCallId: 'perm-approve-without-allow',
+            title: 'Patch',
+            options: [{
+                optionId: 'reject-once',
+                name: 'Reject once',
+                kind: 'reject_once'
+            }]
+        }));
+
+        await harness.rpcHandlers.get('permission')?.({
+            id: 'perm-approve-without-allow',
+            approved: true,
+            decision: 'approved'
+        });
+
+        expect(harness.respondCalls.at(-1)?.response).toEqual({ outcome: 'cancelled' });
+        expect(harness.getAgentState().requests).toEqual({});
+        expect(harness.getAgentState().completedRequests).toMatchObject({
+            'perm-approve-without-allow': {
+                status: 'canceled',
+                decision: 'approved'
+            }
+        });
+    });
+
     it('auto-approves non-title tools once in safe-yolo mode', async () => {
         const harness = createHarnessWithMode(() => 'safe-yolo');
 

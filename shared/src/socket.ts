@@ -1,7 +1,17 @@
 import { z } from 'zod'
-import type { CodexCollaborationMode, PermissionMode } from './modes'
+import type { CodexCollaborationMode, CodexServiceTier, PermissionMode } from './modes'
+import {
+    DeliveryAttemptStateSchema,
+    ManagedLifecycleStateSchema,
+    ManagedStopReasonSchema,
+    ManagedStoppedBySchema,
+    type DeliveryAttemptState,
+    type ManagedLifecycleState,
+    type ManagedStopReason,
+    type ManagedStoppedBy
+} from './schemas'
 
-export type SocketErrorReason = 'namespace-missing' | 'access-denied' | 'not-found'
+export type SocketErrorReason = 'namespace-missing' | 'access-denied' | 'not-found' | 'invalid-request' | 'internal-error'
 
 export const TerminalOpenPayloadSchema = z.object({
     sessionId: z.string().min(1),
@@ -131,20 +141,143 @@ export interface ServerToClientEvents {
     error: (data: { message: string; code?: SocketErrorReason; scope?: 'session' | 'machine'; id?: string }) => void
 }
 
+export type SyncMessageAck = {
+    inserted: true
+} | {
+    inserted: false
+    reason: 'stale-generation' | 'metadata-conflict' | 'duplicate'
+}
+
+export type ManagedSessionOutcomeRequest = {
+    idempotencyKey: string
+    namespace: string
+    machineId: string
+    sessionId: string | null
+    launchNonce: string
+    runnerInstanceId: string
+    expectedVersion: number | null
+    lifecycleState: ManagedLifecycleState
+    active: boolean
+    stoppedBy?: ManagedStoppedBy
+    stopReasonCode?: ManagedStopReason
+    lifecycleStateSince: number
+}
+
+export const ManagedSessionOutcomeRequestSchema = z.object({
+    idempotencyKey: z.string().min(1),
+    namespace: z.string().min(1),
+    machineId: z.string().min(1),
+    sessionId: z.string().min(1).nullable(),
+    launchNonce: z.string().min(1),
+    runnerInstanceId: z.string().min(1),
+    expectedVersion: z.number().int().nonnegative().nullable(),
+    lifecycleState: ManagedLifecycleStateSchema,
+    active: z.boolean(),
+    stoppedBy: ManagedStoppedBySchema.optional(),
+    stopReasonCode: ManagedStopReasonSchema.optional(),
+    lifecycleStateSince: z.number().finite()
+}).strict().superRefine((value, context) => {
+    const expectedActive = value.lifecycleState === 'running'
+    if (value.active !== expectedActive) {
+        context.addIssue({ code: 'custom', path: ['active'], message: 'active must match lifecycleState' })
+    }
+})
+
+export type ManagedSessionOutcomeAck = {
+    result: 'success'
+    canonicalSessionId: string
+    version: number
+} | {
+    result: 'deferred'
+    launchNonce: string
+} | {
+    result: 'error'
+    reason: SocketErrorReason | 'launch-mismatch' | 'version-mismatch'
+}
+
+export const ManagedStopBarrierRequestSchema = z.object({
+    namespace: z.string().min(1),
+    machineId: z.string().min(1),
+    sessionId: z.string().min(1),
+    launchNonce: z.string().min(1),
+    runnerInstanceId: z.string().min(1)
+}).strict()
+export type ManagedStopBarrierRequest = z.infer<typeof ManagedStopBarrierRequestSchema>
+export type ManagedStopBarrierAck = { eligible: boolean; reason: string }
+
+export type DeliveryAttemptRequest = {
+    idempotencyKey: string
+    namespace: string
+    machineId: string
+    sessionId: string
+    messageId: string
+    sequence: number
+    attemptId: string
+    launchNonce: string
+    state: DeliveryAttemptState
+    createdAt: number
+}
+
+export const DeliveryAttemptRequestSchema = z.object({
+    idempotencyKey: z.string().min(1),
+    namespace: z.string().min(1),
+    machineId: z.string().min(1),
+    sessionId: z.string().min(1),
+    messageId: z.string().min(1),
+    sequence: z.number().int().nonnegative(),
+    attemptId: z.string().min(1),
+    launchNonce: z.string().min(1),
+    state: DeliveryAttemptStateSchema,
+    createdAt: z.number().finite()
+}).strict()
+
+export const DeliveryBatchRequestSchema = z.object({
+    attempts: z.array(DeliveryAttemptRequestSchema.omit({ state: true })).min(1).max(100)
+}).strict()
+export type DeliveryBatchRequest = z.infer<typeof DeliveryBatchRequestSchema>
+export type DeliveryBatchAck = {
+    result: 'success'
+    canonicalSessionId: string
+} | {
+    result: 'error'
+    reason: SocketErrorReason | 'launch-mismatch' | 'invalid-transition'
+}
+
+export type DeliveryAttemptAck = {
+    result: 'success'
+    canonicalSessionId: string
+    state: DeliveryAttemptState
+} | {
+    result: 'error'
+    reason: SocketErrorReason | 'launch-mismatch' | 'invalid-transition'
+}
+
 export interface ClientToServerEvents {
     message: (data: { sid: string; message: unknown; localId?: string }) => void
+    'sync-message': (
+        data: { sid: string; message: unknown; localId?: string; source?: 'cli' | 'codex-desktop-sync'; generation?: number },
+        cb?: (answer: SyncMessageAck) => void
+    ) => void
     'session-alive': (data: {
         sid: string
         time: number
-        thinking: boolean
+        thinking?: boolean
         mode?: 'local' | 'remote'
+        source?: 'cli' | 'codex-desktop-sync'
+        generation?: number
         permissionMode?: PermissionMode
         model?: string | null
         modelReasoningEffort?: string | null
+        serviceTier?: CodexServiceTier | null
         effort?: string | null
         collaborationMode?: CodexCollaborationMode
     }) => void
-    'session-end': (data: { sid: string; time: number }) => void
+    'session-end': (data: { sid: string; time: number; source?: 'cli' | 'codex-desktop-sync'; generation?: number }) => void
+    'mark-managed-session-outcome': (data: ManagedSessionOutcomeRequest, cb: (answer: ManagedSessionOutcomeAck) => void) => void
+    'runner-managed-session-outcome': (data: ManagedSessionOutcomeRequest, cb: (answer: ManagedSessionOutcomeAck) => void) => void
+    'runner-managed-stop-barrier': (data: ManagedStopBarrierRequest, cb: (answer: ManagedStopBarrierAck) => void) => void
+    'record-delivery-attempt': (data: DeliveryAttemptRequest, cb: (answer: DeliveryAttemptAck) => void) => void
+    'prepare-delivery-batch': (data: DeliveryBatchRequest, cb: (answer: DeliveryBatchAck) => void) => void
     'update-metadata': (data: { sid: string; expectedVersion: number; metadata: unknown }, cb: (answer: {
         result: 'error'
         reason?: SocketErrorReason

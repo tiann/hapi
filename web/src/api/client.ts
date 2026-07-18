@@ -14,14 +14,20 @@ import type {
     PushSubscriptionPayload,
     PushUnsubscribePayload,
     PushVapidPublicKeyResponse,
+    RecentUserMessagesResponse,
     SlashCommandsResponse,
     SkillsResponse,
+    MentionsResponse,
     SpawnResponse,
     UploadFileResponse,
     VisibilityPayload,
     SessionResponse,
     SessionsResponse
 } from '@/types/api'
+import {
+    PROVIDER_READINESS_ISSUE_CODES,
+    type ProviderReadinessIssueCode
+} from '@hapi/protocol'
 
 type ApiClientOptions = {
     baseUrl?: string
@@ -33,12 +39,42 @@ type ErrorPayload = {
     error?: unknown
 }
 
+type ProviderReadinessConflictPayload = {
+    error?: unknown
+    code?: unknown
+    recoveryCommand?: unknown
+}
+
+const PROVIDER_READINESS_ISSUE_CODE_SET = new Set<string>(PROVIDER_READINESS_ISSUE_CODES)
+
 function parseErrorCode(bodyText: string): string | undefined {
     try {
         const parsed = JSON.parse(bodyText) as ErrorPayload
         return typeof parsed.error === 'string' ? parsed.error : undefined
     } catch {
         return undefined
+    }
+}
+
+function parseProviderReadinessConflict(bodyText: string): SpawnResponse | null {
+    try {
+        const parsed = JSON.parse(bodyText) as ProviderReadinessConflictPayload
+        if (!parsed || typeof parsed !== 'object'
+            || typeof parsed.error !== 'string'
+            || typeof parsed.code !== 'string'
+            || !PROVIDER_READINESS_ISSUE_CODE_SET.has(parsed.code)
+            || (parsed.recoveryCommand !== undefined && typeof parsed.recoveryCommand !== 'string')) {
+            return null
+        }
+
+        return {
+            type: 'error',
+            message: parsed.error,
+            code: parsed.code as ProviderReadinessIssueCode,
+            ...(parsed.recoveryCommand ? { recoveryCommand: parsed.recoveryCommand } : {})
+        }
+    } catch {
+        return null
     }
 }
 
@@ -116,7 +152,12 @@ export class ApiClient {
 
         if (!res.ok) {
             const body = await res.text().catch(() => '')
-            throw new Error(`HTTP ${res.status} ${res.statusText}: ${body}`)
+            throw new ApiError(
+                `HTTP ${res.status} ${res.statusText}: ${body}`,
+                res.status,
+                undefined,
+                body || undefined
+            )
         }
 
         return await res.json() as T
@@ -189,18 +230,40 @@ export class ApiClient {
         return await this.request<SessionResponse>(`/api/sessions/${encodeURIComponent(sessionId)}`)
     }
 
-    async getMessages(sessionId: string, options: { beforeSeq?: number | null; limit?: number }): Promise<MessagesResponse> {
+    async getMessages(sessionId: string, options: { beforeSeq?: number | null; afterSeq?: number | null; limit?: number; markRead?: boolean }): Promise<MessagesResponse> {
         const params = new URLSearchParams()
         if (options.beforeSeq !== undefined && options.beforeSeq !== null) {
             params.set('beforeSeq', `${options.beforeSeq}`)
         }
+        if (options.afterSeq !== undefined && options.afterSeq !== null) {
+            params.set('afterSeq', `${options.afterSeq}`)
+        }
         if (options.limit !== undefined && options.limit !== null) {
             params.set('limit', `${options.limit}`)
+        }
+        if (options.markRead) {
+            params.set('markRead', 'true')
         }
 
         const qs = params.toString()
         const url = `/api/sessions/${encodeURIComponent(sessionId)}/messages${qs ? `?${qs}` : ''}`
         return await this.request<MessagesResponse>(url)
+    }
+
+    async getRecentUserMessages(sessionId: string, options: { limit?: number } = {}): Promise<RecentUserMessagesResponse> {
+        const params = new URLSearchParams()
+        if (options.limit !== undefined && options.limit !== null) {
+            params.set('limit', `${options.limit}`)
+        }
+        const qs = params.toString()
+        const url = `/api/sessions/${encodeURIComponent(sessionId)}/recent-user-messages${qs ? `?${qs}` : ''}`
+        return await this.request<RecentUserMessagesResponse>(url)
+    }
+
+    async markSessionRead(sessionId: string): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/read`, {
+            method: 'POST'
+        })
     }
 
     async getGitStatus(sessionId: string): Promise<GitCommandResponse> {
@@ -274,6 +337,14 @@ export class ApiClient {
         return response.sessionId
     }
 
+    async takeoverSession(sessionId: string): Promise<string> {
+        const response = await this.request<{ sessionId: string }>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/takeover`,
+            { method: 'POST' }
+        )
+        return response.sessionId
+    }
+
     async sendMessage(sessionId: string, text: string, localId?: string | null, attachments?: AttachmentMetadata[]): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/messages`, {
             method: 'POST',
@@ -334,6 +405,13 @@ export class ApiClient {
         })
     }
 
+    async setServiceTier(sessionId: string, serviceTier: string | null): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/service-tier`, {
+            method: 'POST',
+            body: JSON.stringify({ serviceTier })
+        })
+    }
+
     async setEffort(sessionId: string, effort: string | null): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/effort`, {
             method: 'POST',
@@ -347,7 +425,7 @@ export class ApiClient {
         modeOrOptions?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | {
             mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan'
             allowTools?: string[]
-            decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
+            decision?: 'approved' | 'approved_for_session'
             answers?: Record<string, string[]> | Record<string, { answers: string[] }>
         }
     ): Promise<void> {
@@ -364,7 +442,7 @@ export class ApiClient {
         sessionId: string,
         requestId: string,
         options?: {
-            decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
+            decision?: 'denied' | 'abort'
         }
     ): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(requestId)}/deny`, {
@@ -393,23 +471,47 @@ export class ApiClient {
     async spawnSession(
         machineId: string,
         directory: string,
-        agent?: 'claude' | 'codex' | 'cursor' | 'gemini' | 'opencode',
+        agent?: 'claude' | 'claude-deepseek' | 'claude-ark' | 'cc-api' | 'codex' | 'cursor' | 'agy' | 'grok' | 'opencode' | 'hermes-moa',
         model?: string,
         modelReasoningEffort?: string,
         yolo?: boolean,
+        permissionMode?: PermissionMode,
         sessionType?: 'simple' | 'worktree',
         worktreeName?: string,
-        effort?: string
+        effort?: string,
+        serviceTier?: string,
+        spawnRequestId?: string
     ): Promise<SpawnResponse> {
-        return await this.request<SpawnResponse>(`/api/machines/${encodeURIComponent(machineId)}/spawn`, {
-            method: 'POST',
-            body: JSON.stringify({ directory, agent, model, modelReasoningEffort, yolo, sessionType, worktreeName, effort })
-        })
+        try {
+            return await this.request<SpawnResponse>(`/api/machines/${encodeURIComponent(machineId)}/spawn`, {
+                method: 'POST',
+                body: JSON.stringify({ spawnRequestId, directory, agent, model, modelReasoningEffort, yolo, permissionMode, sessionType, worktreeName, effort, serviceTier })
+            })
+        } catch (error) {
+            if (error instanceof ApiError && error.status === 409 && error.body) {
+                const readinessConflict = parseProviderReadinessConflict(error.body)
+                if (readinessConflict) return readinessConflict
+            }
+            throw error
+        }
+    }
+
+    async querySpawnSession(machineId: string, spawnRequestId: string): Promise<SpawnResponse> {
+        return await this.request<SpawnResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/spawn/${encodeURIComponent(spawnRequestId)}`
+        )
     }
 
     async getSlashCommands(sessionId: string): Promise<SlashCommandsResponse> {
         return await this.request<SlashCommandsResponse>(
             `/api/sessions/${encodeURIComponent(sessionId)}/slash-commands`
+        )
+    }
+
+
+    async getMentions(sessionId: string): Promise<MentionsResponse> {
+        return await this.request<MentionsResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/mentions`
         )
     }
 

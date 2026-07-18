@@ -44,7 +44,33 @@ function getSessionLogPath(): string {
   return join(configuration.logsDir, filename)
 }
 
-class Logger {
+export function redactLogValue(value: unknown, key = ''): unknown {
+  if (/(?:api[_-]?key|token|authorization|credential|password|secret|private[_-]?key)/i.test(key)) return '[REDACTED]'
+  if (typeof value === 'string') {
+    return value
+      .replace(/\b(?:sk|rk|pk)-[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]')
+      .replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [REDACTED]')
+      .replace(/\b[A-Z][A-Z0-9_]*(?:API_KEY|API_TOKEN|OAUTH_TOKEN|ACCESS_TOKEN|AUTH_TOKEN|SECRET|PASSWORD|PRIVATE_KEY)\s*=\s*[^\s,;]+/gi, '[REDACTED_CREDENTIAL]')
+  }
+  if (value instanceof Error) {
+    const error = value as Error & { code?: unknown; method?: unknown; writeState?: unknown; childExit?: unknown }
+    return {
+      name: error.name,
+      message: redactLogValue(error.message),
+      ...(typeof error.code === 'number' || typeof error.code === 'string' ? { code: error.code } : {}),
+      ...(typeof error.method === 'string' ? { method: redactLogValue(error.method) } : {}),
+      ...(error.writeState === 'written' || error.writeState === 'not-written' ? { writeState: error.writeState } : {}),
+      ...(error.childExit && typeof error.childExit === 'object' ? { childExit: redactLogValue(error.childExit) } : {})
+    }
+  }
+  if (Array.isArray(value)) return value.map((item) => redactLogValue(item))
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([entryKey, entryValue]) => [entryKey, redactLogValue(entryValue, entryKey)]))
+  }
+  return value
+}
+
+export class Logger {
   private dangerouslyUnencryptedServerLoggingUrl: string | undefined
 
   constructor(
@@ -85,14 +111,19 @@ class Logger {
   ): void {
     if (!process.env.DEBUG) {
       this.debug(`In production, skipping message inspection`)
+      return
     }
 
     // Some of our messages are huge, but we still want to show them in the logs
     const truncateStrings = (obj: unknown): unknown => {
       if (typeof obj === 'string') {
-        return obj.length > maxStringLength 
-          ? obj.substring(0, maxStringLength) + '... [truncated for logs]'
-          : obj
+        const redacted = obj
+          .replace(/\b(?:sk|rk|pk)-[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]')
+          .replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [REDACTED]')
+          .replace(/\b(?:OPENAI|ANTHROPIC|CLI)_API_(?:KEY|TOKEN)\s*=\s*[^\s,;]+/gi, '[REDACTED_CREDENTIAL]')
+        return redacted.length > maxStringLength
+          ? redacted.substring(0, maxStringLength) + '... [truncated for logs]'
+          : redacted
       }
       
       if (Array.isArray(obj)) {
@@ -108,6 +139,10 @@ class Logger {
         for (const [key, value] of Object.entries(obj)) {
           if (key === 'usage') {
             // Drop usage, not generally useful for debugging
+            continue
+          }
+          if (/(?:api[_-]?key|token|authorization|credential|password|secret)/i.test(key)) {
+            result[key] = '[REDACTED]'
             continue
           }
           result[key] = truncateStrings(value)
@@ -148,30 +183,32 @@ class Logger {
   }
   
   private logToConsole(level: 'debug' | 'error' | 'info' | 'warn', prefix: string, message: string, ...args: unknown[]): void {
+    const safeMessage = String(redactLogValue(message))
+    const safeArgs = args.map((value) => redactLogValue(value))
     switch (level) {
       case 'debug': {
-        console.log(chalk.gray(prefix), message, ...args)
+        console.log(chalk.gray(prefix), safeMessage, ...safeArgs)
         break
       }
 
       case 'error': {
-        console.error(chalk.red(prefix), message, ...args)
+        console.error(chalk.red(prefix), safeMessage, ...safeArgs)
         break
       }
 
       case 'info': {
-        console.log(chalk.blue(prefix), message, ...args)
+        console.log(chalk.blue(prefix), safeMessage, ...safeArgs)
         break
       }
 
       case 'warn': {
-        console.log(chalk.yellow(prefix), message, ...args)
+        console.log(chalk.yellow(prefix), safeMessage, ...safeArgs)
         break
       }
 
       default: {
         this.debug('Unknown log level:', level)
-        console.log(chalk.blue(prefix), message, ...args)
+        console.log(chalk.blue(prefix), safeMessage, ...safeArgs)
         break
       }
     }
@@ -181,13 +218,14 @@ class Logger {
     if (!this.dangerouslyUnencryptedServerLoggingUrl) return
     
     try {
+      const safeArgs = args.map((value) => redactLogValue(value))
       await fetch(this.dangerouslyUnencryptedServerLoggingUrl + '/logs-combined-from-cli-and-mobile-for-simple-ai-debugging', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           timestamp: new Date().toISOString(),
           level,
-          message: `${message} ${args.map(a => 
+          message: `${redactLogValue(message)} ${safeArgs.map(a =>
             typeof a === 'object' ? JSON.stringify(a, null, 2) : String(a)
           ).join(' ')}`,
           source: 'cli',
@@ -200,7 +238,8 @@ class Logger {
   }
 
   private logToFile(prefix: string, message: string, ...args: unknown[]): void {
-    const logLine = `${prefix} ${message} ${args.map(arg => 
+    const safeArgs = args.map((value) => redactLogValue(value))
+    const logLine = `${prefix} ${redactLogValue(message)} ${safeArgs.map(arg =>
       typeof arg === 'string' ? arg : JSON.stringify(arg)
     ).join(' ')}\n`
     

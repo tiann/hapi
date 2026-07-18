@@ -27,6 +27,7 @@ import { waitForTunnelTlsReady } from './tunnel/tlsGate'
 import QRCode from 'qrcode'
 import type { Server as BunServer } from 'bun'
 import type { WebSocketData } from '@socket.io/bun-engine'
+import { createConfiguredAccessTokenBindingValidator } from './utils/accessToken'
 
 /** Format config source for logging */
 function formatSource(source: ConfigSource | 'generated'): string {
@@ -135,6 +136,10 @@ async function main() {
     } else {
         console.log(`[Hub] CLI_API_TOKEN: loaded from ${formatSource(config.sources.cliApiToken)}`)
     }
+    console.log(
+        `[Hub] Namespace credentials: ${Object.keys(config.namespaceTokens).length} ` +
+        `(${formatSource(config.sources.namespaceTokens)})`
+    )
 
     // Display other configuration sources
     console.log(`[Hub] HAPI_LISTEN_HOST: ${config.listenHost} (${formatSource(config.sources.listenHost)})`)
@@ -159,8 +164,9 @@ async function main() {
 
     const store = new Store(config.dbPath)
     const jwtSecret = await getOrCreateJwtSecret()
+    const isTelegramBindingCurrent = createConfiguredAccessTokenBindingValidator(jwtSecret)
     const vapidKeys = await getOrCreateVapidKeys(config.dataDir)
-    const vapidSubject = process.env.VAPID_SUBJECT ?? 'mailto:admin@hapi.run'
+    const vapidSubject = process.env.VAPID_SUBJECT ?? 'https://hapi.run'
     const pushService = new PushService(vapidKeys, vapidSubject, store)
 
     visibilityTracker = new VisibilityTracker()
@@ -195,7 +201,8 @@ async function main() {
             syncEngine,
             botToken: config.telegramBotToken,
             publicUrl: config.publicUrl,
-            store
+            store,
+            isTelegramBindingCurrent,
         })
         // Only add to notification channels if notifications are enabled
         if (config.telegramNotification) {

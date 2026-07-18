@@ -17,7 +17,7 @@ See `src/configuration.ts` for all options.
 
 ### Required
 
-- `CLI_API_TOKEN` - Base shared secret used by CLI and web login. Clients append `:<namespace>` for isolation. Auto-generated on first run if not set.
+- `CLI_API_TOKEN` - Opaque credential for the reserved `default` namespace. Auto-generated on first run if not set.
 
 ### Optional (Telegram)
 
@@ -33,6 +33,7 @@ See `src/configuration.ts` for all options.
 
 - `HAPI_LISTEN_HOST` - HTTP bind address (default: 127.0.0.1).
 - `HAPI_LISTEN_PORT` - HTTP port (default: 3006).
+- `HAPI_NAMESPACE_TOKENS_JSON` - JSON map of non-default namespaces to independent credentials.
 - `CORS_ORIGINS` - Comma-separated origins, or `*`.
 - `HAPI_HOME` - Data directory (default: ~/.hapi).
 - `DB_PATH` - SQLite database path (default: HAPI_HOME/hapi.db).
@@ -48,7 +49,8 @@ Binary (single executable):
 
 ```bash
 export TELEGRAM_BOT_TOKEN="..."
-export CLI_API_TOKEN="shared-secret"
+export CLI_API_TOKEN="default-independent-token"
+export HAPI_NAMESPACE_TOKENS_JSON='{"alice":"alice-independent-token"}'
 export HAPI_PUBLIC_URL="https://your-domain.example"
 
 hapi hub
@@ -58,7 +60,7 @@ hapi hub
 
 If you only need web + CLI, you can omit TELEGRAM_BOT_TOKEN.
 To enable Telegram, set TELEGRAM_BOT_TOKEN and HAPI_PUBLIC_URL, start the hub, open `/app`
-in the bot chat, and bind the Mini App with `CLI_API_TOKEN:<namespace>` when prompted.
+in the bot chat, and bind the Mini App with the independent credential assigned to your namespace.
 
 From source:
 
@@ -73,8 +75,8 @@ See `src/web/routes/` for all endpoints.
 
 ### Authentication (`src/web/routes/auth.ts`)
 
-- `POST /api/auth` - Get JWT token (Telegram initData or `CLI_API_TOKEN[:namespace]`).
-- `POST /api/bind` - Bind a Telegram account using initData + `CLI_API_TOKEN:<namespace>`.
+- `POST /api/auth` - Get a JWT (Telegram initData or the credential assigned to one namespace).
+- `POST /api/bind` - Bind a Telegram account using initData plus its assigned namespace credential.
 
 ### Sessions (`src/web/routes/sessions.ts`)
 
@@ -132,6 +134,12 @@ See `src/web/routes/` for all endpoints.
 - `GET /api/push/vapid-public-key` - Get VAPID public key.
 - `POST /api/push/subscribe` - Subscribe to push notifications.
 - `DELETE /api/push/subscribe` - Unsubscribe.
+- Native push is reserved for final/task-stopping states and human-action-required states:
+  task complete, failed/interrupted, and pending permission/user-input requests.
+  Ordinary assistant text, tool calls, tool results, and passive sync updates must not send native push.
+- Notification-level unread counts are persisted in `session_notification_state`, exposed on session summaries,
+  shown in the session list, included in push payload data/title, and propagated as `totalUnreadCount`
+  so installed iOS/iPadOS Home Screen web apps can update the app-icon badge via the Badging API.
 
 ### CLI (`src/web/routes/cli.ts`)
 
@@ -183,7 +191,7 @@ See `src/telegram/bot.ts` for bot implementation.
 ### Features
 
 - Permission request notifications with approve/deny buttons.
-- Session ready notifications.
+- Session final-state notifications.
 - Deep links to Mini App sessions.
 
 See `src/telegram/callbacks.ts` for button handlers.
@@ -199,6 +207,14 @@ See `src/sync/syncEngine.ts` for the main session/message manager:
 - Event publishing to SSE and Telegram.
 - Git operations and file search.
 - Activity tracking and timeouts.
+
+### Desktop mirror takeover invariants
+
+- A Codex thread mirrored from desktop always has exactly one execution owner: `desktop-sync` or `hapi-runner`.
+- HAPI web/mobile never sends directly into a desktop-owned mirror; it must call `POST /api/sessions/:id/takeover` first.
+- Passive watcher traffic must include the current ownership generation and is ignored when the generation is stale.
+- Matching-generation passive watcher traffic is stored as transcript-only sync even while `hapi-runner` owns the lease; it is never rebroadcast to CLI executors.
+- Runner session shutdown releases control back to `desktop-sync`, allowing the watcher to resume mirroring into the canonical session.
 
 ## Storage
 
@@ -226,8 +242,12 @@ See `src/store/index.ts` for SQLite persistence:
 ## Security model
 
 Access is controlled by:
-- Telegram initData verification plus bound Telegram users (bound via `CLI_API_TOKEN:<namespace>`).
-- `CLI_API_TOKEN` base secret for CLI and browser access (namespace is appended by clients).
+- Telegram initData verification plus bound Telegram users.
+- A server-side credential map: `CLI_API_TOKEN` authenticates only `default`, while each
+  `HAPI_NAMESPACE_TOKENS_JSON` entry authenticates exactly one non-default namespace.
+
+Namespaces are authorization boundaries. Caller-selected credential suffixes are rejected;
+never derive or reuse one namespace's credential for another namespace.
 
 Transport security depends on HTTPS in front of the hub.
 

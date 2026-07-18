@@ -7,7 +7,21 @@
   "properties": {
     "cliApiToken": {
       "type": "string",
-      "description": "Shared secret for CLI authentication. Auto-generated if not set. ENV: CLI_API_TOKEN"
+      "description": "Credential for the reserved default namespace. Auto-generated if not set. ENV: CLI_API_TOKEN"
+    },
+    "namespaceTokens": {
+      "type": "object",
+      "description": "Independent credentials for non-default namespaces. ENV: HAPI_NAMESPACE_TOKENS_JSON",
+      "propertyNames": {
+        "allOf": [
+          { "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
+          { "not": { "const": "default" } }
+        ]
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 16
+      }
     },
     "apiUrl": {
       "type": "string",

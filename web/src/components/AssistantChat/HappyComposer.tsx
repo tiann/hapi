@@ -12,7 +12,7 @@ import {
     useRef,
     useState
 } from 'react'
-import type { AgentState, CodexCollaborationMode, PermissionMode } from '@/types/api'
+import type { AgentState, CodexCollaborationMode, PermissionMode, RecentUserMessage } from '@/types/api'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import type { ConversationStatus } from '@/realtime/types'
 import { useActiveWord } from '@/hooks/useActiveWord'
@@ -27,11 +27,16 @@ import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { Autocomplete } from '@/components/ChatInput/Autocomplete'
 import { StatusBar } from '@/components/AssistantChat/StatusBar'
 import { ComposerButtons } from '@/components/AssistantChat/ComposerButtons'
+import { SnippetPicker } from '@/components/AssistantChat/SnippetPicker'
 import { AttachmentItem } from '@/components/AssistantChat/AttachmentItem'
 import { useTranslation } from '@/lib/use-translation'
+import { clearComposerSnippet, getComposerSnippets, saveComposerSnippet } from '@/lib/composer-snippets'
+import { insertComposerSnippet } from '@/lib/composer-insertion'
 import { getModelOptionsForFlavor, getNextModelForFlavor } from './modelOptions'
 import { getClaudeComposerEffortOptions } from './claudeEffortOptions'
 import { getCodexComposerReasoningEffortOptions } from './codexReasoningEffortOptions'
+import { getCodexComposerServiceTierOptions } from './codexServiceTierOptions'
+import { shouldEnterInsertNewline } from './composerEnterBehavior'
 
 export interface TextInputState {
     text: string
@@ -47,6 +52,7 @@ export function HappyComposer(props: {
     collaborationMode?: CodexCollaborationMode
     model?: string | null
     modelReasoningEffort?: string | null
+    serviceTier?: string | null
     effort?: string | null
     active?: boolean
     allowSendWhenInactive?: boolean
@@ -56,16 +62,21 @@ export function HappyComposer(props: {
     contextSize?: number
     controlledByUser?: boolean
     agentFlavor?: string | null
+    grokModels?: Array<{ id: string; name: string }>
+    grokEfforts?: Array<{ id: string; label: string }>
     onCollaborationModeChange?: (mode: CodexCollaborationMode) => void
     onPermissionModeChange?: (mode: PermissionMode) => void
     onModelChange?: (model: string | null) => void
     onModelReasoningEffortChange?: (modelReasoningEffort: string | null) => void
+    onServiceTierChange?: (serviceTier: string | null) => void
     onEffortChange?: (effort: string | null) => void
     onSwitchToRemote?: () => void
     onTerminal?: () => void
     terminalUnsupported?: boolean
     autocompletePrefixes?: string[]
     autocompleteSuggestions?: (query: string) => Promise<Suggestion[]>
+    autocompleteSuggestionsVersion?: unknown
+    loadRecentUserMessages?: () => Promise<RecentUserMessage[]>
     // Voice assistant props
     voiceStatus?: ConversationStatus
     voiceMicMuted?: boolean
@@ -80,6 +91,7 @@ export function HappyComposer(props: {
         collaborationMode: rawCollaborationMode,
         model: rawModel,
         modelReasoningEffort: rawModelReasoningEffort,
+        serviceTier: rawServiceTier,
         effort: rawEffort,
         active = true,
         allowSendWhenInactive = false,
@@ -89,16 +101,21 @@ export function HappyComposer(props: {
         contextSize,
         controlledByUser = false,
         agentFlavor,
+        grokModels,
+        grokEfforts,
         onCollaborationModeChange,
         onPermissionModeChange,
         onModelChange,
         onModelReasoningEffortChange,
+        onServiceTierChange,
         onEffortChange,
         onSwitchToRemote,
         onTerminal,
         terminalUnsupported = false,
         autocompletePrefixes = ['@', '/', '$'],
         autocompleteSuggestions = defaultSuggestionHandler,
+        autocompleteSuggestionsVersion,
+        loadRecentUserMessages,
         voiceStatus = 'disconnected',
         voiceMicMuted = false,
         onVoiceToggle,
@@ -110,6 +127,7 @@ export function HappyComposer(props: {
     const collaborationMode = rawCollaborationMode ?? 'default'
     const model = rawModel ?? null
     const modelReasoningEffort = rawModelReasoningEffort ?? null
+    const serviceTier = rawServiceTier === 'priority' ? 'fast' : (rawServiceTier ?? null)
     const effort = rawEffort ?? null
 
     const api = useAssistantApi()
@@ -139,6 +157,11 @@ export function HappyComposer(props: {
         selection: { start: 0, end: 0 }
     })
     const [showSettings, setShowSettings] = useState(false)
+    const [showSnippets, setShowSnippets] = useState(false)
+    const [snippetSlots, setSnippetSlots] = useState(() => getComposerSnippets())
+    const [recentUserMessages, setRecentUserMessages] = useState<RecentUserMessage[]>([])
+    const [recentUserMessagesLoading, setRecentUserMessagesLoading] = useState(false)
+    const [recentUserMessagesError, setRecentUserMessagesError] = useState<string | null>(null)
     const [isAborting, setIsAborting] = useState(false)
     const [isSwitching, setIsSwitching] = useState(false)
     const [showContinueHint, setShowContinueHint] = useState(false)
@@ -177,7 +200,7 @@ export function HappyComposer(props: {
     const [suggestions, selectedIndex, moveUp, moveDown, clearSuggestions] = useActiveSuggestions(
         activeWord,
         autocompleteSuggestions,
-        { clampSelection: true, wrapAround: true }
+        { clampSelection: true, wrapAround: true, refreshKey: autocompleteSuggestionsVersion }
     )
 
     const haptic = useCallback((type: 'light' | 'success' | 'error' = 'light') => {
@@ -233,6 +256,60 @@ export function HappyComposer(props: {
         haptic('light')
     }, [api, suggestions, inputState, autocompletePrefixes, haptic, agentFlavor])
 
+    const focusComposerAt = useCallback((cursorPosition: number) => {
+        setTimeout(() => {
+            const el = textareaRef.current
+            if (!el) return
+            el.setSelectionRange(cursorPosition, cursorPosition)
+            try {
+                el.focus({ preventScroll: true })
+            } catch {
+                el.focus()
+            }
+        }, 0)
+    }, [])
+
+    const refreshRecentUserMessages = useCallback(async () => {
+        if (!loadRecentUserMessages) {
+            setRecentUserMessages([])
+            return
+        }
+        setRecentUserMessagesLoading(true)
+        setRecentUserMessagesError(null)
+        try {
+            const messages = await loadRecentUserMessages()
+            setRecentUserMessages(messages)
+        } catch (error) {
+            console.error('Failed to load recent user messages:', error)
+            setRecentUserMessages([])
+            setRecentUserMessagesError(t('composer.snippets.loadError'))
+        } finally {
+            setRecentUserMessagesLoading(false)
+        }
+    }, [loadRecentUserMessages, t])
+
+    const handleSnippetSelect = useCallback((text: string) => {
+        const result = insertComposerSnippet(inputState.text, inputState.selection, text)
+        api.composer().setText(result.text)
+        setInputState({
+            text: result.text,
+            selection: { start: result.cursorPosition, end: result.cursorPosition }
+        })
+        setShowSnippets(false)
+        focusComposerAt(result.cursorPosition)
+        haptic('light')
+    }, [api, focusComposerAt, haptic, inputState])
+
+    const handleSnippetSave = useCallback((index: number, text: string) => {
+        setSnippetSlots(saveComposerSnippet(index, text))
+        haptic('light')
+    }, [haptic])
+
+    const handleSnippetDelete = useCallback((index: number) => {
+        setSnippetSlots(clearComposerSnippet(index))
+        haptic('light')
+    }, [haptic])
+
     const abortDisabled = controlsDisabled || isAborting || !threadIsRunning
     const switchDisabled = controlsDisabled || isSwitching || !controlledByUser
     const showSwitchButton = Boolean(controlledByUser && onSwitchToRemote)
@@ -279,16 +356,22 @@ export function HappyComposer(props: {
         [agentFlavor]
     )
     const claudeModelOptions = useMemo(
-        () => getModelOptionsForFlavor(agentFlavor, model),
-        [agentFlavor, model]
+        () => getModelOptionsForFlavor(agentFlavor, model, grokModels),
+        [agentFlavor, model, grokModels]
     )
     const codexReasoningEffortOptions = useMemo(
-        () => agentFlavor === 'codex' ? getCodexComposerReasoningEffortOptions(modelReasoningEffort) : [],
-        [agentFlavor, modelReasoningEffort]
+        () => agentFlavor === 'codex' ? getCodexComposerReasoningEffortOptions(modelReasoningEffort, model) : [],
+        [agentFlavor, modelReasoningEffort, model]
+    )
+    const codexServiceTierOptions = useMemo(
+        () => agentFlavor === 'codex' ? getCodexComposerServiceTierOptions(serviceTier) : [],
+        [agentFlavor, serviceTier]
     )
     const claudeEffortOptions = useMemo(
-        () => getClaudeComposerEffortOptions(effort),
-        [effort]
+        () => agentFlavor === 'grok' && grokEfforts?.length
+            ? [{ value: null, label: 'Auto' }, ...grokEfforts.map((option) => ({ value: option.id, label: option.label }))]
+            : getClaudeComposerEffortOptions(effort, agentFlavor, model),
+        [effort, agentFlavor, model, grokEfforts]
     )
     const permissionModes = useMemo(
         () => permissionModeOptions.map((option) => option.mode),
@@ -303,8 +386,9 @@ export function HappyComposer(props: {
             return
         }
 
-        // Shift+Enter inserts a newline (standard behavior)
-        if (key === 'Enter' && e.shiftKey) {
+        // Shift+Enter inserts a newline on desktop; on touch devices bare Enter
+        // also inserts a newline (iOS soft keyboards cannot emit Shift+Enter).
+        if (key === 'Enter' && shouldEnterInsertNewline({ shiftKey: e.shiftKey, isTouch })) {
             return // let default textarea behavior handle newline
         }
 
@@ -350,6 +434,12 @@ export function HappyComposer(props: {
             }
         }
 
+        if (key === 'Escape' && showSnippets) {
+            e.preventDefault()
+            setShowSnippets(false)
+            return
+        }
+
         if (key === 'Escape' && threadIsRunning) {
             e.preventDefault()
             handleAbort()
@@ -372,27 +462,29 @@ export function HappyComposer(props: {
         clearSuggestions,
         handleSuggestionSelect,
         threadIsRunning,
+        showSnippets,
         handleAbort,
         onPermissionModeChange,
         permissionMode,
         permissionModes,
         canSend,
         api,
-        haptic
+        haptic,
+        isTouch
     ])
 
     useEffect(() => {
         const handleGlobalKeyDown = (e: globalThis.KeyboardEvent) => {
             if (e.key === 'm' && (e.metaKey || e.ctrlKey) && onModelChange && supportsModelChange(agentFlavor)) {
                 e.preventDefault()
-                onModelChange(getNextModelForFlavor(agentFlavor, model))
+                onModelChange(getNextModelForFlavor(agentFlavor, model, grokModels))
                 haptic('light')
             }
         }
 
         window.addEventListener('keydown', handleGlobalKeyDown)
         return () => window.removeEventListener('keydown', handleGlobalKeyDown)
-    }, [model, onModelChange, haptic, agentFlavor])
+    }, [model, onModelChange, haptic, agentFlavor, grokModels])
 
     const handleChange = useCallback((e: ReactChangeEvent<HTMLTextAreaElement>) => {
         const selection = {
@@ -429,8 +521,22 @@ export function HappyComposer(props: {
 
     const handleSettingsToggle = useCallback(() => {
         haptic('light')
+        setShowSnippets(false)
         setShowSettings(prev => !prev)
     }, [haptic])
+
+    const handleSnippetsToggle = useCallback(() => {
+        haptic('light')
+        setShowSettings(false)
+        clearSuggestions()
+        setShowSnippets((prev) => {
+            const next = !prev
+            if (next) {
+                void refreshRecentUserMessages()
+            }
+            return next
+        })
+    }, [clearSuggestions, haptic, refreshRecentUserMessages])
 
     const handleSubmit = useCallback((event?: ReactFormEvent<HTMLFormElement>) => {
         if (event && !attachmentsReady) {
@@ -468,6 +574,13 @@ export function HappyComposer(props: {
         haptic('light')
     }, [onModelReasoningEffortChange, controlsDisabled, haptic])
 
+    const handleServiceTierChange = useCallback((nextServiceTier: string | null) => {
+        if (!onServiceTierChange || controlsDisabled) return
+        onServiceTierChange(nextServiceTier)
+        setShowSettings(false)
+        haptic('light')
+    }, [onServiceTierChange, controlsDisabled, haptic])
+
     const handleEffortChange = useCallback((nextEffort: string | null) => {
         if (!onEffortChange || controlsDisabled) return
         onEffortChange(nextEffort)
@@ -479,12 +592,14 @@ export function HappyComposer(props: {
     const showPermissionSettings = Boolean(onPermissionModeChange && permissionModeOptions.length > 0)
     const showModelSettings = Boolean(onModelChange && supportsModelChange(agentFlavor))
     const showModelReasoningEffortSettings = Boolean(onModelReasoningEffortChange && codexReasoningEffortOptions.length > 0)
+    const showServiceTierSettings = Boolean(onServiceTierChange && codexServiceTierOptions.length > 0)
     const showEffortSettings = Boolean(onEffortChange && supportsEffort(agentFlavor))
     const showSettingsButton = Boolean(
         showCollaborationSettings
         || showPermissionSettings
         || showModelSettings
         || showModelReasoningEffortSettings
+        || showServiceTierSettings
         || showEffortSettings
     )
     const showAbortButton = true
@@ -495,7 +610,7 @@ export function HappyComposer(props: {
     }, [api])
 
     const overlays = useMemo(() => {
-        if (showSettings && (showCollaborationSettings || showPermissionSettings || showModelSettings || showModelReasoningEffortSettings || showEffortSettings)) {
+        if (showSettings && (showCollaborationSettings || showPermissionSettings || showModelSettings || showModelReasoningEffortSettings || showServiceTierSettings || showEffortSettings)) {
             return (
                 <div className="absolute bottom-[100%] mb-2 w-full">
                     <FloatingOverlay maxHeight={320}>
@@ -536,7 +651,7 @@ export function HappyComposer(props: {
                             </div>
                         ) : null}
 
-                        {showCollaborationSettings && (showPermissionSettings || showModelSettings || showModelReasoningEffortSettings || showEffortSettings) ? (
+                        {showCollaborationSettings && (showPermissionSettings || showModelSettings || showModelReasoningEffortSettings || showServiceTierSettings || showEffortSettings) ? (
                             <div className="mx-3 h-px bg-[var(--app-divider)]" />
                         ) : null}
 
@@ -577,7 +692,7 @@ export function HappyComposer(props: {
                             </div>
                         ) : null}
 
-                        {(showCollaborationSettings || showPermissionSettings) && (showModelSettings || showModelReasoningEffortSettings || showEffortSettings) ? (
+                        {(showCollaborationSettings || showPermissionSettings) && (showModelSettings || showModelReasoningEffortSettings || showServiceTierSettings || showEffortSettings) ? (
                             <div className="mx-3 h-px bg-[var(--app-divider)]" />
                         ) : null}
 
@@ -618,7 +733,7 @@ export function HappyComposer(props: {
                             </div>
                         ) : null}
 
-                        {(showModelSettings || showModelReasoningEffortSettings) && showEffortSettings ? (
+                        {(showModelSettings || showModelReasoningEffortSettings || showServiceTierSettings) && showEffortSettings ? (
                             <div className="mx-3 h-px bg-[var(--app-divider)]" />
                         ) : null}
 
@@ -659,7 +774,48 @@ export function HappyComposer(props: {
                             </div>
                         ) : null}
 
-                        {showModelReasoningEffortSettings && showEffortSettings ? (
+                        {showModelReasoningEffortSettings && (showServiceTierSettings || showEffortSettings) ? (
+                            <div className="mx-3 h-px bg-[var(--app-divider)]" />
+                        ) : null}
+
+                        {showServiceTierSettings ? (
+                            <div className="py-2">
+                                <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
+                                    {t('misc.serviceTier')}
+                                </div>
+                                {codexServiceTierOptions.map((option) => (
+                                    <button
+                                        key={option.value ?? 'default'}
+                                        type="button"
+                                        disabled={controlsDisabled}
+                                        className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                                            controlsDisabled
+                                                ? 'cursor-not-allowed opacity-50'
+                                                : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
+                                        }`}
+                                        onClick={() => handleServiceTierChange(option.value)}
+                                        onMouseDown={(e) => e.preventDefault()}
+                                    >
+                                        <div
+                                            className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
+                                                serviceTier === option.value
+                                                    ? 'border-[var(--app-link)]'
+                                                    : 'border-[var(--app-hint)]'
+                                            }`}
+                                        >
+                                            {serviceTier === option.value && (
+                                                <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
+                                            )}
+                                        </div>
+                                        <span className={serviceTier === option.value ? 'text-[var(--app-link)]' : ''}>
+                                            {option.label}
+                                        </span>
+                                    </button>
+                                ))}
+                            </div>
+                        ) : null}
+
+                        {showServiceTierSettings && showEffortSettings ? (
                             <div className="mx-3 h-px bg-[var(--app-divider)]" />
                         ) : null}
 
@@ -704,6 +860,24 @@ export function HappyComposer(props: {
             )
         }
 
+        if (showSnippets) {
+            return (
+                <div className="absolute bottom-[100%] mb-2 w-full">
+                    <FloatingOverlay maxHeight={420}>
+                        <SnippetPicker
+                            snippets={snippetSlots}
+                            recentMessages={recentUserMessages}
+                            recentLoading={recentUserMessagesLoading}
+                            recentError={recentUserMessagesError}
+                            onSelect={handleSnippetSelect}
+                            onSaveSnippet={handleSnippetSave}
+                            onDeleteSnippet={handleSnippetDelete}
+                        />
+                    </FloatingOverlay>
+                </div>
+            )
+        }
+
         if (suggestions.length > 0) {
             return (
                 <div className="absolute bottom-[100%] mb-2 w-full">
@@ -721,21 +895,29 @@ export function HappyComposer(props: {
         return null
     }, [
         showSettings,
+        showSnippets,
         showCollaborationSettings,
         showPermissionSettings,
         showModelSettings,
         showModelReasoningEffortSettings,
+        showServiceTierSettings,
         showEffortSettings,
         claudeModelOptions,
         codexReasoningEffortOptions,
+        codexServiceTierOptions,
         claudeEffortOptions,
         suggestions,
+        snippetSlots,
+        recentUserMessages,
+        recentUserMessagesLoading,
+        recentUserMessagesError,
         selectedIndex,
         controlsDisabled,
         collaborationMode,
         permissionMode,
         model,
         modelReasoningEffort,
+        serviceTier,
         effort,
         collaborationModeOptions,
         permissionModeOptions,
@@ -743,8 +925,12 @@ export function HappyComposer(props: {
         handlePermissionChange,
         handleModelChange,
         handleModelReasoningEffortChange,
+        handleServiceTierChange,
         handleEffortChange,
         handleSuggestionSelect,
+        handleSnippetSelect,
+        handleSnippetSave,
+        handleSnippetDelete,
         t
     ])
 
@@ -796,6 +982,9 @@ export function HappyComposer(props: {
                             controlsDisabled={controlsDisabled}
                             showSettingsButton={showSettingsButton}
                             onSettingsToggle={handleSettingsToggle}
+                            showSnippetsButton
+                            snippetsActive={showSnippets}
+                            onSnippetsToggle={handleSnippetsToggle}
                             showTerminalButton={showTerminalButton}
                             terminalDisabled={terminalDisabled}
                             terminalLabel={terminalLabel}

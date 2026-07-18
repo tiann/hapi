@@ -7,19 +7,23 @@ const BUILTIN_COMMANDS: Record<string, SlashCommand[]> = {
         { name: 'context', description: 'Visualize current context usage as a colored grid', source: 'builtin' },
         { name: 'cost', description: 'Show the total cost and duration of the current session', source: 'builtin' },
         { name: 'doctor', description: 'Diagnose and verify your Claude Code installation and settings', source: 'builtin' },
+        { name: 'goal', description: 'Set, view, or clear the conversation goal', source: 'builtin' },
         { name: 'plan', description: 'View or open the current session plan', source: 'builtin' },
         { name: 'stats', description: 'Show your Claude Code usage statistics and activity', source: 'builtin' },
         { name: 'status', description: 'Show Claude Code status including version, model, account, and API connectivity', source: 'builtin' },
     ],
-    // Codex remote turns send slash-prefixed input as plain text to app-server.
-    // Hide built-ins here until remote slash command execution is implemented end-to-end.
-    codex: [],
-    gemini: [
+    // Codex remote mode supports these end-to-end through HAPI special commands.
+    codex: [
+        { name: 'compact', description: 'Compact conversation context', source: 'builtin' },
+        { name: 'goal', description: 'Set, view, or clear the conversation goal', source: 'builtin' },
+    ],
+    agy: [
         { name: 'about', description: 'Show version info', source: 'builtin' },
         { name: 'clear', description: 'Clear the screen and conversation history', source: 'builtin' },
         { name: 'compress', description: 'Compress the context by replacing it with a summary', source: 'builtin' },
         { name: 'stats', description: 'Check session stats', source: 'builtin' },
     ],
+    grok: [],
     opencode: [],
 }
 
@@ -55,4 +59,21 @@ export function findUnsupportedCodexBuiltinSlashCommand(
     )
 
     return hasCustomCommand ? null : commandName
+}
+
+export async function findUnsupportedCodexBuiltinSlashCommandAfterDeferredLoad(
+    text: string,
+    availableCommands: readonly SlashCommand[],
+    loadAvailableCommands?: () => Promise<readonly SlashCommand[]>
+): Promise<string | null> {
+    const unsupportedCommand = findUnsupportedCodexBuiltinSlashCommand(text, availableCommands)
+    if (!unsupportedCommand || !loadAvailableCommands) {
+        return unsupportedCommand
+    }
+
+    try {
+        return findUnsupportedCodexBuiltinSlashCommand(text, await loadAvailableCommands())
+    } catch {
+        return unsupportedCommand
+    }
 }

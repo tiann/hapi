@@ -91,4 +91,39 @@ describe('convertCodexEvent', () => {
             output: { ok: true }
         });
     });
+
+
+    it('summarizes oversized local function_call_output items with the preceding tool name', () => {
+        convertCodexEvent({
+            type: 'response_item',
+            payload: {
+                type: 'function_call',
+                name: 'mcp__browser__open',
+                call_id: 'call-large-local',
+                arguments: '{}'
+            }
+        });
+
+        const result = convertCodexEvent({
+            type: 'response_item',
+            payload: {
+                type: 'function_call_output',
+                call_id: 'call-large-local',
+                output: `head
+${'l'.repeat(25_000)}
+tail`
+            }
+        });
+
+        expect(result?.message).toMatchObject({
+            type: 'tool-call-result',
+            callId: 'call-large-local',
+            output: expect.objectContaining({
+                type: 'hapi-tool-output-summary',
+                truncated: true,
+                callId: 'call-large-local',
+                toolName: 'mcp__browser__open'
+            })
+        });
+    });
 });

@@ -11,6 +11,71 @@ import { systemPrompt } from "./utils/systemPrompt";
 import { PermissionResult } from "./sdk/types";
 import { getHapiBlobsDir } from "@/constants/uploadPaths";
 import { getDefaultClaudeCodePath } from "./sdk/utils";
+import { PLAN_FAKE_RESTART } from "./sdk/prompts";
+
+export type ClaudeLiveAppend = (next: { message: string, mode: EnhancedMode }) => boolean;
+
+function isBackgroundTaskNotificationMessage(message: SDKMessage): boolean {
+    if (message.type !== 'user') return false;
+    const userMessage = message as SDKUserMessage;
+    if (userMessage.message.role !== 'user') return false;
+    if (typeof userMessage.message.content !== 'string') return false;
+    return isBackgroundTaskNotificationText(userMessage.message.content);
+}
+
+function isBackgroundTaskNotificationSystemEvent(message: SDKMessage): boolean {
+    return message.type === 'system' && (message as SDKSystemMessage).subtype === 'task_notification';
+}
+
+function isExternalUserTextMessage(message: SDKMessage): boolean {
+    if (message.type !== 'user') return false;
+    const userMessage = message as SDKUserMessage;
+    if (userMessage.message.role !== 'user') return false;
+    if (typeof userMessage.message.content !== 'string') return false;
+    return !isInternalQueuedMessage(userMessage.message.content);
+}
+
+function isBackgroundTaskNotificationText(message: string): boolean {
+    return message.trimStart().startsWith('<task-notification>');
+}
+
+function isInternalQueuedMessage(message: string): boolean {
+    const trimmed = message.trimStart();
+    return trimmed === PLAN_FAKE_RESTART
+        || trimmed.startsWith('<task-notification>')
+        || trimmed.startsWith('<command-name>')
+        || trimmed.startsWith('<local-command-caveat>')
+        || trimmed.startsWith('<system-reminder>');
+}
+
+function isAllowedByConfiguredTools(toolName: string, input: unknown, allowedTools: string[]): boolean {
+    if (allowedTools.length === 0) return false;
+
+    if (toolName !== 'Bash') {
+        return allowedTools.includes(toolName);
+    }
+
+    const command = typeof input === 'object' && input !== null && typeof (input as { command?: unknown }).command === 'string'
+        ? (input as { command: string }).command
+        : null;
+
+    for (const tool of allowedTools) {
+        if (tool === 'Bash') return true;
+        if (!command) continue;
+
+        const match = tool.match(/^Bash\((.+?)\)$/);
+        if (!match) continue;
+
+        const allowedCommand = match[1];
+        if (allowedCommand.endsWith(':*')) {
+            if (command.startsWith(allowedCommand.slice(0, -2))) return true;
+        } else if (command === allowedCommand) {
+            return true;
+        }
+    }
+
+    return false;
+}
 
 export async function claudeRemote(opts: {
 
@@ -27,16 +92,19 @@ export async function claudeRemote(opts: {
 
     // Dynamic parameters
     nextMessage: () => Promise<{ message: string, mode: EnhancedMode } | null>,
+    registerLiveAppend?: (append: ClaudeLiveAppend) => void,
     onReady: () => void,
     isAborted: (toolCallId: string) => boolean,
 
     // Callbacks
-    onSessionFound: (id: string) => void,
+    onSessionFound: (id: string) => Promise<void> | void,
     onThinkingChange?: (thinking: boolean) => void,
+    onTurnDuration?: (durationMs: number) => void,
     onMessage: (message: SDKMessage) => void,
     onCompletionEvent?: (message: string) => void,
-    onSessionReset?: () => void
-}) {
+    onSessionReset?: () => void,
+    abortCurrentTurn?: () => void
+}): Promise<'background-notification' | void> {
     const debugPrefix = '[claudeRemote][async-debug]';
 
     // Check if session is valid
@@ -122,6 +190,32 @@ export async function claudeRemote(opts: {
 
     // Prepare SDK options
     let mode = initial.mode;
+    const configuredAllowedTools = initial.mode.allowedTools ? initial.mode.allowedTools.concat(opts.allowedTools) : opts.allowedTools;
+    let backgroundNotificationOnly = isBackgroundTaskNotificationText(initial.message);
+    let backgroundNotificationClearPending = false;
+    let externalUserMessagesPendingSdkEcho = 0;
+    if (backgroundNotificationOnly) {
+        logger.debug(`${debugPrefix} background notification guard enabled from initial queued message`);
+    }
+    const updateBackgroundNotificationOnlyForQueuedMessage = (reason: string, message: string) => {
+        if (isBackgroundTaskNotificationText(message)) {
+            backgroundNotificationOnly = true;
+            backgroundNotificationClearPending = false;
+            logger.debug(`${debugPrefix} background notification guard enabled by ${reason}`);
+            return;
+        }
+        if (isInternalQueuedMessage(message)) {
+            logger.debug(`${debugPrefix} background notification guard kept for internal queued message (${reason})`);
+            return;
+        }
+        externalUserMessagesPendingSdkEcho += 1;
+        if (backgroundNotificationOnly) {
+            backgroundNotificationClearPending = true;
+            logger.debug(`${debugPrefix} background notification guard clear pending by ${reason}`);
+            return;
+        }
+        backgroundNotificationClearPending = false;
+    };
     const sdkOptions: Options = {
         cwd: opts.path,
         resume: startFrom ?? undefined,
@@ -132,9 +226,27 @@ export async function claudeRemote(opts: {
         fallbackModel: initial.mode.fallbackModel,
         customSystemPrompt: initial.mode.customSystemPrompt ? initial.mode.customSystemPrompt + '\n\n' + systemPrompt : undefined,
         appendSystemPrompt: initial.mode.appendSystemPrompt ? initial.mode.appendSystemPrompt + '\n\n' + systemPrompt : systemPrompt,
-        allowedTools: initial.mode.allowedTools ? initial.mode.allowedTools.concat(opts.allowedTools) : opts.allowedTools,
+        // Keep permission enforcement in HAPI's canCallTool path. Passing
+        // allowedTools to Claude Code can pre-approve tools before the HAPI
+        // background-notification guard has a chance to deny them.
+        allowedTools: [],
         disallowedTools: initial.mode.disallowedTools,
-        canCallTool: (toolName: string, input: unknown, options: { signal: AbortSignal }) => opts.canCallTool(toolName, input, mode, options),
+        canCallTool: (toolName: string, input: unknown, options: { signal: AbortSignal }) => {
+            if (backgroundNotificationOnly) {
+                logger.debug(`${debugPrefix} denied tool call while handling background task notification: ${toolName}`);
+                return Promise.resolve({
+                    behavior: 'deny' as const,
+                    message: 'Blocked because the current turn was triggered by an internal background task notification. Only report the background task completion/failure/status, then wait for a real user message before using tools or starting new work.'
+                });
+            }
+            if (isAllowedByConfiguredTools(toolName, input, configuredAllowedTools)) {
+                return Promise.resolve({
+                    behavior: 'allow' as const,
+                    updatedInput: input as Record<string, unknown>
+                });
+            }
+            return opts.canCallTool(toolName, input, mode, options);
+        },
         abort: opts.signal,
         pathToClaudeCodeExecutable: getDefaultClaudeCodePath(),
         settingsPath: opts.hookSettingsPath,
@@ -153,14 +265,37 @@ export async function claudeRemote(opts: {
         }
     };
 
+    let turnStartedAt = Date.now();
+
     // Push initial message
     let messages = new PushableAsyncIterable<SDKUserMessage>();
+    let inputEnded = false;
     messages.push({
         type: 'user',
         message: {
             role: 'user',
             content: initial.message,
         },
+    });
+    opts.registerLiveAppend?.((next) => {
+        if (inputEnded || messages.done || opts.signal?.aborted) {
+            logger.debug(`${debugPrefix} live append rejected (inputEnded=${inputEnded}, done=${messages.done}, aborted=${Boolean(opts.signal?.aborted)})`);
+            return false;
+        }
+        mode = next.mode;
+        turnStartedAt = Date.now();
+        try {
+            updateBackgroundNotificationOnlyForQueuedMessage('live user message', next.message);
+            messages.push({ type: 'user', message: { role: 'user', content: next.message } });
+            logger.debug(
+                `${debugPrefix} live append accepted ` +
+                `messageLength=${next.message.length} permissionMode=${next.mode.permissionMode}`
+            );
+            return true;
+        } catch (error) {
+            logger.debug(`${debugPrefix} live append failed`, error);
+            return false;
+        }
     });
 
     // Start the loop
@@ -170,10 +305,18 @@ export async function claudeRemote(opts: {
     });
 
     let nextMessageFetchInFlight = false;
-    let inputEnded = false;
     let nextMessageFetchSeq = 0;
     let streamMessageSeq = 0;
     let resultSeq = 0;
+
+    const extractResultDurationMs = (message: SDKMessage): number | null => {
+        const raw = (message as Record<string, unknown>).duration_ms
+            ?? (message as Record<string, unknown>).durationMs;
+        if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0) {
+            return null;
+        }
+        return Math.round(raw);
+    };
 
     const scheduleNextMessage = () => {
         if (nextMessageFetchInFlight || inputEnded) {
@@ -200,7 +343,10 @@ export async function claudeRemote(opts: {
                     return;
                 }
                 mode = next.mode;
+                turnStartedAt = Date.now();
+                updateBackgroundNotificationOnlyForQueuedMessage('scheduled user message', next.message);
                 messages.push({ type: 'user', message: { role: 'user', content: next.message } });
+                updateThinking(true);
                 logger.debug(
                     `${debugPrefix} nextMessage resolved fetchId=${fetchId} elapsedMs=${Date.now() - startedAt} ` +
                     `messageLength=${next.message.length} permissionMode=${next.mode.permissionMode}`
@@ -233,8 +379,51 @@ export async function claudeRemote(opts: {
             );
             logger.debugLargeJson(`[claudeRemote] Message ${message.type}`, message);
 
+            const isTaskNotificationSystemEvent = isBackgroundTaskNotificationSystemEvent(message);
+            const isExternalUserEcho = isExternalUserTextMessage(message);
+            const hasExternalUserMessagePendingSdkEcho = externalUserMessagesPendingSdkEcho > 0;
+            let shouldEndTaskNotificationTurn = false;
+
+            if (isTaskNotificationSystemEvent && hasExternalUserMessagePendingSdkEcho) {
+                logger.debug(`${debugPrefix} SDK task_notification observed while external user message is pending echo; preserving real user turn`);
+            } else if (isTaskNotificationSystemEvent) {
+                backgroundNotificationOnly = true;
+                backgroundNotificationClearPending = false;
+                shouldEndTaskNotificationTurn = true;
+                logger.debug(`${debugPrefix} background notification guard enabled by SDK task_notification event`);
+            } else if (isBackgroundTaskNotificationMessage(message)) {
+                backgroundNotificationOnly = true;
+                backgroundNotificationClearPending = false;
+                logger.debug(`${debugPrefix} background notification guard enabled`);
+            } else if (isExternalUserEcho) {
+                if (externalUserMessagesPendingSdkEcho > 0) {
+                    externalUserMessagesPendingSdkEcho -= 1;
+                }
+                if (backgroundNotificationOnly && externalUserMessagesPendingSdkEcho === 0) {
+                    backgroundNotificationOnly = false;
+                    backgroundNotificationClearPending = false;
+                    logger.debug(`${debugPrefix} background notification guard cleared by SDK user echo`);
+                }
+            }
+
+            if (backgroundNotificationOnly && message.type === 'assistant') {
+                logger.debug(
+                    `${debugPrefix} suppressed assistant message while handling background task notification ` +
+                    `(clearPending=${backgroundNotificationClearPending})`
+                );
+                continue;
+            }
+
             // Handle messages
             opts.onMessage(message);
+
+            if (isTaskNotificationSystemEvent && shouldEndTaskNotificationTurn) {
+                updateThinking(false);
+                opts.onReady();
+                opts.abortCurrentTurn?.();
+                logger.debug(`${debugPrefix} ended autonomous SDK task_notification turn before assistant/tool continuation`);
+                return 'background-notification';
+            }
 
             // Handle special system messages
             if (message.type === 'system' && message.subtype === 'init') {
@@ -250,7 +439,7 @@ export async function claudeRemote(opts: {
                     const projectDir = getProjectPath(opts.path);
                     const found = await awaitFileExist(join(projectDir, `${systemInit.session_id}.jsonl`));
                     logger.debug(`[claudeRemote] Session file found: ${systemInit.session_id} ${found}`);
-                    opts.onSessionFound(systemInit.session_id);
+                    await opts.onSessionFound(systemInit.session_id);
                 }
             }
 
@@ -258,6 +447,10 @@ export async function claudeRemote(opts: {
             if (message.type === 'result') {
                 resultSeq += 1;
                 updateThinking(false);
+                opts.onTurnDuration?.(
+                    extractResultDurationMs(message)
+                    ?? Math.max(0, Date.now() - turnStartedAt)
+                );
                 logger.debug(
                     `${debugPrefix} result #${resultSeq} received; scheduling next user message ` +
                     `(nextInFlight=${nextMessageFetchInFlight}, inputEnded=${inputEnded})`

@@ -18,13 +18,16 @@ type DbSessionRow = {
     agent_state_version: number
     model: string | null
     model_reasoning_effort: string | null
+    service_tier: string | null
     effort: string | null
+    permission_mode: string | null
     todos: string | null
     todos_updated_at: number | null
     team_state: string | null
     team_state_updated_at: number | null
     active: number
     active_at: number | null
+    activity_event_at: number | null
     seq: number
 }
 
@@ -42,13 +45,16 @@ function toStoredSession(row: DbSessionRow): StoredSession {
         agentStateVersion: row.agent_state_version,
         model: row.model,
         modelReasoningEffort: row.model_reasoning_effort,
+        serviceTier: row.service_tier,
         effort: row.effort,
+        permissionMode: row.permission_mode,
         todos: safeJsonParse(row.todos),
         todosUpdatedAt: row.todos_updated_at,
         teamState: safeJsonParse(row.team_state),
         teamStateUpdatedAt: row.team_state_updated_at,
         active: row.active === 1,
         activeAt: row.active_at,
+        activityEventAt: row.activity_event_at,
         seq: row.seq
     }
 }
@@ -61,7 +67,8 @@ export function getOrCreateSession(
     namespace: string,
     model?: string,
     effort?: string,
-    modelReasoningEffort?: string
+    modelReasoningEffort?: string,
+    serviceTier?: string
 ): StoredSession {
     const existing = db.prepare(
         'SELECT * FROM sessions WHERE tag = ? AND namespace = ? ORDER BY created_at DESC LIMIT 1'
@@ -84,18 +91,20 @@ export function getOrCreateSession(
             agent_state, agent_state_version,
             model,
             model_reasoning_effort,
+            service_tier,
             effort,
             todos, todos_updated_at,
-            active, active_at, seq
+            active, active_at, activity_event_at, seq
         ) VALUES (
             @id, @tag, @namespace, NULL, @created_at, @updated_at,
             @metadata, 1,
             @agent_state, 1,
             @model,
             @model_reasoning_effort,
+            @service_tier,
             @effort,
             NULL, NULL,
-            0, NULL, 0
+            0, NULL, NULL, 0
         )
     `).run({
         id,
@@ -107,6 +116,7 @@ export function getOrCreateSession(
         agent_state: agentStateJson,
         model: model ?? null,
         model_reasoning_effort: modelReasoningEffort ?? null,
+        service_tier: serviceTier ?? null,
         effort: effort ?? null
     })
 
@@ -177,6 +187,69 @@ export function updateSessionAgentState(
         setClauses: ['updated_at = @updated_at', 'seq = seq + 1'],
         params: { updated_at: now }
     })
+}
+
+export function touchSessionMessage(
+    db: Database,
+    id: string,
+    updatedAt: number,
+    messageSeq: number,
+    namespace: string
+): boolean {
+    try {
+        const result = db.prepare(`
+            UPDATE sessions
+            SET updated_at = CASE WHEN updated_at > @updated_at THEN updated_at ELSE @updated_at END,
+                seq = CASE WHEN seq > @message_seq THEN seq ELSE @message_seq END
+            WHERE id = @id
+              AND namespace = @namespace
+              AND (updated_at < @updated_at OR seq < @message_seq)
+        `).run({
+            id,
+            namespace,
+            updated_at: updatedAt,
+            message_seq: messageSeq
+        })
+
+        return result.changes === 1
+    } catch {
+        return false
+    }
+}
+
+export function setSessionActivity(
+    db: Database,
+    id: string,
+    active: boolean,
+    activeAt: number,
+    activityEventAt: number,
+    namespace: string
+): boolean {
+    try {
+        const result = db.prepare(`
+            UPDATE sessions
+            SET active = @active,
+                active_at = @active_at,
+                activity_event_at = @activity_event_at
+            WHERE id = @id
+              AND namespace = @namespace
+              AND (
+                  activity_event_at IS NULL
+                  OR activity_event_at < @activity_event_at
+                  OR (activity_event_at = @activity_event_at AND @active = 0 AND active != 0)
+              )
+        `).run({
+            id,
+            namespace,
+            active: active ? 1 : 0,
+            active_at: activeAt,
+            activity_event_at: activityEventAt
+        })
+
+        return result.changes === 1
+    } catch {
+        return false
+    }
 }
 
 export function setSessionTodos(
@@ -309,6 +382,39 @@ export function setSessionModelReasoningEffort(
     }
 }
 
+export function setSessionServiceTier(
+    db: Database,
+    id: string,
+    serviceTier: string | null,
+    namespace: string,
+    options?: { touchUpdatedAt?: boolean }
+): boolean {
+    const now = Date.now()
+    const touchUpdatedAt = options?.touchUpdatedAt === true
+
+    try {
+        const result = db.prepare(`
+            UPDATE sessions
+            SET service_tier = @service_tier,
+                updated_at = CASE WHEN @touch_updated_at = 1 THEN @updated_at ELSE updated_at END,
+                seq = seq + 1
+            WHERE id = @id
+              AND namespace = @namespace
+              AND service_tier IS NOT @service_tier
+        `).run({
+            id,
+            namespace,
+            service_tier: serviceTier,
+            updated_at: now,
+            touch_updated_at: touchUpdatedAt ? 1 : 0
+        })
+
+        return result.changes === 1
+    } catch {
+        return false
+    }
+}
+
 export function setSessionEffort(
     db: Database,
     id: string,
@@ -332,6 +438,39 @@ export function setSessionEffort(
             id,
             namespace,
             effort,
+            updated_at: now,
+            touch_updated_at: touchUpdatedAt ? 1 : 0
+        })
+
+        return result.changes === 1
+    } catch {
+        return false
+    }
+}
+
+export function setSessionPermissionMode(
+    db: Database,
+    id: string,
+    permissionMode: string | null,
+    namespace: string,
+    options?: { touchUpdatedAt?: boolean }
+): boolean {
+    const now = Date.now()
+    const touchUpdatedAt = options?.touchUpdatedAt === true
+
+    try {
+        const result = db.prepare(`
+            UPDATE sessions
+            SET permission_mode = @permission_mode,
+                updated_at = CASE WHEN @touch_updated_at = 1 THEN @updated_at ELSE updated_at END,
+                seq = seq + 1
+            WHERE id = @id
+              AND namespace = @namespace
+              AND permission_mode IS NOT @permission_mode
+        `).run({
+            id,
+            namespace,
+            permission_mode: permissionMode,
             updated_at: now,
             touch_updated_at: touchUpdatedAt ? 1 : 0
         })

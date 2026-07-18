@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { filterResumeSubcommand } from './codexLocal';
+import {
+    buildCodexLocalServiceTierArgs,
+    filterResumeSubcommand
+} from './codexLocal';
 
 describe('filterResumeSubcommand', () => {
     it('returns empty array unchanged', () => {
@@ -32,5 +35,19 @@ describe('filterResumeSubcommand', () => {
         // If resume appears after flags, it's not the subcommand position
         expect(filterResumeSubcommand(['--model', 'gpt-4', 'resume', '123']))
             .toEqual(['--model', 'gpt-4', 'resume', '123']);
+    });
+});
+
+describe('buildCodexLocalServiceTierArgs', () => {
+    it('omits the default standard tier', () => {
+        expect(buildCodexLocalServiceTierArgs(undefined)).toEqual([]);
+        expect(buildCodexLocalServiceTierArgs('standard')).toEqual([]);
+    });
+
+    it('passes fast tier through Codex config instead of removed --service-tier flag', () => {
+        expect(buildCodexLocalServiceTierArgs('fast')).toEqual([
+            '-c',
+            'service_tier="fast"'
+        ]);
     });
 });

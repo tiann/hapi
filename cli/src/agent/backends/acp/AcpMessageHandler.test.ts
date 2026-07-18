@@ -14,6 +14,48 @@ function getToolResult(messages: AgentMessage[], id: string): Extract<AgentMessa
 }
 
 describe('AcpMessageHandler', () => {
+    it('preserves ACP reasoning chunks as a reasoning message', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message), {
+            emitReasoning: true
+        });
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentThoughtChunk,
+            content: { type: 'text', text: 'Inspect' }
+        });
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentThoughtChunk,
+            content: { type: 'text', text: 'ing state' }
+        });
+        handler.flush();
+
+        expect(messages).toEqual([{ type: 'reasoning', text: 'Inspecting state' }]);
+    });
+
+    it('deduplicates cumulative ACP reasoning chunks', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message), { emitReasoning: true });
+        handler.handleUpdate({ sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentThoughtChunk, content: { type: 'text', text: 'Inspect' } });
+        handler.handleUpdate({ sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentThoughtChunk, content: { type: 'text', text: 'Inspecting state' } });
+        handler.flush();
+        expect(messages).toEqual([{ type: 'reasoning', text: 'Inspecting state' }]);
+    });
+
+    it('preserves ACP user-message chunks when requested by a local scanner', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message), {
+            emitUserMessages: true
+        });
+
+        handler.handleUpdate({
+            sessionUpdate: 'user_message_chunk',
+            content: { type: 'text', text: 'hello' }
+        });
+
+        expect(messages).toEqual([{ type: 'user_message', text: 'hello' }]);
+    });
+
     it('does not synthesize {status} output when tool completes without payload', () => {
         const messages: AgentMessage[] = [];
         const handler = new AcpMessageHandler((message) => messages.push(message));

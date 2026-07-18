@@ -109,15 +109,8 @@ export async function handleCallback(
  */
 function findRequestByPrefix(session: Session, prefix: string): string | undefined {
     const requests = session.agentState?.requests
-    if (!requests) return undefined
+    if (!requests || !prefix) return undefined
 
-    for (const reqId of Object.keys(requests)) {
-        if (reqId.startsWith(prefix)) {
-            return reqId
-        }
-    }
-
-    // If no prefix match, return the first request
-    const keys = Object.keys(requests)
-    return keys.length > 0 ? keys[0] : undefined
+    const matches = Object.keys(requests).filter((reqId) => reqId.startsWith(prefix))
+    return matches.length === 1 ? matches[0] : undefined
 }

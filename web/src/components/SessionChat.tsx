@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { AssistantRuntimeProvider } from '@assistant-ui/react'
+import { getExecutionControl, isCodexDesktopMirrorSession } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
 import type {
     AttachmentMetadata,
@@ -19,7 +20,7 @@ import { HappyComposer } from '@/components/AssistantChat/HappyComposer'
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
 import { useHappyRuntime } from '@/lib/assistant-runtime'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
-import { findUnsupportedCodexBuiltinSlashCommand } from '@/lib/codexSlashCommands'
+import { findUnsupportedCodexBuiltinSlashCommandAfterDeferredLoad } from '@/lib/codexSlashCommands'
 import { useToast } from '@/lib/toast-context'
 import { useTranslation } from '@/lib/use-translation'
 import { SessionHeader } from '@/components/SessionHeader'
@@ -27,8 +28,15 @@ import { TeamPanel } from '@/components/TeamPanel'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useVoiceOptional } from '@/lib/voice-context'
-import { RealtimeVoiceSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
+import { shouldMountRealtimeVoiceSession } from '@/lib/voice-mount'
+import { canChangeSessionPermissionMode } from '@/lib/session-config-controls'
+import { registerSessionStore } from '@/realtime/realtimeClientTools'
+import { registerVoiceHooksStore, voiceHooks } from '@/realtime/hooks/voiceHooks'
 import { isRemoteTerminalSupported } from '@/utils/terminalSupport'
+
+const LazyRealtimeVoiceSession = lazy(() => (
+    import('@/realtime/RealtimeVoiceSession').then((mod) => ({ default: mod.RealtimeVoiceSession }))
+))
 
 export function SessionChat(props: {
     api: ApiClient
@@ -36,20 +44,26 @@ export function SessionChat(props: {
     messages: DecryptedMessage[]
     messagesWarning: string | null
     hasMoreMessages: boolean
+    hasNewerMessages: boolean
     isLoadingMessages: boolean
     isLoadingMoreMessages: boolean
+    isLoadingNewerMessages: boolean
     isSending: boolean
     pendingCount: number
     messagesVersion: number
     onBack: () => void
     onRefresh: () => void
     onLoadMore: () => Promise<unknown>
-    onSend: (text: string, attachments?: AttachmentMetadata[]) => void
+    onLoadNewer: () => Promise<unknown>
+    onReturnToLatest: () => Promise<unknown>
+    onSend: (text: string, attachments?: AttachmentMetadata[]) => void | Promise<void>
     onFlushPending: () => void
     onAtBottomChange: (atBottom: boolean) => void
     onRetryMessage?: (localId: string) => void
     autocompleteSuggestions?: (query: string) => Promise<Suggestion[]>
+    autocompleteSuggestionsVersion?: unknown
     availableSlashCommands?: readonly SlashCommand[]
+    resolveAvailableSlashCommands?: () => Promise<readonly SlashCommand[]>
 }) {
     const { haptic } = usePlatform()
     const { addToast } = useToast()
@@ -60,7 +74,16 @@ export function SessionChat(props: {
     const normalizedCacheRef = useRef<Map<string, { source: DecryptedMessage; normalized: NormalizedMessage | null }>>(new Map())
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
     const [forceScrollToken, setForceScrollToken] = useState(0)
+    const [voiceSessionRequested, setVoiceSessionRequested] = useState(false)
+    const voiceSessionReadyRef = useRef(false)
+    const pendingVoiceStartSessionIdRef = useRef<string | null>(null)
     const agentFlavor = props.session.metadata?.flavor ?? null
+    const desktopMirrorSession = agentFlavor === 'codex' && isCodexDesktopMirrorSession({
+        metadata: props.session.metadata,
+        messages: props.messages
+    })
+    const executionControl = getExecutionControl(props.session.metadata)
+    const desktopMirrorTakeoverRequired = desktopMirrorSession && executionControl?.owner !== 'hapi-runner'
     const controlledByUser = props.session.agentState?.controlledByUser === true
     const codexCollaborationModeSupported = agentFlavor === 'codex' && !controlledByUser
     const {
@@ -70,6 +93,7 @@ export function SessionChat(props: {
         setCollaborationMode,
         setModel,
         setModelReasoningEffort,
+        setServiceTier,
         setEffort
     } = useSessionActions(
         props.api,
@@ -154,12 +178,29 @@ export function SessionChat(props: {
         prevRequestIdsRef.current = currentIds
     }, [props.session.agentState?.requests, props.session.id])
 
+    const startPendingVoice = useCallback(async () => {
+        voiceSessionReadyRef.current = true
+        const pendingSessionId = pendingVoiceStartSessionIdRef.current
+        if (!voice || !pendingSessionId) {
+            return
+        }
+        pendingVoiceStartSessionIdRef.current = null
+        await voice.startVoice(pendingSessionId)
+    }, [voice])
+
     const handleVoiceToggle = useCallback(async () => {
         if (!voice) return
         if (voice.status === 'connected' || voice.status === 'connecting') {
+            pendingVoiceStartSessionIdRef.current = null
             await voice.stopVoice()
         } else {
-            await voice.startVoice(props.session.id)
+            if (voiceSessionReadyRef.current) {
+                await voice.startVoice(props.session.id)
+                return
+            }
+            pendingVoiceStartSessionIdRef.current = props.session.id
+            voice.setStatus('connecting')
+            setVoiceSessionRequested(true)
         }
     }, [voice, props.session.id])
 
@@ -265,6 +306,17 @@ export function SessionChat(props: {
         }
     }, [setModelReasoningEffort, props.onRefresh, haptic])
 
+    const handleServiceTierChange = useCallback(async (serviceTier: string | null) => {
+        try {
+            await setServiceTier(serviceTier)
+            haptic.notification('success')
+            props.onRefresh()
+        } catch (e) {
+            haptic.notification('error')
+            console.error('Failed to set service tier:', e)
+        }
+    }, [setServiceTier, props.onRefresh, haptic])
+
     const handleEffortChange = useCallback(async (effort: string | null) => {
         try {
             await setEffort(effort)
@@ -302,11 +354,17 @@ export function SessionChat(props: {
         })
     }, [navigate, props.session.id])
 
-    const handleSend = useCallback((text: string, attachments?: AttachmentMetadata[]) => {
+    const handleLoadRecentUserMessages = useCallback(async () => {
+        const response = await props.api.getRecentUserMessages(props.session.id, { limit: 10 })
+        return response.messages
+    }, [props.api, props.session.id])
+
+    const handleSend = useCallback(async (text: string, attachments?: AttachmentMetadata[]) => {
         if (agentFlavor === 'codex') {
-            const unsupportedCommand = findUnsupportedCodexBuiltinSlashCommand(
+            const unsupportedCommand = await findUnsupportedCodexBuiltinSlashCommandAfterDeferredLoad(
                 text,
-                props.availableSlashCommands ?? []
+                props.availableSlashCommands ?? [],
+                props.resolveAvailableSlashCommands
             )
             if (unsupportedCommand) {
                 haptic.notification('error')
@@ -320,9 +378,18 @@ export function SessionChat(props: {
             }
         }
 
-        props.onSend(text, attachments)
+        await props.onSend(text, attachments)
         setForceScrollToken((token) => token + 1)
-    }, [agentFlavor, props.availableSlashCommands, props.onSend, props.session.id, addToast, haptic, t])
+    }, [
+        agentFlavor,
+        props.availableSlashCommands,
+        props.resolveAvailableSlashCommands,
+        props.onSend,
+        props.session.id,
+        addToast,
+        haptic,
+        t
+    ])
 
     const attachmentAdapter = useMemo(() => {
         if (!props.session.active) {
@@ -363,6 +430,19 @@ export function SessionChat(props: {
                 </div>
             ) : null}
 
+            {desktopMirrorTakeoverRequired ? (
+                <div className="px-3 pt-3">
+                    <div className="mx-auto w-full max-w-content rounded-md bg-[var(--app-subtle-bg)] p-3 text-sm text-[var(--app-hint)]">
+                        <div className="font-medium text-[var(--app-text)]">
+                            {t('composer.codexDesktopSyncReadonly.title')}
+                        </div>
+                        <div className="mt-1">
+                            {t('composer.codexDesktopSyncReadonly.body')}
+                        </div>
+                    </div>
+                </div>
+            ) : null}
+
             <AssistantRuntimeProvider runtime={runtime}>
                 <div className="relative flex min-h-0 flex-1 flex-col">
                     <HappyThread
@@ -378,8 +458,12 @@ export function SessionChat(props: {
                         isLoadingMessages={props.isLoadingMessages}
                         messagesWarning={props.messagesWarning}
                         hasMoreMessages={props.hasMoreMessages}
+                        hasNewerMessages={props.hasNewerMessages}
                         isLoadingMoreMessages={props.isLoadingMoreMessages}
+                        isLoadingNewerMessages={props.isLoadingNewerMessages}
                         onLoadMore={props.onLoadMore}
+                        onLoadNewer={props.onLoadNewer}
+                        onReturnToLatest={props.onReturnToLatest}
                         pendingCount={props.pendingCount}
                         rawMessagesCount={props.messages.length}
                         normalizedMessagesCount={normalizedMessages.length}
@@ -395,8 +479,13 @@ export function SessionChat(props: {
                         collaborationMode={codexCollaborationModeSupported ? props.session.collaborationMode : undefined}
                         model={props.session.model}
                         modelReasoningEffort={agentFlavor === 'codex' ? props.session.modelReasoningEffort : undefined}
+                        serviceTier={agentFlavor === 'codex' ? props.session.serviceTier : undefined}
                         effort={props.session.effort}
                         agentFlavor={agentFlavor}
+                        grokModels={props.session.metadata?.grokCapabilities?.models}
+                        grokEfforts={props.session.metadata?.grokCapabilities?.models
+                            ?.find((model) => model.id === (props.session.model
+                                ?? props.session.metadata?.grokCapabilities?.currentModel))?.efforts}
                         active={props.session.active}
                         allowSendWhenInactive
                         thinking={props.session.thinking}
@@ -409,11 +498,20 @@ export function SessionChat(props: {
                                 ? handleCollaborationModeChange
                                 : undefined
                         }
-                        onPermissionModeChange={handlePermissionModeChange}
+                        onPermissionModeChange={
+                            canChangeSessionPermissionMode(props.session)
+                                ? handlePermissionModeChange
+                                : undefined
+                        }
                         onModelChange={handleModelChange}
                         onModelReasoningEffortChange={
                             agentFlavor === 'codex' && props.session.active && !controlledByUser
                                 ? handleModelReasoningEffortChange
+                                : undefined
+                        }
+                        onServiceTierChange={
+                            agentFlavor === 'codex' && props.session.active && !controlledByUser
+                                ? handleServiceTierChange
                                 : undefined
                         }
                         onEffortChange={handleEffortChange}
@@ -421,6 +519,8 @@ export function SessionChat(props: {
                         onTerminal={props.session.active && terminalSupported ? handleViewTerminal : undefined}
                         terminalUnsupported={props.session.active && !terminalSupported}
                         autocompleteSuggestions={props.autocompleteSuggestions}
+                        autocompleteSuggestionsVersion={props.autocompleteSuggestionsVersion}
+                        loadRecentUserMessages={handleLoadRecentUserMessages}
                         voiceStatus={voice?.status}
                         voiceMicMuted={voice?.micMuted}
                         onVoiceToggle={voice ? handleVoiceToggle : undefined}
@@ -430,12 +530,15 @@ export function SessionChat(props: {
             </AssistantRuntimeProvider>
 
             {/* Voice session component - renders nothing but initializes ElevenLabs */}
-            {voice && (
-                <RealtimeVoiceSession
-                    api={props.api}
-                    micMuted={voice.micMuted}
-                    onStatusChange={voice.setStatus}
-                />
+            {voice && shouldMountRealtimeVoiceSession(voice.status, voiceSessionRequested) && (
+                <Suspense fallback={null}>
+                    <LazyRealtimeVoiceSession
+                        api={props.api}
+                        micMuted={voice.micMuted}
+                        onStatusChange={voice.setStatus}
+                        onReady={startPendingVoice}
+                    />
+                </Suspense>
             )}
         </div>
     )

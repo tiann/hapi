@@ -2,7 +2,58 @@ import type { ChatBlock, ToolCallBlock, ToolPermission } from '@/chat/types'
 import type { TracedMessage } from '@/chat/tracer'
 import { createCliOutputBlock, isCliOutputText, mergeCliOutputBlocks } from '@/chat/reducerCliOutput'
 import { parseMessageAsEvent } from '@/chat/reducerEvents'
-import { ensureToolBlock, extractTitleFromChangeTitleInput, isChangeTitleToolName, type PermissionEntry } from '@/chat/reducerTools'
+import { ensureToolBlock, extractTitleFromChangeTitleInput, isChangeTitleToolName, isSendAttachmentToolName, type PermissionEntry } from '@/chat/reducerTools'
+
+function canUseCompletionTimestamp(block: ChatBlock): boolean {
+    return block.kind === 'agent-text'
+        || block.kind === 'agent-reasoning'
+        || block.kind === 'moa-reference'
+        || block.kind === 'agent-attachments'
+        || block.kind === 'tool-call'
+        || (block.kind === 'cli-output' && block.source === 'assistant')
+}
+
+function withDisplayTimestamp(block: ChatBlock, displayTimestamp: number): ChatBlock {
+    if (!canUseCompletionTimestamp(block)) return block
+    return { ...block, displayTimestamp } as ChatBlock
+}
+
+function applyAgentCompletionTimestamps(blocks: ChatBlock[]): ChatBlock[] {
+    const output: ChatBlock[] = []
+    let pendingAgentBlockIndexes: number[] = []
+
+    const completePendingAgentBlocks = (displayTimestamp: number) => {
+        if (pendingAgentBlockIndexes.length === 0) return
+        for (const index of pendingAgentBlockIndexes) {
+            output[index] = withDisplayTimestamp(output[index], displayTimestamp)
+        }
+        pendingAgentBlockIndexes = []
+    }
+
+    for (const block of blocks) {
+        if (block.kind === 'user-text') {
+            pendingAgentBlockIndexes = []
+            output.push(block)
+            continue
+        }
+
+        if (block.kind === 'agent-event' && (block.event.type === 'turn-duration' || block.event.type === 'ready')) {
+            completePendingAgentBlocks(block.createdAt)
+            if (block.event.type !== 'ready') {
+                output.push(block)
+            }
+            continue
+        }
+
+        const outputIndex = output.length
+        output.push(block)
+        if (canUseCompletionTimestamp(block)) {
+            pendingAgentBlockIndexes.push(outputIndex)
+        }
+    }
+
+    return output
+}
 
 export function reduceTimeline(
     messages: TracedMessage[],
@@ -12,6 +63,7 @@ export function reduceTimeline(
         consumedGroupIds: Set<string>
         titleChangesByToolUseId: Map<string, string>
         emittedTitleChangeToolUseIds: Set<string>
+        sendAttachmentToolUseIds: Set<string>
     }
 ): { blocks: ChatBlock[]; toolBlocksById: Map<string, ToolCallBlock>; hasReadyEvent: boolean } {
     const blocks: ChatBlock[] = []
@@ -36,6 +88,13 @@ export function reduceTimeline(
         if (msg.role === 'event') {
             if (msg.content.type === 'ready') {
                 hasReadyEvent = true
+                blocks.push({
+                    kind: 'agent-event',
+                    id: msg.id,
+                    createdAt: msg.createdAt,
+                    event: msg.content,
+                    meta: msg.meta
+                })
                 continue
             }
             blocks.push({
@@ -162,6 +221,33 @@ export function reduceTimeline(
                     continue
                 }
 
+                if (c.type === 'moa-reference') {
+                    blocks.push({
+                        kind: 'moa-reference',
+                        id: `${msg.id}:${idx}`,
+                        localId: msg.localId,
+                        createdAt: msg.createdAt,
+                        label: c.label,
+                        text: c.text,
+                        ...(c.index !== undefined ? { index: c.index } : {}),
+                        ...(c.count !== undefined ? { count: c.count } : {}),
+                        meta: msg.meta
+                    })
+                    continue
+                }
+
+                if (c.type === 'attachments') {
+                    blocks.push({
+                        kind: 'agent-attachments',
+                        id: `${msg.id}:${idx}`,
+                        localId: msg.localId,
+                        createdAt: msg.createdAt,
+                        attachments: c.attachments,
+                        meta: msg.meta
+                    })
+                    continue
+                }
+
                 if (c.type === 'summary') {
                     blocks.push({
                         kind: 'agent-event',
@@ -186,6 +272,10 @@ export function reduceTimeline(
                                 meta: msg.meta
                             })
                         }
+                        continue
+                    }
+
+                    if (isSendAttachmentToolName(c.name) && context.sendAttachmentToolUseIds.has(c.id)) {
                         continue
                     }
 
@@ -234,6 +324,10 @@ export function reduceTimeline(
                         continue
                     }
 
+                    if (context.sendAttachmentToolUseIds.has(c.tool_use_id)) {
+                        continue
+                    }
+
                     const permissionEntry = context.permissionsById.get(c.tool_use_id)
                     const permissionFromResult = c.permissions ? ({
                         id: c.tool_use_id,
@@ -275,14 +369,18 @@ export function reduceTimeline(
                 if (c.type === 'sidechain') {
                     // Extract task-notification summaries as visible events
                     const trimmedPrompt = c.prompt.trimStart()
-                    if (trimmedPrompt.startsWith('<task-notification>')) {
+                    if (c.kind === 'background_notification' || trimmedPrompt.startsWith('<task-notification>')) {
                         const summary = trimmedPrompt.match(/<summary>([\s\S]*?)<\/summary>/)?.[1]?.trim()
                         if (summary) {
                             blocks.push({
                                 kind: 'agent-event',
                                 id: `${msg.id}:${idx}`,
                                 createdAt: msg.createdAt,
-                                event: { type: 'message', message: summary },
+                                event: {
+                                    type: 'background-notification',
+                                    message: summary,
+                                    internalKind: 'background_notification'
+                                },
                                 meta: msg.meta
                             })
                         }
@@ -294,5 +392,5 @@ export function reduceTimeline(
         }
     }
 
-    return { blocks: mergeCliOutputBlocks(blocks), toolBlocksById, hasReadyEvent }
+    return { blocks: applyAgentCompletionTimestamps(mergeCliOutputBlocks(blocks)), toolBlocksById, hasReadyEvent }
 }

@@ -11,6 +11,10 @@ export async function runLocalRemoteSession<TSession extends AgentSessionBase<an
     runRemote: LoopLauncher<TSession>;
     onSessionReady?: (session: TSession) => void;
 }): Promise<void> {
+    // Drain any identity work that completed before loop startup. The provider
+    // launcher must still report and await its first real native identity; the
+    // expected resume id is never synthetically confirmed here.
+    await opts.session.waitForNativeIdentity();
     if (opts.onSessionReady) {
         opts.onSessionReady(opts.session);
     }

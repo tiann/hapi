@@ -21,15 +21,13 @@ export function registerDifftasticHandlers(rpcHandlerManager: RpcHandlerManager,
     rpcHandlerManager.registerHandler<DifftasticRequest, DifftasticResponse>('difftastic', async (data) => {
         logger.debug('Difftastic request with args:', data.args, 'cwd:', data.cwd)
 
-        if (data.cwd) {
-            const validation = validatePath(data.cwd, workingDirectory)
-            if (!validation.valid) {
-                return rpcError(validation.error ?? 'Invalid working directory')
-            }
+        const validation = await validatePath(data.cwd ?? workingDirectory, workingDirectory)
+        if (!validation.valid) {
+            return rpcError(validation.error ?? 'Invalid working directory')
         }
 
         try {
-            const result = await runDifftastic(data.args, { cwd: data.cwd })
+            const result = await runDifftastic(data.args, { cwd: validation.resolvedPath })
             return {
                 success: true,
                 exitCode: result.exitCode,

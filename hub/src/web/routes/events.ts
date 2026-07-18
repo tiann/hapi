@@ -27,6 +27,10 @@ function parseVisibility(value: string | undefined): VisibilityState {
     return value === 'visible' ? 'visible' : 'hidden'
 }
 
+type TerminalRejection = {
+    reason: 'session-not-found' | 'session-access-denied' | 'machine-not-found' | 'machine-access-denied' | 'too-many-subscriptions'
+}
+
 const visibilitySchema = z.object({
     subscriptionId: z.string().min(1),
     visibility: z.enum(['visible', 'hidden'])
@@ -53,8 +57,13 @@ export function createEventsRoutes(
         const visibility = parseVisibility(query.visibility)
         const namespace = c.get('namespace')
         let resolvedSessionId = sessionId
+        let terminalRejection: TerminalRejection | null = null
 
-        if (sessionId || machineId) {
+        if (!manager.canAcceptSubscription(namespace)) {
+            terminalRejection = { reason: 'too-many-subscriptions' }
+        }
+
+        if (!terminalRejection && (sessionId || machineId)) {
             const engine = getSyncEngine()
             if (!engine) {
                 return c.json({ error: 'Not connected' }, 503)
@@ -62,23 +71,39 @@ export function createEventsRoutes(
             if (sessionId) {
                 const sessionResult = requireSession(c, engine, sessionId)
                 if (sessionResult instanceof Response) {
-                    return sessionResult
+                    terminalRejection = {
+                        reason: sessionResult.status === 403 ? 'session-access-denied' : 'session-not-found'
+                    }
+                } else {
+                    resolvedSessionId = sessionResult.sessionId
                 }
-                resolvedSessionId = sessionResult.sessionId
             }
             if (machineId) {
                 const machine = engine.getMachine(machineId)
                 if (!machine) {
-                    return c.json({ error: 'Machine not found' }, 404)
-                }
-                if (machine.namespace !== namespace) {
-                    return c.json({ error: 'Machine access denied' }, 403)
+                    terminalRejection = { reason: 'machine-not-found' }
+                } else if (machine.namespace !== namespace) {
+                    terminalRejection = { reason: 'machine-access-denied' }
                 }
             }
         }
 
         return streamSSE(c, async (stream) => {
-            manager.subscribe({
+            if (terminalRejection) {
+                await stream.writeSSE({
+                    data: JSON.stringify({
+                        type: 'connection-changed',
+                        namespace,
+                        data: {
+                            status: 'rejected',
+                            reason: terminalRejection.reason
+                        }
+                    })
+                })
+                return
+            }
+
+            const subscription = manager.subscribe({
                 id: subscriptionId,
                 namespace,
                 all,
@@ -98,6 +123,20 @@ export function createEventsRoutes(
                     })
                 }
             })
+
+            if (!subscription) {
+                await stream.writeSSE({
+                    data: JSON.stringify({
+                        type: 'connection-changed',
+                        namespace,
+                        data: {
+                            status: 'rejected',
+                            reason: 'too-many-subscriptions'
+                        }
+                    })
+                })
+                return
+            }
 
             await stream.writeSSE({
                 data: JSON.stringify({

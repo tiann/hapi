@@ -6,7 +6,6 @@
  */
 
 import { randomBytes } from 'node:crypto'
-import { parseAccessToken } from '../utils/accessToken'
 import { getOrCreateSettingsValue } from './generators'
 import { getSettingsFile, readSettings, writeSettings } from './settings'
 
@@ -41,26 +40,15 @@ function isWeakToken(token: string): boolean {
     return weakPatterns.some(p => p.test(token))
 }
 
-type CliApiTokenSource = 'env' | 'file'
-
-function normalizeCliApiToken(rawToken: string, source: CliApiTokenSource): { token: string; didStrip: boolean } {
-    const parsed = parseAccessToken(rawToken)
-    if (!parsed) {
-        if (rawToken.includes(':')) {
-            console.warn(`[WARN] CLI_API_TOKEN from ${source} contains ":" but is not a valid token. Server expects a base token without namespace.`)
-        }
-        return { token: rawToken, didStrip: false }
+function normalizeCliApiToken(rawToken: string, source: 'env' | 'file'): { token: string; didTrim: boolean } {
+    const token = rawToken.trim()
+    if (!token) {
+        throw new Error(`CLI_API_TOKEN from ${source} must not be empty`)
     }
-
-    if (!rawToken.includes(':')) {
-        return { token: rawToken, didStrip: false }
+    if (token !== rawToken) {
+        console.warn(`[WARN] CLI_API_TOKEN from ${source} contained surrounding whitespace; trimming it.`)
     }
-
-    console.warn(
-        `[WARN] CLI_API_TOKEN from ${source} includes namespace suffix "${parsed.namespace}". ` +
-        'Server expects the base token only; stripping the suffix.'
-    )
-    return { token: parsed.baseToken, didStrip: true }
+    return { token, didTrim: token !== rawToken }
 }
 
 /**
@@ -99,7 +87,7 @@ export async function getOrCreateCliApiToken(dataDir: string): Promise<CliApiTok
                 return null
             }
             const normalized = normalizeCliApiToken(settings.cliApiToken, 'file')
-            if (normalized.didStrip) {
+            if (normalized.didTrim) {
                 settings.cliApiToken = normalized.token
                 return { value: normalized.token, writeBack: true }
             }

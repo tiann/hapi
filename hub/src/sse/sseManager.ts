@@ -15,15 +15,75 @@ type SSEConnection = SSESubscription & {
     sendHeartbeat: () => void | Promise<void>
 }
 
+const DEFAULT_MAX_CONNECTIONS_PER_NAMESPACE = 100
+
 export class SSEManager {
     private readonly connections: Map<string, SSEConnection> = new Map()
     private heartbeatTimer: NodeJS.Timeout | null = null
     private readonly heartbeatMs: number
     private readonly visibilityTracker: VisibilityTracker
+    private readonly maxConnectionsPerNamespace: number
 
-    constructor(heartbeatMs = 30_000, visibilityTracker: VisibilityTracker) {
+    constructor(
+        heartbeatMs = 30_000,
+        visibilityTracker: VisibilityTracker,
+        maxConnectionsPerNamespace = DEFAULT_MAX_CONNECTIONS_PER_NAMESPACE
+    ) {
         this.heartbeatMs = heartbeatMs
         this.visibilityTracker = visibilityTracker
+        this.maxConnectionsPerNamespace = maxConnectionsPerNamespace
+    }
+
+    private countConnections(namespace: string): number {
+        let count = 0
+        for (const connection of this.connections.values()) {
+            if (connection.namespace === namespace) {
+                count += 1
+            }
+        }
+        return count
+    }
+
+    private evictOldestHiddenConnection(namespace: string): boolean {
+        for (const connection of this.connections.values()) {
+            if (connection.namespace !== namespace) {
+                continue
+            }
+            if (this.visibilityTracker.isVisibleConnection(connection.id)) {
+                continue
+            }
+            this.unsubscribe(connection.id)
+            return true
+        }
+        return false
+    }
+
+    private makeRoomForSubscription(namespace: string): boolean {
+        while (this.countConnections(namespace) >= this.maxConnectionsPerNamespace) {
+            if (!this.evictOldestHiddenConnection(namespace)) {
+                return false
+            }
+        }
+        return true
+    }
+
+    canAcceptSubscription(namespace: string): boolean {
+        const count = this.countConnections(namespace)
+        if (count < this.maxConnectionsPerNamespace) {
+            return true
+        }
+        return this.connections.size > 0
+            && Array.from(this.connections.values()).some((connection) => (
+                connection.namespace === namespace
+                && !this.visibilityTracker.isVisibleConnection(connection.id)
+            ))
+    }
+
+    private ensureCapacity(namespace: string): boolean {
+        if (this.countConnections(namespace) < this.maxConnectionsPerNamespace) {
+            return true
+        }
+        return this.makeRoomForSubscription(namespace)
     }
 
     subscribe(options: {
@@ -35,7 +95,11 @@ export class SSEManager {
         visibility?: VisibilityState
         send: (event: SyncEvent) => void | Promise<void>
         sendHeartbeat: () => void | Promise<void>
-    }): SSESubscription {
+    }): SSESubscription | null {
+        if (!this.ensureCapacity(options.namespace)) {
+            return null
+        }
+
         const subscription: SSEConnection = {
             id: options.id,
             namespace: options.namespace,

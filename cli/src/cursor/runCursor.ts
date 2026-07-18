@@ -11,6 +11,7 @@ import { isPermissionModeAllowedForFlavor } from '@hapi/protocol';
 import { PermissionModeSchema } from '@hapi/protocol/schemas';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
+import { applyHapiSessionEnvironment } from '@/agent/sessionEnvironment';
 
 const formatFailureReason = (message: string): string => {
     const maxLength = 200;
@@ -35,13 +36,14 @@ export async function runCursor(opts: {
     const state: AgentState = {
         controlledByUser: false
     };
-    const { api, session } = await bootstrapSession({
+    const { api, session, sessionInfo, reportStartedToRunner } = await bootstrapSession({
         flavor: 'cursor',
         startedBy,
         workingDirectory,
         agentState: state,
         model: opts.model
     });
+    applyHapiSessionEnvironment(sessionInfo.id);
 
     const startingMode: 'local' | 'remote' = startedBy === 'runner' ? 'remote' : 'local';
 
@@ -66,6 +68,7 @@ export async function runCursor(opts: {
     });
 
     lifecycle.registerProcessHandlers();
+    await reportStartedToRunner();
     registerKillSessionHandler(session.rpcHandlerManager, lifecycle.cleanupAndExit);
 
     const syncSessionMode = () => {

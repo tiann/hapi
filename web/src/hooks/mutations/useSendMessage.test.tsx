@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { useSendMessage } from './useSendMessage'
 import type { ApiClient } from '@/api/client'
+import { getMessageWindowState, updateMessageStatus } from '@/lib/message-window-store'
 
 vi.mock('@/lib/message-window-store', () => ({
     appendOptimisticMessage: vi.fn(),
@@ -116,5 +117,98 @@ describe('useSendMessage', () => {
 
         expect(onBlocked).toHaveBeenCalledWith('no-api')
         expect(onSuccess).not.toHaveBeenCalled()
+    })
+
+    it('resolves the target session before retrying a failed message', async () => {
+        const onSuccess = vi.fn()
+        const onSessionResolved = vi.fn()
+        const sendMessage = vi.fn(async () => {})
+        const api = createMockApi(sendMessage)
+        vi.mocked(getMessageWindowState).mockReturnValue({
+            messages: [
+                {
+                    id: 'local-id-1',
+                    seq: null,
+                    localId: 'local-id-1',
+                    content: {
+                        role: 'user',
+                        content: { type: 'text', text: 'hello' },
+                    },
+                    createdAt: 123,
+                    status: 'failed',
+                    originalText: 'hello',
+                },
+            ],
+            pending: [],
+        } as unknown as ReturnType<typeof getMessageWindowState>)
+
+        const { result } = renderHook(
+            () => useSendMessage(api, 'session-original', {
+                onSuccess,
+                resolveSessionId: async () => 'session-resolved',
+                onSessionResolved,
+            }),
+            { wrapper: createWrapper() },
+        )
+
+        act(() => {
+            result.current.retryMessage('local-id-1')
+        })
+
+        await waitFor(() => {
+            expect(sendMessage).toHaveBeenCalledWith('session-resolved', 'hello', 'local-id-1', undefined)
+        })
+        expect(onSessionResolved).toHaveBeenCalledWith('session-resolved')
+        expect(onSuccess).toHaveBeenCalledWith('session-resolved')
+        expect(updateMessageStatus).not.toHaveBeenCalledWith('session-original', 'local-id-1', 'sending')
+        expect(updateMessageStatus).toHaveBeenCalledWith('session-resolved', 'local-id-1', 'sent')
+    })
+
+    it('restores failed status when resolving the retry target fails', async () => {
+        const onSuccess = vi.fn()
+        const onSessionResolved = vi.fn()
+        const sendMessage = vi.fn(async () => {})
+        const api = createMockApi(sendMessage)
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+        vi.mocked(getMessageWindowState).mockReturnValue({
+            messages: [
+                {
+                    id: 'local-id-1',
+                    seq: null,
+                    localId: 'local-id-1',
+                    content: {
+                        role: 'user',
+                        content: { type: 'text', text: 'hello' },
+                    },
+                    createdAt: 123,
+                    status: 'failed',
+                    originalText: 'hello',
+                },
+            ],
+            pending: [],
+        } as unknown as ReturnType<typeof getMessageWindowState>)
+
+        const { result } = renderHook(
+            () => useSendMessage(api, 'session-original', {
+                onSuccess,
+                resolveSessionId: async () => { throw new Error('takeover failed') },
+                onSessionResolved,
+            }),
+            { wrapper: createWrapper() },
+        )
+
+        act(() => {
+            result.current.retryMessage('local-id-1')
+        })
+
+        await waitFor(() => {
+            expect(result.current.isSending).toBe(false)
+        })
+        expect(sendMessage).not.toHaveBeenCalled()
+        expect(onSessionResolved).not.toHaveBeenCalled()
+        expect(onSuccess).not.toHaveBeenCalled()
+        expect(updateMessageStatus).toHaveBeenCalledWith('session-original', 'local-id-1', 'failed')
+        expect(errorSpy).toHaveBeenCalledWith('Failed to resolve session before retry:', expect.any(Error))
+        errorSpy.mockRestore()
     })
 })

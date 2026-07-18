@@ -11,8 +11,8 @@ export type ConfirmationMode = 'exit' | 'switch' | null;
 export type ActionInProgress = 'exiting' | 'switching' | null;
 
 export function useSwitchControls(opts: {
-    onExit?: () => void;
-    onSwitch?: () => void;
+    onExit?: () => void | Promise<void>;
+    onSwitch?: () => void | Promise<void>;
     confirmationTimeoutMs?: number;
 }): {
     confirmationMode: ConfirmationMode;
@@ -78,7 +78,11 @@ export function useSwitchControls(opts: {
                 resetConfirmation();
                 setActionInProgress('exiting');
                 await new Promise(resolve => setTimeout(resolve, 100));
-                onExit();
+                try {
+                    await onExit();
+                } catch {
+                    setActionInProgress(null);
+                }
             } else {
                 setConfirmationWithTimeout('exit');
             }
@@ -104,7 +108,11 @@ export function useSwitchControls(opts: {
                 resetConfirmation();
                 setActionInProgress('switching');
                 await new Promise(resolve => setTimeout(resolve, 100));
-                onSwitch?.();
+                try {
+                    await onSwitch?.();
+                } catch {
+                    setActionInProgress(null);
+                }
             } else {
                 setConfirmationWithTimeout('switch');
             }

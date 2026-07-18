@@ -29,6 +29,7 @@ export interface ThreadStartParams {
     baseInstructions?: string;
     developerInstructions?: string;
     personality?: string;
+    serviceTier?: ServiceTier;
     ephemeral?: boolean;
     experimentalRawEvents?: boolean;
 }
@@ -56,6 +57,7 @@ export interface ThreadResumeParams {
     baseInstructions?: string;
     developerInstructions?: string;
     personality?: string;
+    serviceTier?: ServiceTier;
 }
 
 export interface ThreadResumeResponse {
@@ -101,8 +103,9 @@ export type SandboxPolicy =
         excludeSlashTmp?: boolean;
     };
 
-export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 export type ReasoningSummary = 'auto' | 'none' | 'brief' | 'detailed';
+export type ServiceTier = 'standard' | 'fast';
 
 export type CollaborationMode = {
     mode: 'plan' | 'default';
@@ -120,6 +123,7 @@ export interface TurnStartParams {
     approvalPolicy?: ApprovalPolicy;
     sandboxPolicy?: SandboxPolicy;
     model?: string;
+    serviceTier?: ServiceTier;
     effort?: ReasoningEffort;
     summary?: ReasoningSummary;
     personality?: string;
@@ -135,6 +139,18 @@ export interface TurnStartResponse {
     [key: string]: unknown;
 }
 
+export interface TurnSteerParams {
+    threadId: string;
+    expectedTurnId: string;
+    input: UserInput[];
+    clientUserMessageId?: string;
+}
+
+export interface TurnSteerResponse {
+    turnId: string;
+    [key: string]: unknown;
+}
+
 export interface TurnInterruptParams {
     threadId: string;
     turnId: string;
@@ -143,4 +159,52 @@ export interface TurnInterruptParams {
 export interface TurnInterruptResponse {
     ok: boolean;
     [key: string]: unknown;
+}
+
+export interface ThreadCompactStartParams {
+    threadId: string;
+}
+
+export interface ThreadCompactStartResponse {
+    [key: string]: unknown;
+}
+
+export type ThreadGoalStatus = 'active' | 'paused' | 'blocked' | 'usageLimited' | 'budgetLimited' | 'complete';
+
+export interface ThreadGoal {
+    threadId: string;
+    objective: string;
+    status: ThreadGoalStatus;
+    tokenBudget: number | null;
+    tokensUsed: number;
+    timeUsedSeconds: number;
+    createdAt: number;
+    updatedAt: number;
+}
+
+export interface ThreadGoalGetParams {
+    threadId: string;
+}
+
+export interface ThreadGoalGetResponse {
+    goal: ThreadGoal | null;
+}
+
+export interface ThreadGoalSetParams {
+    threadId: string;
+    objective?: string | null;
+    status?: ThreadGoalStatus | null;
+    tokenBudget?: number | null;
+}
+
+export interface ThreadGoalSetResponse {
+    goal: ThreadGoal;
+}
+
+export interface ThreadGoalClearParams {
+    threadId: string;
+}
+
+export interface ThreadGoalClearResponse {
+    cleared: boolean;
 }

@@ -42,10 +42,6 @@ export async function opencodeLoop(opts: OpencodeLoopOptions): Promise<void> {
         permissionMode: opts.permissionMode ?? 'default'
     });
 
-    if (opts.resumeSessionId) {
-        session.onSessionFound(opts.resumeSessionId);
-    }
-
     await runLocalRemoteSession({
         session,
         startingMode: opts.startingMode,

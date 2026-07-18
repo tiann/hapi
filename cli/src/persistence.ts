@@ -5,8 +5,9 @@
  */
 
 import { FileHandle } from 'node:fs/promises'
-import { readFile, writeFile, mkdir, open, unlink, rename, stat } from 'node:fs/promises'
-import { existsSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs'
+import { lstat, mkdir, open, readFile, unlink, rename, stat } from 'node:fs/promises'
+import { constants, existsSync, writeFileSync, readFileSync, unlinkSync, type Stats } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { configuration } from '@/configuration'
 import { isProcessAlive } from '@/utils/process';
 
@@ -24,6 +25,102 @@ interface Settings {
 }
 
 const defaultSettings: Settings = {}
+const PRIVATE_FILE_MODE = 0o600
+const PRIVATE_DIRECTORY_MODE = 0o700
+// Windows does not expose O_NOFOLLOW. The pre-open, handle, and post-open
+// identity checks below are the fallback instead of silently trusting open().
+const NOFOLLOW_FLAG = typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0
+const NONBLOCK_FLAG = process.platform === 'win32' ? 0 : constants.O_NONBLOCK
+
+function unsafePrivateFile(path: string, reason: string): Error {
+  return new Error(`Unsafe private file '${path}': ${reason}`)
+}
+
+function assertPrivateRegularFile(path: string, fileStat: Stats): void {
+  if (fileStat.isSymbolicLink()) {
+    throw unsafePrivateFile(path, 'symbolic links are not allowed')
+  }
+  if (!fileStat.isFile() || fileStat.nlink !== 1) {
+    throw unsafePrivateFile(path, 'expected one regular file link')
+  }
+}
+
+function isSameFileIdentity(left: Stats, right: Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino
+}
+
+async function inspectPrivateFilePath(path: string): Promise<Stats | null> {
+  try {
+    const pathStat = await lstat(path)
+    assertPrivateRegularFile(path, pathStat)
+    return pathStat
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+}
+
+async function openPrivateRegularFile(path: string): Promise<FileHandle | null> {
+  const beforeOpen = await inspectPrivateFilePath(path)
+  if (!beforeOpen) return null
+
+  let handle: FileHandle
+  try {
+    handle = await open(path, constants.O_RDONLY | NOFOLLOW_FLAG | NONBLOCK_FLAG)
+  } catch (error) {
+    const nodeError = error as NodeJS.ErrnoException
+    if (nodeError.code === 'ENOENT') return null
+    if (nodeError.code === 'ELOOP') throw unsafePrivateFile(path, 'symbolic links are not allowed')
+    throw error
+  }
+
+  try {
+    const openedFile = await handle.stat()
+    assertPrivateRegularFile(path, openedFile)
+    const afterOpen = await inspectPrivateFilePath(path)
+    if (!afterOpen
+      || !isSameFileIdentity(beforeOpen, openedFile)
+      || !isSameFileIdentity(openedFile, afterOpen)) {
+      throw unsafePrivateFile(path, 'path identity changed while opening')
+    }
+    await handle.chmod(PRIVATE_FILE_MODE)
+    return handle
+  } catch (error) {
+    await handle.close().catch(() => {})
+    throw error
+  }
+}
+
+async function secureExistingFile(path: string): Promise<void> {
+  const handle = await openPrivateRegularFile(path)
+  if (handle) {
+    await handle.close()
+  }
+}
+
+async function writePrivateFileAtomically(path: string, contents: string): Promise<void> {
+  await secureExistingFile(`${path}.tmp`)
+  const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`
+  let handle: FileHandle | null = null
+  let renamed = false
+  try {
+    handle = await open(
+      temporary,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW_FLAG,
+      PRIVATE_FILE_MODE,
+    )
+    await handle.chmod(PRIVATE_FILE_MODE)
+    await handle.writeFile(contents, { encoding: 'utf8' })
+    await handle.sync()
+    await handle.close()
+    handle = null
+    await rename(temporary, path)
+    renamed = true
+  } finally {
+    await handle?.close().catch(() => {})
+    if (!renamed) await unlink(temporary).catch(() => {})
+  }
+}
 
 /**
  * Runner state persisted locally (different from API RunnerState)
@@ -31,6 +128,7 @@ const defaultSettings: Settings = {}
  */
 export interface RunnerLocallyPersistedState {
   pid: number;
+  runnerInstanceId?: string;
   httpPort: number;
   startTime: string;
   startedWithCliVersion: string;
@@ -43,24 +141,28 @@ export interface RunnerLocallyPersistedState {
 }
 
 export async function readSettings(): Promise<Settings> {
-  if (!existsSync(configuration.settingsFile)) {
+  await secureExistingFile(`${configuration.settingsFile}.tmp`)
+  const handle = await openPrivateRegularFile(configuration.settingsFile)
+  if (!handle) {
     return { ...defaultSettings }
   }
-
   try {
-    const content = await readFile(configuration.settingsFile, 'utf8')
+    const content = await handle.readFile({ encoding: 'utf8' })
     return JSON.parse(content)
   } catch {
     return { ...defaultSettings }
+  } finally {
+    await handle.close()
   }
 }
 
 export async function writeSettings(settings: Settings): Promise<void> {
   if (!existsSync(configuration.happyHomeDir)) {
-    await mkdir(configuration.happyHomeDir, { recursive: true })
+    await mkdir(configuration.happyHomeDir, { recursive: true, mode: PRIVATE_DIRECTORY_MODE })
   }
 
-  await writeFile(configuration.settingsFile, JSON.stringify(settings, null, 2))
+  await secureExistingFile(configuration.settingsFile)
+  await writePrivateFileAtomically(configuration.settingsFile, JSON.stringify(settings, null, 2))
 }
 
 /**
@@ -77,11 +179,10 @@ export async function updateSettings(
   const STALE_LOCK_TIMEOUT_MS = 10000; // Consider lock stale after 10 seconds
 
   if (!existsSync(configuration.happyHomeDir)) {
-    await mkdir(configuration.happyHomeDir, { recursive: true });
+    await mkdir(configuration.happyHomeDir, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
   }
 
   const lockFile = configuration.settingsFile + '.lock';
-  const tmpFile = configuration.settingsFile + '.tmp';
   let fileHandle;
   let attempts = 0;
 
@@ -89,7 +190,7 @@ export async function updateSettings(
   while (attempts < MAX_LOCK_ATTEMPTS) {
     try {
       // 'wx' = create exclusively, fail if exists (cross-platform compatible)
-      fileHandle = await open(lockFile, 'wx');
+      fileHandle = await open(lockFile, 'wx', PRIVATE_FILE_MODE);
       break;
     } catch (err: any) {
       if (err.code === 'EEXIST') {
@@ -121,9 +222,8 @@ export async function updateSettings(
     // Apply update
     const updated = await updater(current);
 
-    // Write atomically using rename
-    await writeFile(tmpFile, JSON.stringify(updated, null, 2));
-    await rename(tmpFile, configuration.settingsFile); // Atomic on POSIX
+    // Write atomically through a private, unpredictable, no-follow file.
+    await writePrivateFileAtomically(configuration.settingsFile, JSON.stringify(updated, null, 2));
 
     return updated;
   } finally {
@@ -139,9 +239,10 @@ export async function updateSettings(
 
 export async function writeCredentialsDataKey(credentials: { publicKey: Uint8Array, machineKey: Uint8Array, token: string }): Promise<void> {
   if (!existsSync(configuration.happyHomeDir)) {
-    await mkdir(configuration.happyHomeDir, { recursive: true })
+    await mkdir(configuration.happyHomeDir, { recursive: true, mode: PRIVATE_DIRECTORY_MODE })
   }
-  await writeFile(configuration.privateKeyFile, JSON.stringify({
+  await secureExistingFile(configuration.privateKeyFile)
+  await writePrivateFileAtomically(configuration.privateKeyFile, JSON.stringify({
     encryption: { publicKey: Buffer.from(credentials.publicKey).toString('base64'), machineKey: Buffer.from(credentials.machineKey).toString('base64') },
     token: credentials.token
   }, null, 2));
@@ -191,14 +292,8 @@ export async function clearRunnerState(): Promise<void> {
   if (existsSync(configuration.runnerStateFile)) {
     await unlink(configuration.runnerStateFile);
   }
-  // Also clean up lock file if it exists (for stale cleanup)
-  if (existsSync(configuration.runnerLockFile)) {
-    try {
-      await unlink(configuration.runnerLockFile);
-    } catch {
-      // Lock file might be held by running runner, ignore error
-    }
-  }
+  // runner.lock is a persistent inode. Ownership is released only by closing
+  // the helper's descriptor; cleanup must never unlink or replace it.
 }
 
 /**
@@ -244,17 +339,9 @@ export async function acquireRunnerLock(
   return null;
 }
 
-/**
- * Release runner lock by closing handle and deleting lock file
- */
+/** Release legacy ownership by closing its handle. The inode is persistent. */
 export async function releaseRunnerLock(lockHandle: FileHandle): Promise<void> {
   try {
     await lockHandle.close();
-  } catch { }
-
-  try {
-    if (existsSync(configuration.runnerLockFile)) {
-      unlinkSync(configuration.runnerLockFile);
-    }
   } catch { }
 }

@@ -13,6 +13,7 @@ import { PermissionModeSchema } from '@hapi/protocol/schemas';
 import { startOpencodeHookServer } from './utils/startOpencodeHookServer';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
+import { applyHapiSessionEnvironment } from '@/agent/sessionEnvironment';
 
 export async function runOpencode(opts: {
     startedBy?: 'runner' | 'terminal';
@@ -34,12 +35,13 @@ export async function runOpencode(opts: {
         controlledByUser: false
     };
 
-    const { api, session } = await bootstrapSession({
+    const { api, session, sessionInfo, reportStartedToRunner } = await bootstrapSession({
         flavor: 'opencode',
         startedBy,
         workingDirectory,
         agentState: initialState
     });
+    applyHapiSessionEnvironment(sessionInfo.id);
 
     const startingMode: 'local' | 'remote' = opts.startingMode
         ?? (startedBy === 'runner' ? 'remote' : 'local');
@@ -73,6 +75,7 @@ export async function runOpencode(opts: {
     });
 
     lifecycle.registerProcessHandlers();
+    await reportStartedToRunner();
     registerKillSessionHandler(session.rpcHandlerManager, lifecycle.cleanupAndExit);
 
     const syncSessionMode = () => {

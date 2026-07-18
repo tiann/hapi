@@ -6,20 +6,38 @@ on:
             - 'v*'
 
 permissions:
-    contents: write
+    contents: read
 
 jobs:
+    test:
+        uses: ./.github/workflows/test.yml
+        permissions:
+            contents: read
+
     release:
+        needs: test
         runs-on: ubuntu-latest
+        permissions:
+            contents: write
         steps:
             - uses: actions/checkout@v4
             - uses: oven-sh/setup-bun@v2
-            - run: bun install
+              with:
+                  bun-version: '1.3.11'
+            - run: bun install --frozen-lockfile
+            - name: Gate dependency security policy
+              run: bun run dependency:security -- --out "$RUNNER_TEMP/dependency-security" --as-of "$(date -u +%F)"
+            - name: Generate dependency SBOMs
+              run: bun run dependency:sbom -- --out "$RUNNER_TEMP/dependency-security" --git-sha "$GITHUB_SHA"
             - run: bun run build:single-exe:all
             - name: Package release artifacts
               run: |
                   cd cli/dist-exe
                   mkdir -p ../release-artifacts
+                  cp "$RUNNER_TEMP/dependency-security/hapi.cdx.json" ../release-artifacts/
+                  cp "$RUNNER_TEMP/dependency-security/hapi-codex-sync.cdx.json" ../release-artifacts/
+                  cp "$RUNNER_TEMP/dependency-security/hapi-sbom-manifest.json" ../release-artifacts/
+                  cp "$RUNNER_TEMP/dependency-security/dependency-audit-summary.json" ../release-artifacts/
 
                   for dir in bun-*/; do
                       target="${dir%/}"

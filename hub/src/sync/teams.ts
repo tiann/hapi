@@ -1,9 +1,81 @@
-import { AGENT_MESSAGE_PAYLOAD_TYPE } from "@hapi/protocol"
+import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import { isObject } from '@hapi/protocol'
 import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
-import type { TeamState } from '@hapi/protocol/types'
+import type { TeamState, TeamTask } from '@hapi/protocol/types'
 
-type TeamStateDelta = Partial<TeamState> & { _action?: 'create' | 'delete' | 'update' }
+type TeamTaskDelta = {
+    id: string
+    title?: string
+    description?: string
+    status?: TeamTask['status']
+    owner?: string
+}
+
+type TeamStateDelta = Omit<Partial<TeamState>, 'tasks'> & {
+    _action?: 'create' | 'delete' | 'update' | 'ensure'
+    tasks?: TeamTaskDelta[]
+}
+
+const CODEX_SUBAGENT_TEAM_NAME = 'Codex subagents'
+const CODEX_SUBAGENT_TASK_PREFIX = 'codex-subagent:'
+const TEAM_TASK_STATUSES = new Set<NonNullable<TeamTask['status']>>([
+    'pending',
+    'in_progress',
+    'completed',
+    'blocked'
+])
+
+function asString(value: unknown): string | null {
+    return typeof value === 'string' && value.length > 0 ? value : null
+}
+
+function asStringArray(value: unknown): string[] | null {
+    if (!Array.isArray(value)) return null
+    const strings = value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
+    return strings.length > 0 ? strings : null
+}
+
+function asTaskStatus(value: unknown): TeamTask['status'] | undefined {
+    return typeof value === 'string' && TEAM_TASK_STATUSES.has(value as NonNullable<TeamTask['status']>)
+        ? value as TeamTask['status']
+        : undefined
+}
+
+function normalizeToolName(name: string): string {
+    return name.includes('.') ? name.slice(name.lastIndexOf('.') + 1) : name
+}
+
+function shortId(id: string): string {
+    return id.length > 12 ? id.slice(0, 8) : id
+}
+
+function truncateOneLine(value: string, limit = 120): string {
+    const compact = value.replace(/\s+/g, ' ').trim()
+    if (compact.length <= limit) return compact
+    return `${compact.slice(0, Math.max(0, limit - 1))}…`
+}
+
+function codexSubagentTaskId(agentId: string): string {
+    return `${CODEX_SUBAGENT_TASK_PREFIX}${agentId}`
+}
+
+function codexSubagentTaskTitle(agentId: string, input?: Record<string, unknown>): string {
+    const prompt = input
+        ? asString(input.message ?? input.prompt ?? input.description)
+        : null
+    return prompt ? truncateOneLine(prompt) : `Codex subagent ${shortId(agentId)}`
+}
+
+function codexAgentType(input: Record<string, unknown>): string | undefined {
+    const nickname = asString(input.nickname ?? input.name)
+    const agentType = asString(input.agent_type ?? input.agentType)
+    if (nickname && agentType) return `${nickname} (${agentType})`
+    return nickname ?? agentType ?? undefined
+}
+
+function getCodexAgentId(input: Record<string, unknown>): string | null {
+    return asString(input.agent_id ?? input.agentId ?? input.id)
+}
 
 function extractToolBlocks(content: Record<string, unknown>): Array<{ name: string; input: Record<string, unknown> }> {
     const blocks: Array<{ name: string; input: Record<string, unknown> }> = []
@@ -89,6 +161,111 @@ function processTaskToolWithTeam(input: Record<string, unknown>): TeamStateDelta
     return delta
 }
 
+function processCodexSpawnAgent(input: Record<string, unknown>): TeamStateDelta | null {
+    const agentId = getCodexAgentId(input)
+    if (!agentId) return null
+
+    const title = codexSubagentTaskTitle(agentId, input)
+
+    return {
+        _action: 'ensure',
+        teamName: CODEX_SUBAGENT_TEAM_NAME,
+        description: 'Codex multi_agent_v1 subagents observed through HAPI',
+        members: [{
+            name: agentId,
+            agentType: codexAgentType(input),
+            status: 'active'
+        }],
+        tasks: [{
+            id: codexSubagentTaskId(agentId),
+            title,
+            description: title,
+            status: 'in_progress',
+            owner: agentId
+        }],
+        updatedAt: Date.now()
+    }
+}
+
+function processCodexWaitAgent(input: Record<string, unknown>): TeamStateDelta | null {
+    const status = isObject(input.status) ? input.status as Record<string, unknown> : null
+    const target = asString(input.target ?? input.agent_id ?? input.agentId)
+    const targets = asStringArray(input.targets ?? input.agent_ids ?? input.agentIds)
+    const agentIds = new Set<string>()
+    if (target) agentIds.add(target)
+    for (const id of targets ?? []) {
+        agentIds.add(id)
+    }
+    if (status) {
+        for (const id of Object.keys(status)) {
+            agentIds.add(id)
+        }
+    }
+    if (agentIds.size === 0) return null
+
+    const members = Array.from(agentIds, (agentId) => {
+        const statusEntry = status && isObject(status[agentId]) ? status[agentId] as Record<string, unknown> : null
+        const completed = Boolean(statusEntry?.completed)
+            || statusEntry?.status === 'completed'
+            || input.completed === true
+        return {
+            name: agentId,
+            status: completed ? 'idle' as const : 'active' as const
+        }
+    })
+
+    const tasks = Array.from(agentIds, (agentId) => {
+        const statusEntry = status && isObject(status[agentId]) ? status[agentId] as Record<string, unknown> : null
+        const completed = Boolean(statusEntry?.completed)
+            || statusEntry?.status === 'completed'
+            || input.completed === true
+        return {
+            id: codexSubagentTaskId(agentId),
+            status: completed ? 'completed' as const : 'in_progress' as const,
+            owner: agentId
+        }
+    })
+
+    return {
+        _action: 'update',
+        members,
+        tasks,
+        updatedAt: Date.now()
+    }
+}
+
+function isCompletedPreviousStatus(value: unknown): boolean {
+    if (value === 'completed') return true
+    if (!isObject(value)) return false
+    return Object.prototype.hasOwnProperty.call(value, 'completed')
+        || value.status === 'completed'
+}
+
+function processCodexCloseAgent(input: Record<string, unknown>): TeamStateDelta | null {
+    const target = asString(input.target ?? input.agent_id ?? input.agentId)
+    if (!target) return null
+
+    const previousStatus = input.previous_status ?? input.previousStatus
+    const hasPreviousStatus = previousStatus !== null && previousStatus !== undefined
+    const taskStatus = !hasPreviousStatus || isCompletedPreviousStatus(previousStatus)
+        ? 'completed'
+        : 'blocked'
+
+    return {
+        _action: 'update',
+        members: [{
+            name: target,
+            status: 'shutdown'
+        }],
+        tasks: [{
+            id: codexSubagentTaskId(target),
+            status: taskStatus,
+            owner: target
+        }],
+        updatedAt: Date.now()
+    }
+}
+
 function processTaskCreate(input: Record<string, unknown>): TeamStateDelta | null {
     const id = typeof input.task_id === 'string' ? input.task_id
         : typeof input.id === 'string' ? input.id
@@ -99,7 +276,7 @@ function processTaskCreate(input: Record<string, unknown>): TeamStateDelta | nul
     if (!id || !title) return null
 
     const description = typeof input.description === 'string' ? input.description : undefined
-    const status = typeof input.status === 'string' ? input.status as 'pending' | 'in_progress' | 'completed' | 'blocked' : 'pending'
+    const status = asTaskStatus(input.status) ?? 'pending'
     const owner = typeof input.owner === 'string' ? input.owner : undefined
 
     return {
@@ -115,9 +292,10 @@ function processTaskUpdate(input: Record<string, unknown>): TeamStateDelta | nul
         : null
     if (!id) return null
 
-    const task: Record<string, unknown> = { id }
+    const task: TeamTaskDelta = { id }
     if (typeof input.title === 'string') task.title = input.title
-    if (typeof input.status === 'string') task.status = input.status
+    const status = asTaskStatus(input.status)
+    if (status) task.status = status
     if (typeof input.owner === 'string') task.owner = input.owner
     if (typeof input.description === 'string') task.description = input.description
 
@@ -126,7 +304,7 @@ function processTaskUpdate(input: Record<string, unknown>): TeamStateDelta | nul
 
     return {
         _action: 'update',
-        tasks: [task as { id: string; title: string; status?: 'pending' | 'in_progress' | 'completed' | 'blocked'; owner?: string }],
+        tasks: [task],
         updatedAt: Date.now()
     }
 }
@@ -177,8 +355,9 @@ export function extractTeamStateFromMessageContent(messageContent: unknown): Tea
 
     for (const block of blocks) {
         let delta: TeamStateDelta | null = null
+        const toolName = normalizeToolName(block.name)
 
-        switch (block.name) {
+        switch (toolName) {
             case 'TeamCreate':
                 delta = processTeamCreate(block.input)
                 break
@@ -187,6 +366,15 @@ export function extractTeamStateFromMessageContent(messageContent: unknown): Tea
                 break
             case 'Task':
                 delta = processTaskToolWithTeam(block.input)
+                break
+            case 'spawn_agent':
+                delta = processCodexSpawnAgent(block.input)
+                break
+            case 'wait_agent':
+                delta = processCodexWaitAgent(block.input)
+                break
+            case 'close_agent':
+                delta = processCodexCloseAgent(block.input)
                 break
             case 'TaskCreate':
                 delta = processTaskCreate(block.input)
@@ -214,6 +402,9 @@ function mergeDelta(base: TeamStateDelta, incoming: TeamStateDelta): TeamStateDe
     if (incoming._action === 'create') return incoming
 
     const merged = { ...base }
+    if (incoming._action === 'ensure' && merged._action !== 'create') {
+        merged._action = 'ensure'
+    }
 
     if (incoming.members) {
         merged.members = [...(merged.members ?? []), ...incoming.members]
@@ -223,6 +414,12 @@ function mergeDelta(base: TeamStateDelta, incoming: TeamStateDelta): TeamStateDe
     }
     if (incoming.messages) {
         merged.messages = [...(merged.messages ?? []), ...incoming.messages]
+    }
+    if (incoming.teamName && !merged.teamName) {
+        merged.teamName = incoming.teamName
+    }
+    if (incoming.description && !merged.description) {
+        merged.description = incoming.description
     }
     if (incoming.updatedAt) {
         merged.updatedAt = incoming.updatedAt
@@ -242,10 +439,24 @@ export function applyTeamStateDelta(
         return state as TeamState
     }
 
-    // update: merge into existing
-    if (!existing) return null
+    // update: merge into existing; ensure creates a lightweight state when
+    // Codex emits subagent lifecycle events without a prior TeamCreate tool.
+    if (!existing && delta._action !== 'ensure') return null
 
-    const updated = { ...existing }
+    const base = existing ?? {
+        teamName: delta.teamName ?? CODEX_SUBAGENT_TEAM_NAME,
+        description: delta.description,
+        members: [],
+        tasks: [],
+        messages: [],
+        updatedAt: delta.updatedAt ?? Date.now()
+    }
+
+    const updated = { ...base }
+
+    if (!updated.description && delta.description) {
+        updated.description = delta.description
+    }
 
     if (delta.members) {
         const memberMap = new Map((updated.members ?? []).map(m => [m.name, m]))
@@ -269,7 +480,7 @@ export function applyTeamStateDelta(
             } else if (task.title) {
                 // Only insert new tasks that have a title (required by schema).
                 // Orphan TaskUpdate without title is ignored to prevent schema validation failure.
-                taskMap.set(task.id, task)
+                taskMap.set(task.id, { ...task, title: task.title })
             }
         }
         updated.tasks = Array.from(taskMap.values())

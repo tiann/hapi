@@ -61,8 +61,8 @@ const setActEnvironment = (value: boolean | undefined) => {
 };
 
 function HookProbe(props: {
-    onExit?: () => void;
-    onSwitch?: () => void;
+    onExit?: () => void | Promise<void>;
+    onSwitch?: () => void | Promise<void>;
     onState: (state: SwitchState) => void;
 }): null {
     const state = useSwitchControls({
@@ -83,7 +83,10 @@ describe('useSwitchControls', () => {
     let latestState: SwitchState | null = null;
     let previousActEnvironment: boolean | undefined;
 
-    const mount = async (opts: { onExit?: () => void; onSwitch?: () => void }) => {
+    const mount = async (opts: {
+        onExit?: () => void | Promise<void>;
+        onSwitch?: () => void | Promise<void>;
+    }) => {
         const { stdout, stderr, stdin } = createInkStreams();
         await act(async () => {
             renderer = render(
@@ -182,6 +185,30 @@ describe('useSwitchControls', () => {
         await triggerInputWithTimers('c', { ctrl: true }, 100);
         expect(latestState?.actionInProgress).toBe('exiting');
         expect(onExit).toHaveBeenCalledTimes(1);
+    });
+
+    it('awaits a rejecting exit callback and restores controls without leaking the rejection', async () => {
+        const onExit = vi.fn(async () => { throw new Error('exit failed'); });
+        await mount({ onExit });
+
+        await triggerInput('c', { ctrl: true });
+        await expect(triggerInputWithTimers('c', { ctrl: true }, 100)).resolves.toBeUndefined();
+
+        expect(onExit).toHaveBeenCalledTimes(1);
+        expect(latestState?.confirmationMode).toBe(null);
+        expect(latestState?.actionInProgress).toBe(null);
+    });
+
+    it('awaits a rejecting switch callback and restores controls without leaking the rejection', async () => {
+        const onSwitch = vi.fn(async () => { throw new Error('switch failed'); });
+        await mount({ onSwitch });
+
+        await triggerInput(' ', {});
+        await expect(triggerInputWithTimers(' ', {}, 100)).resolves.toBeUndefined();
+
+        expect(onSwitch).toHaveBeenCalledTimes(1);
+        expect(latestState?.confirmationMode).toBe(null);
+        expect(latestState?.actionInProgress).toBe(null);
     });
 
     it('ignores key-release sequences so confirmation stays visible', async () => {

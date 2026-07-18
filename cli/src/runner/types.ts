@@ -17,4 +17,9 @@ export interface TrackedSession {
   error?: string;
   directoryCreated?: boolean;
   message?: string;
+  launchNonce?: string;
+  birthToken?: string;
+  pgid?: number;
 }
+
+export type RunnerState = 'starting' | 'reconciling' | 'ready' | 'ready-no-admission' | 'draining' | 'stopped';

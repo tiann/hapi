@@ -13,6 +13,27 @@ import {
 import type { CursorSession } from './session';
 import type { CursorStreamEvent } from './utils/cursorEventConverter';
 import { parseCursorEvent, convertCursorEventToAgentMessage } from './utils/cursorEventConverter';
+import { createCursorNativeIdentityTracker, establishCursorNativeIdentity } from './cursorNativeIdentity';
+import { getProviderCommand } from '@/runner/providerRuntime';
+
+const CURSOR_IDENTITY_BOOTSTRAP_PROMPT = 'HAPI lifecycle identity bootstrap. Reply exactly HAPI_IDENTITY_READY. Do not use tools.';
+
+export function buildCursorRemoteSpawnSpec(
+    args: string[],
+    cwd: string,
+    env: NodeJS.ProcessEnv = process.env
+) {
+    return {
+        command: getProviderCommand('cursor', env),
+        args,
+        options: {
+            cwd,
+            env,
+            stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'],
+            shell: process.platform === 'win32'
+        }
+    };
+}
 
 function buildAgentArgs(opts: {
     message: string;
@@ -81,7 +102,33 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             session.sendSessionEvent({ type: 'ready' });
         };
 
-        let cursorSessionId: string | null = session.sessionId;
+        let cursorSessionId: string | null = await establishCursorNativeIdentity({
+            runBootstrap: async (onNativeIdentity) => {
+                const args = buildAgentArgs({
+                    message: CURSOR_IDENTITY_BOOTSTRAP_PROMPT,
+                    cwd: session.path,
+                    sessionId: session.sessionId,
+                    mode: 'plan',
+                    model: session.model
+                });
+                return await this.runAgentProcess(args, session.path, (event) => {
+                    if (event.type === 'system' && event.subtype === 'init' && event.session_id) {
+                        onNativeIdentity(event.session_id);
+                    }
+                });
+            },
+            acknowledge: async (sessionId) => await session.onSessionFound(sessionId)
+        });
+        const nativeIdentityTracker = createCursorNativeIdentityTracker({
+            initialSessionId: cursorSessionId,
+            acknowledge: async (sessionId) => await session.onSessionFound(sessionId),
+            onRejected: (error) => {
+                logger.warn('[cursor-remote] Native identity update was rejected', error);
+                this.exitReason = 'exit';
+                this.shouldExit = true;
+                this.abortController.abort();
+            }
+        });
 
         while (!this.shouldExit) {
             const waitSignal = this.abortController.signal;
@@ -114,8 +161,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             try {
                 const exitCode = await this.runAgentProcess(args, session.path, (event) => {
                     if (event.type === 'system' && event.subtype === 'init' && event.session_id) {
-                        cursorSessionId = event.session_id;
-                        session.onSessionFound(event.session_id);
+                        nativeIdentityTracker.observe(event.session_id);
                     } else if (event.type === 'thinking') {
                         if (event.subtype === 'completed') {
                             // keep thinking until we get assistant/result
@@ -145,6 +191,8 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                         }
                     }
                 });
+                await nativeIdentityTracker.settle();
+                cursorSessionId = nativeIdentityTracker.currentSessionId();
 
                 if (exitCode !== 0 && exitCode !== null) {
                     logger.debug(`[cursor-remote] Agent exited with code ${exitCode}`);
@@ -170,12 +218,8 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         onEvent: (event: ReturnType<typeof parseCursorEvent> & object) => void
     ): Promise<number | null> {
         return new Promise((resolve, reject) => {
-            const child = spawn('agent', args, {
-                cwd,
-                env: process.env,
-                stdio: ['ignore', 'pipe', 'pipe'],
-                shell: process.platform === 'win32'
-            });
+            const spec = buildCursorRemoteSpawnSpec(args, cwd);
+            const child = spawn(spec.command, spec.args, spec.options);
 
             const abortHandler = () => {
                 killProcessByChildProcess(child, false).catch(() => {});

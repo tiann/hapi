@@ -9,14 +9,20 @@ import { parseCodexCliOverrides } from './utils/codexCliOverrides';
 import { bootstrapSession } from '@/agent/sessionFactory';
 import { createModeChangeHandler, createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle';
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol';
-import { CodexCollaborationModeSchema, PermissionModeSchema } from '@hapi/protocol/schemas';
+import { CodexCollaborationModeSchema, CodexServiceTierSchema, PermissionModeSchema } from '@hapi/protocol/schemas';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
+import { parseSpecialCommand } from '@/parsers/specialCommands';
 import type { ReasoningEffort } from './appServerTypes';
+import type { CodexServiceTier } from '@hapi/protocol/types';
+import { applyHapiSessionEnvironment } from '@/agent/sessionEnvironment';
+import { DeliveryOutcomeClient } from './deliveryOutcomeClient';
+import { randomUUID } from 'node:crypto';
+import { RecoveringSerialQueue } from '@/utils/recoveringSerialQueue';
 
 export { emitReadyIfIdle } from './utils/emitReadyIfIdle';
 
-const REASONING_EFFORTS = new Set<ReasoningEffort>(['none', 'minimal', 'low', 'medium', 'high', 'xhigh'])
+const REASONING_EFFORTS = new Set<ReasoningEffort>(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'])
 
 export async function runCodex(opts: {
     startedBy?: 'runner' | 'terminal';
@@ -25,6 +31,7 @@ export async function runCodex(opts: {
     resumeSessionId?: string;
     model?: string;
     modelReasoningEffort?: ReasoningEffort;
+    serviceTier?: CodexServiceTier;
 }): Promise<void> {
     const workingDirectory = getInvokedCwd();
     const startedBy = opts.startedBy ?? 'terminal';
@@ -34,14 +41,19 @@ export async function runCodex(opts: {
     let state: AgentState = {
         controlledByUser: false
     };
-    const { api, session } = await bootstrapSession({
+    const launchNonce = process.env.HAPI_LAUNCH_NONCE;
+    const runnerInstanceId = process.env.HAPI_RUNNER_INSTANCE_ID;
+    const { api, session, sessionInfo, machineId, reportStartedToRunner } = await bootstrapSession({
         flavor: 'codex',
         startedBy,
         workingDirectory,
         agentState: state,
         model: opts.model,
-        modelReasoningEffort: opts.modelReasoningEffort
+        modelReasoningEffort: opts.modelReasoningEffort,
+        serviceTier: opts.serviceTier,
+        metadataOverrides: launchNonce && runnerInstanceId ? { launchNonce, runnerInstanceId } : undefined
     });
+    applyHapiSessionEnvironment(sessionInfo.id);
 
     const startingMode: 'local' | 'remote' = startedBy === 'runner' ? 'remote' : 'local';
 
@@ -51,15 +63,31 @@ export async function runCodex(opts: {
         permissionMode: mode.permissionMode,
         model: mode.model,
         modelReasoningEffort: mode.modelReasoningEffort,
+        serviceTier: mode.serviceTier,
         collaborationMode: mode.collaborationMode
     }));
 
     const codexCliOverrides = parseCodexCliOverrides(opts.codexArgs);
     const sessionWrapperRef: { current: CodexSession | null } = { current: null };
+    const deliveryOutcomes = launchNonce ? new DeliveryOutcomeClient({
+        namespace: sessionInfo.namespace,
+        machineId,
+        sessionId: sessionInfo.id,
+        launchNonce,
+        prepare: async (attempts) => {
+            const result = await session.prepareDeliveryBatch({ attempts });
+            if (result.result === 'success') return 'success';
+            return ['ack-timeout', 'internal-error', 'invalid-transition'].includes(result.reason)
+                ? 'ambiguous'
+                : 'definitive-no-write';
+        },
+        record: async (request) => (await session.recordDeliveryAttempt(request)).result === 'success'
+    }) : undefined;
 
     let currentPermissionMode: PermissionMode = opts.permissionMode ?? 'default';
     let currentModel = opts.model;
     let currentModelReasoningEffort: ReasoningEffort | undefined = opts.modelReasoningEffort;
+    let currentServiceTier: CodexServiceTier | undefined = opts.serviceTier;
     let currentCollaborationMode: EnhancedMode['collaborationMode'] = 'default';
 
     const lifecycle = createRunnerLifecycle({
@@ -69,6 +97,7 @@ export async function runCodex(opts: {
     });
 
     lifecycle.registerProcessHandlers();
+    await reportStartedToRunner();
     registerKillSessionHandler(session.rpcHandlerManager, lifecycle.cleanupAndExit);
 
     const syncSessionMode = () => {
@@ -80,21 +109,35 @@ export async function runCodex(opts: {
         if (sessionModel !== undefined) {
             currentModel = sessionModel ?? undefined;
         }
-        const sessionModelReasoningEffort = sessionInstance.getModelReasoningEffort();
-        if (sessionModelReasoningEffort !== undefined) {
-            currentModelReasoningEffort = (sessionModelReasoningEffort ?? undefined) as ReasoningEffort | undefined;
-        }
         sessionInstance.setPermissionMode(currentPermissionMode);
         sessionInstance.setModel(currentModel ?? null);
         sessionInstance.setModelReasoningEffort(currentModelReasoningEffort ?? null);
+        sessionInstance.setServiceTier(currentServiceTier ?? null);
         sessionInstance.setCollaborationMode(currentCollaborationMode);
         logger.debug(
             `[Codex] Synced session config for keepalive: ` +
             `permissionMode=${currentPermissionMode}, model=${currentModel ?? 'auto'}, ` +
-            `modelReasoningEffort=${currentModelReasoningEffort ?? 'default'}, collaborationMode=${currentCollaborationMode}`
+            `modelReasoningEffort=${currentModelReasoningEffort ?? 'default'}, serviceTier=${currentServiceTier ?? 'default'}, ` +
+            `collaborationMode=${currentCollaborationMode}`
         );
     };
 
+    const enqueueSerial = new RecoveringSerialQueue((error) => {
+        lifecycle.markManagedUnhealthy?.('ambiguous-turn-delivery');
+        logger.warn('[Codex] Failed to terminalize queued messages before mutation', error);
+    });
+    const invalidateManagedQueue = async (reason: string): Promise<void> => {
+        const attemptId = randomUUID();
+        await messageQueue.invalidateAll(reason, async (item) => {
+            if (!deliveryOutcomes) return;
+            const recorded = await deliveryOutcomes.recordTerminal(
+                [{ messageId: item.messageId, sequence: item.seq }],
+                attemptId,
+                'superseded'
+            );
+            if (!recorded) throw new Error(`failed to durably supersede queued message ${item.messageId}`);
+        });
+    };
     session.onUserMessage((message) => {
         const sessionPermissionMode = sessionWrapperRef.current?.getPermissionMode();
         if (sessionPermissionMode && isPermissionModeAllowedForFlavor(sessionPermissionMode, 'codex')) {
@@ -108,6 +151,10 @@ export async function runCodex(opts: {
         if (sessionModelReasoningEffort !== undefined) {
             currentModelReasoningEffort = (sessionModelReasoningEffort ?? undefined) as ReasoningEffort | undefined;
         }
+        const sessionServiceTier = sessionWrapperRef.current?.getServiceTier();
+        if (sessionServiceTier !== undefined) {
+            currentServiceTier = (sessionServiceTier ?? undefined) as CodexServiceTier | undefined;
+        }
         const sessionCollaborationMode = sessionWrapperRef.current?.getCollaborationMode();
         if (sessionCollaborationMode) {
             currentCollaborationMode = sessionCollaborationMode;
@@ -117,17 +164,42 @@ export async function runCodex(opts: {
         logger.debug(
             `[Codex] User message received with permission mode: ${currentPermissionMode}, ` +
             `model: ${currentModel ?? 'auto'}, modelReasoningEffort: ${currentModelReasoningEffort ?? 'default'}, ` +
-            `collaborationMode: ${currentCollaborationMode}`
+            `serviceTier: ${currentServiceTier ?? 'default'}, collaborationMode: ${currentCollaborationMode}`
         );
 
         const enhancedMode: EnhancedMode = {
             permissionMode: messagePermissionMode ?? 'default',
             model: currentModel,
             modelReasoningEffort: currentModelReasoningEffort,
+            serviceTier: currentServiceTier,
             collaborationMode: currentCollaborationMode
         };
-        const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
-        messageQueue.push(formattedText, enhancedMode);
+
+        const specialCommand = parseSpecialCommand(message.content.text);
+        if (!deliveryOutcomes) {
+            if (specialCommand.type === 'compact' || specialCommand.type === 'goal') {
+                const commandText = (specialCommand.originalMessage ?? message.content.text).trim();
+                messageQueue.pushIsolateAndClear(commandText, enhancedMode, message.delivery);
+            } else {
+                messageQueue.push(formatMessageWithAttachments(message.content.text, message.content.attachments), enhancedMode, message.delivery);
+            }
+            return;
+        }
+        const enqueue = async () => {
+            if (specialCommand.type === 'compact' || specialCommand.type === 'goal') {
+                await invalidateManagedQueue('codex-isolate-command');
+                const commandText = (specialCommand.originalMessage ?? message.content.text).trim();
+                messageQueue.pushIsolateAndClear(commandText, enhancedMode, message.delivery);
+                return;
+            }
+
+            const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
+            messageQueue.push(formattedText, enhancedMode, message.delivery);
+        };
+        void enqueueSerial.enqueue(enqueue).catch(() => {
+            // RecoveringSerialQueue already reports this failure and keeps the
+            // tail usable for later messages.
+        });
     });
 
     const formatFailureReason = (message: string): string => {
@@ -167,18 +239,48 @@ export async function runCodex(opts: {
         return value as ReasoningEffort;
     };
 
+    const resolveModel = (value: unknown): string | undefined => {
+        if (value === null) {
+            return undefined;
+        }
+        if (typeof value !== 'string' || value.trim().length === 0) {
+            throw new Error('Invalid model');
+        }
+        return value.trim();
+    };
+
+    const resolveServiceTier = (value: unknown): CodexServiceTier | undefined => {
+        if (value === null) {
+            return undefined;
+        }
+        const parsed = CodexServiceTierSchema.safeParse(value);
+        if (!parsed.success) {
+            throw new Error('Invalid service tier');
+        }
+        return parsed.data;
+    };
+
     session.rpcHandlerManager.registerHandler('set-session-config', async (payload: unknown) => {
         if (!payload || typeof payload !== 'object') {
             throw new Error('Invalid session config payload');
         }
-        const config = payload as { permissionMode?: unknown; modelReasoningEffort?: unknown; collaborationMode?: unknown };
+        const config = payload as { permissionMode?: unknown; model?: unknown; modelReasoningEffort?: unknown; serviceTier?: unknown; collaborationMode?: unknown };
 
         if (config.permissionMode !== undefined) {
             currentPermissionMode = resolvePermissionMode(config.permissionMode);
         }
 
+        if (config.model !== undefined) {
+            currentModel = resolveModel(config.model);
+            sessionWrapperRef.current?.setModel(currentModel ?? null);
+        }
+
         if (config.modelReasoningEffort !== undefined) {
             currentModelReasoningEffort = resolveModelReasoningEffort(config.modelReasoningEffort);
+        }
+
+        if (config.serviceTier !== undefined) {
+            currentServiceTier = resolveServiceTier(config.serviceTier);
         }
 
         if (config.collaborationMode !== undefined) {
@@ -189,7 +291,9 @@ export async function runCodex(opts: {
         return {
             applied: {
                 permissionMode: currentPermissionMode,
+                ...(config.model !== undefined ? { model: currentModel ?? null } : {}),
                 modelReasoningEffort: currentModelReasoningEffort ?? null,
+                serviceTier: currentServiceTier ?? null,
                 collaborationMode: currentCollaborationMode
             }
         };
@@ -208,8 +312,11 @@ export async function runCodex(opts: {
             permissionMode: currentPermissionMode,
             model: currentModel,
             modelReasoningEffort: currentModelReasoningEffort,
+            serviceTier: currentServiceTier,
             collaborationMode: currentCollaborationMode,
             resumeSessionId: opts.resumeSessionId,
+            deliveryOutcomes,
+            onAmbiguousDelivery: () => lifecycle.markManagedUnhealthy('ambiguous-turn-delivery'),
             onModeChange: createModeChangeHandler(session),
             onSessionReady: (instance) => {
                 sessionWrapperRef.current = instance;

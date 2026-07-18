@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useState, type ReactNode } from 'react'
 import type { ConversationStatus, StatusCallback } from '@/realtime/types'
-import { startRealtimeSession, stopRealtimeSession, voiceHooks } from '@/realtime'
+import { startRealtimeSession, stopRealtimeSession } from '@/realtime/RealtimeSession'
+import { voiceHooks } from '@/realtime/hooks/voiceHooks'
 import { getElevenLabsCodeFromPreference } from '@/lib/languages'
 
 interface VoiceContextValue {
