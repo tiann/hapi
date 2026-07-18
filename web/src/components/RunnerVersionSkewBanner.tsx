@@ -31,7 +31,8 @@ export function listSkewedMachines(machines: Machine[]): Machine[] {
 /**
  * Compact, minimizable skew banner (#1084 dogfood).
  * Temp-dismiss (1h, sessionStorage) or minimize so sessions stay clickable.
- * Manual Restart asks hub to stop-runner; auto-upgrade is opt-in on the hub.
+ * Manual Restart asks hub to stop-runner (escape hatch when version handoff
+ * is stuck or HAPI_DISABLE_VERSION_HANDOFF=1). Normal upgrades self-restart.
  */
 export function RunnerVersionSkewBanner({ topClassName }: { topClassName?: string } = {}) {
     const { api } = useAppContext()
@@ -212,7 +213,7 @@ export function RunnerVersionSkewBanner({ topClassName }: { topClassName?: strin
             ) : null}
 
             <p className="mt-2 text-[11px] leading-relaxed text-amber-800 dark:text-amber-200">
-                {t('runner.skew.banner.autoUpgradeHint')}
+                {t('runner.skew.banner.handoffHint')}
             </p>
         </div>
     )

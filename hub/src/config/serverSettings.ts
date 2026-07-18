@@ -21,12 +21,6 @@ export interface ServerSettings {
     listenPort: number
     publicUrl: string
     corsOrigins: string[]
-    /**
-     * Opt-in: when a skewed runner already has a newer CLI binary on disk,
-     * hub may call stop-runner so systemd/handoff loads it. Default false.
-     * Env: HAPI_AUTO_UPGRADE_RUNNERS=true|1
-     */
-    autoUpgradeRunners: boolean
 }
 
 export interface ServerSettingsResult {
@@ -40,7 +34,6 @@ export interface ServerSettingsResult {
         listenPort: 'env' | 'file' | 'default'
         publicUrl: 'env' | 'file' | 'default'
         corsOrigins: 'env' | 'file' | 'default'
-        autoUpgradeRunners: 'env' | 'file' | 'default'
     }
     savedToFile: boolean
 }
@@ -118,7 +111,6 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
         listenPort: 'default',
         publicUrl: 'default',
         corsOrigins: 'default',
-        autoUpgradeRunners: 'default',
     }
     // telegramBotToken: env > file > null
     let telegramBotToken: string | null = null
@@ -238,21 +230,6 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
         corsOrigins = deriveCorsOrigins(publicUrl)
     }
 
-    // autoUpgradeRunners: env > file > false (opt-in)
-    let autoUpgradeRunners = false
-    if (process.env.HAPI_AUTO_UPGRADE_RUNNERS !== undefined) {
-        autoUpgradeRunners = process.env.HAPI_AUTO_UPGRADE_RUNNERS === 'true'
-            || process.env.HAPI_AUTO_UPGRADE_RUNNERS === '1'
-        sources.autoUpgradeRunners = 'env'
-        if (settings.autoUpgradeRunners === undefined) {
-            settings.autoUpgradeRunners = autoUpgradeRunners
-            needsSave = true
-        }
-    } else if (typeof settings.autoUpgradeRunners === 'boolean') {
-        autoUpgradeRunners = settings.autoUpgradeRunners
-        sources.autoUpgradeRunners = 'file'
-    }
-
     // Save settings if any new values were added
     if (needsSave) {
         await writeSettings(settingsFile, settings)
@@ -268,7 +245,6 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
             listenPort,
             publicUrl,
             corsOrigins,
-            autoUpgradeRunners,
         },
         sources,
         savedToFile: needsSave,

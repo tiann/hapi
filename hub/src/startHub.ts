@@ -194,12 +194,7 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
         onMessagesConsumed: (sessionId) => syncEngine?.clearQueuedThinkingGrace(sessionId)
     })
 
-    syncEngine = new SyncEngine(store, socketServer.io, socketServer.rpcRegistry, sseManager, {
-        autoUpgradeRunners: config.autoUpgradeRunners,
-    })
-    if (config.autoUpgradeRunners) {
-        console.log('[Hub] autoUpgradeRunners enabled (opt-in): will stop-runner when skewed + newer CLI on disk')
-    }
+    syncEngine = new SyncEngine(store, socketServer.io, socketServer.rpcRegistry, sseManager)
 
     const notificationChannels: NotificationChannel[] = [
         new PushNotificationChannel(pushService, sseManager, visibilityTracker, config.publicUrl)
