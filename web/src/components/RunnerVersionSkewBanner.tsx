@@ -64,20 +64,21 @@ export function RunnerVersionSkewBanner({ topClassName }: { topClassName?: strin
 
     const onMinimize = useCallback(() => {
         haptic.impact('light')
-        setRunnerSkewMinimized(true)
+        // UI first — storage may throw QuotaExceededError on full sessionStorage.
         setMinimized(true)
+        setRunnerSkewMinimized(true)
     }, [haptic])
 
     const onExpand = useCallback(() => {
         haptic.impact('light')
-        setRunnerSkewMinimized(false)
         setMinimized(false)
+        setRunnerSkewMinimized(false)
     }, [haptic])
 
     const onTempDismiss = useCallback(() => {
         haptic.impact('light')
-        tempDismissRunnerSkew()
         setDismissed(true)
+        tempDismissRunnerSkew()
     }, [haptic])
 
     const onRestart = useCallback(async (machine: Machine) => {
@@ -162,7 +163,8 @@ export function RunnerVersionSkewBanner({ topClassName }: { topClassName?: strin
                 {skewed.map((machine) => {
                     const host = machineDisplayHost(machine)
                     const version = machine.metadata?.happyCliVersion
-                    const canAutoHint = cliBinaryUpdatedOnDisk(machine.metadata)
+                    const newerOnDisk = cliBinaryUpdatedOnDisk(machine.metadata)
+                    const restartBusy = restartingId === machine.id
                     return (
                         <li
                             key={machine.id}
@@ -173,22 +175,29 @@ export function RunnerVersionSkewBanner({ topClassName }: { topClassName?: strin
                                 <div className="min-w-0 text-xs text-amber-950 dark:text-amber-50">
                                     <span className="font-medium">{host}</span>
                                     {version ? ` · CLI ${version}` : null}
-                                    {canAutoHint ? (
+                                    {newerOnDisk ? (
                                         <span className="ml-1 text-amber-800 dark:text-amber-200">
                                             {t('runner.skew.banner.binaryUpdatedHint')}
                                         </span>
-                                    ) : null}
+                                    ) : (
+                                        <span className="ml-1 text-amber-800 dark:text-amber-200">
+                                            {t('runner.skew.banner.upgradeCliFirst')}
+                                        </span>
+                                    )}
                                 </div>
                                 <button
                                     type="button"
                                     data-testid={`runner-version-skew-restart-${machine.id}`}
-                                    disabled={restartingId === machine.id}
+                                    disabled={!newerOnDisk || restartBusy}
+                                    title={newerOnDisk ? undefined : t('runner.skew.banner.restartNeedsNewerBinary')}
                                     onClick={() => void onRestart(machine)}
                                     className="shrink-0 rounded bg-amber-900 px-2 py-1 text-xs font-medium text-amber-50 disabled:opacity-50 dark:bg-amber-100 dark:text-amber-950"
                                 >
-                                    {restartingId === machine.id
+                                    {restartBusy
                                         ? t('runner.skew.banner.restarting')
-                                        : t('runner.skew.banner.restart')}
+                                        : newerOnDisk
+                                            ? t('runner.skew.banner.restart')
+                                            : t('runner.skew.banner.restartUnavailable')}
                                 </button>
                             </div>
                         </li>

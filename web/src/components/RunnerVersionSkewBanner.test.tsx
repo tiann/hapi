@@ -10,6 +10,7 @@ import {
 import { I18nProvider } from '@/lib/i18n-context'
 import {
     clearRunnerSkewTempDismiss,
+    resetRunnerSkewBannerMemoryForTests,
     setRunnerSkewMinimized,
 } from '@/lib/runnerSkewBannerState'
 
@@ -99,6 +100,7 @@ describe('listSkewedMachines', () => {
 describe('RunnerVersionSkewBanner', () => {
     beforeEach(() => {
         window.sessionStorage.clear()
+        resetRunnerSkewBannerMemoryForTests()
         setRunnerSkewMinimized(false)
         clearRunnerSkewTempDismiss()
         restartMachineRunnerMock.mockClear()
@@ -170,10 +172,39 @@ describe('RunnerVersionSkewBanner', () => {
         expect(screen.queryByTestId('runner-version-skew-banner')).not.toBeInTheDocument()
     })
 
-    it('calls restartMachineRunner when Restart is clicked', async () => {
+    it('disables Restart when no newer CLI is on disk', () => {
         useMachinesMock.mockReturnValue({
             machines: [
                 makeMachine({ id: 'old', metadata: { host: 'proxmox', platform: 'linux', happyCliVersion: '0.20.0' } }),
+            ],
+            isLoading: false,
+            error: null,
+        })
+
+        render(
+            <I18nProvider>
+                <RunnerVersionSkewBanner />
+            </I18nProvider>,
+        )
+
+        const restart = screen.getByTestId('runner-version-skew-restart-old')
+        expect(restart).toBeDisabled()
+        expect(restart).toHaveTextContent(/Upgrade CLI first/)
+    })
+
+    it('calls restartMachineRunner when Restart is clicked and newer CLI is on disk', async () => {
+        useMachinesMock.mockReturnValue({
+            machines: [
+                makeMachine({
+                    id: 'old',
+                    metadata: {
+                        host: 'proxmox',
+                        platform: 'linux',
+                        happyCliVersion: '0.20.0',
+                        startedCliMtimeMs: 100,
+                        installedCliMtimeMs: 200,
+                    },
+                }),
             ],
             isLoading: false,
             error: null,
@@ -189,6 +220,30 @@ describe('RunnerVersionSkewBanner', () => {
         await waitFor(() => {
             expect(restartMachineRunnerMock).toHaveBeenCalledWith('old')
         })
+    })
+
+    it('minimizes even when sessionStorage setItem throws QuotaExceededError', () => {
+        const proto = Object.getPrototypeOf(window.sessionStorage) as Storage
+        vi.spyOn(proto, 'setItem').mockImplementation(() => {
+            throw new DOMException('quota', 'QuotaExceededError')
+        })
+
+        useMachinesMock.mockReturnValue({
+            machines: [
+                makeMachine({ id: 'old', metadata: { host: 'proxmox', platform: 'linux', happyCliVersion: '0.20.0' } }),
+            ],
+            isLoading: false,
+            error: null,
+        })
+
+        render(
+            <I18nProvider>
+                <RunnerVersionSkewBanner />
+            </I18nProvider>,
+        )
+
+        expect(() => fireEvent.click(screen.getByTestId('runner-version-skew-minimize'))).not.toThrow()
+        expect(screen.getByTestId('runner-version-skew-banner')).toHaveAttribute('data-state', 'minimized')
     })
 
     it('hides when all online machines advertise required capabilities', async () => {
