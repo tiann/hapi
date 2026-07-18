@@ -553,19 +553,7 @@ WantedBy=default.target
 
 ### Multi-machine hubs
 
-You can run **one hub** and **runners on many machines** (each machine installs its own CLI). When you upgrade the hub, upgrade the HAPI CLI on every machine that parents sessions, then restart that machine's runner (`systemctl --user restart hapi-runner` or `hapi runner start`). Until a runner reports the capabilities the hub requires, the web UI shows a **Runner out of date** banner (minimizable / snoozeable) with the host name and upgrade steps.
-
-**Opt-in auto-restart (no remote package push):** if a machine already has a newer CLI binary on disk but is still running an old generation, you can let the hub call `stop-runner` so systemd/handoff loads it:
-
-```bash
-# env (preferred for systemd units)
-HAPI_AUTO_UPGRADE_RUNNERS=1
-
-# or in ~/.hapi/settings.json
-# "autoUpgradeRunners": true
-```
-
-Off by default. This does **not** download, `npm install`, or push packages to remotes — you still upgrade the CLI on each host yourself. Opt-in only means: when the hub detects skew **and** a newer on-disk binary (mtime differs from the running process), it may `stop-runner` so the existing install is loaded. The banner’s per-host **Restart runner** button is the same action, manual and only enabled when a newer binary is already on disk.
+You can run **one hub** and **runners on many machines** (each machine installs its own CLI). When you upgrade the hub, upgrade the HAPI CLI on every machine that parents sessions. After the CLI binary on disk changes, that machine’s runner normally **self-restarts** via version handoff (unless `HAPI_DISABLE_VERSION_HANDOFF=1`). Until a runner reports the capabilities the hub requires, the web UI shows a **Runner out of date** banner (minimizable / snoozeable) with the host name and upgrade steps. The banner’s per-host **Restart** is only an escape hatch when handoff is stuck or disabled — the hub never downloads or installs packages on remotes.
 
 Enable and start:
 

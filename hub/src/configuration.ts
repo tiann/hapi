@@ -21,7 +21,6 @@
  * - VAPID_SUBJECT: Contact email or URL for Web Push (defaults to mailto:admin@hapi.run)
  * - HAPI_HOME: Data directory (default: ~/.hapi)
  * - DB_PATH: SQLite database path (default: {HAPI_HOME}/hapi.db)
- * - HAPI_AUTO_UPGRADE_RUNNERS: Opt-in stop-runner when skewed + newer CLI on disk (true|1)
  */
 
 import { existsSync, mkdirSync } from 'node:fs'
@@ -42,7 +41,6 @@ export interface ConfigSources {
     listenPort: ConfigSource
     publicUrl: ConfigSource
     corsOrigins: ConfigSource
-    autoUpgradeRunners: ConfigSource
     cliApiToken: 'env' | 'file' | 'generated'
 }
 
@@ -92,12 +90,6 @@ class Configuration {
     /** Allowed CORS origins for Mini App + Socket.IO (comma-separated env override) */
     public readonly corsOrigins: string[]
 
-    /**
-     * Opt-in: hub may stop-runner when a skewed machine already has a newer
-     * CLI binary on disk. Default false.
-     */
-    public readonly autoUpgradeRunners: boolean
-
     /** Sources of each configuration value */
     public readonly sources: ConfigSources
 
@@ -122,7 +114,6 @@ class Configuration {
         this.listenPort = serverSettings.listenPort
         this.publicUrl = serverSettings.publicUrl
         this.corsOrigins = serverSettings.corsOrigins
-        this.autoUpgradeRunners = serverSettings.autoUpgradeRunners
 
         // CLI API token - will be set by _setCliApiToken() before create() returns
         this.cliApiToken = ''
