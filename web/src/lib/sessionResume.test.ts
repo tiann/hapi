@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { Session } from '@/types/api'
-import { inactiveSessionCanResume, resolveAgentSessionIdFromMetadata } from './sessionResume'
+import {
+    inactiveSessionCanResume,
+    resolveAgentSessionIdFromMetadata,
+    resolveCursorReopenGate,
+} from './sessionResume'
 
 function makeSession(overrides: Partial<Session> = {}): Session {
     return {
@@ -67,7 +71,7 @@ describe('sessionResume', () => {
         }), 5, true)).toBe(true)
     })
 
-    it('conservatively rejects cursor resume until the chat store is verified', () => {
+    it('allows cursor resume when chat-store probe is unverified (skew / missing handler)', () => {
         expect(inactiveSessionCanResume(makeSession({
             metadata: {
                 path: '/tmp/project',
@@ -75,7 +79,7 @@ describe('sessionResume', () => {
                 flavor: 'cursor',
                 cursorSessionId: 'cursor-thread-1',
             },
-        }), 5)).toBe(false)
+        }), 5)).toBe(true)
     })
 
     it('rejects cursor resume when the recorded chat store is missing on its machine', () => {
@@ -87,6 +91,33 @@ describe('sessionResume', () => {
                 cursorSessionId: 'cursor-thread-1',
             },
         }), 5, false)).toBe(false)
+    })
+
+    it('resolveCursorReopenGate only disables for definitive onDisk:false', () => {
+        expect(resolveCursorReopenGate({
+            applicable: true,
+            onDisk: false,
+            error: null,
+            isLoading: false,
+        })).toEqual({ disabledReason: 'missing', probeUnverified: false })
+        expect(resolveCursorReopenGate({
+            applicable: true,
+            onDisk: undefined,
+            error: 'RPC handler not registered',
+            isLoading: false,
+        })).toEqual({ disabledReason: null, probeUnverified: true })
+        expect(resolveCursorReopenGate({
+            applicable: true,
+            onDisk: true,
+            error: null,
+            isLoading: false,
+        })).toEqual({ disabledReason: null, probeUnverified: false })
+        expect(resolveCursorReopenGate({
+            applicable: true,
+            onDisk: undefined,
+            error: null,
+            isLoading: true,
+        })).toEqual({ disabledReason: 'checking', probeUnverified: false })
     })
 
     it('does not apply Cursor chat store status to other agent flavors', () => {

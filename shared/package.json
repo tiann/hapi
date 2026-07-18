@@ -13,6 +13,7 @@
         "./buildInfo": "./src/buildInfo.ts",
         "./modes": "./src/modes.ts",
         "./rpcMethods": "./src/rpcMethods.ts",
+        "./runnerCapabilities": "./src/runnerCapabilities.ts",
         "./schemas": "./src/schemas.ts",
         "./sessionExport": "./src/sessionExport.ts",
         "./types": "./src/types.ts",

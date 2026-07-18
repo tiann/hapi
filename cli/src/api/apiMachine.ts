@@ -21,6 +21,7 @@ import {
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import type { RunnerState, Machine, MachineMetadata } from './types'
 import { RunnerStateSchema, MachineMetadataSchema } from './types'
+import { getInstalledCliMtimeMs } from '@/runner/controlClient'
 import { backoff } from '@/utils/time'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { RpcHandlerManager } from './rpc/RpcHandlerManager'
@@ -604,6 +605,19 @@ export class ApiMachineClient {
                 time: Date.now(),
                 health: collectMachineHealth()
             })
+            const installedCliMtimeMs = getInstalledCliMtimeMs()
+            if (
+                typeof installedCliMtimeMs === 'number'
+                && this.machine.metadata
+                && this.machine.metadata.installedCliMtimeMs !== installedCliMtimeMs
+            ) {
+                void this.updateMachineMetadata((current) => ({
+                    ...(current ?? this.machine.metadata!),
+                    installedCliMtimeMs,
+                })).catch((error) => {
+                    logger.debug('[API MACHINE] Failed to refresh installedCliMtimeMs', error)
+                })
+            }
         }
         // Prime CPU sampling so the first heartbeat already includes CPU %.
         collectMachineHealth()

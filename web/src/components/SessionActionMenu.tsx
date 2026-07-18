@@ -26,6 +26,8 @@ type SessionActionMenuProps = {
     onArchive: () => void
     onReopen?: () => void
     reopenDisabledReason?: string
+    /** Soft-fail tip when reopen is allowed but chat-store probe could not verify. */
+    reopenHint?: string
     onDelete: () => void
     anchorPoint: { x: number; y: number }
     menuId?: string
@@ -179,6 +181,7 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
         onArchive,
         onReopen,
         reopenDisabledReason,
+        reopenHint,
         onDelete,
         anchorPoint,
         menuId
@@ -391,7 +394,7 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                     </button>
                 ) : (
                     <>
-                        {onReopen || reopenDisabledReason ? (
+                        {onReopen || reopenDisabledReason || reopenHint ? (
                             <HoverTooltip
                                 id={`${resolvedMenuId}-reopen-tooltip`}
                                 className="w-full [&>span:first-child]:w-full"
@@ -402,7 +405,11 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                                         type="button"
                                         role="menuitem"
                                         aria-disabled={reopenDisabledReason ? true : undefined}
-                                        aria-describedby={reopenDisabledReason ? `${resolvedMenuId}-reopen-tooltip` : undefined}
+                                        aria-describedby={
+                                            reopenDisabledReason || reopenHint
+                                                ? `${resolvedMenuId}-reopen-tooltip`
+                                                : undefined
+                                        }
                                         className={`${baseItemClassName} ${reopenDisabledReason
                                             ? 'cursor-not-allowed opacity-50'
                                             : 'hover:bg-[var(--app-subtle-bg)]'}`}
@@ -413,7 +420,7 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                                     </button>
                                 )}
                             >
-                                {reopenDisabledReason ?? t('session.action.reopen')}
+                                {reopenDisabledReason ?? reopenHint ?? t('session.action.reopen')}
                             </HoverTooltip>
                         ) : null}
                         <button

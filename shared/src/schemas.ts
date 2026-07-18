@@ -260,7 +260,13 @@ export const MachineMetadataSchema = z.object({
     homeDir: z.string().optional(),
     happyHomeDir: z.string().optional(),
     happyLibDir: z.string().optional(),
-    workspaceRoots: z.array(z.string()).optional()
+    workspaceRoots: z.array(z.string()).optional(),
+    /** Machine-scoped RPC capability ids this runner registers (see runnerCapabilities). */
+    capabilities: z.array(z.string()).optional(),
+    /** CLI binary/package mtime when this runner process started. */
+    startedCliMtimeMs: z.number().optional(),
+    /** Current on-disk CLI binary/package mtime (may differ after upgrade). */
+    installedCliMtimeMs: z.number().optional(),
 })
 
 export type MachineMetadata = z.infer<typeof MachineMetadataSchema>

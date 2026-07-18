@@ -551,6 +551,10 @@ WantedBy=default.target
 
 > **Why `KillMode=process`?** The runner spawns each agent session as a detached child process (`detached: true` in `cli/src/runner/run.ts`) so that sessions stay alive when the runner exits. Without `KillMode=process`, systemd's default `KillMode=control-group` sends SIGTERM to every PID in the runner's cgroup when the unit stops, defeating the detach and forcibly archiving every running session. `KillMode=process` preserves the contract: stopping or restarting the runner only signals the runner itself; agent sessions stay alive, and a fresh runner re-establishes control via the existing socket.io reconnect path. This applies to runner upgrades, manual restarts, and any reboot in which the runner unit is stopped before agents have finished.
 
+### Multi-machine hubs
+
+You can run **one hub** and **runners on many machines** (each machine installs its own CLI). When you upgrade the hub, upgrade the HAPI CLI on every machine that parents sessions, then restart that machine's runner (`systemctl --user restart hapi-runner` or `hapi runner start`). Until a runner reports the capabilities the hub requires, the web UI shows a persistent **Runner out of date** banner with the host name and upgrade steps — do not ignore it (Cursor reopen and similar features depend on matching generations).
+
 Enable and start:
 
 ```bash

@@ -1927,6 +1927,59 @@ describe('session model', () => {
         }
     })
 
+    it('soft-fails Cursor reopen when chat-store probe throws (missing handler / skew)', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'cursor-probe-skew-reopen',
+                {
+                    path: '/tmp/project',
+                    host: 'cursor-host',
+                    machineId: 'cursor-machine',
+                    homeDir: '/home/cursor-owner',
+                    flavor: 'cursor',
+                    cursorSessionId: 'cursor-thread-skew',
+                    cursorSessionProtocol: 'acp'
+                },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'cursor-machine',
+                { host: 'cursor-host', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'cursor-machine', time: Date.now() })
+
+            let spawnCalled = false
+            ;(engine as any).rpcGateway.getCursorChatStoreStatus = async () => {
+                throw new Error('RPC handler not registered: cursor-machine:cursor-chat-store-status')
+            }
+            ;(engine as any).rpcGateway.spawnSession = async () => {
+                spawnCalled = true
+                engine.handleSessionAlive({ sid: session.id, time: Date.now() })
+                return { type: 'success', sessionId: session.id }
+            }
+            ;(engine as any).waitForSessionActive = async () => true
+            ;(engine as any).waitForSessionReady = async () => 'ready'
+
+            const result = await engine.resumeSession(session.id, 'default')
+
+            expect(result).toEqual({ type: 'success', sessionId: session.id })
+            expect(spawnCalled).toBe(true)
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('probes Cursor chat data on the session recorded machine', async () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(

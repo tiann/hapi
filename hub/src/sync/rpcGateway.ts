@@ -238,6 +238,10 @@ export class RpcGateway {
         return CursorChatStoreStatusSchema.parse(result)
     }
 
+    async stopRunner(machineId: string): Promise<void> {
+        await this.machineRpc(machineId, RPC_METHODS.StopRunner, {})
+    }
+
     async getGitStatus(sessionId: string, cwd?: string): Promise<RpcCommandResponse> {
         return await this.sessionRpc(sessionId, RPC_METHODS.GitStatus, { cwd }) as RpcCommandResponse
     }
