@@ -69,6 +69,45 @@ async function waitFor(condition: () => boolean, timeoutMs = 300, intervalMs = 1
 }
 
 describe('claudeRemote async message handling', () => {
+    it('reports the initial normal message once after the first result', async () => {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        const onFirstResult = vi.fn();
+
+        queryMock.mockReturnValueOnce(createAsyncStream([
+            { type: 'result', subtype: 'success' } as unknown as SDKMessage,
+            { type: 'result', subtype: 'success' } as unknown as SDKMessage
+        ]));
+
+        let nextCallCount = 0;
+        try {
+            await claudeRemote({
+                sessionId: 'session-1',
+                path: process.cwd(),
+                mcpServers: {},
+                claudeEnvVars: {},
+                claudeArgs: [],
+                allowedTools: [],
+                hookSettingsPath: '/tmp/hook.json',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                nextMessage: async () => nextCallCount++ === 0
+                    ? { message: 'Review this project', mode: { permissionMode: 'default' } }
+                    : null,
+                onReady: () => {},
+                isAborted: () => false,
+                onSessionFound: () => {},
+                onMessage: () => {},
+                onFirstResult
+            });
+
+            expect(onFirstResult).toHaveBeenCalledTimes(1);
+            expect(onFirstResult).toHaveBeenCalledWith('Review this project');
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+    });
+
     it('continues consuming assistant messages even when next user message is pending', async () => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');

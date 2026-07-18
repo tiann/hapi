@@ -161,6 +161,8 @@ function messageKey(message: RawJSONLines): string {
         return message.uuid;
     } else if (message.type === 'summary') {
         return 'summary: ' + message.leafUuid + ': ' + message.summary;
+    } else if (message.type === 'ai-title') {
+        return 'ai-title: ' + message.aiTitle;
     } else if (message.type === 'system') {
         return message.uuid;
     } else {

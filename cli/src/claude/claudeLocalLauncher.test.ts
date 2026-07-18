@@ -49,6 +49,7 @@ function createSessionStub() {
             queue: { size: () => 0, reset: () => {}, setOnMessage: () => {} },
             client: {
                 sendClaudeSessionMessage: (msg: Record<string, unknown>) => { sentMessages.push(msg) },
+                hasSessionTitle: () => false,
                 rpcHandlerManager: { registerHandler: () => {} }
             },
             addSessionFoundCallback: () => {},
@@ -66,11 +67,48 @@ describe('claudeLocalLauncher message filtering', () => {
         harness.scannerOnMessage = null
     })
 
-    it('filters out summary messages', async () => {
+    it('uses Claude Code summary messages as a title fallback', async () => {
         const { session, sentMessages } = createSessionStub()
         await claudeLocalLauncher(session as never)
 
-        harness.scannerOnMessage!({ type: 'summary', leafUuid: '1' })
+        harness.scannerOnMessage!({ type: 'summary', summary: 'Native title', leafUuid: '1' })
+
+        expect(sentMessages).toEqual([{ type: 'summary', summary: 'Native title', leafUuid: '1' }])
+    })
+
+    it('converts Claude Code ai-title metadata into a HAPI title', async () => {
+        const { session, sentMessages } = createSessionStub()
+        await claudeLocalLauncher(session as never)
+
+        harness.scannerOnMessage!({
+            type: 'ai-title',
+            aiTitle: '根据交接文档部署 HAPI 服务',
+            sessionId: 'test-session'
+        })
+
+        expect(sentMessages).toHaveLength(1)
+        expect(sentMessages[0]).toEqual(expect.objectContaining({
+            type: 'summary',
+            summary: '根据交接文档部署 HAPI 服务'
+        }))
+    })
+
+    it('does not replace an existing HAPI title with ai-title metadata', async () => {
+        const { session, sentMessages } = createSessionStub()
+        session.client.hasSessionTitle = () => true
+        await claudeLocalLauncher(session as never)
+
+        harness.scannerOnMessage!({ type: 'ai-title', aiTitle: 'Native title' })
+
+        expect(sentMessages).toHaveLength(0)
+    })
+
+    it('does not replace an existing HAPI title with a native summary', async () => {
+        const { session, sentMessages } = createSessionStub()
+        session.client.hasSessionTitle = () => true
+        await claudeLocalLauncher(session as never)
+
+        harness.scannerOnMessage!({ type: 'summary', summary: 'Native title', leafUuid: '1' })
 
         expect(sentMessages).toHaveLength(0)
     })

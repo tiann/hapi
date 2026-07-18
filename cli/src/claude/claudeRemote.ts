@@ -34,6 +34,7 @@ export async function claudeRemote(opts: {
     onSessionFound: (id: string) => void,
     onThinkingChange?: (thinking: boolean) => void,
     onMessage: (message: SDKMessage) => void,
+    onFirstResult?: (initialMessage: string) => void,
     onCompletionEvent?: (message: string) => void,
     onSessionReset?: () => void
 }) {
@@ -281,6 +282,10 @@ export async function claudeRemote(opts: {
                     `${debugPrefix} result #${resultSeq} received; scheduling next user message ` +
                     `(nextInFlight=${nextMessageFetchInFlight}, inputEnded=${inputEnded})`
                 );
+
+                if (resultSeq === 1 && specialCommand.type === null) {
+                    opts.onFirstResult?.(initial.message);
+                }
 
                 // Send completion messages
                 if (isCompactCommand) {

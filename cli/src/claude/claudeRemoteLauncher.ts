@@ -12,6 +12,7 @@ import { PLAN_FAKE_REJECT } from "./sdk/prompts";
 import { EnhancedMode } from "./loop";
 import { OutgoingMessageQueue } from "./utils/OutgoingMessageQueue";
 import type { ClaudePermissionMode } from "@hapi/protocol/types";
+import { applySessionTitleFallback } from './utils/sessionTitleFallback';
 import {
     RemoteLauncherBase,
     type RemoteLauncherDisplayContext,
@@ -362,6 +363,9 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         claudeEnvVars: session.claudeEnvVars,
                         claudeArgs: session.claudeArgs,
                         onMessage,
+                        onFirstResult: (initialMessage) => {
+                            applySessionTitleFallback(session.client, initialMessage);
+                        },
                         onCompletionEvent: (message: string) => {
                             logger.debug(`[remote]: Completion event: ${message}`);
                             session.client.sendSessionEvent({ type: 'message', message });

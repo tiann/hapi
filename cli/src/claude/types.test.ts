@@ -2,6 +2,18 @@ import { describe, it, expect } from "vitest";
 import { RawJSONLinesSchema } from "./types";
 
 describe("RawJSONLinesSchema", () => {
+    it("accepts Claude Code native ai-title events", () => {
+        expect(RawJSONLinesSchema.parse({
+            type: "ai-title",
+            aiTitle: "根据交接文档部署 HAPI 服务",
+            sessionId: "session-1"
+        })).toEqual({
+            type: "ai-title",
+            aiTitle: "根据交接文档部署 HAPI 服务",
+            sessionId: "session-1"
+        });
+    });
+
     describe("system / turn_duration record", () => {
         it("preserves messageId so the web reducer can match the duration to the right block", () => {
             // Claude code emits turn_duration as a system record carrying the

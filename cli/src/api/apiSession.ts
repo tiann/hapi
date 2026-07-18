@@ -761,6 +761,10 @@ export class ApiSessionClient extends EventEmitter {
         }
     }
 
+    hasSessionTitle(): boolean {
+        return Boolean(this.metadata?.name?.trim() || this.metadata?.summary?.text.trim())
+    }
+
     sendUserMessage(text: string, meta?: MessageMeta): void {
         if (!text) {
             return
