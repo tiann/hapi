@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import type { SessionSummary } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
@@ -105,6 +105,15 @@ describe('SessionList directory action', () => {
 })
 
 describe('SessionList time filter', () => {
+    beforeEach(() => {
+        vi.useFakeTimers()
+        vi.setSystemTime(new Date(2026, 6, 18, 12))
+    })
+
+    afterEach(() => {
+        vi.useRealTimers()
+    })
+
     it('filters after selecting a start and end date', () => {
         const recent = makeSession({
             id: 'recent',
