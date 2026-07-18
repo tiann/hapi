@@ -9,7 +9,15 @@ import { basename, dirname, isAbsolute, join, relative, resolve as resolvePath }
 import { logger } from '@/ui/logger'
 import { configuration } from '@/configuration'
 import type { ClientToServerEvents, ServerToClientEvents, Update, UpdateMachineBody } from '@hapi/protocol'
-import type { MachineDirectoryEntry, MachineListDirectoryResponse, PathExistsResponse } from '@hapi/protocol/apiTypes'
+import {
+    ArchiveCodexSessionRpcRequestSchema,
+    ListCodexSessionsRpcRequestSchema,
+    type ArchiveCodexSessionRpcResponse,
+    type ListCodexSessionsRpcResponse,
+    type MachineDirectoryEntry,
+    type MachineListDirectoryResponse,
+    type PathExistsResponse
+} from '@hapi/protocol/apiTypes'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import type { RunnerState, Machine, MachineMetadata } from './types'
 import { RunnerStateSchema, MachineMetadataSchema } from './types'
@@ -29,7 +37,7 @@ import {
 } from '../modules/common/grokModels'
 import type { SpawnSessionOptions, SpawnSessionResult } from '../modules/common/rpcTypes'
 import { applyVersionedAck } from './versionedUpdate'
-import { archiveLocalCodexSession, listLocalCodexSessionSummaries, listLocalCodexSessionsWithMessages, listLocalCodexSessionsWithMessagesByIds } from '../modules/common/codexSessions'
+import { archiveLocalCodexSession, listLocalCodexSessionSummaries, listLocalCodexSessionsWithMessagesByIds } from '../modules/common/codexSessions'
 import { buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
 import { collectMachineHealth } from '@/utils/machineHealth'
 import { inspectCursorChatStore } from '@/cursor/cursorChatStoreStatus'
@@ -259,18 +267,20 @@ export class ApiMachineClient {
             }
         )
 
-        this.rpcHandlerManager.registerHandler<{ cwd?: string | null; sessionIds?: string[] }, { success: true; sessions: ReturnType<typeof listLocalCodexSessionsWithMessages> | ReturnType<typeof listLocalCodexSessionSummaries> } | { success: false; error: string }>(
+        this.rpcHandlerManager.registerHandler<unknown, ListCodexSessionsRpcResponse>(
             RPC_METHODS.ListCodexSessions,
             async (params) => {
-                const rawCwd = typeof params?.cwd === 'string' ? params.cwd.trim() : ''
+                const parsed = ListCodexSessionsRpcRequestSchema.safeParse(params)
+                if (!parsed.success) return { success: false, error: 'Invalid Codex sessions request' }
+                const rawCwd = typeof parsed.data.cwd === 'string' ? parsed.data.cwd.trim() : ''
                 if (rawCwd) {
                     const resolvedCwd = await this.resolveForWorkspaceCheck(rawCwd)
                     if (!this.isWithinWorkspaceRoots(resolvedCwd)) {
                         return { success: false, error: 'Path is outside workspace roots' }
                     }
                 }
-                const requestedIds = Array.isArray(params?.sessionIds)
-                    ? new Set(params.sessionIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0))
+                const requestedIds = parsed.data.sessionIds
+                    ? new Set(parsed.data.sessionIds)
                     : null
                 const allSessions = requestedIds
                     ? listLocalCodexSessionsWithMessagesByIds(requestedIds)
@@ -285,13 +295,12 @@ export class ApiMachineClient {
             }
         )
 
-        this.rpcHandlerManager.registerHandler<{ sessionId?: string | null }, { success: true; archivedPath: string } | { success: false; error: string }>(
+        this.rpcHandlerManager.registerHandler<unknown, ArchiveCodexSessionRpcResponse>(
             RPC_METHODS.ArchiveCodexSession,
             async (params) => {
-                const sessionId = typeof params?.sessionId === 'string' ? params.sessionId.trim() : ''
-                if (!sessionId) {
-                    return { success: false, error: 'sessionId is required' }
-                }
+                const parsed = ArchiveCodexSessionRpcRequestSchema.safeParse(params)
+                if (!parsed.success) return { success: false, error: 'Invalid Codex archive request' }
+                const sessionId = parsed.data.sessionId.trim()
                 return await archiveLocalCodexSession(sessionId, {
                     canArchive: (session) => this.isCodexSessionWithinWorkspaceRoots(session)
                 })

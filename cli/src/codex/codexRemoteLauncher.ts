@@ -3525,7 +3525,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
         while (!this.shouldExit) {
             logActiveHandles('loop-top');
-            if (!pending && (recoveryInFlight || (turnInFlight && session.queue.size() === 0))) {
+            if (!pending && recoveryInFlight) {
                 await waitForTurnOrRecovery(this.abortController.signal);
                 if (this.abortController.signal.aborted && !this.shouldExit) {
                     logger.debug('[codex]: Internal wait aborted while recovery was active; continuing');

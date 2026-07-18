@@ -1308,9 +1308,6 @@ export class SyncEngine {
             return { type: 'error', message: 'Session failed to become active', code: 'resume_failed' }
         }
 
-        // Resume 成功是服务端已确认的状态：立即写入并广播 active，避免 Web 重新拉取到旧的 inactive 快照。
-        this.sessionCache.markSessionActive(spawnResult.sessionId)
-
         // permissionMode is passed to spawnSession above; do not call set-session-config here.
         // session-alive can arrive before the CLI registers that RPC handler, which caused resume_failed.
 

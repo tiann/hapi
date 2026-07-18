@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
     Navigate,
@@ -185,17 +185,6 @@ function getMachineTitle(machine: Machine): string {
     if (machine.metadata?.displayName) return machine.metadata.displayName
     if (machine.metadata?.host) return machine.metadata.host
     return machine.id.slice(0, 8)
-}
-
-type CodexImportContextValue = {
-    openCodexImportDialog: (workDirectory?: string | null) => void
-    isBusy: boolean
-}
-
-const CodexImportContext = createContext<CodexImportContextValue | null>(null)
-
-function useCodexImportAction(): CodexImportContextValue | null {
-    return useContext(CodexImportContext)
 }
 
 function SessionsPage() {
@@ -544,13 +533,8 @@ function SessionsPage() {
         t
     ])
 
-    const codexImportContextValue = useMemo<CodexImportContextValue>(() => ({
-        openCodexImportDialog: (workDirectory?: string | null) => void openCodexImportDialog(workDirectory),
-        isBusy: isSyncingCodexSession || isLoadingCodexSessions
-    }), [isLoadingCodexSessions, isSyncingCodexSession, openCodexImportDialog])
-
     return (
-        <CodexImportContext.Provider value={codexImportContextValue}>
+        <>
             <div className="flex h-full min-h-0">
             <div
                 className={`${isSessionsIndex ? 'flex' : 'hidden lg:flex'} w-full shrink-0 flex-col bg-[var(--app-bg)]`}
@@ -562,6 +546,17 @@ function SessionsPage() {
                             {t('sessions.count', { n: sessions.length, m: projectCount })}
                         </div>
                         <div className="flex items-center gap-2">
+                            <button
+                                type="button"
+                                onClick={() => void openCodexImportDialog()}
+                                disabled={isSyncingCodexSession || isLoadingCodexSessions}
+                                aria-label={t('codexSync.tooltip')}
+                                aria-busy={isSyncingCodexSession || isLoadingCodexSessions}
+                                className="p-1.5 rounded-full text-[var(--app-hint)] hover:text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)] transition-colors disabled:opacity-60 disabled:cursor-wait"
+                                title={t('codexSync.tooltip')}
+                            >
+                                <CodexImportIcon className={`h-5 w-5 ${isLoadingCodexSessions ? 'animate-spin' : ''}`} />
+                            </button>
                             <button
                                 type="button"
                                 onClick={handleRefresh}
@@ -668,7 +663,7 @@ function SessionsPage() {
                 onConfirm={handleMergeDuplicateSessions}
                 isPending={isMergingDuplicateSessions}
             />
-        </CodexImportContext.Provider>
+        </>
     )
 }
 
@@ -1085,7 +1080,6 @@ function NewSessionPage() {
     const queryClient = useQueryClient()
     const { machines, isLoading: machinesLoading, error: machinesError } = useMachines(api, true)
     const { t } = useTranslation()
-    const codexImport = useCodexImportAction()
     const { directory: initialDirectory, machineId: initialMachineId, shareTransferId } = newSessionRoute.useSearch()
 
     const handleCancel = useCallback(() => {

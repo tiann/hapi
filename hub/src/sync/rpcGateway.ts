@@ -1,6 +1,10 @@
 import type { AgentFlavor, CodexCollaborationMode, PermissionMode } from '@hapi/protocol/types'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
-import { CursorChatStoreStatusSchema } from '@hapi/protocol/apiTypes'
+import {
+    ArchiveCodexSessionRpcResponseSchema,
+    CursorChatStoreStatusSchema,
+    ListCodexSessionsRpcResponseSchema
+} from '@hapi/protocol/apiTypes'
 import type {
     CodexModelSummary,
     CodexModelsResponse,
@@ -15,6 +19,8 @@ import type {
     GrokModelsResponse,
     GrokReasoningEffortResponse,
     ListDirectoryResponse,
+    ListCodexSessionsRpcResponse,
+    ArchiveCodexSessionRpcResponse,
     OpencodeModelsResponse,
     OpencodeModelSummary,
     OpencodeReasoningEffortResponse,
@@ -59,8 +65,8 @@ export type RpcListDirectoryResponse = ListDirectoryResponse
 export type RpcPathExistsResponse = PathExistsResponse
 export type RpcCodexModel = CodexModelSummary
 export type RpcListCodexModelsResponse = CodexModelsResponse
-export type RpcListCodexSessionsResponse = { success: true; sessions: unknown[] } | { success: false; error: string }
-export type RpcArchiveCodexSessionResponse = { success: true; archivedPath: string } | { success: false; error: string }
+export type RpcListCodexSessionsResponse = ListCodexSessionsRpcResponse
+export type RpcArchiveCodexSessionResponse = ArchiveCodexSessionRpcResponse
 export type RpcCursorModel = CursorModelSummary
 export type RpcListCursorModelsResponse = CursorModelsResponse
 export type RpcCursorChatStoreStatus = CursorChatStoreStatus
@@ -291,11 +297,13 @@ export class RpcGateway {
     }
 
     async listCodexSessionsForMachine(machineId: string, cwd?: string | null, sessionIds?: string[]): Promise<RpcListCodexSessionsResponse> {
-        return await this.machineRpc(machineId, RPC_METHODS.ListCodexSessions, { cwd: cwd ?? null, sessionIds }, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListCodexSessionsResponse
+        const result = await this.machineRpc(machineId, RPC_METHODS.ListCodexSessions, { cwd: cwd ?? null, sessionIds }, MODEL_LIST_RPC_TIMEOUT_MS)
+        return ListCodexSessionsRpcResponseSchema.parse(result)
     }
 
     async archiveCodexSessionForMachine(machineId: string, sessionId: string): Promise<RpcArchiveCodexSessionResponse> {
-        return await this.machineRpc(machineId, RPC_METHODS.ArchiveCodexSession, { sessionId }, MODEL_LIST_RPC_TIMEOUT_MS) as RpcArchiveCodexSessionResponse
+        const result = await this.machineRpc(machineId, RPC_METHODS.ArchiveCodexSession, { sessionId }, MODEL_LIST_RPC_TIMEOUT_MS)
+        return ArchiveCodexSessionRpcResponseSchema.parse(result)
     }
 
     async listCursorModelsForSession(sessionId: string): Promise<RpcListCursorModelsResponse> {

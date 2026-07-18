@@ -917,8 +917,10 @@ function resolveCodexImportMachineId(
 ): string | null {
     if (!engine) return null
     const onlineMachines = engine.getOnlineMachinesByNamespace(namespace)
-    if (requestedMachineId && onlineMachines.some((machine) => machine.id === requestedMachineId)) {
-        return requestedMachineId
+    if (requestedMachineId) {
+        return onlineMachines.some((machine) => machine.id === requestedMachineId)
+            ? requestedMachineId
+            : null
     }
     if (cwd) {
         const resolved = resolveImportMachineId(cwd, namespace, engine)
@@ -1112,12 +1114,18 @@ function selectImportTargetSession(
     store: Store,
     candidates: ImportCandidate[],
     codexSessionId: string,
-    importedComparableMessages: string[]
+    importedComparableMessages: string[],
+    sourceMachineId?: string | null
 ): ImportTargetSelection {
     const relatedCandidates = candidates
         .filter((candidate) => (
             candidate.metadata?.codexSessionId === codexSessionId
             || candidate.metadata?.codexSourceSessionId === codexSessionId
+        ))
+        .filter((candidate) => (
+            !sourceMachineId
+            || typeof candidate.metadata?.machineId !== 'string'
+            || candidate.metadata.machineId === sourceMachineId
         ))
         .sort((a, b) => b.updatedAt - a.updatedAt)
 
@@ -1812,7 +1820,8 @@ function importSingleCodexSession(options: {
             options.store,
             candidates,
             options.codexSessionId,
-            importedComparableMessages
+            importedComparableMessages,
+            options.machineId
         )
         const engine = options.getSyncEngine?.() ?? null
         const existingStored = target.sessionId ? options.store.sessions.getSessionByNamespace(target.sessionId, options.namespace) : null
