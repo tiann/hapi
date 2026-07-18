@@ -3,6 +3,10 @@ import { basename, dirname, join, normalize } from 'node:path'
 
 const distDir = join(import.meta.dir, '..', 'dist')
 const assetsDir = join(distDir, 'assets')
+const configuredBase = process.env.VITE_BASE_URL || '/'
+const basePath = configuredBase.startsWith('/')
+    ? `/${configuredBase.replace(/^\/+|\/+$/g, '')}${configuredBase === '/' ? '' : '/'}`
+    : '/'
 
 if (!existsSync(assetsDir)) {
     throw new Error(`Web build assets are missing: ${assetsDir}`)
@@ -22,7 +26,12 @@ for (const cssFile of cssFiles) {
         }
         const withoutQuery = raw.split(/[?#]/, 1)[0] ?? ''
         const resolved = withoutQuery.startsWith('/')
-            ? join(distDir, withoutQuery.slice(1))
+            ? join(
+                distDir,
+                basePath !== '/' && withoutQuery.startsWith(basePath)
+                    ? withoutQuery.slice(basePath.length)
+                    : withoutQuery.slice(1)
+            )
             : normalize(join(dirname(cssFile), withoutQuery))
         referenced.add(resolved)
     }
