@@ -45,7 +45,10 @@ describe('MachineGroupHeader', () => {
             </I18nProvider>
         )
 
-        expect(screen.getByRole('button', { name: /Teemo/i })).toBeTruthy()
+        const machineButton = screen.getByRole('button', { name: /Teemo/i })
+        expect(machineButton.getAttribute('aria-expanded')).toBe('true')
+        fireEvent.click(machineButton)
+        expect(onToggle).toHaveBeenCalledTimes(1)
         expect(screen.queryByText('Windows')).toBeNull()
         expect(screen.getByText('(4)')).toBeTruthy()
         expect(screen.getByLabelText(/CPU 12 percent; RAM 88 percent/i)).toBeTruthy()
@@ -53,7 +56,7 @@ describe('MachineGroupHeader', () => {
         const healthButton = screen.getByRole('button', { name: /CPU 12 percent; RAM 88 percent/i })
         fireEvent.click(healthButton)
         expect(healthButton.getAttribute('aria-expanded')).toBe('true')
-        expect(onToggle).not.toHaveBeenCalled()
+        expect(onToggle).toHaveBeenCalledTimes(1)
     })
 
     it('keeps uptime in the health tooltip instead of replacing the machine name', () => {

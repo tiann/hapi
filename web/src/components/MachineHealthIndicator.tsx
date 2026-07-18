@@ -221,6 +221,7 @@ export function MachineHealthIndicator(props: {
                 props.className
             )}
             aria-label={ariaLabel}
+            aria-describedby={tooltipId}
             aria-expanded={clickOpen}
             aria-controls={tooltipId}
             onClick={(event) => {
