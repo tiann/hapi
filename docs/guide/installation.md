@@ -565,7 +565,7 @@ HAPI_AUTO_UPGRADE_RUNNERS=1
 # "autoUpgradeRunners": true
 ```
 
-Off by default. The banner also has a per-host **Restart runner** button for manual stop-runner. Installing/upgrading the CLI package on remote hosts remains your responsibility.
+Off by default. This does **not** download, `npm install`, or push packages to remotes — you still upgrade the CLI on each host yourself. Opt-in only means: when the hub detects skew **and** a newer on-disk binary (mtime differs from the running process), it may `stop-runner` so the existing install is loaded. The banner’s per-host **Restart runner** button is the same action, manual and only enabled when a newer binary is already on disk.
 
 Enable and start:
 
