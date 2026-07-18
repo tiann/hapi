@@ -11,6 +11,14 @@ export default {
   'message.copy': '复制',
   'message.copied': '已复制',
   'message.info': '消息详情',
+  'message.jumpToPrompt': '跳到本轮输入',
+  'message.jumpToConversationStart': '跳到会话开头',
+  'message.loadingConversationStart': '正在加载更早的消息…',
+  'message.reachedConversationStart': '已到会话开头',
+  'message.loadConversationStartFailed': '加载更早消息失败，请重试',
+  'message.loadingPrompt': '正在加载本轮输入…',
+  'message.reachedPrompt': '已定位到本轮输入',
+  'message.loadPromptFailed': '加载本轮输入失败，请重试',
 
   // Login / Auth
   'login.title': 'HAPI',

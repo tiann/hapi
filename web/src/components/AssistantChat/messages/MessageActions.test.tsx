@@ -45,6 +45,45 @@ describe('MessageActions', () => {
         expect(copy).toHaveBeenCalledWith('message body')
     })
 
+    it('renders separate icon-only navigation actions on the right side', () => {
+        const onJumpToPrompt = vi.fn()
+        const onJumpToConversationStart = vi.fn()
+        renderActions({
+            align: 'start',
+            copyText: 'message body',
+            onJumpToPrompt,
+            onJumpToConversationStart
+        })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Jump to turn input' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Jump to conversation start' }))
+
+        expect(onJumpToPrompt).toHaveBeenCalledOnce()
+        expect(onJumpToConversationStart).toHaveBeenCalledOnce()
+        expect(screen.queryByText('Jump to turn input')).toBeNull()
+        expect(screen.queryByText('Jump to conversation start')).toBeNull()
+    })
+
+    it('disables the conversation-start action while history is loading', () => {
+        renderActions({
+            align: 'start',
+            onJumpToConversationStart: vi.fn(),
+            isLoadingConversationStart: true
+        })
+
+        expect(screen.getByRole('button', { name: 'Jump to conversation start' })).toBeDisabled()
+    })
+
+    it('disables the prompt action and shows progress while its history is loading', () => {
+        renderActions({
+            align: 'start',
+            onJumpToPrompt: vi.fn(),
+            isLoadingPrompt: true
+        })
+
+        expect(screen.getByRole('button', { name: 'Jump to turn input' })).toBeDisabled()
+    })
+
     it('shows meaningful assistant metadata in a popover without invoke time', () => {
         renderActions({
             align: 'start',

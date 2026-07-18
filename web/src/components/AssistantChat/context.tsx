@@ -15,6 +15,11 @@ export type HappyChatContextValue = {
     hasMoreMessages: boolean
     isLoadingMoreMessages: boolean
     loadOlderMessagesPreservingScroll: () => Promise<boolean>
+    scrollToMessage: (messageId: string) => boolean
+    scrollToPromptForMessage: (messageId: string) => Promise<boolean>
+    loadingPromptMessageId: string | null
+    scrollToConversationStart: () => Promise<boolean>
+    isLoadingConversationStart: boolean
 }
 
 const HappyChatContext = createContext<HappyChatContextValue | null>(null)
