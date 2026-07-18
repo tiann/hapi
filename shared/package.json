@@ -14,6 +14,7 @@
         "./modes": "./src/modes.ts",
         "./rpcMethods": "./src/rpcMethods.ts",
         "./runnerCapabilities": "./src/runnerCapabilities.ts",
+        "./machineRegistration": "./src/machineRegistration.ts",
         "./upgradeChannel": "./src/upgradeChannel.ts",
         "./schemas": "./src/schemas.ts",
         "./sessionExport": "./src/sessionExport.ts",

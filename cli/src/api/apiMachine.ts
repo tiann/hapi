@@ -46,6 +46,10 @@ import { homedir } from 'node:os'
 import type { CursorChatStoreStatus } from '@hapi/protocol/apiTypes'
 import type { HubUpgradeOffer, RunnerSelfUpgradeResponse } from '@hapi/protocol/upgradeChannel'
 import { applyRunnerSelfUpgrade } from '@/upgrade/selfUpgrade'
+import { buildMachineMetadata } from '@/agent/sessionFactory'
+import {
+    machineRegistrationNeedsRefresh,
+} from '@hapi/protocol/machineRegistration'
 
 type MachineRpcHandlers = {
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>
@@ -534,26 +538,41 @@ export class ApiMachineClient {
 
             const hubWorkspaceRoots = this.machine.metadata?.workspaceRoots
             const desiredWorkspaceRoots = this.workspaceRoots
-            if (!workspaceRootsEqual(desiredWorkspaceRoots, hubWorkspaceRoots)) {
-                if (desiredWorkspaceRoots?.length) {
-                    console.log(`[HAPI] Syncing workspace roots to hub: ${formatWorkspaceRoots(desiredWorkspaceRoots)} (current hub value: ${formatWorkspaceRoots(hubWorkspaceRoots)})`)
-                } else {
-                    console.log(`[HAPI] Clearing workspace roots on hub (was: ${formatWorkspaceRoots(hubWorkspaceRoots)})`)
+            const identity = buildMachineMetadata({
+                workspaceRoots: desiredWorkspaceRoots?.length ? desiredWorkspaceRoots : undefined,
+                startedCliMtimeMs: this.machine.metadata?.startedCliMtimeMs,
+            })
+            const needsRoots = !workspaceRootsEqual(desiredWorkspaceRoots, hubWorkspaceRoots)
+            const needsIdentity = machineRegistrationNeedsRefresh(this.machine.metadata, identity)
+
+            if (needsRoots || needsIdentity) {
+                if (needsRoots) {
+                    if (desiredWorkspaceRoots?.length) {
+                        console.log(`[HAPI] Syncing workspace roots to hub: ${formatWorkspaceRoots(desiredWorkspaceRoots)} (current hub value: ${formatWorkspaceRoots(hubWorkspaceRoots)})`)
+                    } else {
+                        console.log(`[HAPI] Clearing workspace roots on hub (was: ${formatWorkspaceRoots(hubWorkspaceRoots)})`)
+                    }
+                }
+                if (needsIdentity) {
+                    console.log(`[HAPI] Refreshing machine identity on hub (version=${identity.happyCliVersion}, capabilities=${(identity.capabilities ?? []).join(',') || '(none)'})`)
                 }
                 this.updateMachineMetadata((current) => {
-                    const base = current ?? this.machine.metadata
-                    if (!base) {
-                        return { workspaceRoots: desiredWorkspaceRoots } as MachineMetadata
+                    const merged = {
+                        ...identity,
+                        displayName: current?.displayName,
+                        startedCliMtimeMs: current?.startedCliMtimeMs ?? identity.startedCliMtimeMs,
                     }
                     if (desiredWorkspaceRoots?.length) {
-                        return { ...base, workspaceRoots: desiredWorkspaceRoots }
+                        return { ...merged, workspaceRoots: desiredWorkspaceRoots }
                     }
-                    const { workspaceRoots: _workspaceRoots, ...rest } = base
+                    const { workspaceRoots: _workspaceRoots, ...rest } = merged
                     return rest as MachineMetadata
                 }).then(() => {
-                    console.log(`[HAPI] Workspace roots synced: ${formatWorkspaceRoots(this.machine.metadata?.workspaceRoots)}`)
+                    if (needsRoots) {
+                        console.log(`[HAPI] Workspace roots synced: ${formatWorkspaceRoots(this.machine.metadata?.workspaceRoots)}`)
+                    }
                 }).catch((error) => {
-                    console.error('[HAPI] Failed to sync workspace roots:', error instanceof Error ? error.message : error)
+                    console.error('[HAPI] Failed to sync machine metadata:', error instanceof Error ? error.message : error)
                 })
             } else if (desiredWorkspaceRoots?.length) {
                 console.log(`[HAPI] Workspace roots already up to date on hub: ${formatWorkspaceRoots(desiredWorkspaceRoots)}`)
