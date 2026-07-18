@@ -42,14 +42,17 @@ jobs:
             - run: bun install --frozen-lockfile
             - name: Gate dependency security policy
               run: bun run dependency:security -- --out "$RUNNER_TEMP/dependency-security" --as-of "$(date -u +%F)"
+            - name: Setup Pages
+              id: pages
+              uses: actions/configure-pages@v5
             - name: Build web app
               env:
                   VITE_REQUIRE_HUB_URL: '1'
+                  VITE_BASE_URL: '${{ steps.pages.outputs.base_path }}/'
               run: bun run --cwd web build
             - name: Add CNAME for custom domain
+              if: github.repository == 'tiann/hapi'
               run: echo "app.hapi.run" > web/dist/CNAME
-            - name: Setup Pages
-              uses: actions/configure-pages@v5
             - name: Upload artifact
               uses: actions/upload-pages-artifact@v3
               with:
