@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { Metadata } from '@/api/types'
 
 const harness = vi.hoisted(() => ({
     launches: [] as Array<Record<string, unknown>>,
@@ -35,6 +36,7 @@ import { claudeLocalLauncher } from './claudeLocalLauncher'
 
 function createSessionStub() {
     const sentMessages: Array<Record<string, unknown>> = []
+    let metadata: Metadata = { path: '/tmp/test', host: 'localhost' }
     return {
         session: {
             sessionId: 'test-session',
@@ -49,7 +51,9 @@ function createSessionStub() {
             queue: { size: () => 0, reset: () => {}, setOnMessage: () => {} },
             client: {
                 sendClaudeSessionMessage: (msg: Record<string, unknown>) => { sentMessages.push(msg) },
-                hasSessionTitle: () => false,
+                updateMetadata: (handler: (current: Metadata) => Metadata) => {
+                    metadata = handler(metadata)
+                },
                 rpcHandlerManager: { registerHandler: () => {} }
             },
             addSessionFoundCallback: () => {},
@@ -57,7 +61,9 @@ function createSessionStub() {
             consumeOneTimeFlags: () => {},
             recordLocalLaunchFailure: () => {}
         },
-        sentMessages
+        sentMessages,
+        getMetadata: () => metadata,
+        setMetadata: (value: Metadata) => { metadata = value }
     }
 }
 
@@ -68,16 +74,17 @@ describe('claudeLocalLauncher message filtering', () => {
     })
 
     it('uses Claude Code summary messages as a title fallback', async () => {
-        const { session, sentMessages } = createSessionStub()
+        const { session, sentMessages, getMetadata } = createSessionStub()
         await claudeLocalLauncher(session as never)
 
         harness.scannerOnMessage!({ type: 'summary', summary: 'Native title', leafUuid: '1' })
 
-        expect(sentMessages).toEqual([{ type: 'summary', summary: 'Native title', leafUuid: '1' }])
+        expect(sentMessages).toHaveLength(0)
+        expect(getMetadata().summary?.text).toBe('Native title')
     })
 
     it('converts Claude Code ai-title metadata into a HAPI title', async () => {
-        const { session, sentMessages } = createSessionStub()
+        const { session, sentMessages, getMetadata } = createSessionStub()
         await claudeLocalLauncher(session as never)
 
         harness.scannerOnMessage!({
@@ -86,31 +93,34 @@ describe('claudeLocalLauncher message filtering', () => {
             sessionId: 'test-session'
         })
 
-        expect(sentMessages).toHaveLength(1)
-        expect(sentMessages[0]).toEqual(expect.objectContaining({
-            type: 'summary',
-            summary: '根据交接文档部署 HAPI 服务'
-        }))
+        expect(sentMessages).toHaveLength(0)
+        expect(getMetadata().summary?.text).toBe('根据交接文档部署 HAPI 服务')
     })
 
     it('does not replace an existing HAPI title with ai-title metadata', async () => {
-        const { session, sentMessages } = createSessionStub()
-        session.client.hasSessionTitle = () => true
+        const { session, sentMessages, getMetadata, setMetadata } = createSessionStub()
+        setMetadata({ path: '/tmp/test', host: 'localhost', name: 'Manual title' })
         await claudeLocalLauncher(session as never)
 
         harness.scannerOnMessage!({ type: 'ai-title', aiTitle: 'Native title' })
 
         expect(sentMessages).toHaveLength(0)
+        expect(getMetadata()).toEqual({ path: '/tmp/test', host: 'localhost', name: 'Manual title' })
     })
 
     it('does not replace an existing HAPI title with a native summary', async () => {
-        const { session, sentMessages } = createSessionStub()
-        session.client.hasSessionTitle = () => true
+        const { session, sentMessages, getMetadata, setMetadata } = createSessionStub()
+        setMetadata({
+            path: '/tmp/test',
+            host: 'localhost',
+            summary: { text: 'Existing title', updatedAt: 1 }
+        })
         await claudeLocalLauncher(session as never)
 
         harness.scannerOnMessage!({ type: 'summary', summary: 'Native title', leafUuid: '1' })
 
         expect(sentMessages).toHaveLength(0)
+        expect(getMetadata().summary?.text).toBe('Existing title')
     })
 
     it('filters out invisible system messages', async () => {

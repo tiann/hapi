@@ -21,9 +21,7 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
             // Claude Code writes its native session title as a summary. Use it as
             // a fallback for older transcript formats.
             if (message.type === 'summary') {
-                if (!session.client.hasSessionTitle()) {
-                    session.client.sendClaudeSessionMessage(message)
-                }
+                applySessionTitleFallback(session.client, message.summary)
                 return
             }
             // Filter out internal meta messages (e.g. skill injections) and

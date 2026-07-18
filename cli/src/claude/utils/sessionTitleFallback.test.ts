@@ -10,31 +10,29 @@ describe('Claude session title fallback', () => {
     })
 
     it('writes a summary when no title exists', () => {
-        const sendClaudeSessionMessage = vi.fn()
+        const updateMetadata = vi.fn((handler) => handler({}))
 
         expect(applySessionTitleFallback({
-            hasSessionTitle: () => false,
-            sendClaudeSessionMessage
+            updateMetadata
         }, 'Review this project')).toBe(true)
 
-        expect(sendClaudeSessionMessage).toHaveBeenCalledWith(expect.objectContaining({
-            type: 'summary',
-            summary: 'Review this project'
+        expect(updateMetadata).toHaveReturnedWith(expect.objectContaining({
+            summary: expect.objectContaining({ text: 'Review this project' })
         }))
     })
 
     it('does not replace an existing title or use an empty message', () => {
-        const sendClaudeSessionMessage = vi.fn()
+        const manualMetadata = { name: 'Manual title' }
+        const updateMetadata = vi.fn((handler) => handler(manualMetadata))
 
         expect(applySessionTitleFallback({
-            hasSessionTitle: () => true,
-            sendClaudeSessionMessage
-        }, 'Review this project')).toBe(false)
+            updateMetadata
+        }, 'Review this project')).toBe(true)
         expect(applySessionTitleFallback({
-            hasSessionTitle: () => false,
-            sendClaudeSessionMessage
+            updateMetadata
         }, '  \n  ')).toBe(false)
 
-        expect(sendClaudeSessionMessage).not.toHaveBeenCalled()
+        expect(updateMetadata).toHaveBeenCalledTimes(1)
+        expect(updateMetadata).toHaveReturnedWith(manualMetadata)
     })
 })

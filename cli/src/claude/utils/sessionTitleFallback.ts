@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto'
 import type { ApiSessionClient } from '@/api/apiSession'
 
 const MAX_FALLBACK_TITLE_LENGTH = 80
@@ -12,18 +11,22 @@ export function createSessionTitleFallback(message: string): string | null {
 }
 
 export function applySessionTitleFallback(
-    client: Pick<ApiSessionClient, 'hasSessionTitle' | 'sendClaudeSessionMessage'>,
+    client: Pick<ApiSessionClient, 'updateMetadata'>,
     message: string
 ): boolean {
-    if (client.hasSessionTitle()) return false
-
     const title = createSessionTitleFallback(message)
     if (!title) return false
 
-    client.sendClaudeSessionMessage({
-        type: 'summary',
-        summary: title,
-        leafUuid: randomUUID()
+    client.updateMetadata((metadata) => {
+        if (metadata.name?.trim() || metadata.summary?.text.trim()) return metadata
+
+        return {
+            ...metadata,
+            summary: {
+                text: title,
+                updatedAt: Date.now()
+            }
+        }
     })
     return true
 }
