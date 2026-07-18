@@ -196,7 +196,7 @@ export function SessionHeader(props: {
                                 </span>
                             ) : null}
                             {reasoningLabel ? (
-                                <span data-testid="session-header-reasoning">
+                                <span data-testid="session-header-reasoning" className="hidden sm:inline">
                                     {reasoningLabel}
                                 </span>
                             ) : null}
