@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ApiClient } from '@/api/client'
-import type { Session } from '@/types/api'
 import {
     downloadSessionExport,
     readSessionExportFormat,
@@ -21,7 +20,7 @@ import {
 type SessionExportDialogProps = {
     isOpen: boolean
     onClose: () => void
-    session: Session
+    sessionId: string
     api: ApiClient | null
 }
 
@@ -65,14 +64,14 @@ export function SessionExportDialog(props: SessionExportDialogProps) {
         abortRef.current = controller
 
         try {
-            const result = await downloadSessionExport(props.api, props.session.id, format, {
+            const result = await downloadSessionExport(props.api, props.sessionId, format, {
                 signal: controller.signal
             })
             toast.addToast({
                 title: t('session.export.toast.success.title'),
                 body: t('session.export.toast.success.body', { filename: result.filename }),
-                sessionId: props.session.id,
-                url: `/sessions/${props.session.id}`
+                sessionId: props.sessionId,
+                url: `/sessions/${props.sessionId}`
             })
             props.onClose()
         } catch (error) {
@@ -86,8 +85,8 @@ export function SessionExportDialog(props: SessionExportDialogProps) {
             toast.addToast({
                 title: t('session.export.toast.error.title'),
                 body: message,
-                sessionId: props.session.id,
-                url: `/sessions/${props.session.id}`
+                sessionId: props.sessionId,
+                url: `/sessions/${props.sessionId}`
             })
         } finally {
             if (abortRef.current === controller) {

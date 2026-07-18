@@ -161,15 +161,15 @@ export function useSendMessage(
             await api.sendMessage(input.sessionId, input.text, input.localId, input.attachments, input.scheduledAt)
         },
         onMutate: async (input) => {
-            const status = isSessionThinkingRef.current ? 'queued' as const : 'sending' as const
-            appendOptimisticMessage(input.sessionId, createOptimisticMessage(input, status))
-            return { status }
+            const successStatus = isSessionThinkingRef.current ? 'queued' as const : 'sent' as const
+            appendOptimisticMessage(input.sessionId, createOptimisticMessage(input, 'sending'))
+            return { successStatus }
         },
         onSuccess: (_, input, context) => {
             updateMessageStatus(
                 input.sessionId,
                 input.localId,
-                context?.status === 'queued' ? 'queued' : 'sent'
+                context?.successStatus ?? 'sent'
             )
             haptic.notification('success')
             options?.onSuccess?.(input.sessionId)

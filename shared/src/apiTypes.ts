@@ -251,6 +251,20 @@ export const SendMessageRequestSchema = z.object({
 
 export type SendMessageRequest = z.infer<typeof SendMessageRequestSchema>
 
+export const QueuedStateRequestSchema = z.object({
+    localIds: z.array(z.string().min(1)).max(1000)
+})
+
+export type QueuedStateRequest = z.infer<typeof QueuedStateRequestSchema>
+
+export type QueuedStateResponse = {
+    queuedLocalIds: string[]
+    invokedLocalMessages: Array<{
+        localId: string
+        invokedAt: number
+    }>
+}
+
 export const SpawnSessionRequestSchema = z.object({
     directory: z.string().min(1),
     agent: AgentFlavorSchema.optional(),

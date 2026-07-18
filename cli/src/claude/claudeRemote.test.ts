@@ -285,3 +285,101 @@ describe('claudeRemote async message handling', () => {
         }
     });
 });
+
+describe('claudeRemote /compact result reporting', () => {
+    const resultMessage = {
+        type: 'result',
+        subtype: 'success',
+        num_turns: 1,
+        total_cost_usd: 0,
+        duration_ms: 1,
+        duration_api_ms: 1,
+        is_error: false,
+        session_id: 's-1'
+    } as unknown as SDKMessage;
+
+    async function runCompact(sdkMessages: SDKMessage[]): Promise<string[]> {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        const completionEvents: string[] = [];
+
+        queryMock.mockReturnValueOnce(createAsyncStream(sdkMessages));
+
+        let nextCallCount = 0;
+        try {
+            await claudeRemote({
+                sessionId: 'session-1',
+                path: process.cwd(),
+                mcpServers: {},
+                claudeEnvVars: {},
+                claudeArgs: [],
+                allowedTools: [],
+                hookSettingsPath: '/tmp/hook.json',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                nextMessage: async () => {
+                    nextCallCount += 1;
+                    if (nextCallCount === 1) {
+                        return { message: '/compact', mode: { permissionMode: 'default' } };
+                    }
+                    return null;
+                },
+                onReady: () => {},
+                isAborted: () => false,
+                onSessionFound: () => {},
+                onMessage: () => {},
+                onCompletionEvent: (message) => {
+                    completionEvents.push(message);
+                },
+                onSessionReset: () => {}
+            });
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+
+        return completionEvents;
+    }
+
+    it('reports the failure reason when the SDK says the compaction failed', async () => {
+        // Shape taken from a real session: the SDK emits a 'compacting' status
+        // first, then a second status carrying the outcome.
+        const completionEvents = await runCompact([
+            {
+                type: 'system',
+                subtype: 'status',
+                status: 'compacting',
+                session_id: 's-1',
+                uuid: 'u-1'
+            } as unknown as SDKMessage,
+            {
+                type: 'system',
+                subtype: 'status',
+                status: null,
+                compact_result: 'failed',
+                compact_error: 'Not enough messages to compact.',
+                session_id: 's-1',
+                uuid: 'u-2'
+            } as unknown as SDKMessage,
+            resultMessage
+        ]);
+
+        expect(completionEvents).toContain('Compaction started');
+        expect(completionEvents.some((event) => event.includes('Not enough messages to compact.'))).toBe(true);
+        expect(completionEvents).not.toContain('Compaction completed');
+    }, 15_000);
+
+    it('still reports success when no failure status arrives', async () => {
+        const completionEvents = await runCompact([
+            {
+                type: 'system',
+                subtype: 'status',
+                status: 'compacting',
+                session_id: 's-1',
+                uuid: 'u-1'
+            } as unknown as SDKMessage,
+            resultMessage
+        ]);
+
+        expect(completionEvents).toEqual(['Compaction started', 'Compaction completed']);
+    }, 15_000);
+});

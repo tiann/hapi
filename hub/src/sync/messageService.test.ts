@@ -307,6 +307,41 @@ describe('MessageService message pagination', () => {
     })
 })
 
+describe('MessageService.getQueuedState', () => {
+    it('returns requested queued and invoked local IDs from the requested session', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'queued-state')
+        const otherSession = makeSession(store, 'queued-state-other')
+        store.messages.addMessage(session.id, 'queued', 'local-queued')
+        store.messages.addMessage(session.id, 'invoked', 'local-invoked')
+        store.messages.addMessage(
+            session.id,
+            'future scheduled',
+            'local-future',
+            Date.now() + 60_000
+        )
+        store.messages.addMessage(otherSession.id, 'other session', 'local-other')
+        store.messages.markMessagesInvoked(session.id, ['local-invoked'], 1_000)
+
+        const service = new MessageService(store, makeIo(() => {}), makePublisher() as any)
+
+        expect(service.getQueuedState(session.id, [
+            'local-queued',
+            'local-invoked',
+            'local-absent',
+            'local-future',
+            'local-other'
+        ])).toEqual({
+            queuedLocalIds: ['local-queued', 'local-future'],
+            invokedLocalMessages: [{ localId: 'local-invoked', invokedAt: 1_000 }]
+        })
+        expect(service.getQueuedState(session.id, [])).toEqual({
+            queuedLocalIds: [],
+            invokedLocalMessages: []
+        })
+    })
+})
+
 describe('MessageService.cancelQueuedMessage race scenarios', () => {
     describe('Race-A: CLI ack removed:true → DELETE + status=cancelled', () => {
         it('returns cancelled and emits message-cancelled SSE after CLI confirms removal', async () => {
