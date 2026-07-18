@@ -37,7 +37,8 @@ export const RPC_METHODS = {
     ListGrokModelsForCwd: 'listGrokModelsForCwd',
     ListGrokModels: 'listGrokModels',
     ListGrokReasoningEffortOptions: 'listGrokReasoningEffortOptions',
-    ListOpencodeReasoningEffortOptions: 'listOpencodeReasoningEffortOptions'
+    ListOpencodeReasoningEffortOptions: 'listOpencodeReasoningEffortOptions',
+    RunnerSelfUpgrade: 'runner-self-upgrade',
 } as const
 
 export type RpcMethod = typeof RPC_METHODS[keyof typeof RPC_METHODS]

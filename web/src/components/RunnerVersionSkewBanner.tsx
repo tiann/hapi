@@ -29,10 +29,8 @@ export function listSkewedMachines(machines: Machine[]): Machine[] {
 }
 
 /**
- * Compact, minimizable skew banner (#1084 dogfood).
- * Temp-dismiss (1h, sessionStorage) or minimize so sessions stay clickable.
- * Manual Restart asks hub to stop-runner (escape hatch when version handoff
- * is stuck or HAPI_DISABLE_VERSION_HANDOFF=1). Normal upgrades self-restart.
+ * Compact, minimizable skew banner (#1084).
+ * Primary action: fleet Upgrade (npm or hub-artifact). Restart is escape hatch.
  */
 export function RunnerVersionSkewBanner({ topClassName }: { topClassName?: string } = {}) {
     const { api } = useAppContext()
@@ -43,8 +41,8 @@ export function RunnerVersionSkewBanner({ topClassName }: { topClassName?: strin
     const skewed = listSkewedMachines(machines)
     const [minimized, setMinimized] = useState(() => isRunnerSkewMinimized())
     const [dismissed, setDismissed] = useState(() => isRunnerSkewTempDismissed())
-    const [restartingId, setRestartingId] = useState<string | null>(null)
-    const [restartError, setRestartError] = useState<string | null>(null)
+    const [busyId, setBusyId] = useState<string | null>(null)
+    const [actionError, setActionError] = useState<string | null>(null)
 
     useEffect(() => {
         if (!dismissed) {
@@ -65,7 +63,6 @@ export function RunnerVersionSkewBanner({ topClassName }: { topClassName?: strin
 
     const onMinimize = useCallback(() => {
         haptic.impact('light')
-        // UI first — storage may throw QuotaExceededError on full sessionStorage.
         setMinimized(true)
         setRunnerSkewMinimized(true)
     }, [haptic])
@@ -82,19 +79,35 @@ export function RunnerVersionSkewBanner({ topClassName }: { topClassName?: strin
         tempDismissRunnerSkew()
     }, [haptic])
 
+    const onUpgrade = useCallback(async (machine: Machine) => {
+        if (!api) {
+            return
+        }
+        haptic.impact('medium')
+        setActionError(null)
+        setBusyId(machine.id)
+        try {
+            await api.upgradeMachineRunner(machine.id)
+        } catch (error) {
+            setActionError(error instanceof Error ? error.message : t('runner.skew.upgradeFailed'))
+        } finally {
+            setBusyId(null)
+        }
+    }, [api, haptic, t])
+
     const onRestart = useCallback(async (machine: Machine) => {
         if (!api) {
             return
         }
         haptic.impact('medium')
-        setRestartError(null)
-        setRestartingId(machine.id)
+        setActionError(null)
+        setBusyId(machine.id)
         try {
             await api.restartMachineRunner(machine.id)
         } catch (error) {
-            setRestartError(error instanceof Error ? error.message : t('runner.skew.restartFailed'))
+            setActionError(error instanceof Error ? error.message : t('runner.skew.restartFailed'))
         } finally {
-            setRestartingId(null)
+            setBusyId(null)
         }
     }, [api, haptic, t])
 
@@ -165,7 +178,7 @@ export function RunnerVersionSkewBanner({ topClassName }: { topClassName?: strin
                     const host = machineDisplayHost(machine)
                     const version = machine.metadata?.happyCliVersion
                     const newerOnDisk = cliBinaryUpdatedOnDisk(machine.metadata)
-                    const restartBusy = restartingId === machine.id
+                    const busy = busyId === machine.id
                     return (
                         <li
                             key={machine.id}
@@ -176,39 +189,42 @@ export function RunnerVersionSkewBanner({ topClassName }: { topClassName?: strin
                                 <div className="min-w-0 text-xs text-amber-950 dark:text-amber-50">
                                     <span className="font-medium">{host}</span>
                                     {version ? ` · CLI ${version}` : null}
-                                    {newerOnDisk ? (
-                                        <span className="ml-1 text-amber-800 dark:text-amber-200">
-                                            {t('runner.skew.banner.binaryUpdatedHint')}
-                                        </span>
-                                    ) : (
-                                        <span className="ml-1 text-amber-800 dark:text-amber-200">
-                                            {t('runner.skew.banner.upgradeCliFirst')}
-                                        </span>
-                                    )}
+                                    <span className="ml-1 text-amber-800 dark:text-amber-200">
+                                        {newerOnDisk
+                                            ? t('runner.skew.banner.binaryUpdatedHint')
+                                            : t('runner.skew.banner.upgradeCliFirst')}
+                                    </span>
                                 </div>
-                                <button
-                                    type="button"
-                                    data-testid={`runner-version-skew-restart-${machine.id}`}
-                                    disabled={!newerOnDisk || restartBusy}
-                                    title={newerOnDisk ? undefined : t('runner.skew.banner.restartNeedsNewerBinary')}
-                                    onClick={() => void onRestart(machine)}
-                                    className="shrink-0 rounded bg-amber-900 px-2 py-1 text-xs font-medium text-amber-50 disabled:opacity-50 dark:bg-amber-100 dark:text-amber-950"
-                                >
-                                    {restartBusy
-                                        ? t('runner.skew.banner.restarting')
-                                        : newerOnDisk
-                                            ? t('runner.skew.banner.restart')
-                                            : t('runner.skew.banner.restartUnavailable')}
-                                </button>
+                                <div className="flex shrink-0 gap-1">
+                                    <button
+                                        type="button"
+                                        data-testid={`runner-version-skew-upgrade-${machine.id}`}
+                                        disabled={busy}
+                                        onClick={() => void onUpgrade(machine)}
+                                        className="rounded bg-amber-900 px-2 py-1 text-xs font-medium text-amber-50 disabled:opacity-50 dark:bg-amber-100 dark:text-amber-950"
+                                    >
+                                        {busy ? t('runner.skew.banner.upgrading') : t('runner.skew.banner.upgrade')}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        data-testid={`runner-version-skew-restart-${machine.id}`}
+                                        disabled={!newerOnDisk || busy}
+                                        title={newerOnDisk ? undefined : t('runner.skew.banner.restartNeedsNewerBinary')}
+                                        onClick={() => void onRestart(machine)}
+                                        className="rounded border border-amber-700/50 px-2 py-1 text-xs font-medium text-amber-950 disabled:opacity-50 dark:border-amber-200/40 dark:text-amber-50"
+                                    >
+                                        {t('runner.skew.banner.restart')}
+                                    </button>
+                                </div>
                             </div>
                         </li>
                     )
                 })}
             </ul>
 
-            {restartError ? (
-                <p className="mt-2 text-xs text-red-700 dark:text-red-300" data-testid="runner-version-skew-restart-error">
-                    {restartError}
+            {actionError ? (
+                <p className="mt-2 text-xs text-red-700 dark:text-red-300" data-testid="runner-version-skew-action-error">
+                    {actionError}
                 </p>
             ) : null}
 
