@@ -1,5 +1,5 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CURRENT_MACHINE_CAPABILITIES } from '@hapi/protocol/runnerCapabilities'
 import type { Machine } from '@/types/api'
 import {
@@ -8,10 +8,15 @@ import {
     machineDisplayHost,
 } from './RunnerVersionSkewBanner'
 import { I18nProvider } from '@/lib/i18n-context'
+import {
+    clearRunnerSkewTempDismiss,
+    setRunnerSkewMinimized,
+} from '@/lib/runnerSkewBannerState'
 
 const useMachinesMock = vi.fn()
+const restartMachineRunnerMock = vi.fn(async () => ({ message: 'ok' }))
 const useAppContextMock = vi.fn(() => ({
-    api: {} as never,
+    api: { restartMachineRunner: restartMachineRunnerMock } as never,
     token: 't',
     baseUrl: 'http://localhost',
 }))
@@ -26,6 +31,12 @@ vi.mock('@/lib/app-context', () => ({
 
 vi.mock('@/hooks/useOnlineStatus', () => ({
     useOnlineStatus: () => true,
+}))
+
+vi.mock('@/hooks/usePlatform', () => ({
+    usePlatform: () => ({
+        haptic: { impact: vi.fn(), notification: vi.fn() },
+    }),
 }))
 
 function makeMachine(overrides: Partial<Machine> & { id: string }): Machine {
@@ -86,12 +97,19 @@ describe('listSkewedMachines', () => {
 })
 
 describe('RunnerVersionSkewBanner', () => {
+    beforeEach(() => {
+        window.sessionStorage.clear()
+        setRunnerSkewMinimized(false)
+        clearRunnerSkewTempDismiss()
+        restartMachineRunnerMock.mockClear()
+    })
+
     afterEach(() => {
         cleanup()
         vi.clearAllMocks()
     })
 
-    it('renders an unmissable banner for skewed online machines', () => {
+    it('renders a compact banner with minimize and snooze actions', () => {
         useMachinesMock.mockReturnValue({
             machines: [
                 makeMachine({ id: 'old', metadata: { host: 'proxmox', platform: 'linux', happyCliVersion: '0.20.0' } }),
@@ -106,10 +124,71 @@ describe('RunnerVersionSkewBanner', () => {
             </I18nProvider>,
         )
 
-        expect(screen.getByTestId('runner-version-skew-banner')).toBeInTheDocument()
-        expect(screen.getByText(/Runner out of date on proxmox/)).toBeInTheDocument()
-        expect(screen.getByText(/Upgrade the CLI on that machine/)).toBeInTheDocument()
-        expect(screen.getByText(/0\.20\.0/)).toBeInTheDocument()
+        expect(screen.getByTestId('runner-version-skew-banner')).toHaveAttribute('data-state', 'expanded')
+        expect(screen.getByText(/1 runner\(s\) out of date/)).toBeInTheDocument()
+        expect(screen.getByTestId('runner-version-skew-minimize')).toBeInTheDocument()
+        expect(screen.getByTestId('runner-version-skew-dismiss')).toBeInTheDocument()
+        expect(screen.getByTestId('runner-version-skew-restart-old')).toBeInTheDocument()
+    })
+
+    it('minimizes so the strip stays small', () => {
+        useMachinesMock.mockReturnValue({
+            machines: [
+                makeMachine({ id: 'old', metadata: { host: 'proxmox', platform: 'linux', happyCliVersion: '0.20.0' } }),
+            ],
+            isLoading: false,
+            error: null,
+        })
+
+        render(
+            <I18nProvider>
+                <RunnerVersionSkewBanner />
+            </I18nProvider>,
+        )
+
+        fireEvent.click(screen.getByTestId('runner-version-skew-minimize'))
+        expect(screen.getByTestId('runner-version-skew-banner')).toHaveAttribute('data-state', 'minimized')
+        expect(screen.getByTestId('runner-version-skew-expand')).toBeInTheDocument()
+    })
+
+    it('temp-dismisses so sessions are reachable', () => {
+        useMachinesMock.mockReturnValue({
+            machines: [
+                makeMachine({ id: 'old', metadata: { host: 'proxmox', platform: 'linux', happyCliVersion: '0.20.0' } }),
+            ],
+            isLoading: false,
+            error: null,
+        })
+
+        render(
+            <I18nProvider>
+                <RunnerVersionSkewBanner />
+            </I18nProvider>,
+        )
+
+        fireEvent.click(screen.getByTestId('runner-version-skew-dismiss'))
+        expect(screen.queryByTestId('runner-version-skew-banner')).not.toBeInTheDocument()
+    })
+
+    it('calls restartMachineRunner when Restart is clicked', async () => {
+        useMachinesMock.mockReturnValue({
+            machines: [
+                makeMachine({ id: 'old', metadata: { host: 'proxmox', platform: 'linux', happyCliVersion: '0.20.0' } }),
+            ],
+            isLoading: false,
+            error: null,
+        })
+
+        render(
+            <I18nProvider>
+                <RunnerVersionSkewBanner />
+            </I18nProvider>,
+        )
+
+        fireEvent.click(screen.getByTestId('runner-version-skew-restart-old'))
+        await waitFor(() => {
+            expect(restartMachineRunnerMock).toHaveBeenCalledWith('old')
+        })
     })
 
     it('hides when all online machines advertise required capabilities', async () => {

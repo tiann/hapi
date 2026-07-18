@@ -144,6 +144,11 @@ function extractClaudeUserMessageTextFromAgentOutput(content: unknown): string |
     return extractUserMessageText(message.content)
 }
 
+export type SyncEngineOptions = {
+    /** Opt-in auto stop-runner when skewed runner has newer CLI on disk. Default false. */
+    autoUpgradeRunners?: boolean
+}
+
 export class SyncEngine {
     private readonly eventPublisher: EventPublisher
     private readonly sessionCache: SessionCache
@@ -156,13 +161,16 @@ export class SyncEngine {
     /** Rate-limit hub-initiated stop-runner ensure attempts (machineId → last attempt ms). */
     private readonly runnerEnsureAttemptAt = new Map<string, number>()
     private static readonly RUNNER_ENSURE_COOLDOWN_MS = 5 * 60_000
+    private readonly autoUpgradeRunners: boolean
 
     constructor(
         private readonly store: Store,
         io: Server,
         rpcRegistry: RpcRegistry,
-        sseManager: SSEManager
+        sseManager: SSEManager,
+        options?: SyncEngineOptions
     ) {
+        this.autoUpgradeRunners = options?.autoUpgradeRunners === true
         this.eventPublisher = new EventPublisher(sseManager, (event) => this.resolveNamespace(event))
         this.sessionCache = new SessionCache(store, this.eventPublisher)
         this.machineCache = new MachineCache(store, this.eventPublisher)
@@ -448,11 +456,15 @@ export class SyncEngine {
     }
 
     /**
-     * When a connected runner is missing required capabilities but a newer CLI
-     * binary is already on disk, ask it to stop so systemd/handoff loads the
-     * new generation. If the binary is not updated, the web skew banner stays.
+     * When opt-in auto-upgrade is enabled and a connected runner is missing
+     * required capabilities but a newer CLI binary is already on disk, ask it
+     * to stop so systemd/handoff loads the new generation. Otherwise the web
+     * skew banner stays until the operator upgrades/restarts manually.
      */
     private async maybeEnsureRunnerGeneration(machineId: string): Promise<void> {
+        if (!this.autoUpgradeRunners) {
+            return
+        }
         const machine = this.machineCache.getMachine(machineId)
         if (!machine?.active || !machine.metadata) {
             return
@@ -478,6 +490,34 @@ export class SyncEngine {
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
             console.warn('[runner-ensure] stop-runner failed', { machineId, message })
+        }
+    }
+
+    /**
+     * Operator-initiated restart (banner Restart button). Always attempts
+     * stop-runner for an online machine — does not require autoUpgradeRunners.
+     */
+    async restartMachineRunner(machineId: string, namespace: string): Promise<
+        | { type: 'success'; message: string }
+        | { type: 'error'; message: string; code: 'machine_not_found' | 'machine_offline' | 'restart_failed' }
+    > {
+        const machine = this.machineCache.getMachineByNamespace(machineId, namespace)
+            ?? this.machineCache.refreshMachine(machineId)
+        if (!machine || machine.namespace !== namespace) {
+            return { type: 'error', message: 'Machine not found', code: 'machine_not_found' }
+        }
+        if (!machine.active) {
+            return { type: 'error', message: 'Machine is offline', code: 'machine_offline' }
+        }
+        try {
+            await this.rpcGateway.stopRunner(machineId)
+            return { type: 'success', message: 'Runner restart requested' }
+        } catch (error) {
+            return {
+                type: 'error',
+                message: error instanceof Error ? error.message : 'Failed to restart runner',
+                code: 'restart_failed',
+            }
         }
     }
 

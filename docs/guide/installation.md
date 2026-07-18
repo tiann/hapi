@@ -553,7 +553,19 @@ WantedBy=default.target
 
 ### Multi-machine hubs
 
-You can run **one hub** and **runners on many machines** (each machine installs its own CLI). When you upgrade the hub, upgrade the HAPI CLI on every machine that parents sessions, then restart that machine's runner (`systemctl --user restart hapi-runner` or `hapi runner start`). Until a runner reports the capabilities the hub requires, the web UI shows a persistent **Runner out of date** banner with the host name and upgrade steps — do not ignore it (Cursor reopen and similar features depend on matching generations).
+You can run **one hub** and **runners on many machines** (each machine installs its own CLI). When you upgrade the hub, upgrade the HAPI CLI on every machine that parents sessions, then restart that machine's runner (`systemctl --user restart hapi-runner` or `hapi runner start`). Until a runner reports the capabilities the hub requires, the web UI shows a **Runner out of date** banner (minimizable / snoozeable) with the host name and upgrade steps.
+
+**Opt-in auto-restart (no remote package push):** if a machine already has a newer CLI binary on disk but is still running an old generation, you can let the hub call `stop-runner` so systemd/handoff loads it:
+
+```bash
+# env (preferred for systemd units)
+HAPI_AUTO_UPGRADE_RUNNERS=1
+
+# or in ~/.hapi/settings.json
+# "autoUpgradeRunners": true
+```
+
+Off by default. The banner also has a per-host **Restart runner** button for manual stop-runner. Installing/upgrading the CLI package on remote hosts remains your responsibility.
 
 Enable and start:
 

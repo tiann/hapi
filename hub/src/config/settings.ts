@@ -20,6 +20,8 @@ export interface Settings {
     listenPort?: number
     publicUrl?: string
     corsOrigins?: string[]
+    /** Opt-in: hub stop-runner when skewed + newer CLI on disk. */
+    autoUpgradeRunners?: boolean
 }
 
 export function getSettingsFile(dataDir: string): string {
