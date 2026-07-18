@@ -145,18 +145,6 @@ export interface ThreadForkResponse {
     [key: string]: unknown;
 }
 
-export interface ThreadRollbackParams {
-    threadId: string;
-    numTurns: number;
-}
-
-export interface ThreadRollbackResponse {
-    thread?: {
-        id?: string;
-    };
-    [key: string]: unknown;
-}
-
 export type UserInput =
     | {
         type: 'text';

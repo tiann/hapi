@@ -117,6 +117,25 @@ describe('listLocalCodexSessionSummaries', () => {
         rmSync(root, { recursive: true, force: true })
     })
 
+    it('uses the latest session_index thread name as the title', () => {
+        const root = mkdtempSync(join(tmpdir(), 'codex-home-'))
+        process.env.CODEX_HOME = root
+        const sessionsDir = join(root, 'sessions', '2026', '07', '19')
+        mkdirSync(sessionsDir, { recursive: true })
+
+        writeFileSync(join(sessionsDir, 'session.jsonl'), [
+            JSON.stringify({ type: 'session_meta', payload: { id: 'indexed-session-id', cwd: '/tmp/project' } }),
+            JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'fallback title' }] } })
+        ].join('\n'))
+        writeFileSync(join(root, 'session_index.jsonl'), [
+            JSON.stringify({ id: 'indexed-session-id', thread_name: 'old title', updated_at: '2026-07-19T01:00:00Z' }),
+            JSON.stringify({ id: 'indexed-session-id', thread_name: 'latest title', updated_at: '2026-07-19T02:00:00Z' })
+        ].join('\n'))
+
+        expect(listLocalCodexSessionSummaries()[0]?.title).toBe('latest title')
+        rmSync(root, { recursive: true, force: true })
+    })
+
     it('skips subagent transcripts', () => {
         const root = mkdtempSync(join(tmpdir(), 'codex-home-'))
         process.env.CODEX_HOME = root

@@ -6,6 +6,11 @@ import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 
 const DEFAULT_CODEX_SESSION_SCAN_LIMIT = 200
 
+type CodexSessionIndexTitle = {
+    threadName: string
+    updatedAt: string
+}
+
 type CodexImportedMessageContent = {
     role: 'user'
     content: { type: 'text'; text: string }
@@ -105,6 +110,42 @@ function getCodexSessionRoots(): string[] {
     return [join(codexHome, 'sessions')]
 }
 
+function getCodexSessionIndexPath(): string {
+    return join(getCodexHome(), 'session_index.jsonl')
+}
+
+function readCodexSessionIndexTitles(): Map<string, CodexSessionIndexTitle> {
+    let content: string
+    try {
+        content = readFileSync(getCodexSessionIndexPath(), 'utf-8')
+    } catch {
+        return new Map()
+    }
+
+    const titles = new Map<string, CodexSessionIndexTitle>()
+    for (const line of content.split(/\r?\n/).filter(Boolean)) {
+        try {
+            const record = asRecord(JSON.parse(line))
+            const id = typeof record?.id === 'string' ? record.id : null
+            const threadName = typeof record?.thread_name === 'string' && record.thread_name.trim()
+                ? record.thread_name.trim()
+                : null
+            const updatedAt = typeof record?.updated_at === 'string' && record.updated_at.trim()
+                ? record.updated_at.trim()
+                : null
+            if (!id || !threadName || !updatedAt) continue
+
+            const previous = titles.get(id)
+            if (!previous || previous.updatedAt < updatedAt) {
+                titles.set(id, { threadName, updatedAt })
+            }
+        } catch {
+            continue
+        }
+    }
+    return titles
+}
+
 function extractCodexChangedTitle(record: Record<string, unknown>): string | null {
     if (record.type === 'response_item') {
         const payload = asRecord(record.payload)
@@ -152,7 +193,8 @@ function getLatestCodexUserMessage(lines: string[]): string | null {
     return null
 }
 
-function getCodexSessionTitle(cwd: string | null | undefined, sessionId: string, changedTitle: string | null, firstUserMessage: string | null): string {
+function getCodexSessionTitle(cwd: string | null | undefined, sessionId: string, sessionIndexTitle: string | null, changedTitle: string | null, firstUserMessage: string | null): string {
+    if (sessionIndexTitle) return truncateText(sessionIndexTitle, 80)
     if (changedTitle) return changedTitle
     if (firstUserMessage) return truncateText(firstUserMessage, 80)
     if (cwd) return basename(cwd) || cwd
@@ -261,7 +303,11 @@ function deduplicateAdjacentImportedMessages(messages: CodexImportedMessageConte
     return deduped
 }
 
-function parseCodexLocalSession(filePath: string, includeMessages: boolean): LocalCodexSessionWithMessages | LocalCodexSessionSummary | null {
+function parseCodexLocalSession(
+    filePath: string,
+    includeMessages: boolean,
+    sessionIndexTitles = new Map<string, CodexSessionIndexTitle>()
+): LocalCodexSessionWithMessages | LocalCodexSessionSummary | null {
     let content: string
     try { content = readFileSync(filePath, 'utf-8') } catch { return null }
     const lines = content.split(/\r?\n/).filter(Boolean)
@@ -313,13 +359,14 @@ function parseCodexLocalSession(filePath: string, includeMessages: boolean): Loc
 
     sessionId = sessionId ?? inferSessionIdFromFileName(filePath)
     if (!sessionId) return null
+    const sessionIndexTitle = sessionIndexTitles.get(sessionId)?.threadName ?? null
     const changedTitle = getLatestCodexChangedTitle(lines)
     const lastUserMessage = getLatestCodexUserMessage(lines)
     let modifiedAt = Date.now()
     try { modifiedAt = statSync(filePath).mtimeMs } catch {}
     const summary = {
         id: sessionId,
-        title: getCodexSessionTitle(cwd, sessionId, changedTitle, firstUserMessage),
+        title: getCodexSessionTitle(cwd, sessionId, sessionIndexTitle, changedTitle, firstUserMessage),
         lastUserMessage,
         cwd,
         file: filePath,
@@ -338,9 +385,10 @@ function listLocalCodexSessions(includeMessages: true, limit?: number): LocalCod
 function listLocalCodexSessions(includeMessages: boolean, limit = DEFAULT_CODEX_SESSION_SCAN_LIMIT): Array<LocalCodexSessionSummary | LocalCodexSessionWithMessages> {
     const files: string[] = []
     for (const root of getCodexSessionRoots()) collectJsonlFiles(root, files)
+    const sessionIndexTitles = readCodexSessionIndexTitles()
     const deduped = new Map<string, LocalCodexSessionSummary | LocalCodexSessionWithMessages>()
     for (const file of files) {
-        const session = parseCodexLocalSession(file, includeMessages)
+        const session = parseCodexLocalSession(file, includeMessages, sessionIndexTitles)
         if (!session) continue
         const previous = deduped.get(session.id)
         if (!previous || previous.modifiedAt < session.modifiedAt) deduped.set(session.id, session)
@@ -358,9 +406,10 @@ export function listLocalCodexSessionsWithMessages(limit = DEFAULT_CODEX_SESSION
 
 export function listLocalCodexSessionsWithMessagesByIds(ids: Set<string>): LocalCodexSessionWithMessages[] {
     if (ids.size === 0) return []
+    const sessionIndexTitles = readCodexSessionIndexTitles()
     return listLocalCodexSessionSummaries(Number.MAX_SAFE_INTEGER)
         .filter((session) => ids.has(session.id))
-        .map((session) => parseCodexLocalSession(session.file, true))
+        .map((session) => parseCodexLocalSession(session.file, true, sessionIndexTitles))
         .filter((session): session is LocalCodexSessionWithMessages => Boolean(session))
 }
 

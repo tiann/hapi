@@ -1984,7 +1984,7 @@ describe('codexRemoteLauncher', () => {
         expect(session.sessionId).toBe('thread-old');
         expect(sessionEvents).toContainEqual({
             type: 'message',
-            message: 'Task failed: Codex conversation thread-old could not be resumed; no new conversation was created'
+            message: 'Task failed: Codex conversation thread-old could not be resumed; no new conversation was created. Reason: resume failed'
         });
         expect(session.thinking).toBe(false);
     });

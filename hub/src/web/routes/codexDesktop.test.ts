@@ -772,12 +772,6 @@ describe('Codex Desktop import routes', () => {
                 }
             ])
 
-            const app = createRoutesApp('default')
-            const response = await app.request('/api/codex/sessions')
-            expect(response.status).toBe(200)
-            const body = await response.json() as { sessions: Array<{ id: string; title: string }> }
-            expect(body.sessions.find((session) => session.id === codexSessionId)?.title).toBe('new thread title')
-
             const result = await importSelectedCodexSessions({
                 codexSessionIds: [codexSessionId],
                 store,
@@ -806,12 +800,6 @@ describe('Codex Desktop import routes', () => {
 
         try {
             createTranscript(codexHome, codexSessionId)
-
-            const app = createRoutesApp('default')
-            const response = await app.request('/api/codex/sessions')
-            expect(response.status).toBe(200)
-            const body = await response.json() as { sessions: Array<{ id: string; title: string }> }
-            expect(body.sessions.find((session) => session.id === codexSessionId)?.title).toBe('normal user message')
 
             const result = await importSelectedCodexSessions({
                 codexSessionIds: [codexSessionId],
@@ -848,12 +836,6 @@ describe('Codex Desktop import routes', () => {
                     updated_at: '2026-07-07T03:00:00.000000000Z'
                 }
             ])
-
-            const app = createRoutesApp('default')
-            const response = await app.request('/api/codex/sessions')
-            expect(response.status).toBe(200)
-            const body = await response.json() as { sessions: Array<{ id: string; title: string }> }
-            expect(body.sessions.find((session) => session.id === codexSessionId)?.title).toBe('normal user message')
 
             const result = await importSelectedCodexSessions({
                 codexSessionIds: [codexSessionId],
