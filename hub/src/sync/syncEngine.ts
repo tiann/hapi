@@ -175,7 +175,7 @@ export class SyncEngine {
         this.prepareArtifactOffer = options?.prepareArtifactOffer
         this.eventPublisher = new EventPublisher(sseManager, (event) => this.resolveNamespace(event))
         this.sessionCache = new SessionCache(store, this.eventPublisher)
-        this.machineCache = new MachineCache(store, this.eventPublisher)
+        this.machineCache = new MachineCache(store, this.eventPublisher, rpcRegistry)
         this.messageService = new MessageService(
             store,
             io,
