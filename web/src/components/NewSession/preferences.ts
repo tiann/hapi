@@ -3,7 +3,7 @@ import type { AgentType } from './types'
 const AGENT_STORAGE_KEY = 'hapi:newSession:agent'
 const YOLO_STORAGE_KEY = 'hapi:newSession:yolo'
 
-const VALID_AGENTS: AgentType[] = ['claude', 'codex', 'cursor', 'gemini', 'opencode']
+const VALID_AGENTS: AgentType[] = ['claude', 'claude-deepseek', 'claude-ark', 'cc-api', 'codex', 'cursor', 'agy', 'grok', 'opencode', 'hermes-moa']
 
 export function loadPreferredAgent(): AgentType {
     try {

@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "name": "portable-token-baseline",
+  "description": "CI-safe replay gate for non-author machines. It does not enforce local history volume minimums; missing replay data is a warning, while available compaction ratios still fail on regression.",
+  "missingData": "warn",
+  "maximums": {
+    "codexPostOverPreMedian": {
+      "hapi-codex": 0.2,
+      "cli-codex": 0.2
+    },
+    "claudePostOverPreMedian": 0.05
+  }
+}

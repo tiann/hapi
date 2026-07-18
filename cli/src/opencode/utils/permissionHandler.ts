@@ -31,10 +31,10 @@ function pickOptionId(request: PermissionRequest, preferredKinds: string[]): str
             return match.optionId;
         }
     }
-    return request.options.length > 0 ? request.options[0].optionId : null;
+    return null;
 }
 
-function mapDecisionToOutcome(request: PermissionRequest, decision: PermissionResponseMessage['decision']): PermissionResponse {
+export function mapDecisionToOutcome(request: PermissionRequest, decision: PermissionResponseMessage['decision']): PermissionResponse {
     if (decision === 'abort') {
         return { outcome: 'cancelled' };
     }
@@ -98,6 +98,8 @@ export class OpencodePermissionHandler extends BasePermissionHandler<PermissionR
         const outcome = mapDecisionToOutcome(request, decision);
         await this.backend.respondToPermission(request.sessionId, request, outcome);
 
+        const completed = outcome.outcome === 'selected';
+
         this.client.updateAgentState((currentState) => ({
             ...currentState,
             completedRequests: {
@@ -107,13 +109,13 @@ export class OpencodePermissionHandler extends BasePermissionHandler<PermissionR
                     arguments: toolInput,
                     createdAt: Date.now(),
                     completedAt: Date.now(),
-                    status: 'approved',
-                    decision
+                    status: completed ? 'approved' : 'canceled',
+                    decision: completed ? decision : 'abort'
                 }
             }
         }));
 
-        logger.debug(`[Opencode] Auto-approved ${toolName} (${request.id}) mode=${decision}`);
+        logger.debug(`[Opencode] Auto-${completed ? 'approved' : 'canceled'} ${toolName} (${request.id}) mode=${decision}`);
     }
 
     protected async handlePermissionResponse(
@@ -133,17 +135,21 @@ export class OpencodePermissionHandler extends BasePermissionHandler<PermissionR
             await this.backend.cancelPrompt(pendingRequest.sessionId);
         }
 
+        let completionStatus: PermissionCompletion['status'] = response.approved ? 'approved' : 'denied';
         if (pendingRequest) {
             const outcome = mapDecisionToOutcome(pendingRequest, decision);
             await this.backend.respondToPermission(pendingRequest.sessionId, pendingRequest, outcome);
+            if (outcome.outcome === 'cancelled') {
+                completionStatus = 'canceled';
+            }
         }
 
         pending.resolve();
 
-        logger.debug(`[Opencode] Permission ${response.approved ? 'approved' : 'denied'} for ${pending.toolName}`);
+        logger.debug(`[Opencode] Permission ${completionStatus} for ${pending.toolName}`);
 
         return {
-            status: response.approved ? 'approved' : 'denied',
+            status: completionStatus,
             decision,
             reason: response.reason
         };

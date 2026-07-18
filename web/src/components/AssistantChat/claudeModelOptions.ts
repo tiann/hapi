@@ -1,4 +1,4 @@
-import { CLAUDE_MODEL_PRESETS, getClaudeModelLabel } from '@hapi/protocol'
+import { CLAUDE_MODEL_PRESETS, DEFAULT_CLAUDE_MODEL_LABEL, getClaudeModelLabel } from '@hapi/protocol'
 
 export type ClaudeComposerModelOption = {
     value: string | null
@@ -17,7 +17,7 @@ function normalizeClaudeComposerModel(model?: string | null): string | null {
 export function getClaudeComposerModelOptions(currentModel?: string | null): ClaudeComposerModelOption[] {
     const normalizedCurrentModel = normalizeClaudeComposerModel(currentModel)
     const options: ClaudeComposerModelOption[] = [
-        { value: null, label: 'Auto' }
+        { value: null, label: DEFAULT_CLAUDE_MODEL_LABEL }
     ]
 
     if (

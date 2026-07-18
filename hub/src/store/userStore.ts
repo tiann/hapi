@@ -22,8 +22,13 @@ export class UserStore {
         return getUsersByPlatformAndNamespace(this.db, platform, namespace)
     }
 
-    addUser(platform: string, platformUserId: string, namespace: string): StoredUser {
-        return addUser(this.db, platform, platformUserId, namespace)
+    addUser(
+        platform: string,
+        platformUserId: string,
+        namespace: string,
+        credentialFingerprint: string,
+    ): StoredUser {
+        return addUser(this.db, platform, platformUserId, namespace, credentialFingerprint)
     }
 
     removeUser(platform: string, platformUserId: string): boolean {

@@ -1,25 +1,36 @@
 import { describe, expect, it, mock, spyOn } from 'bun:test'
 import { HappyBot } from './bot'
 import type { SyncEngine } from '../sync/syncEngine'
-import type { Store } from '../store'
+import type { Store, StoredUser } from '../store'
+import type { AccessTokenBindingValidator } from '../utils/accessToken'
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
-function createFakeStore(): Store {
+function createFakeStore(users: StoredUser[] = []): Store {
     return {
         users: {
-            getUsersByPlatformAndNamespace: () => [],
-            getUser: () => null
+            getUsersByPlatformAndNamespace: (platform: string, namespace: string) => users.filter(
+                (user) => user.platform === platform && user.namespace === namespace,
+            ),
+            getUser: (platform: string, platformUserId: string) => users.find(
+                (user) => user.platform === platform && user.platformUserId === platformUserId,
+            ) ?? null,
         }
     } as unknown as Store
 }
 
-function createBot() {
+function createBot(
+    users: StoredUser[] = [],
+    isTelegramBindingCurrent: AccessTokenBindingValidator = () => true,
+) {
     const bot = new HappyBot({
         syncEngine: {} as unknown as SyncEngine,
         botToken: '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11',
         publicUrl: 'https://example.com',
-        store: createFakeStore()
+        store: createFakeStore(users),
+        isTelegramBindingCurrent,
+    } as ConstructorParameters<typeof HappyBot>[0] & {
+        isTelegramBindingCurrent: AccessTokenBindingValidator
     })
     return bot
 }
@@ -61,5 +72,37 @@ describe('HappyBot.start', () => {
         await bot.start() // second call should be no-op
 
         expect(innerBot.start).toHaveBeenCalledTimes(1)
+    })
+})
+
+describe('HappyBot Telegram binding authorization', () => {
+    it('filters invalidated bindings from callbacks and notification recipients', () => {
+        const users = [
+            {
+                id: 1,
+                platform: 'telegram',
+                platformUserId: '111',
+                namespace: 'alice',
+                credentialFingerprint: null,
+                createdAt: 1,
+            },
+            {
+                id: 2,
+                platform: 'telegram',
+                platformUserId: '222',
+                namespace: 'alice',
+                credentialFingerprint: 'current-fingerprint',
+                createdAt: 2,
+            },
+        ] as unknown as StoredUser[]
+        const bot = createBot(users, (user) => user.credentialFingerprint === 'current-fingerprint')
+        const internal = bot as unknown as {
+            getNamespaceForChatId(chatId: number): string | null
+            getBoundChatIds(namespace: string): number[]
+        }
+
+        expect(internal.getNamespaceForChatId(111)).toBeNull()
+        expect(internal.getNamespaceForChatId(222)).toBe('alice')
+        expect(internal.getBoundChatIds('alice')).toEqual([222])
     })
 })

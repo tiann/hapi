@@ -6,7 +6,7 @@ Short guide for AI agents in this repo. Prefer progressive loading: start with t
 
 ## What is HAPI?
 
-Local-first platform for running AI coding agents (Claude Code, Codex, Gemini) with remote control via web/phone. CLI wraps agents and connects to hub; hub serves web app and handles real-time sync.
+Local-first platform for running AI coding agents (Claude Code, Codex, Antigravity agy) with remote control via web/phone. CLI wraps agents and connects to hub; hub serves web app and handles real-time sync.
 
 ## Repo layout
 
@@ -36,7 +36,7 @@ Bun workspaces; `shared` consumed by cli, hub, web.
 ```
 
 **Data flow:**
-1. CLI spawns agent (claude/codex/gemini), connects to hub via Socket.IO
+1. CLI spawns agent (claude/codex/agy), connects to hub via Socket.IO
 2. Agent events → CLI → hub (socket `message` event) → DB + SSE broadcast
 3. Web subscribes to SSE `/api/events`, receives live updates
 4. User actions → Web → hub REST API → RPC to CLI → agent
@@ -60,6 +60,26 @@ Bun workspaces; `shared` consumed by cli, hub, web.
 - Prefer 4-space indentation
 - Zod for runtime validation (schemas in `shared/src/schemas.ts`)
 
+## HAPI maintenance closure
+
+When changing HAPI itself (source, tests, docs, agent instructions, scripts, config, runtime
+maintenance notes), finish the slice instead of leaving task-created dirt behind:
+
+- Verify with commands that match the touched surface (`bun typecheck`, focused tests, build,
+  `git diff --check`, or runtime smoke/doctor when operational behavior changes).
+- If the user requested review, or the change affects stability, routing, permissions, model
+  selection, agent bridges, or maintenance policy, run external review before finalizing. Prefer
+  Codex + Claude-DeepSeek when the user asks for the two-reviewer gate.
+- Runner-spawned agent sessions must expose local tool paths and stable session identity:
+  keep `~/.local/bin` on `PATH`, set `HAPI_SESSION_ID`, and use that id as the default
+  `CODEX_HANDOFF_CALLER_TAG` for handoff artifact attribution.
+- Read review results from the recorded artifact paths, fix any `FAIL`/`BLOCKED` findings, then
+  rerun the relevant verification/review loop.
+- After verification and required review pass, commit the exact touched paths. Do not leave this
+  task's HAPI changes uncommitted.
+- Keep unrelated dirty files separate: no `git add .`, broad `git reset`, broad `git stash`, or
+  `git clean` unless the user explicitly authorizes that cleanup.
+
 ## Common commands (repo root)
 
 ```bash
@@ -75,7 +95,7 @@ bun run build:single-exe # All-in-one binary
 - `api/` - Hub connection (Socket.IO client, auth)
 - `claude/` - Claude Code integration (wrapper, hooks)
 - `codex/` - Codex mode integration
-- `agent/` - Multi-agent support (Gemini via ACP)
+- `agent/` - Antigravity agy integration
 - `runner/` - Background daemon for remote spawn
 - `commands/` - CLI subcommands (auth, runner, doctor)
 - `modules/` - Tool implementations (ripgrep, difftastic, git)
@@ -138,7 +158,7 @@ bun run build:single-exe # All-in-one binary
 - **Versioned updates**: CLI sends `update-metadata`/`update-state` with version; hub rejects stale
 - **Session modes**: `local` (terminal) vs `remote` (web-controlled); switchable mid-session
 - **Permission modes**: `default`, `acceptEdits`, `bypassPermissions`, `plan`
-- **Namespaces**: Multi-user isolation via `CLI_API_TOKEN:<namespace>` suffix
+- **Namespaces**: Multi-user isolation via an independently assigned credential mapped server-side to exactly one namespace; never derive credentials with a token suffix
 
 ## Critical Thinking
 

@@ -1,4 +1,4 @@
-import type { CodexCollaborationMode, PermissionMode } from '@hapi/protocol/types'
+import type { CodexCollaborationMode, CodexServiceTier, PermissionMode } from '@hapi/protocol/types'
 import type { Store, StoredMachine, StoredSession } from '../../../store'
 import type { RpcRegistry } from '../../rpcRegistry'
 import type { SyncEvent } from '../../../sync/syncEngine'
@@ -13,11 +13,14 @@ import { cleanupTerminalHandlers, registerTerminalHandlers } from './terminalHan
 type SessionAlivePayload = {
     sid: string
     time: number
+    source?: 'cli' | 'codex-desktop-sync'
+    generation?: number
     thinking?: boolean
     mode?: 'local' | 'remote'
     permissionMode?: PermissionMode
     model?: string | null
     modelReasoningEffort?: string | null
+    serviceTier?: CodexServiceTier | null
     effort?: string | null
     collaborationMode?: CodexCollaborationMode
 }
@@ -25,6 +28,8 @@ type SessionAlivePayload = {
 type SessionEndPayload = {
     sid: string
     time: number
+    source?: 'cli' | 'codex-desktop-sync'
+    generation?: number
 }
 
 type MachineAlivePayload = {

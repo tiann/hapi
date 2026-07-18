@@ -24,7 +24,9 @@ function compareMessages(a: DecryptedMessage, b: DecryptedMessage): number {
     const aSeq = typeof a.seq === 'number' ? a.seq : null
     const bSeq = typeof b.seq === 'number' ? b.seq : null
 
-    if (aSeq !== null && bSeq !== null && aSeq !== bSeq) {
+    if (aSeq !== bSeq) {
+        if (aSeq === null) return 1
+        if (bSeq === null) return -1
         return aSeq - bSeq
     }
 
@@ -35,13 +37,6 @@ function compareMessages(a: DecryptedMessage, b: DecryptedMessage): number {
 }
 
 export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedMessage[]): DecryptedMessage[] {
-    if (existing.length === 0) {
-        return [...incoming].sort(compareMessages)
-    }
-    if (incoming.length === 0) {
-        return [...existing].sort(compareMessages)
-    }
-
     const byId = new Map<string, DecryptedMessage>()
     for (const msg of existing) {
         byId.set(msg.id, msg)
@@ -52,44 +47,28 @@ export function mergeMessages(existing: DecryptedMessage[], incoming: DecryptedM
 
     let merged = Array.from(byId.values())
 
-    const incomingStoredLocalIds = new Set<string>()
-    for (const msg of incoming) {
+    const storedLocalIds = new Set<string>()
+    for (const msg of merged) {
         if (msg.localId && !isOptimisticMessage(msg)) {
-            incomingStoredLocalIds.add(msg.localId)
+            storedLocalIds.add(msg.localId)
         }
     }
 
-    // If we received stored messages with a localId, drop any optimistic bubbles with the same localId.
-    if (incomingStoredLocalIds.size > 0) {
+    // A stored echo can arrive on either side of the merge. Drop any optimistic
+    // bubble with the same localId regardless of operand ordering.
+    if (storedLocalIds.size > 0) {
         merged = merged.filter((msg) => {
-            if (!msg.localId || !incomingStoredLocalIds.has(msg.localId)) {
+            if (!msg.localId || !storedLocalIds.has(msg.localId)) {
                 return true
             }
             return !isOptimisticMessage(msg)
         })
     }
 
-    // Fallback: if an optimistic message was marked as sent but we didn't get a localId echo,
-    // drop it when a server user message appears close in time.
-    const optimisticMessages = merged.filter((m) => isOptimisticMessage(m))
-    const nonOptimisticMessages = merged.filter((m) => !isOptimisticMessage(m))
-    const result: DecryptedMessage[] = [...nonOptimisticMessages]
-
-    for (const optimistic of optimisticMessages) {
-        if (optimistic.status === 'sent') {
-            const hasServerUserMessage = nonOptimisticMessages.some((m) =>
-                isUserMessage(m) &&
-                Math.abs(m.createdAt - optimistic.createdAt) < 10_000
-            )
-            if (hasServerUserMessage) {
-                continue
-            }
-        }
-        result.push(optimistic)
-    }
-
-    result.sort(compareMessages)
-    return result
+    // Do not reconcile by timestamp proximity: multiple user sends can occur in
+    // the same interval, and only localId is a one-to-one acknowledgement.
+    merged.sort(compareMessages)
+    return merged
 }
 
 export function upsertMessagesInCache(
@@ -105,9 +84,18 @@ export function upsertMessagesInCache(
                     messages: mergedIncoming,
                     page: {
                         limit: 50,
+                        direction: 'latest',
                         beforeSeq: null,
+                        afterSeq: null,
                         nextBeforeSeq: null,
+                        nextAfterSeq: null,
                         hasMore: false,
+                        hasOlder: false,
+                        hasNewer: false,
+                        range: null,
+                        startComplete: true,
+                        endComplete: true,
+                        continuation: null,
                     },
                 },
             ],

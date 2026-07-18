@@ -1,5 +1,5 @@
 import type { Session, SyncEngine, SyncEvent } from '../sync/syncEngine'
-import type { AttentionReason, NotificationChannel, NotificationHubOptions } from './notificationTypes'
+import type { AttentionReason, NotificationChannel, NotificationContext, NotificationHubOptions } from './notificationTypes'
 import { extractAttentionReason, extractMessageEventType, isAgentMessageEvent } from './eventParsing'
 
 export class NotificationHub {
@@ -91,6 +91,10 @@ export class NotificationHub {
             }
 
             if (eventType === 'ready') {
+                const session = this.syncEngine.getSession(event.sessionId)
+                if (session?.thinking) {
+                    return
+                }
                 this.agentActivityBySession.delete(event.sessionId)
                 this.sendReadyNotification(event.sessionId).catch((error) => {
                     console.error('[NotificationHub] Failed to send ready notification:', error)
@@ -229,9 +233,10 @@ export class NotificationHub {
     }
 
     private async notifyReady(session: Session): Promise<void> {
+        const context = this.buildNotificationContext(session)
         for (const channel of this.channels) {
             try {
-                await channel.sendReady(session)
+                await channel.sendReady(session, context)
             } catch (error) {
                 console.error('[NotificationHub] Failed to send ready notification:', error)
             }
@@ -239,9 +244,10 @@ export class NotificationHub {
     }
 
     private async notifyPermission(session: Session): Promise<void> {
+        const context = this.buildNotificationContext(session)
         for (const channel of this.channels) {
             try {
-                await channel.sendPermissionRequest(session)
+                await channel.sendPermissionRequest(session, context)
             } catch (error) {
                 console.error('[NotificationHub] Failed to send permission notification:', error)
             }
@@ -249,12 +255,21 @@ export class NotificationHub {
     }
 
     private async notifyAttention(session: Session, reason: AttentionReason): Promise<void> {
+        const context = this.buildNotificationContext(session)
         for (const channel of this.channels) {
             try {
-                await channel.sendAttention(session, reason)
+                await channel.sendAttention(session, reason, context)
             } catch (error) {
                 console.error('[NotificationHub] Failed to send attention notification:', error)
             }
+        }
+    }
+
+    private buildNotificationContext(session: Session): NotificationContext {
+        const unreadCount = this.syncEngine.incrementSessionNotificationUnread(session.id, session.namespace)
+        return {
+            unreadCount,
+            totalUnreadCount: this.syncEngine.getTotalNotificationUnread(session.namespace)
         }
     }
 }

@@ -1,10 +1,10 @@
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { arch, platform } from 'node:os';
-import * as tar from 'tar';
 import packageJson from '../../package.json';
 import type { EmbeddedAsset } from '#embedded-assets';
 import { isBunCompiled, runtimePath } from '@/projectPath';
+import { extractTarArchivesSafely } from './safeTarExtract';
 
 const RUNTIME_MARKER = '.runtime-version';
 
@@ -61,7 +61,8 @@ function areToolsUnpacked(unpackedPath: string): boolean {
 
     const expectedFiles = [
         join(unpackedPath, difftBinary),
-        join(unpackedPath, rgBinary)
+        join(unpackedPath, rgBinary),
+        join(unpackedPath, 'ripgrep.node')
     ];
 
     return expectedFiles.every((file) => existsSync(file));
@@ -85,7 +86,7 @@ function ensureTunwgExecutable(runtimeRoot: string): void {
     }
 }
 
-function unpackTools(runtimeRoot: string): void {
+async function unpackTools(runtimeRoot: string): Promise<void> {
     const platformDir = getPlatformDir();
     const toolsDir = join(runtimeRoot, 'tools');
     const archivesDir = join(toolsDir, 'archives');
@@ -94,9 +95,6 @@ function unpackTools(runtimeRoot: string): void {
     if (areToolsUnpacked(unpackedPath)) {
         return;
     }
-
-    rmSync(unpackedPath, { recursive: true, force: true });
-    ensureDirectory(unpackedPath);
 
     const archives = [
         `difftastic-${platformDir}.tar.gz`,
@@ -108,13 +106,17 @@ function unpackTools(runtimeRoot: string): void {
         if (!existsSync(archivePath)) {
             throw new Error(`Archive not found: ${archivePath}`);
         }
-        tar.extract({
-            file: archivePath,
-            cwd: unpackedPath,
-            sync: true,
-            preserveOwner: false
-        });
     }
+
+    await extractTarArchivesSafely({
+        archives: archives.map((archiveName) => join(archivesDir, archiveName)),
+        destination: unpackedPath,
+        expectedFiles: [
+            platform() === 'win32' ? 'difft.exe' : 'difft',
+            platform() === 'win32' ? 'rg.exe' : 'rg',
+            'ripgrep.node'
+        ]
+    });
 
     if (platform() !== 'win32') {
         const files = readdirSync(unpackedPath);
@@ -159,7 +161,7 @@ export async function ensureRuntimeAssets(): Promise<void> {
         await copyAssetFile(asset, targetPath);
     }
 
-    unpackTools(runtimeRoot);
+    await unpackTools(runtimeRoot);
     ensureTunwgExecutable(runtimeRoot);
     writeFileSync(markerPath, packageJson.version, 'utf-8');
 }

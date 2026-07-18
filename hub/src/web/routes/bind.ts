@@ -1,9 +1,12 @@
 import { Hono } from 'hono'
 import { SignJWT } from 'jose'
 import { z } from 'zod'
+import {
+    createAccessTokenBindingFingerprint,
+    resolveConfiguredAccessTokenNamespace,
+    type AccessTokenNamespaceResolver,
+} from '../../utils/accessToken'
 import { configuration } from '../../configuration'
-import { constantTimeEquals } from '../../utils/crypto'
-import { parseAccessToken } from '../../utils/accessToken'
 import { validateTelegramInitData } from '../telegramInitData'
 import { getOrCreateOwnerId } from '../../config/ownerId'
 import type { WebAppEnv } from '../middleware/auth'
@@ -14,8 +17,22 @@ const bindBodySchema = z.object({
     accessToken: z.string()
 })
 
-export function createBindRoutes(jwtSecret: Uint8Array, store: Store): Hono<WebAppEnv> {
+export type BindRouteOptions = {
+    resolveAccessTokenNamespace?: AccessTokenNamespaceResolver
+    getOwnerId?: () => Promise<number>
+    telegramBotToken?: string | null
+    validateTelegramInitData?: typeof validateTelegramInitData
+}
+
+export function createBindRoutes(
+    jwtSecret: Uint8Array,
+    store: Store,
+    options: BindRouteOptions = {},
+): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
+    const resolveAccessToken = options.resolveAccessTokenNamespace ?? resolveConfiguredAccessTokenNamespace
+    const getOwnerId = options.getOwnerId ?? getOrCreateOwnerId
+    const validateInitData = options.validateTelegramInitData ?? validateTelegramInitData
 
     app.post('/bind', async (c) => {
         const json = await c.req.json().catch(() => null)
@@ -24,17 +41,23 @@ export function createBindRoutes(jwtSecret: Uint8Array, store: Store): Hono<WebA
             return c.json({ error: 'Invalid body' }, 400)
         }
 
-        const parsedToken = parseAccessToken(parsed.data.accessToken)
-        if (!parsedToken || !constantTimeEquals(parsedToken.baseToken, configuration.cliApiToken)) {
+        const namespace = resolveAccessToken(parsed.data.accessToken)
+        if (!namespace) {
             return c.json({ error: 'Invalid access token' }, 401)
         }
-        const namespace = parsedToken.namespace
+        const credentialFingerprint = createAccessTokenBindingFingerprint(parsed.data.accessToken, jwtSecret)
+        if (!credentialFingerprint) {
+            return c.json({ error: 'Invalid access token' }, 401)
+        }
 
-        if (!configuration.telegramEnabled || !configuration.telegramBotToken) {
+        const telegramBotToken = options.telegramBotToken === undefined
+            ? configuration.telegramBotToken
+            : options.telegramBotToken
+        if (!telegramBotToken) {
             return c.json({ error: 'Telegram authentication is disabled. Configure TELEGRAM_BOT_TOKEN.' }, 503)
         }
 
-        const result = validateTelegramInitData(parsed.data.initData, configuration.telegramBotToken)
+        const result = validateInitData(parsed.data.initData, telegramBotToken)
         if (!result.ok) {
             return c.json({ error: result.error }, 401)
         }
@@ -44,9 +67,9 @@ export function createBindRoutes(jwtSecret: Uint8Array, store: Store): Hono<WebA
         if (existingUser && existingUser.namespace !== namespace) {
             return c.json({ error: 'already_bound' }, 409)
         }
-        store.users.addUser('telegram', telegramUserId, namespace)
+        store.users.addUser('telegram', telegramUserId, namespace, credentialFingerprint)
 
-        const userId = await getOrCreateOwnerId()
+        const userId = await getOwnerId()
 
         const token = await new SignJWT({ uid: userId, ns: namespace })
             .setProtectedHeader({ alg: 'HS256' })

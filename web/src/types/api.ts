@@ -1,10 +1,12 @@
 import type {
     DecryptedMessage as ProtocolDecryptedMessage,
+    MachineMetadata,
     Session,
     SessionSummary,
     SyncEvent as ProtocolSyncEvent,
     WorktreeMetadata
 } from '@hapi/protocol/types'
+import type { ProviderReadinessIssueCode } from '@hapi/protocol'
 
 export type {
     AgentState,
@@ -27,8 +29,11 @@ export type SessionMetadataSummary = {
     host: string
     version?: string
     name?: string
+    title?: string
+    titleUpdatedAt?: number
     os?: string
     summary?: { text: string; updatedAt: number }
+    mirrorSource?: string
     machineId?: string
     tools?: string[]
     flavor?: string | null
@@ -61,12 +66,7 @@ export type RunnerState = {
 export type Machine = {
     id: string
     active: boolean
-    metadata: {
-        host: string
-        platform: string
-        happyCliVersion: string
-        displayName?: string
-    } | null
+    metadata: MachineMetadata | null
     runnerState?: RunnerState | null
 }
 
@@ -82,22 +82,60 @@ export type AuthResponse = {
 
 export type SessionsResponse = { sessions: SessionSummary[] }
 export type SessionResponse = { session: Session }
+export type MessagePageContinuation = {
+    direction: 'older' | 'newer'
+    cursorSeq: number
+}
+export type MessagePage = {
+    limit: number
+    direction: 'latest' | 'older' | 'newer'
+    beforeSeq: number | null
+    afterSeq: number | null
+    nextBeforeSeq: number | null
+    nextAfterSeq: number | null
+    hasMore: boolean
+    hasOlder: boolean
+    hasNewer: boolean
+    range: { startSeq: number; endSeq: number } | null
+    startComplete: boolean
+    endComplete: boolean
+    continuation: MessagePageContinuation | null
+}
 export type MessagesResponse = {
     messages: DecryptedMessage[]
-    page: {
-        limit: number
-        beforeSeq: number | null
-        nextBeforeSeq: number | null
-        hasMore: boolean
-    }
+    page: MessagePage
 }
 
-export type MachinesResponse = { machines: Machine[] }
+export type RecentUserMessage = {
+    id: string
+    seq: number
+    createdAt: number
+    text: string
+}
+
+export type RecentUserMessagesResponse = {
+    messages: RecentUserMessage[]
+}
+
+export type MachinesResponse = {
+    machines: Machine[]
+    knownMachinesCount: number
+    offlineMachinesCount: number
+    /** Hub wall clock at response time. Optional for compatibility with older Hubs. */
+    serverTime?: number
+}
 export type MachinePathsExistsResponse = { exists: Record<string, boolean> }
 
 export type SpawnResponse =
     | { type: 'success'; sessionId: string }
-    | { type: 'error'; message: string }
+    | { type: 'pending'; spawnRequestId: string }
+    | { type: 'not_found'; spawnRequestId: string }
+    | {
+        type: 'error'
+        message: string
+        code?: ProviderReadinessIssueCode
+        recoveryCommand?: string
+    }
 
 export type GitCommandResponse = {
     success: boolean
@@ -180,6 +218,21 @@ export type SlashCommand = {
 export type SlashCommandsResponse = {
     success: boolean
     commands?: SlashCommand[]
+    error?: string
+}
+
+export type MentionSummary = {
+    name: string
+    label: string
+    insertText: string
+    description?: string
+    kind: 'app' | 'plugin'
+    pluginName: string
+}
+
+export type MentionsResponse = {
+    success: boolean
+    mentions?: MentionSummary[]
     error?: string
 }
 

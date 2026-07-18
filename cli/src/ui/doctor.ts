@@ -9,14 +9,18 @@ import chalk from 'chalk'
 import { configuration } from '@/configuration'
 import { readSettings } from '@/persistence'
 import { checkIfRunnerRunningAndCleanupStaleState } from '@/runner/controlClient'
-import { findRunawayHappyProcesses, findAllHappyProcesses } from '@/runner/doctor'
+import { findAllHappyProcesses, inventoryUnsupportedRunnerTopologies } from '@/runner/doctor'
 import { readRunnerState } from '@/persistence'
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { isBunCompiled, projectPath, runtimePath } from '@/projectPath'
 import { getInvokedCwd } from '@/utils/invokedCwd'
+import { buildDoctorSettingsSummary } from '@/ui/doctorSettings'
+import { verifyConfiguredRunnerLaunchAgentInstallation } from '@/runner/supportedTopology'
 import packageJson from '../../package.json'
+import { execFileSync } from 'node:child_process'
 
 /**
  * Get relevant environment information for debugging
@@ -69,11 +73,15 @@ function getLogFiles(logDir: string): { file: string, path: string, modified: Da
 /**
  * Run doctor command specifically for runner diagnostics
  */
-export async function runDoctorRunner(): Promise<void> {
-    return runDoctorCommand('runner');
+export type DoctorCommandOptions = {
+    fullArgs?: boolean
 }
 
-export async function runDoctorCommand(filter?: 'all' | 'runner'): Promise<void> {
+export async function runDoctorRunner(options: DoctorCommandOptions = {}): Promise<void> {
+    return runDoctorCommand('runner', options);
+}
+
+export async function runDoctorCommand(filter?: 'all' | 'runner', options: DoctorCommandOptions = {}): Promise<void> {
     // Default to 'all' if no filter specified
     if (!filter) {
         filter = 'all';
@@ -105,6 +113,18 @@ export async function runDoctorCommand(filter?: 'all' | 'runner'): Promise<void>
         }
         console.log('');
 
+        console.log(chalk.bold('🟠 Grok CLI'));
+        try {
+            const version = execFileSync('grok', ['version'], { encoding: 'utf8', timeout: 5000 }).trim();
+            console.log(chalk.green(`✓ Grok CLI available: ${version}`));
+            console.log(`  GROK_HOME: ${chalk.blue(process.env.GROK_HOME || join(process.env.HOME || '', '.grok'))}`);
+            console.log(chalk.gray('  HAPI remote mode uses `grok agent --no-leader stdio`; native TUI uses the same Grok home/config.'));
+        } catch (error) {
+            console.log(chalk.red('❌ Grok CLI is unavailable or failed `grok version`'));
+            console.log(chalk.gray(`  ${error instanceof Error ? error.message : String(error)}`));
+        }
+        console.log('');
+
         // Configuration
         console.log(chalk.bold('⚙️  Configuration'));
         console.log(`hapi Home: ${chalk.blue(configuration.happyHomeDir)}`);
@@ -126,8 +146,7 @@ export async function runDoctorCommand(filter?: 'all' | 'runner'): Promise<void>
         try {
             settings = await readSettings();
             console.log(chalk.bold('\n📄 Settings (settings.json):'));
-            // Hide cliApiToken in output for security
-            const displaySettings = { ...settings, cliApiToken: settings.cliApiToken ? '***' : undefined };
+            const displaySettings = buildDoctorSettingsSummary(settings);
             console.log(chalk.gray(JSON.stringify(displaySettings, null, 2)));
         } catch (error) {
             console.log(chalk.bold('\n📄 Settings:'));
@@ -178,9 +197,33 @@ export async function runDoctorCommand(filter?: 'all' | 'runner'): Promise<void>
         }
 
         // All hapi processes
-        const allProcesses = await findAllHappyProcesses();
+        const allProcesses = await findAllHappyProcesses({ fullArgs: options.fullArgs });
+        const unsupportedTopologies = await inventoryUnsupportedRunnerTopologies();
+        const launchAgentIdentity = await verifyConfiguredRunnerLaunchAgentInstallation({
+            platform: process.platform,
+            currentUid: process.getuid?.() ?? -1,
+            hapiHome: configuration.happyHomeDir,
+            homeDirectory: homedir(),
+            ...(isRunning && state ? { expectedPid: state.pid } : {}),
+        });
+        console.log(chalk.bold('\n🧭 Runner Supervisor Topology'));
+        if (unsupportedTopologies.length === 0) {
+            console.log(chalk.green('✓ No unsupported supervisor script, Terminal fallback, or monitor loop detected'));
+        } else {
+            console.log(chalk.yellow(`⚠️  Unsupported topology detected: ${unsupportedTopologies.join(', ')}`));
+            console.log(chalk.gray('  Enforcement remains unsafe until these launch paths are removed and the direct LaunchAgent topology is installed.'));
+        }
+        if (launchAgentIdentity.eligible) {
+            console.log(chalk.green(`✓ Direct LaunchAgent identity verified: ${launchAgentIdentity.label}`));
+        } else if (process.platform === 'darwin') {
+            console.log(chalk.yellow(`⚠️  Direct LaunchAgent identity not verified: ${launchAgentIdentity.reason}`));
+            console.log(chalk.gray('  Startup reconciliation remains report-only until the exact per-home job and private plist match.'));
+        }
         if (allProcesses.length > 0) {
             console.log(chalk.bold('\n🔍 All hapi CLI Processes'));
+            if (!options.fullArgs) {
+                console.log(chalk.gray('  Process command lines are redacted/truncated by default. Use --full-args to show full argv.'));
+            }
 
             // Group by type
             const grouped = allProcesses.reduce((groups, process) => {
@@ -220,7 +263,7 @@ export async function runDoctorCommand(filter?: 'all' | 'runner'): Promise<void>
 
         if (filter === 'all' && allProcesses.length > 1) { // More than just current process
             console.log(chalk.bold('\n💡 Process Management'));
-            console.log(chalk.gray('To clean up runaway processes: hapi doctor clean'));
+            console.log(chalk.gray('Automatic PID/name-based cleanup is disabled; verify every legacy identity manually.'));
         }
     } catch (error) {
         console.log(chalk.red('❌ Error checking runner status'));

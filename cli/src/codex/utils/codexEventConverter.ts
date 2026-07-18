@@ -1,12 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { logger } from '@/ui/logger';
+import { compactToolOutputForHapi } from './toolOutputCompaction';
 
 const CodexSessionEventSchema = z.object({
     timestamp: z.string().optional(),
     type: z.string(),
     payload: z.unknown().optional()
 });
+
+const localToolNamesByCallId = new Map<string, string>();
 
 export type CodexSessionEvent = z.infer<typeof CodexSessionEventSchema>;
 
@@ -200,6 +203,7 @@ export function convertCodexEvent(rawEvent: unknown): CodexConversionResult | nu
             if (!name || !callId) {
                 return null;
             }
+            localToolNamesByCallId.set(callId, name);
             return {
                 message: {
                     type: 'tool-call',
@@ -216,11 +220,16 @@ export function convertCodexEvent(rawEvent: unknown): CodexConversionResult | nu
             if (!callId) {
                 return null;
             }
+            const toolName = localToolNamesByCallId.get(callId) ?? 'CodexTool';
+            localToolNamesByCallId.delete(callId);
             return {
                 message: {
                     type: 'tool-call-result',
                     callId,
-                    output: payloadRecord.output,
+                    output: compactToolOutputForHapi(payloadRecord.output, {
+                        callId,
+                        toolName
+                    }),
                     id: randomUUID()
                 }
             };

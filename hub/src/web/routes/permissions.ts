@@ -6,7 +6,8 @@ import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
 
-const decisionSchema = z.enum(['approved', 'approved_for_session', 'denied', 'abort'])
+const approveDecisionSchema = z.enum(['approved', 'approved_for_session'])
+const denyDecisionSchema = z.enum(['denied', 'abort'])
 
 // Flat format: Record<string, string[]> (AskUserQuestion)
 // Nested format: Record<string, { answers: string[] }> (request_user_input)
@@ -18,12 +19,12 @@ const answersSchema = z.union([
 const approveBodySchema = z.object({
     mode: PermissionModeSchema.optional(),
     allowTools: z.array(z.string()).optional(),
-    decision: decisionSchema.optional(),
+    decision: approveDecisionSchema.optional(),
     answers: answersSchema.optional()
 })
 
 const denyBodySchema = z.object({
-    decision: decisionSchema.optional()
+    decision: denyDecisionSchema.optional()
 })
 
 export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {

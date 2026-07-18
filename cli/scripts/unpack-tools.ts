@@ -1,8 +1,8 @@
-import { chmodSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { arch, platform } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import * as tar from 'tar';
+import { extractTarArchivesSafely } from '../src/runtime/safeTarExtract';
 
 export function getPlatformDir(): string {
     const platformName = platform();
@@ -38,28 +38,14 @@ function areToolsUnpacked(toolsDir: string): boolean {
 
     const expectedFiles = [
         join(unpackedPath, difftBinary),
-        join(unpackedPath, rgBinary)
+        join(unpackedPath, rgBinary),
+        join(unpackedPath, 'ripgrep.node')
     ];
 
     return expectedFiles.every((file) => existsSync(file));
 }
 
-function unpackArchive(archivePath: string, destDir: string): void {
-    if (!existsSync(destDir)) {
-        mkdirSync(destDir, { recursive: true });
-    }
-
-    tar.extract({
-        file: archivePath,
-        cwd: destDir,
-        sync: true,
-        gzip: true,
-        preserveMode: true,
-        preserveOwner: false
-    });
-}
-
-export function unpackTools(): { success: true; alreadyUnpacked: boolean } {
+export async function unpackTools(): Promise<{ success: true; alreadyUnpacked: boolean }> {
     const platformDir = getPlatformDir();
     const toolsDir = getToolsDir();
     const archivesDir = join(toolsDir, 'archives');
@@ -71,10 +57,6 @@ export function unpackTools(): { success: true; alreadyUnpacked: boolean } {
     }
 
     console.log(`Unpacking tools for ${platformDir}...`);
-    if (!existsSync(unpackedPath)) {
-        mkdirSync(unpackedPath, { recursive: true });
-    }
-
     const archives = [
         `difftastic-${platformDir}.tar.gz`,
         `ripgrep-${platformDir}.tar.gz`
@@ -85,8 +67,17 @@ export function unpackTools(): { success: true; alreadyUnpacked: boolean } {
         if (!existsSync(archivePath)) {
             throw new Error(`Archive not found: ${archivePath}`);
         }
-        unpackArchive(archivePath, unpackedPath);
     }
+
+    await extractTarArchivesSafely({
+        archives: archives.map((archiveName) => join(archivesDir, archiveName)),
+        destination: unpackedPath,
+        expectedFiles: [
+            platform() === 'win32' ? 'difft.exe' : 'difft',
+            platform() === 'win32' ? 'rg.exe' : 'rg',
+            'ripgrep.node'
+        ]
+    });
 
     if (platform() !== 'win32') {
         const files = readdirSync(unpackedPath);
@@ -105,7 +96,7 @@ export function unpackTools(): { success: true; alreadyUnpacked: boolean } {
 
 if (import.meta.main) {
     try {
-        unpackTools();
+        await unpackTools();
         process.exit(0);
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

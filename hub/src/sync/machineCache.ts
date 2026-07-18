@@ -1,17 +1,8 @@
-import { z } from 'zod'
+import { MachineMetadataSchema } from '@hapi/protocol/schemas'
+import type { MachineMetadata } from '@hapi/protocol/types'
 import type { Store } from '../store'
 import { clampAliveTime } from './aliveTime'
 import { EventPublisher } from './eventPublisher'
-
-const machineMetadataSchema = z.object({
-    host: z.string().optional(),
-    platform: z.string().optional(),
-    happyCliVersion: z.string().optional(),
-    displayName: z.string().optional(),
-    homeDir: z.string().optional(),
-    happyHomeDir: z.string().optional(),
-    happyLibDir: z.string().optional()
-})
 
 export interface Machine {
     id: string
@@ -21,15 +12,7 @@ export interface Machine {
     updatedAt: number
     active: boolean
     activeAt: number
-    metadata: {
-        host: string
-        platform: string
-        happyCliVersion: string
-        displayName?: string
-        homeDir?: string
-        happyHomeDir?: string
-        happyLibDir?: string
-    } | null
+    metadata: MachineMetadata | null
     metadataVersion: number
     runnerState: unknown | null
     runnerStateVersion: number
@@ -91,17 +74,8 @@ export class MachineCache {
         const existing = this.machines.get(machineId)
 
         const metadata = (() => {
-            const parsed = machineMetadataSchema.safeParse(stored.metadata)
-            if (!parsed.success) return null
-            const data = parsed.data
-            const host = typeof data.host === 'string' ? data.host : 'unknown'
-            const platform = typeof data.platform === 'string' ? data.platform : 'unknown'
-            const happyCliVersion = typeof data.happyCliVersion === 'string' ? data.happyCliVersion : 'unknown'
-            const displayName = typeof data.displayName === 'string' ? data.displayName : undefined
-            const homeDir = typeof data.homeDir === 'string' ? data.homeDir : undefined
-            const happyHomeDir = typeof data.happyHomeDir === 'string' ? data.happyHomeDir : undefined
-            const happyLibDir = typeof data.happyLibDir === 'string' ? data.happyLibDir : undefined
-            return { host, platform, happyCliVersion, displayName, homeDir, happyHomeDir, happyLibDir }
+            const parsed = MachineMetadataSchema.safeParse(stored.metadata)
+            return parsed.success ? parsed.data : null
         })()
 
         const storedActiveAt = stored.activeAt ?? stored.createdAt

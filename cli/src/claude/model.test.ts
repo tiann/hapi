@@ -13,6 +13,8 @@ describe('normalizeClaudeSessionModel', () => {
     })
 
     it('preserves Claude aliases and full model strings', () => {
+        expect(normalizeClaudeSessionModel('fable')).toBe('fable')
+        expect(normalizeClaudeSessionModel('claude-fable-5[1m]')).toBe('claude-fable-5[1m]')
         expect(normalizeClaudeSessionModel('sonnet')).toBe('sonnet')
         expect(normalizeClaudeSessionModel('opus[1m]')).toBe('opus[1m]')
         expect(normalizeClaudeSessionModel('claude-3-7-sonnet-latest')).toBe('claude-3-7-sonnet-latest')

@@ -15,7 +15,7 @@ React Mini App / PWA for monitoring and controlling hapi sessions.
 ## Runtime behavior
 
 - When opened inside Telegram, auth uses Telegram WebApp init data.
-- When opened in a normal browser, you can log in with `CLI_API_TOKEN:<namespace>` (or `CLI_API_TOKEN` for the default namespace).
+- When opened in a normal browser, use `CLI_API_TOKEN` for the default namespace. For a non-default namespace, use its independently assigned credential from `HAPI_NAMESPACE_TOKENS_JSON` or `settings.json.namespaceTokens`; never derive one by appending a namespace suffix.
 - The login screen includes a top-right hub picker; if unset, the app uses the same origin it was loaded from.
 - Live updates come from the hub via SSE.
 
@@ -40,7 +40,7 @@ See `src/router.tsx` for route definitions.
 - Session title from name, summary, or path.
 - Todo progress display.
 - Pending permission request count.
-- Agent flavor label (claude/codex/gemini).
+- Agent flavor label (claude/codex/agy).
 - Model mode display.
 
 ### Chat interface (`src/components/SessionChat.tsx`)
@@ -88,7 +88,7 @@ Modular session creation:
 See `src/hooks/useAuth.ts` and `src/hooks/useAuthSource.ts`.
 
 - Telegram Mini App: Uses initData from WebApp SDK.
-- Browser: Uses CLI_API_TOKEN from login prompt.
+- Browser: Uses `CLI_API_TOKEN` for the default namespace or the selected namespace's independent credential from `HAPI_NAMESPACE_TOKENS_JSON` / `settings.json.namespaceTokens`.
 - JWT tokens with auto-refresh.
 
 ## Data fetching

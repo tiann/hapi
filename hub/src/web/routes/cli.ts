@@ -1,9 +1,11 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { PROTOCOL_VERSION } from '@hapi/protocol'
-import { configuration } from '../../configuration'
-import { constantTimeEquals } from '../../utils/crypto'
-import { parseAccessToken } from '../../utils/accessToken'
+import { CodexServiceTierSchema, MachineMetadataSchema } from '@hapi/protocol/schemas'
+import {
+    resolveConfiguredAccessTokenNamespace,
+    type AccessTokenNamespaceResolver,
+} from '../../utils/accessToken'
 import type { Machine, Session, SyncEngine } from '../../sync/syncEngine'
 
 const bearerSchema = z.string().regex(/^Bearer\s+(.+)$/i)
@@ -14,12 +16,13 @@ const createOrLoadSessionSchema = z.object({
     agentState: z.unknown().nullable().optional(),
     model: z.string().optional(),
     modelReasoningEffort: z.string().optional(),
+    serviceTier: CodexServiceTierSchema.optional(),
     effort: z.string().optional()
 })
 
 const createOrLoadMachineSchema = z.object({
     id: z.string().min(1),
-    metadata: z.unknown(),
+    metadata: MachineMetadataSchema,
     runnerState: z.unknown().nullable().optional()
 })
 
@@ -28,10 +31,33 @@ const getMessagesQuerySchema = z.object({
     limit: z.coerce.number().int().min(1).max(200).optional()
 })
 
+const PASSIVE_SYNC_SOURCES = new Set(['cli', 'codex-desktop-sync'])
+const PASSIVE_SYNC_LOCAL_ID_PREFIX = 'codex:'
+
 type CliEnv = {
     Variables: {
         namespace: string
     }
+}
+
+function getMessageSentFrom(content: unknown): string | null {
+    if (!content || typeof content !== 'object') {
+        return null
+    }
+    const meta = (content as { meta?: unknown }).meta
+    if (!meta || typeof meta !== 'object') {
+        return null
+    }
+    const sentFrom = (meta as { sentFrom?: unknown }).sentFrom
+    return typeof sentFrom === 'string' ? sentFrom : null
+}
+
+function isPassiveSyncBackfillMessage(message: { localId?: string | null; content: unknown }): boolean {
+    if (typeof message.localId === 'string' && message.localId.startsWith(PASSIVE_SYNC_LOCAL_ID_PREFIX)) {
+        return true
+    }
+    const sentFrom = getMessageSentFrom(message.content)
+    return sentFrom !== null && PASSIVE_SYNC_SOURCES.has(sentFrom)
 }
 
 function resolveSessionForNamespace(
@@ -65,7 +91,10 @@ function resolveMachineForNamespace(
     return { ok: false, status: 404, error: 'Machine not found' }
 }
 
-export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<CliEnv> {
+export function createCliRoutes(
+    getSyncEngine: () => SyncEngine | null,
+    resolveAccessToken: AccessTokenNamespaceResolver = resolveConfiguredAccessTokenNamespace,
+): Hono<CliEnv> {
     const app = new Hono<CliEnv>()
 
     app.use('*', async (c, next) => {
@@ -82,12 +111,12 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         }
 
         const token = parsed.data.replace(/^Bearer\s+/i, '')
-        const parsedToken = parseAccessToken(token)
-        if (!parsedToken || !constantTimeEquals(parsedToken.baseToken, configuration.cliApiToken)) {
+        const namespace = resolveAccessToken(token)
+        if (!namespace) {
             return c.json({ error: 'Invalid token' }, 401)
         }
 
-        c.set('namespace', parsedToken.namespace)
+        c.set('namespace', namespace)
         return await next()
     })
 
@@ -110,7 +139,8 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
             namespace,
             parsed.data.model,
             parsed.data.effort,
-            parsed.data.modelReasoningEffort
+            parsed.data.modelReasoningEffort,
+            parsed.data.serviceTier
         )
         return c.json({ session })
     })
@@ -147,7 +177,9 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         }
 
         const limit = parsed.data.limit ?? 200
-        const messages = engine.getMessagesAfter(resolved.sessionId, { afterSeq: parsed.data.afterSeq, limit })
+        const messages = engine
+            .getMessagesAfter(resolved.sessionId, { afterSeq: parsed.data.afterSeq, limit })
+            .filter((message) => !isPassiveSyncBackfillMessage(message))
         return c.json({ messages })
     })
 

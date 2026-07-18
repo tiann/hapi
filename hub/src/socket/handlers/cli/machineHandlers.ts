@@ -1,4 +1,4 @@
-import type { ClientToServerEvents } from '@hapi/protocol'
+import { MachineMetadataSchema, ManagedSessionOutcomeRequestSchema, ManagedStopBarrierRequestSchema, isObject, type ClientToServerEvents, type ManagedSessionOutcomeAck, type ManagedSessionOutcomeRequest, type ManagedStopBarrierAck, type ManagedStopBarrierRequest } from '@hapi/protocol'
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
 import type { Store, StoredMachine } from '../../../store'
@@ -21,7 +21,7 @@ type MachineUpdateStateHandler = ClientToServerEvents['machine-update-state']
 const machineUpdateMetadataSchema = z.object({
     machineId: z.string(),
     expectedVersion: z.number().int(),
-    metadata: z.unknown()
+    metadata: MachineMetadataSchema
 })
 
 const machineUpdateStateSchema = z.object({
@@ -56,7 +56,7 @@ export function registerMachineHandlers(socket: CliSocketWithData, deps: Machine
     const handleMachineMetadataUpdate: MachineUpdateMetadataHandler = (data, cb) => {
         const parsed = machineUpdateMetadataSchema.safeParse(data)
         if (!parsed.success) {
-            cb({ result: 'error' })
+            cb({ result: 'error', reason: 'invalid-request' })
             return
         }
 
@@ -140,4 +140,69 @@ export function registerMachineHandlers(socket: CliSocketWithData, deps: Machine
 
     socket.on('machine-update-metadata', handleMachineMetadataUpdate)
     socket.on('machine-update-state', handleMachineStateUpdate)
+    socket.on('runner-managed-session-outcome', (raw: ManagedSessionOutcomeRequest, cb: (answer: ManagedSessionOutcomeAck) => void) => {
+        const parsed = ManagedSessionOutcomeRequestSchema.safeParse(raw)
+        if (!parsed.success) {
+            cb({ result: 'error', reason: 'invalid-request' })
+            return
+        }
+        const request = parsed.data
+        const namespace = typeof socket.data.namespace === 'string' ? socket.data.namespace : null
+        const authenticatedMachineId = typeof (socket.handshake.auth as Record<string, unknown> | undefined)?.machineId === 'string'
+            ? (socket.handshake.auth as Record<string, unknown>).machineId as string
+            : null
+        if (!namespace || authenticatedMachineId !== request.machineId || request.namespace !== namespace) {
+            cb({ result: 'error', reason: 'access-denied' })
+            return
+        }
+        try {
+            if (!request.sessionId) {
+                cb({ result: 'deferred', launchNonce: request.launchNonce })
+                return
+            }
+            const canonicalSessionId = store.managedSessions.resolveCanonical(namespace, request.sessionId)
+            const session = store.sessions.getSessionByNamespace(canonicalSessionId, namespace)
+            const metadata = session && isObject(session.metadata) ? session.metadata : null
+            if (!session || !metadata || metadata.launchNonce !== request.launchNonce || metadata.runnerInstanceId !== request.runnerInstanceId) {
+                cb({ result: 'error', reason: session ? 'launch-mismatch' : 'not-found' })
+                return
+            }
+            const answer = store.managedSessions.markOutcome({ ...request, sessionId: canonicalSessionId, expectedVersion: session.metadataVersion })
+            cb(answer)
+            if (answer.result === 'success') {
+                onWebappEvent?.({ type: 'session-updated', sessionId: answer.canonicalSessionId })
+            }
+        } catch {
+            cb({ result: 'error', reason: 'internal-error' })
+        }
+    })
+    socket.on('runner-managed-stop-barrier', (raw: ManagedStopBarrierRequest, cb: (answer: ManagedStopBarrierAck) => void) => {
+        const parsed = ManagedStopBarrierRequestSchema.safeParse(raw)
+        if (!parsed.success) return cb({ eligible: false, reason: 'invalid-request' })
+        const request = parsed.data
+        const namespace = typeof socket.data.namespace === 'string' ? socket.data.namespace : null
+        const authenticatedMachineId = typeof (socket.handshake.auth as Record<string, unknown> | undefined)?.machineId === 'string'
+            ? (socket.handshake.auth as Record<string, unknown>).machineId as string
+            : null
+        if (!namespace || request.namespace !== namespace || request.machineId !== authenticatedMachineId) {
+            return cb({ eligible: false, reason: 'access-denied' })
+        }
+        try {
+            const canonicalSessionId = store.managedSessions.resolveCanonical(namespace, request.sessionId)
+            const session = store.sessions.getSessionByNamespace(canonicalSessionId, namespace)
+            const metadata = session && isObject(session.metadata) ? session.metadata : null
+            if (!session || !metadata) return cb({ eligible: false, reason: 'not-found' })
+            if (metadata.launchNonce !== request.launchNonce || metadata.runnerInstanceId !== request.runnerInstanceId) {
+                return cb({ eligible: false, reason: 'launch-mismatch' })
+            }
+            if (session.active || metadata.lifecycleState === 'running') return cb({ eligible: false, reason: 'session-active' })
+            if (metadata.stopReasonCode === 'ambiguous-turn-delivery'
+                || store.deliveryAttempts.hasUnresolvedAmbiguous(namespace, canonicalSessionId)) {
+                return cb({ eligible: false, reason: 'ambiguous-delivery' })
+            }
+            return cb({ eligible: true, reason: 'canonical-terminal-outcome' })
+        } catch {
+            return cb({ eligible: false, reason: 'internal-error' })
+        }
+    })
 }

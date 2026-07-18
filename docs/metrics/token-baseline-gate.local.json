@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "name": "real-history-2026-07-04-token-baseline",
+  "description": "Local strict replay gate built from maintainer HAPI/Codex/Claude history on 2026-07-04. Enforces conservative local corpus volume minimums and compaction ratio maximums.",
+  "minimums": {
+    "codex": {
+      "hapi-codex": {
+        "sessions": 200,
+        "compactSessions": 45,
+        "compactEvents": 600
+      },
+      "cli-codex": {
+        "sessions": 1500,
+        "compactSessions": 55,
+        "compactEvents": 300
+      }
+    },
+    "claude": {
+      "sessions": 3000,
+      "compactBoundaries": 12
+    }
+  },
+  "maximums": {
+    "codexPostOverPreMedian": {
+      "hapi-codex": 0.2,
+      "cli-codex": 0.2
+    },
+    "claudePostOverPreMedian": 0.05
+  }
+}

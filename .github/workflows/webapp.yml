@@ -5,7 +5,20 @@ on:
         branches:
             - main
         paths:
+            - 'bun.lock'
+            - 'package.json'
+            - 'cli/package.json'
+            - 'shared/package.json'
+            - 'shared/src/**'
+            - 'hub/package.json'
             - 'web/**'
+            - 'web/package.json'
+            - 'website/package.json'
+            - 'docs/package.json'
+            - 'tools/hapi-codex-sync/package.json'
+            - 'tools/hapi-codex-sync/package-lock.json'
+            - 'scripts/dependency-security/**'
+            - 'security/dependencies/**'
             - '.github/workflows/webapp.yml'
     workflow_dispatch:
 
@@ -24,7 +37,11 @@ jobs:
         steps:
             - uses: actions/checkout@v4
             - uses: oven-sh/setup-bun@v2
-            - run: bun install
+              with:
+                  bun-version: '1.3.11'
+            - run: bun install --frozen-lockfile
+            - name: Gate dependency security policy
+              run: bun run dependency:security -- --out "$RUNNER_TEMP/dependency-security" --as-of "$(date -u +%F)"
             - name: Build web app
               env:
                   VITE_REQUIRE_HUB_URL: '1'

@@ -1,0 +1,70 @@
+{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "hapi-fixture",
+      "devDependencies": {
+        "duplicate": "1.0.0",
+      },
+    },
+    "cli": {
+      "name": "@fixture/cli",
+      "version": "1.0.0",
+      "dependencies": {
+        "runtime-parent": "1.0.0",
+      },
+    },
+    "hub": {
+      "name": "@fixture/hub",
+      "version": "1.0.0",
+      "dependencies": {
+        "duplicate": "1.0.0",
+      },
+    },
+    "shared": {
+      "name": "@fixture/shared",
+      "version": "1.0.0",
+      "dependencies": {
+        "duplicate": "1.0.0",
+      },
+    },
+    "web": {
+      "name": "@fixture/web",
+      "version": "1.0.0",
+      "dependencies": {
+        "dual-role": "1.0.0",
+        "duplicate": "1.0.0",
+      },
+      "devDependencies": {
+        "dual-role": "1.0.0",
+      },
+    },
+    "website": {
+      "name": "fixture-website",
+      "version": "1.0.0",
+      "dependencies": {
+        "duplicate": "1.0.0",
+      },
+      "devDependencies": {
+        "workspace-tool": "2.0.0",
+      },
+    },
+    "docs": {
+      "name": "@fixture/docs",
+      "version": "1.0.0",
+      "devDependencies": {
+        "duplicate": "1.0.0",
+      },
+    },
+  },
+  "packages": {
+    "fixture-website": ["fixture-website@workspace:website"],
+    "fixture-website/workspace-tool": ["workspace-tool@2.0.0", "", {}, "sha512-d29ya3NwYWNlLXRvb2wtMg=="],
+    "dual-role": ["dual-role@1.0.0", "", {}, "sha512-ZHVhbC1yb2xl"],
+    "duplicate": ["duplicate@1.0.0", "", {}, "sha512-ZHVwbGljYXRlLTE="],
+    "runtime-parent": ["runtime-parent@1.0.0", "", { "dependencies": { "duplicate": "2.0.0" } }, "sha512-cnVudGltZS1wYXJlbnQ="],
+    "runtime-parent/duplicate": ["duplicate@2.0.0", "", {}, "sha512-ZHVwbGljYXRlLTI="],
+    "workspace-tool": ["workspace-tool@4.0.0", "", {}, "sha512-d29ya3NwYWNlLXRvb2wtNA=="],
+  },
+}

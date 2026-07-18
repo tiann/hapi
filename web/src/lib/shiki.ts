@@ -6,54 +6,54 @@ import { toJsxRuntime } from 'hast-util-to-jsx-runtime'
 import { jsx, jsxs, Fragment } from 'react/jsx-runtime'
 
 // Only 2 themes
-const THEMES = [
-    import('@shikijs/themes/github-light'),
-    import('@shikijs/themes/github-dark'),
+const THEME_LOADERS = [
+    () => import('@shikijs/themes/github-light'),
+    () => import('@shikijs/themes/github-dark'),
 ]
 
 // 30 common languages for LLM code output
-const LANGS = [
+const LANG_LOADERS = [
     // Shell
-    import('@shikijs/langs/shellscript'),
-    import('@shikijs/langs/powershell'),
+    () => import('@shikijs/langs/shellscript'),
+    () => import('@shikijs/langs/powershell'),
     // Data formats
-    import('@shikijs/langs/json'),
-    import('@shikijs/langs/yaml'),
-    import('@shikijs/langs/toml'),
-    import('@shikijs/langs/xml'),
-    import('@shikijs/langs/ini'),
+    () => import('@shikijs/langs/json'),
+    () => import('@shikijs/langs/yaml'),
+    () => import('@shikijs/langs/toml'),
+    () => import('@shikijs/langs/xml'),
+    () => import('@shikijs/langs/ini'),
     // Markup
-    import('@shikijs/langs/markdown'),
-    import('@shikijs/langs/html'),
-    import('@shikijs/langs/css'),
-    import('@shikijs/langs/scss'),
+    () => import('@shikijs/langs/markdown'),
+    () => import('@shikijs/langs/html'),
+    () => import('@shikijs/langs/css'),
+    () => import('@shikijs/langs/scss'),
     // JavaScript ecosystem
-    import('@shikijs/langs/javascript'),
-    import('@shikijs/langs/typescript'),
-    import('@shikijs/langs/jsx'),
-    import('@shikijs/langs/tsx'),
+    () => import('@shikijs/langs/javascript'),
+    () => import('@shikijs/langs/typescript'),
+    () => import('@shikijs/langs/jsx'),
+    () => import('@shikijs/langs/tsx'),
     // Query languages
-    import('@shikijs/langs/sql'),
-    import('@shikijs/langs/graphql'),
+    () => import('@shikijs/langs/sql'),
+    () => import('@shikijs/langs/graphql'),
     // Systems languages
-    import('@shikijs/langs/c'),
-    import('@shikijs/langs/rust'),
-    import('@shikijs/langs/go'),
+    () => import('@shikijs/langs/c'),
+    () => import('@shikijs/langs/rust'),
+    () => import('@shikijs/langs/go'),
     // JVM
-    import('@shikijs/langs/java'),
-    import('@shikijs/langs/kotlin'),
+    () => import('@shikijs/langs/java'),
+    () => import('@shikijs/langs/kotlin'),
     // Scripting
-    import('@shikijs/langs/python'),
-    import('@shikijs/langs/php'),
+    () => import('@shikijs/langs/python'),
+    () => import('@shikijs/langs/php'),
     // Apple
-    import('@shikijs/langs/swift'),
+    () => import('@shikijs/langs/swift'),
     // .NET
-    import('@shikijs/langs/csharp'),
+    () => import('@shikijs/langs/csharp'),
     // DevOps
-    import('@shikijs/langs/dockerfile'),
-    import('@shikijs/langs/make'),
+    () => import('@shikijs/langs/dockerfile'),
+    () => import('@shikijs/langs/make'),
     // Misc
-    import('@shikijs/langs/diff'),
+    () => import('@shikijs/langs/diff'),
 ]
 
 export const SHIKI_THEMES = {
@@ -94,8 +94,8 @@ let highlighterPromise: Promise<HighlighterCore> | null = null
 function getHighlighter(): Promise<HighlighterCore> {
     if (!highlighterPromise) {
         highlighterPromise = createHighlighterCore({
-            themes: THEMES,
-            langs: LANGS,
+            themes: THEME_LOADERS.map((load) => load()),
+            langs: LANG_LOADERS.map((load) => load()),
             engine: createJavaScriptRegexEngine({ forgiving: true }),
         })
     }

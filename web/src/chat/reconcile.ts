@@ -1,6 +1,8 @@
 import type {
+    AgentAttachmentBlock,
     AgentEvent,
     AgentEventBlock,
+    MoaReferenceBlock,
     AgentReasoningBlock,
     AgentTextBlock,
     ChatBlock,
@@ -9,6 +11,7 @@ import type {
     ToolPermission,
     UserTextBlock,
 } from '@/chat/types'
+import type { AttachmentMetadata } from '@/types/api'
 
 export type ChatBlocksById = Map<string, ChatBlock>
 
@@ -82,6 +85,8 @@ function getEventKey(event: AgentEvent): string {
             return `switch:${event.mode}`
         case 'message':
             return `message:${event.message}`
+        case 'background-notification':
+            return `background-notification:${event.message}`
         case 'title-changed':
             return `title:${event.title}`
         case 'limit-reached':
@@ -117,6 +122,7 @@ function areAgentTextBlocksEqual(left: AgentTextBlock, right: AgentTextBlock): b
     return left.text === right.text
         && left.localId === right.localId
         && left.createdAt === right.createdAt
+        && left.displayTimestamp === right.displayTimestamp
         && left.meta === right.meta
 }
 
@@ -124,13 +130,55 @@ function areAgentReasoningBlocksEqual(left: AgentReasoningBlock, right: AgentRea
     return left.text === right.text
         && left.localId === right.localId
         && left.createdAt === right.createdAt
+        && left.displayTimestamp === right.displayTimestamp
         && left.meta === right.meta
+}
+
+function areMoaReferenceBlocksEqual(left: MoaReferenceBlock, right: MoaReferenceBlock): boolean {
+    return left.label === right.label
+        && left.text === right.text
+        && left.index === right.index
+        && left.count === right.count
+        && left.localId === right.localId
+        && left.createdAt === right.createdAt
+        && left.displayTimestamp === right.displayTimestamp
+        && left.meta === right.meta
+}
+
+function areAttachmentsEqual(left?: AttachmentMetadata[], right?: AttachmentMetadata[]): boolean {
+    if (left === right) return true
+    if (!left || !right) return false
+    if (left.length !== right.length) return false
+    for (let i = 0; i < left.length; i += 1) {
+        const l = left[i]
+        const r = right[i]
+        if (
+            l.id !== r.id
+            || l.filename !== r.filename
+            || l.mimeType !== r.mimeType
+            || l.size !== r.size
+            || l.path !== r.path
+            || l.previewUrl !== r.previewUrl
+        ) {
+            return false
+        }
+    }
+    return true
+}
+
+function areAgentAttachmentBlocksEqual(left: AgentAttachmentBlock, right: AgentAttachmentBlock): boolean {
+    return left.localId === right.localId
+        && left.createdAt === right.createdAt
+        && left.displayTimestamp === right.displayTimestamp
+        && left.meta === right.meta
+        && areAttachmentsEqual(left.attachments, right.attachments)
 }
 
 function areCliOutputBlocksEqual(left: CliOutputBlock, right: CliOutputBlock): boolean {
     return left.text === right.text
         && left.localId === right.localId
         && left.createdAt === right.createdAt
+        && left.displayTimestamp === right.displayTimestamp
         && left.source === right.source
         && left.meta === right.meta
 }
@@ -145,6 +193,7 @@ function areToolCallsEqual(left: ToolCallBlock, right: ToolCallBlock, childrenSa
     if (!childrenSame) return false
     return left.localId === right.localId
         && left.createdAt === right.createdAt
+        && left.displayTimestamp === right.displayTimestamp
         && left.meta === right.meta
         && left.tool.id === right.tool.id
         && left.tool.name === right.tool.name
@@ -211,6 +260,16 @@ function reconcileBlock(block: ChatBlock, prevById: ChatBlocksById): ChatBlock {
     if (block.kind === 'agent-reasoning') {
         const prevBlock = prev as AgentReasoningBlock
         return areAgentReasoningBlocksEqual(prevBlock, block) ? prevBlock : block
+    }
+
+    if (block.kind === 'moa-reference') {
+        const prevBlock = prev as MoaReferenceBlock
+        return areMoaReferenceBlocksEqual(prevBlock, block) ? prevBlock : block
+    }
+
+    if (block.kind === 'agent-attachments') {
+        const prevBlock = prev as AgentAttachmentBlock
+        return areAgentAttachmentBlocksEqual(prevBlock, block) ? prevBlock : block
     }
 
     const prevBlock = prev as AgentEventBlock

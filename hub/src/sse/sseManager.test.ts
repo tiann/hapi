@@ -118,4 +118,79 @@ describe('SSEManager namespace filtering', () => {
         expect(received).toHaveLength(1)
         expect(received[0]?.id).toBe('visible')
     })
+
+    it('rejects subscriptions over the per-namespace connection cap', () => {
+        const manager = new SSEManager(0, new VisibilityTracker(), 1)
+
+        const first = manager.subscribe({
+            id: 'first',
+            namespace: 'alpha',
+            all: true,
+            visibility: 'visible',
+            send: () => {},
+            sendHeartbeat: () => {}
+        })
+        const second = manager.subscribe({
+            id: 'second',
+            namespace: 'alpha',
+            all: true,
+            visibility: 'visible',
+            send: () => {},
+            sendHeartbeat: () => {}
+        })
+
+        expect(first).not.toBeNull()
+        expect(second).toBeNull()
+    })
+
+    it('allows many browser tabs by default before hitting the namespace cap', () => {
+        const manager = new SSEManager(0, new VisibilityTracker())
+
+        const subscriptions = Array.from({ length: 64 }, (_, index) => manager.subscribe({
+            id: `tab-${index}`,
+            namespace: 'alpha',
+            all: true,
+            send: () => {},
+            sendHeartbeat: () => {}
+        }))
+
+        expect(subscriptions.every((subscription) => subscription !== null)).toBe(true)
+    })
+
+    it('evicts an old hidden connection before rejecting a visible subscription at the cap', () => {
+        const visibilityTracker = new VisibilityTracker()
+        const manager = new SSEManager(0, visibilityTracker, 2)
+
+        const hidden = manager.subscribe({
+            id: 'hidden',
+            namespace: 'alpha',
+            all: true,
+            visibility: 'hidden',
+            send: () => {},
+            sendHeartbeat: () => {}
+        })
+        const visible = manager.subscribe({
+            id: 'visible',
+            namespace: 'alpha',
+            all: true,
+            visibility: 'visible',
+            send: () => {},
+            sendHeartbeat: () => {}
+        })
+        const newcomer = manager.subscribe({
+            id: 'new-visible',
+            namespace: 'alpha',
+            all: true,
+            visibility: 'visible',
+            send: () => {},
+            sendHeartbeat: () => {}
+        })
+
+        expect(hidden).not.toBeNull()
+        expect(visible).not.toBeNull()
+        expect(newcomer).not.toBeNull()
+        expect(visibilityTracker.isVisibleConnection('visible')).toBe(true)
+        expect(visibilityTracker.isVisibleConnection('new-visible')).toBe(true)
+        expect(visibilityTracker.isVisibleConnection('hidden')).toBe(false)
+    })
 })

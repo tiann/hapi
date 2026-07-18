@@ -4,12 +4,15 @@ import { jwtVerify } from 'jose'
 import { z } from 'zod'
 import type { Store } from '../store'
 import { configuration } from '../configuration'
-import { constantTimeEquals } from '../utils/crypto'
-import { parseAccessToken } from '../utils/accessToken'
+import {
+    resolveConfiguredAccessTokenNamespace,
+    type AccessTokenNamespaceResolver,
+} from '../utils/accessToken'
 import { registerCliHandlers } from './handlers/cli'
 import { registerTerminalHandlers } from './handlers/terminal'
 import { RpcRegistry } from './rpcRegistry'
 import type { SyncEvent } from '../sync/syncEngine'
+import type { CodexServiceTier } from '@hapi/protocol/types'
 import { TerminalRegistry } from './terminalRegistry'
 import type { CliSocketWithData, SocketData, SocketServer } from './socketTypes'
 
@@ -20,6 +23,7 @@ const jwtPayloadSchema = z.object({
 
 const DEFAULT_IDLE_TIMEOUT_MS = 15 * 60_000
 const DEFAULT_MAX_TERMINALS = 4
+export const DEFAULT_SOCKET_IO_MAX_HTTP_BUFFER_BYTES = 50 * 1024 * 1024
 
 function resolveEnvNumber(name: string, fallback: number): number {
     const raw = process.env[name]
@@ -36,10 +40,11 @@ export type SocketServerDeps = {
     corsOrigins?: string[]
     getSession?: (sessionId: string) => { active: boolean; namespace: string } | null
     onWebappEvent?: (event: SyncEvent) => void
-    onSessionAlive?: (payload: { sid: string; time: number; thinking?: boolean; mode?: 'local' | 'remote' }) => void
-    onSessionEnd?: (payload: { sid: string; time: number }) => void
+    onSessionAlive?: (payload: { sid: string; time: number; source?: 'cli' | 'codex-desktop-sync'; generation?: number; thinking?: boolean; mode?: 'local' | 'remote'; serviceTier?: CodexServiceTier | null }) => void
+    onSessionEnd?: (payload: { sid: string; time: number; source?: 'cli' | 'codex-desktop-sync'; generation?: number }) => void
     onMachineAlive?: (payload: { machineId: string; time: number }) => void
     onBackgroundTaskDelta?: (sessionId: string, delta: { started: number; completed: number }) => void
+    resolveAccessTokenNamespace?: AccessTokenNamespaceResolver
 }
 
 export function createSocketServer(deps: SocketServerDeps): {
@@ -62,6 +67,7 @@ export function createSocketServer(deps: SocketServerDeps): {
 
     const engine = new Engine({
         path: '/socket.io/',
+        maxHttpBufferSize: DEFAULT_SOCKET_IO_MAX_HTTP_BUFFER_BYTES,
         cors: corsOptions,
         allowRequest: async (req) => {
             const origin = req.headers.get('origin')
@@ -80,6 +86,7 @@ export function createSocketServer(deps: SocketServerDeps): {
     const maxTerminalsPerSession = maxTerminals
     const cliNs = io.of('/cli')
     const terminalNs = io.of('/terminal')
+    const resolveAccessToken = deps.resolveAccessTokenNamespace ?? resolveConfiguredAccessTokenNamespace
     const terminalRegistry = new TerminalRegistry({
         idleTimeoutMs,
         onIdle: (entry) => {
@@ -99,11 +106,11 @@ export function createSocketServer(deps: SocketServerDeps): {
     cliNs.use((socket, next) => {
         const auth = socket.handshake.auth as Record<string, unknown> | undefined
         const token = typeof auth?.token === 'string' ? auth.token : null
-        const parsedToken = token ? parseAccessToken(token) : null
-        if (!parsedToken || !constantTimeEquals(parsedToken.baseToken, configuration.cliApiToken)) {
+        const namespace = token ? resolveAccessToken(token) : null
+        if (!namespace) {
             return next(new Error('Invalid token'))
         }
-        socket.data.namespace = parsedToken.namespace
+        socket.data.namespace = namespace
         next()
     })
     cliNs.on('connection', (socket) => registerCliHandlers(socket as CliSocketWithData, {

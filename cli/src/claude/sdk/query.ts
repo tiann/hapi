@@ -29,6 +29,7 @@ import { stripNewlinesForWindowsShellArg } from '@/utils/shellEscape'
 import type { Writable } from 'node:stream'
 import { logger } from '@/ui/logger'
 import { appendMcpConfigArg } from '../utils/mcpConfig'
+import { ClaudeProcessExitError } from '../utils/remoteFailure'
 
 const DEFAULT_PROMPT_FAILURE_CLEANUP_TIMEOUT_MS = 3_000
 
@@ -460,7 +461,7 @@ export function query(config: {
     }
 
     // Register close handler - query is safely defined now
-    child.on('close', (code) => {
+    child.on('close', (code, signal) => {
         const promptFailure = query.getPromptFailure()
         if (promptFailure) {
             rejectExit(promptFailure)
@@ -468,8 +469,12 @@ export function query(config: {
             const err = new AbortError('Claude Code process aborted by user')
             query.setError(err)
             rejectExit(err)
-        } else if (code !== 0) {
-            const err = new Error(`Claude Code process exited with code ${code}`)
+        } else if ((typeof code === 'number' && code !== 0) || signal !== null) {
+            const err = new ClaudeProcessExitError({ code, signal })
+            query.setError(err)
+            rejectExit(err)
+        } else if (code === null) {
+            const err = new Error('Claude Code process closed without an exit status')
             query.setError(err)
             rejectExit(err)
         } else {

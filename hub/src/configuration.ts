@@ -6,7 +6,8 @@
  * they are automatically saved for future use
  *
  * Optional environment variables:
- * - CLI_API_TOKEN: Shared secret for hapi CLI authentication (auto-generated if not set)
+ * - CLI_API_TOKEN: Credential for the reserved default namespace (auto-generated if not set)
+ * - HAPI_NAMESPACE_TOKENS_JSON: JSON object mapping non-default namespaces to independent credentials
  * - TELEGRAM_BOT_TOKEN: Telegram Bot API token from @BotFather
  * - TELEGRAM_NOTIFICATION: Enable/disable Telegram notifications (default: true)
  * - HAPI_LISTEN_HOST: Host/IP to bind the HTTP service (default: 127.0.0.1)
@@ -16,7 +17,7 @@
  * - HAPI_RELAY_API: Relay API domain for tunwg (default: relay.hapi.run)
  * - HAPI_RELAY_AUTH: Relay auth key for tunwg (default: hapi)
  * - HAPI_RELAY_FORCE_TCP: Force TCP relay mode when UDP is unavailable (true/1)
- * - VAPID_SUBJECT: Contact email or URL for Web Push (defaults to mailto:admin@hapi.run)
+ * - VAPID_SUBJECT: Contact email or URL for Web Push (defaults to https://hapi.run)
  * - HAPI_HOME: Data directory (default: ~/.hapi)
  * - DB_PATH: SQLite database path (default: {HAPI_HOME}/hapi.db)
  */
@@ -25,6 +26,7 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { getOrCreateCliApiToken } from './config/cliApiToken'
+import { loadNamespaceTokens } from './config/namespaceTokens'
 import { getSettingsFile } from './config/settings'
 import { loadServerSettings, type ServerSettings, type ServerSettingsResult } from './config/serverSettings'
 
@@ -38,6 +40,7 @@ export interface ConfigSources {
     publicUrl: ConfigSource
     corsOrigins: ConfigSource
     cliApiToken: 'env' | 'file' | 'generated'
+    namespaceTokens: 'env' | 'file' | 'default'
 }
 
 class Configuration {
@@ -58,6 +61,12 @@ class Configuration {
 
     /** Whether CLI API token was newly generated (for first-run display) */
     public cliApiTokenIsNew: boolean
+
+    /** Independent credentials for non-default namespaces */
+    public namespaceTokens: Readonly<Record<string, string>>
+
+    /** Source of namespace credential mapping */
+    public namespaceTokensSource: 'env' | 'file' | 'default'
 
     /** Path to settings.json file */
     public readonly settingsFile: string
@@ -107,10 +116,13 @@ class Configuration {
         this.cliApiToken = ''
         this.cliApiTokenSource = ''
         this.cliApiTokenIsNew = false
+        this.namespaceTokens = Object.freeze({})
+        this.namespaceTokensSource = 'default'
 
         // Store sources for logging (cliApiToken will be set by _setCliApiToken)
         this.sources = {
             ...sources,
+            namespaceTokens: 'default',
         } as ConfigSources
 
         // Ensure data directory exists
@@ -155,6 +167,13 @@ class Configuration {
         const tokenResult = await getOrCreateCliApiToken(dataDir)
         config._setCliApiToken(tokenResult.token, tokenResult.source, tokenResult.isNew)
 
+        // 6. Load independent credentials for non-default namespaces
+        const namespaceTokensResult = await loadNamespaceTokens(dataDir, tokenResult.token)
+        config._setNamespaceTokens(namespaceTokensResult.tokens, namespaceTokensResult.source)
+        if (namespaceTokensResult.savedToFile) {
+            console.log(`[Hub] Namespace credentials saved to ${getSettingsFile(dataDir)}`)
+        }
+
         return config
     }
 
@@ -164,6 +183,15 @@ class Configuration {
         this.cliApiTokenSource = source
         this.cliApiTokenIsNew = isNew
         ;(this.sources as { cliApiToken: string }).cliApiToken = source
+    }
+
+    _setNamespaceTokens(
+        tokens: Readonly<Record<string, string>>,
+        source: 'env' | 'file' | 'default'
+    ): void {
+        this.namespaceTokens = Object.freeze({ ...tokens })
+        this.namespaceTokensSource = source
+        ;(this.sources as { namespaceTokens: string }).namespaceTokens = source
     }
 }
 

@@ -9,8 +9,9 @@ import { apiValidationError } from '@/utils/errorUtils'
 import { AsyncLock } from '@/utils/lock'
 import type { RawJSONLines } from '@/claude/types'
 import { configuration } from '@/configuration'
-import { AGENT_MESSAGE_PAYLOAD_TYPE } from "@hapi/protocol"
-import type { ClientToServerEvents, ServerToClientEvents, Update } from '@hapi/protocol'
+import { getHapiMetadataTitleForCodex, syncHapiMetadataTitleToCodexThread } from '@/codex/utils/codexThreadTitle'
+import { AGENT_MESSAGE_PAYLOAD_TYPE, isCodexDesktopMirrorSession } from "@hapi/protocol"
+import type { ClientToServerEvents, DeliveryAttemptAck, DeliveryAttemptRequest, ServerToClientEvents, Update } from '@hapi/protocol'
 import {
     TerminalClosePayloadSchema,
     TerminalOpenPayloadSchema,
@@ -25,6 +26,7 @@ import type {
     SessionCollaborationMode,
     Session,
     SessionModel,
+    SessionServiceTier,
     SessionPermissionMode,
     UserMessage
 } from './types'
@@ -35,17 +37,36 @@ import { cleanupUploadDir } from '../modules/common/handlers/uploads'
 import { TerminalManager } from '@/terminal/TerminalManager'
 import { applyVersionedAck } from './versionedUpdate'
 import { buildHubRequestHeaders, buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
+import { deepEqual } from '@/utils/deepEqual'
+import { PLAN_FAKE_RESTART } from '@/claude/sdk/prompts'
 
 /**
  * XML tags that Claude Code injects as `type:'user'` messages.
  * These are internal bookkeeping, not text the human actually typed.
  */
-const SYSTEM_INJECTION_PREFIXES = [
-    '<task-notification>',
-    '<command-name>',
-    '<local-command-caveat>',
-    '<system-reminder>',
-]
+const SYSTEM_INJECTION_TAGS = [
+    { prefix: '<task-notification>', kind: 'background_notification' },
+    { prefix: '<command-name>', kind: 'internal_command_name' },
+    { prefix: '<local-command-caveat>', kind: 'internal_local_command_caveat' },
+    { prefix: '<system-reminder>', kind: 'internal_system_reminder' },
+] as const
+
+export type InternalMessageKind =
+    | 'background_notification'
+    | 'internal_tool_result'
+    | 'internal_sidechain'
+    | 'internal_meta'
+    | 'internal_plan_restart'
+    | 'internal_command_name'
+    | 'internal_local_command_caveat'
+    | 'internal_system_reminder'
+
+export type IncomingUserMessage = UserMessage & {
+    delivery: { messageId: string; seq: number }
+}
+
+const PASSIVE_SYNC_SOURCES = new Set(['cli', 'codex-desktop-sync'])
+const PASSIVE_SYNC_LOCAL_ID_PREFIX = 'codex:'
 
 /**
  * Returns true if a JSONL message should be classified as a user-role message
@@ -57,17 +78,37 @@ const SYSTEM_INJECTION_PREFIXES = [
  * genuine user messages, so the only reliable signal is the message content
  * itself: injected messages always start with a well-known XML tag.
  */
+export function classifyInternalMessage(body: RawJSONLines): InternalMessageKind | null {
+    if (body.type !== 'user') return null
+
+    const content = body.message.content
+
+    if (typeof content === 'string') {
+        const trimmed = content.trimStart()
+        if (trimmed.trimEnd() === PLAN_FAKE_RESTART) return 'internal_plan_restart'
+        for (const tag of SYSTEM_INJECTION_TAGS) {
+            if (trimmed.startsWith(tag.prefix)) return tag.kind
+        }
+    }
+
+    if (body.isSidechain === true) return 'internal_sidechain'
+    if (body.isMeta === true) return 'internal_meta'
+
+    if (Array.isArray(content)) {
+        for (const block of content) {
+            if (typeof block === 'object' && block !== null && (block as { type?: unknown }).type === 'tool_result') {
+                return 'internal_tool_result'
+            }
+        }
+    }
+
+    return null
+}
+
 export function isExternalUserMessage(body: RawJSONLines): body is Extract<RawJSONLines, { type: 'user' }> & { message: { content: string } } {
     if (body.type !== 'user') return false
     if (typeof body.message.content !== 'string') return false
-    if (body.isSidechain === true) return false
-    if (body.isMeta === true) return false
-
-    const trimmed = body.message.content.trimStart()
-    for (const prefix of SYSTEM_INJECTION_PREFIXES) {
-        if (trimmed.startsWith(prefix)) return false
-    }
-    return true
+    return classifyInternalMessage(body) === null
 }
 
 export class ApiSessionClient extends EventEmitter {
@@ -78,8 +119,8 @@ export class ApiSessionClient extends EventEmitter {
     private agentState: AgentState | null
     private agentStateVersion: number
     private readonly socket: Socket<ServerToClientEvents, ClientToServerEvents>
-    private pendingMessages: UserMessage[] = []
-    private pendingMessageCallback: ((message: UserMessage) => void) | null = null
+    private pendingMessages: IncomingUserMessage[] = []
+    private pendingMessageCallback: ((message: IncomingUserMessage) => void) | null = null
     private lastSeenMessageSeq: number | null = null
     private backfillInFlight: Promise<void> | null = null
     private needsBackfill = false
@@ -212,7 +253,9 @@ export class ApiSessionClient extends EventEmitter {
                     if (data.body.metadata && data.body.metadata.version > this.metadataVersion) {
                         const parsed = MetadataSchema.safeParse(data.body.metadata.value)
                         if (parsed.success) {
+                            const previousMetadata = this.metadata
                             this.metadata = parsed.data
+                            this.syncCodexThreadTitleForMetadataChange(previousMetadata, this.metadata)
                         } else {
                             logger.debug('[API] Ignoring invalid metadata update', { version: data.body.metadata.version })
                         }
@@ -244,14 +287,48 @@ export class ApiSessionClient extends EventEmitter {
         this.socket.connect()
     }
 
-    onUserMessage(callback: (data: UserMessage) => void): void {
+    onUserMessage(callback: (data: IncomingUserMessage) => void): void {
         this.pendingMessageCallback = callback
         while (this.pendingMessages.length > 0) {
             callback(this.pendingMessages.shift()!)
         }
     }
 
-    private enqueueUserMessage(message: UserMessage): void {
+    async recordDeliveryAttempt(request: DeliveryAttemptRequest, timeoutMs: number = 10_000): Promise<DeliveryAttemptAck> {
+        return await new Promise<DeliveryAttemptAck>((resolve) => {
+            let settled = false
+            const timeout = setTimeout(() => {
+                if (settled) return
+                settled = true
+                resolve({ result: 'error', reason: 'not-found' })
+            }, timeoutMs)
+            this.socket.emit('record-delivery-attempt', request, (answer) => {
+                if (settled) return
+                settled = true
+                clearTimeout(timeout)
+                resolve(answer)
+            })
+        })
+    }
+
+    async prepareDeliveryBatch(request: import('@hapi/protocol').DeliveryBatchRequest, timeoutMs: number = 10_000): Promise<import('@hapi/protocol').DeliveryBatchAck | { result: 'error'; reason: 'ack-timeout' }> {
+        return await new Promise((resolve) => {
+            let settled = false
+            const timeout = setTimeout(() => {
+                if (settled) return
+                settled = true
+                resolve({ result: 'error', reason: 'ack-timeout' })
+            }, timeoutMs)
+            this.socket.emit('prepare-delivery-batch', request, (answer) => {
+                if (settled) return
+                settled = true
+                clearTimeout(timeout)
+                resolve(answer)
+            })
+        })
+    }
+
+    private enqueueUserMessage(message: IncomingUserMessage): void {
         if (this.pendingMessageCallback) {
             this.pendingMessageCallback(message)
         } else {
@@ -259,7 +336,7 @@ export class ApiSessionClient extends EventEmitter {
         }
     }
 
-    private handleIncomingMessage(message: { seq?: number; content: unknown }): void {
+    private handleIncomingMessage(message: { id?: string; seq?: number; localId?: string | null; content: unknown }): void {
         const seq = typeof message.seq === 'number' ? message.seq : null
         if (seq !== null) {
             if (this.lastSeenMessageSeq !== null && seq <= this.lastSeenMessageSeq) {
@@ -270,7 +347,19 @@ export class ApiSessionClient extends EventEmitter {
 
         const userResult = UserMessageSchema.safeParse(message.content)
         if (userResult.success) {
-            this.enqueueUserMessage(userResult.data)
+            if (typeof message.localId === 'string' && message.localId.startsWith(PASSIVE_SYNC_LOCAL_ID_PREFIX)) {
+                return
+            }
+            if (userResult.data.meta?.sentFrom && PASSIVE_SYNC_SOURCES.has(userResult.data.meta.sentFrom)) {
+                return
+            }
+            this.enqueueUserMessage({
+                ...userResult.data,
+                delivery: {
+                    messageId: message.id ?? message.localId ?? `session-${this.sessionId}-seq-${seq ?? 0}`,
+                    seq: seq ?? 0
+                }
+            })
             return
         }
 
@@ -365,6 +454,7 @@ export class ApiSessionClient extends EventEmitter {
 
     sendClaudeSessionMessage(body: RawJSONLines): void {
         let content: MessageContent
+        const internalMessageKind = classifyInternalMessage(body)
 
         if (isExternalUserMessage(body)) {
             content = {
@@ -385,7 +475,8 @@ export class ApiSessionClient extends EventEmitter {
                     data: body
                 },
                 meta: {
-                    sentFrom: 'cli'
+                    sentFrom: 'cli',
+                    ...(internalMessageKind ? { messageKind: internalMessageKind } : {})
                 }
             }
         }
@@ -457,6 +548,9 @@ export class ApiSessionClient extends EventEmitter {
         mode: SessionPermissionMode
     } | {
         type: 'ready'
+    } | {
+        type: 'turn-duration'
+        durationMs: number
     }, id?: string): void {
         const content = {
             role: 'agent',
@@ -480,6 +574,7 @@ export class ApiSessionClient extends EventEmitter {
             permissionMode?: SessionPermissionMode
             model?: SessionModel
             modelReasoningEffort?: string | null
+            serviceTier?: SessionServiceTier
             effort?: string | null
             collaborationMode?: SessionCollaborationMode
         }
@@ -498,11 +593,40 @@ export class ApiSessionClient extends EventEmitter {
         this.socket.emit('session-end', { sid: this.sessionId, time: Date.now() })
     }
 
+    isDesktopMirrorSession(): boolean {
+        return isCodexDesktopMirrorSession({
+            metadata: this.metadata,
+            messages: null
+        })
+    }
+
+    getMetadataSnapshot(): Metadata | null {
+        return this.metadata ? { ...this.metadata } : null
+    }
+
+    private syncCodexThreadTitleForMetadataChange(previous: Metadata | null, next: Metadata | null): void {
+        const nextTitle = getHapiMetadataTitleForCodex(next)
+        if (!next?.codexSessionId || !nextTitle) {
+            return
+        }
+
+        if (getHapiMetadataTitleForCodex(previous) === nextTitle) {
+            return
+        }
+
+        void syncHapiMetadataTitleToCodexThread(next)
+    }
+
     updateMetadata(handler: (metadata: Metadata) => Metadata): void {
         this.metadataLock.inLock(async () => {
             await backoff(async () => {
-                const current = this.metadata ?? ({} as Metadata)
+                const previous = this.metadata ?? ({} as Metadata)
+                const current = structuredClone(previous) as Metadata
                 const updated = handler(current)
+
+                if (deepEqual(updated, previous)) {
+                    return
+                }
 
                 const answer = await this.socket.emitWithAck('update-metadata', {
                     sid: this.sessionId,
@@ -517,7 +641,9 @@ export class ApiSessionClient extends EventEmitter {
                         return parsed.success ? parsed.data : null
                     },
                     applyValue: (value) => {
+                        const previousMetadata = this.metadata
                         this.metadata = value
+                        this.syncCodexThreadTitleForMetadataChange(previousMetadata, this.metadata)
                     },
                     applyVersion: (version) => {
                         this.metadataVersion = version

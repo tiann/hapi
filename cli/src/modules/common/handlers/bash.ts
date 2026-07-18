@@ -25,16 +25,14 @@ export function registerBashHandlers(rpcHandlerManager: RpcHandlerManager, worki
     rpcHandlerManager.registerHandler<BashRequest, BashResponse>('bash', async (data) => {
         logger.debug('Shell command request:', data.command)
 
-        if (data.cwd) {
-            const validation = validatePath(data.cwd, workingDirectory)
-            if (!validation.valid) {
-                return rpcError(validation.error ?? 'Invalid working directory')
-            }
+        const validation = await validatePath(data.cwd ?? workingDirectory, workingDirectory)
+        if (!validation.valid) {
+            return rpcError(validation.error ?? 'Invalid working directory')
         }
 
         try {
             const options: ExecOptions = {
-                cwd: data.cwd,
+                cwd: validation.resolvedPath,
                 timeout: data.timeout || 30000
             }
 

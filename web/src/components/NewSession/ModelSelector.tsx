@@ -6,10 +6,13 @@ export function ModelSelector(props: {
     agent: AgentType
     model: string
     isDisabled: boolean
+    allowedModels?: readonly string[]
     onModelChange: (value: string) => void
 }) {
     const { t } = useTranslation()
-    const options = MODEL_OPTIONS[props.agent]
+    const options = props.allowedModels === undefined
+        ? MODEL_OPTIONS[props.agent]
+        : MODEL_OPTIONS[props.agent].filter((option) => props.allowedModels?.includes(option.value))
     if (options.length === 0) {
         return null
     }

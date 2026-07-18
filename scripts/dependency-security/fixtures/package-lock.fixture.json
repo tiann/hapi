@@ -1,0 +1,34 @@
+{
+  "name": "hapi-codex-sync-fixture",
+  "version": "1.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "hapi-codex-sync-fixture",
+      "version": "1.0.0",
+      "dependencies": {
+        "duplicate": "1.0.0",
+        "parent": "1.0.0"
+      }
+    },
+    "node_modules/duplicate": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/duplicate/-/duplicate-1.0.0.tgz",
+      "integrity": "sha512-ZHVwbGljYXRlLTE="
+    },
+    "node_modules/parent": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/parent/-/parent-1.0.0.tgz",
+      "integrity": "sha512-cGFyZW50",
+      "dependencies": {
+        "duplicate": "2.0.0"
+      }
+    },
+    "node_modules/parent/node_modules/duplicate": {
+      "version": "2.0.0",
+      "resolved": "https://registry.npmjs.org/duplicate/-/duplicate-2.0.0.tgz",
+      "integrity": "sha512-ZHVwbGljYXRlLTI="
+    }
+  }
+}

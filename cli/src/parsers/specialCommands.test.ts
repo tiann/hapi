@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseCompact, parseClear, parseSpecialCommand } from './specialCommands';
+import { parseCompact, parseClear, parseGoal, parseSpecialCommand } from './specialCommands';
 
 describe('parseCompact', () => {
     it('should parse /compact command with argument', () => {
@@ -49,6 +49,60 @@ describe('parseClear', () => {
     });
 });
 
+describe('parseGoal', () => {
+    it('should parse /goal command exactly', () => {
+        const result = parseGoal('/goal');
+        expect(result.isGoal).toBe(true);
+        expect(result.action).toBe('get');
+        expect(result.text).toBeUndefined();
+    });
+
+    it('should parse /goal clear command', () => {
+        const result = parseGoal('/goal clear');
+        expect(result.isGoal).toBe(true);
+        expect(result.action).toBe('clear');
+        expect(result.text).toBeUndefined();
+    });
+
+    it('should parse /goal clear with flexible whitespace', () => {
+        expect(parseGoal('/goal    clear')).toMatchObject({ isGoal: true, action: 'clear' });
+        expect(parseGoal('/goal\tclear')).toMatchObject({ isGoal: true, action: 'clear' });
+        expect(parseGoal('/goal\nclear')).toMatchObject({ isGoal: true, action: 'clear' });
+    });
+
+    it('should treat clear plus extra text as a goal objective', () => {
+        const result = parseGoal('/goal clear now');
+        expect(result.isGoal).toBe(true);
+        expect(result.action).toBe('set');
+        expect(result.text).toBe('clear now');
+    });
+
+    it('should treat flag-like arguments as a goal objective', () => {
+        const result = parseGoal('/goal --clear');
+        expect(result.isGoal).toBe(true);
+        expect(result.action).toBe('set');
+        expect(result.text).toBe('--clear');
+    });
+
+    it('should parse /goal with text argument', () => {
+        const result = parseGoal('/goal fix the bug');
+        expect(result.isGoal).toBe(true);
+        expect(result.action).toBe('set');
+        expect(result.text).toBe('fix the bug');
+    });
+
+    it('should fallback to get if text argument is empty', () => {
+        const result = parseGoal('/goal   ');
+        expect(result.isGoal).toBe(true);
+        expect(result.action).toBe('get');
+    });
+
+    it('should not parse regular messages', () => {
+        const result = parseGoal('this is my goal');
+        expect(result.isGoal).toBe(false);
+    });
+});
+
 describe('parseSpecialCommand', () => {
     it('should detect compact command', () => {
         const result = parseSpecialCommand('/compact optimize');
@@ -62,6 +116,19 @@ describe('parseSpecialCommand', () => {
         expect(result.originalMessage).toBeUndefined();
     });
 
+    it('should detect goal command', () => {
+        const result = parseSpecialCommand('/goal');
+        expect(result.type).toBe('goal');
+        expect(result.goalAction).toBe('get');
+    });
+
+    it('should detect goal set command', () => {
+        const result = parseSpecialCommand('/goal new goal');
+        expect(result.type).toBe('goal');
+        expect(result.goalAction).toBe('set');
+        expect(result.goalText).toBe('new goal');
+    });
+
     it('should return null for regular messages', () => {
         const result = parseSpecialCommand('hello world');
         expect(result.type).toBeNull();
@@ -72,10 +139,12 @@ describe('parseSpecialCommand', () => {
         // Test with extra whitespace
         expect(parseSpecialCommand('  /compact test  ').type).toBe('compact');
         expect(parseSpecialCommand('  /clear  ').type).toBe('clear');
+        expect(parseSpecialCommand('  /goal  ').type).toBe('goal');
         
         // Test partial matches should not trigger
         expect(parseSpecialCommand('some /compact text').type).toBeNull();
         expect(parseSpecialCommand('/compactor').type).toBeNull();
         expect(parseSpecialCommand('/clearing').type).toBeNull();
+        expect(parseSpecialCommand('/goalkeeper').type).toBeNull();
     });
 });

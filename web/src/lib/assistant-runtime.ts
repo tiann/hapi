@@ -3,12 +3,16 @@ import type { AppendMessage, AttachmentAdapter, ThreadMessageLike } from '@assis
 import { useExternalMessageConverter, useExternalStoreRuntime } from '@assistant-ui/react'
 import { safeStringify } from '@hapi/protocol'
 import { renderEventLabel } from '@/chat/presentation'
+import { groupConsecutiveToolBlocks, isToolGroupBlock, type ToolDisplayBlock } from '@/chat/toolGrouping'
 import type { ChatBlock, CliOutputBlock } from '@/chat/types'
 import type { AgentEvent, ToolCallBlock } from '@/chat/types'
 import type { AttachmentMetadata, MessageStatus as HappyMessageStatus, Session } from '@/types/api'
 
+export const AGENT_ATTACHMENTS_DATA_PART_NAME = 'hapi-agent-attachments'
+export const MOA_REFERENCE_DATA_PART_NAME = 'hapi-moa-reference'
+
 export type HappyChatMessageMetadata = {
-    kind: 'user' | 'assistant' | 'tool' | 'event' | 'cli-output'
+    kind: 'user' | 'assistant' | 'tool' | 'tool-group' | 'event' | 'cli-output' | 'moa-reference'
     status?: HappyMessageStatus
     localId?: string | null
     originalText?: string
@@ -16,9 +20,18 @@ export type HappyChatMessageMetadata = {
     event?: AgentEvent
     source?: CliOutputBlock['source']
     attachments?: AttachmentMetadata[]
+    timestampSource?: 'completion'
+    timestampAt?: number | null
 }
 
-function toThreadMessageLike(block: ChatBlock): ThreadMessageLike {
+function getCompletionTimestampMetadata(block: { displayTimestamp?: number | null }): Pick<HappyChatMessageMetadata, 'timestampSource' | 'timestampAt'> {
+    return {
+        timestampSource: 'completion',
+        timestampAt: typeof block.displayTimestamp === 'number' ? block.displayTimestamp : null
+    }
+}
+
+export function toThreadMessageLike(block: ToolDisplayBlock): ThreadMessageLike {
     if (block.kind === 'user-text') {
         const messageId = `user:${block.id}`
         return {
@@ -46,7 +59,10 @@ function toThreadMessageLike(block: ChatBlock): ThreadMessageLike {
             createdAt: new Date(block.createdAt),
             content: [{ type: 'text', text: block.text }],
             metadata: {
-                custom: { kind: 'assistant' } satisfies HappyChatMessageMetadata
+                custom: {
+                    kind: 'assistant',
+                    ...getCompletionTimestampMetadata(block)
+                } satisfies HappyChatMessageMetadata
             }
         }
     }
@@ -59,7 +75,59 @@ function toThreadMessageLike(block: ChatBlock): ThreadMessageLike {
             createdAt: new Date(block.createdAt),
             content: [{ type: 'reasoning', text: block.text }],
             metadata: {
-                custom: { kind: 'assistant' } satisfies HappyChatMessageMetadata
+                custom: {
+                    kind: 'assistant',
+                    ...getCompletionTimestampMetadata(block)
+                } satisfies HappyChatMessageMetadata
+            }
+        }
+    }
+
+    if (block.kind === 'moa-reference') {
+        const messageId = `assistant:${block.id}`
+        return {
+            role: 'assistant',
+            id: messageId,
+            createdAt: new Date(block.createdAt),
+            content: [{
+                type: 'data' as const,
+                name: MOA_REFERENCE_DATA_PART_NAME,
+                data: {
+                    label: block.label,
+                    text: block.text,
+                    ...(block.index !== undefined ? { index: block.index } : {}),
+                    ...(block.count !== undefined ? { count: block.count } : {})
+                }
+            }],
+            metadata: {
+                custom: {
+                    kind: 'moa-reference',
+                    ...getCompletionTimestampMetadata(block)
+                } satisfies HappyChatMessageMetadata
+            }
+        }
+    }
+
+    if (block.kind === 'agent-attachments') {
+        const messageId = `assistant:${block.id}`
+        return {
+            role: 'assistant',
+            id: messageId,
+            createdAt: new Date(block.createdAt),
+            content: [{
+                type: 'data' as const,
+                name: AGENT_ATTACHMENTS_DATA_PART_NAME,
+                data: {
+                    attachments: block.attachments
+                }
+            }],
+            metadata: {
+                custom: {
+                    kind: 'assistant',
+                    localId: block.localId,
+                    attachments: block.attachments,
+                    ...getCompletionTimestampMetadata(block)
+                } satisfies HappyChatMessageMetadata
             }
         }
     }
@@ -85,7 +153,37 @@ function toThreadMessageLike(block: ChatBlock): ThreadMessageLike {
             createdAt: new Date(block.createdAt),
             content: [{ type: 'text', text: block.text }],
             metadata: {
-                custom: { kind: 'cli-output', source: block.source } satisfies HappyChatMessageMetadata
+                custom: {
+                    kind: 'cli-output',
+                    source: block.source,
+                    ...(block.source === 'assistant' ? getCompletionTimestampMetadata(block) : {})
+                } satisfies HappyChatMessageMetadata
+            }
+        }
+    }
+
+    if (isToolGroupBlock(block)) {
+        const messageId = block.id
+
+        return {
+            role: 'assistant',
+            id: messageId,
+            createdAt: new Date(block.createdAt),
+            content: [{
+                type: 'tool-call',
+                toolCallId: block.id,
+                toolName: 'tool-group',
+                argsText: '',
+                result: undefined,
+                isError: false,
+                artifact: block
+            }],
+            metadata: {
+                custom: {
+                    kind: 'tool-group',
+                    toolCallId: block.id,
+                    ...getCompletionTimestampMetadata(block)
+                } satisfies HappyChatMessageMetadata
             }
         }
     }
@@ -108,7 +206,11 @@ function toThreadMessageLike(block: ChatBlock): ThreadMessageLike {
             artifact: toolBlock
         }],
         metadata: {
-            custom: { kind: 'tool', toolCallId: toolBlock.id } satisfies HappyChatMessageMetadata
+            custom: {
+                kind: 'tool',
+                toolCallId: toolBlock.id,
+                ...getCompletionTimestampMetadata(toolBlock)
+            } satisfies HappyChatMessageMetadata
         }
     }
 }
@@ -172,23 +274,28 @@ export function useHappyRuntime(props: {
     session: Session
     blocks: readonly ChatBlock[]
     isSending: boolean
-    onSendMessage: (text: string, attachments?: AttachmentMetadata[]) => void
+    onSendMessage: (text: string, attachments?: AttachmentMetadata[]) => void | Promise<void>
     onAbort: () => Promise<void>
     attachmentAdapter?: AttachmentAdapter
     allowSendWhenInactive?: boolean
 }) {
+    const displayBlocks = useMemo(
+        () => groupConsecutiveToolBlocks(props.blocks),
+        [props.blocks]
+    )
+
     // Use cached message converter for performance optimization
     // This prevents re-converting all messages on every render
-    const convertedMessages = useExternalMessageConverter<ChatBlock>({
+    const convertedMessages = useExternalMessageConverter<ToolDisplayBlock>({
         callback: toThreadMessageLike,
-        messages: props.blocks as ChatBlock[],
+        messages: displayBlocks,
         isRunning: props.session.thinking,
     })
 
     const onNew = useCallback(async (message: AppendMessage) => {
         const { text, attachments } = extractMessageContent(message)
         if (!text && attachments.length === 0) return
-        props.onSendMessage(text, attachments.length > 0 ? attachments : undefined)
+        await props.onSendMessage(text, attachments.length > 0 ? attachments : undefined)
     }, [props.onSendMessage])
 
     const onCancel = useCallback(async () => {

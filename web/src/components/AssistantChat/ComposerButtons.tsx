@@ -143,6 +143,26 @@ function AttachmentIcon() {
     )
 }
 
+function SnippetsIcon() {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+        >
+            <path d="M12 8v5l3 2" />
+            <path d="M3.05 11a9 9 0 1 1 2.64 6.36" />
+            <path d="M3 17h3v-3" />
+        </svg>
+    )
+}
+
 function AbortIcon(props: { spinning: boolean }) {
     if (props.spinning) {
         return (
@@ -301,6 +321,9 @@ export function ComposerButtons(props: {
     controlsDisabled: boolean
     showSettingsButton: boolean
     onSettingsToggle: () => void
+    showSnippetsButton?: boolean
+    snippetsActive?: boolean
+    onSnippetsToggle?: () => void
     showTerminalButton: boolean
     terminalDisabled: boolean
     terminalLabel: string
@@ -334,6 +357,24 @@ export function ComposerButtons(props: {
                 >
                     <AttachmentIcon />
                 </ComposerPrimitive.AddAttachment>
+
+                {props.showSnippetsButton ? (
+                    <button
+                        type="button"
+                        aria-label={t('composer.snippets')}
+                        title={t('composer.snippets')}
+                        aria-pressed={props.snippetsActive ? 'true' : 'false'}
+                        disabled={props.controlsDisabled}
+                        className={`flex h-8 w-8 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                            props.snippetsActive
+                                ? 'bg-[var(--app-bg)] text-[var(--app-fg)]'
+                                : 'text-[var(--app-fg)]/60 hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)]'
+                        }`}
+                        onClick={props.onSnippetsToggle}
+                    >
+                        <SnippetsIcon />
+                    </button>
+                ) : null}
 
                 {props.showSettingsButton ? (
                     <button

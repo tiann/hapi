@@ -17,11 +17,12 @@
  *   HOMEBREW_TAP_REPO - Git URL of the tap repository (default: https://github.com/tiann/homebrew-tap.git)
  */
 
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
+import { createGitHubAuthEnv } from './gitAuthEnv';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(__dirname, '..');
@@ -176,12 +177,9 @@ async function main(): Promise<void> {
 
     // Clone and push to tap repository
     const githubToken = process.env.GITHUB_TOKEN;
-    let cloneUrl = tapRepo;
-
-    // Use token-authenticated URL in CI
-    if (githubToken && tapRepo.includes('github.com')) {
-        cloneUrl = tapRepo.replace('https://github.com/', `https://x-access-token:${githubToken}@github.com/`);
-    }
+    const gitEnv = githubToken && tapRepo.startsWith('https://github.com/')
+        ? createGitHubAuthEnv(process.env, githubToken)
+        : process.env;
 
     console.log(`Cloning ${tapRepo}...`);
 
@@ -189,7 +187,7 @@ async function main(): Promise<void> {
     mkdirSync(tempDir, { recursive: true });
 
     try {
-        execSync(`git clone --depth 1 "${cloneUrl}" "${tempDir}"`, { stdio: 'pipe' });
+        execFileSync('git', ['clone', '--depth', '1', tapRepo, tempDir], { stdio: 'pipe', env: gitEnv });
 
         // Ensure Formula directory exists
         const formulaDir = join(tempDir, 'Formula');
@@ -202,16 +200,16 @@ async function main(): Promise<void> {
 
         // Configure git user for CI
         if (githubToken) {
-            execSync('git config user.name "github-actions[bot]"', { cwd: tempDir, stdio: 'pipe' });
-            execSync('git config user.email "github-actions[bot]@users.noreply.github.com"', { cwd: tempDir, stdio: 'pipe' });
+            execFileSync('git', ['config', 'user.name', 'github-actions[bot]'], { cwd: tempDir, stdio: 'pipe', env: gitEnv });
+            execFileSync('git', ['config', 'user.email', 'github-actions[bot]@users.noreply.github.com'], { cwd: tempDir, stdio: 'pipe', env: gitEnv });
         }
 
         // Commit and push
-        execSync('git add Formula/hapi.rb', { cwd: tempDir, stdio: 'pipe' });
+        execFileSync('git', ['add', 'Formula/hapi.rb'], { cwd: tempDir, stdio: 'pipe', env: gitEnv });
 
         try {
-            execSync(`git commit -m "Update hapi to v${version}"`, { cwd: tempDir, stdio: 'pipe' });
-            execSync('git push origin main', { cwd: tempDir, stdio: 'pipe' });
+            execFileSync('git', ['commit', '-m', 'Update hapi to v' + version], { cwd: tempDir, stdio: 'pipe', env: gitEnv });
+            execFileSync('git', ['push', 'origin', 'main'], { cwd: tempDir, stdio: 'pipe', env: gitEnv });
             console.log(`\nSuccessfully pushed hapi v${version} to homebrew-tap`);
         } catch {
             console.log('\nNo changes to commit (formula already up to date)');

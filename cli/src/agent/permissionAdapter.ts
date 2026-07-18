@@ -23,17 +23,13 @@ function deriveToolInput(request: PermissionRequest): unknown {
 
 function pickOptionId(
     request: PermissionRequest,
-    preferredKinds: string[],
-    options?: { fallbackToFirst?: boolean }
+    preferredKinds: string[]
 ): string | null {
     for (const kind of preferredKinds) {
         const match = request.options.find((option) => option.kind === kind);
         if (match) return match.optionId;
     }
-    if (options?.fallbackToFirst === false) {
-        return null;
-    }
-    return request.options.length > 0 ? request.options[0].optionId : null;
+    return null;
 }
 
 export class PermissionAdapter {
@@ -95,8 +91,7 @@ export class PermissionAdapter {
             request,
             decision === 'approved_for_session'
                 ? ['allow_always', 'allow_once']
-                : ['allow_once', 'allow_always'],
-            { fallbackToFirst: false }
+                : ['allow_once', 'allow_always']
         );
 
         const outcome: PermissionResponse = optionId
@@ -155,11 +150,13 @@ export class PermissionAdapter {
             await this.backend.respondToPermission(pending.sessionId, pending, outcome);
         }
 
+        const completionStatus = outcome?.outcome === 'selected'
+            ? decision === 'denied' ? 'denied' : 'approved'
+            : 'canceled';
+
         this.session.updateAgentState((currentState) => {
             const requestEntry = currentState.requests?.[response.id];
             const { [response.id]: _, ...remaining } = currentState.requests ?? {};
-
-            const status = response.approved ? 'approved' : 'denied';
 
             return {
                 ...currentState,
@@ -171,14 +168,14 @@ export class PermissionAdapter {
                         arguments: toolInput,
                         createdAt: requestEntry?.createdAt ?? Date.now(),
                         completedAt: Date.now(),
-                        status,
+                        status: completionStatus,
                         decision
                     }
                 }
             } satisfies AgentState;
         });
 
-        logger.debug(`[ACP] Permission ${response.approved ? 'approved' : 'denied'} for ${toolName}`);
+        logger.debug(`[ACP] Permission ${completionStatus} for ${toolName}`);
     }
 
     private mapDecisionToOutcome(

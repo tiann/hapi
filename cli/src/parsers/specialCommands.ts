@@ -11,9 +11,17 @@ export interface ClearCommandResult {
     isClear: boolean;
 }
 
+export interface GoalCommandResult {
+    isGoal: boolean;
+    action?: 'get' | 'clear' | 'set';
+    text?: string;
+}
+
 export interface SpecialCommandResult {
-    type: 'compact' | 'clear' | null;
+    type: 'compact' | 'clear' | 'goal' | null;
     originalMessage?: string;
+    goalAction?: 'get' | 'clear' | 'set';
+    goalText?: string;
 }
 
 /**
@@ -56,6 +64,30 @@ export function parseClear(message: string): ClearCommandResult {
 }
 
 /**
+ * Parse /goal command
+ * Matches /goal (get), /goal clear (clear), and /goal <text> (set)
+ */
+export function parseGoal(message: string): GoalCommandResult {
+    const trimmed = message.trim();
+    const match = trimmed.match(/^\/goal(?:\s+([\s\S]*))?$/);
+    if (!match) {
+        return { isGoal: false };
+    }
+
+    const rawArgument = match[1]?.trim();
+    if (!rawArgument) {
+        return { isGoal: true, action: 'get' };
+    }
+
+    const [firstToken, ...restTokens] = rawArgument.split(/\s+/);
+    if (firstToken === 'clear' && restTokens.length === 0) {
+        return { isGoal: true, action: 'clear' };
+    }
+
+    return { isGoal: true, action: 'set', text: rawArgument };
+}
+
+/**
  * Unified parser for special commands
  * Returns the type of command and original message if applicable
  */
@@ -75,6 +107,16 @@ export function parseSpecialCommand(message: string): SpecialCommandResult {
         };
     }
     
+    const goalResult = parseGoal(message);
+    if (goalResult.isGoal) {
+        return {
+            type: 'goal',
+            goalAction: goalResult.action,
+            goalText: goalResult.text,
+            originalMessage: message
+        };
+    }
+
     return {
         type: null
     };

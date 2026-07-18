@@ -101,8 +101,10 @@ async function branchExists(repoRoot: string, branch: string): Promise<boolean> 
 export async function createWorktree(options: {
   basePath: string;
   nameHint?: string;
+  signal?: AbortSignal;
 }): Promise<WorktreeResult> {
-  const { basePath, nameHint } = options;
+  const { basePath, nameHint, signal } = options;
+  if (signal?.aborted) return { ok: false, error: 'Worktree creation cancelled.' };
   let repoRoot: string;
 
   try {
@@ -123,6 +125,7 @@ export async function createWorktree(options: {
   const baseName = normalizeNameHint(nameHint) ?? makeDefaultBaseName();
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+    if (signal?.aborted) return { ok: false, error: 'Worktree creation cancelled.' };
     const name = attempt === 0 ? baseName : `${baseName}-${randomBytes(2).toString('hex')}`;
     const branch = `hapi-${name}`;
     const worktreePath = join(repoWorktreesRoot, name);
@@ -137,6 +140,10 @@ export async function createWorktree(options: {
 
     try {
       await runGit(['worktree', 'add', '-b', branch, worktreePath], repoRoot);
+      if (signal?.aborted) {
+        await removeWorktree({ repoRoot, worktreePath });
+        return { ok: false, error: 'Worktree creation cancelled.' };
+      }
       return {
         ok: true,
         info: {

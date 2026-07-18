@@ -12,6 +12,7 @@ import { formatSessionNotification, createNotificationKeyboard } from './session
 import { getAgentName } from '../notifications/sessionInfo'
 import type { AttentionReason, NotificationChannel } from '../notifications/notificationTypes'
 import type { Store } from '../store'
+import type { AccessTokenBindingValidator } from '../utils/accessToken'
 
 export interface BotContext extends Context {
     // Extended context for future use
@@ -22,6 +23,7 @@ export interface HappyBotConfig {
     botToken: string
     publicUrl: string
     store: Store
+    isTelegramBindingCurrent: AccessTokenBindingValidator
 }
 
 /**
@@ -33,11 +35,13 @@ export class HappyBot implements NotificationChannel {
     private isRunning = false
     private readonly publicUrl: string
     private readonly store: Store
+    private readonly isTelegramBindingCurrent: AccessTokenBindingValidator
 
     constructor(config: HappyBotConfig) {
         this.syncEngine = config.syncEngine
         this.publicUrl = config.publicUrl
         this.store = config.store
+        this.isTelegramBindingCurrent = config.isTelegramBindingCurrent
 
         this.bot = new Bot<BotContext>(config.botToken)
         this.setupMiddleware()
@@ -168,6 +172,9 @@ export class HappyBot implements NotificationChannel {
         const users = this.store.users.getUsersByPlatformAndNamespace('telegram', namespace)
         const ids = new Set<number>()
         for (const user of users) {
+            if (!this.isTelegramBindingCurrent(user)) {
+                continue
+            }
             const chatId = Number(user.platformUserId)
             if (Number.isFinite(chatId)) {
                 ids.add(chatId)
@@ -181,7 +188,7 @@ export class HappyBot implements NotificationChannel {
             return null
         }
         const stored = this.store.users.getUser('telegram', String(chatId))
-        return stored?.namespace ?? null
+        return stored && this.isTelegramBindingCurrent(stored) ? stored.namespace : null
     }
 
     /**

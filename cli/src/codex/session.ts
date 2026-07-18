@@ -4,7 +4,11 @@ import { AgentSessionBase } from '@/agent/sessionBase';
 import type { EnhancedMode, PermissionMode } from './loop';
 import type { CodexCliOverrides } from './utils/codexCliOverrides';
 import type { LocalLaunchExitReason } from '@/agent/localLaunchPolicy';
-import type { SessionModel, SessionModelReasoningEffort } from '@/api/types';
+import type { SessionModel, SessionModelReasoningEffort, SessionServiceTier } from '@/api/types';
+import type { DeliveryOutcomeClient } from './deliveryOutcomeClient';
+import { randomUUID } from 'node:crypto';
+import type { DeliveryAttemptState } from '@hapi/protocol';
+import { invalidateCodexQueueDurably } from './durableQueueInvalidation';
 
 type LocalLaunchFailure = {
     message: string;
@@ -17,6 +21,8 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
     readonly startedBy: 'runner' | 'terminal';
     readonly startingMode: 'local' | 'remote';
     localLaunchFailure: LocalLaunchFailure | null = null;
+    readonly deliveryOutcomes?: DeliveryOutcomeClient;
+    readonly onAmbiguousDelivery?: () => void;
 
     constructor(opts: {
         api: ApiClient;
@@ -34,7 +40,10 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         permissionMode?: PermissionMode;
         model?: SessionModel;
         modelReasoningEffort?: SessionModelReasoningEffort;
+        serviceTier?: SessionServiceTier;
         collaborationMode?: EnhancedMode['collaborationMode'];
+        deliveryOutcomes?: DeliveryOutcomeClient;
+        onAmbiguousDelivery?: () => void;
     }) {
         super({
             api: opts.api,
@@ -54,6 +63,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
             permissionMode: opts.permissionMode,
             model: opts.model,
             modelReasoningEffort: opts.modelReasoningEffort,
+            serviceTier: opts.serviceTier,
             collaborationMode: opts.collaborationMode
         });
 
@@ -64,7 +74,10 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         this.permissionMode = opts.permissionMode;
         this.model = opts.model;
         this.modelReasoningEffort = opts.modelReasoningEffort;
+        this.serviceTier = opts.serviceTier;
         this.collaborationMode = opts.collaborationMode;
+        this.deliveryOutcomes = opts.deliveryOutcomes;
+        this.onAmbiguousDelivery = opts.onAmbiguousDelivery;
     }
 
     setPermissionMode = (mode: PermissionMode): void => {
@@ -79,12 +92,36 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         this.modelReasoningEffort = modelReasoningEffort;
     };
 
+    setServiceTier = (serviceTier: SessionServiceTier): void => {
+        this.serviceTier = serviceTier;
+    };
+
     setCollaborationMode = (mode: EnhancedMode['collaborationMode']): void => {
         this.collaborationMode = mode;
     };
 
     recordLocalLaunchFailure = (message: string, exitReason: LocalLaunchExitReason): void => {
         this.localLaunchFailure = { message, exitReason };
+    };
+
+    invalidateQueuedMessages = async (
+        reason: string,
+        state: Extract<DeliveryAttemptState, 'canceled' | 'superseded' | 'ambiguous'>
+    ): Promise<void> => {
+        const attemptId = randomUUID();
+        await invalidateCodexQueueDurably({
+            queue: this.queue,
+            reason,
+            state,
+            attemptId,
+            recordTerminal: this.deliveryOutcomes
+                ? async (items, terminalAttemptId, terminalState) => await this.deliveryOutcomes!.recordTerminal(
+                    items,
+                    terminalAttemptId,
+                    terminalState
+                )
+                : undefined
+        });
     };
 
     sendAgentMessage = (message: unknown): void => {

@@ -43,6 +43,14 @@ function formatDuration(ms: number): string {
     return `${mins}m ${secs}s`
 }
 
+function formatTokenCount(value: number): string {
+    const rounded = Math.round(value)
+    const abs = Math.abs(rounded)
+    if (abs >= 1_000_000) return `${Math.round(rounded / 1_000_000)}M`
+    if (abs >= 1_000) return `${Math.round(rounded / 1_000)}K`
+    return String(rounded)
+}
+
 export type EventPresentation = {
     icon: string | null
     text: string
@@ -93,17 +101,49 @@ export function getEventPresentation(event: AgentEvent): EventPresentation {
     if (event.type === 'message') {
         return { icon: null, text: typeof event.message === 'string' ? event.message : 'Message' }
     }
+    if (event.type === 'background-notification') {
+        return { icon: null, text: typeof event.message === 'string' ? event.message : 'Background notification' }
+    }
     if (event.type === 'turn-duration') {
         const ms = typeof event.durationMs === 'number' ? event.durationMs : 0
         return { icon: '⏱️', text: `Turn: ${formatDuration(ms)}` }
     }
     if (event.type === 'microcompact') {
         const saved = typeof event.tokensSaved === 'number' ? event.tokensSaved : 0
-        const formatted = saved >= 1000 ? `${Math.round(saved / 1000)}K` : String(saved)
+        const formatted = formatTokenCount(saved)
         return { icon: '📦', text: `Context compacted (saved ${formatted} tokens)` }
     }
     if (event.type === 'compact') {
+        const ev = event as { preTokens?: unknown; postTokens?: unknown; tokensSaved?: unknown }
+        const preTokens = typeof ev.preTokens === 'number' && Number.isFinite(ev.preTokens) && ev.preTokens > 0
+            ? ev.preTokens
+            : null
+        const postTokens = typeof ev.postTokens === 'number' && Number.isFinite(ev.postTokens) && ev.postTokens > 0
+            ? ev.postTokens
+            : null
+        const explicitSaved = typeof ev.tokensSaved === 'number' && Number.isFinite(ev.tokensSaved) && ev.tokensSaved > 0
+            ? ev.tokensSaved
+            : null
+        const tokensSaved = explicitSaved ?? (preTokens !== null && postTokens !== null && preTokens > postTokens ? preTokens - postTokens : null)
+        if (preTokens !== null && postTokens !== null && tokensSaved !== null) {
+            return {
+                icon: '📦',
+                text: `Conversation compacted (${formatTokenCount(preTokens)} → ${formatTokenCount(postTokens)}, saved ${formatTokenCount(tokensSaved)} tokens)`
+            }
+        }
+        if (tokensSaved !== null) {
+            return { icon: '📦', text: `Conversation compacted (saved ${formatTokenCount(tokensSaved)} tokens)` }
+        }
         return { icon: '📦', text: 'Conversation compacted' }
+    }
+    if (event.type === 'moa-aggregating') {
+        const aggregator = (event as Record<string, unknown>).aggregator
+        return {
+            icon: '🧩',
+            text: typeof aggregator === 'string' && aggregator.trim()
+                ? `MoA aggregating with ${aggregator.trim()}`
+                : 'MoA aggregating'
+        }
     }
     try {
         return { icon: null, text: JSON.stringify(event) }

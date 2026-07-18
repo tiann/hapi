@@ -7,11 +7,14 @@ import {
     useState,
     type CSSProperties
 } from 'react'
+import { CopyIcon } from '@/components/icons'
+import { safeCopyToClipboard } from '@/lib/clipboard'
 import { useTranslation } from '@/lib/use-translation'
 
 type SessionActionMenuProps = {
     isOpen: boolean
     onClose: () => void
+    sessionId: string
     sessionActive: boolean
     onRename: () => void
     onArchive: () => void
@@ -95,6 +98,7 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
     const {
         isOpen,
         onClose,
+        sessionId,
         sessionActive,
         onRename,
         onArchive,
@@ -107,6 +111,11 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
     const internalId = useId()
     const resolvedMenuId = menuId ?? `session-action-menu-${internalId}`
     const headingId = `${resolvedMenuId}-heading`
+
+    const handleCopySessionId = () => {
+        void safeCopyToClipboard(sessionId).catch(() => {})
+        onClose()
+    }
 
     const handleRename = () => {
         onClose()
@@ -229,6 +238,16 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                 aria-labelledby={headingId}
                 className="flex flex-col gap-1"
             >
+                <button
+                    type="button"
+                    role="menuitem"
+                    className={`${baseItemClassName} hover:bg-[var(--app-subtle-bg)]`}
+                    onClick={handleCopySessionId}
+                >
+                    <CopyIcon className="h-[18px] w-[18px] text-[var(--app-hint)]" />
+                    {t('session.action.copySessionId')}
+                </button>
+
                 <button
                     type="button"
                     role="menuitem"

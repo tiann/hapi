@@ -8,7 +8,8 @@ function makeContext() {
         groups: new Map(),
         consumedGroupIds: new Set<string>(),
         titleChangesByToolUseId: new Map(),
-        emittedTitleChangeToolUseIds: new Set<string>()
+        emittedTitleChangeToolUseIds: new Set<string>(),
+        sendAttachmentToolUseIds: new Set<string>()
     }
 }
 
@@ -144,20 +145,77 @@ describe('reduceTimeline', () => {
         expect(textBlocks).toHaveLength(1)
     })
 
+    it('uses turn-duration event time as the display timestamp for the preceding assistant reply', () => {
+        const startedAt = 1_700_000_000_000
+        const completedAt = 1_700_000_125_000
+        const agentMessage = makeAgentMessage('Done.', {
+            id: 'msg-agent-completes',
+            createdAt: startedAt
+        })
+        const durationEvent: TracedMessage = {
+            id: 'msg-duration',
+            localId: null,
+            createdAt: completedAt,
+            role: 'event',
+            content: { type: 'turn-duration', durationMs: completedAt - startedAt },
+            isSidechain: false
+        } as TracedMessage
+
+        const { blocks } = reduceTimeline([agentMessage, durationEvent], makeContext())
+
+        const textBlock = blocks.find(b => b.kind === 'agent-text')
+        expect(textBlock).toMatchObject({
+            kind: 'agent-text',
+            createdAt: startedAt,
+            displayTimestamp: completedAt
+        })
+    })
+
+    it('uses ready event time as a fallback completion timestamp without rendering the ready event', () => {
+        const startedAt = 1_700_000_000_000
+        const completedAt = 1_700_000_045_000
+        const agentMessage = makeAgentMessage('Done without duration.', {
+            id: 'msg-agent-ready',
+            createdAt: startedAt
+        })
+        const readyEvent: TracedMessage = {
+            id: 'msg-ready',
+            localId: null,
+            createdAt: completedAt,
+            role: 'event',
+            content: { type: 'ready' },
+            isSidechain: false
+        } as TracedMessage
+
+        const { blocks } = reduceTimeline([agentMessage, readyEvent], makeContext())
+
+        expect(blocks.some(b => b.kind === 'agent-event' && b.event.type === 'ready')).toBe(false)
+        const textBlock = blocks.find(b => b.kind === 'agent-text')
+        expect(textBlock).toMatchObject({
+            kind: 'agent-text',
+            createdAt: startedAt,
+            displayTimestamp: completedAt
+        })
+    })
+
     it('extracts task-notification summary as event from sidechain block', () => {
         const msg: TracedMessage = {
             id: 'msg-notif',
             localId: null,
             createdAt: 1_700_000_000_000,
             role: 'agent',
-            content: [{ type: 'sidechain', uuid: 'n-1', prompt: '<task-notification> <summary>Background command stopped</summary> </task-notification>' }],
+            content: [{ type: 'sidechain', uuid: 'n-1', parentUUID: null, kind: 'background_notification', prompt: '<task-notification> <summary>Background command stopped</summary> </task-notification>' }],
             isSidechain: true
         } as TracedMessage
 
         const { blocks } = reduceTimeline([msg], makeContext())
         const events = blocks.filter(b => b.kind === 'agent-event')
         expect(events).toHaveLength(1)
-        expect((events[0] as any).event.message).toBe('Background command stopped')
+        expect((events[0] as any).event).toMatchObject({
+            type: 'background-notification',
+            message: 'Background command stopped',
+            internalKind: 'background_notification'
+        })
     })
 
     it('suppresses sentinel reply to task-notification (summary path)', () => {
@@ -166,7 +224,7 @@ describe('reduceTimeline', () => {
             localId: null,
             createdAt: 1_700_000_000_000,
             role: 'agent',
-            content: [{ type: 'sidechain', uuid: 'notif-uuid', prompt: '<task-notification> <summary>Done</summary> </task-notification>' }],
+            content: [{ type: 'sidechain', uuid: 'notif-uuid', parentUUID: null, kind: 'background_notification', prompt: '<task-notification> <summary>Done</summary> </task-notification>' }],
             isSidechain: true
         } as TracedMessage
 
@@ -186,4 +244,95 @@ describe('reduceTimeline', () => {
         const events = blocks.filter(b => b.kind === 'agent-event')
         expect(events).toHaveLength(1)
     })
+
+    it('renders agent attachments as assistant attachment blocks', () => {
+        const attachment = {
+            id: 'agent-att-1',
+            filename: 'chart.png',
+            mimeType: 'image/png',
+            size: 4,
+            path: 'hapi-agent-inline://agent-att-1/chart.png',
+            previewUrl: 'data:image/png;base64,AAAA'
+        }
+        const msg: TracedMessage = {
+            id: 'msg-attachments',
+            localId: null,
+            createdAt: 1_700_000_000_123,
+            role: 'agent',
+            content: [{ type: 'attachments', attachments: [attachment], uuid: 'u-att', parentUUID: null }],
+            isSidechain: false
+        } as TracedMessage
+
+        const { blocks } = reduceTimeline([msg], makeContext())
+
+        expect(blocks).toEqual([{
+            kind: 'agent-attachments',
+            id: 'msg-attachments:0',
+            localId: null,
+            createdAt: 1_700_000_000_123,
+            attachments: [attachment],
+            meta: undefined
+        }])
+    })
+
+    it('does not render send_attachment tool cards when the attachment message is present', () => {
+        const attachment = {
+            id: 'agent-att-1',
+            filename: 'chart.png',
+            mimeType: 'image/png',
+            size: 4,
+            path: 'hapi-agent-inline://agent-att-1/chart.png',
+            previewUrl: 'data:image/png;base64,AAAA'
+        }
+        const context = makeContext()
+        context.sendAttachmentToolUseIds.add('tool-attach')
+        const toolCall: TracedMessage = {
+            id: 'msg-tool-call',
+            localId: null,
+            createdAt: 1_700_000_000_100,
+            role: 'agent',
+            content: [{
+                type: 'tool-call',
+                id: 'tool-attach',
+                name: 'mcp__hapi__send_attachment',
+                input: { files: [{ path: 'chart.png' }] },
+                description: null,
+                uuid: 'u-tool',
+                parentUUID: null
+            }],
+            isSidechain: false
+        } as TracedMessage
+        const toolResult: TracedMessage = {
+            id: 'msg-tool-result',
+            localId: null,
+            createdAt: 1_700_000_000_200,
+            role: 'agent',
+            content: [{
+                type: 'tool-result',
+                tool_use_id: 'tool-attach',
+                content: 'Sent 1 attachment to the user.',
+                is_error: false,
+                uuid: 'u-result',
+                parentUUID: null
+            }],
+            isSidechain: false
+        } as TracedMessage
+        const attachmentMessage: TracedMessage = {
+            id: 'msg-attachments',
+            localId: null,
+            createdAt: 1_700_000_000_300,
+            role: 'agent',
+            content: [{ type: 'attachments', attachments: [attachment], uuid: 'u-att', parentUUID: null }],
+            isSidechain: false
+        } as TracedMessage
+
+        const { blocks } = reduceTimeline([toolCall, toolResult, attachmentMessage], context)
+
+        expect(blocks).toHaveLength(1)
+        expect(blocks[0]).toMatchObject({
+            kind: 'agent-attachments',
+            attachments: [attachment]
+        })
+    })
+
 })

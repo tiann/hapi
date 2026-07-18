@@ -22,6 +22,8 @@ export default defineConfig({
       { text: 'Installation', link: '/guide/installation' },
       { text: 'PWA', link: '/guide/pwa' },
       { text: 'How it Works', link: '/guide/how-it-works' },
+      { text: 'Context Compaction', link: '/guide/context-compaction' },
+      { text: 'Token Baseline', link: '/guide/token-baseline' },
       { text: 'Cursor Agent', link: '/guide/cursor' },
       { text: 'Voice Assistant', link: '/guide/voice-assistant' },
       { text: 'Why HAPI', link: '/guide/why-hapi' },

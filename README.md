@@ -1,6 +1,6 @@
 # HAPI
 
-Run official Claude Code / Codex / Gemini / OpenCode sessions locally and control them remotely through a Web / PWA / Telegram Mini App.
+Run official Claude Code / Codex / Antigravity agy / OpenCode sessions locally and control them remotely through a Web / PWA / Telegram Mini App.
 
 > **Why HAPI?** HAPI is a local-first alternative to Happy. See [Why Not Happy?](docs/guide/why-hapi.md) for the key differences.
 
@@ -9,7 +9,7 @@ Run official Claude Code / Codex / Gemini / OpenCode sessions locally and contro
 - **Seamless Handoff** - Work locally, switch to remote when needed, switch back anytime. No context loss, no session restart.
 - **Native First** - HAPI wraps your AI agent instead of replacing it. Same terminal, same experience, same muscle memory.
 - **AFK Without Stopping** - Step away from your desk? Approve AI requests from your phone with one tap.
-- **Your AI, Your Choice** - Claude Code, Codex, Cursor Agent, Gemini, OpenCode—different models, one unified workflow.
+- **Your AI, Your Choice** - Claude Code, Codex, Cursor Agent, Antigravity agy, OpenCode—different models, one unified workflow.
 - **Terminal Anywhere** - Run commands from your phone or browser, directly connected to the working machine.
 - **Voice Control** - Talk to your AI agent hands-free using the built-in voice assistant.
 

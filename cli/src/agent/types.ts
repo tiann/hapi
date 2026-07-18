@@ -15,6 +15,13 @@ export type AgentSessionConfig = {
     mcpServers: McpServerStdio[];
 };
 
+export type AgentSessionHandle = {
+    /** Live runtime session id used for prompt/config RPCs. */
+    sessionId: string;
+    /** Stable native session id that can be passed back to the agent for resume. */
+    resumeSessionId?: string | null;
+};
+
 export type PromptContent = {
     type: 'text';
     text: string;
@@ -28,6 +35,11 @@ export type PlanItem = {
 
 export type AgentMessage =
     | { type: 'text'; text: string }
+    | { type: 'reasoning'; text: string }
+    | { type: 'user_message'; text: string }
+    | { type: 'title'; title: string }
+    | { type: 'moa_reference'; label: string; text: string; index?: number; count?: number }
+    | { type: 'moa_aggregating'; aggregator?: string }
     | { type: 'tool_call'; id: string; name: string; input: unknown; status: 'pending' | 'in_progress' | 'completed' | 'failed' }
     | { type: 'tool_result'; id: string; output: unknown; status: 'completed' | 'failed' }
     | { type: 'plan'; items: PlanItem[] }
@@ -57,9 +69,11 @@ export type PermissionResponse =
 
 export interface AgentBackend {
     initialize(): Promise<void>;
-    newSession(config: AgentSessionConfig): Promise<string>;
+    newSession(config: AgentSessionConfig): Promise<string | AgentSessionHandle>;
+    resumeSession?(resumeSessionId: string, config: AgentSessionConfig): Promise<string | AgentSessionHandle>;
     prompt(sessionId: string, content: PromptContent[], onUpdate: (msg: AgentMessage) => void): Promise<void>;
     cancelPrompt(sessionId: string): Promise<void>;
+    setSessionConfig?(sessionId: string, config: { model?: string | null; effort?: string | null; permissionMode?: string }): Promise<Record<string, unknown>>;
     respondToPermission(sessionId: string, request: PermissionRequest, response: PermissionResponse): Promise<void>;
     onPermissionRequest(handler: (request: PermissionRequest) => void): void;
     disconnect(): Promise<void>;

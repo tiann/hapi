@@ -9,6 +9,7 @@ import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { CopyIcon, CheckIcon } from '@/components/icons'
 import { useTranslation } from '@/lib/use-translation'
+import { getSessionDisplayTitle } from '@hapi/protocol'
 
 type SessionGroup = {
     key: string
@@ -257,17 +258,7 @@ function ChevronIcon(props: { className?: string; collapsed?: boolean }) {
 }
 
 function getSessionTitle(session: SessionSummary): string {
-    if (session.metadata?.name) {
-        return session.metadata.name
-    }
-    if (session.metadata?.summary?.text) {
-        return session.metadata.summary.text
-    }
-    if (session.metadata?.path) {
-        const parts = session.metadata.path.split('/').filter(Boolean)
-        return parts.length > 0 ? parts[parts.length - 1] : session.id.slice(0, 8)
-    }
-    return session.id.slice(0, 8)
+    return getSessionDisplayTitle(session)
 }
 
 function getTodoProgress(session: SessionSummary): { completed: number; total: number } | null {
@@ -276,10 +267,25 @@ function getTodoProgress(session: SessionSummary): { completed: number; total: n
     return session.todoProgress
 }
 
-const FLAVOR_BADGES: Record<string, { label: string; colors: string }> = {
+type FlavorBadge = { label: string; colors: string; icon?: 'api' }
+
+const FLAVOR_BADGES: Record<string, FlavorBadge> = {
     claude: {
         label: 'Cl',
         colors: 'bg-[#d97706] text-white',
+    },
+    'claude-deepseek': {
+        label: 'DS',
+        colors: 'bg-[#0f4c81] text-white',
+    },
+    'claude-ark': {
+        label: 'ARK',
+        colors: 'bg-[#7c3aed] text-white',
+    },
+    'cc-api': {
+        label: 'API',
+        colors: 'bg-[#0891b2] text-white',
+        icon: 'api',
     },
     codex: {
         label: 'Cx',
@@ -289,25 +295,54 @@ const FLAVOR_BADGES: Record<string, { label: string; colors: string }> = {
         label: 'Cu',
         colors: 'bg-[#0f766e] text-white',
     },
-    gemini: {
-        label: 'Gm',
+    agy: {
+        label: 'AGY',
         colors: 'bg-[#2563eb] text-white',
+    },
+    grok: {
+        label: 'Gk',
+        colors: 'bg-[#c026d3] text-white',
     },
     opencode: {
         label: 'Op',
         colors: 'bg-[#15803d] text-white',
     },
+    'hermes-moa': {
+        label: 'MoA',
+        colors: 'bg-[#6d28d9] text-white',
+    },
+}
+
+export function getFlavorBadge(flavor?: string | null): FlavorBadge {
+    return FLAVOR_BADGES[(flavor ?? 'claude').trim().toLowerCase()] ?? FLAVOR_BADGES.claude
 }
 
 function FlavorIcon({ flavor, className }: { flavor?: string | null; className?: string }) {
-    const badge = FLAVOR_BADGES[(flavor ?? 'claude').trim().toLowerCase()] ?? FLAVOR_BADGES.claude
+    const badge = getFlavorBadge(flavor)
     return (
         <span
             aria-hidden="true"
             className={`inline-flex items-center justify-center rounded-sm text-[8px] font-semibold leading-none ${badge.colors} ${className ?? 'h-4 w-4'}`}
         >
-            {badge.label}
+            {badge.icon === 'api' ? <ApiFlavorGlyph /> : badge.label}
         </span>
+    )
+}
+
+function ApiFlavorGlyph() {
+    return (
+        <svg
+            viewBox="0 0 16 16"
+            className="h-3 w-3"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+        >
+            <path d="M5.25 5.25h5.5v5.5h-5.5z" />
+            <path d="M3 8h2.25M10.75 8H13M8 3v2.25M8 10.75V13" />
+        </svg>
     )
 }
 
@@ -415,6 +450,14 @@ function SessionItem(props: {
                                 {t('session.item.pending')} {s.pendingRequestsCount}
                             </span>
                         ) : null}
+                        {s.unreadCount > 0 ? (
+                            <span
+                                className="inline-flex min-w-5 items-center justify-center rounded-full bg-red-500 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white"
+                                aria-label={`${s.unreadCount} unread`}
+                            >
+                                {s.unreadCount > 9 ? '9+' : s.unreadCount}
+                            </span>
+                        ) : null}
                         <span className="text-[var(--app-hint)]">
                             {formatRelativeTime(s.updatedAt, t)}
                         </span>
@@ -430,6 +473,7 @@ function SessionItem(props: {
             <SessionActionMenu
                 isOpen={menuOpen}
                 onClose={() => setMenuOpen(false)}
+                sessionId={s.id}
                 sessionActive={s.active}
                 onRename={() => setRenameOpen(true)}
                 onArchive={() => setArchiveOpen(true)}

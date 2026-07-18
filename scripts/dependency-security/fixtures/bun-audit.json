@@ -1,0 +1,27 @@
+{
+  "duplicate": [
+    {
+      "id": 1001,
+      "url": "https://github.com/advisories/GHSA-duplicate-one",
+      "title": "duplicate before version two",
+      "severity": "high",
+      "vulnerable_versions": "<2.0.0"
+    },
+    {
+      "id": 1002,
+      "url": "https://github.com/advisories/GHSA-duplicate-two",
+      "title": "duplicate version two range",
+      "severity": "moderate",
+      "vulnerable_versions": ">=2.0.0 <3.0.0"
+    }
+  ],
+  "other": [
+    {
+      "id": "1003",
+      "url": "https://github.com/advisories/GHSA-other",
+      "title": "other advisory",
+      "severity": "low",
+      "vulnerable_versions": "<=1.0.0"
+    }
+  ]
+}

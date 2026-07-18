@@ -9,24 +9,39 @@ import { serializerCompiler, validatorCompiler, ZodTypeProvider } from 'fastify-
 import { logger } from '@/ui/logger';
 import { Metadata } from '@/api/types';
 import { TrackedSession } from './types';
-import { SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/rpcTypes';
+import { QuerySpawnSessionResult, SpawnSessionOptions, SpawnSessionResult } from '@/modules/common/rpcTypes';
+import type { SignedManagedOutcome } from './managedOutcomeMailbox';
+
+export const RUNNER_CONTROL_BODY_LIMIT_BYTES = 1024 * 1024;
 
 export function startRunnerControlServer({
   getChildren,
   stopSession,
   spawnSession,
+  querySpawnSession,
   requestShutdown,
-  onHappySessionWebhook
+  onHappySessionWebhook,
+  onManagedOutcome,
+  onNativeIdentity
 }: {
   getChildren: () => TrackedSession[];
-  stopSession: (sessionId: string) => boolean;
+  stopSession: (sessionId: string) => Promise<boolean> | boolean;
   spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
+  querySpawnSession: (spawnRequestId: string) => Promise<QuerySpawnSessionResult>;
   requestShutdown: () => void;
-  onHappySessionWebhook: (sessionId: string, metadata: Metadata) => void;
+  onHappySessionWebhook: (sessionId: string, metadata: Metadata) => Promise<void> | void;
+  onManagedOutcome: (envelope: SignedManagedOutcome) => Promise<{ acknowledged: boolean }>;
+  onNativeIdentity?: (input: {
+    launchNonce: string;
+    pid: number;
+    nativeResumeId: string;
+    resumeProfileFingerprint: string;
+  }) => Promise<{ acknowledged: boolean }>;
 }): Promise<{ port: number; stop: () => Promise<void> }> {
   return new Promise((resolve) => {
     const app = fastify({
-      logger: false // We use our own logger
+      logger: false, // We use our own logger
+      bodyLimit: RUNNER_CONTROL_BODY_LIMIT_BYTES
     });
 
     // Set up Zod type provider
@@ -51,9 +66,33 @@ export function startRunnerControlServer({
       const { sessionId, metadata } = request.body;
 
       logger.debug(`[CONTROL SERVER] Session started: ${sessionId}`);
-      onHappySessionWebhook(sessionId, metadata);
+      await onHappySessionWebhook(sessionId, metadata);
 
       return { status: 'ok' as const };
+    });
+
+    typed.post('/managed-outcome', {
+      schema: {
+        body: z.object({ envelope: z.any() }),
+        response: { 200: z.object({ acknowledged: z.boolean() }) }
+      }
+    }, async (request) => {
+      return await onManagedOutcome(request.body.envelope as SignedManagedOutcome);
+    });
+
+    typed.post('/native-identity', {
+      schema: {
+        body: z.object({
+          launchNonce: z.string().uuid(),
+          pid: z.number().int().positive(),
+          nativeResumeId: z.string().min(1).max(4096),
+          resumeProfileFingerprint: z.string().regex(/^[a-f0-9]{64}$/)
+        }),
+        response: { 200: z.object({ acknowledged: z.boolean() }) }
+      }
+    }, async (request) => {
+      if (!onNativeIdentity) return { acknowledged: false };
+      return await onNativeIdentity(request.body);
     });
 
     // List all tracked sessions
@@ -99,7 +138,7 @@ export function startRunnerControlServer({
       const { sessionId } = request.body;
 
       logger.debug(`[CONTROL SERVER] Stop session request: ${sessionId}`);
-      const success = stopSession(sessionId);
+      const success = await stopSession(sessionId);
       return { success };
     });
 
@@ -107,6 +146,7 @@ export function startRunnerControlServer({
     typed.post('/spawn-session', {
       schema: {
         body: z.object({
+          spawnRequestId: z.string().uuid().optional(),
           directory: z.string(),
           sessionId: z.string().optional(),
           sessionType: z.enum(['simple', 'worktree']).optional(),
@@ -117,6 +157,11 @@ export function startRunnerControlServer({
             success: z.boolean(),
             sessionId: z.string().optional(),
             approvedNewDirectoryCreation: z.boolean().optional()
+          }),
+          202: z.object({
+            success: z.literal(false),
+            pending: z.literal(true),
+            spawnRequestId: z.string().uuid()
           }),
           409: z.object({
             success: z.boolean(),
@@ -131,10 +176,10 @@ export function startRunnerControlServer({
         }
       }
     }, async (request, reply) => {
-      const { directory, sessionId, sessionType, worktreeName } = request.body;
+      const { spawnRequestId, directory, sessionId, sessionType, worktreeName } = request.body;
 
       logger.debug(`[CONTROL SERVER] Spawn session request: dir=${directory}, sessionId=${sessionId || 'new'}`);
-      const result = await spawnSession({ directory, sessionId, sessionType, worktreeName });
+      const result = await spawnSession({ spawnRequestId, directory, sessionId, sessionType, worktreeName });
 
       switch (result.type) {
         case 'success':
@@ -150,6 +195,14 @@ export function startRunnerControlServer({
             success: true,
             sessionId: result.sessionId,
             approvedNewDirectoryCreation: true
+          };
+
+        case 'pending':
+          reply.code(202);
+          return {
+            success: false,
+            pending: true,
+            spawnRequestId: result.spawnRequestId
           };
         
         case 'requestToApproveDirectoryCreation':
@@ -168,6 +221,24 @@ export function startRunnerControlServer({
             error: result.errorMessage
           };
       }
+    });
+
+    typed.post('/spawn-session-status', {
+      schema: {
+        body: z.object({ spawnRequestId: z.string().uuid() }),
+        response: {
+          200: z.discriminatedUnion('type', [
+            z.object({ type: z.literal('success'), sessionId: z.string() }),
+            z.object({ type: z.literal('pending'), spawnRequestId: z.string().uuid() }),
+            z.object({ type: z.literal('not_found'), spawnRequestId: z.string().uuid() }),
+            z.object({ type: z.literal('conflict'), spawnRequestId: z.string().uuid() }),
+            z.object({ type: z.literal('requestToApproveDirectoryCreation'), directory: z.string() }),
+            z.object({ type: z.literal('error'), errorMessage: z.string() })
+          ])
+        }
+      }
+    }, async (request) => {
+      return await querySpawnSession(request.body.spawnRequestId);
     });
 
     // Stop runner

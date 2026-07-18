@@ -8,11 +8,43 @@ import { clearRunnerState, readRunnerState, readSettings } from '@/persistence';
 import { Metadata } from '@/api/types';
 import packageJson from '../../package.json';
 import { existsSync, statSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { isBunCompiled, projectPath } from '@/projectPath';
-import { isProcessAlive, killProcess } from '@/utils/process';
+import { isProcessAlive } from '@/utils/process';
 import { configuration } from '@/configuration';
 import { hashRunnerCliApiToken, isRunnerStateCompatibleWithIdentity } from './runnerIdentity';
+import { RUNNER_TIMING } from './runnerConstants';
+import type { SignedManagedOutcome } from './managedOutcomeMailbox';
+
+export function formatRunnerHttpError(path: string, status: number, payload: unknown): string {
+  const base = `Request failed: ${path}, HTTP ${status}`;
+  if (!payload || typeof payload !== 'object' || typeof (payload as { error?: unknown }).error !== 'string') {
+    return base;
+  }
+  const detail = (payload as { error: string }).error.trim().replace(/\s+/g, ' ').slice(0, 500);
+  return detail ? `${base}: ${detail}` : base;
+}
+
+type RunnerHttpTimeoutOptions = {
+  minimumTimeoutMs?: number;
+  maximumTimeoutMs?: number;
+};
+
+export function resolveRunnerHttpTimeout(
+  configuredValue: string | undefined,
+  options: RunnerHttpTimeoutOptions
+): number {
+  const parsed = configuredValue ? Number.parseInt(configuredValue, 10) : 10_000;
+  const configured = Number.isFinite(parsed) && parsed > 0 ? parsed : 10_000;
+  const minimum = typeof options.minimumTimeoutMs === 'number' && Number.isFinite(options.minimumTimeoutMs)
+    ? Math.max(1, Math.trunc(options.minimumTimeoutMs))
+    : 1;
+  const maximum = typeof options.maximumTimeoutMs === 'number' && Number.isFinite(options.maximumTimeoutMs)
+    ? Math.max(1, Math.trunc(options.maximumTimeoutMs))
+    : Number.POSITIVE_INFINITY;
+  return Math.max(minimum, Math.min(configured, maximum));
+}
 
 export function getInstalledCliMtimeMs(): number | undefined {
   if (isBunCompiled()) {
@@ -23,19 +55,19 @@ export function getInstalledCliMtimeMs(): number | undefined {
     }
   }
 
-  const packageJsonPath = join(projectPath(), 'package.json');
-  if (!existsSync(packageJsonPath)) {
-    return undefined;
-  }
-
-  try {
-    return statSync(packageJsonPath).mtimeMs;
-  } catch {
-    return undefined;
-  }
+  const candidates = [join(projectPath(), 'package.json')];
+  if (process.argv[1]?.startsWith('/')) candidates.push(process.argv[1]);
+  const mtimes = candidates.flatMap((path) => {
+    try { return existsSync(path) ? [statSync(path).mtimeMs] : []; } catch { return []; }
+  });
+  return mtimes.length > 0 ? Math.max(...mtimes) : undefined;
 }
 
-async function runnerPost(path: string, body?: any): Promise<{ error?: string } | any> {
+async function runnerPost(
+  path: string,
+  body?: any,
+  timeoutOptions: RunnerHttpTimeoutOptions = {}
+): Promise<{ error?: string } | any> {
   const state = await readRunnerState();
   if (!state?.httpPort) {
     const errorMessage = 'No runner running, no state file found';
@@ -54,7 +86,7 @@ async function runnerPost(path: string, body?: any): Promise<{ error?: string } 
   }
 
   try {
-    const timeout = process.env.HAPI_RUNNER_HTTP_TIMEOUT ? parseInt(process.env.HAPI_RUNNER_HTTP_TIMEOUT) : 10_000;
+    const timeout = resolveRunnerHttpTimeout(process.env.HAPI_RUNNER_HTTP_TIMEOUT, timeoutOptions);
     const response = await fetch(`http://127.0.0.1:${state.httpPort}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -64,7 +96,8 @@ async function runnerPost(path: string, body?: any): Promise<{ error?: string } 
     });
     
     if (!response.ok) {
-      const errorMessage = `Request failed: ${path}, HTTP ${response.status}`;
+      const payload = await response.json().catch(() => undefined);
+      const errorMessage = formatRunnerHttpError(path, response.status, payload);
       logger.debug(`[CONTROL CLIENT] ${errorMessage}`);
       return {
         error: errorMessage
@@ -83,12 +116,23 @@ async function runnerPost(path: string, body?: any): Promise<{ error?: string } 
 
 export async function notifyRunnerSessionStarted(
   sessionId: string,
-  metadata: Metadata
+  metadata: Metadata,
+  maximumTimeoutMs?: number
 ): Promise<{ error?: string } | any> {
   return await runnerPost('/session-started', {
     sessionId,
     metadata
-  });
+  }, { maximumTimeoutMs });
+}
+
+export async function notifyRunnerNativeIdentity(input: {
+  launchNonce: string;
+  pid: number;
+  nativeResumeId: string;
+  resumeProfileFingerprint: string;
+}): Promise<{ acknowledged: boolean; error?: string }> {
+  const result = await runnerPost('/native-identity', input);
+  return { acknowledged: result?.acknowledged === true, error: result?.error };
 }
 
 export async function listRunnerSessions(): Promise<any[]> {
@@ -101,9 +145,42 @@ export async function stopRunnerSession(sessionId: string): Promise<boolean> {
   return result.success || false;
 }
 
-export async function spawnRunnerSession(directory: string, sessionId?: string): Promise<any> {
-  const result = await runnerPost('/spawn-session', { directory, sessionId });
+export async function submitManagedOutcome(envelope: SignedManagedOutcome): Promise<{ acknowledged: boolean }> {
+  const result = await runnerPost('/managed-outcome', { envelope });
+  return { acknowledged: result?.acknowledged === true };
+}
+
+export async function spawnRunnerSession(
+  directory: string,
+  sessionId?: string,
+  spawnRequestId: string = randomUUID()
+): Promise<any> {
+  let result = await runnerPost('/spawn-session', { spawnRequestId, directory, sessionId }, { minimumTimeoutMs: 20_000 });
+  const deadline = Date.now() + 120_000;
+  while (result?.pending === true && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    const status = await queryRunnerSpawnSession(spawnRequestId);
+    if (status?.type === 'pending') continue;
+    if (status?.type === 'success') {
+      return { success: true, sessionId: status.sessionId, approvedNewDirectoryCreation: true };
+    }
+    if (status?.type === 'requestToApproveDirectoryCreation') {
+      return {
+        success: false,
+        requiresUserApproval: true,
+        actionRequired: 'CREATE_DIRECTORY',
+        directory: status.directory
+      };
+    }
+    if (status?.type === 'error') return { success: false, error: status.errorMessage };
+    result = status;
+    break;
+  }
   return result;
+}
+
+export async function queryRunnerSpawnSession(spawnRequestId: string): Promise<any> {
+  return await runnerPost('/spawn-session-status', { spawnRequestId });
 }
 
 export async function stopRunnerHttp(): Promise<void> {
@@ -243,12 +320,12 @@ export async function cleanupRunnerState(): Promise<void> {
   }
 }
 
-export async function stopRunner() {
+export async function stopRunner(): Promise<boolean> {
   try {
     const state = await readRunnerState();
     if (!state) {
       logger.debug('No runner state found');
-      return;
+      return true;
     }
 
     logger.debug(`Stopping runner with PID ${state.pid}`);
@@ -258,22 +335,21 @@ export async function stopRunner() {
       await stopRunnerHttp();
 
       // Wait for runner to die
-      await waitForProcessDeath(state.pid, 2000);
+      await waitForProcessDeath(state.pid, RUNNER_TIMING.externalEscalationMs);
       logger.debug('Runner stopped gracefully via HTTP');
-      return;
+      return true;
     } catch (error) {
-      logger.debug('HTTP stop failed, will force kill', error);
+      logger.debug('HTTP stop failed; ownership must be verified before any escalation', error);
     }
 
-    // Force kill
-    const killed = await killProcess(state.pid, true);
-    if (killed) {
-      logger.debug('Force killed runner');
-    } else {
-      logger.debug('Runner already dead or could not be killed');
-    }
+    // PID-only force killing is unsafe because the PID may have been reused.
+    // Escalation is allowed only after the owner handoff tuple and live birth
+    // identity are verified; the lifecycle reconciler owns that path.
+    logger.debug('Runner did not stop gracefully; refusing unverified PID-only force kill');
+    return false;
   } catch (error) {
     logger.debug('Error stopping runner', error);
+    return false;
   }
 }
 

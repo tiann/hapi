@@ -63,5 +63,8 @@ export function parseCallbackData(data: string): { action: string; sessionPrefix
  * Find session by ID prefix
  */
 export function findSessionByPrefix(sessions: Session[], prefix: string): Session | undefined {
-    return sessions.find(s => s.id.startsWith(prefix))
+    if (!prefix) return undefined
+
+    const matches = sessions.filter((session) => session.id.startsWith(prefix))
+    return matches.length === 1 ? matches[0] : undefined
 }

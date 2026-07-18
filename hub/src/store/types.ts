@@ -11,13 +11,16 @@ export type StoredSession = {
     agentStateVersion: number
     model: string | null
     modelReasoningEffort: string | null
+    serviceTier: string | null
     effort: string | null
+    permissionMode: string | null
     todos: unknown | null
     todosUpdatedAt: number | null
     teamState: unknown | null
     teamStateUpdatedAt: number | null
     active: boolean
     activeAt: number | null
+    activityEventAt: number | null
     seq: number
 }
 
@@ -49,6 +52,25 @@ export type StoredUser = {
     platform: string
     platformUserId: string
     namespace: string
+    credentialFingerprint: string
+    createdAt: number
+}
+
+export type StoredSessionAlias = {
+    namespace: string
+    aliasId: string
+    canonicalSessionId: string
+    createdAt: number
+}
+
+export type StoredDeliveryAttemptState = {
+    namespace: string
+    canonicalSessionId: string
+    messageId: string
+    attemptId: string
+    launchNonce: string
+    sequence: number
+    state: string
     createdAt: number
 }
 

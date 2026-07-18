@@ -25,7 +25,7 @@ function isToolAllowedForSession(toolName: string, toolInput: unknown, allowedTo
 function isCodexSession(metadata: SessionMetadataSummary | null, toolName: string): boolean {
     return isCodexFamilyFlavor(metadata?.flavor)
         || toolName.startsWith('Codex')
-        || toolName.startsWith('Gemini')
+        || toolName.startsWith('Antigravity agy')
         || toolName.startsWith('OpenCode')
 }
 

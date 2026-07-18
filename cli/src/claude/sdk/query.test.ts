@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { ClaudeProcessExitError } from '../utils/remoteFailure'
 
 const spawnMock = vi.fn()
 const killProcessMock = vi.fn(async (child: any) => {
@@ -50,6 +51,36 @@ afterEach(() => {
 })
 
 describe('Query', () => {
+    it('attaches explicit code and signal evidence to observed child exits', async () => {
+        const child = createFakeChild()
+        spawnMock.mockReturnValueOnce(child)
+        process.env.HAPI_CLAUDE_PATH = 'claude'
+
+        const { query } = await import('./query')
+        const result = query({ prompt: 'hello' })
+        child.stdout.end()
+        child.emit('close', 9, null)
+
+        const error = await result.next().catch((value) => value)
+        expect(error).toBeInstanceOf(ClaudeProcessExitError)
+        expect(error).toMatchObject({ childExit: { code: 9, signal: null } })
+    })
+
+    it('does not invent process-exit evidence when close reports neither code nor signal', async () => {
+        const child = createFakeChild()
+        spawnMock.mockReturnValueOnce(child)
+        process.env.HAPI_CLAUDE_PATH = 'claude'
+
+        const { query } = await import('./query')
+        const result = query({ prompt: 'hello' })
+        child.stdout.end()
+        child.emit('close', null, null)
+
+        const error = await result.next().catch((value) => value)
+        expect(error).not.toBeInstanceOf(ClaudeProcessExitError)
+        expect(error).toMatchObject({ message: 'Claude Code process closed without an exit status' })
+    })
+
     it('preserves externally set errors even if the process exits cleanly', async () => {
         const { Query } = await import('./query')
         const stdout = new PassThrough()

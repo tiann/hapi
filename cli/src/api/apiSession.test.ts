@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { isExternalUserMessage } from './apiSession'
+import { classifyInternalMessage, isExternalUserMessage } from './apiSession'
+import { PLAN_FAKE_RESTART } from '../claude/sdk/prompts'
 
 describe('isExternalUserMessage', () => {
     const baseUserMsg = {
@@ -94,5 +95,68 @@ describe('isExternalUserMessage', () => {
                 message: { role: 'user', content: '  \n<task-notification>\n<task-id>x</task-id>\n</task-notification>' },
             })
         ).toBe(false)
+    })
+})
+
+
+describe('classifyInternalMessage', () => {
+    const baseUserMsg = {
+        type: 'user' as const,
+        uuid: 'test-uuid',
+        userType: 'external' as const,
+        isSidechain: false,
+        message: { role: 'user', content: 'hello' },
+    }
+
+    it('returns null for a real user text message', () => {
+        expect(classifyInternalMessage(baseUserMsg)).toBeNull()
+    })
+
+    it('labels task notifications as background_notification', () => {
+        expect(classifyInternalMessage({
+            ...baseUserMsg,
+            message: { role: 'user', content: '  <task-notification><summary>Done</summary></task-notification>' },
+        })).toBe('background_notification')
+    })
+
+    it('labels plan restart control prompts as internal_plan_restart', () => {
+        expect(classifyInternalMessage({
+            ...baseUserMsg,
+            message: { role: 'user', content: PLAN_FAKE_RESTART },
+        })).toBe('internal_plan_restart')
+    })
+
+    it('labels tool result arrays as internal_tool_result', () => {
+        expect(classifyInternalMessage({
+            ...baseUserMsg,
+            message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'x', content: 'ok' }] },
+        } as never)).toBe('internal_tool_result')
+    })
+
+    it('labels sidechain and meta user messages without treating them as external users', () => {
+        expect(classifyInternalMessage({ ...baseUserMsg, isSidechain: true })).toBe('internal_sidechain')
+        expect(classifyInternalMessage({ ...baseUserMsg, isMeta: true })).toBe('internal_meta')
+    })
+
+    it('labels other Claude user-role injections by tag', () => {
+        expect(classifyInternalMessage({
+            ...baseUserMsg,
+            message: { role: 'user', content: '<command-name>/clear</command-name>' },
+        })).toBe('internal_command_name')
+        expect(classifyInternalMessage({
+            ...baseUserMsg,
+            message: { role: 'user', content: '<local-command-caveat>caveat</local-command-caveat>' },
+        })).toBe('internal_local_command_caveat')
+        expect(classifyInternalMessage({
+            ...baseUserMsg,
+            message: { role: 'user', content: '<system-reminder>note</system-reminder>' },
+        })).toBe('internal_system_reminder')
+    })
+
+    it('does not label real user text that only mentions an internal tag', () => {
+        expect(classifyInternalMessage({
+            ...baseUserMsg,
+            message: { role: 'user', content: 'How do I use the <task-notification> tag?' },
+        })).toBeNull()
     })
 })

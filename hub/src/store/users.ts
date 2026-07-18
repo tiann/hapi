@@ -7,6 +7,7 @@ type DbUserRow = {
     platform: string
     platform_user_id: string
     namespace: string
+    credential_fingerprint: string
     created_at: number
 }
 
@@ -16,6 +17,7 @@ function toStoredUser(row: DbUserRow): StoredUser {
         platform: row.platform,
         platformUserId: row.platform_user_id,
         namespace: row.namespace,
+        credentialFingerprint: row.credential_fingerprint,
         createdAt: row.created_at
     }
 }
@@ -49,25 +51,31 @@ export function addUser(
     db: Database,
     platform: string,
     platformUserId: string,
-    namespace: string
+    namespace: string,
+    credentialFingerprint: string,
 ): StoredUser {
     const now = Date.now()
     db.prepare(`
-        INSERT OR IGNORE INTO users (
-            platform, platform_user_id, namespace, created_at
+        INSERT INTO users (
+            platform, platform_user_id, namespace, credential_fingerprint, created_at
         ) VALUES (
-            @platform, @platform_user_id, @namespace, @created_at
+            @platform, @platform_user_id, @namespace, @credential_fingerprint, @created_at
         )
+        ON CONFLICT(platform, platform_user_id) DO UPDATE SET
+            credential_fingerprint = excluded.credential_fingerprint,
+            created_at = excluded.created_at
+        WHERE users.namespace = excluded.namespace
     `).run({
         platform,
         platform_user_id: platformUserId,
         namespace,
+        credential_fingerprint: credentialFingerprint,
         created_at: now
     })
 
     const row = getUser(db, platform, platformUserId)
-    if (!row) {
-        throw new Error('Failed to create user')
+    if (!row || row.namespace !== namespace || row.credentialFingerprint !== credentialFingerprint) {
+        throw new Error('Failed to create credential-bound user')
     }
     return row
 }

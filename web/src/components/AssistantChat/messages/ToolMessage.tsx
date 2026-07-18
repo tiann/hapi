@@ -1,6 +1,7 @@
+import { useMemo, useState } from 'react'
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
-import type { ChatBlock } from '@/chat/types'
-import type { ToolCallBlock } from '@/chat/types'
+import type { ChatBlock, ToolCallBlock } from '@/chat/types'
+import { groupConsecutiveToolBlocks, isToolGroupBlock, type ToolDisplayBlock, type ToolGroupBlock } from '@/chat/toolGrouping'
 import { isObject, safeStringify } from '@hapi/protocol'
 import { getEventPresentation } from '@/chat/presentation'
 import { CodeBlock } from '@/components/CodeBlock'
@@ -26,6 +27,10 @@ function isToolCallBlock(value: unknown): value is ToolCallBlock {
     return true
 }
 
+function isToolGroupArtifact(value: unknown): value is ToolGroupBlock {
+    return isToolGroupBlock(value) && value.tools.every(isToolCallBlock)
+}
+
 function isPendingPermissionBlock(block: ChatBlock): boolean {
     return block.kind === 'tool-call' && block.tool.permission?.status === 'pending'
 }
@@ -45,14 +50,155 @@ function splitTaskChildren(block: ToolCallBlock): { pending: ChatBlock[]; rest: 
     return { pending, rest }
 }
 
+const TOOL_GROUP_LABELS: Record<string, string> = {
+    Bash: '终端',
+    CodexBash: '终端',
+    shell_command: '终端',
+    CodexDiff: '差异',
+    CodexPatch: '应用修改',
+    Read: '读取',
+    Edit: '编辑',
+    MultiEdit: '编辑',
+    Write: '写入',
+    Grep: '搜索',
+    Glob: '搜索',
+    LS: '列文件',
+    TodoWrite: '待办',
+    update_plan: '计划',
+    Task: '任务',
+    Agent: '代理'
+}
+
+function getToolGroupLabel(toolName: string): string {
+    if (toolName.startsWith('mcp__')) return 'MCP'
+    return TOOL_GROUP_LABELS[toolName] ?? toolName
+}
+
+function formatToolGroupComposition(tools: ToolCallBlock[]): string {
+    const counts = new Map<string, number>()
+    for (const tool of tools) {
+        const label = getToolGroupLabel(tool.tool.name)
+        counts.set(label, (counts.get(label) ?? 0) + 1)
+    }
+
+    const entries = Array.from(counts.entries())
+    const visible = entries.slice(0, 3).map(([label, count]) => count > 1 ? `${label} ×${count}` : label)
+    const remaining = entries.length - visible.length
+    if (remaining > 0) {
+        visible.push(`+${remaining} 类`)
+    }
+    return visible.join(' · ')
+}
+
+function getToolGroupStatus(tools: ToolCallBlock[]): { text: string; icon: string; className: string } {
+    const running = tools.filter((tool) => tool.tool.state === 'running').length
+    if (running > 0) {
+        return { text: `${running} 个运行中`, icon: '●', className: 'text-amber-600' }
+    }
+
+    return { text: '已完成', icon: '✓', className: 'text-emerald-600' }
+}
+
+function ToolGroupCard(props: { group: ToolGroupBlock }) {
+    const [expanded, setExpanded] = useState(false)
+    const composition = formatToolGroupComposition(props.group.tools)
+    const status = getToolGroupStatus(props.group.tools)
+
+    return (
+        <details
+            data-testid="tool-group"
+            className="group/toolgroup w-fit max-w-full"
+            onToggle={(event) => setExpanded(event.currentTarget.open)}
+        >
+            <summary className="flex min-w-0 cursor-pointer list-none items-center justify-between gap-3 rounded-md px-2 py-1 text-xs hover:bg-[var(--app-subtle-bg)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] [&::-webkit-details-marker]:hidden">
+                <span className="flex min-w-0 items-center gap-1.5">
+                    <span className="shrink-0 text-[var(--app-hint)] transition-transform group-open/toolgroup:rotate-90" aria-hidden="true">
+                        ▸
+                    </span>
+                    <span className="shrink-0 font-medium text-[var(--app-fg)]">
+                        {props.group.tools.length} 个工具调用
+                    </span>
+                    <span className="shrink-0 text-[var(--app-hint)]" aria-hidden="true">·</span>
+                    <span className="min-w-0 truncate font-mono text-[11px] text-[var(--app-hint)] opacity-80">
+                        {composition}
+                    </span>
+                </span>
+
+                <span className={`flex shrink-0 items-center gap-1 ${status.className}`}>
+                    <span aria-hidden="true">{status.icon}</span>
+                    <span className="text-[11px]">{status.text}</span>
+                </span>
+            </summary>
+
+            {expanded ? (
+                <div className="mt-1 flex flex-col gap-1 border-l border-[var(--app-border)] pl-3">
+                    {props.group.tools.map((tool) => (
+                        <ToolBlockView
+                            key={`group-tool:${tool.id}`}
+                            block={tool}
+                            className="py-0 min-w-0 max-w-full overflow-x-hidden"
+                        />
+                    ))}
+                </div>
+            ) : null}
+        </details>
+    )
+}
+
+function ToolBlockView(props: { block: ToolCallBlock; className?: string }) {
+    const ctx = useHappyChatContext()
+    const block = props.block
+    const isTask = block.tool.name === 'Task'
+    const taskChildren = isTask ? splitTaskChildren(block) : null
+
+    return (
+        <div className={props.className ?? 'py-1'}>
+            <ToolCard
+                api={ctx.api}
+                sessionId={ctx.sessionId}
+                metadata={ctx.metadata}
+                disabled={ctx.disabled}
+                onDone={ctx.onRefresh}
+                block={block}
+            />
+            {block.children.length > 0 ? (
+                isTask ? (
+                    <>
+                        {taskChildren && taskChildren.pending.length > 0 ? (
+                            <div className="mt-2 pl-3">
+                                <HappyNestedBlockList blocks={taskChildren.pending} />
+                            </div>
+                        ) : null}
+                        {taskChildren && taskChildren.rest.length > 0 ? (
+                            <details className="mt-2">
+                                <summary className="cursor-pointer text-xs text-[var(--app-hint)]">
+                                    Task details ({taskChildren.rest.length})
+                                </summary>
+                                <div className="mt-2 pl-3">
+                                    <HappyNestedBlockList blocks={taskChildren.rest} />
+                                </div>
+                            </details>
+                        ) : null}
+                    </>
+                ) : (
+                    <div className="mt-2 pl-3">
+                        <HappyNestedBlockList blocks={block.children} />
+                    </div>
+                )
+            ) : null}
+        </div>
+    )
+}
+
 function HappyNestedBlockList(props: {
     blocks: ChatBlock[]
 }) {
     const ctx = useHappyChatContext()
+    const blocks = useMemo<ToolDisplayBlock[]>(() => groupConsecutiveToolBlocks(props.blocks), [props.blocks])
 
     return (
-        <div className="flex flex-col gap-3">
-            {props.blocks.map((block) => {
+        <div className="flex flex-col gap-2">
+            {blocks.map((block) => {
                 if (block.kind === 'user-text') {
                     const userBubbleClass = 'w-fit max-w-[92%] ml-auto rounded-xl bg-[var(--app-secondary-bg)] px-3 py-2 text-[var(--app-fg)] shadow-sm'
                     const status = block.status
@@ -108,46 +254,21 @@ function HappyNestedBlockList(props: {
                     )
                 }
 
-                if (block.kind === 'tool-call') {
-                    const isTask = block.tool.name === 'Task'
-                    const taskChildren = isTask ? splitTaskChildren(block) : null
-
+                if (block.kind === 'tool-group') {
                     return (
-                        <div key={`tool:${block.id}`} className="py-1">
-                            <ToolCard
-                                api={ctx.api}
-                                sessionId={ctx.sessionId}
-                                metadata={ctx.metadata}
-                                disabled={ctx.disabled}
-                                onDone={ctx.onRefresh}
-                                block={block}
-                            />
-                            {block.children.length > 0 ? (
-                                isTask ? (
-                                    <>
-                                        {taskChildren && taskChildren.pending.length > 0 ? (
-                                            <div className="mt-2 pl-3">
-                                                <HappyNestedBlockList blocks={taskChildren.pending} />
-                                            </div>
-                                        ) : null}
-                                        {taskChildren && taskChildren.rest.length > 0 ? (
-                                            <details className="mt-2">
-                                                <summary className="cursor-pointer text-xs text-[var(--app-hint)]">
-                                                    Task details ({taskChildren.rest.length})
-                                                </summary>
-                                                <div className="mt-2 pl-3">
-                                                    <HappyNestedBlockList blocks={taskChildren.rest} />
-                                                </div>
-                                            </details>
-                                        ) : null}
-                                    </>
-                                ) : (
-                                    <div className="mt-2 pl-3">
-                                        <HappyNestedBlockList blocks={block.children} />
-                                    </div>
-                                )
-                            ) : null}
+                        <div key={block.id} className="py-1 min-w-0 max-w-full overflow-x-hidden">
+                            <ToolGroupCard group={block} />
                         </div>
+                    )
+                }
+
+                if (block.kind === 'tool-call') {
+                    return (
+                        <ToolBlockView
+                            key={`tool:${block.id}`}
+                            block={block}
+                            className="py-1 min-w-0 max-w-full overflow-x-hidden"
+                        />
                     )
                 }
 
@@ -158,8 +279,15 @@ function HappyNestedBlockList(props: {
 }
 
 export function HappyToolMessage(props: ToolCallMessagePartProps) {
-    const ctx = useHappyChatContext()
     const artifact = props.artifact
+
+    if (isToolGroupArtifact(artifact)) {
+        return (
+            <div className="py-1 min-w-0 max-w-full overflow-x-hidden">
+                <ToolGroupCard group={artifact} />
+            </div>
+        )
+    }
 
     if (!isToolCallBlock(artifact)) {
         const argsText = typeof props.argsText === 'string' ? props.argsText.trim() : ''
@@ -198,45 +326,10 @@ export function HappyToolMessage(props: ToolCallMessagePartProps) {
         )
     }
 
-    const block = artifact
-    const isTask = block.tool.name === 'Task'
-    const taskChildren = isTask ? splitTaskChildren(block) : null
-
     return (
-        <div className="py-1 min-w-0 max-w-full overflow-x-hidden">
-            <ToolCard
-                api={ctx.api}
-                sessionId={ctx.sessionId}
-                metadata={ctx.metadata}
-                disabled={ctx.disabled}
-                onDone={ctx.onRefresh}
-                block={block}
-            />
-            {block.children.length > 0 ? (
-                isTask ? (
-                    <>
-                        {taskChildren && taskChildren.pending.length > 0 ? (
-                            <div className="mt-2 pl-3">
-                                <HappyNestedBlockList blocks={taskChildren.pending} />
-                            </div>
-                        ) : null}
-                        {taskChildren && taskChildren.rest.length > 0 ? (
-                            <details className="mt-2">
-                                <summary className="cursor-pointer text-xs text-[var(--app-hint)]">
-                                    Task details ({taskChildren.rest.length})
-                                </summary>
-                                <div className="mt-2 pl-3">
-                                    <HappyNestedBlockList blocks={taskChildren.rest} />
-                                </div>
-                            </details>
-                        ) : null}
-                    </>
-                ) : (
-                    <div className="mt-2 pl-3">
-                        <HappyNestedBlockList blocks={block.children} />
-                    </div>
-                )
-            ) : null}
-        </div>
+        <ToolBlockView
+            block={artifact}
+            className="py-1 min-w-0 max-w-full overflow-x-hidden"
+        />
     )
 }

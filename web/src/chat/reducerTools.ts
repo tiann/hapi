@@ -146,10 +146,49 @@ export function isChangeTitleToolName(name: string): boolean {
     return name === 'mcp__hapi__change_title' || name === 'hapi__change_title'
 }
 
+export function isSendAttachmentToolName(name: string): boolean {
+    return name === 'send_attachment'
+        || name === 'hapi_send_attachment'
+        || name === 'hapi__send_attachment'
+        || name === 'functions.hapi__send_attachment'
+        || name === 'happy__send_attachment'
+        || name === 'mcp__hapi__send_attachment'
+}
+
 export function extractTitleFromChangeTitleInput(input: unknown): string | null {
     if (!input || typeof input !== 'object') return null
     const title = (input as { title?: unknown }).title
     return typeof title === 'string' && title.trim().length > 0 ? title.trim() : null
+}
+
+export function collectSendAttachmentToolIds(messages: NormalizedMessage[]): Set<string> {
+    const ids = new Set<string>()
+    const pendingSendAttachmentIds: string[] = []
+    const dropPendingSendAttachmentId = (id: string) => {
+        const index = pendingSendAttachmentIds.indexOf(id)
+        if (index >= 0) {
+            pendingSendAttachmentIds.splice(index, 1)
+        }
+    }
+
+    for (const msg of messages) {
+        if (msg.role !== 'agent') continue
+        for (const content of msg.content) {
+            if (content.type === 'tool-call' && isSendAttachmentToolName(content.name)) {
+                pendingSendAttachmentIds.push(content.id)
+                continue
+            }
+            if (content.type === 'tool-result' && content.is_error) {
+                dropPendingSendAttachmentId(content.tool_use_id)
+                continue
+            }
+            if (content.type === 'attachments' && content.attachments.length > 0) {
+                const completedToolId = pendingSendAttachmentIds.shift()
+                if (completedToolId) ids.add(completedToolId)
+            }
+        }
+    }
+    return ids
 }
 
 export function collectTitleChanges(messages: NormalizedMessage[]): Map<string, string> {

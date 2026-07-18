@@ -4,7 +4,7 @@ Install the HAPI CLI and set up the hub.
 
 ## Prerequisites
 
-- Claude Code, OpenAI Codex CLI, Cursor Agent CLI, Google Gemini CLI, or OpenCode CLI installed
+- Claude Code, OpenAI Codex CLI, Cursor Agent CLI, Antigravity agy CLI, or OpenCode CLI installed
 
 Verify your CLI is installed:
 
@@ -16,10 +16,10 @@ claude --version
 codex --version
 
 # For Cursor Agent CLI
-agent --version
+cursor-agent --version
 
-# For Google Gemini CLI
-gemini --version
+# For Antigravity agy CLI
+agy --version
 
 # For OpenCode CLI
 opencode --version
@@ -31,7 +31,7 @@ HAPI has three components:
 
 | Component | Role | Required |
 |-----------|------|----------|
-| **CLI** | Wraps AI agents (Claude/Codex/Cursor/Gemini/OpenCode), runs sessions | Yes |
+| **CLI** | Wraps AI agents (Claude/Codex/Cursor/Antigravity agy/OpenCode), runs sessions | Yes |
 | **Hub** | Central coordinator: persistence, real-time sync, remote access | Yes |
 | **Runner** | Background service for remote session spawning | Optional |
 
@@ -175,7 +175,8 @@ On first run, HAPI:
 
 | Variable | Default | settings.json | Description |
 |----------|---------|---------------|-------------|
-| `CLI_API_TOKEN` | Auto-generated | `cliApiToken` | Shared secret for authentication |
+| `CLI_API_TOKEN` | Auto-generated | `cliApiToken` | Credential for the reserved `default` namespace |
+| `HAPI_NAMESPACE_TOKENS_JSON` | `{}` | `namespaceTokens` | JSON map of non-default namespaces to independent credentials |
 | `HAPI_API_URL` | `http://localhost:3006` | `apiUrl` | Hub URL for CLI connections |
 | `HAPI_EXTRA_HEADERS_JSON` | - | - | JSON object of extra outbound headers for CLI → hub HTTP/WebSocket requests |
 | `HAPI_LISTEN_HOST` | `127.0.0.1` | `listenHost` | Hub HTTP bind address |
@@ -185,7 +186,7 @@ On first run, HAPI:
 | `TELEGRAM_BOT_TOKEN` | - | `telegramBotToken` | Telegram Bot API token |
 | `TELEGRAM_NOTIFICATION` | `true` | `telegramNotification` | Enable Telegram notifications |
 | `HAPI_RELAY_FORCE_TCP` | `false` | - | Force TCP mode for relay |
-| `VAPID_SUBJECT` | `mailto:admin@hapi.run` | - | Web Push contact info |
+| `VAPID_SUBJECT` | `https://hapi.run` | - | Web Push contact info |
 | `HAPI_HOME` | `~/.hapi` | - | Config directory path |
 | `DB_PATH` | `~/.hapi/hapi.db` | - | Database file path |
 | `ELEVENLABS_API_KEY` | - | - | ElevenLabs API key for voice |
@@ -204,7 +205,10 @@ When ENV values are set and not present in settings.json, they are automatically
   "$schema": "https://hapi.run/docs/schemas/settings.schema.json",
   "listenHost": "0.0.0.0",
   "listenPort": 3006,
-  "publicUrl": "https://your-domain.com"
+  "publicUrl": "https://your-domain.com",
+  "namespaceTokens": {
+    "alice": "alice-independent-token"
+  }
 }
 ```
 
@@ -217,7 +221,7 @@ If the hub is not on localhost, set these before running `hapi`:
 
 ```bash
 export HAPI_API_URL="http://your-hub:3006"
-export CLI_API_TOKEN="your-token-here"
+export CLI_API_TOKEN="your-assigned-namespace-credential"
 export HAPI_EXTRA_HEADERS_JSON='{"Cookie":"CF_Authorization=..."}'
 ```
 
@@ -336,7 +340,7 @@ export HAPI_PUBLIC_URL="https://your-public-url"
 hapi hub
 ```
 
-Then message your bot with `/start`, open the app, and enter your `CLI_API_TOKEN`.
+Then message your bot with `/start`, open the app, and enter the independent credential assigned to your namespace (`CLI_API_TOKEN` for `default`).
 
 **Troubleshooting:**
 
@@ -452,51 +456,25 @@ Create plist files for automatic startup on macOS.
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/Users/YOUR_USERNAME/.hapi/logs/hub.log</string>
+    <string>/Users/example/.hapi/logs/hub.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/YOUR_USERNAME/.hapi/logs/hub.log</string>
+    <string>/Users/example/.hapi/logs/hub.log</string>
 </dict>
 </plist>
 ```
 
-**Runner** (`~/Library/LaunchAgents/com.hapi.runner.plist`):
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.hapi.runner</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/local/bin/hapi</string>
-        <string>runner</string>
-        <string>start</string>
-        <string>--foreground</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>/Users/YOUR_USERNAME/.hapi/logs/runner.log</string>
-    <key>StandardErrorPath</key>
-    <string>/Users/YOUR_USERNAME/.hapi/logs/runner.log</string>
-</dict>
-</plist>
-```
+**Runner:** use the [supported direct macOS Runner LaunchAgent](runner-launchagent.md). It uses one label per canonical `HAPI_HOME`, absolute runtime paths, `runner start-sync`, report-only reconciliation, and an exit timeout compatible with graceful drain. Shell supervisors, Terminal fallbacks, and monitor loops are unsupported for enforcement.
 
 Load/unload services:
 
 ```bash
 # Load (start)
 launchctl load ~/Library/LaunchAgents/com.hapi.hub.plist
-launchctl load ~/Library/LaunchAgents/com.hapi.runner.plist
+# Follow runner-launchagent.md for bootstrap in gui/$(id -u)
 
 # Unload (stop)
 launchctl unload ~/Library/LaunchAgents/com.hapi.hub.plist
-launchctl unload ~/Library/LaunchAgents/com.hapi.runner.plist
+# Follow runner-launchagent.md for bootout in gui/$(id -u)
 ```
 
 > **macOS sleep note:** macOS may suspend background processes when the display sleeps. Use `caffeinate` to prevent this:

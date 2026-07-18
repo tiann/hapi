@@ -35,7 +35,18 @@ function formatLabel(tag: string, t?: (key: string) => string): string {
     return normalized.replace(/-/g, ' ')
 }
 
-function buildCliOutput(text: string, t?: (key: string) => string): string {
+export type CompressedCliOutput = {
+    text: string
+    wasCompressed: boolean
+    originalChars: number
+    displayedChars: number
+    hiddenChars: number
+}
+
+const DEFAULT_UI_OUTPUT_MAX_CHARS = 24_000
+const DEFAULT_UI_OUTPUT_EDGE_CHARS = 6_000
+
+export function buildCliOutput(text: string, t?: (key: string) => string): string {
     const matches = Array.from(text.matchAll(new RegExp(CLI_TAG_REGEX_SOURCE, 'gi')))
     if (matches.length === 0) {
         return normalizeCliText(text)
@@ -76,6 +87,39 @@ function buildCliOutput(text: string, t?: (key: string) => string): string {
     return sections.join('\n\n')
 }
 
+export function buildCompressedCliOutput(
+    text: string,
+    options: { maxChars?: number; edgeChars?: number } = {}
+): CompressedCliOutput {
+    const maxChars = options.maxChars ?? DEFAULT_UI_OUTPUT_MAX_CHARS
+    const edgeChars = options.edgeChars ?? DEFAULT_UI_OUTPUT_EDGE_CHARS
+
+    if (text.length <= maxChars) {
+        return {
+            text,
+            wasCompressed: false,
+            originalChars: text.length,
+            displayedChars: text.length,
+            hiddenChars: 0
+        }
+    }
+
+    const safeEdgeChars = Math.max(1, Math.min(edgeChars, Math.floor((maxChars - 1) / 2)))
+    const head = text.slice(0, safeEdgeChars).trimEnd()
+    const tail = text.slice(text.length - safeEdgeChars).trimStart()
+    const hiddenChars = Math.max(0, text.length - head.length - tail.length)
+    const marker = `\n\n[... ${hiddenChars.toLocaleString()} chars hidden in UI preview; full output is retained below ...]\n\n`
+    const compressedText = `${head}${marker}${tail}`
+
+    return {
+        text: compressedText,
+        wasCompressed: true,
+        originalChars: text.length,
+        displayedChars: compressedText.length,
+        hiddenChars
+    }
+}
+
 function extractCommandName(text: string): string | null {
     const match = text.match(COMMAND_NAME_REGEX)
     if (!match) return null
@@ -104,6 +148,7 @@ function CliIcon() {
 export function CliOutputBlock(props: { text: string }) {
     const { t } = useTranslation()
     const content = useMemo(() => buildCliOutput(props.text, t), [props.text, t])
+    const preview = useMemo(() => buildCompressedCliOutput(content), [content])
     const commandName = useMemo(() => extractCommandName(props.text), [props.text])
 
     return (
@@ -134,11 +179,29 @@ export function CliOutputBlock(props: { text: string }) {
                             <DialogTitle>{t('terminal.commandName')}</DialogTitle>
                         </DialogHeader>
                         <div className="mt-3 max-h-[75vh] overflow-auto">
+                            {preview.wasCompressed ? (
+                                <div className="mb-2 rounded-md border border-[var(--app-border)] bg-[var(--app-subtle-bg)] p-2 text-xs text-[var(--app-hint)]">
+                                    UI preview compressed from {preview.originalChars.toLocaleString()} to {preview.displayedChars.toLocaleString()} characters.
+                                    Full output remains available below.
+                                </div>
+                            ) : null}
                             <div className="min-w-0 max-w-full overflow-x-auto overflow-y-hidden">
                                 <pre className="m-0 w-max min-w-full bg-[var(--app-code-bg)] p-2 text-xs font-mono">
-                                    {content}
+                                    {preview.text}
                                 </pre>
                             </div>
+                            {preview.wasCompressed ? (
+                                <details className="mt-3">
+                                    <summary className="cursor-pointer text-xs text-[var(--app-hint)]">
+                                        Show full output
+                                    </summary>
+                                    <div className="mt-2 min-w-0 max-w-full overflow-x-auto overflow-y-hidden">
+                                        <pre className="m-0 w-max min-w-full bg-[var(--app-code-bg)] p-2 text-xs font-mono">
+                                            {content}
+                                        </pre>
+                                    </div>
+                                </details>
+                            ) : null}
                         </div>
                     </DialogContent>
                 </Dialog>

@@ -77,7 +77,7 @@ function createChannel() {
 }
 
 describe('PushNotificationChannel', () => {
-    it('sends foreground toast and skips Web Push when visible toast is delivered', async () => {
+    it('sends foreground toast and still sends Web Push when a visible client exists', async () => {
         const { channel, push, sse, visibility } = createChannel()
         visibility.visible = true
         sse.delivered = 1
@@ -86,7 +86,8 @@ describe('PushNotificationChannel', () => {
 
         expect(sse.toasts).toHaveLength(1)
         expect(sse.toasts[0]?.event.data.title).toBe('Ready for input')
-        expect(push.sent).toHaveLength(0)
+        expect(push.sent).toHaveLength(1)
+        expect(push.sent[0]?.payload.data?.type).toBe('ready')
     })
 
     it('falls back to Web Push when there is no visible delivered toast', async () => {
@@ -104,18 +105,45 @@ describe('PushNotificationChannel', () => {
     it('formats attention notification payloads', async () => {
         const { channel, push } = createChannel()
 
-        await channel.sendAttention(createSession(), 'failed')
+        await channel.sendAttention(createSession(), 'failed', { unreadCount: 2, totalUnreadCount: 5 })
 
         expect(push.sent).toHaveLength(1)
         expect(push.sent[0]?.payload).toEqual({
-            title: 'Task needs attention',
+            title: 'Task needs attention · 2 unread',
             body: 'Build UI stopped or failed',
             tag: 'attention-session-1',
             data: {
                 type: 'attention',
                 sessionId: 'session-1',
-                url: '/sessions/session-1'
+                url: '/sessions/session-1',
+                unreadCount: 2,
+                totalUnreadCount: 5
             }
         })
+    })
+
+    it('includes unread count in ready notification payloads', async () => {
+        const { channel, push } = createChannel()
+
+        await channel.sendReady(createSession(), { unreadCount: 3, totalUnreadCount: 8 })
+
+        expect(push.sent).toHaveLength(1)
+        expect(push.sent[0]?.payload.title).toBe('Ready for input · 3 unread')
+        expect(push.sent[0]?.payload.data?.unreadCount).toBe(3)
+        expect(push.sent[0]?.payload.data?.totalUnreadCount).toBe(8)
+    })
+
+    it('uses a unique ready notification tag for each completed turn', async () => {
+        const { channel, push } = createChannel()
+        const session = createSession()
+
+        await channel.sendReady(session)
+        await channel.sendReady(session)
+
+        const firstTag = push.sent[0]?.payload.tag
+        const secondTag = push.sent[1]?.payload.tag
+        expect(firstTag).toStartWith('ready-session-1-')
+        expect(secondTag).toStartWith('ready-session-1-')
+        expect(secondTag).not.toBe(firstTag)
     })
 })

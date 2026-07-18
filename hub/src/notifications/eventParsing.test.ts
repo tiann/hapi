@@ -193,4 +193,36 @@ describe('extractMessageEventType', () => {
         expect(isAgentMessageEvent(agentEvent)).toBe(true)
         expect(isAgentMessageEvent(userEvent)).toBe(false)
     })
+
+    it('does not treat codex attachment payloads as notification event types', () => {
+        const event: SyncEvent = {
+            type: 'message-received',
+            sessionId: 'session-1',
+            message: {
+                id: 'attachment-message',
+                seq: 15,
+                localId: null,
+                createdAt: 0,
+                content: {
+                    role: 'agent',
+                    content: {
+                        type: 'codex',
+                        data: {
+                            type: 'attachments',
+                            attachments: [{
+                                id: 'agent-att-1',
+                                filename: 'report.csv',
+                                mimeType: 'text/csv',
+                                size: 8,
+                                path: 'hapi-agent-inline://agent-att-1/report.csv'
+                            }]
+                        }
+                    }
+                }
+            }
+        }
+
+        expect(extractMessageEventType(event)).toBeNull()
+        expect(extractAttentionReason(event)).toBeNull()
+    })
 })

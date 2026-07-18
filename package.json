@@ -1,15 +1,17 @@
 {
     "name": "hapi",
     "private": true,
+    "packageManager": "bun@1.3.11",
     "workspaces": ["cli", "shared", "hub", "web", "website", "docs"],
     "scripts": {
         "build:site": "bun run --cwd website build && bun run --cwd docs docs:build && cp -r docs/.vitepress/dist website/dist/public/docs",
         "dev": "concurrently \"bun run dev:hub\" \"bun run dev:web\" --kill-others-on-exit",
         "build": "bun run build:cli && bun run build:hub && bun run build:web",
-        "build:cli": "cd cli && bun run build",
-        "build:single-exe": "bun run download:tunwg && bun run build:web && (cd hub && bun run generate:embedded-web-assets) && (cd cli && bun run build:exe:allinone)",
+        "build:cli": "bun run download:tunwg:host && bun run --cwd cli build",
+        "build:single-exe": "bun run download:tunwg:host && bun run build:web && (cd hub && bun run generate:embedded-web-assets) && (cd cli && bun run build:exe:allinone)",
         "build:single-exe:all": "bun run download:tunwg && bun run build:web && (cd hub && bun run generate:embedded-web-assets) && (cd cli && bun run build:exe:allinone:all)",
         "download:tunwg": "bun run hub/scripts/download-tunwg.ts",
+        "download:tunwg:host": "bun run hub/scripts/download-tunwg.ts --host",
         "build:hub": "cd hub && bun run build",
         "build:web": "cd web && bun run build",
         "dev:hub": "cd hub && bun run dev",
@@ -18,16 +20,30 @@
         "typecheck:cli": "cd cli && bun run typecheck",
         "typecheck:hub": "cd hub && bun run typecheck",
         "typecheck:web": "cd web && bun run typecheck",
-        "test": "bun run test:cli && bun run test:hub && bun run test:web",
-        "test:cli": "cd cli && bun run test",
+    "test": "bun run test:dependency-security && bun run test:shared && bun run test:cli && bun run test:hub && bun run test:web",
+    "test:shared": "bun test shared/src",
+    "test:cli": "cd cli && bun run test",
         "test:hub": "cd hub && bun run test",
         "test:web": "cd web && bun run test",
+        "dependency:inventory": "bun scripts/dependency-security/cli.ts inventory",
+        "dependency:security": "bun scripts/dependency-security/cli.ts gate",
+        "dependency:sbom": "bun scripts/dependency-security/cli.ts sbom",
+        "test:dependency-security": "bun test scripts/dependency-security",
+        "baseline:tokens": "bun cli/src/metrics/compactBaselineCli.ts",
+        "baseline:tokens:check": "bun cli/src/metrics/compactBaselineCli.ts --out .hapi-work/token-baseline-check --check docs/metrics/token-baseline-gate.local.json",
+        "baseline:tokens:check:local": "bun cli/src/metrics/compactBaselineCli.ts --out .hapi-work/token-baseline-check --check docs/metrics/token-baseline-gate.local.json",
+        "baseline:tokens:check:portable": "bun cli/src/metrics/compactBaselineCli.ts --out .hapi-work/token-baseline-check-portable --check docs/metrics/token-baseline-gate.portable.json",
         "clean-session": "bun run hub/scripts/cleanup-sessions.ts",
         "release-all": "cd cli && bun run release-all"
     },
     "devDependencies": {
-        "concurrently": "^9.2.1",
+        "ajv": "8.20.0",
+        "ajv-formats": "3.0.1",
+        "concurrently": "^10.0.3",
         "react-devtools-core": "^7.0.1",
-        "vite-plugin-pwa": "^1.2.0"
+        "vite-plugin-pwa": "^1.3.0"
+    },
+    "overrides": {
+        "fast-uri": "4.1.0"
     }
 }

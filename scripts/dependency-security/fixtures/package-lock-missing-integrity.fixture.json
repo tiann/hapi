@@ -1,0 +1,19 @@
+{
+  "name": "missing-integrity-fixture",
+  "version": "1.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "missing-integrity-fixture",
+      "version": "1.0.0",
+      "dependencies": {
+        "bad-package": "1.0.0"
+      }
+    },
+    "node_modules/bad-package": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/bad-package/-/bad-package-1.0.0.tgz"
+    }
+  }
+}

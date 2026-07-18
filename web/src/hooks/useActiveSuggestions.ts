@@ -14,6 +14,7 @@ interface SuggestionOptions {
     autoSelectFirst?: boolean  // If true, automatically select first item when suggestions appear
     wrapAround?: boolean       // If true, wrap around when reaching top/bottom
     allowEmptyQuery?: boolean  // If true, allow empty string queries
+    refreshKey?: unknown       // Changes rerun the active query without depending on handler identity
 }
 
 /**
@@ -75,7 +76,8 @@ export function useActiveSuggestions(
         clampSelection = true,
         autoSelectFirst = true,
         wrapAround = true,
-        allowEmptyQuery = false
+        allowEmptyQuery = false,
+        refreshKey
     } = options
 
     // State for suggestions
@@ -193,7 +195,7 @@ export function useActiveSuggestions(
 
     useEffect(() => {
         syncRef.current?.setValue(query)
-    }, [query, handler, clampSelection, autoSelectFirst, allowEmptyQuery])
+    }, [query, clampSelection, autoSelectFirst, allowEmptyQuery, refreshKey])
 
     // If no query return empty suggestions
     if (query === null || (!allowEmptyQuery && query === '')) {

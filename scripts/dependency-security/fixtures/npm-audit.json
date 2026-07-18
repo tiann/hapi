@@ -1,0 +1,85 @@
+{
+  "auditReportVersion": 2,
+  "vulnerabilities": {
+    "aggregate-parent": {
+      "name": "aggregate-parent",
+      "severity": "high",
+      "via": [
+        "vulnerable-leaf"
+      ],
+      "effects": [],
+      "range": "*",
+      "nodes": [
+        "node_modules/aggregate-parent"
+      ],
+      "fixAvailable": true
+    },
+    "aggregate-grandparent": {
+      "name": "aggregate-grandparent",
+      "severity": "high",
+      "via": [
+        "aggregate-parent"
+      ],
+      "effects": [],
+      "range": "*",
+      "nodes": [
+        "node_modules/aggregate-grandparent"
+      ],
+      "fixAvailable": true
+    },
+    "direct-leaf": {
+      "name": "direct-leaf",
+      "severity": "moderate",
+      "via": [
+        {
+          "source": 2002,
+          "name": "direct-leaf",
+          "dependency": "direct-leaf",
+          "title": "direct concrete advisory",
+          "url": "https://github.com/advisories/GHSA-direct-leaf",
+          "severity": "moderate",
+          "range": ">=1.0.0 <1.5.0"
+        }
+      ],
+      "effects": [],
+      "range": "1.0.0 - 1.4.9",
+      "nodes": [
+        "node_modules/direct-leaf"
+      ],
+      "fixAvailable": true
+    },
+    "vulnerable-leaf": {
+      "name": "vulnerable-leaf",
+      "severity": "high",
+      "via": [
+        {
+          "source": 2001,
+          "name": "vulnerable-leaf",
+          "dependency": "vulnerable-leaf",
+          "title": "transitive concrete advisory",
+          "url": "https://github.com/advisories/GHSA-vulnerable-leaf",
+          "severity": "high",
+          "range": "<2.0.0"
+        }
+      ],
+      "effects": [
+        "aggregate-parent"
+      ],
+      "range": "<2.0.0",
+      "nodes": [
+        "node_modules/vulnerable-leaf"
+      ],
+      "fixAvailable": true
+    }
+  },
+  "metadata": {
+    "vulnerabilities": {
+      "info": 0,
+      "low": 0,
+      "moderate": 1,
+      "high": 3,
+      "critical": 0,
+      "total": 4
+    }
+  }
+}

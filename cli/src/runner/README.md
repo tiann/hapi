@@ -2,6 +2,8 @@
 
 The runner is a persistent background process that manages HAPI sessions, enables remote control from the mobile app, and handles auto-updates when the CLI version changes.
 
+On macOS, the only topology eligible for enforced startup reconciliation is the direct per-`HAPI_HOME` LaunchAgent documented in `docs/guide/runner-launchagent.md`: absolute `bun` + absolute CLI entrypoint + `runner start-sync`, with `HAPI_RUNNER_SUPERVISED=launchd`. Runtime admission also binds the current PID to the canonical GUI-domain job and verifies the private installed plist plus exact loaded argv; environment and PPID alone never authorize enforcement. Supervisor scripts, Terminal fallbacks, and independent monitor loops stay report-only. Legacy unjournaled processes are inventory-only and require manual review; command-line matching never authorizes a signal.
+
 ## 1. Runner Lifecycle
 
 ### Starting the Runner
@@ -15,9 +17,11 @@ Control Flow:
 4. `startRunner()` performs startup:
    - Sets up shutdown promise and handlers (SIGINT, SIGTERM, uncaughtException, unhandledRejection)
    - Version check: `isRunnerRunningCurrentlyInstalledHappyVersion()` compares CLI binary mtime
-   - If version mismatch: calls `stopRunner()` to kill old runner before proceeding
-   - If same version running: exits with "Runner already running"
-   - Lock acquisition: `acquireRunnerLock()` creates exclusive lock file to prevent multiple runners
+   - Acquires the verified ownership helper for the configured `HAPI_HOME`; the helper binds runner PID, UID, birth token, boot identity, and supervised topology before admission can open
+   - Treats the JSON state file as discovery metadata only; it never authorizes a signal by itself
+   - Reconciles journaled launches only from complete kernel identity and process-group evidence, revalidating after durable TERM/KILL intent; ambiguous evidence is quarantined without signalling
+   - Captures one process table per proof sweep; syntactically valid Linux kernel-thread rows with PGID 0 are ignored for positive managed groups without making unrelated evidence incomplete
+   - Reclaims stopped or verified-absent launch leases only after complete process enumeration proves that no owned process group remains
    - Direct-connect setup: `authAndSetupMachineIfNeeded()` ensures `CLI_API_TOKEN` is set and `machineId` exists
    - State persistence: writes PID, version, HTTP port, mtime to runner.state.json
    - HTTP server: starts Fastify on random port for local CLI control (list, stop, spawn)
@@ -35,7 +39,7 @@ Control Flow:
    - Disconnects WebSocket
    - Stops HTTP server
    - Deletes runner.state.json
-   - Releases lock file
+   - Releases the verified ownership helper
    - Exits process
 
 ### Version Detection & Auto-Update
@@ -44,21 +48,19 @@ The runner detects when CLI binary changes (e.g., after `npm upgrade hapi`):
 1. At startup, records `startedWithCliMtimeMs` (file modification time of CLI binary)
 2. Heartbeat compares current CLI mtime with recorded mtime via `getInstalledCliMtimeMs()`
 3. If mtime changed:
-   - Clears heartbeat interval
-   - Spawns new runner via `spawnHappyCLI(['runner', 'start'])`
-   - Waits 10 seconds to be killed by new runner
-4. New runner starts, sees old runner running with different mtime
-5. New runner calls `stopRunner()` which tries HTTP `/stop`, falls back to SIGKILL
-6. New runner takes over
+   - Supervised runners request a clean replacement shutdown and let the supervisor start the new binary
+   - Explicit self-managed foreground runners first spawn a successor, then request their own clean shutdown
+4. Ownership handoff is journaled and identity-verified; there is no PID/name-based or HTTP-to-SIGKILL fallback
 
 ### Heartbeat System
 
 Every 60 seconds (configurable via `HAPI_RUNNER_HEARTBEAT_INTERVAL`):
 1. **Guard**: Skips if previous heartbeat still running (prevents concurrent heartbeats)
-2. **Session Pruning**: Checks each tracked PID with `isProcessAlive(pid)`, removes dead sessions
-3. **Version Check**: Compares CLI binary mtime, triggers self-restart if changed
-4. **PID Ownership**: Verifies runner still owns state file, self-terminates if another runner took over
-5. **State Update**: Writes `lastHeartbeat` timestamp to runner.state.json
+2. **Ownership Check**: Verifies the kernel-backed runner lock is still healthy
+3. **Outcome Convergence**: Rescans the durable managed-outbox and retries unacknowledged lifecycle outcomes
+4. **Session Pruning**: Checks each tracked PID with `isProcessAlive(pid)`, removes dead sessions
+5. **Version Check**: Compares CLI binary mtime, triggers self-restart if changed
+6. **State Update**: Writes `lastHeartbeat` timestamp to runner.state.json
 
 ### Stopping the Runner
 
@@ -74,7 +76,7 @@ Control Flow:
    - Stops HTTP server
    - Deletes runner.state.json
    - Releases lock file
-5. If HTTP fails, falls back to `killProcess(pid, true)` (uses `taskkill /T /F` on Windows)
+5. If HTTP shutdown cannot be verified, the CLI returns failure instead of sending a PID-only kill; lifecycle reconciliation may escalate only with a verified ownership identity
 
 ## 2. Multi-Agent Support
 
@@ -84,7 +86,8 @@ The runner supports spawning sessions with different AI agents:
 |-------|---------|-------------------|
 | `claude` (default) | `hapi claude` | `CLAUDE_CODE_OAUTH_TOKEN` |
 | `codex` | `hapi codex` | `CODEX_HOME` (temp directory with `auth.json`) |
-| `gemini` | `hapi gemini` | - |
+| `agy` | `hapi agy` | - |
+| `grok` | `hapi grok` | Grok CLI config and ACP |
 | `opencode` | `hapi opencode` | OpenCode config (no token injection) |
 
 ### Token Authentication
@@ -238,10 +241,10 @@ Graceful runner shutdown.
 ```
 
 ### Lock File
-- Created with O_EXCL flag for atomic acquisition
-- Contains PID for debugging
-- Prevents multiple runner instances
-- Cleaned up on graceful shutdown
+- Opened without following symlinks and held with a non-blocking kernel `flock`
+- Contains the lock-helper PID for diagnostics; the kernel lock, not file existence, is authoritative
+- Prevents multiple verified runner owners
+- The lock is released when the helper closes; the diagnostic file may remain for the next owner to reuse
 
 ## 6. WebSocket Communication
 
@@ -264,34 +267,75 @@ All data is plain JSON over TLS; authentication is `CLI_API_TOKEN` (no end-to-en
 
 ### Doctor Command
 
-`hapi doctor` uses `ps aux | grep` to find all HAPI processes:
+`hapi doctor` uses a process inventory to find HAPI processes:
 - Production: matches `hapi` binary, `happy-coder`
 - Development: matches `src/index.ts` (run via `bun`)
 - Categorizes by command args: runner, runner-spawned, user-session, doctor
 
-### Clean Runaway Processes
+### Legacy Process Report
 
-`hapi doctor clean`:
-1. `findRunawayHappyProcesses()` filters for likely orphans
-2. `killRunawayHappyProcesses()`:
-   - Sends SIGTERM
-   - Waits 1 second
-   - Sends SIGKILL if still alive
+`hapi doctor clean` is retained as a compatibility report command only. It identifies likely legacy/orphan processes but sends no signals. Unjournaled processes require manual kernel-identity review before any cleanup.
 
 ## 8. Integration Testing
 
 ### Test Environment
-- Requires `.env.integration-test`
-- Uses local hapi-hub (http://localhost:3006)
-- Separate `~/.hapi-dev-test` home directory
+- The ordinary unit suite excludes `runner.integration.test.ts`; it never
+  silently skips integration assertions or contacts a live Hub.
+- CI starts a loopback Hub with isolated Hub/CLI homes under `$RUNNER_TEMP`,
+  creates an unpredictable private root with `mktemp`, passes the canonical
+  integration root and read-only Hub database receipt path, waits on `/health`,
+  and runs `test:runner-integration` as a dedicated job step. The contract
+  accepts lexical ancestor aliases such as Darwin `/tmp` and `/private/tmp`,
+  but its root/home final nodes must be real directories and its event, ledger,
+  and Hub database nodes must already be regular non-symlink files. Dangling
+  links, final-node links, directories, FIFOs, escapes, equality, and shared
+  event/ledger inodes are rejected.
+- Spawned sessions route to a deterministic child only when both
+  `NODE_ENV=test` and `HAPI_RUNNER_INTEGRATION_FIXTURE=1` are present. The
+  fixture creates a canonical Hub session and reports the real Runner webhook,
+  but cannot invoke Claude, Codex, AGY, or another provider.
+- Each fixture start is also appended to an isolated cleanup ledger with its
+  kernel birth token, process group, runtime realpath, launch nonce, and Runner
+  instance. The committed CI `EXIT` trap and the suite cleanup both consume this
+  cumulative ledger, including a start interrupted before its ordinary event
+  append. The ledger must be readable and contain only valid `process-started`
+  records; unexpected records, malformed/conflicting bindings, and any
+  non-`ESRCH` liveness error fail closed. Signals run through a test-only Bun
+  verifier that requires an exact kernel match and never authorizes from `ps`
+  fallback data. The cleanup implementation owns the fixed
+  verify-before-TERM/verify-before-KILL order, while tests may replace only the
+  verifier and raw signal syscall, not that ordering.
+- After the ordinary suite passes, CI starts one guarded exact cleanup probe.
+  It publishes a kernel-bound ledger record, ignores TERM, and must appear in
+  both the committed helper's TERM and KILL receipts. Missing receipts,
+  cleanup errors, identity mismatch, or any surviving exact fixture fail the
+  gate. A sourceable Bash status helper explicitly exits with the original test
+  failure when present and otherwise promotes cleanup failure; returning from
+  an `EXIT` trap is not treated as status propagation.
+- The fixture installs production lifecycle handlers before any webhook delay
+  or report. Stop coverage waits for its cleanup event, observes the exact
+  managed-outcome acknowledgement ID, and uses a read-only isolated Bun/SQLite
+  inspector to verify the corresponding Hub idempotency receipt. Ordinary
+  lifecycle metadata alone is not accepted as signed-outcome proof.
+- The CI gate requires all collected integration tests to pass, requires a
+  nonzero passing total, and rejects skipped output without hard-coding a count.
+- The Linux PGID-zero regression drives the public process-table capture seam,
+  with baseline evidence showing the pre-fix parser returned
+  `complete: false`; a missing test-only export is not accepted as semantic RED
+  proof.
+
+These guarantees describe isolated code and test closure only. They do not by
+themselves establish a merge, release, LaunchAgent rollout, or production
+deployment.
 
 ### Key Test Scenarios
 - Session listing, spawning, stopping
 - External session webhook tracking
 - Graceful SIGTERM/SIGKILL shutdown
 - Multiple runner prevention
-- Version mismatch detection
-- Directory creation approval flow
+- Idempotent replay/conflict handling for stable spawn request IDs
+- A real 16.5-second late webhook that stays pending and queryable
+- Canonical Hub-session creation with managed identity metadata
 - Concurrent session stress tests
 
 ---
@@ -339,11 +383,11 @@ Checks if machine ID exists in settings:
 {
   "id": "machine-uuid-123",
   "metadata": {
-    "host": "MacBook-Pro.local",
+    "host": "example-host",
     "platform": "darwin",
     "happyCliVersion": "1.0.0",
-    "homeDir": "/Users/john",
-    "happyHomeDir": "/Users/john/.hapi",
+    "homeDir": "/Users/example",
+    "happyHomeDir": "/Users/example/.hapi",
     "happyLibDir": "/usr/local/lib/node_modules/hapi"
   },
   "runnerState": {
@@ -436,11 +480,11 @@ socket.emit('machine-update-state', {
 socket.emit('machine-update-metadata', {
   "machineId": "machine-uuid-123",
   "metadata": {
-    "host": "MacBook-Pro.local",
+    "host": "example-host",
     "platform": "darwin",
     "happyCliVersion": "1.0.1",
-    "homeDir": "/Users/john",
-    "happyHomeDir": "/Users/john/.hapi"
+    "homeDir": "/Users/example",
+    "happyHomeDir": "/Users/example/.hapi"
   },
   "expectedVersion": 1
 }, callback)
@@ -483,7 +527,7 @@ socket.emit('update', {
     "t": "update-machine",
     "machineId": "machine-uuid-123",
     "metadata": {
-      "value": { "host": "MacBook-Pro.local" },
+      "value": { "host": "example-host" },
       "version": 2
     }
   },

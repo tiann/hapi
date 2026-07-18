@@ -36,6 +36,10 @@ function resolveSandboxPolicyOverride(value: CodexCliOverrides['sandbox'] | unde
     }
 }
 
+function resolveAppServerServiceTier(serviceTier: EnhancedMode['serviceTier']): ThreadStartParams['serviceTier'] | undefined {
+    return serviceTier === 'standard' ? undefined : serviceTier;
+}
+
 function buildMcpServerConfig(mcpServers: McpServersConfig): Record<string, unknown> {
     const config: Record<string, unknown> = {};
 
@@ -101,6 +105,10 @@ export function buildThreadStartParams(args: {
     if (args.mode.model) {
         params.model = args.mode.model;
     }
+    const serviceTier = resolveAppServerServiceTier(args.mode.serviceTier);
+    if (serviceTier) {
+        params.serviceTier = serviceTier;
+    }
 
     return params;
 }
@@ -139,6 +147,15 @@ export function buildTurnStartParams(args: {
         ?? (args.mode ? resolveSandboxPolicy(args.mode) : undefined);
     if (sandboxPolicy) {
         params.sandboxPolicy = sandboxPolicy;
+    }
+
+    const serviceTier = resolveAppServerServiceTier(args.mode?.serviceTier);
+    if (serviceTier) {
+        params.serviceTier = serviceTier;
+    }
+
+    if (args.mode?.modelReasoningEffort) {
+        params.effort = args.mode.modelReasoningEffort;
     }
 
     const collaborationMode = args.mode?.collaborationMode;

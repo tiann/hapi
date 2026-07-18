@@ -7,7 +7,8 @@ import { codexRemoteLauncher } from './codexRemoteLauncher';
 import { ApiClient, ApiSessionClient } from '@/lib';
 import type { CodexCliOverrides } from './utils/codexCliOverrides';
 import type { ReasoningEffort } from './appServerTypes';
-import type { CodexCollaborationMode, CodexPermissionMode } from '@hapi/protocol/types';
+import type { CodexCollaborationMode, CodexPermissionMode, CodexServiceTier } from '@hapi/protocol/types';
+import type { DeliveryOutcomeClient } from './deliveryOutcomeClient';
 
 export type PermissionMode = CodexPermissionMode;
 
@@ -16,6 +17,7 @@ export interface EnhancedMode {
     model?: string;
     collaborationMode: CodexCollaborationMode;
     modelReasoningEffort?: ReasoningEffort;
+    serviceTier?: CodexServiceTier;
 }
 
 interface LoopOptions {
@@ -31,9 +33,12 @@ interface LoopOptions {
     permissionMode?: PermissionMode;
     model?: string;
     modelReasoningEffort?: ReasoningEffort;
+    serviceTier?: CodexServiceTier;
     collaborationMode?: CodexCollaborationMode;
     resumeSessionId?: string;
     onSessionReady?: (session: CodexSession) => void;
+    deliveryOutcomes?: DeliveryOutcomeClient;
+    onAmbiguousDelivery?: () => void;
 }
 
 export async function loop(opts: LoopOptions): Promise<void> {
@@ -56,7 +61,10 @@ export async function loop(opts: LoopOptions): Promise<void> {
         permissionMode: opts.permissionMode ?? 'default',
         model: opts.model,
         modelReasoningEffort: opts.modelReasoningEffort,
-        collaborationMode: opts.collaborationMode ?? 'default'
+        serviceTier: opts.serviceTier,
+        collaborationMode: opts.collaborationMode ?? 'default',
+        deliveryOutcomes: opts.deliveryOutcomes,
+        onAmbiguousDelivery: opts.onAmbiguousDelivery
     });
 
     await runLocalRemoteSession({

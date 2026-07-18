@@ -2,6 +2,7 @@ import { access, readdir, readFile } from 'fs/promises';
 import { basename, dirname, join, resolve } from 'path';
 import { homedir } from 'os';
 import { parse as parseYaml } from 'yaml';
+import { listEnabledCodexPluginInstallations, resolveRealFileInside } from './codexPlugins';
 
 export interface SkillSummary {
     name: string;
@@ -9,6 +10,7 @@ export interface SkillSummary {
 }
 
 export interface ListSkillsRequest {
+    agent?: string;
 }
 
 export interface ListSkillsResponse {
@@ -39,6 +41,12 @@ function getProjectSkillsRoots(directory: string): string[] {
         join(directory, '.agents', 'skills'),
         join(directory, '.claude', 'skills'),
     ];
+}
+
+interface SkillDirEntry {
+    dir: string;
+    namePrefix?: string;
+    skillFilePath?: string;
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -90,13 +98,14 @@ function parseFrontmatter(fileContent: string): { frontmatter?: Record<string, u
     }
 }
 
-function extractSkillSummary(skillDir: string, fileContent: string): SkillSummary | null {
+function extractSkillSummary(skillDir: string, fileContent: string, namePrefix?: string): SkillSummary | null {
     const parsed = parseFrontmatter(fileContent);
     const nameFromFrontmatter = typeof parsed.frontmatter?.name === 'string' ? parsed.frontmatter.name.trim() : '';
-    const name = nameFromFrontmatter || basename(skillDir);
-    if (!name) {
+    const baseName = nameFromFrontmatter || basename(skillDir);
+    if (!baseName) {
         return null;
     }
+    const name = namePrefix ? `${namePrefix}:${baseName}` : baseName;
 
     const description = typeof parsed.frontmatter?.description === 'string'
         ? parsed.frontmatter.description.trim()
@@ -124,12 +133,37 @@ async function listTopLevelSkillDirs(skillsRoot: string): Promise<string[]> {
     }
 }
 
-async function readSkillsFromDirs(skillDirs: string[]): Promise<SkillSummary[]> {
-    const skills = await Promise.all(skillDirs.map(async (dir): Promise<SkillSummary | null> => {
-        const filePath = join(dir, 'SKILL.md');
+async function listCodexPluginSkillDirs(): Promise<SkillDirEntry[]> {
+    const installations = await listEnabledCodexPluginInstallations();
+    const skillDirs = await Promise.all(installations.map(async (installation) => {
+        const dirs = await listTopLevelSkillDirs(join(installation.installPath, 'skills'));
+        const entries = await Promise.all(dirs.map(async (dir): Promise<SkillDirEntry | null> => {
+            const skillName = basename(dir);
+            const skillFilePath = await resolveRealFileInside(installation.installPath, 'skills', skillName, 'SKILL.md');
+            if (!skillFilePath) {
+                return null;
+            }
+
+            return {
+                dir,
+                namePrefix: installation.pluginName,
+                skillFilePath,
+            };
+        }));
+        return entries.filter((entry): entry is SkillDirEntry => entry !== null);
+    }));
+
+    return skillDirs.flat();
+}
+
+async function readSkillsFromDirs(skillDirs: Array<string | SkillDirEntry>): Promise<SkillSummary[]> {
+    const skills = await Promise.all(skillDirs.map(async (entry): Promise<SkillSummary | null> => {
+        const dir = typeof entry === 'string' ? entry : entry.dir;
+        const namePrefix = typeof entry === 'string' ? undefined : entry.namePrefix;
+        const filePath = typeof entry === 'string' ? join(dir, 'SKILL.md') : entry.skillFilePath ?? join(dir, 'SKILL.md');
         try {
             const fileContent = await readFile(filePath, 'utf-8');
-            return extractSkillSummary(dir, fileContent);
+            return extractSkillSummary(dir, fileContent, namePrefix);
         } catch {
             return null;
         }
@@ -138,17 +172,19 @@ async function readSkillsFromDirs(skillDirs: string[]): Promise<SkillSummary[]> 
     return skills.filter((skill): skill is SkillSummary => skill !== null);
 }
 
-export async function listSkills(workingDirectory?: string): Promise<SkillSummary[]> {
+export async function listSkills(workingDirectory?: string, options?: { agent?: string }): Promise<SkillSummary[]> {
     const projectRoots = await listProjectSkillsRoots(workingDirectory);
-    const [projectSkillDirs, userSkillDirs, adminSkillDirs] = await Promise.all([
+    const [projectSkillDirs, userSkillDirs, pluginSkillDirs, adminSkillDirs] = await Promise.all([
         Promise.all(projectRoots.map(async (root) => await listTopLevelSkillDirs(root))).then((dirs) => dirs.flat()),
         Promise.all(getUserSkillsRoots().map(async (root) => await listTopLevelSkillDirs(root))).then((dirs) => dirs.flat()),
+        options?.agent === 'codex' ? listCodexPluginSkillDirs() : Promise.resolve([]),
         listTopLevelSkillDirs(getAdminSkillsRoot()),
     ]);
 
-    const [projectSkills, userSkills, adminSkills] = await Promise.all([
+    const [projectSkills, userSkills, pluginSkills, adminSkills] = await Promise.all([
         readSkillsFromDirs(projectSkillDirs),
         readSkillsFromDirs(userSkillDirs),
+        readSkillsFromDirs(pluginSkillDirs),
         readSkillsFromDirs(adminSkillDirs),
     ]);
 
@@ -156,6 +192,7 @@ export async function listSkills(workingDirectory?: string): Promise<SkillSummar
     for (const skill of [
         ...projectSkills,
         ...userSkills,
+        ...pluginSkills,
         ...adminSkills,
     ]) {
         if (!dedupedSkills.has(skill.name)) {

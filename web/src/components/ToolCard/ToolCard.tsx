@@ -226,6 +226,25 @@ function renderToolInput(block: ToolCallBlock): ReactNode {
     return <CodeBlock code={safeStringify(input)} language="json" />
 }
 
+function RawPayloadDisclosure(props: {
+    label: string
+    testId: string
+    value: unknown
+}) {
+    if (props.value === undefined) return null
+
+    return (
+        <details className="mt-2" data-testid={props.testId}>
+            <summary className="cursor-pointer text-xs font-medium text-[var(--app-hint)]">
+                {props.label}
+            </summary>
+            <div className="mt-2">
+                <CodeBlock code={safeStringify(props.value)} language="json" />
+            </div>
+        </details>
+    )
+}
+
 function StatusIcon(props: { state: ToolCallBlock['tool']['state'] }) {
     if (props.state === 'completed') {
         return (
@@ -314,15 +333,53 @@ function ToolCardInner(props: ToolCardProps) {
     const isAskUserQuestion = isAskUserQuestionToolName(toolName)
     const isRequestUserInput = isRequestUserInputToolName(toolName)
     const isQuestionTool = isAskUserQuestion || isRequestUserInput
+    const hasPendingPermission = permission?.status === 'pending'
     const showsPermissionFooter = Boolean(permission && (
         permission.status === 'pending'
         || ((permission.status === 'denied' || permission.status === 'canceled') && Boolean(permission.reason))
     ))
-    const hasBody = showInline || taskSummary !== null || showsPermissionFooter
+    const density = hasPendingPermission ? 'actionable' : 'compact'
+    const isCompact = density === 'compact'
+    const shouldShowInlineBody = !isCompact && showInline
+    const shouldShowTaskSummary = !isCompact && taskSummary !== null
+    const hasBody = shouldShowInlineBody || shouldShowTaskSummary || showsPermissionFooter
     const stateColor = statusColorClass(props.block.tool.state)
     const { suppressFocusRing, onTriggerPointerDown, onTriggerKeyDown, onTriggerBlur } = usePointerFocusRing()
 
-    const header = (
+    const compactHeader = (
+        <div className="flex min-w-0 items-center justify-between gap-2">
+            <div className="min-w-0 flex flex-1 items-center gap-1.5">
+                <div className="shrink-0 flex h-3.5 w-3.5 items-center justify-center text-[var(--app-hint)] leading-none">
+                    {presentation.icon}
+                </div>
+                <CardTitle className="min-w-0 truncate text-xs font-medium leading-tight">
+                    {toolTitle}
+                </CardTitle>
+                {subtitle ? (
+                    <>
+                        <span className="shrink-0 text-[11px] text-[var(--app-hint)]" aria-hidden="true">
+                            ·
+                        </span>
+                        <span className="min-w-0 truncate font-mono text-[11px] text-[var(--app-hint)] opacity-80">
+                            {truncate(subtitle, 96)}
+                        </span>
+                    </>
+                ) : null}
+            </div>
+
+            <div className="flex shrink-0 items-center gap-1.5">
+                <ElapsedView from={runningFrom} active={props.block.tool.state === 'running'} />
+                <span className={stateColor}>
+                    <StatusIcon state={props.block.tool.state} />
+                </span>
+                <span className="text-[var(--app-hint)]">
+                    <DetailsIcon />
+                </span>
+            </div>
+        </div>
+    )
+
+    const actionableHeader = (
         <div className="flex flex-col gap-1">
             <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0 flex items-center gap-2">
@@ -354,21 +411,33 @@ function ToolCardInner(props: ToolCardProps) {
     )
 
     return (
-        <Card className="overflow-hidden shadow-sm">
-            <CardHeader className="p-3 space-y-0">
+        <Card
+            data-testid="tool-card"
+            data-tool-density={density}
+            className={cn(
+                'overflow-hidden',
+                isCompact
+                    ? 'w-fit max-w-full rounded-md shadow-none'
+                    : 'shadow-sm'
+            )}
+        >
+            <CardHeader className={cn(isCompact ? 'p-0 space-y-0' : 'p-3 space-y-0')}>
                 <Dialog>
                     <DialogTrigger asChild>
                         <button
                             type="button"
                             className={cn(
                                 'w-full text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]',
+                                isCompact
+                                    ? 'min-w-0 rounded-md px-2 py-1 hover:bg-[var(--app-subtle-bg)]'
+                                    : '',
                                 suppressFocusRing && 'focus-visible:ring-0'
                             )}
                             onPointerDown={onTriggerPointerDown}
                             onKeyDown={onTriggerKeyDown}
                             onBlur={onTriggerBlur}
                         >
-                            {header}
+                            {isCompact ? compactHeader : actionableHeader}
                         </button>
                     </DialogTrigger>
                     <DialogContent className="max-w-2xl">
@@ -391,13 +460,30 @@ function ToolCardInner(props: ToolCardProps) {
                                         ) : (
                                             renderToolInput(props.block)
                                         )}
+                                        <RawPayloadDisclosure
+                                            label={t('tool.rawInput')}
+                                            testId="tool-raw-input-payload"
+                                            value={props.block.tool.input}
+                                        />
                                     </div>
                                     {!isQuestionToolWithAnswers && (
                                         <div>
                                             <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">{t('tool.result')}</div>
                                             <ResultToolView block={props.block} metadata={props.metadata} />
+                                            <RawPayloadDisclosure
+                                                label={t('tool.rawResult')}
+                                                testId="tool-raw-result-payload"
+                                                value={props.block.tool.result}
+                                            />
                                         </div>
                                     )}
+                                    {isQuestionToolWithAnswers ? (
+                                        <RawPayloadDisclosure
+                                            label={t('tool.rawResult')}
+                                            testId="tool-raw-result-payload"
+                                            value={props.block.tool.result}
+                                        />
+                                    ) : null}
                                 </div>
                             )
                         })()}
@@ -407,13 +493,13 @@ function ToolCardInner(props: ToolCardProps) {
 
             {hasBody ? (
                 <CardContent className="px-3 pb-3 pt-0">
-                    {taskSummary ? (
+                    {shouldShowTaskSummary && taskSummary ? (
                         <div className="mt-2">
                             {taskSummary}
                         </div>
                     ) : null}
 
-                    {showInline ? (
+                    {shouldShowInlineBody ? (
                         CompactToolView ? (
                             <div className="mt-3">
                                 <CompactToolView block={props.block} metadata={props.metadata} />

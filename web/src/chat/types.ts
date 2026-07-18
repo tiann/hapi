@@ -11,6 +11,7 @@ export type UsageData = {
 export type AgentEvent =
     | { type: 'switch'; mode: 'local' | 'remote' }
     | { type: 'message'; message: string }
+    | { type: 'background-notification'; message: string; internalKind: 'background_notification' }
     | { type: 'title-changed'; title: string }
     | { type: 'limit-reached'; endsAt: number; limitType: string }
     | { type: 'limit-warning'; /** 0–1 ratio (e.g. 0.9 = 90%), integer-precision via CLI pipe format */ utilization: number; endsAt: number; limitType: string }
@@ -18,7 +19,7 @@ export type AgentEvent =
     | { type: 'api-error'; retryAttempt: number; maxRetries: number; error: unknown }
     | { type: 'turn-duration'; durationMs: number }
     | { type: 'microcompact'; trigger: string; preTokens: number; tokensSaved: number }
-    | { type: 'compact'; trigger: string; preTokens: number }
+    | { type: 'compact'; trigger?: string; source?: 'claude' | 'codex'; preTokens?: number; postTokens?: number; tokensSaved?: number; durationMs?: number }
     | ({ type: string } & Record<string, unknown>)
 
 export type ToolResultPermission = {
@@ -28,6 +29,16 @@ export type ToolResultPermission = {
     allowedTools?: string[]
     decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
 }
+
+export type InternalMessageKind =
+    | 'background_notification'
+    | 'internal_tool_result'
+    | 'internal_sidechain'
+    | 'internal_meta'
+    | 'internal_plan_restart'
+    | 'internal_command_name'
+    | 'internal_local_command_caveat'
+    | 'internal_system_reminder'
 
 export type ToolUse = {
     type: 'tool-call'
@@ -62,10 +73,25 @@ export type NormalizedAgentContent =
         uuid: string
         parentUUID: string | null
     }
+    | {
+        type: 'moa-reference'
+        label: string
+        text: string
+        index?: number
+        count?: number
+        uuid: string
+        parentUUID: string | null
+    }
+    | {
+        type: 'attachments'
+        attachments: AttachmentMetadata[]
+        uuid: string
+        parentUUID: string | null
+    }
     | ToolUse
     | ToolResult
     | { type: 'summary'; summary: string }
-    | { type: 'sidechain'; uuid: string; parentUUID: string | null; prompt: string }
+    | { type: 'sidechain'; uuid: string; parentUUID: string | null; prompt: string; kind?: InternalMessageKind }
 
 export type NormalizedMessage = ({
     role: 'user'
@@ -130,6 +156,7 @@ export type AgentTextBlock = {
     id: string
     localId: string | null
     createdAt: number
+    displayTimestamp?: number | null
     text: string
     meta?: unknown
 }
@@ -139,7 +166,31 @@ export type AgentReasoningBlock = {
     id: string
     localId: string | null
     createdAt: number
+    displayTimestamp?: number | null
     text: string
+    meta?: unknown
+}
+
+export type MoaReferenceBlock = {
+    kind: 'moa-reference'
+    id: string
+    localId: string | null
+    createdAt: number
+    displayTimestamp?: number | null
+    label: string
+    text: string
+    index?: number
+    count?: number
+    meta?: unknown
+}
+
+export type AgentAttachmentBlock = {
+    kind: 'agent-attachments'
+    id: string
+    localId: string | null
+    createdAt: number
+    displayTimestamp?: number | null
+    attachments: AttachmentMetadata[]
     meta?: unknown
 }
 
@@ -148,6 +199,7 @@ export type CliOutputBlock = {
     id: string
     localId: string | null
     createdAt: number
+    displayTimestamp?: number | null
     text: string
     source: 'user' | 'assistant'
     meta?: unknown
@@ -166,9 +218,10 @@ export type ToolCallBlock = {
     id: string
     localId: string | null
     createdAt: number
+    displayTimestamp?: number | null
     tool: ChatToolCall
     children: ChatBlock[]
     meta?: unknown
 }
 
-export type ChatBlock = UserTextBlock | AgentTextBlock | AgentReasoningBlock | CliOutputBlock | ToolCallBlock | AgentEventBlock
+export type ChatBlock = UserTextBlock | AgentTextBlock | AgentReasoningBlock | MoaReferenceBlock | AgentAttachmentBlock | CliOutputBlock | ToolCallBlock | AgentEventBlock

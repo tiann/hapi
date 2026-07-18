@@ -1,66 +1,54 @@
 /// <reference lib="webworker" />
 import { precacheAndRoute } from 'workbox-precaching'
 import { registerRoute } from 'workbox-routing'
-import { CacheFirst, NetworkFirst } from 'workbox-strategies'
+import { CacheFirst } from 'workbox-strategies'
 import { ExpirationPlugin } from 'workbox-expiration'
 import { focusOrOpenNotificationUrl, type NotificationClientsLike } from './lib/notificationClick'
+import { getBadgeCountFromPushPayload, updateAppBadge, type AppBadgeTarget } from './lib/appBadge'
+import { buildNotificationOptions, shouldShowPushNotification, type PushPayload } from './lib/pushNotification'
+import {
+    hasLegacyAuthenticatedApiCaches,
+    removeLegacyAuthenticatedApiCaches,
+} from './lib/serviceWorkerCachePolicy'
 
 declare const self: ServiceWorkerGlobalScope & {
     __WB_MANIFEST: Array<string | { url: string; revision?: string }>
 }
 
-type PushPayload = {
-    title: string
-    body?: string
-    icon?: string
-    badge?: string
-    tag?: string
-    data?: {
-        type?: string
-        sessionId?: string
-        url?: string
+self.addEventListener('install', (event) => {
+    // This release removes caches that were keyed only by URL even though they
+    // held authenticated responses. If one exists, do not let a declined
+    // ordinary update prompt leave the legacy worker serving it indefinitely.
+    event.waitUntil(hasLegacyAuthenticatedApiCaches(self.caches).then(async (mustMigrate) => {
+        if (mustMigrate) await self.skipWaiting()
+    }))
+})
+
+self.addEventListener('message', (event) => {
+    if (event.data && typeof event.data === 'object' && event.data.type === 'SKIP_WAITING') {
+        self.skipWaiting()
     }
-}
+})
+
+self.addEventListener('activate', (event) => {
+    event.waitUntil(Promise.all([
+        removeLegacyAuthenticatedApiCaches(self.caches),
+        self.clients.claim(),
+    ]).then(() => undefined))
+})
 
 precacheAndRoute(self.__WB_MANIFEST)
 
 registerRoute(
-    ({ url }) => url.pathname === '/api/sessions',
-    new NetworkFirst({
-        cacheName: 'api-sessions',
-        networkTimeoutSeconds: 10,
+    ({ url, request }) => url.origin === self.location.origin
+        && url.pathname.startsWith('/assets/')
+        && request.method === 'GET',
+    new CacheFirst({
+        cacheName: 'local-assets',
         plugins: [
             new ExpirationPlugin({
-                maxEntries: 10,
-                maxAgeSeconds: 60 * 5
-            })
-        ]
-    })
-)
-
-registerRoute(
-    ({ url }) => /^\/api\/sessions\/[^/]+$/.test(url.pathname),
-    new NetworkFirst({
-        cacheName: 'api-session-detail',
-        networkTimeoutSeconds: 10,
-        plugins: [
-            new ExpirationPlugin({
-                maxEntries: 20,
-                maxAgeSeconds: 60 * 5
-            })
-        ]
-    })
-)
-
-registerRoute(
-    ({ url }) => url.pathname === '/api/machines',
-    new NetworkFirst({
-        cacheName: 'api-machines',
-        networkTimeoutSeconds: 10,
-        plugins: [
-            new ExpirationPlugin({
-                maxEntries: 5,
-                maxAgeSeconds: 60 * 10
+                maxEntries: 80,
+                maxAgeSeconds: 60 * 60 * 24 * 30
             })
         ]
     })
@@ -99,20 +87,17 @@ self.addEventListener('push', (event) => {
     }
 
     const title = payload.title || 'HAPI'
-    const body = payload.body ?? ''
-    const icon = payload.icon ?? '/pwa-192x192.png'
-    const badge = payload.badge ?? '/pwa-64x64.png'
-    const data = payload.data
-    const tag = payload.tag
+    const badgeCount = getBadgeCountFromPushPayload(payload)
 
     event.waitUntil(
-        self.registration.showNotification(title, {
-            body,
-            icon,
-            badge,
-            data,
-            tag
-        })
+        Promise.all([
+            updateAppBadge(navigator as unknown as AppBadgeTarget, badgeCount),
+            shouldShowPushNotification(self.clients).then((shouldShow) => (
+                shouldShow
+                    ? self.registration.showNotification(title, buildNotificationOptions(payload))
+                    : undefined
+            ))
+        ]).then(() => undefined)
     )
 })
 

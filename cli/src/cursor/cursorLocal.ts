@@ -1,5 +1,6 @@
 import { logger } from '@/ui/logger';
 import { spawnWithTerminalGuard } from '@/utils/spawnWithTerminalGuard';
+import { getProviderCommand } from '@/runner/providerRuntime';
 
 /**
  * Filter out 'resume' subcommand which is managed internally by hapi.
@@ -53,7 +54,8 @@ export async function cursorLocal(opts: {
         args.push(...safeArgs);
     }
 
-    logger.debug(`[CursorLocal] Spawning agent with args: ${JSON.stringify(args)}`);
+    const command = getProviderCommand('cursor', process.env);
+    logger.debug(`[CursorLocal] Spawning cursor-agent with args: ${JSON.stringify(args)}`);
 
     if (opts.abort.aborted) {
         logger.debug('[CursorLocal] Abort already signaled before spawn; skipping launch');
@@ -61,13 +63,13 @@ export async function cursorLocal(opts: {
     }
 
     await spawnWithTerminalGuard({
-        command: 'agent',
+        command,
         args,
         cwd: opts.path,
         env: process.env,
         signal: opts.abort,
         logLabel: 'CursorLocal',
-        spawnName: 'agent',
+        spawnName: 'cursor-agent',
         installHint: 'Cursor Agent CLI (curl https://cursor.com/install -fsS | bash)',
         includeCause: true,
         logExit: true,

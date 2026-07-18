@@ -10,7 +10,7 @@ The voice assistant lets you:
 - **Approve permissions by voice** - Say "yes" or "no" to approve or deny permission requests
 - **Monitor progress** - Receive spoken updates when tasks complete or errors occur
 
-The assistant bridges voice communication with your active coding agent (Claude Code, Codex, Gemini, or OpenCode), relaying your requests and summarizing responses in natural speech.
+The assistant bridges voice communication with your active coding agent (Claude Code, Codex, Antigravity agy, or OpenCode), relaying your requests and summarizing responses in natural speech.
 
 ## Prerequisites
 

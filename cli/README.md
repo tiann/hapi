@@ -1,13 +1,13 @@
 # hapi CLI
 
-Run Claude Code, Codex, Cursor Agent, Gemini, or OpenCode sessions from your terminal and control them remotely through the hapi hub.
+Run Claude Code, Codex, Cursor Agent, Antigravity agy, or OpenCode sessions from your terminal and control them remotely through the hapi hub.
 
 ## What it does
 
 - Starts Claude Code sessions and registers them with hapi-hub.
 - Starts Codex mode for OpenAI-based sessions.
 - Starts Cursor Agent mode for Cursor CLI sessions.
-- Starts Gemini mode via ACP (Anthropic Code Plugins).
+- Starts Antigravity agy mode through the local `agy` CLI (`--print`).
 - Starts OpenCode mode via ACP and its plugin hook system.
 - Provides an MCP stdio bridge for external tools.
 - Manages a background runner for long-running sessions.
@@ -29,9 +29,9 @@ Run Claude Code, Codex, Cursor Agent, Gemini, or OpenCode sessions from your ter
 - `hapi codex resume <sessionId>` - Resume existing Codex session.
 - `hapi cursor` - Start Cursor Agent mode. See `src/cursor/runCursor.ts`.
   Supports `hapi cursor resume <chatId>`, `hapi cursor --continue`, `--mode plan|ask`, `--yolo`, `--model`.
-  Local and remote modes supported; remote uses `agent -p` with stream-json.
-- `hapi gemini` - Start Gemini mode via ACP. See `src/agent/runners/runAgentSession.ts`.
-  Note: Gemini runs in remote mode only; it waits for messages from the hub UI/Telegram.
+  Local and remote modes supported; remote uses `cursor-agent -p` with stream-json.
+- `hapi agy` - Start Antigravity agy mode through the local `agy` CLI. See `src/agy/runAgy.ts`.
+  Note: Antigravity agy supports remote hub sessions through stateless `agy --print` turns; HAPI keeps transcript context between turns.
 - `hapi opencode` - Start OpenCode mode via ACP. See `src/opencode/runOpencode.ts`.
   Note: OpenCode supports local and remote modes; local mode streams via OpenCode plugins.
 
@@ -108,7 +108,7 @@ Data is stored in `~/.hapi/` (or `$HAPI_HOME`):
 ## Requirements
 
 - Claude CLI installed and logged in (`claude` on PATH).
-- Cursor Agent CLI installed (`agent` on PATH) for `hapi cursor`. Install: `curl https://cursor.com/install -fsS | bash` (macOS/Linux), `irm 'https://cursor.com/install?win32=true' | iex` (Windows).
+- Cursor Agent CLI installed (`cursor-agent` on PATH) for `hapi cursor`. Set `HAPI_CURSOR_PATH` to an absolute/alternate executable path when needed. Install: `curl https://cursor.com/install -fsS | bash` (macOS/Linux), `irm 'https://cursor.com/install?win32=true' | iex` (Windows).
 - OpenCode CLI installed (`opencode` on PATH).
 - Bun for building from source.
 
@@ -134,7 +134,7 @@ bun run build:single-exe
 - `src/claude/` - Claude Code integration.
 - `src/codex/` - Codex mode integration.
 - `src/cursor/` - Cursor Agent integration.
-- `src/agent/` - Multi-agent support (Gemini via ACP).
+- `src/agy/` - Antigravity agy integration through the local `agy` CLI.
 - `src/opencode/` - OpenCode ACP + hook integration.
 - `src/runner/` - Background service.
 - `src/commands/` - CLI command handlers.

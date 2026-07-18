@@ -47,7 +47,7 @@ function dnsNameMatchesHost(host: string, dnsName: string): boolean {
     return remainder.length > 0 && !remainder.includes('.')
 }
 
-function hostMatchesCertificate(host: string, cert: PeerCertificate): boolean {
+export function hostMatchesCertificate(host: string, cert: PeerCertificate): boolean {
     const altNames = parseSubjectAltNames(cert.subjectaltname)
     const hostIsIp = isIP(host) !== 0
 
@@ -63,11 +63,12 @@ function hostMatchesCertificate(host: string, cert: PeerCertificate): boolean {
         return false
     }
 
+    const commonNames = Array.isArray(commonName) ? commonName : [commonName]
     if (hostIsIp) {
-        return commonName === host
+        return commonNames.includes(host)
     }
 
-    return dnsNameMatchesHost(host, commonName)
+    return commonNames.some(name => dnsNameMatchesHost(host, name))
 }
 
 function parseCertDate(value: string | undefined): Date | null {

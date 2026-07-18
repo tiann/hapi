@@ -160,7 +160,7 @@ You can install HAPI on multiple devices:
 
 - All devices use the same server
 - Sessions sync across devices
-- Same access token works everywhere
+- The same credential for your assigned namespace works on your own devices
 
 ## Troubleshooting
 
