@@ -162,6 +162,10 @@ export default {
   'session.action.reopenCursorChecking': '正在检查记录设备上的 Cursor 聊天数据是否仍然可用。',
   'session.action.reopenCursorMissing': '记录设备上的 Cursor 聊天数据已不可用。',
   'session.action.reopenCursorCheckFailed': '无法验证记录设备上的 Cursor 聊天数据。',
+  'session.action.reopenCursorUnverified': '无法验证 Cursor 聊天数据（运行器可能过旧）。仍可尝试重新打开——若失败，请在该机器上升级 CLI。',
+  'runner.skew.banner.title': '{host} 上的运行器版本过旧',
+  'runner.skew.banner.body': '此 Hub 需要 {host} 上更新的 HAPI CLI（当前 {version}）。请在该机器上升级 CLI，然后重启运行器（`systemctl --user restart hapi-runner` 或 `hapi runner start`）。在运行器报告所需能力之前，此横幅会一直显示。',
+  'runner.skew.banner.bodyUnknownVersion': '此 Hub 需要 {host} 上更新的 HAPI CLI。请在该机器上升级 CLI，然后重启运行器（`systemctl --user restart hapi-runner` 或 `hapi runner start`）。在运行器报告所需能力之前，此横幅会一直显示。',
   'session.action.delete': '删除',
   'session.action.copy': '复制',
 

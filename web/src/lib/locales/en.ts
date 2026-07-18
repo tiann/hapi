@@ -162,6 +162,10 @@ export default {
   'session.action.reopenCursorChecking': 'Checking whether Cursor chat data is still available on the recorded machine.',
   'session.action.reopenCursorMissing': 'Cursor chat data is no longer available on the recorded machine.',
   'session.action.reopenCursorCheckFailed': 'Could not verify Cursor chat data on the recorded machine.',
+  'session.action.reopenCursorUnverified': 'Could not verify Cursor chat data (runner may be outdated). Reopen is still available — upgrade the CLI on that machine if reopen fails.',
+  'runner.skew.banner.title': 'Runner out of date on {host}',
+  'runner.skew.banner.body': 'This hub needs a newer HAPI CLI on {host} (running {version}). Upgrade the CLI on that machine, then restart the runner (`systemctl --user restart hapi-runner` or `hapi runner start`). This banner stays until the runner reports the required capabilities.',
+  'runner.skew.banner.bodyUnknownVersion': 'This hub needs a newer HAPI CLI on {host}. Upgrade the CLI on that machine, then restart the runner (`systemctl --user restart hapi-runner` or `hapi runner start`). This banner stays until the runner reports the required capabilities.',
   'session.action.delete': 'Delete',
   'session.action.copy': 'Copy',
 

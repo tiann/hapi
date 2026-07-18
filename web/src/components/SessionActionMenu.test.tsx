@@ -69,6 +69,22 @@ describe('SessionActionMenu - Reopen action', () => {
         expect(onClose).not.toHaveBeenCalled()
     })
 
+    it('keeps Reopen enabled with a soft-fail hint when probe is unverified', () => {
+        const onReopen = vi.fn()
+        renderMenu({
+            sessionActive: false,
+            onReopen,
+            reopenHint: 'Could not verify Cursor chat data (runner may be outdated).',
+        })
+
+        const reopen = screen.getByRole('menuitem', { name: /Reopen/ })
+        expect(reopen).not.toHaveAttribute('aria-disabled', 'true')
+        expect(screen.getByRole('tooltip')).toHaveTextContent('Could not verify Cursor chat data')
+
+        fireEvent.click(reopen)
+        expect(onReopen).toHaveBeenCalledTimes(1)
+    })
+
     it('fires onReopen and closes the menu when the Reopen item is clicked', () => {
         const onReopen = vi.fn()
         const onClose = vi.fn()

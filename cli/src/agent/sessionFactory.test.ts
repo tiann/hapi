@@ -29,7 +29,8 @@ vi.mock('@/api/api', () => ({
 }))
 
 vi.mock('@/runner/controlClient', () => ({
-    notifyRunnerSessionStarted: notifyRunnerSessionStartedMock
+    notifyRunnerSessionStarted: notifyRunnerSessionStartedMock,
+    getInstalledCliMtimeMs: () => 1_700_000_000_000,
 }))
 
 vi.mock('@/persistence', () => ({
