@@ -77,6 +77,46 @@ describe('toSessionSummary', () => {
         expect(summary.metadata?.agentSessionId).toBe('grok-session-1')
     })
 
+    it('uses the native id matching the current flavor instead of a stale id', () => {
+        const summary = toSessionSummary(makeSession({
+            metadata: {
+                path: '/proj',
+                host: 'local',
+                flavor: 'cursor',
+                codexSessionId: 'stale-codex-id',
+                cursorSessionId: 'cursor-session-1'
+            }
+        }))
+
+        expect(summary.metadata?.agentSessionId).toBe('cursor-session-1')
+    })
+
+    it('does not fall back to a stale cross-agent id for a known flavor', () => {
+        const summary = toSessionSummary(makeSession({
+            metadata: {
+                path: '/proj',
+                host: 'local',
+                flavor: 'pi',
+                codexSessionId: 'stale-codex-id'
+            }
+        }))
+
+        expect(summary.metadata?.agentSessionId).toBeUndefined()
+    })
+
+    it('includes piSessionId as the native resume token', () => {
+        const summary = toSessionSummary(makeSession({
+            metadata: {
+                path: '/proj',
+                host: 'local',
+                flavor: 'pi',
+                piSessionId: 'pi-session-1'
+            }
+        }))
+
+        expect(summary.metadata?.agentSessionId).toBe('pi-session-1')
+    })
+
     it('includes pending request kinds and background task count', () => {
         const summary = toSessionSummary(makeSession({
             backgroundTaskCount: 2,

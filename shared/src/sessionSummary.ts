@@ -1,4 +1,4 @@
-import type { Session, WorktreeMetadata } from './schemas'
+import type { Metadata, Session, WorktreeMetadata } from './schemas'
 
 export type PendingRequestKind = 'permission' | 'input'
 
@@ -105,6 +105,41 @@ export function getPendingRequestKinds(session: Session): PendingRequestKind[] {
         : Array.from(kinds)
 }
 
+const AGENT_SESSION_ID_FIELD_BY_FLAVOR = {
+    claude: 'claudeSessionId',
+    codex: 'codexSessionId',
+    gemini: 'geminiSessionId',
+    opencode: 'opencodeSessionId',
+    grok: 'grokSessionId',
+    cursor: 'cursorSessionId',
+    kimi: 'kimiSessionId',
+    pi: 'piSessionId'
+} as const satisfies Record<string, keyof Metadata>
+
+function getSummaryAgentSessionId(metadata: Metadata): string | undefined {
+    const flavor = metadata.flavor?.trim().toLowerCase()
+    const flavorField = flavor
+        ? AGENT_SESSION_ID_FIELD_BY_FLAVOR[flavor as keyof typeof AGENT_SESSION_ID_FIELD_BY_FLAVOR]
+        : undefined
+    if (flavorField) {
+        const flavorSessionId = metadata[flavorField]
+        return typeof flavorSessionId === 'string' && flavorSessionId.trim()
+            ? flavorSessionId.trim()
+            : undefined
+    }
+
+    // Legacy fallback only applies when the stored flavor is missing or unknown.
+    return metadata.codexSessionId
+        ?? metadata.claudeSessionId
+        ?? metadata.geminiSessionId
+        ?? metadata.opencodeSessionId
+        ?? metadata.grokSessionId
+        ?? metadata.cursorSessionId
+        ?? metadata.kimiSessionId
+        ?? metadata.piSessionId
+        ?? undefined
+}
+
 export function toSessionSummary(session: Session): SessionSummary {
     const pendingRequestsCount = session.agentState?.requests ? Object.keys(session.agentState.requests).length : 0
 
@@ -115,14 +150,7 @@ export function toSessionSummary(session: Session): SessionSummary {
         summary: session.metadata.summary ? { text: session.metadata.summary.text } : undefined,
         flavor: session.metadata.flavor ?? null,
         worktree: session.metadata.worktree,
-        agentSessionId: session.metadata.codexSessionId
-            ?? session.metadata.claudeSessionId
-            ?? session.metadata.geminiSessionId
-            ?? session.metadata.opencodeSessionId
-            ?? session.metadata.grokSessionId
-            ?? session.metadata.cursorSessionId
-            ?? session.metadata.kimiSessionId
-            ?? undefined,
+        agentSessionId: getSummaryAgentSessionId(session.metadata),
         lifecycleState: session.metadata.lifecycleState
     } : null
 

@@ -16,6 +16,7 @@ type SessionActionMenuProps = {
     sessionActive: boolean
     onRename: () => void
     onExport?: () => void
+    onCopyResumeCommand?: () => void
     onArchive: () => void
     onReopen?: () => void
     reopenDisabledReason?: string
@@ -86,6 +87,26 @@ function DownloadIcon(props: { className?: string }) {
     )
 }
 
+function CopyIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
+            <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+        </svg>
+    )
+}
+
 function ReopenIcon(props: { className?: string }) {
     return (
         <svg
@@ -143,6 +164,7 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
         sessionActive,
         onRename,
         onExport,
+        onCopyResumeCommand,
         onArchive,
         onReopen,
         reopenDisabledReason,
@@ -174,6 +196,11 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
     const handleExport = () => {
         onClose()
         onExport?.()
+    }
+
+    const handleCopyResumeCommand = () => {
+        onClose()
+        onCopyResumeCommand?.()
     }
 
     const handleDelete = () => {
@@ -306,6 +333,18 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                     >
                         <DownloadIcon className="text-[var(--app-hint)]" />
                         {t('session.action.export')}
+                    </button>
+                ) : null}
+
+                {onCopyResumeCommand ? (
+                    <button
+                        type="button"
+                        role="menuitem"
+                        className={`${baseItemClassName} hover:bg-[var(--app-subtle-bg)]`}
+                        onClick={handleCopyResumeCommand}
+                    >
+                        <CopyIcon className="text-[var(--app-hint)]" />
+                        {t('session.action.copyResumeCommand')}
                     </button>
                 ) : null}
 

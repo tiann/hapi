@@ -14,6 +14,9 @@ import { useTranslation } from '@/lib/use-translation'
 import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
 import { isFastServiceTier } from '@/components/AssistantChat/codexFastMode'
 import { getSessionTitle } from '@/lib/sessionTitle'
+import { getAgentResumeCommand } from '@/lib/agentSessionId'
+import { safeCopyToClipboard } from '@/lib/clipboard'
+import { useToast } from '@/lib/toast-context'
 
 function FilesIcon(props: { className?: string }) {
     return (
@@ -98,8 +101,10 @@ export function SessionHeader(props: {
     onSessionReopened?: (newSessionId: string) => void
 }) {
     const { t } = useTranslation()
+    const toast = useToast()
     const { session, api, onSessionDeleted, onSessionReopened } = props
     const title = useMemo(() => getSessionTitle(session), [session])
+    const resumeCommand = getAgentResumeCommand(session.metadata)
     const worktreeBranch = session.metadata?.worktree?.branch
     const modelLabel = getSessionModelLabel(session)
     const agentFlavor = session.metadata?.flavor ?? null
@@ -148,6 +153,27 @@ export function SessionHeader(props: {
             setMenuAnchorPoint({ x: rect.right, y: rect.bottom })
         }
         setMenuOpen((open) => !open)
+    }
+
+    const handleCopyResumeCommand = async () => {
+        if (!resumeCommand) return
+
+        try {
+            await safeCopyToClipboard(resumeCommand)
+            toast.addToast({
+                title: t('session.copyResumeCommand.toast.success.title'),
+                body: t('session.copyResumeCommand.toast.success.body'),
+                sessionId: session.id,
+                url: `/sessions/${session.id}`
+            })
+        } catch {
+            toast.addToast({
+                title: t('session.copyResumeCommand.toast.error.title'),
+                body: t('session.copyResumeCommand.toast.error.body'),
+                sessionId: session.id,
+                url: `/sessions/${session.id}`
+            })
+        }
     }
 
     // In Telegram, don't render header (Telegram provides its own)
@@ -259,6 +285,7 @@ export function SessionHeader(props: {
                 sessionActive={session.active}
                 onRename={() => setRenameOpen(true)}
                 onExport={() => setExportOpen(true)}
+                onCopyResumeCommand={resumeCommand ? handleCopyResumeCommand : undefined}
                 onArchive={() => setArchiveOpen(true)}
                 onReopen={props.canReopen === false ? undefined : handleReopen}
                 reopenDisabledReason={props.reopenDisabledReason}
