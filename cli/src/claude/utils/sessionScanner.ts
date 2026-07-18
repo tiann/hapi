@@ -169,15 +169,32 @@ function messageKey(message: RawJSONLines): string {
 }
 
 /**
+ * Whether a trailing segment (after the last newline) is already a complete
+ * JSON value. A record still being written parses as incomplete, so this
+ * distinguishes a flushed final record with no terminating newline from a
+ * genuinely partial line.
+ */
+function isCompleteJsonLine(segment: Buffer): boolean {
+    try {
+        JSON.parse(segment.toString('utf-8'));
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
  * Incrementally read and parse a session log file.
  *
  * The cursor is a BYTE OFFSET into the (append-only) JSONL. Each scan stats the
  * file and reads only the bytes after the cursor — so the cost is O(new content)
  * regardless of how large the conversation has grown, instead of re-reading the
  * whole file on every scan, poll- or watch-driven. A trailing partial line (a
- * write in progress) is left unconsumed until its newline arrives. If the file
- * shrank, the cursor resets to 0 and the whole file is re-read (dedup by uuid in
- * the base scanner absorbs any re-sent events).
+ * write in progress) is left unconsumed until its newline arrives — unless it
+ * already forms a complete record flushed without a terminating newline, which
+ * is consumed rather than stranded. If the file shrank, the cursor resets to 0
+ * and the whole file is re-read (dedup by uuid in the base scanner absorbs any
+ * re-sent events).
  */
 export async function readSessionLog(filePath: string, startByte: number): Promise<{ events: SessionFileScanEntry<RawJSONLines>[]; nextCursor: number }> {
     let size: number;
@@ -224,15 +241,23 @@ export async function readSessionLog(filePath: string, startByte: number): Promi
         return { events: [], nextCursor: startByte };
     }
 
-    // Consume only through the last newline; keep any trailing partial line for
-    // the next scan (`from` always sits on a line boundary, so the chunk's first
-    // line is always complete).
-    const lastNewline = chunk.lastIndexOf(0x0a);
-    if (lastNewline === -1) {
+    // Everything up to and including the last newline is complete lines. A
+    // segment after it is normally a partial write, held back until its newline
+    // arrives on a later scan. But a final record can be flushed without a
+    // trailing newline (e.g. at shutdown or on import); the previous whole-file
+    // reader parsed such a record, so if the trailing segment already parses as
+    // a complete JSON value, consume it now instead of stranding it until the
+    // next append.
+    let readableEnd = chunk.lastIndexOf(0x0a) + 1; // 0 when no newline yet
+    const trailing = chunk.subarray(readableEnd);
+    if (trailing.length > 0 && isCompleteJsonLine(trailing)) {
+        readableEnd = chunk.length;
+    }
+    if (readableEnd === 0) {
         return { events: [], nextCursor: from };
     }
-    const nextCursor = from + lastNewline + 1;
-    const text = chunk.subarray(0, lastNewline).toString('utf-8');
+    const nextCursor = from + readableEnd;
+    const text = chunk.subarray(0, readableEnd).toString('utf-8');
 
     const messages: SessionFileScanEntry<RawJSONLines>[] = [];
     for (const l of text.split('\n')) {

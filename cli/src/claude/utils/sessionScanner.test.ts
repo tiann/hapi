@@ -194,4 +194,33 @@ describe('sessionScanner', () => {
       expect(followUp.events[0].event.uuid).toBe('u2')
     }
   })
+
+  it('forwards a complete final record written without a trailing newline', async () => {
+    const filePath = join(testDir, 'no-trailing-newline.jsonl')
+    const line1 = JSON.stringify({ type: 'user', uuid: 'u1', message: { content: 'first' } })
+    const line2 = JSON.stringify({ type: 'user', uuid: 'u2', message: { content: 'last' } })
+
+    // A prior line terminated by a newline, then a complete final record that
+    // was flushed without its terminating newline (shutdown/import).
+    await writeFile(filePath, line1 + '\n' + line2)
+
+    const result = await readSessionLog(filePath, 0)
+    expect(result.events).toHaveLength(2)
+    expect(result.events.map((e) => e.event.type === 'user' ? e.event.uuid : null)).toEqual(['u1', 'u2'])
+    // The whole file is consumed even though it does not end in a newline.
+    expect(result.nextCursor).toBe(Buffer.byteLength(line1 + '\n' + line2))
+  })
+
+  it('forwards a single complete record with no newline at all', async () => {
+    const filePath = join(testDir, 'single-no-newline.jsonl')
+    const only = JSON.stringify({ type: 'user', uuid: 'u1', message: { content: 'only' } })
+    await writeFile(filePath, only)
+
+    const result = await readSessionLog(filePath, 0)
+    expect(result.events).toHaveLength(1)
+    if (result.events[0].event.type === 'user') {
+      expect(result.events[0].event.uuid).toBe('u1')
+    }
+    expect(result.nextCursor).toBe(Buffer.byteLength(only))
+  })
 })
