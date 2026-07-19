@@ -254,6 +254,8 @@ export const MachineMetadataSchema = z.object({
     platform: z.string(),
     happyCliVersion: z.string(),
     displayName: z.string().optional(),
+    /** process.arch when the runner last registered (x64, arm64, …). */
+    arch: z.string().optional(),
     homeDir: z.string().optional(),
     happyHomeDir: z.string().optional(),
     happyLibDir: z.string().optional(),

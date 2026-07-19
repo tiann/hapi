@@ -80,6 +80,98 @@ describe('SyncEngine fleet upgrade', () => {
         }
     })
 
+    it('refuses hub-artifact upgrade when machine arch is missing', async () => {
+        const offer: HubUpgradeOffer = {
+            channel: 'hub-artifact',
+            targetVersion: '0.24.0',
+            targetCapabilities: ['cursor-chat-store-status'],
+        }
+        const store = new Store(':memory:')
+        const prepareArtifactOffer = mock(async () => offer)
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never,
+            { getUpgradeOffer: () => offer, prepareArtifactOffer },
+        )
+
+        try {
+            engine.getOrCreateMachine(
+                'no-arch',
+                { host: 'teemo', platform: 'win32', happyCliVersion: '0.20.0' },
+                null,
+                'default',
+            )
+            engine.handleMachineAlive({ machineId: 'no-arch', time: Date.now() })
+            const result = await engine.upgradeMachineRunner('no-arch', 'default')
+            expect(result).toEqual({
+                type: 'error',
+                message: 'Machine platform/arch unavailable for hub-artifact upgrade',
+                code: 'upgrade_unavailable',
+            })
+            expect(prepareArtifactOffer).not.toHaveBeenCalled()
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('prepares hub-artifact for the runner platform/arch, not the hub host', async () => {
+        const baseOffer: HubUpgradeOffer = {
+            channel: 'hub-artifact',
+            targetVersion: '0.24.0',
+            targetCapabilities: ['cursor-chat-store-status'],
+        }
+        const prepared: HubUpgradeOffer = {
+            ...baseOffer,
+            artifact: {
+                url: '/cli/upgrade/cli-artifact',
+                sha256: 'abc',
+                platform: 'darwin',
+                arch: 'arm64',
+                sizeBytes: 10,
+            },
+        }
+        const store = new Store(':memory:')
+        const prepareArtifactOffer = mock(async () => prepared)
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never,
+            { getUpgradeOffer: () => baseOffer, prepareArtifactOffer },
+        )
+
+        try {
+            const runnerSelfUpgrade = mock(async () => ({
+                status: 'started',
+                message: 'ok',
+                channel: 'hub-artifact',
+            }))
+            ;(engine as any).rpcGateway.runnerSelfUpgrade = runnerSelfUpgrade
+
+            engine.getOrCreateMachine(
+                'mac',
+                {
+                    host: 'mac',
+                    platform: 'darwin',
+                    arch: 'arm64',
+                    happyCliVersion: '0.20.0',
+                    capabilities: [],
+                },
+                null,
+                'default',
+            )
+            engine.handleMachineAlive({ machineId: 'mac', time: Date.now() })
+            const result = await engine.upgradeMachineRunner('mac', 'default')
+            expect(result.type).toBe('success')
+            expect(prepareArtifactOffer).toHaveBeenCalledWith(baseOffer, 'darwin', 'arm64')
+            expect(runnerSelfUpgrade).toHaveBeenCalledWith('mac', prepared)
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('skips auto fleet upgrade when runner advertised versionHandoffDisabled', async () => {
         const offer: HubUpgradeOffer = {
             channel: 'npm',

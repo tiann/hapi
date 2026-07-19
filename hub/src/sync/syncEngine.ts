@@ -555,11 +555,20 @@ export class SyncEngine {
             if (!this.prepareArtifactOffer) {
                 return { type: 'error', message: 'Artifact builder not configured', code: 'upgrade_unavailable' }
             }
+            const platform = machine.metadata?.platform
+            const arch = machine.metadata?.arch
+            if (!platform || !arch) {
+                return {
+                    type: 'error',
+                    message: 'Machine platform/arch unavailable for hub-artifact upgrade',
+                    code: 'upgrade_unavailable',
+                }
+            }
             try {
                 offer = await this.prepareArtifactOffer(
                     offer,
-                    process.platform,
-                    process.arch,
+                    platform,
+                    arch,
                 )
             } catch (error) {
                 return {
