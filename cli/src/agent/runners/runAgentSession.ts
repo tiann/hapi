@@ -16,8 +16,6 @@ import { PermissionModeSchema } from '@hapi/protocol/schemas';
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import type { SessionEndReason } from '@hapi/protocol';
-import { SKILL_LOOKUP_INSTRUCTION } from '@/modules/common/skillLookupInstruction';
-
 function emitReadyIfIdle(props: {
     queueSize: () => number;
     shouldExit: boolean;
@@ -101,8 +99,6 @@ export async function runAgentSession(opts: {
     let thinking = false;
     let shouldExit = false;
     let waitAbortController: AbortController | null = null;
-    let skillLookupInstructionSent = false;
-
     const syncKeepAlive = () => {
         session.keepAlive(thinking, 'remote', {
             permissionMode: currentPermissionMode
@@ -180,15 +176,11 @@ export async function runAgentSession(opts: {
                 continue;
             }
 
-            let messageText = batch.message;
-            if (!skillLookupInstructionSent && !messageText.trimStart().startsWith('/')) {
-                messageText = `${SKILL_LOOKUP_INSTRUCTION}\n\n${messageText}`;
-                skillLookupInstructionSent = true;
-            }
-
+            // skill_lookup discovery lives on the MCP tool description — do not
+            // prepend instructions onto user turns (prompt-injection false positive).
             const promptContent: PromptContent[] = [{
                 type: 'text',
-                text: messageText
+                text: batch.message
             }];
 
             thinking = true;
