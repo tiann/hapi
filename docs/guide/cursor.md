@@ -48,7 +48,7 @@ Set mode via `--mode` / `--permission-mode` / `--auto-review`, or change from th
 - New Session **Worktree** for Cursor uses Cursor's `--worktree` (`~/.cursor/worktrees/<repo>/<name>`), not HAPI's sibling-directory worktree.
 - Mid-session: send `/worktree`, `/apply-worktree`, `/delete-worktree`, or `/add-dir <path>` (isolated pass-through).
 - CLI: `hapi cursor --cursor-worktree feature-x --cursor-add-dir ../shared`
-- ACP ignores Cursor's plain-text `Using worktree: …` stdout banner so remote `sessionType: worktree` can initialize (fixed in [#1085](https://github.com/tiann/hapi/issues/1085)).
+- ACP ignores Cursor's plain-text `Using worktree: …` stdout banner so remote `sessionType: worktree` can initialize (fixed in [#1085](https://github.com/tiann/hapi/issues/1085)). Other non-JSON ACP stdout remains a fatal protocol error.
 
 ## Slash pass-through (remote)
 

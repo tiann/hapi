@@ -226,10 +226,20 @@ export class AcpStdioTransport {
                 return;
             }
             message = parsed as JsonRpcRequest | JsonRpcResponse | JsonRpcNotification;
-        } catch {
+        } catch (error) {
             // Cursor `--worktree` prints `Using worktree: …` on stdout before ACP
-            // JSON-RPC; treat plain text as noise (same as Gemini non-object JSON).
-            logger.debug('[ACP] Ignoring non-JSON stdout line', { line });
+            // JSON-RPC. Only that known banner is noise; other parse failures stay fatal
+            // so pending requests (incl. session/prompt with infinite timeout) fail fast.
+            if (this.shouldGuardAgentCli && line.startsWith('Using worktree:')) {
+                logger.debug('[ACP] Ignoring Cursor worktree stdout banner', { line });
+                return;
+            }
+
+            const protocolError = new Error('Failed to parse JSON-RPC from ACP agent');
+            logger.debug('[ACP] Failed to parse JSON-RPC line', { line, error });
+            this.markClosed(protocolError);
+            this.process.stdin.end();
+            void killProcessByChildProcess(this.process);
             return;
         }
 

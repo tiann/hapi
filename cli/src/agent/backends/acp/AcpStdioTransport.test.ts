@@ -165,6 +165,20 @@ describe('AcpStdioTransport plain-text stdout', () => {
         expect(killProcessByChildProcess).not.toHaveBeenCalled();
         await transport.close();
     });
+
+    test('treats unknown non-JSON stdout as a fatal protocol error', async () => {
+        const transport = new AcpStdioTransport({ command: 'agent', args: ['acp'] });
+        const pending = transport.sendRequest('initialize');
+
+        emitStdout('not-a-json-rpc-frame\n');
+
+        await expect(pending).rejects.toThrow('Failed to parse JSON-RPC from ACP agent');
+        expect(spawnState.stdinEnd).toHaveBeenCalled();
+        expect(killProcessByChildProcess).toHaveBeenCalled();
+        await expect(transport.sendRequest('session/new')).rejects.toThrow(
+            'Failed to parse JSON-RPC from ACP agent'
+        );
+    });
 });
 
 describe('AcpStdioTransport closed stdin writes', () => {
