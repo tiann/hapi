@@ -1,6 +1,11 @@
 import type { SessionSummary } from '@/types/api'
 import { DEFAULT_SESSION_PREVIEW_LIMIT } from '@/hooks/useSessionPreviewLimit'
-import { normalizeSearch, sessionMatchesQuery } from '@/components/SessionList'
+import {
+    normalizeSearch,
+    sessionMatchesQuery,
+    sessionMatchesTimeRange,
+    type SessionTimeRange,
+} from '@/components/SessionList'
 
 /** Max active sessions shown before the operator must search for more. */
 export const SHARE_PICKER_ACTIVE_LIMIT = DEFAULT_SESSION_PREVIEW_LIMIT
@@ -13,22 +18,29 @@ function sortByUpdatedAtDesc(sessions: SessionSummary[]): SessionSummary[] {
 
 /**
  * Share-target session picker filter.
- * Empty query: recent active sessions (capped). Non-empty: all sessions matching query.
+ * Empty query (and no date range): recent active sessions (capped).
+ * Non-empty query and/or date range: all sessions matching those filters.
  */
 export function filterSharePickerSessions(
     sessions: SessionSummary[],
     query: string,
     resolveMachineLabel: SharePickerMachineLabelResolver,
+    timeRange: SessionTimeRange | null = null,
 ): SessionSummary[] {
     const normalizedQuery = normalizeSearch(query)
     const sorted = sortByUpdatedAtDesc(sessions)
+    const inRange = (session: SessionSummary) => sessionMatchesTimeRange(session, timeRange)
 
-    if (normalizedQuery) {
-        return sorted.filter((session) => sessionMatchesQuery(
-            session,
-            normalizedQuery,
-            resolveMachineLabel(session.metadata?.machineId ?? null),
-        ))
+    if (normalizedQuery || timeRange) {
+        return sorted.filter((session) => {
+            if (!inRange(session)) return false
+            if (!normalizedQuery) return true
+            return sessionMatchesQuery(
+                session,
+                normalizedQuery,
+                resolveMachineLabel(session.metadata?.machineId ?? null),
+            )
+        })
     }
 
     return sorted.filter((session) => session.active).slice(0, SHARE_PICKER_ACTIVE_LIMIT)

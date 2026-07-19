@@ -5,7 +5,7 @@ import { useSessions } from '@/hooks/queries/useSessions'
 import { useMachines } from '@/hooks/queries/useMachines'
 import { useTranslation } from '@/lib/use-translation'
 import { LoadingState } from '@/components/LoadingState'
-import { SessionListSearch } from '@/components/SessionList'
+import { SessionListSearch, getSessionTimeRange } from '@/components/SessionList'
 import {
     countHiddenActiveSharePickerSessions,
     filterSharePickerSessions,
@@ -117,6 +117,12 @@ export default function SharePage() {
     const { sessions, isLoading: sessionsLoading } = useSessions(api)
     const { machines } = useMachines(api, true)
     const [searchQuery, setSearchQuery] = useState('')
+    const [customStart, setCustomStart] = useState('')
+    const [customEnd, setCustomEnd] = useState('')
+    const timeRange = useMemo(
+        () => getSessionTimeRange(customStart, customEnd),
+        [customStart, customEnd],
+    )
 
     const machineLabelsById = useMemo(() => {
         const labels: Record<string, string> = {}
@@ -184,11 +190,16 @@ export default function SharePage() {
         setSessionsSnapshot([...sessions])
     }, [sessionsSnapshot, sessions, sessionsLoading])
 
-    const isSearching = searchQuery.trim().length > 0
+    const isSearching = searchQuery.trim().length > 0 || timeRange !== null
     const pickerSessions = useMemo(() => {
         if (!sessionsSnapshot) return null
-        return filterSharePickerSessions(sessionsSnapshot, searchQuery, resolveMachineLabel)
-    }, [sessionsSnapshot, searchQuery, resolveMachineLabel])
+        return filterSharePickerSessions(
+            sessionsSnapshot,
+            searchQuery,
+            resolveMachineLabel,
+            timeRange,
+        )
+    }, [sessionsSnapshot, searchQuery, resolveMachineLabel, timeRange])
 
     const hiddenActiveCount = useMemo(() => {
         if (!sessionsSnapshot || isSearching) return 0
@@ -282,7 +293,16 @@ export default function SharePage() {
                         <div className="px-1 pb-1 text-xs font-semibold uppercase tracking-wide text-[var(--app-hint)]">
                             {isSearching ? t('share.searchResults') : t('share.recentSessions')}
                         </div>
-                        <SessionListSearch value={searchQuery} onChange={setSearchQuery} />
+                        <SessionListSearch
+                            value={searchQuery}
+                            onChange={setSearchQuery}
+                            customStart={customStart}
+                            customEnd={customEnd}
+                            onDateRangeChange={(start, end) => {
+                                setCustomStart(start)
+                                setCustomEnd(end)
+                            }}
+                        />
                         {pickerSessions === null ? (
                             <LoadingState label={t('share.loading')} className="text-sm py-4" />
                         ) : pickerSessions.length === 0 ? (
