@@ -91,10 +91,10 @@ export async function buildHapiMcpBridge(
     ]);
     const tools: Record<string, McpServerToolConfig> = {
         display_image: {
-            approval_mode: 'approve'
+            approval_mode: 'prompt'
         },
         display_video: {
-            approval_mode: 'approve'
+            approval_mode: 'prompt'
         }
     };
     if (options.enableChangeTitle !== false) {

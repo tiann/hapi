@@ -31,14 +31,6 @@ const AUTO_APPROVE_EXACT_TOOL_NAMES = new Set([
     'hapi_skill_lookup',
     'happy__skill_lookup',
     'mcp__hapi__skill_lookup',
-    'display_image',
-    'display_video',
-    'hapi_display_image',
-    'hapi_display_video',
-    'hapi__display_image',
-    'hapi__display_video',
-    'mcp__hapi__display_image',
-    'mcp__hapi__display_video',
 ]);
 const AUTO_APPROVE_TOOL_ID_HINTS = ['change_title', 'save_memory'];
 const AUTO_APPROVE_WRITE_TOOL_HINTS = ['write', 'edit', 'create', 'delete', 'patch', 'fs-edit'];

@@ -45,12 +45,12 @@ describe('resolveToolAutoApprovalDecision display media', () => {
         'hapi_display_video',
         'mcp__hapi__display_image',
         'mcp__hapi__display_video',
-    ])('auto-approves the exact display media tool name %s', (toolName) => {
+    ])('does not auto-approve display media tool %s in default mode', (toolName) => {
         expect(resolveToolAutoApprovalDecision(
             'default',
             toolName,
             'call-1'
-        )).toBe('approved')
+        )).toBeNull()
     })
 
     it('does not approve substring lookalikes or forged call ids', () => {
