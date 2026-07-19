@@ -59,13 +59,43 @@ export function detectImageMimeType(bytes: Uint8Array): string | null {
     return null
 }
 
+const MP4_FTYP_BRANDS = new Set([
+    'isom',
+    'iso2',
+    'iso3',
+    'iso4',
+    'iso5',
+    'iso6',
+    'mp41',
+    'mp42',
+    'mp71',
+    'avc1',
+    'avc3',
+    'hev1',
+    'hvc1',
+    'mmp4',
+    'dash',
+    'msnv',
+    'ndas',
+    'ndsc',
+    'ndsh',
+    'ndsm',
+    'ndsp',
+    'ndss',
+    'ndxc',
+    'ndxh',
+    'ndxm',
+    'ndxp',
+    'ndxs',
+])
+
 export function detectVideoMimeType(bytes: Uint8Array): string | null {
     if (bytes.length >= 12 && ascii(bytes, 4, 8) === 'ftyp') {
         const brand = ascii(bytes, 8, 12)
-        if (brand === 'avif' || brand === 'avis') {
-            return null
+        if (MP4_FTYP_BRANDS.has(brand)) {
+            return 'video/mp4'
         }
-        return 'video/mp4'
+        return null
     }
 
     if (bytes.length >= 4
