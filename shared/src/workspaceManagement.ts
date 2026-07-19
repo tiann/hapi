@@ -98,6 +98,29 @@ export type HostDownloadChunkResponse = z.infer<typeof HostDownloadChunkResponse
 
 const HostPathListSchema = z.array(z.string().trim().min(1)).min(1).max(200)
 export const HostConflictPolicySchema = z.enum(['fail', 'replace', 'new-copy', 'skip'])
+export const MAX_HOST_FILE_UPLOAD_BYTES = 20 * 1024 * 1024
+const HostUploadFileNameSchema = z.string().trim().min(1).max(255).refine(
+    (value) => value !== '.' && value !== '..' && !/[\\/\0]/.test(value),
+    'Invalid file name'
+)
+
+export const HostFileUploadRequestSchema = z.object({
+    directory: z.string().trim().min(1),
+    name: HostUploadFileNameSchema,
+    contentBase64: z.string().max(Math.ceil((MAX_HOST_FILE_UPLOAD_BYTES * 4) / 3) + 4),
+    conflict: HostConflictPolicySchema.default('new-copy')
+})
+export type HostFileUploadRequest = z.infer<typeof HostFileUploadRequestSchema>
+
+export const HostFileUploadResponseSchema = z.object({
+    success: z.boolean(),
+    path: z.string().optional(),
+    size: z.number().int().nonnegative().optional(),
+    replaced: z.boolean().optional(),
+    skipped: z.boolean().optional(),
+    error: z.string().optional()
+})
+export type HostFileUploadResponse = z.infer<typeof HostFileUploadResponseSchema>
 
 export const FileOperationSchema = z.discriminatedUnion('kind', [
     z.object({

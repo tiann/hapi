@@ -79,6 +79,8 @@ export type {
     GitOperation,
     HostFileEntry,
     HostFilePreviewResponse,
+    HostFileUploadRequest,
+    HostFileUploadResponse,
     HostFileWriteRequest,
     HostFileWriteResponse,
     HostDownloadChunkResponse,

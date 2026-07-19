@@ -34,6 +34,8 @@ import type {
     GitInspectResponse,
     HostListDirectoryResponse,
     HostFilePreviewResponse,
+    HostFileUploadRequest,
+    HostFileUploadResponse,
     HostFileWriteRequest,
     HostFileWriteResponse,
     HostDownloadChunkResponse,
@@ -244,6 +246,10 @@ export class RpcGateway {
 
     async writeHostFile(machineId: string, request: HostFileWriteRequest): Promise<HostFileWriteResponse> {
         return await this.machineRpc(machineId, RPC_METHODS.HostFileWrite, request) as HostFileWriteResponse
+    }
+
+    async uploadHostFile(machineId: string, request: HostFileUploadRequest): Promise<HostFileUploadResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.HostFileUpload, request, 5 * 60_000) as HostFileUploadResponse
     }
 
     async prepareHostDownload(machineId: string, path: string): Promise<HostDownloadPrepareResponse> {

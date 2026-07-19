@@ -21,9 +21,10 @@ The **Files** tab supports:
 - choosing a conflict policy: stop, replace, create a numbered copy, or skip;
 - previewing and editing text files with stale-write protection;
 - previewing supported images;
+- uploading one file at a time to the current directory, up to 20 MiB;
 - downloading individual files and ZIP archives of directories.
 
-Copy and move operations preflight destinations before changing files. Long operations run as cancellable runner jobs and report progress in the web app. Directory archives preserve the selected root directory and empty directories.
+Copy and move operations preflight destinations before changing files. Uploads create a numbered copy when the destination name already exists, so they do not overwrite a host file by default. Long operations run as cancellable runner jobs and report progress in the web app. Directory archives preserve the selected root directory and empty directories.
 
 ## Git controls
 

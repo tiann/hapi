@@ -13,6 +13,7 @@ function renderBrowser() {
     const api = {
         listHostDirectory: vi.fn(async () => ({ success: true, path: '/workspace', entries: [] })),
         inspectHostGit: vi.fn(async () => ({ success: false, error: 'No Git repository found' })),
+        uploadHostFile: vi.fn(async () => ({ success: true, path: '/workspace/notes.txt', size: 5 })),
         startHostOperation: vi.fn(async () => ({
             success: true,
             operation: {
@@ -96,6 +97,24 @@ describe('WorkspaceBrowser host operations', () => {
                 source: 'owner/repository.git',
                 destination: '/workspace/repository'
             }
+        }))
+    })
+
+    it('uploads a selected file to the current workspace directory', async () => {
+        const api = renderBrowser()
+        await waitFor(() => expect(api.listHostDirectory).toHaveBeenCalled())
+        const file = new File([], 'notes.txt', { type: 'text/plain' })
+        Object.defineProperty(file, 'arrayBuffer', { value: async () => new Uint8Array([104, 101, 108, 108, 111]).buffer })
+
+        const input = screen.getAllByLabelText('Upload file').find((element) => element instanceof HTMLInputElement)
+        expect(input).toBeDefined()
+        fireEvent.change(input as HTMLInputElement, { target: { files: [file] } })
+
+        await waitFor(() => expect(api.uploadHostFile).toHaveBeenCalledWith('machine-1', {
+            directory: '/workspace',
+            name: 'notes.txt',
+            contentBase64: 'aGVsbG8=',
+            conflict: 'new-copy'
         }))
     })
 })

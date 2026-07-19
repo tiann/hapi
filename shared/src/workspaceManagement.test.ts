@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { FileOperationSchema, GitOperationSchema } from './workspaceManagement'
+import { FileOperationSchema, GitOperationSchema, HostFileUploadRequestSchema } from './workspaceManagement'
 
 describe('workspace management schemas', () => {
     it('accepts copy conflict policies and Git branch lifecycle operations', () => {
@@ -23,5 +23,24 @@ describe('workspace management schemas', () => {
             remote: 'origin',
             name: 'feature/workspace-controls'
         }).success).toBe(true)
+    })
+
+    it('accepts bounded uploads to one directory and rejects path-like file names', () => {
+        expect(HostFileUploadRequestSchema.safeParse({
+            directory: '/workspace',
+            name: 'notes.txt',
+            contentBase64: 'aGVsbG8=',
+            conflict: 'new-copy'
+        }).success).toBe(true)
+        expect(HostFileUploadRequestSchema.safeParse({
+            directory: '/workspace',
+            name: 'empty.txt',
+            contentBase64: ''
+        }).success).toBe(true)
+        expect(HostFileUploadRequestSchema.safeParse({
+            directory: '/workspace',
+            name: '../outside.txt',
+            contentBase64: 'aGVsbG8='
+        }).success).toBe(false)
     })
 })

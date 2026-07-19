@@ -99,6 +99,41 @@ describe('machines routes', () => {
         ])
     })
 
+    it('forwards a bounded workspace file upload to the selected machine', async () => {
+        const machine = createMachine()
+        const calls: unknown[] = []
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            uploadHostFile: async (_machineId: string, request: unknown) => {
+                calls.push(request)
+                return { success: true, path: '/workspace/notes.txt', size: 5 }
+            }
+        } as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/machines/machine-1/host/files/upload', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                directory: '/workspace',
+                name: 'notes.txt',
+                contentBase64: 'aGVsbG8=',
+                conflict: 'new-copy'
+            })
+        })
+
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([{
+            directory: '/workspace',
+            name: 'notes.txt',
+            contentBase64: 'aGVsbG8=',
+            conflict: 'new-copy'
+        }])
+    })
+
     it('forwards Grok Auto permission mode when spawning', async () => {
         const machine = createMachine()
         let capturedPermissionMode: string | undefined

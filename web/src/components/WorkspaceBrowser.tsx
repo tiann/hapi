@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { ApiClient } from '@/api/client'
 import type {
     GitFileChange,
@@ -21,6 +21,7 @@ import {
 type WorkspaceDialog = 'create-file' | 'create-directory' | 'copy' | 'move' | 'delete' | 'clone' | 'push' | 'set-remote' | 'create-branch' | 'switch-branch' | 'delete-branch' | 'delete-remote-branch'
 type FileConflictPolicy = 'fail' | 'replace' | 'new-copy' | 'skip'
 type CommitKind = 'feat' | 'fix' | 'docs' | 'refactor' | 'test' | 'chore'
+const MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
 function conventionalMessage(kind: CommitKind, scope: string, subject: string, body: string): string {
     const header = `${kind}${scope.trim() ? `(${scope.trim()})` : ''}: ${subject.trim()}`
@@ -35,6 +36,7 @@ function FolderIcon(props: { className?: string }) { return <Icon {...props}><pa
 function FileIcon(props: { className?: string }) { return <Icon {...props}><path d="M6 2h8l4 4v16H6z" /><path d="M14 2v5h5" /></Icon> }
 function GitIcon(props: { className?: string }) { return <Icon {...props}><circle cx="12" cy="18" r="2" /><circle cx="6" cy="6" r="2" /><circle cx="18" cy="6" r="2" /><path d="M6 8v3a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V8M12 13v3" /></Icon> }
 function RefreshIcon(props: { className?: string }) { return <Icon {...props}><path d="M20 6v5h-5" /><path d="M4 18v-5h5" /><path d="M18.5 9a7 7 0 0 0-12-2L4 11M20 13l-2.5 4a7 7 0 0 1-12-2" /></Icon> }
+function UploadIcon(props: { className?: string }) { return <Icon {...props}><path d="M12 3v12" /><path d="m7 8 5-5 5 5" /><path d="M5 14v5h14v-5" /></Icon> }
 
 function getMachineTitle(machine: Machine): string {
     return machine.metadata?.displayName || machine.metadata?.host || machine.id.slice(0, 8)
@@ -106,6 +108,15 @@ function changeUnstaged(change: GitFileChange): boolean {
     return change.worktreeStatus !== '.' || change.indexStatus === '?'
 }
 
+async function fileToBase64(file: File): Promise<string> {
+    const bytes = new Uint8Array(await file.arrayBuffer())
+    let binary = ''
+    for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
+    }
+    return btoa(binary)
+}
+
 export function WorkspaceBrowser(props: {
     api: ApiClient
     machines: Machine[]
@@ -144,6 +155,8 @@ export function WorkspaceBrowser(props: {
     const [previewSaving, setPreviewSaving] = useState(false)
     const [previewLoading, setPreviewLoading] = useState(false)
     const [downloadingPath, setDownloadingPath] = useState<string | null>(null)
+    const [uploadingName, setUploadingName] = useState<string | null>(null)
+    const uploadInputRef = useRef<HTMLInputElement>(null)
 
     useEffect(() => {
         if (props.machines.length === 0) return setMachineId(null)
@@ -268,6 +281,40 @@ export function WorkspaceBrowser(props: {
             setDownloadingPath(null)
         }
     }, [machineId, props.api])
+
+    const uploadFile = useCallback(async (file: File) => {
+        if (!machineId || !currentPath) return
+        if (file.size > MAX_UPLOAD_BYTES) {
+            setError(t('browse.uploadTooLarge'))
+            return
+        }
+        setUploadingName(file.name)
+        setError(null)
+        setNotice(null)
+        try {
+            const result = await props.api.uploadHostFile(machineId, {
+                directory: currentPath,
+                name: file.name,
+                contentBase64: await fileToBase64(file),
+                conflict: 'new-copy'
+            })
+            if (!result.success) throw new Error(result.error ?? 'Failed to upload file')
+            setNotice(t('browse.fileUploaded'))
+            await loadDirectory(currentPath)
+        } catch (uploadError) {
+            setError(uploadError instanceof Error ? uploadError.message : 'Failed to upload file')
+        } finally {
+            setUploadingName(null)
+        }
+    }, [currentPath, loadDirectory, machineId, props.api, t])
+
+    const selectUpload = () => uploadInputRef.current?.click()
+
+    const handleUploadInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.currentTarget.files?.[0]
+        event.currentTarget.value = ''
+        if (file) void uploadFile(file)
+    }
 
     useEffect(() => {
         const nextRoot = roots.includes(selectedRoot ?? '') ? selectedRoot : roots[0] ?? null
@@ -477,6 +524,8 @@ export function WorkspaceBrowser(props: {
                     <div className="flex flex-wrap items-center gap-1 border-b border-[var(--app-divider)] px-2 py-2 text-xs">
                         <button type="button" disabled={operationBusy} onClick={() => openDialog('create-file')} className="rounded-md border border-[var(--app-border)] px-2 py-1.5 disabled:opacity-40">{t('browse.newFile')}</button>
                         <button type="button" disabled={operationBusy} onClick={() => openDialog('create-directory')} className="rounded-md border border-[var(--app-border)] px-2 py-1.5 disabled:opacity-40">{t('browse.newFolder')}</button>
+                        <input ref={uploadInputRef} type="file" className="hidden" aria-label={t('browse.upload')} onChange={handleUploadInputChange} />
+                        <button type="button" aria-label={uploadingName ? t('browse.uploading') : t('browse.upload')} title={uploadingName ? t('browse.uploading') : t('browse.upload')} disabled={!currentPath || operationBusy || uploadingName !== null} onClick={selectUpload} className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-[var(--app-border)] disabled:opacity-40"><UploadIcon className={uploadingName ? 'h-4 w-4 animate-pulse' : 'h-4 w-4'} /></button>
                         <button type="button" onClick={() => openDialog('copy', currentPath ?? '')} disabled={!selected.size || operationBusy} className="rounded-md border border-[var(--app-border)] px-2 py-1.5 disabled:opacity-40">{t('browse.copy')}</button>
                         <button type="button" onClick={() => openDialog('move', currentPath ?? '')} disabled={!selected.size || operationBusy} className="rounded-md border border-[var(--app-border)] px-2 py-1.5 disabled:opacity-40">{t('browse.move')}</button>
                         <button type="button" onClick={() => selectedPaths[0] && void downloadPath(selectedPaths[0])} disabled={selected.size !== 1 || operationBusy || downloadingPath !== null} className="rounded-md border border-[var(--app-border)] px-2 py-1.5 disabled:opacity-40">{t('browse.download')}</button>

@@ -2,6 +2,7 @@ import {
     GitInspectRequestSchema,
     HostListDirectoryRequestSchema,
     HostFilePreviewRequestSchema,
+    HostFileUploadRequestSchema,
     HostFileWriteRequestSchema,
     HostDownloadChunkRequestSchema,
     HostDownloadPrepareRequestSchema,
@@ -120,6 +121,17 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const parsed = HostFileWriteRequestSchema.safeParse(await c.req.json().catch(() => null))
         if (!parsed.success) return c.json({ error: 'Invalid body' }, 400)
         return c.json(await engine.writeHostFile(machineId, parsed.data))
+    })
+
+    app.post('/machines/:id/host/files/upload', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) return c.json({ error: 'Not connected' }, 503)
+        const machineId = c.req.param('id')
+        const machine = requireMachine(c, engine, machineId)
+        if (machine instanceof Response) return machine
+        const parsed = HostFileUploadRequestSchema.safeParse(await c.req.json().catch(() => null))
+        if (!parsed.success) return c.json({ error: 'Invalid body' }, 400)
+        return c.json(await engine.uploadHostFile(machineId, parsed.data))
     })
 
     app.post('/machines/:id/host/downloads', async (c) => {

@@ -13,6 +13,7 @@ export const RPC_METHODS = {
     HostListDirectory: 'host-list-directory',
     HostFilePreview: 'host-file-preview',
     HostFileWrite: 'host-file-write',
+    HostFileUpload: 'host-file-upload',
     HostDownloadPrepare: 'host-download-prepare',
     HostDownloadReadChunk: 'host-download-read-chunk',
     HostDownloadRelease: 'host-download-release',

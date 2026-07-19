@@ -840,6 +840,10 @@ export class SyncEngine {
         return await this.rpcGateway.writeHostFile(machineId, request)
     }
 
+    async uploadHostFile(machineId: string, request: import('@hapi/protocol').HostFileUploadRequest) {
+        return await this.rpcGateway.uploadHostFile(machineId, request)
+    }
+
     async prepareHostDownload(machineId: string, path: string) {
         return await this.rpcGateway.prepareHostDownload(machineId, path)
     }

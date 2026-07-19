@@ -2,6 +2,7 @@ import {
     GitInspectRequestSchema,
     HostListDirectoryRequestSchema,
     HostFilePreviewRequestSchema,
+    HostFileUploadRequestSchema,
     HostFileWriteRequestSchema,
     HostDownloadChunkRequestSchema,
     HostDownloadPrepareRequestSchema,
@@ -10,6 +11,7 @@ import {
     type HostOperationGetResponse,
     type HostOperationStartResponse,
     type HostFilePreviewResponse,
+    type HostFileUploadResponse,
     type HostFileWriteResponse,
     type HostDownloadChunkResponse,
     type HostDownloadPrepareResponse
@@ -70,6 +72,17 @@ export function registerWorkspaceHandlers(options: {
         try {
             const modules = await getWorkspaceModules()
             return await modules.files.writeText(parsed.data)
+        } catch (error) {
+            return { success: false, error: errorMessage(error) }
+        }
+    })
+
+    rpcHandlerManager.registerHandler<unknown, HostFileUploadResponse>(RPC_METHODS.HostFileUpload, async (raw) => {
+        const parsed = HostFileUploadRequestSchema.safeParse(raw)
+        if (!parsed.success) return { success: false, error: 'Invalid file upload request' }
+        try {
+            const modules = await getWorkspaceModules()
+            return await modules.files.upload(parsed.data)
         } catch (error) {
             return { success: false, error: errorMessage(error) }
         }

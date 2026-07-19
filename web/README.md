@@ -73,7 +73,7 @@ See `src/router.tsx` for route definitions.
 ### Host workspace (`src/components/WorkspaceBrowser.tsx`)
 
 - Machine/workspace-root scoped file listing, including optional hidden files.
-- Create, copy, move, and permanently delete files and folders.
+- Create, upload, copy, move, and permanently delete files and folders.
 - Clone, stage, unstage, commit, push, and change Git remotes.
 - Long operations expose progress and cancellation.
 

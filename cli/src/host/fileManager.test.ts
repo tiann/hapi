@@ -43,6 +43,42 @@ describe('FileManager', () => {
         await expect(stat(moveDir)).rejects.toMatchObject({ code: 'ENOENT' })
     })
 
+    it('uploads binary files into the selected workspace directory without overwriting by default', async () => {
+        const { root, manager } = await createManager()
+        const bytes = Buffer.from([0, 255, 1, 2])
+
+        const uploaded = await manager.upload({
+            directory: root,
+            name: 'archive.bin',
+            contentBase64: bytes.toString('base64'),
+            conflict: 'fail'
+        })
+        expect(uploaded).toMatchObject({ success: true, path: join(root, 'archive.bin'), size: 4 })
+        expect(await readFile(join(root, 'archive.bin'))).toEqual(bytes)
+
+        const duplicate = await manager.upload({
+            directory: root,
+            name: 'archive.bin',
+            contentBase64: bytes.toString('base64'),
+            conflict: 'new-copy'
+        })
+        expect(duplicate.path).toBe(join(root, 'archive (copy).bin'))
+        const empty = await manager.upload({
+            directory: root,
+            name: 'empty.txt',
+            contentBase64: '',
+            conflict: 'fail'
+        })
+        expect(empty).toMatchObject({ success: true, size: 0 })
+        expect((await stat(join(root, 'empty.txt'))).size).toBe(0)
+        await expect(manager.upload({
+            directory: root,
+            name: '../outside.bin',
+            contentBase64: bytes.toString('base64'),
+            conflict: 'fail'
+        })).rejects.toThrow(/outside configured workspace roots/)
+    })
+
     it('fails on conflicts and protects .git', async () => {
         const { root, manager } = await createManager()
         await mkdir(join(root, 'a'))

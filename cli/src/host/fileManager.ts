@@ -1,10 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import { cp, lstat, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, relative } from 'node:path'
+import { MAX_HOST_FILE_UPLOAD_BYTES } from '@hapi/protocol'
 import type {
     FileOperation,
     HostFileEntry,
     HostFilePreviewResponse,
+    HostFileUploadRequest,
+    HostFileUploadResponse,
     HostFileWriteRequest,
     HostListDirectoryResponse
 } from '@hapi/protocol'
@@ -65,6 +68,17 @@ async function nextCopyPath(directory: string, name: string): Promise<string> {
         if (!(await pathExists(candidate))) return candidate
     }
     throw new Error(`Unable to create a unique copy of ${name}`)
+}
+
+function decodeUploadBase64(value: string): Buffer {
+    if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
+        throw new Error('Upload content is not valid base64')
+    }
+    const bytes = Buffer.from(value, 'base64')
+    if (bytes.length > MAX_HOST_FILE_UPLOAD_BYTES) {
+        throw new Error('File too large (max 20 MiB)')
+    }
+    return bytes
 }
 
 export class FileManager {
@@ -155,6 +169,48 @@ export class FileManager {
         await writeFile(tempPath, request.content, { encoding: 'utf8', mode: info.mode & 0o777 })
         await rename(tempPath, path)
         return await this.readPreview(path)
+    }
+
+    async upload(request: HostFileUploadRequest): Promise<HostFileUploadResponse> {
+        const directory = await this.scope.resolveReadable(request.directory)
+        const directoryInfo = await stat(directory)
+        if (!directoryInfo.isDirectory()) throw new Error('Upload destination is not a directory')
+        const bytes = decodeUploadBase64(request.contentBase64)
+        let target = await this.scope.resolveDestination(join(directory, request.name))
+        let replaced = false
+
+        if (await pathExists(target)) {
+            if (request.conflict === 'skip') {
+                return { success: true, path: target, skipped: true }
+            }
+            if (request.conflict === 'fail') {
+                throw new Error('Destination already exists: ' + target)
+            }
+            if (request.conflict === 'new-copy') {
+                target = await this.scope.resolveDestination(await nextCopyPath(directory, request.name))
+            } else {
+                const existing = await this.scope.resolveMutableExisting(target)
+                if (!(await lstat(existing)).isFile()) {
+                    throw new Error('Upload cannot replace a directory')
+                }
+                replaced = true
+            }
+        }
+
+        if (!replaced) {
+            const handle = await open(target, 'wx', 0o600)
+            try {
+                await handle.writeFile(bytes)
+            } finally {
+                await handle.close()
+            }
+        } else {
+            const tempPath = join(dirname(target), '.' + basename(target) + '.' + randomUUID() + '.upload')
+            await writeFile(tempPath, bytes, { mode: 0o600 })
+            await rename(tempPath, target)
+        }
+
+        return { success: true, path: target, size: bytes.length, replaced: replaced || undefined }
     }
 
     async lockKeys(operation: FileOperation): Promise<string[]> {
