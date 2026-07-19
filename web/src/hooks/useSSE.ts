@@ -513,6 +513,7 @@ export function useSSE(options: {
                     ?? metadata.claudeSessionId
                     ?? metadata.geminiSessionId
                     ?? metadata.opencodeSessionId
+                    ?? metadata.grokSessionId
                     ?? metadata.cursorSessionId
                     ?? metadata.kimiSessionId
                     ?? undefined,
