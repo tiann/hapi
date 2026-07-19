@@ -48,6 +48,14 @@ function parseCursorWireContextWindow(model: string): number | null {
 }
 
 export function getContextBudgetTokens(model: string | null | undefined, flavor?: string | null): number | null {
+    const trimmedModel = model?.trim()
+    // Managed-provider 1M variants are stored as `<raw-model>[1M]`. Check
+    // this before flavor defaults so Codex and Grok provider sessions retain
+    // the explicit capacity the operator selected.
+    if (/\[1m\]$/i.test(trimmedModel ?? '')) {
+        return Math.max(1, LARGE_CLAUDE_CONTEXT_WINDOW_TOKENS - CONTEXT_HEADROOM_TOKENS)
+    }
+
     if (flavor === 'codex') {
         return Math.max(1, DEFAULT_CODEX_CONTEXT_WINDOW_TOKENS - CONTEXT_HEADROOM_TOKENS)
     }
@@ -57,7 +65,6 @@ export function getContextBudgetTokens(model: string | null | undefined, flavor?
     }
 
     if (flavor === 'cursor') {
-        const trimmedModel = model?.trim()
         const windowTokens = trimmedModel ? parseCursorWireContextWindow(trimmedModel) : null
         if (!windowTokens) {
             return null
@@ -69,7 +76,6 @@ export function getContextBudgetTokens(model: string | null | undefined, flavor?
         return null
     }
 
-    const trimmedModel = model?.trim()
     const windowTokens = (() => {
         if (!trimmedModel) {
             return DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS

@@ -29,6 +29,7 @@ import { stripNewlinesForWindowsShellArg } from '@/utils/shellEscape'
 import type { Writable } from 'node:stream'
 import { logger } from '@/ui/logger'
 import { appendMcpConfigArg } from '../utils/mcpConfig'
+import { resolveManagedProviderWireModel } from '@/host/providerModel'
 
 const DEFAULT_PROMPT_FAILURE_CLEANUP_TIMEOUT_MS = 3_000
 
@@ -331,7 +332,8 @@ export function query(config: {
     if (customSystemPrompt) args.push('--system-prompt', stripNewlinesForWindowsShellArg(customSystemPrompt))
     if (appendSystemPrompt) args.push('--append-system-prompt', stripNewlinesForWindowsShellArg(appendSystemPrompt))
     if (maxTurns) args.push('--max-turns', maxTurns.toString())
-    if (model) args.push('--model', model)
+    const wireModel = resolveManagedProviderWireModel(model)
+    if (wireModel) args.push('--model', wireModel)
     if (effort) args.push('--effort', effort)
     if (canCallTool) {
         if (typeof prompt === 'string') {

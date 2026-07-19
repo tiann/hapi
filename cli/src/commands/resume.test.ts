@@ -12,6 +12,7 @@ const {
     runClaudeMock,
     runGrokMock,
     runPiMock,
+    applyProviderSelectionMock,
     assertCodexLocalSupportedMock,
     existsSyncMock
 } = vi.hoisted(() => ({
@@ -26,6 +27,7 @@ const {
     runClaudeMock: vi.fn(async () => {}),
     runGrokMock: vi.fn(async () => {}),
     runPiMock: vi.fn(async () => {}),
+    applyProviderSelectionMock: vi.fn(async () => null),
     assertCodexLocalSupportedMock: vi.fn(),
     existsSyncMock: vi.fn(() => true)
 }))
@@ -50,6 +52,7 @@ vi.mock('@/codex/runCodex', () => ({ runCodex: runCodexMock }))
 vi.mock('@/claude/runClaude', () => ({ runClaude: runClaudeMock }))
 vi.mock('@/grok/runGrok', () => ({ runGrok: runGrokMock }))
 vi.mock('@/pi/runPi', () => ({ runPi: runPiMock }))
+vi.mock('@/host/applyProviderSelection', () => ({ applyProviderSelection: applyProviderSelectionMock }))
 vi.mock('@/codex/utils/codexVersion', () => ({ assertCodexLocalSupported: assertCodexLocalSupportedMock }))
 vi.mock('node:fs', () => ({ existsSync: existsSyncMock }))
 
@@ -80,6 +83,8 @@ describe('resumeCommand', () => {
         runClaudeMock.mockClear()
         runGrokMock.mockClear()
         runPiMock.mockClear()
+        applyProviderSelectionMock.mockReset()
+        applyProviderSelectionMock.mockResolvedValue(null)
         assertCodexLocalSupportedMock.mockClear()
         existsSyncMock.mockReturnValue(true)
     })
@@ -94,6 +99,7 @@ describe('resumeCommand', () => {
             thinking: false,
             controlledByUser: false,
             agentSessionId: 'codex-thread-1',
+            providerProfileId: '11111111-1111-4111-8111-111111111111',
             model: 'gpt-5.4',
             modelReasoningEffort: 'xhigh',
             permissionMode: 'default',
@@ -104,6 +110,7 @@ describe('resumeCommand', () => {
 
         expect(handoffSessionToLocalMock).toHaveBeenCalledWith('hapi-session-1')
         expect(assertCodexLocalSupportedMock).toHaveBeenCalledOnce()
+        expect(applyProviderSelectionMock).toHaveBeenCalledWith('codex', '11111111-1111-4111-8111-111111111111')
         expect(runCodexMock).toHaveBeenCalledWith({
             existingSessionId: 'hapi-session-1',
             workingDirectory: '/tmp/project',

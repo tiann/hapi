@@ -19,6 +19,7 @@ import { maybeAutoStartServer } from '@/utils/autoStartServer'
 import { assertCodexLocalSupported } from '@/codex/utils/codexVersion'
 import { ResumeSessionPicker } from '@/ui/ink/ResumeSessionPicker'
 import type { CommandDefinition } from './types'
+import { applyProviderSelection } from '@/host/applyProviderSelection'
 
 function formatSessionLine(session: ResumableSession, index: number): string {
     const name = session.name ?? session.summary ?? session.sessionId
@@ -72,6 +73,10 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
         permissionMode: target.permissionMode
     }
 
+    const providerLaunch = target.flavor === 'claude' || target.flavor === 'codex' || target.flavor === 'grok'
+        ? await applyProviderSelection(target.flavor, target.providerProfileId)
+        : null
+
     if (target.flavor === 'claude') {
         const { runClaude } = await import('@/claude/runClaude')
         await runClaude({
@@ -81,7 +86,7 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
             startedBy: base.startedBy,
             permissionMode: base.permissionMode as ClaudePermissionMode | undefined,
             startingMode: 'local',
-            model: target.model ?? undefined,
+            model: target.model ?? providerLaunch?.defaultModel,
             effort: target.effort ?? undefined
         })
         return
@@ -96,7 +101,7 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
             resumeSessionId: base.resumeSessionId,
             startedBy: base.startedBy,
             permissionMode: base.permissionMode as CodexPermissionMode | undefined,
-            model: target.model ?? undefined,
+            model: target.model ?? providerLaunch?.defaultModel,
             modelReasoningEffort: (target.modelReasoningEffort ?? undefined) as ReasoningEffort | undefined,
             collaborationMode: target.collaborationMode
         })
@@ -130,7 +135,7 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
             startedBy: base.startedBy,
             permissionMode: base.permissionMode as GrokPermissionMode | undefined,
             startingMode: 'local',
-            model: target.model ?? undefined,
+            model: target.model ?? providerLaunch?.defaultModel,
             effort: target.effort ?? undefined
         })
         return

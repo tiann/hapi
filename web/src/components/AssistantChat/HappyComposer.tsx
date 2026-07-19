@@ -1009,38 +1009,42 @@ export function HappyComposer(props: {
                                         </div>
                                     ))
                                 ) : (
-                                    modelOptions.map((option) => {
+                                    modelOptions.map((option, index) => {
                                         const isSelected = selectedModelBase !== undefined
                                             ? selectedModelBase === option.value
                                             : model === option.value
                                         return (
-                                        <button
-                                            key={option.value ?? 'auto'}
-                                            type="button"
-                                            disabled={controlsDisabled}
-                                            className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
-                                                controlsDisabled
-                                                    ? 'cursor-not-allowed opacity-50'
-                                                    : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
-                                            }`}
-                                            onClick={() => handleModelChange(option.value)}
-                                            onMouseDown={(e) => e.preventDefault()}
-                                        >
-                                            <div
-                                                className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
-                                                    isSelected
-                                                        ? 'border-[var(--app-link)]'
-                                                        : 'border-[var(--app-hint)]'
-                                                }`}
-                                            >
-                                                {isSelected && (
-                                                    <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
-                                                )}
+                                            <div key={option.value ?? 'auto'}>
+                                                {option.group && option.group !== modelOptions[index - 1]?.group ? (
+                                                    <div className="px-3 pt-2 pb-0.5 text-xs font-medium text-[var(--app-hint)]">{option.group}</div>
+                                                ) : null}
+                                                <button
+                                                    type="button"
+                                                    disabled={controlsDisabled}
+                                                    className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                                                        controlsDisabled
+                                                            ? 'cursor-not-allowed opacity-50'
+                                                            : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
+                                                    }`}
+                                                    onClick={() => handleModelChange(option.value)}
+                                                    onMouseDown={(e) => e.preventDefault()}
+                                                >
+                                                    <div
+                                                        className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
+                                                            isSelected
+                                                                ? 'border-[var(--app-link)]'
+                                                                : 'border-[var(--app-hint)]'
+                                                        }`}
+                                                    >
+                                                        {isSelected && (
+                                                            <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
+                                                        )}
+                                                    </div>
+                                                    <span className={isSelected ? 'text-[var(--app-link)]' : ''}>
+                                                        {option.label}
+                                                    </span>
+                                                </button>
                                             </div>
-                                            <span className={isSelected ? 'text-[var(--app-link)]' : ''}>
-                                                {option.label}
-                                            </span>
-                                        </button>
                                         )
                                     })
                                 )}
