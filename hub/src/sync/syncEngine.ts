@@ -473,6 +473,11 @@ export class SyncEngine {
         if (!machine?.active || !machine.metadata) {
             return
         }
+        // Honor runner opt-out: operators with HAPI_DISABLE_VERSION_HANDOFF=1
+        // must not get hub-initiated upgrade/stop churn (mtime handoff sibling).
+        if (machine.metadata.versionHandoffDisabled === true) {
+            return
+        }
         if (!isMachineCapabilitySkewed(machine.metadata.capabilities)) {
             return
         }

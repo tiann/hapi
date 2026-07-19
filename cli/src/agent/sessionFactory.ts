@@ -57,6 +57,7 @@ export function buildMachineMetadata(options?: {
         happyLibDir: runtimePath(),
         workspaceRoots: options?.workspaceRoots,
         capabilities: [...CURRENT_MACHINE_CAPABILITIES],
+        versionHandoffDisabled: process.env.HAPI_DISABLE_VERSION_HANDOFF === '1',
         ...(typeof startedCliMtimeMs === 'number' ? { startedCliMtimeMs } : {}),
         ...(typeof installedCliMtimeMs === 'number' ? { installedCliMtimeMs } : {}),
     }

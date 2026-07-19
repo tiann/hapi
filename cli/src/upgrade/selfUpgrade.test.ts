@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test'
+import { describe, expect, it } from 'vitest'
 import { shouldApplyUpgradeOffer } from './selfUpgrade'
 import type { HubUpgradeOffer } from '@hapi/protocol/upgradeChannel'
 

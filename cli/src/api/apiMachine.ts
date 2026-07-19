@@ -645,18 +645,40 @@ export class ApiMachineClient {
                 health: collectMachineHealth()
             })
             const installedCliMtimeMs = getInstalledCliMtimeMs()
-            if (
-                typeof installedCliMtimeMs === 'number'
-                && this.machine.metadata
-                && this.machine.metadata.installedCliMtimeMs !== installedCliMtimeMs
-            ) {
-                void this.updateMachineMetadata((current) => ({
-                    ...(current ?? this.machine.metadata!),
-                    installedCliMtimeMs,
-                })).catch((error) => {
-                    logger.debug('[API MACHINE] Failed to refresh installedCliMtimeMs', error)
-                })
+            if (!this.machine.metadata) {
+                return
             }
+            // Keepalive must refresh capabilities/version too — `/cli/machines`
+            // historically returned stale rows for existing machines, and a
+            // long-lived socket may never reconnect after a binary upgrade.
+            const identity = buildMachineMetadata({
+                workspaceRoots: this.workspaceRoots?.length ? this.workspaceRoots : undefined,
+                startedCliMtimeMs: this.machine.metadata.startedCliMtimeMs,
+            })
+            const needsIdentity = machineRegistrationNeedsRefresh(this.machine.metadata, identity)
+            const needsInstalledMtime = typeof installedCliMtimeMs === 'number'
+                && this.machine.metadata.installedCliMtimeMs !== installedCliMtimeMs
+            if (!needsIdentity && !needsInstalledMtime) {
+                return
+            }
+            void this.updateMachineMetadata((current) => {
+                const base: MachineMetadata = {
+                    ...identity,
+                    displayName: current?.displayName,
+                    startedCliMtimeMs: current?.startedCliMtimeMs ?? identity.startedCliMtimeMs,
+                    ...(typeof installedCliMtimeMs === 'number' ? { installedCliMtimeMs } : {}),
+                }
+                if (this.workspaceRoots?.length) {
+                    return { ...base, workspaceRoots: this.workspaceRoots }
+                }
+                // Keepalive must not clear workspace roots; connect owns that sync.
+                if (current?.workspaceRoots?.length) {
+                    return { ...base, workspaceRoots: current.workspaceRoots }
+                }
+                return base
+            }).catch((error) => {
+                logger.debug('[API MACHINE] Failed to refresh machine identity on keepalive', error)
+            })
         }
         // Prime CPU sampling so the first heartbeat already includes CPU %.
         collectMachineHealth()
