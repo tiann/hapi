@@ -343,8 +343,17 @@ export function useHubScratchlist(
             return { previousData, optimisticEntryId: optimistic.entryId }
         },
         onError: (_error, _variables, context) => {
+            // When previousData is missing (initial fetch cancelled before
+            // populate), still drop the optimistic ghost so a rejected POST
+            // cannot leave an unsaved note in the UI.
             if (context?.previousData !== undefined) {
                 queryClient.setQueryData(queryKey, context.previousData)
+                return
+            }
+            if (context?.optimisticEntryId) {
+                queryClient.setQueryData<ScratchlistResponse>(queryKey, (prev) => ({
+                    entries: (prev?.entries ?? []).filter((e) => e.entryId !== context.optimisticEntryId)
+                }))
             }
         },
         onSuccess: (data, _variables, context) => {
