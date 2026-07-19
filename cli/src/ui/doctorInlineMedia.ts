@@ -242,5 +242,5 @@ export async function runDoctorInlineMedia(): Promise<number> {
     } else {
         console.log(chalk.red('\n✗ Inline media checks failed — fix items marked ✗ above.\n'))
     }
-    return withBridge.length > 0 ? 0 : 1
+    return 1
 }
