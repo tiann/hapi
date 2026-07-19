@@ -89,6 +89,23 @@ describe('generatedImages', () => {
         clearGeneratedImages()
     })
 
+    it('ignores URI-only ACP image blocks that would read local disk without a permission prompt', async () => {
+        const dir = join(tmpdir(), `hapi-acp-uri-only-${Date.now()}`)
+        mkdirSync(dir, { recursive: true })
+        const path = join(dir, 'secret.png')
+        writeFileSync(path, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]))
+
+        await expect(registerGeneratedImageFromAcpBlock({
+            type: 'image',
+            uri: `file://${path}`
+        })).resolves.toBeNull()
+
+        await expect(registerGeneratedImageFromAcpBlock({
+            type: 'image',
+            url: path
+        })).resolves.toBeNull()
+    })
+
     it('registers images from local file paths in ACP uri blocks', async () => {
         const dir = join(tmpdir(), `hapi-acp-image-${Date.now()}`)
         mkdirSync(dir, { recursive: true })

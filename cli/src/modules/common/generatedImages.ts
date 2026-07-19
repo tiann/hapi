@@ -213,16 +213,7 @@ export async function registerGeneratedImageFromAcpBlock(block: unknown): Promis
         })
     }
 
-    if (uri) {
-        const path = parseAcpImageUri(uri)
-        if (!path) {
-            return null
-        }
-        return registerGeneratedImageFromPath({
-            path,
-            fileName: basename(path)
-        })
-    }
-
+    // URI-only ACP image blocks are not permission-gated. Local-path display must
+    // go through display_image / display_video MCP tools (approval_mode: prompt).
     return null
 }
