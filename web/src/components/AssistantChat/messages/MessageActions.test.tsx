@@ -58,7 +58,7 @@ describe('MessageActions', () => {
         expect(screen.getByRole('button', { name: 'Message details' })).toBeTruthy()
         expect(screen.getByText('Duration: 1.3s')).toBeTruthy()
         expect(screen.getByText('Model: gpt-5.2-codex')).toBeTruthy()
-        expect(screen.getByText('Usage: 125 billable tokens (100 in / 25 out)')).toBeTruthy()
+        expect(screen.getByText('Tokens: 125 total (100 in / 25 out)')).toBeTruthy()
         expect(screen.queryByText(/^Invoke:/)).toBeNull()
     })
 

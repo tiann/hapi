@@ -6,10 +6,12 @@ import {
     clearMessageWindow,
     fetchLatestMessages,
     fetchOlderMessages,
+    getQueuedReconcileCandidateLocalIds,
     getMessageWindowState,
     ingestIncomingMessages,
     markMessagesConsumed,
     reconcileQueuedAgainstLatest,
+    reconcileQueuedLocalIds,
     removeOptimisticMessage,
     setAtBottom,
     VISIBLE_WINDOW_SIZE,
@@ -213,6 +215,39 @@ describe('message-window-store async generations', () => {
     afterEach(() => {
         clearMessageWindow(SESSION_ID)
         sessionStorage.clear()
+    })
+
+    it('waits for an in-flight latest refresh instead of resolving early', async () => {
+        const request = deferred<Awaited<ReturnType<ApiClient['getMessages']>>>()
+        const api = {
+            getMessages: vi.fn(() => request.promise)
+        } as Pick<ApiClient, 'getMessages'> & {
+            getMessages: ReturnType<typeof vi.fn>
+        }
+
+        const firstLoad = fetchLatestMessages(api as unknown as ApiClient, SESSION_ID)
+        let secondResolved = false
+        const secondLoad = fetchLatestMessages(api as unknown as ApiClient, SESSION_ID)
+            .then(() => {
+                secondResolved = true
+            })
+        await Promise.resolve()
+
+        expect(api.getMessages).toHaveBeenCalledTimes(1)
+        expect(secondResolved).toBe(false)
+
+        request.resolve({
+            messages: [],
+            page: {
+                limit: 50,
+                nextBeforeSeq: null,
+                nextBeforeAt: null,
+                hasMore: false
+            }
+        })
+        await Promise.all([firstLoad, secondLoad])
+
+        expect(secondResolved).toBe(true)
     })
 
     it('does not let a stale failed retry overwrite a newer reset-and-reload state', async () => {
@@ -449,6 +484,107 @@ describe('message-window-store status updates', () => {
 
         const message = getMessageWindowState(SESSION_ID).messages.find((entry) => entry.id === 'server-queued')
         expect(message?.status).toBe('sent')
+    })
+})
+
+describe('queued-state reconciliation', () => {
+    const CANDIDATE_SESSION_ID = 'session-queued-state-candidates-test'
+    const PERSISTED_SENDING_SESSION_ID = 'session-queued-state-persisted-sending-test'
+    const RECONCILE_SESSION_ID = 'session-queued-state-reconcile-test'
+
+    function makeQueuedUserMessage(props: Parameters<typeof makeUserMessage>[0]): DecryptedMessage {
+        return {
+            ...makeUserMessage(props),
+            invokedAt: null,
+        }
+    }
+
+    function hydrate(sessionId: string, messages: DecryptedMessage[], pending: DecryptedMessage[] = []): void {
+        sessionStorage.setItem(`hapi:message-window:v1:${sessionId}`, JSON.stringify({
+            messages,
+            pending,
+            atBottom: true,
+        }))
+    }
+
+    afterEach(() => {
+        clearMessageWindow(CANDIDATE_SESSION_ID)
+        clearMessageWindow(PERSISTED_SENDING_SESSION_ID)
+        clearMessageWindow(RECONCILE_SESSION_ID)
+    })
+
+    it('deduplicates queued candidates and excludes unsafe optimistic rows', () => {
+        hydrate(CANDIDATE_SESSION_ID, [
+            makeQueuedUserMessage({ id: 'server-echo', localId: 'local-server' }),
+            makeQueuedUserMessage({ id: 'local-queued', localId: 'local-queued', status: 'queued' }),
+            makeQueuedUserMessage({ id: 'local-sent', localId: 'local-sent', status: 'sent' }),
+            makeQueuedUserMessage({ id: 'local-sending', localId: 'local-sending', status: 'queued' }),
+            makeQueuedUserMessage({ id: 'local-failed', localId: 'local-failed', status: 'failed' }),
+            {
+                ...makeQueuedUserMessage({ id: 'local-invoked', localId: 'local-invoked', status: 'sent' }),
+                invokedAt: 1_700_000_000_000,
+            },
+        ], [
+            makeQueuedUserMessage({ id: 'server-echo-duplicate', localId: 'local-server' }),
+        ])
+        updateMessageStatus(CANDIDATE_SESSION_ID, 'local-sending', 'sending')
+
+        expect(getQueuedReconcileCandidateLocalIds(CANDIDATE_SESSION_ID)).toEqual([
+            'local-server',
+            'local-queued',
+            'local-sent',
+        ])
+    })
+
+    it('treats persisted sending rows as queued candidates after reload', () => {
+        hydrate(PERSISTED_SENDING_SESSION_ID, [
+            makeQueuedUserMessage({ id: 'local-sending', localId: 'local-sending', status: 'sending' }),
+        ])
+
+        expect(getQueuedReconcileCandidateLocalIds(PERSISTED_SENDING_SESSION_ID)).toEqual(['local-sending'])
+    })
+
+    it('removes only snapshotted rows that are no longer authoritatively queued', () => {
+        hydrate(RECONCILE_SESSION_ID, [
+            makeQueuedUserMessage({ id: 'stale-message', localId: 'local-stale-message' }),
+            makeQueuedUserMessage({ id: 'queued-message', localId: 'local-queued-message' }),
+            makeQueuedUserMessage({ id: 'new-message', localId: 'local-new-message' }),
+            makeQueuedUserMessage({ id: 'local-retry', localId: 'local-retry', status: 'sending' }),
+            {
+                ...makeQueuedUserMessage({ id: 'invoked-message', localId: 'local-invoked-message' }),
+                invokedAt: 1_700_000_000_000,
+            },
+        ], [
+            makeQueuedUserMessage({ id: 'stale-pending', localId: 'local-stale-pending' }),
+            makeQueuedUserMessage({ id: 'queued-pending', localId: 'local-queued-pending' }),
+            makeQueuedUserMessage({ id: 'new-pending', localId: 'local-new-pending' }),
+        ])
+        updateMessageStatus(RECONCILE_SESSION_ID, 'local-retry', 'sending')
+
+        reconcileQueuedLocalIds(
+            RECONCILE_SESSION_ID,
+            [
+                'local-stale-message',
+                'local-queued-message',
+                'local-retry',
+                'local-invoked-message',
+                'local-stale-pending',
+                'local-queued-pending',
+            ],
+            ['local-queued-message', 'local-queued-pending'],
+        )
+
+        const state = getMessageWindowState(RECONCILE_SESSION_ID)
+        expect(state.messages.map((message) => message.id)).toEqual([
+            'queued-message',
+            'new-message',
+            'local-retry',
+            'invoked-message',
+        ])
+        expect(state.pending.map((message) => message.id)).toEqual([
+            'queued-pending',
+            'new-pending',
+        ])
     })
 })
 

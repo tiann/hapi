@@ -20,6 +20,14 @@ import { encodeBase64 } from '@/lib/utils'
 import { queryKeys } from '@/lib/query-keys'
 import { useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from '@/lib/use-translation'
+import * as Popover from '@radix-ui/react-popover'
+import { CheckIcon } from '@/components/icons'
+import {
+    DEFAULT_DIRECTORY_SORT,
+    type DirectorySort,
+    type DirectorySortDirection,
+    type DirectorySortField,
+} from '@/lib/directory-sort'
 
 function RefreshIcon(props: { className?: string }) {
     return (
@@ -38,6 +46,72 @@ function RefreshIcon(props: { className?: string }) {
             <path d="M21 12a9 9 0 1 1-3-6.7" />
             <polyline points="21 3 21 9 15 9" />
         </svg>
+    )
+}
+
+function SortIcon() {
+    return (
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 6h13" /><path d="M3 12h9" /><path d="M3 18h5" />
+            <path d="m17 15 3 3 3-3" /><path d="M20 18V6" />
+        </svg>
+    )
+}
+
+const DIRECTORY_SORT_STORAGE_KEY = 'hapi-directory-sort'
+
+function readDirectorySort(): DirectorySort {
+    try {
+        const value = JSON.parse(localStorage.getItem(DIRECTORY_SORT_STORAGE_KEY) ?? '') as Partial<DirectorySort>
+        if (['name', 'modified', 'size'].includes(value.field ?? '') && ['asc', 'desc'].includes(value.direction ?? '')) {
+            return value as DirectorySort
+        }
+    } catch {
+        // Use the default when storage is unavailable or invalid.
+    }
+    return DEFAULT_DIRECTORY_SORT
+}
+
+function DirectorySortMenu(props: { sort: DirectorySort; onChange: (sort: DirectorySort) => void }) {
+    const { t } = useTranslation()
+    const fields: Array<{ value: DirectorySortField; label: string }> = [
+        { value: 'name', label: t('files.sort.name') },
+        { value: 'modified', label: t('files.sort.modified') },
+        { value: 'size', label: t('files.sort.size') },
+    ]
+    const directions: Array<{ value: DirectorySortDirection; label: string }> = props.sort.field === 'name'
+        ? [{ value: 'asc', label: t('files.sort.nameAsc') }, { value: 'desc', label: t('files.sort.nameDesc') }]
+        : props.sort.field === 'modified'
+            ? [{ value: 'asc', label: t('files.sort.oldest') }, { value: 'desc', label: t('files.sort.newest') }]
+            : [{ value: 'asc', label: t('files.sort.smallest') }, { value: 'desc', label: t('files.sort.largest') }]
+    const optionClass = 'flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-[var(--app-subtle-bg)]'
+
+    return (
+        <Popover.Root>
+            <Popover.Trigger asChild>
+                <button type="button" className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]" title={t('files.sort.title')} aria-label={t('files.sort.title')}>
+                    <SortIcon />
+                </button>
+            </Popover.Trigger>
+            <Popover.Portal>
+                <Popover.Content side="bottom" align="end" sideOffset={6} collisionPadding={8} className="z-50 w-48 rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] p-2 shadow-lg">
+                    <div className="px-2 pb-1 text-xs font-semibold text-[var(--app-hint)]">{t('files.sort.by')}</div>
+                    {fields.map((field) => (
+                        <button key={field.value} type="button" className={optionClass} onClick={() => props.onChange({ field: field.value, direction: props.sort.direction })}>
+                            <span className="flex h-4 w-4 items-center justify-center">{props.sort.field === field.value ? <CheckIcon className="h-3.5 w-3.5" /> : null}</span>
+                            {field.label}
+                        </button>
+                    ))}
+                    <div className="my-1 border-t border-[var(--app-divider)]" />
+                    {directions.map((direction) => (
+                        <button key={direction.value} type="button" className={optionClass} onClick={() => props.onChange({ ...props.sort, direction: direction.value })}>
+                            <span className="flex h-4 w-4 items-center justify-center">{props.sort.direction === direction.value ? <CheckIcon className="h-3.5 w-3.5" /> : null}</span>
+                            {direction.label}
+                        </button>
+                    ))}
+                </Popover.Content>
+            </Popover.Portal>
+        </Popover.Root>
     )
 }
 
@@ -235,6 +309,15 @@ export default function FilesPage() {
 
     const initialTab = search.tab === 'directories' ? 'directories' : 'changes'
     const [activeTab, setActiveTab] = useState<'changes' | 'directories'>(initialTab)
+    const [directorySort, setDirectorySort] = useState<DirectorySort>(readDirectorySort)
+
+    useEffect(() => {
+        try {
+            localStorage.setItem(DIRECTORY_SORT_STORAGE_KEY, JSON.stringify(directorySort))
+        } catch {
+            // Sorting still works when storage is unavailable.
+        }
+    }, [directorySort])
 
     useEffect(() => {
         const el = scrollRef.current
@@ -384,6 +467,9 @@ export default function FilesPage() {
                             autoCorrect="off"
                         />
                     </div>
+                    {activeTab === 'directories' && !searchQuery ? (
+                        <DirectorySortMenu sort={directorySort} onChange={setDirectorySort} />
+                    ) : null}
                     <button
                         type="button"
                         onClick={handleRefresh}
@@ -477,6 +563,7 @@ export default function FilesPage() {
                             sessionId={sessionId}
                             rootLabel={rootLabel}
                             onOpenFile={(path) => handleOpenFile(path)}
+                            sort={directorySort}
                         />
                     ) : gitLoading ? (
                         <FileListSkeleton label={t('loading.git')} />

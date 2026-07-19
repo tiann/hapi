@@ -29,6 +29,7 @@ type ScriptLaunchResponse = {
     codexClientAvailable?: boolean
     syncedCount?: number
     sessionIds?: string[]
+    hapiSessionIds?: string[]
 } | {
     success: false
     error: string
@@ -39,6 +40,7 @@ type ScriptLaunchResponse = {
     codexClientAvailable?: boolean
     syncedCount?: number
     sessionIds?: string[]
+    hapiSessionIds?: string[]
 }
 
 type CodexDesktopStatus = {
@@ -66,6 +68,12 @@ type CodexLocalSessionSummary = {
 type CodexLocalSessionsResponse = {
     success: true
     sessions: CodexLocalSessionSummary[]
+    machineId?: string
+} | {
+    success: false
+    error: string
+    sessions: []
+    machineId?: string
 }
 
 type CodexImportedMessageContent = {
@@ -102,6 +110,7 @@ type CodexSessionIndexTitle = {
     threadName: string
     updatedAt: string
 }
+type RemoteCodexSession = CodexTranscriptImportData
 
 type ImportCandidate = {
     sessionId: string
@@ -117,6 +126,11 @@ type ImportTargetSelection = {
 
 type SyncSessionRequestParseResult = {
     sessionIds: string[]
+    cwd?: string | null
+    machineId?: string | null
+    model?: string | null
+    modelReasoningEffort?: string | null
+    yolo?: boolean
     error?: string
 }
 
@@ -894,10 +908,65 @@ function resolveImportMachineId(
     return machineIds.length === 1 ? machineIds[0] : undefined
 }
 
+
+function resolveCodexImportMachineId(
+    cwd: string | null | undefined,
+    namespace: string,
+    engine: SyncEngine | null,
+    requestedMachineId?: string | null
+): string | null {
+    if (!engine) return null
+    const onlineMachines = engine.getOnlineMachinesByNamespace(namespace)
+    if (requestedMachineId) {
+        return onlineMachines.some((machine) => machine.id === requestedMachineId)
+            ? requestedMachineId
+            : null
+    }
+    if (cwd) {
+        const resolved = resolveImportMachineId(cwd, namespace, engine)
+        if (resolved) return resolved
+    }
+    return onlineMachines.length === 1 ? onlineMachines[0].id : null
+}
+
+function asRemoteCodexSessions(value: unknown, requireMessages: boolean): RemoteCodexSession[] {
+    if (!Array.isArray(value)) return []
+    return value.filter((session): session is RemoteCodexSession => {
+        const record = asRecord(session)
+        return typeof record?.id === 'string'
+            && typeof record.title === 'string'
+            && typeof record.file === 'string'
+            && typeof record.modifiedAt === 'number'
+            && (!requireMessages || Array.isArray(record.messages))
+    })
+}
+
+async function listCodexSessionsViaMachine(options: {
+    engine: SyncEngine | null
+    namespace: string
+    cwd?: string | null
+    machineId?: string | null
+    sessionIds?: string[]
+}): Promise<{ sessions: RemoteCodexSession[]; machineId?: string; error?: string }> {
+    const machineId = resolveCodexImportMachineId(options.cwd, options.namespace, options.engine, options.machineId)
+    if (!machineId || !options.engine) {
+        return { sessions: [], error: 'No online machine available for Codex history import' }
+    }
+    const result = await options.engine.listCodexSessionsForMachine(machineId, options.cwd, options.sessionIds)
+    if (!result || typeof result !== 'object') {
+        return { sessions: [], machineId, error: 'Unexpected Codex sessions RPC response' }
+    }
+    if ((result as { success?: unknown }).success !== true) {
+        return { sessions: [], machineId, error: typeof (result as { error?: unknown }).error === 'string' ? (result as { error: string }).error : 'Failed to list local Codex sessions' }
+    }
+    return { sessions: asRemoteCodexSessions((result as { sessions?: unknown }).sessions, Boolean(options.sessionIds?.length)), machineId }
+}
+
 function buildImportedSessionMetadata(
     data: CodexTranscriptImportData,
     existingMetadata?: Record<string, unknown> | null,
-    resolvedMachineId?: string
+    resolvedMachineId?: string,
+    permissionMode?: string
 ): Record<string, unknown> {
     const now = Date.now()
     const path = data.cwd ?? (typeof existingMetadata?.path === 'string' ? existingMetadata.path : dirname(data.file))
@@ -907,6 +976,9 @@ function buildImportedSessionMetadata(
     const machineId = typeof existingMetadata?.machineId === 'string'
         ? existingMetadata.machineId
         : resolvedMachineId
+    const currentCodexSessionId = typeof existingMetadata?.codexSessionId === 'string'
+        ? existingMetadata.codexSessionId
+        : data.id
 
     return {
         ...(existingMetadata ?? {}),
@@ -921,7 +993,11 @@ function buildImportedSessionMetadata(
             }
             : existingMetadata?.summary,
         flavor: 'codex',
-        codexSessionId: data.id,
+        codexSessionId: currentCodexSessionId,
+        codexSourceSessionId: typeof existingMetadata?.codexSourceSessionId === 'string'
+            ? existingMetadata.codexSourceSessionId
+            : data.id,
+        ...(permissionMode ? { preferredPermissionMode: permissionMode } : {}),
         ...(machineId ? { machineId } : {}),
         lifecycleState: typeof existingMetadata?.lifecycleState === 'string'
             ? existingMetadata.lifecycleState
@@ -953,6 +1029,10 @@ function stableSerialize(value: unknown): string {
     return JSON.stringify(value)
 }
 
+function normalizeComparableText(value: string): string {
+    return value.replace(/\s+$/u, '')
+}
+
 function normalizeComparableAgentData(value: unknown): unknown {
     const record = asRecord(value)
     if (!record) {
@@ -979,7 +1059,7 @@ function normalizeComparableContent(content: unknown): string | null {
         }
         return stableSerialize({
             role: 'user',
-            text: body.text
+            text: normalizeComparableText(body.text)
         })
     }
 
@@ -1025,19 +1105,29 @@ function collectImportCandidates(
     }))
 }
 
+function getCodexImportIds(metadata: Record<string, unknown> | null | undefined): string[] {
+    return [metadata?.codexSessionId, metadata?.codexSourceSessionId]
+        .filter((id): id is string => typeof id === 'string' && id.length > 0)
+}
+
 function selectImportTargetSession(
     store: Store,
     candidates: ImportCandidate[],
     codexSessionId: string,
-    importedComparableMessages: string[]
+    importedComparableMessages: string[],
+    sourceMachineId?: string | null
 ): ImportTargetSelection {
     const relatedCandidates = candidates
-        .filter((candidate) => candidate.metadata?.codexSessionId === codexSessionId)
+        .filter((candidate) => (
+            candidate.metadata?.codexSessionId === codexSessionId
+            || candidate.metadata?.codexSourceSessionId === codexSessionId
+        ))
+        .filter((candidate) => (
+            !sourceMachineId
+            || typeof candidate.metadata?.machineId !== 'string'
+            || candidate.metadata.machineId === sourceMachineId
+        ))
         .sort((a, b) => b.updatedAt - a.updatedAt)
-
-    if (relatedCandidates.some((candidate) => candidate.active)) {
-        throw new Error('当前会话仍处于活跃状态，请等待会话结束后重试')
-    }
 
     let bestSessionId: string | null = null
     let bestPrefixCount = -1
@@ -1088,18 +1178,17 @@ function listDuplicateCodexSessionGroups(
 
     const groups = new Map<string, ImportCandidate[]>()
     for (const candidate of collectImportCandidates(store, namespace, getSyncEngine)) {
-        const codexSessionId = typeof candidate.metadata?.codexSessionId === 'string'
-            ? candidate.metadata.codexSessionId
-            : null
-        if (!codexSessionId || !requestedSessionIds.has(codexSessionId)) {
-            continue
-        }
+        for (const codexSessionId of getCodexImportIds(candidate.metadata)) {
+            if (!requestedSessionIds.has(codexSessionId)) {
+                continue
+            }
 
-        const existing = groups.get(codexSessionId)
-        if (existing) {
-            existing.push(candidate)
-        } else {
-            groups.set(codexSessionId, [candidate])
+            const existing = groups.get(codexSessionId)
+            if (existing) {
+                existing.push(candidate)
+            } else {
+                groups.set(codexSessionId, [candidate])
+            }
         }
     }
 
@@ -1590,7 +1679,8 @@ function parseSyncSessionRequest(body: unknown): SyncSessionRequestParseResult {
         return { sessionIds: [] }
     }
 
-    const rawSessionIds = (body as { sessionIds?: unknown }).sessionIds
+    const bodyRecord = body as { sessionIds?: unknown; cwd?: unknown; machineId?: unknown; model?: unknown; modelReasoningEffort?: unknown; yolo?: unknown }
+    const rawSessionIds = bodyRecord.sessionIds
     if (!Array.isArray(rawSessionIds)) {
         return { sessionIds: [], error: 'Invalid sessionIds' }
     }
@@ -1606,8 +1696,18 @@ function parseSyncSessionRequest(body: unknown): SyncSessionRequestParseResult {
         }
     }
 
+    const hasModel = Object.prototype.hasOwnProperty.call(bodyRecord, 'model')
+    const hasModelReasoningEffort = Object.prototype.hasOwnProperty.call(bodyRecord, 'modelReasoningEffort')
+
     // 中文注释：前端允许多选，这里按 Codex thread 去重，避免重复导入同一条本地 transcript。
-    return { sessionIds: Array.from(new Set(sessionIds)) }
+    return {
+        sessionIds: Array.from(new Set(sessionIds)),
+        cwd: typeof bodyRecord.cwd === 'string' && bodyRecord.cwd.trim() ? bodyRecord.cwd.trim() : null,
+        machineId: typeof bodyRecord.machineId === 'string' && bodyRecord.machineId.trim() ? bodyRecord.machineId.trim() : null,
+        model: hasModel ? (typeof bodyRecord.model === 'string' && bodyRecord.model.trim() ? bodyRecord.model.trim() : null) : undefined,
+        modelReasoningEffort: hasModelReasoningEffort ? (typeof bodyRecord.modelReasoningEffort === 'string' && bodyRecord.modelReasoningEffort.trim() ? bodyRecord.modelReasoningEffort.trim() : null) : undefined,
+        yolo: bodyRecord.yolo === true
+    }
 }
 
 function combineSyncOutputs(results: ScriptLaunchResponse[]): string | undefined {
@@ -1645,6 +1745,12 @@ function createImportErrorResponse(
     }
 }
 
+function parseImportedHapiSessionId(output?: string): string | null {
+    if (!output) return null
+    const match = /^Hapi session:\s*(.+)$/m.exec(output)
+    return match?.[1]?.trim() || null
+}
+
 function createImportSuccessResponse(
     codexSessionIds: string[],
     results: ScriptLaunchResponse[]
@@ -1663,16 +1769,21 @@ function createImportSuccessResponse(
         cwd: workspace,
         output: combineSyncOutputs(results),
         sessionIds: codexSessionIds,
+        hapiSessionIds: results.map((result) => parseImportedHapiSessionId(result.output)).filter((id): id is string => Boolean(id)),
         syncedCount: results.length
     }
 }
 
 function importSingleCodexSession(options: {
     codexSessionId: string
-    localSessionsById: Map<string, CodexLocalSessionSummary>
+    localSessionsById: Map<string, CodexLocalSessionSummary | RemoteCodexSession>
     store: Store
     namespace: string
     getSyncEngine?: () => SyncEngine | null
+    model?: string | null
+    modelReasoningEffort?: string | null
+    yolo?: boolean
+    machineId?: string | null
 }): ScriptLaunchResponse {
     const summary = options.localSessionsById.get(options.codexSessionId)
     if (!summary) {
@@ -1682,7 +1793,9 @@ function importSingleCodexSession(options: {
         }
     }
 
-    const transcript = parseCodexTranscriptImportData(summary)
+    const transcript = 'messages' in summary && Array.isArray((summary as RemoteCodexSession).messages)
+        ? summary as RemoteCodexSession
+        : parseCodexTranscriptImportData(summary)
     if (!transcript) {
         return {
             ...createImportErrorResponse([options.codexSessionId], `Failed to parse Codex transcript: ${summary.file}`),
@@ -1707,14 +1820,16 @@ function importSingleCodexSession(options: {
             options.store,
             candidates,
             options.codexSessionId,
-            importedComparableMessages
+            importedComparableMessages,
+            options.machineId
         )
         const engine = options.getSyncEngine?.() ?? null
         const existingStored = target.sessionId ? options.store.sessions.getSessionByNamespace(target.sessionId, options.namespace) : null
         const metadata = buildImportedSessionMetadata(
             transcript,
             asRecord(existingStored?.metadata),
-            resolveImportMachineId(transcript.cwd, options.namespace, engine)
+            options.machineId ?? resolveImportMachineId(transcript.cwd, options.namespace, engine) ?? undefined,
+            options.yolo ? 'yolo' : undefined
         )
 
         let sessionId = existingStored?.id ?? null
@@ -1725,8 +1840,11 @@ function importSingleCodexSession(options: {
                 randomUUID(),
                 metadata,
                 {},
-                options.namespace
-            ) ?? options.store.sessions.getOrCreateSession(randomUUID(), metadata, {}, options.namespace)
+                options.namespace,
+                options.model ?? undefined,
+                undefined,
+                options.modelReasoningEffort ?? undefined
+            ) ?? options.store.sessions.getOrCreateSession(randomUUID(), metadata, {}, options.namespace, options.model ?? undefined, undefined, options.modelReasoningEffort ?? undefined)
             sessionId = createdSession.id
             created = true
         } else if (existingStored) {
@@ -1739,6 +1857,12 @@ function importSingleCodexSession(options: {
             if (updatedMetadata.result !== 'success') {
                 throw new Error(`Failed to update metadata for Hapi session: ${existingStored.id}`)
             }
+            if (options.model !== undefined) {
+                options.store.sessions.setSessionModel(existingStored.id, options.model, options.namespace, { touchUpdatedAt: false })
+            }
+            if (options.modelReasoningEffort !== undefined) {
+                options.store.sessions.setSessionModelReasoningEffort(existingStored.id, options.modelReasoningEffort, options.namespace, { touchUpdatedAt: false })
+            }
             engine?.handleRealtimeEvent({ type: 'session-updated', sessionId: existingStored.id })
         }
 
@@ -1748,6 +1872,10 @@ function importSingleCodexSession(options: {
 
         const comparablePrefixCount = sessionId ? target.comparablePrefixCount : 0
         const messagesToAppend = transcript.messages.slice(comparablePrefixCount)
+        const targetIsActive = Boolean(candidates.find((candidate) => candidate.sessionId === sessionId)?.active)
+        if (targetIsActive && messagesToAppend.length > 0) {
+            throw new Error('当前会话正在运行且 Codex transcript 有新消息，停止或归档后再同步，避免消息顺序错乱')
+        }
         const appendedMessages = messagesToAppend.map((message) => options.store.messages.addMessage(sessionId!, message))
 
         // 中文注释：更新 Hapi 会话的 updatedAt，并在已有会话追加时广播新增消息，让当前打开的聊天页立刻显示客户端新增内容。
@@ -1782,6 +1910,7 @@ function importSingleCodexSession(options: {
             cwd: getDirectImportRouteContext().workspace,
             output,
             sessionIds: [options.codexSessionId],
+            hapiSessionIds: [sessionId],
             syncedCount: 1
         }
     } catch (error) {
@@ -1798,13 +1927,18 @@ export async function importSelectedCodexSessions(options: {
     store: Store
     namespace: string
     getSyncEngine?: () => SyncEngine | null
+    localSessions?: RemoteCodexSession[]
+    model?: string | null
+    modelReasoningEffort?: string | null
+    yolo?: boolean
+    machineId?: string | null
 }): Promise<ScriptLaunchResponse> {
     const codexSessionIds = options.codexSessionIds
     if (codexSessionIds.length === 0) {
         return createImportErrorResponse(codexSessionIds, NO_SYNC_SESSION_SELECTED_ERROR)
     }
 
-    const localSessionsById = new Map(listLocalCodexSessions().map((session) => [session.id, session]))
+    const localSessionsById = new Map((options.localSessions ?? listLocalCodexSessions()).map((session) => [session.id, session]))
     const results: ScriptLaunchResponse[] = []
     for (const codexSessionId of codexSessionIds) {
         const result = importSingleCodexSession({
@@ -1812,7 +1946,11 @@ export async function importSelectedCodexSessions(options: {
             localSessionsById,
             store: options.store,
             namespace: options.namespace,
-            getSyncEngine: options.getSyncEngine
+            getSyncEngine: options.getSyncEngine,
+            model: options.model,
+            modelReasoningEffort: options.modelReasoningEffort,
+            yolo: options.yolo,
+            machineId: options.machineId
         })
         results.push(result)
 
@@ -1854,11 +1992,57 @@ export function createCodexDesktopRoutes(options: {
         } satisfies CodexDesktopStatusResponse)
     })
 
-    app.get('/codex/sessions', (c) => {
+    app.get('/codex/sessions', async (c) => {
+        const cwd = c.req.query('cwd')?.trim() || null
+        const machineId = c.req.query('machineId')?.trim() || null
+        const remote = await listCodexSessionsViaMachine({
+            engine: options.getSyncEngine(),
+            namespace: c.get('namespace'),
+            cwd,
+            machineId
+        })
+        if (remote.error) {
+            return c.json({
+                success: false,
+                error: remote.error,
+                sessions: [],
+                ...(remote.machineId ? { machineId: remote.machineId } : {})
+            } satisfies CodexLocalSessionsResponse, 503)
+        }
         return c.json({
             success: true,
-            sessions: listLocalCodexSessions()
+            sessions: remote.sessions.map(({ messages: _messages, ...summary }) => summary),
+            ...(remote.machineId ? { machineId: remote.machineId } : {})
         } satisfies CodexLocalSessionsResponse)
+    })
+
+
+    app.post('/codex/archive-session', async (c) => {
+        const body = await c.req.json().catch(() => null)
+        const record = asRecord(body)
+        const sessionId = typeof record?.sessionId === 'string' ? record.sessionId.trim() : ''
+        const requestedMachineId = typeof record?.machineId === 'string' ? record.machineId.trim() : null
+        if (!sessionId) {
+            return c.json({ success: false, error: 'sessionId is required' }, 400)
+        }
+
+        const engine = options.getSyncEngine()
+        const machineId = resolveCodexImportMachineId(null, c.get('namespace'), engine, requestedMachineId)
+        if (!engine || !machineId) {
+            return c.json({ success: false, error: 'No online machine available for Codex history archive' }, 503)
+        }
+
+        const result = await engine.archiveCodexSessionForMachine(machineId, sessionId)
+        if (!result || typeof result !== 'object') {
+            return c.json({ success: false, error: 'Unexpected Codex archive RPC response', machineId }, 500)
+        }
+        if ((result as { success?: unknown }).success !== true) {
+            const error = typeof (result as { error?: unknown }).error === 'string'
+                ? (result as { error: string }).error
+                : 'Failed to archive Codex session'
+            return c.json({ success: false, error, machineId }, 500)
+        }
+        return c.json({ success: true, archivedPath: (result as { archivedPath: string }).archivedPath, machineId })
     })
 
     app.post('/codex/sync-session', async (c) => {
@@ -1877,12 +2061,34 @@ export function createCodexDesktopRoutes(options: {
             })
         }
 
-        // 中文注释：这里直接读取本地 transcript 写入 Hapi store，不再启动隐藏 codex resume 进程，避免漏导入客户端新增内容。
+        // 中文注释：hub 可能运行在服务器上；Codex transcript 必须通过用户本机 runner RPC 读取，不能扫描服务器磁盘。
+        const remote = await listCodexSessionsViaMachine({
+            engine: options.getSyncEngine(),
+            namespace: c.get('namespace'),
+            cwd: parsed.cwd,
+            machineId: parsed.machineId,
+            sessionIds: parsed.sessionIds
+        })
+        if (remote.error) {
+            const { workspace } = getDirectImportRouteContext()
+            return c.json({
+                success: false,
+                error: remote.error,
+                cwd: workspace,
+                codexDesktopRunning: codexStatus.running,
+                codexClientAvailable: codexStatus.clientAvailable
+            })
+        }
         const result = await importSelectedCodexSessions({
             codexSessionIds: parsed.sessionIds,
             store: options.store,
             namespace: c.get('namespace'),
-            getSyncEngine: options.getSyncEngine
+            getSyncEngine: options.getSyncEngine,
+            localSessions: remote.sessions,
+            machineId: remote.machineId ?? null,
+            model: parsed.model,
+            modelReasoningEffort: parsed.modelReasoningEffort,
+            yolo: parsed.yolo
         })
         return c.json({
             ...result,

@@ -140,16 +140,6 @@ export function presentMachineHealth(
     }
 }
 
-export function getCpuMetricTooltipLabel(
-    cpuCount: number | undefined,
-    t: (key: string, params?: Record<string, string | number>) => string
-): string {
-    if (cpuCount !== undefined && cpuCount > 0) {
-        return t('machine.health.metric.cpuWithCount', { n: cpuCount })
-    }
-    return t('machine.health.metric.cpu')
-}
-
 export function getMachinePlatform(machine: Machine | null | undefined): string | null {
     return machine?.metadata?.platform ?? null
 }

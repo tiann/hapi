@@ -9,7 +9,15 @@ import { basename, dirname, isAbsolute, join, relative, resolve as resolvePath }
 import { logger } from '@/ui/logger'
 import { configuration } from '@/configuration'
 import type { ClientToServerEvents, ServerToClientEvents, Update, UpdateMachineBody } from '@hapi/protocol'
-import type { MachineDirectoryEntry, MachineListDirectoryResponse, PathExistsResponse } from '@hapi/protocol/apiTypes'
+import {
+    ArchiveCodexSessionRpcRequestSchema,
+    ListCodexSessionsRpcRequestSchema,
+    type ArchiveCodexSessionRpcResponse,
+    type ListCodexSessionsRpcResponse,
+    type MachineDirectoryEntry,
+    type MachineListDirectoryResponse,
+    type PathExistsResponse
+} from '@hapi/protocol/apiTypes'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import type { RunnerState, Machine, MachineMetadata } from './types'
 import { RunnerStateSchema, MachineMetadataSchema } from './types'
@@ -29,6 +37,7 @@ import {
 } from '../modules/common/grokModels'
 import type { SpawnSessionOptions, SpawnSessionResult } from '../modules/common/rpcTypes'
 import { applyVersionedAck } from './versionedUpdate'
+import { archiveLocalCodexSession, listLocalCodexSessionSummaries, listLocalCodexSessionsWithMessagesByIds } from '../modules/common/codexSessions'
 import { buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
 import { collectMachineHealth } from '@/utils/machineHealth'
 import { inspectCursorChatStore } from '@/cursor/cursorChatStoreStatus'
@@ -257,6 +266,54 @@ export class ApiMachineClient {
                 return await listGrokModelsForCwd(resolvedCwd)
             }
         )
+
+        this.rpcHandlerManager.registerHandler<unknown, ListCodexSessionsRpcResponse>(
+            RPC_METHODS.ListCodexSessions,
+            async (params) => {
+                const parsed = ListCodexSessionsRpcRequestSchema.safeParse(params)
+                if (!parsed.success) return { success: false, error: 'Invalid Codex sessions request' }
+                const rawCwd = typeof parsed.data.cwd === 'string' ? parsed.data.cwd.trim() : ''
+                if (rawCwd) {
+                    const resolvedCwd = await this.resolveForWorkspaceCheck(rawCwd)
+                    if (!this.isWithinWorkspaceRoots(resolvedCwd)) {
+                        return { success: false, error: 'Path is outside workspace roots' }
+                    }
+                }
+                const requestedIds = parsed.data.sessionIds
+                    ? new Set(parsed.data.sessionIds)
+                    : null
+                const allSessions = requestedIds
+                    ? listLocalCodexSessionsWithMessagesByIds(requestedIds)
+                    : listLocalCodexSessionSummaries()
+                const sessions = []
+                for (const session of allSessions) {
+                    if (await this.isCodexSessionWithinWorkspaceRoots(session)) {
+                        sessions.push(session)
+                    }
+                }
+                return { success: true, sessions }
+            }
+        )
+
+        this.rpcHandlerManager.registerHandler<unknown, ArchiveCodexSessionRpcResponse>(
+            RPC_METHODS.ArchiveCodexSession,
+            async (params) => {
+                const parsed = ArchiveCodexSessionRpcRequestSchema.safeParse(params)
+                if (!parsed.success) return { success: false, error: 'Invalid Codex archive request' }
+                const sessionId = parsed.data.sessionId.trim()
+                return await archiveLocalCodexSession(sessionId, {
+                    canArchive: (session) => this.isCodexSessionWithinWorkspaceRoots(session)
+                })
+            }
+        )
+    }
+
+    private async isCodexSessionWithinWorkspaceRoots(session: { cwd?: string | null }): Promise<boolean> {
+        if (!this.normalizedWorkspaceRoots?.length) return true
+        const cwd = session.cwd?.trim()
+        if (!cwd) return false
+        const resolvedCwd = await this.resolveForWorkspaceCheck(cwd)
+        return this.isWithinWorkspaceRoots(resolvedCwd)
     }
 
     private isWithinWorkspaceRoots(absolutePath: string): boolean {
@@ -300,7 +357,7 @@ export class ApiMachineClient {
 
     setRPCHandlers({ spawnSession, stopSession, requestShutdown }: MachineRpcHandlers): void {
         this.rpcHandlerManager.registerHandler(RPC_METHODS.SpawnHappySession, async (params: any) => {
-            const { directory, sessionId, resumeSessionId, machineId, approvedNewDirectoryCreation, agent, model, effort, modelReasoningEffort, yolo, permissionMode, serviceTier, token, sessionType, worktreeName } = params || {}
+            const { directory, sessionId, existingSessionId, resumeSessionId, machineId, approvedNewDirectoryCreation, agent, model, effort, modelReasoningEffort, yolo, permissionMode, serviceTier, token, sessionType, worktreeName } = params || {}
 
             if (!directory) {
                 throw new Error('Directory is required')
@@ -314,6 +371,7 @@ export class ApiMachineClient {
             const result = await spawnSession({
                 directory,
                 sessionId,
+                existingSessionId,
                 resumeSessionId,
                 machineId,
                 approvedNewDirectoryCreation,

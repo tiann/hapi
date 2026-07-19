@@ -20,6 +20,7 @@ import {
     persistMarkdownPreviewMode,
     type MarkdownPreviewMode,
 } from '@/lib/file-markdown-preview'
+import { downloadBase64File } from '@/lib/file-download'
 
 const MAX_COPYABLE_FILE_BYTES = 1_000_000
 const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
@@ -62,23 +63,6 @@ function DownloadIcon(props: { className?: string }) {
             <line x1="12" y1="15" x2="12" y2="3" />
         </svg>
     )
-}
-
-function triggerDownload(fileName: string, base64Content: string, mimeType: string | null) {
-    const byteChars = atob(base64Content)
-    const byteArray = new Uint8Array(byteChars.length)
-    for (let i = 0; i < byteChars.length; i++) {
-        byteArray[i] = byteChars.charCodeAt(i)
-    }
-    const blob = new Blob([byteArray], { type: mimeType ?? 'application/octet-stream' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = fileName
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
 }
 
 function BackIcon(props: { className?: string }) {
@@ -321,7 +305,7 @@ export default function FilePage() {
                     {canDownload ? (
                         <button
                             type="button"
-                            onClick={() => triggerDownload(fileName, fileContentResult!.content!, imageMimeType)}
+                            onClick={() => downloadBase64File(fileName, fileContentResult!.content!, imageMimeType)}
                             className="shrink-0 rounded p-1 text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] transition-colors"
                             title={t('file.page.download')}
                         >

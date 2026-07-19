@@ -41,12 +41,12 @@ describe('buildMessageMetadataLabels', () => {
         expect(buildMessageMetadataLabels({})).toEqual([])
     })
 
-    it('labels token totals as billable to clarify that cache I/O is intentionally excluded', () => {
+    it('renders the token total and input/output breakdown without billing claims', () => {
         const parts = buildMessageMetadataLabels({
             usage: { input_tokens: 100, output_tokens: 200 }
         })
-        expect(parts.some(p => /\bbillable tokens\b/.test(p))).toBe(true)
-        expect(parts.some(p => p.includes('300 billable tokens (100 in / 200 out)'))).toBe(true)
+        expect(parts).toContain('Tokens: 300 total (100 in / 200 out)')
+        expect(parts.some(p => /\bbillable\b/.test(p))).toBe(false)
     })
 
     it('does not drop a Duration line when durationMs is exactly 0', () => {
@@ -83,7 +83,7 @@ describe('buildMessageMetadataLabels', () => {
         expect(parts).toEqual([
             'Duration: 1.2s',
             'Model: claude-sonnet-4-6',
-            'Usage: 22 billable tokens (3 in / 19 out)'
+            'Tokens: 22 total (3 in / 19 out)'
         ])
     })
 
@@ -95,8 +95,7 @@ describe('buildMessageMetadataLabels', () => {
         })
         expect(parts).toContain('Models: claude-sonnet-4-6, claude-haiku-4-5-20251001')
         expect(parts.some(p => p.startsWith('Model:'))).toBe(false)
-        expect(parts).toContain('Total: 300 billable tokens (100 in / 200 out)')
-        expect(parts.some(p => p.startsWith('Usage:'))).toBe(false)
+        expect(parts).toContain('Tokens: 300 total (100 in / 200 out)')
         expect(parts).toContain('3 turns')
     })
 

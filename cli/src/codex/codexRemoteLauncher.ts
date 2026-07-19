@@ -20,6 +20,7 @@ import { buildThreadStartParams, buildTurnStartParams } from './utils/appServerC
 import type { ThreadGoal, ThreadGoalStatus } from './appServerTypes';
 import { shouldIgnoreTerminalEvent } from './utils/terminalEventGuard';
 import { parseCodexSpecialCommand } from './codexSpecialCommands';
+import { extractErrorInfo } from '@/utils/errorUtils';
 import {
     RemoteLauncherBase,
     type RemoteLauncherDisplayContext,
@@ -79,6 +80,17 @@ const THROTTLED_AGENT_RUN_ACTIVITY_KINDS = new Set(['thinking']);
 const CODEX_SPAWN_AGENT_FULL_HISTORY_ARGUMENT_ERROR =
     'Full-history forked agents inherit the parent agent type, model, and reasoning effort; ' +
     'omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.';
+
+function formatCodexResumeError(error: unknown): string {
+    const info = extractErrorInfo(error);
+    const message = info.message && info.message !== 'Unknown error' ? info.message : '';
+    const record = error && typeof error === 'object' ? error as Record<string, unknown> : null;
+    const name = error instanceof Error && error.name && error.name !== 'Error' ? error.name : '';
+    const cause = record?.cause instanceof Error ? record.cause.message : typeof record?.cause === 'string' ? record.cause : '';
+    const code = typeof record?.code === 'string' ? record.code : '';
+    const parts = [name, code, message, cause].filter((part) => part.trim().length > 0);
+    return parts.length > 0 ? Array.from(new Set(parts)).join(': ') : 'unknown resume error';
+}
 
 const SAME_THREAD_RETRYABLE_ERROR_PATTERNS = [
     'selected model is at capacity',
@@ -3513,10 +3525,19 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
         while (!this.shouldExit) {
             logActiveHandles('loop-top');
-            if (!pending && (recoveryInFlight || (turnInFlight && session.queue.size() === 0))) {
+            if (!pending && recoveryInFlight) {
                 await waitForTurnOrRecovery(this.abortController.signal);
                 if (this.abortController.signal.aborted && !this.shouldExit) {
-                    logger.debug('[codex]: Internal wait aborted while turn/recovery was active; continuing');
+                    logger.debug('[codex]: Internal wait aborted while recovery was active; continuing');
+                    continue;
+                }
+                continue;
+            }
+
+            if (!pending && turnInFlight && session.queue.size() === 0) {
+                await waitForTurnOrRecovery(this.abortController.signal);
+                if (this.abortController.signal.aborted && !this.shouldExit) {
+                    logger.debug('[codex]: Internal wait aborted while turn was active; continuing');
                     continue;
                 }
                 continue;
@@ -3579,20 +3600,34 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
                     if (resumeCandidate) {
                         try {
-                            const resumeResponse = await appServerClient.resumeThread({
-                                threadId: resumeCandidate,
-                                ...threadParams
-                            }, {
-                                signal: this.abortController.signal
-                            });
-                            const resumeRecord = asRecord(resumeResponse);
-                            const resumeThread = resumeRecord ? asRecord(resumeRecord.thread) : null;
-                            threadId = asString(resumeThread?.id) ?? resumeCandidate;
-                            applyResolvedModel(resumeRecord?.model);
-                            logger.debug(`[Codex] Resumed app-server thread ${threadId}`);
+                            const shouldForkImportedSource = Boolean(
+                                session.sourceSessionId
+                                && resumeCandidate === session.sourceSessionId
+                            );
+                            const response = shouldForkImportedSource
+                                ? await appServerClient.forkThread({
+                                    threadId: resumeCandidate,
+                                    ...threadParams
+                                }, {
+                                    signal: this.abortController.signal
+                                })
+                                : await appServerClient.resumeThread({
+                                    threadId: resumeCandidate,
+                                    ...threadParams
+                                }, {
+                                    signal: this.abortController.signal
+                                });
+                            const responseRecord = asRecord(response);
+                            const responseThread = responseRecord ? asRecord(responseRecord.thread) : null;
+                            threadId = asString(responseThread?.id) ?? resumeCandidate;
+                            applyResolvedModel(responseRecord?.model);
+                            logger.debug(shouldForkImportedSource
+                                ? `[Codex] Forked imported app-server thread ${resumeCandidate} -> ${threadId}`
+                                : `[Codex] Resumed app-server thread ${threadId}`);
                         } catch (error) {
-                            logger.warn(`[Codex] Failed to resume app-server thread ${resumeCandidate}; preserving old conversation boundary`, error);
-                            const failureMessage = `Task failed: Codex conversation ${resumeCandidate} could not be resumed; no new conversation was created`;
+                            const resumeError = formatCodexResumeError(error);
+                            logger.warn(`[Codex] Failed to resume app-server thread ${resumeCandidate}; preserving old conversation boundary: ${resumeError}`, error);
+                            const failureMessage = `Task failed: Codex conversation ${resumeCandidate} could not be resumed; no new conversation was created. Reason: ${resumeError}`;
                             messageBuffer.addMessage(failureMessage, 'status');
                             session.sendSessionEvent({ type: 'message', message: failureMessage });
                             pending = null;

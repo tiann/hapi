@@ -4,6 +4,10 @@ import { FileIcon } from '@/components/FileIcon'
 import { useSessionDirectory } from '@/hooks/queries/useSessionDirectory'
 import { formatDirectoryError } from '@/lib/files-i18n'
 import { useTranslation } from '@/lib/use-translation'
+import { useToast } from '@/lib/toast-context'
+import { downloadBase64File } from '@/lib/file-download'
+import { formatFileMetadata } from '@/lib/file-metadata'
+import { sortDirectoryEntries, type DirectorySort } from '@/lib/directory-sort'
 
 function ChevronIcon(props: { className?: string; collapsed: boolean }) {
     return (
@@ -39,6 +43,16 @@ function FolderIcon(props: { className?: string }) {
             className={props.className}
         >
             <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+        </svg>
+    )
+}
+
+function DownloadIcon(props: { className?: string }) {
+    return (
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={props.className}>
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="7 10 12 15 17 10" />
+            <line x1="12" y1="15" x2="12" y2="3" />
         </svg>
     )
 }
@@ -84,19 +98,47 @@ function DirectoryNode(props: {
     onOpenFile: (path: string) => void
     expanded: Set<string>
     onToggle: (path: string) => void
+    sort: DirectorySort
 }) {
-    const { t } = useTranslation()
+    const { t, locale } = useTranslation()
+    const toast = useToast()
+    const [downloadingPath, setDownloadingPath] = useState<string | null>(null)
     const isExpanded = props.expanded.has(props.path)
     const { entries, error, isLoading } = useSessionDirectory(props.api, props.sessionId, props.path, {
         enabled: isExpanded
     })
 
-    const directories = useMemo(() => entries.filter((entry) => entry.type === 'directory'), [entries])
-    const files = useMemo(() => entries.filter((entry) => entry.type === 'file'), [entries])
+    const sortedEntries = useMemo(
+        () => sortDirectoryEntries(entries, props.sort, locale),
+        [entries, locale, props.sort],
+    )
+    const directories = useMemo(() => sortedEntries.filter((entry) => entry.type === 'directory'), [sortedEntries])
+    const files = useMemo(() => sortedEntries.filter((entry) => entry.type === 'file'), [sortedEntries])
     const childDepth = props.depth + 1
 
     const indent = 12 + props.depth * 14
     const childIndent = 12 + childDepth * 14
+
+    const handleDownload = async (filePath: string, fileName: string) => {
+        if (!props.api || downloadingPath) return
+        setDownloadingPath(filePath)
+        try {
+            const result = await props.api.readSessionFile(props.sessionId, filePath)
+            if (!result.success || result.content === undefined) {
+                throw new Error(result.error ?? t('files.directories.download.error.default'))
+            }
+            downloadBase64File(fileName, result.content)
+        } catch (error) {
+            toast.addToast({
+                title: t('files.directories.download.error.title'),
+                body: error instanceof Error ? error.message : t('files.directories.download.error.default'),
+                sessionId: props.sessionId,
+                url: `/sessions/${props.sessionId}/files?tab=directories`,
+            })
+        } finally {
+            setDownloadingPath(null)
+        }
+    }
 
     return (
         <div>
@@ -133,26 +175,38 @@ function DirectoryNode(props: {
                                     onOpenFile={props.onOpenFile}
                                     expanded={props.expanded}
                                     onToggle={props.onToggle}
+                                    sort={props.sort}
                                 />
                             )
                         })}
 
                         {files.map((entry) => {
                             const filePath = props.path ? `${props.path}/${entry.name}` : entry.name
+                            const metadata = formatFileMetadata(entry.size, entry.modified, locale)
+                            const isDownloading = downloadingPath === filePath
                             return (
-                                <button
+                                <div
                                     key={filePath}
-                                    type="button"
-                                    onClick={() => props.onOpenFile(filePath)}
                                     className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-[var(--app-subtle-bg)] transition-colors"
                                     style={{ paddingLeft: childIndent }}
                                 >
                                     <span className="h-4 w-4" />
                                     <FileIcon fileName={entry.name} size={22} />
-                                    <div className="min-w-0 flex-1">
+                                    <button type="button" onClick={() => props.onOpenFile(filePath)} className="min-w-0 flex-1 text-left">
                                         <div className="truncate font-medium">{entry.name}</div>
-                                    </div>
-                                </button>
+                                        {metadata ? <div className="truncate text-xs text-[var(--app-hint)]">{metadata}</div> : null}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => void handleDownload(filePath, entry.name)}
+                                        disabled={Boolean(downloadingPath)}
+                                        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)] disabled:cursor-wait disabled:opacity-50"
+                                        title={t('files.directories.download')}
+                                        aria-label={t('files.directories.downloadNamed', { name: entry.name })}
+                                    >
+                                        <DownloadIcon className={`h-4 w-4 ${isDownloading ? 'animate-pulse' : ''}`} />
+                                    </button>
+                                </div>
                             )
                         })}
 
@@ -199,6 +253,7 @@ export function DirectoryTree(props: {
     sessionId: string
     rootLabel: string
     onOpenFile: (path: string) => void
+    sort: DirectorySort
 }) {
     const [expanded, setExpanded] = useState<Set<string>>(() => readExpanded(props.sessionId))
 
@@ -229,6 +284,7 @@ export function DirectoryTree(props: {
                 onOpenFile={props.onOpenFile}
                 expanded={expanded}
                 onToggle={handleToggle}
+                sort={props.sort}
             />
         </div>
     )

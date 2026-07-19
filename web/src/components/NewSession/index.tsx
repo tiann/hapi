@@ -1,6 +1,6 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import type { ApiClient } from '@/api/client'
-import type { Machine } from '@/types/api'
+import type { CodexLocalSessionSummary, Machine } from '@/types/api'
 import type { GrokPermissionMode } from '@hapi/protocol'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useMachinePathsExists } from '@/hooks/useMachinePathsExists'
@@ -52,7 +52,51 @@ import {
 } from './preferences'
 import { SessionTypeSelector } from './SessionTypeSelector'
 import { YoloToggle } from './YoloToggle'
+import { CodexSessionSyncDialog } from '@/components/CodexSessionSyncDialog'
 import { formatRunnerSpawnError } from '../../utils/formatRunnerSpawnError'
+import { markCodexSessionsImported } from '@/lib/codexImportedSessions'
+
+
+
+
+function CodexImportSelectButton(props: {
+    selectedSession: CodexLocalSessionSummary | null
+    isLoading: boolean
+    isDisabled: boolean
+    error: string | null
+    onOpen: () => void
+    onClear: () => void
+}) {
+    const { t } = useTranslation()
+    return (
+        <div className="flex flex-col gap-2 px-3 py-3">
+            <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                    <div className="text-xs font-medium text-[var(--app-hint)]">{t('codexSync.newSessionInline.title')}</div>
+                    <div className="truncate text-[11px] text-[var(--app-hint)]">
+                        {props.selectedSession ? props.selectedSession.title : t('codexSync.newSessionInline.description')}
+                    </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                    {props.selectedSession ? (
+                        <button type="button" className="text-xs text-[var(--app-link)]" onClick={props.onClear} disabled={props.isDisabled}>
+                            {t('codexSync.newSessionInline.clear')}
+                        </button>
+                    ) : null}
+                    <button
+                        type="button"
+                        className="rounded-md border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-2 py-1.5 text-xs text-[var(--app-fg)] hover:bg-[var(--app-secondary-bg)] disabled:opacity-50"
+                        onClick={props.onOpen}
+                        disabled={props.isDisabled || props.isLoading}
+                    >
+                        {props.isLoading ? t('codexSync.confirm.loading') : t('codexSync.newSessionInline.choose')}
+                    </button>
+                </div>
+            </div>
+            {props.error ? <div className="text-xs text-red-600">{props.error}</div> : null}
+        </div>
+    )
+}
 
 export function NewSession(props: {
     api: ApiClient
@@ -68,7 +112,6 @@ export function NewSession(props: {
     const { t } = useTranslation()
     const { spawnSession, isPending, error: spawnError } = useSpawnSession(props.api)
     const { sessions } = useSessions(props.api)
-    const isFormDisabled = Boolean(isPending || props.isLoading)
     const { getRecentPaths, addRecentPath, getLastUsedMachineId, setLastUsedMachineId } = useRecentPaths()
 
     const [machineId, setMachineId] = useState<string | null>(props.initialMachineId ?? null)
@@ -87,6 +130,14 @@ export function NewSession(props: {
     const [worktreeName, setWorktreeName] = useState('')
     const [directoryCreationConfirmed, setDirectoryCreationConfirmed] = useState(false)
     const [error, setError] = useState<string | null>(null)
+    const [codexImportSessions, setCodexImportSessions] = useState<CodexLocalSessionSummary[]>([])
+    const [selectedCodexImportSessionId, setSelectedCodexImportSessionId] = useState<string | null>(null)
+    const [codexImportMachineId, setCodexImportMachineId] = useState<string | null>(null)
+    const [isLoadingCodexImportSessions, setIsLoadingCodexImportSessions] = useState(false)
+    const [codexImportError, setCodexImportError] = useState<string | null>(null)
+    const [isImportingCodexSession, setIsImportingCodexSession] = useState(false)
+    const [isCodexImportDialogOpen, setIsCodexImportDialogOpen] = useState(false)
+    const isFormDisabled = Boolean(isPending || props.isLoading || isImportingCodexSession)
     const worktreeInputRef = useRef<HTMLInputElement>(null)
 
     useEffect(() => {
@@ -107,6 +158,15 @@ export function NewSession(props: {
 
     useEffect(() => {
         savePreferredAgent(agent)
+    }, [agent])
+
+    useEffect(() => {
+        if (agent !== 'codex') {
+            setSelectedCodexImportSessionId(null)
+            setCodexImportSessions([])
+            setCodexImportMachineId(null)
+            setCodexImportError(null)
+        }
     }, [agent])
 
     useEffect(() => {
@@ -461,10 +521,51 @@ export function NewSession(props: {
         { allowEmptyQuery: true, autoSelectFirst: false }
     )
 
+
+
+    const handleArchiveCodexImportSession = useCallback(async (session: CodexLocalSessionSummary) => {
+        if (!props.api) return
+        const result = await props.api.archiveCodexSession(session.id, codexImportMachineId ?? machineId)
+        if (!result.success) {
+            throw new Error(result.error)
+        }
+        setCodexImportSessions((current) => current.filter((item) => item.id !== session.id))
+        if (selectedCodexImportSessionId === session.id) {
+            setSelectedCodexImportSessionId(null)
+        }
+    }, [codexImportMachineId, machineId, props.api, selectedCodexImportSessionId])
+
+    const loadCodexImportSessions = useCallback(async () => {
+        if (agent !== 'codex' || !machineId) return
+        setIsLoadingCodexImportSessions(true)
+        setCodexImportError(null)
+        try {
+            const result = await props.api.getCodexSessions(trimmedDirectory || null, machineId)
+            setCodexImportSessions(result.sessions)
+            setCodexImportMachineId(result.machineId ?? machineId)
+            setSelectedCodexImportSessionId((current) => current && result.sessions.some((session) => session.id === current) ? current : null)
+        } catch (e) {
+            setCodexImportSessions([])
+            setCodexImportMachineId(null)
+            setSelectedCodexImportSessionId(null)
+            setCodexImportError(e instanceof Error ? e.message : t('codexSync.failed.body'))
+        } finally {
+            setIsLoadingCodexImportSessions(false)
+        }
+    }, [agent, machineId, props.api, trimmedDirectory, t])
+
+    const selectedCodexImportSession = useMemo(
+        () => codexImportSessions.find((session) => session.id === selectedCodexImportSessionId) ?? null,
+        [codexImportSessions, selectedCodexImportSessionId]
+    )
+
     const handleMachineChange = useCallback((newMachineId: string) => {
         setMachineId(newMachineId)
         setModel('auto')
         setCursorSelectedBase('auto')
+        setSelectedCodexImportSessionId(null)
+        setCodexImportSessions([])
+        setCodexImportMachineId(null)
         const paths = getRecentPaths(newMachineId)
         if (paths[0]) {
             setDirectory(paths[0])
@@ -534,6 +635,13 @@ export function NewSession(props: {
         worktreeName,
         trimmedDirectory
     ])
+
+    const handleSelectCodexImportSession = useCallback((session: CodexLocalSessionSummary) => {
+        setSelectedCodexImportSessionId(session.id)
+        if (session.cwd?.trim()) {
+            setDirectory(session.cwd.trim())
+        }
+    }, [])
 
     const handlePathClick = useCallback((path: string) => {
         setDirectory(path)
@@ -627,6 +735,42 @@ export function NewSession(props: {
             const resolvedModelReasoningEffort = (agent === 'codex' || agent === 'opencode') && modelReasoningEffort !== 'default'
                 ? modelReasoningEffort
                 : undefined
+
+            if (agent === 'codex' && selectedCodexImportSession) {
+                setIsImportingCodexSession(true)
+                const result = await props.api.syncCodexSession({
+                    sessionIds: [selectedCodexImportSession.id],
+                    cwd: selectedCodexImportSession.cwd ?? trimmedDirectory,
+                    machineId: codexImportMachineId ?? machineId,
+                    model: resolvedModel ?? null,
+                    modelReasoningEffort: resolvedModelReasoningEffort ?? null,
+                    yolo: yoloMode
+                })
+                if (result.success) {
+                    const importedSessionId = result.hapiSessionIds?.[0]
+                    if (!importedSessionId) {
+                        throw new Error('Imported session id missing')
+                    }
+                    // 中文注释：Codex transcript 导入只会创建 Hapi 记录，不会自动启动 agent。
+                    // 这里立刻 resume，避免进入会话页时先看到离线，等首条消息才触发启动。
+                    const resumedSessionId = await props.api.resumeSession(
+                        importedSessionId,
+                        yoloMode ? { permissionMode: 'yolo' } : undefined
+                    )
+                    haptic.notification('success')
+                    markCodexSessionsImported([selectedCodexImportSession.id])
+                    clearNewSessionFormDraft()
+                    setLastUsedMachineId(machineId)
+                    addRecentPath(machineId, trimmedDirectory)
+                    props.onSuccess(resumedSessionId)
+                    return
+                }
+                setIsImportingCodexSession(false)
+                haptic.notification('error')
+                setError(result.error || result.message || t('codexSync.failed.body'))
+                return
+            }
+
             const result = await spawnSession({
                 machineId,
                 directory: trimmedDirectory,
@@ -652,6 +796,7 @@ export function NewSession(props: {
             haptic.notification('error')
             setError(result.message)
         } catch (e) {
+            setIsImportingCodexSession(false)
             haptic.notification('error')
             setError(e instanceof Error ? e.message : 'Failed to create session')
         }
@@ -702,6 +847,19 @@ export function NewSession(props: {
                 isDisabled={isFormDisabled}
                 onAgentChange={setAgent}
             />
+            {agent === 'codex' ? (
+                <CodexImportSelectButton
+                    selectedSession={selectedCodexImportSession}
+                    isLoading={isLoadingCodexImportSessions}
+                    isDisabled={isFormDisabled}
+                    error={codexImportError}
+                    onOpen={() => {
+                        setIsCodexImportDialogOpen(true)
+                        void loadCodexImportSessions()
+                    }}
+                    onClear={() => setSelectedCodexImportSessionId(null)}
+                />
+            ) : null}
             {agent === 'opencode' ? (
                 <OpencodeModelSelector
                     cwd={deferredDirectory}
@@ -817,12 +975,30 @@ export function NewSession(props: {
             ) : null}
 
             <ActionButtons
-                isPending={isPending}
+                isPending={isPending || isImportingCodexSession}
                 canCreate={canCreate}
                 isDisabled={isFormDisabled}
                 createLabel={createLabel}
                 onCancel={props.onCancel}
                 onCreate={handleCreate}
+            />
+            <CodexSessionSyncDialog
+                isOpen={isCodexImportDialogOpen}
+                onClose={() => setIsCodexImportDialogOpen(false)}
+                sessions={codexImportSessions}
+                currentCodexSessionId={selectedCodexImportSessionId}
+                currentWorkDirectory={trimmedDirectory}
+                selectionMode="single"
+                onSelectOnly={(session) => {
+                    handleSelectCodexImportSession(session)
+                    setIsCodexImportDialogOpen(false)
+                }}
+                onConfirm={async () => {}}
+                onRestartCodexDesktop={async () => { await loadCodexImportSessions() }}
+                onArchiveSession={handleArchiveCodexImportSession}
+                isPending={false}
+                isRestartingCodexDesktop={false}
+                isLoading={isLoadingCodexImportSessions}
             />
         </div>
     )

@@ -64,6 +64,7 @@ type PersistedMessageWindowState = {
 const states = new Map<string, InternalState>()
 const listeners = new Map<string, Set<() => void>>()
 const pendingVisibilityCacheBySession = new Map<string, Map<string, PendingVisibilityCacheEntry>>()
+const latestLoads = new Map<string, Promise<void>>()
 
 // Throttled notification: coalesce rapid state updates into at most one
 // notification per NOTIFY_THROTTLE_MS during streaming. This prevents
@@ -284,9 +285,20 @@ function hydrateState(sessionId: string): InternalState | null {
             return null
         }
         const base = createState(sessionId)
+        const restorePersistedMessage = (message: DecryptedMessage): DecryptedMessage => {
+            if (message.status !== 'sending') {
+                return message
+            }
+            // A page reload ends the in-flight POST, so persisted sending rows
+            // must re-enter authoritative queued-state reconciliation.
+            return {
+                ...message,
+                status: message.invokedAt === null ? 'queued' as const : 'sent' as const
+            }
+        }
         return buildState(base, {
-            messages: parsed.messages,
-            pending: parsed.pending,
+            messages: parsed.messages.map(restorePersistedMessage),
+            pending: parsed.pending.map(restorePersistedMessage),
             pendingOverflowCount: typeof parsed.pendingOverflowCount === 'number' ? parsed.pendingOverflowCount : 0,
             pendingOverflowVisibleCount: typeof parsed.pendingOverflowVisibleCount === 'number' ? parsed.pendingOverflowVisibleCount : 0,
             hasMore: parsed.hasMore === true,
@@ -669,6 +681,16 @@ function isOptimisticMessage(message: DecryptedMessage): boolean {
     return Boolean(message.localId && message.id === message.localId)
 }
 
+function isQueuedReconcileCandidate(message: DecryptedMessage): boolean {
+    if (!message.localId || !isQueuedForInvocation(message)) {
+        return false
+    }
+    if (!isOptimisticMessage(message)) {
+        return true
+    }
+    return message.status === 'queued' || message.status === 'sent'
+}
+
 /**
  * Drops phantom queued messages during an at-bottom full refresh.
  *
@@ -764,6 +786,48 @@ export function getMessageWindowState(sessionId: string): MessageWindowState {
     return getState(sessionId)
 }
 
+export function getQueuedReconcileCandidateLocalIds(sessionId: string): string[] {
+    const state = getState(sessionId)
+    const localIds = new Set<string>()
+    for (const message of [...state.messages, ...state.pending]) {
+        if (isQueuedReconcileCandidate(message)) {
+            localIds.add(message.localId!)
+        }
+    }
+    return [...localIds]
+}
+
+export function reconcileQueuedLocalIds(
+    sessionId: string,
+    candidateLocalIds: string[],
+    queuedLocalIds: string[]
+): void {
+    if (candidateLocalIds.length === 0) {
+        return
+    }
+    const candidates = new Set(candidateLocalIds)
+    const queued = new Set(queuedLocalIds)
+    updateState(sessionId, (prev) => {
+        let changed = false
+        const reconcile = (messages: DecryptedMessage[]) => messages.filter((message) => {
+            if (!message.localId || !candidates.has(message.localId)) {
+                return true
+            }
+            if (queued.has(message.localId) || !isQueuedReconcileCandidate(message)) {
+                return true
+            }
+            changed = true
+            return false
+        })
+        const messages = reconcile(prev.messages)
+        const pending = reconcile(prev.pending)
+        if (!changed) {
+            return prev
+        }
+        return buildState(prev, { messages, pending })
+    }, true)
+}
+
 export function subscribeMessageWindow(sessionId: string, listener: () => void): () => void {
     const subs = listeners.get(sessionId) ?? new Set()
     subs.add(listener)
@@ -780,6 +844,7 @@ export function subscribeMessageWindow(sessionId: string, listener: () => void):
 }
 
 export function clearMessageWindow(sessionId: string): void {
+    latestLoads.delete(sessionId)
     clearPendingVisibilityCache(sessionId)
     clearPersistedState(sessionId)
     const previous = states.get(sessionId)
@@ -819,7 +884,23 @@ export function seedMessageWindowFromSession(fromSessionId: string, toSessionId:
     })
 }
 
-export async function fetchLatestMessages(api: ApiClient, sessionId: string): Promise<void> {
+export function fetchLatestMessages(api: ApiClient, sessionId: string): Promise<void> {
+    const existing = latestLoads.get(sessionId)
+    if (existing) {
+        return existing
+    }
+    const load = fetchLatestMessagesOnce(api, sessionId)
+    latestLoads.set(sessionId, load)
+    const cleanup = () => {
+        if (latestLoads.get(sessionId) === load) {
+            latestLoads.delete(sessionId)
+        }
+    }
+    void load.then(cleanup, cleanup)
+    return load
+}
+
+async function fetchLatestMessagesOnce(api: ApiClient, sessionId: string): Promise<void> {
     const initial = getState(sessionId)
     if (initial.isLoading) {
         return

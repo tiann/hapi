@@ -171,6 +171,7 @@ export type CodexDesktopScriptResponse = {
     syncedCount?: number
     // 中文注释：这里存放本次导入对应的 Codex thread ID 列表，方便日志和排查 direct import 结果。
     sessionIds?: string[]
+    hapiSessionIds?: string[]
 }
 
 export type CodexLocalSessionSummary = {
@@ -182,16 +183,41 @@ export type CodexLocalSessionSummary = {
     modifiedAt: number
     originator?: string | null
     cliVersion?: string | null
+    source?: string | null
+    threadSource?: string | null
+    forkedFromId?: string | null
 }
 
 export type CodexLocalSessionsResponse = {
     success: true
     sessions: CodexLocalSessionSummary[]
+    machineId?: string
+} | {
+    success: false
+    error: string
+    sessions: []
+    machineId?: string
+}
+
+
+export type CodexArchiveSessionResponse = {
+    success: true
+    archivedPath: string
+    machineId?: string
+} | {
+    success: false
+    error: string
+    machineId?: string
 }
 
 export type CodexDesktopSyncRequest = {
     // 中文注释：前端弹窗直接提交 Codex thread ID，后端会按这些 transcript 直接导入到 Hapi。
     sessionIds: string[]
+    cwd?: string | null
+    machineId?: string | null
+    model?: string | null
+    modelReasoningEffort?: string | null
+    yolo?: boolean
 }
 
 export type CodexDesktopStatusResponse = {

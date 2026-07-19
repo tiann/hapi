@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, rmSync, mkdirSync, realpathSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -90,6 +90,35 @@ async function callCursorChatStoreStatus(
         params: JSON.stringify(params)
     })
     return JSON.parse(raw) as unknown
+}
+
+async function callListCodexSessions(client: ApiMachineClient, machineId: string, params: { cwd?: string | null; sessionIds?: string[] }): Promise<unknown> {
+    const manager = (client as unknown as { rpcHandlerManager: { handleRequest: (req: { method: string; params: string }) => Promise<string> } }).rpcHandlerManager
+    const raw = await manager.handleRequest({
+        method: `${machineId}:listCodexSessions`,
+        params: JSON.stringify(params)
+    })
+    return JSON.parse(raw) as unknown
+}
+
+async function callArchiveCodexSession(client: ApiMachineClient, machineId: string, sessionId: string): Promise<unknown> {
+    const manager = (client as unknown as { rpcHandlerManager: { handleRequest: (req: { method: string; params: string }) => Promise<string> } }).rpcHandlerManager
+    const raw = await manager.handleRequest({
+        method: `${machineId}:archiveCodexSession`,
+        params: JSON.stringify({ sessionId })
+    })
+    return JSON.parse(raw) as unknown
+}
+
+function writeCodexTranscript(codexHome: string, fileName: string, payload: Record<string, unknown>, userText: string): string {
+    const sessionDir = join(codexHome, 'sessions', '2026', '06', '29')
+    mkdirSync(sessionDir, { recursive: true })
+    const file = join(sessionDir, fileName)
+    writeFileSync(file, [
+        JSON.stringify({ type: 'session_meta', payload }),
+        JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: userText }] } })
+    ].join('\n'))
+    return file
 }
 
 describe('ApiMachineClient cursor-chat-store-status handler', () => {
@@ -294,6 +323,100 @@ describe('ApiMachineClient listGrokModelsForCwd handler', () => {
                 currentModelId: 'grok-4.5'
             })
             expect(listGrokModelsForCwdMock).toHaveBeenCalledWith(realpathSync.native(workspaceRoot))
+        } finally {
+            client.shutdown()
+        }
+    })
+})
+
+describe('ApiMachineClient Codex transcript handlers', () => {
+    const originalCodexHome = process.env.CODEX_HOME
+    let workspaceRoot: string
+    let outsideRoot: string
+    let codexHome: string
+
+    beforeEach(() => {
+        ioMock.mockReset()
+        listOpencodeModelsForCwdMock.mockReset()
+        workspaceRoot = mkdtempSync(join(tmpdir(), 'hapi-codex-allowed-'))
+        outsideRoot = mkdtempSync(join(tmpdir(), 'hapi-codex-outside-'))
+        codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-'))
+        process.env.CODEX_HOME = codexHome
+    })
+
+    afterEach(() => {
+        if (originalCodexHome === undefined) delete process.env.CODEX_HOME
+        else process.env.CODEX_HOME = originalCodexHome
+        rmSync(workspaceRoot, { recursive: true, force: true })
+        rmSync(outsideRoot, { recursive: true, force: true })
+        rmSync(codexHome, { recursive: true, force: true })
+    })
+
+    it('filters listed Codex sessions to workspace roots', async () => {
+        writeCodexTranscript(codexHome, 'allowed.jsonl', {
+            id: 'allowed-session-id',
+            cwd: workspaceRoot
+        }, 'allowed prompt')
+        writeCodexTranscript(codexHome, 'outside.jsonl', {
+            id: 'outside-session-id',
+            cwd: outsideRoot
+        }, 'outside prompt')
+
+        const machine = makeMachine('codex-machine-1')
+        const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
+
+        try {
+            const result = await callListCodexSessions(client, machine.id, {})
+
+            expect(result).toMatchObject({ success: true })
+            const sessions = (result as { sessions: Array<{ id: string }> }).sessions
+            expect(sessions.map((session) => session.id)).toEqual(['allowed-session-id'])
+        } finally {
+            client.shutdown()
+        }
+    })
+
+    it('filters import-by-sessionId Codex sessions to workspace roots before returning message bodies', async () => {
+        writeCodexTranscript(codexHome, 'allowed.jsonl', {
+            id: 'allowed-session-id',
+            cwd: workspaceRoot
+        }, 'allowed prompt')
+        writeCodexTranscript(codexHome, 'outside.jsonl', {
+            id: 'outside-session-id',
+            cwd: outsideRoot
+        }, 'outside prompt')
+
+        const machine = makeMachine('codex-machine-2')
+        const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
+
+        try {
+            const result = await callListCodexSessions(client, machine.id, {
+                sessionIds: ['allowed-session-id', 'outside-session-id']
+            })
+
+            expect(result).toMatchObject({ success: true })
+            const sessions = (result as { sessions: Array<{ id: string; messages?: unknown[] }> }).sessions
+            expect(sessions.map((session) => session.id)).toEqual(['allowed-session-id'])
+            expect(sessions[0]?.messages).toHaveLength(1)
+        } finally {
+            client.shutdown()
+        }
+    })
+
+    it('rejects archive for Codex sessions outside workspace roots', async () => {
+        const outsideFile = writeCodexTranscript(codexHome, 'outside.jsonl', {
+            id: 'outside-session-id',
+            cwd: outsideRoot
+        }, 'outside prompt')
+
+        const machine = makeMachine('codex-machine-3')
+        const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
+
+        try {
+            const result = await callArchiveCodexSession(client, machine.id, 'outside-session-id')
+
+            expect(result).toEqual({ success: false, error: 'Codex session is outside workspace roots' })
+            expect(existsSync(outsideFile)).toBe(true)
         } finally {
             client.shutdown()
         }
