@@ -157,4 +157,14 @@ describe('installCursorMcpOverlay', () => {
         handle.cleanup();
         expect(existsSync(mcpPath)).toBe(false);
     });
+
+    it('throws when existing .cursor/mcp.json is not valid JSON', () => {
+        const cwd = makeProjectDir('{ not-json');
+        expect(() => installCursorMcpOverlay(cwd, {
+            command: 'hapi',
+            args: ['mcp', '--url', 'http://127.0.0.1:9999/'],
+        })).toThrow();
+        // Malformed project config must stay untouched for the launcher try/catch path.
+        expect(readFileSync(join(cwd, '.cursor', 'mcp.json'), 'utf-8')).toBe('{ not-json');
+    });
 });
