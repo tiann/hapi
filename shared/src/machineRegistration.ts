@@ -11,6 +11,7 @@
 const IDENTITY_KEYS = [
     'host',
     'platform',
+    'arch',
     'happyCliVersion',
     'homeDir',
     'happyHomeDir',

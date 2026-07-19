@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { spawn } from 'node:child_process'
 import { chmodSync, createWriteStream, existsSync, mkdirSync, renameSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -145,12 +146,21 @@ function scheduleRunnerRelaunch(cliExecutable?: string): void {
     if (cliExecutable) {
         env.HAPI_CLI_EXECUTABLE = cliExecutable
     }
-    // Replay runner start-sync so systemd/supervisor or detached child takes over.
-    spawnHappyCLI(['runner', 'start-sync'], {
-        detached: true,
-        stdio: 'ignore',
-        env,
-    }).unref()
+    // spawnHappyCLI resolves HAPI_CLI_EXECUTABLE from process.env before merging
+    // options.env, and in compiled mode overwrites it with the old binary. When we
+    // have a freshly downloaded artifact path, spawn that path directly.
+    const child = cliExecutable
+        ? spawn(cliExecutable, ['runner', 'start-sync'], {
+            detached: true,
+            stdio: 'ignore',
+            env,
+        })
+        : spawnHappyCLI(['runner', 'start-sync'], {
+            detached: true,
+            stdio: 'ignore',
+            env,
+        })
+    child.unref()
     setTimeout(() => {
         process.exit(0)
     }, 250)

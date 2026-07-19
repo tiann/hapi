@@ -148,7 +148,8 @@ export function withStubEmbeddedAssets<T>(
     run: () => Promise<T>,
 ): Promise<T> {
     const manifestPath = join(monorepoRoot, 'hub', 'src', 'web', 'embeddedAssets.generated.ts')
-    const backupPath = `${manifestPath}.fleet-upgrade.bak`
+    // Unique backup per call so overlapping builds cannot clobber each other's restore.
+    const backupPath = `${manifestPath}.fleet-upgrade.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.bak`
     const hadOriginal = existsSync(manifestPath)
     if (hadOriginal) {
         copyFileSync(manifestPath, backupPath)
@@ -177,6 +178,23 @@ export function withStubEmbeddedAssets<T>(
     return run().finally(restore)
 }
 
+/** Serialize artifact compiles — concurrent heartbeats must not race the stub/restore. */
+let artifactBuildLock: Promise<void> = Promise.resolve()
+
+async function withArtifactBuildLock<T>(run: () => Promise<T>): Promise<T> {
+    const previous = artifactBuildLock
+    let release!: () => void
+    artifactBuildLock = new Promise<void>((resolve) => {
+        release = resolve
+    })
+    await previous
+    try {
+        return await run()
+    } finally {
+        release()
+    }
+}
+
 /**
  * Ensure a compiled CLI artifact exists for platform/arch.
  * Uses the same bootstrap entry as `cli/scripts/build-executable.ts` (without
@@ -195,76 +213,84 @@ export async function ensureCliArtifact(options: {
         return existing
     }
 
-    if (options.platform !== process.platform || options.arch !== process.arch) {
-        throw new Error(
-            `Cross-compile not supported yet (hub is ${process.platform}/${process.arch}, requested ${options.platform}/${options.arch})`,
-        )
-    }
-
-    const hubRoot = options.hubPackageRoot ?? defaultHubPackageRoot()
-    const monorepo = findMonorepoRoot(hubRoot)
-    if (!monorepo) {
-        throw new Error('No monorepo root found; cannot build hub-artifact')
-    }
-
-    const cliRoot = join(monorepo, 'cli')
-    const entry = join(cliRoot, 'src', 'bootstrap.ts')
-    if (!existsSync(entry)) {
-        throw new Error(`CLI bootstrap missing: ${entry}`)
-    }
-
-    for (const archive of requiredToolArchives(cliRoot, options.platform, options.arch)) {
-        if (!existsSync(archive)) {
-            throw new Error(`Missing tool archive for compile: ${archive}`)
+    return await withArtifactBuildLock(async () => {
+        // Re-check after waiting — another build may have finished.
+        const cached = readArtifactMeta(options.version, options.platform, options.arch, options.dataDir)
+        if (cached && existsSync(cached.path)) {
+            return cached
         }
-    }
 
-    const bun = options.bunCommand
-        ?? (process.execPath.includes('bun') ? process.execPath : 'bun')
-    await ensureTunwgBinary(monorepo, options.platform, options.arch, bun)
+        if (options.platform !== process.platform || options.arch !== process.arch) {
+            throw new Error(
+                `Cross-compile not supported yet (hub is ${process.platform}/${process.arch}, requested ${options.platform}/${options.arch})`,
+            )
+        }
 
-    const dir = artifactsRoot(options.dataDir)
-    mkdirSync(dir, { recursive: true })
-    const outPath = join(dir, artifactFileName(options.version, options.platform, options.arch))
-    const target = bunCompileTarget(options.platform, options.arch)
-    const feature = featureFlagFor(options.platform, options.arch)
+        const hubRoot = options.hubPackageRoot ?? defaultHubPackageRoot()
+        const monorepo = findMonorepoRoot(hubRoot)
+        if (!monorepo) {
+            throw new Error('No monorepo root found; cannot build hub-artifact')
+        }
 
-    await withStubEmbeddedAssets(monorepo, async () => {
-        const proc = Bun.spawn([
-            bun,
-            'build',
-            '--compile',
-            '--no-compile-autoload-dotenv',
-            `--feature=${feature}`,
-            `--target=${target}`,
-            `--outfile=${outPath}`,
-            entry,
-        ], {
-            cwd: cliRoot,
-            stdout: 'pipe',
-            stderr: 'pipe',
-            env: process.env,
+        const cliRoot = join(monorepo, 'cli')
+        const entry = join(cliRoot, 'src', 'bootstrap.ts')
+        if (!existsSync(entry)) {
+            throw new Error(`CLI bootstrap missing: ${entry}`)
+        }
+
+        for (const archive of requiredToolArchives(cliRoot, options.platform, options.arch)) {
+            if (!existsSync(archive)) {
+                throw new Error(`Missing tool archive for compile: ${archive}`)
+            }
+        }
+
+        const bun = options.bunCommand
+            ?? (process.execPath.includes('bun') ? process.execPath : 'bun')
+        await ensureTunwgBinary(monorepo, options.platform, options.arch, bun)
+
+        const dir = artifactsRoot(options.dataDir)
+        mkdirSync(dir, { recursive: true })
+        const outPath = join(dir, artifactFileName(options.version, options.platform, options.arch))
+        const target = bunCompileTarget(options.platform, options.arch)
+        const feature = featureFlagFor(options.platform, options.arch)
+
+        await withStubEmbeddedAssets(monorepo, async () => {
+            const proc = Bun.spawn([
+                bun,
+                'build',
+                '--compile',
+                '--no-compile-autoload-dotenv',
+                `--feature=${feature}`,
+                `--target=${target}`,
+                `--outfile=${outPath}`,
+                entry,
+            ], {
+                cwd: cliRoot,
+                stdout: 'pipe',
+                stderr: 'pipe',
+                env: process.env,
+            })
+            const [stdout, stderr, code] = await Promise.all([
+                new Response(proc.stdout).text(),
+                new Response(proc.stderr).text(),
+                proc.exited,
+            ])
+            if (code !== 0 || !existsSync(outPath)) {
+                throw new Error(`bun compile failed: ${stderr || stdout}`)
+            }
         })
-        const [stdout, stderr, code] = await Promise.all([
-            new Response(proc.stdout).text(),
-            new Response(proc.stderr).text(),
-            proc.exited,
-        ])
-        if (code !== 0 || !existsSync(outPath)) {
-            throw new Error(`bun compile failed: ${stderr || stdout}`)
-        }
-    })
 
-    const buf = readFileSync(outPath)
-    const sha256 = createHash('sha256').update(buf).digest('hex')
-    const meta: ArtifactMeta = {
-        version: options.version,
-        platform: options.platform,
-        arch: options.arch,
-        path: outPath,
-        sha256,
-        sizeBytes: statSync(outPath).size,
-    }
-    writeMeta(meta)
-    return meta
+        const buf = readFileSync(outPath)
+        const sha256 = createHash('sha256').update(buf).digest('hex')
+        const meta: ArtifactMeta = {
+            version: options.version,
+            platform: options.platform,
+            arch: options.arch,
+            path: outPath,
+            sha256,
+            sizeBytes: statSync(outPath).size,
+        }
+        writeMeta(meta)
+        return meta
+    })
 }
