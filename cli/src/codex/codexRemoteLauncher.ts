@@ -356,7 +356,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
         const scanner = await createCodexSessionScanner({
             transcriptPath,
-            replayExistingEvents: true,
+            replayExistingHistory: true,
             onEvent: (event) => {
                 const converted = convertCodexEvent(event);
                 if (converted?.message?.type === 'token_count') {
