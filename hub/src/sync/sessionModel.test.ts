@@ -626,10 +626,12 @@ describe('session model', () => {
                 'default'
             )
             engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+            session.personality = 'pragmatic'
 
             let capturedModel: string | undefined
             let capturedModelReasoningEffort: string | undefined
             let capturedEffort: string | undefined
+            let capturedPersonality: string | undefined
             ;(engine as any).rpcGateway.spawnSession = async (
                 _machineId: string,
                 _directory: string,
@@ -640,11 +642,15 @@ describe('session model', () => {
                 _sessionType?: string,
                 _worktreeName?: string,
                 _resumeSessionId?: string,
-                effort?: string
+                effort?: string,
+                _permissionMode?: string,
+                _serviceTier?: string,
+                personality?: string
             ) => {
                 capturedModel = model
                 capturedModelReasoningEffort = modelReasoningEffort
                 capturedEffort = effort
+                capturedPersonality = personality
                 return { type: 'success', sessionId: session.id }
             }
             ;(engine as any).waitForSessionActive = async () => true
@@ -655,6 +661,7 @@ describe('session model', () => {
             expect(capturedModel).toBe('gpt-5.4')
             expect(capturedModelReasoningEffort).toBeUndefined()
             expect(capturedEffort).toBeUndefined()
+            expect(capturedPersonality).toBe('pragmatic')
         } finally {
             engine.stop()
         }

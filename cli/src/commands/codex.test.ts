@@ -121,6 +121,15 @@ describe('codexCommand', () => {
         }
     })
 
+    it('forwards a valid --personality to runCodex', async () => {
+        await codexCommand.run(createCommandContext(['--started-by', 'runner', '--personality', 'friendly']))
+
+        expect(runCodexMock).toHaveBeenCalledWith({
+            startedBy: 'runner',
+            personality: 'friendly'
+        })
+    })
+
     it('accepts and normalizes a dynamic model reasoning effort', async () => {
         await codexCommand.run(createCommandContext([
             '--started-by',

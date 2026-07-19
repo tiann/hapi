@@ -4,7 +4,7 @@ import { initializeToken } from '@/ui/tokenInit'
 import { maybeAutoStartServer } from '@/utils/autoStartServer'
 import type { CommandDefinition } from './types'
 import { CODEX_PERMISSION_MODES } from '@hapi/protocol/modes'
-import type { CodexPermissionMode } from '@hapi/protocol/types'
+import type { CodexPermissionMode, CodexPersonality } from '@hapi/protocol/types'
 import type { ReasoningEffort } from '@/codex/appServerTypes'
 import { assertCodexLocalSupported } from '@/codex/utils/codexVersion'
 import { parseReasoningEffortValue } from '@/codex/utils/reasoningEffort'
@@ -34,6 +34,7 @@ export const codexCommand: CommandDefinition = {
                 model?: string
                 modelReasoningEffort?: ReasoningEffort
                 serviceTier?: string
+                personality?: CodexPersonality
             } = {}
             const unknownArgs: string[] = []
             let hasExplicitPermissionMode = false
@@ -80,6 +81,12 @@ export const codexCommand: CommandDefinition = {
                         throw new Error('Missing --service-tier value')
                     }
                     options.serviceTier = parseServiceTier(tier)
+                } else if (arg === '--personality') {
+                    const personality = commandArgs[++i]
+                    if (!personality || !['friendly', 'pragmatic', 'none'].includes(personality)) {
+                        throw new Error(`Invalid --personality value: ${personality ?? '(missing)'}`)
+                    }
+                    options.personality = personality as CodexPersonality
                 } else {
                     unknownArgs.push(arg)
                 }

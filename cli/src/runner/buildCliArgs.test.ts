@@ -92,6 +92,15 @@ describe('buildCliArgs', () => {
         expect(args).not.toContain('--service-tier')
     })
 
+    it('passes --personality through for resumed codex sessions', () => {
+        const args = buildCliArgs('codex', {
+            directory: '/tmp',
+            personality: 'pragmatic',
+        })
+        expect(args).toContain('--personality')
+        expect(args).toContain('pragmatic')
+    })
+
     it('validates all known permission modes', () => {
         for (const mode of ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan', 'ask', 'debug', 'autoReview', 'read-only', 'safe-yolo', 'yolo']) {
             const args = buildCliArgs('claude', {
