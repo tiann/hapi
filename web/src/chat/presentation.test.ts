@@ -135,7 +135,7 @@ describe('getEventPresentation — thread goals', () => {
 })
 
 describe('getEventPresentation — recap (away_summary)', () => {
-    it('formats the auto-generated away recap with a recap: prefix, distinct from manual /recap', () => {
+    it('formats the recap with a recap: prefix', () => {
         const result = getEventPresentation({
             type: 'recap',
             text: 'Building the login flow, next: wire up the submit handler.'
