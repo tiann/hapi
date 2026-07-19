@@ -200,6 +200,34 @@ describe('useHubScratchlist - add', () => {
         expect(result.current.entries.map((e) => e.id)).toEqual(['a'])
     })
 
+    it('removes optimistic ghost when create fails before initial fetch populates (HAPI Bot, PR #896)', async () => {
+        const sid = makeSid()
+        let releaseFetch: (value: { entries: HubEntry[] }) => void = () => undefined
+        const fetchDeferred = new Promise<{ entries: HubEntry[] }>((resolve) => {
+            releaseFetch = resolve
+        })
+        const api = createMockApi({
+            getScratchlist: async () => fetchDeferred,
+            createScratchlistEntry: async () => {
+                throw new Error('HTTP 409: scratchlist_at_cap')
+            }
+        })
+        const { result } = renderHook(() => useHubScratchlist(sid, api), { wrapper: createWrapper() })
+        // Do not wait for fetch - race create against empty previousData.
+        let added: boolean | undefined
+        await act(async () => {
+            added = await result.current.add('ghost')
+        })
+        expect(added).toBe(false)
+        await waitFor(() => expect(result.current.entries).toHaveLength(0))
+
+        await act(async () => {
+            releaseFetch({ entries: [] })
+        })
+        await waitFor(() => expect(result.current.isLoading).toBe(false))
+        expect(result.current.entries).toHaveLength(0)
+    })
+
     it('refuses to add empty text without calling the hub', async () => {
         const sid = makeSid()
         const create = vi.fn(async () => ({
