@@ -52,7 +52,7 @@ const harness = vi.hoisted(() => ({
     safetyBufferingFasterModel: null as string | null,
     emitModelSafetyNotices: false,
     transcriptPathByThreadId: new Map<string, string>(),
-    scannerStarts: [] as Array<{ transcriptPath: string | null; replayExistingEvents?: boolean }>,
+    scannerStarts: [] as Array<{ transcriptPath: string | null; replayExistingHistory?: boolean }>,
     scannerCleanups: 0,
     scannerEvents: [] as Array<(event: unknown) => void>,
     startTurnMessages: [] as string[],
@@ -1054,12 +1054,12 @@ vi.mock('@/modules/common/codexSessions', () => ({
 vi.mock('./utils/codexSessionScanner', () => ({
     createCodexSessionScanner: async (opts: {
         transcriptPath: string | null;
-        replayExistingEvents?: boolean;
+        replayExistingHistory?: boolean;
         onEvent: (event: unknown) => void;
     }) => {
         harness.scannerStarts.push({
             transcriptPath: opts.transcriptPath,
-            replayExistingEvents: opts.replayExistingEvents
+            replayExistingHistory: opts.replayExistingHistory
         });
         harness.scannerEvents.push(opts.onEvent);
         return {
@@ -3179,7 +3179,7 @@ describe('codexRemoteLauncher', () => {
         expect(exitReason).toBe('exit');
         expect(harness.scannerStarts).toEqual([{
             transcriptPath: '/tmp/codex-thread-1.jsonl',
-            replayExistingEvents: true
+            replayExistingHistory: true
         }]);
 
         harness.scannerEvents[0]?.({
