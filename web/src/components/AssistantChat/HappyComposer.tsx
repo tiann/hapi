@@ -766,9 +766,11 @@ export function HappyComposer(props: {
         && modelEffortOptions.length > 0
     )
     const showModelReasoningEffortSettings = Boolean(onModelReasoningEffortChange && codexReasoningEffortOptions.length > 0)
-    // For Pi: hide effort when selected model explicitly has reasoning: false
-    const piEffortHidden = piModels && selectedPiModel && selectedPiModel.reasoning === false
-    const showEffortSettings = Boolean(onEffortChange && supportsEffort(agentFlavor) && !piEffortHidden)
+    const showEffortSettings = Boolean(
+        onEffortChange
+        && supportsEffort(agentFlavor)
+        && (agentFlavor !== 'pi' || selectedPiModel?.reasoning === true)
+    )
     const showFastModeSettings = Boolean(onServiceTierChange)
     const showSettingsButton = Boolean(
         showCollaborationSettings
