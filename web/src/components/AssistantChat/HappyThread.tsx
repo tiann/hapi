@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/Spinner'
 import { useTerminalToolDisplayMode } from '@/hooks/useTerminalToolDisplayMode'
 import { useTranslation } from '@/lib/use-translation'
+import { CloseIcon } from '@/components/icons'
 
 type ScrollAnchor = {
     id: string
@@ -153,6 +154,7 @@ export function ConversationOutlinePanel(props: {
     isLoadingMoreMessages: boolean
     onLoadMore: () => void
     onSelect: (item: ConversationOutlineItem) => void
+    onClose: () => void
 }) {
     const { t } = useTranslation()
     const [searchQuery, setSearchQuery] = useState('')
@@ -216,6 +218,15 @@ export function ConversationOutlinePanel(props: {
                             )}
                         </Button>
                     ) : null}
+                    <button
+                        type="button"
+                        onClick={props.onClose}
+                        aria-label={t('button.close')}
+                        title={t('button.close')}
+                        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                    >
+                        <CloseIcon className="h-4 w-4" />
+                    </button>
                 </div>
                 {normalizedSearchQuery.length > 0 ? (
                     <div className="mt-1.5 text-right text-xs text-[var(--app-hint)]" aria-live="polite">
@@ -791,6 +802,7 @@ export function HappyThread(props: {
                                 void loadOlderPreservingScroll()
                             }}
                             onSelect={handleOutlineSelect}
+                            onClose={() => props.onOutlineOpenChange(false)}
                         />
                     </>
                 ) : null}

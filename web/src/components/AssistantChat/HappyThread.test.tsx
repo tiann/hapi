@@ -51,6 +51,7 @@ function renderPanel(props: Partial<ComponentProps<typeof ConversationOutlinePan
                 isLoadingMoreMessages={false}
                 onLoadMore={vi.fn()}
                 onSelect={vi.fn()}
+                onClose={vi.fn()}
                 {...props}
             />
         </I18nProvider>
@@ -100,6 +101,15 @@ describe('ConversationOutlinePanel', () => {
 
         expect(screen.getByText('No matching outline items')).toBeInTheDocument()
         expect(screen.queryByText('No outline items in loaded messages')).not.toBeInTheDocument()
+    })
+
+    it('keeps an in-panel close action available', () => {
+        const onClose = vi.fn()
+        renderPanel({ onClose })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+
+        expect(onClose).toHaveBeenCalledTimes(1)
     })
 
     it('renders an empty state', () => {
