@@ -187,6 +187,79 @@ describe('AcpSdkBackend', () => {
         });
     });
 
+    it('captures Grok reasoning efforts from x.ai session metadata and switches with set_mode', async () => {
+        const backend = new AcpSdkBackend({ command: 'grok' });
+        const calls: Array<{ method: string; params: unknown }> = [];
+        const backendInternal = backend as unknown as {
+            transport: { sendRequest: (method: string, params: unknown) => Promise<unknown>; close: () => Promise<void> } | null;
+        };
+        backendInternal.transport = {
+            sendRequest: async (method, params) => {
+                calls.push({ method, params });
+                if (method === 'session/new') {
+                    return {
+                        sessionId: 'grok-session-1',
+                        models: {
+                            currentModelId: 'grok-4.5',
+                            availableModels: [{
+                                modelId: 'grok-4.5',
+                                name: 'Grok 4.5',
+                                _meta: {
+                                    reasoningEfforts: [
+                                        { value: 'high', label: 'High Effort', default: true },
+                                        { value: 'low', label: 'Low Effort', default: false }
+                                    ]
+                                }
+                            }]
+                        },
+                        _meta: {
+                            availableCommands: [{ name: 'auto' }],
+                            'x.ai/sessionConfig': {
+                                options: [
+                                    { id: 'high', category: 'mode', label: 'High Effort', selected: false },
+                                    { id: 'low', category: 'mode', label: 'Low Effort', selected: true }
+                                ]
+                            }
+                        }
+                    };
+                }
+                if (method === 'session/set_mode') return { meta: null };
+                return null;
+            },
+            close: async () => {}
+        };
+
+        const sessionId = await backend.newSession({ cwd: '/tmp/x', mcpServers: [] });
+
+        expect(backend.getSessionModelsMetadata(sessionId)).toEqual({
+            availableModels: [{
+                modelId: 'grok-4.5',
+                name: 'Grok 4.5',
+                reasoningEfforts: [
+                    { value: 'high', name: 'High Effort', isDefault: true },
+                    { value: 'low', name: 'Low Effort', isDefault: false }
+                ]
+            }],
+            currentModelId: 'grok-4.5'
+        });
+        expect(backend.getThoughtLevelConfigOption(sessionId)).toMatchObject({
+            currentValue: 'low',
+            options: [
+                { value: 'high', name: 'High Effort' },
+                { value: 'low', name: 'Low Effort' }
+            ]
+        });
+        expect(backend.hasAvailableCommand(sessionId, 'auto')).toBe(true);
+
+        await backend.setMode(sessionId, 'high');
+
+        expect(calls).toContainEqual({
+            method: 'session/set_mode',
+            params: { sessionId, modeId: 'high' }
+        });
+        expect(backend.getThoughtLevelConfigOption(sessionId)?.currentValue).toBe('high');
+    });
+
     it('merges configOptions model variants into availableModels when both are present', async () => {
         const backend = new AcpSdkBackend({ command: 'agent' });
         const backendInternal = backend as unknown as {
@@ -753,6 +826,52 @@ describe('AcpSdkBackend', () => {
                 m.type === 'usage' && m.contextTokens !== undefined
         );
         expect(realtimeUsage.map((m) => m.contextTokens)).toEqual([1_000, 2_500]);
+    });
+
+    it('forwards title changes from session_info_update', () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const updates: Array<{ title?: string | null }> = [];
+        backend.setSessionInfoUpdateListener((update) => updates.push(update));
+
+        const backendInternal = backend as unknown as {
+            activeSessionId: string | null;
+            handleSessionUpdate: (params: unknown) => void;
+        };
+        backendInternal.activeSessionId = 'session-1';
+
+        backendInternal.handleSessionUpdate({
+            sessionId: 'session-1',
+            update: {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.sessionInfoUpdate,
+                title: 'Native ACP title'
+            }
+        });
+        backendInternal.handleSessionUpdate({
+            sessionId: 'session-1',
+            update: {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.sessionInfoUpdate,
+                title: null
+            }
+        });
+        backendInternal.handleSessionUpdate({
+            sessionId: 'session-1',
+            update: {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.sessionInfoUpdate,
+                title: 123
+            }
+        });
+        backendInternal.handleSessionUpdate({
+            sessionId: 'other-session',
+            update: {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.sessionInfoUpdate,
+                title: 'Wrong session'
+            }
+        });
+
+        expect(updates).toEqual([
+            { title: 'Native ACP title' },
+            { title: null }
+        ]);
     });
 
     it('emits a context-only usage on finalize when the prompt response carries no usage', async () => {

@@ -13,6 +13,7 @@ import chalk from 'chalk'
 import { configuration } from '@/configuration'
 import { readSettings, updateSettings } from '@/persistence'
 import { initializeApiUrl } from '@/ui/apiUrlInit'
+import { initializeExtraHeaders } from '@/ui/extraHeadersInit'
 
 /**
  * Initialize CLI API token
@@ -21,6 +22,7 @@ import { initializeApiUrl } from '@/ui/apiUrlInit'
 export async function initializeToken(): Promise<void> {
     // Initialize API URL first (env > settings.json > default)
     await initializeApiUrl()
+    await initializeExtraHeaders()
 
     // 1. Environment variable has highest priority (allows temporary override)
     if (configuration.cliApiToken) {

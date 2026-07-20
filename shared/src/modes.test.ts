@@ -1,5 +1,8 @@
 import { describe, expect, it, test } from 'bun:test'
 import {
+    AGENT_FLAVORS,
+    AgentFlavorSchema,
+    CREATABLE_AGENT_FLAVORS,
     getPermissionModeLabel,
     getPermissionModeOptionsForFlavor,
     getPermissionModeTone,
@@ -7,7 +10,34 @@ import {
     isPermissionModeAllowedForFlavor,
 } from './modes'
 
+describe('Gemini CLI sunset (read-only, not creatable)', () => {
+    test('gemini stays a valid flavor so existing stored sessions still validate/load', () => {
+        expect(AGENT_FLAVORS).toContain('gemini')
+        expect(AgentFlavorSchema.safeParse('gemini').success).toBe(true)
+    })
+
+    test('gemini is excluded from creatable flavors (not offered for new sessions)', () => {
+        expect(CREATABLE_AGENT_FLAVORS).not.toContain('gemini')
+    })
+
+    test('all other flavors remain creatable', () => {
+        for (const flavor of AGENT_FLAVORS) {
+            if (flavor === 'gemini') continue
+            expect(CREATABLE_AGENT_FLAVORS).toContain(flavor)
+        }
+    })
+})
+
 describe('getPermissionModesForFlavor', () => {
+    test("returns the conservative Grok modes", () => {
+        expect(getPermissionModesForFlavor('grok')).toEqual([
+            'default',
+            'auto',
+            'plan',
+            'bypassPermissions'
+        ])
+    })
+
     test("returns [] for flavor 'pi' (RPC mode has no runtime permission switching)", () => {
         expect(getPermissionModesForFlavor('pi')).toEqual([])
     })
@@ -33,6 +63,15 @@ describe('getPermissionModeOptionsForFlavor', () => {
 })
 
 describe('isPermissionModeAllowedForFlavor', () => {
+    test("allows only the supported Grok modes", () => {
+        expect(isPermissionModeAllowedForFlavor('default', 'grok')).toBe(true)
+        expect(isPermissionModeAllowedForFlavor('plan', 'grok')).toBe(true)
+        expect(isPermissionModeAllowedForFlavor('bypassPermissions', 'grok')).toBe(true)
+        expect(isPermissionModeAllowedForFlavor('acceptEdits', 'grok')).toBe(false)
+        expect(isPermissionModeAllowedForFlavor('auto', 'grok')).toBe(true)
+        expect(isPermissionModeAllowedForFlavor('yolo', 'grok')).toBe(false)
+    })
+
     test("no mode is allowed for pi", () => {
         expect(isPermissionModeAllowedForFlavor('yolo', 'pi')).toBe(false)
         expect(isPermissionModeAllowedForFlavor('default', 'pi')).toBe(false)
@@ -43,6 +82,14 @@ describe('isPermissionModeAllowedForFlavor', () => {
         expect(isPermissionModeAllowedForFlavor('read-only', 'pi')).toBe(false)
         expect(isPermissionModeAllowedForFlavor('safe-yolo', 'pi')).toBe(false)
         expect(isPermissionModeAllowedForFlavor('ask', 'pi')).toBe(false)
+    })
+
+    test("cursor includes autoReview", () => {
+        expect(getPermissionModesForFlavor('cursor')).toContain('autoReview')
+        expect(getPermissionModeLabel('autoReview')).toBe('Auto-review')
+        expect(getPermissionModeTone('autoReview')).toBe('warning')
+        expect(isPermissionModeAllowedForFlavor('autoReview', 'cursor')).toBe(true)
+        expect(isPermissionModeAllowedForFlavor('autoReview', 'claude')).toBe(false)
     })
 })
 

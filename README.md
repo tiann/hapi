@@ -1,6 +1,6 @@
 # HAPI
 
-Run official Claude Code / Codex / Gemini / OpenCode sessions locally and control them remotely through a Web / PWA / Telegram Mini App.
+Run official Claude Code / Codex / Cursor Agent / Grok Build / OpenCode sessions locally and control them remotely through a Web / PWA / Telegram Mini App.
 
 > **Why HAPI?** HAPI is a local-first alternative to Happy. See [Why Not Happy?](docs/guide/why-hapi.md) for the key differences.
 
@@ -9,7 +9,7 @@ Run official Claude Code / Codex / Gemini / OpenCode sessions locally and contro
 - **Seamless Handoff** - Work locally, switch to remote when needed, switch back anytime. No context loss, no session restart.
 - **Native First** - HAPI wraps your AI agent instead of replacing it. Same terminal, same experience, same muscle memory.
 - **AFK Without Stopping** - Step away from your desk? Approve AI requests from your phone with one tap.
-- **Your AI, Your Choice** - Claude Code, Codex, Cursor Agent, Gemini, OpenCode—different models, one unified workflow.
+- **Your AI, Your Choice** - Claude Code, Codex, Cursor Agent, Grok Build, OpenCode—different agents, one unified workflow.
 - **Terminal Anywhere** - Run commands from your phone or browser, directly connected to the working machine.
 - **Voice Control** - Talk to your AI agent hands-free using the built-in voice assistant.
 - **Workspace Browser** - Opt-in via one or more `hapi runner start --workspace-root <path>` flags: browse scoped file trees from the web and start sessions in allowed subdirectories.
@@ -38,6 +38,7 @@ For self-hosted options (Cloudflare Tunnel, Tailscale), see [Installation](docs/
 - [App](docs/guide/pwa.md)
 - [How it Works](docs/guide/how-it-works.md)
 - [Cursor Agent](docs/guide/cursor.md)
+- [Grok Build](docs/guide/grok.md)
 - [Voice Assistant](docs/guide/voice-assistant.md)
 - [Why HAPI](docs/guide/why-hapi.md)
 - [FAQ](docs/guide/faq.md)

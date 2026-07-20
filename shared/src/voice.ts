@@ -399,8 +399,10 @@ export function buildQwenSessionUpdateMessage(
                 silence_duration_ms: 800,
                 prefix_padding_ms: 300
             },
-            tools,
-            tool_choice: 'auto'
+            // Qwen-Omni-Realtime decides whether to call tools automatically.
+            // The official realtime API does not support OpenAI-style tool_choice /
+            // parallel_tool_calls parameters on session.update.
+            tools
         }
     }
 }

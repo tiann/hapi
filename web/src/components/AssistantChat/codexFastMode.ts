@@ -49,3 +49,12 @@ export function codexModelAdvertisesFastTier(
 export function isFastServiceTier(serviceTier?: string | null): boolean {
     return serviceTier?.trim().toLowerCase() === 'fast'
 }
+
+/**
+ * The persisted null tier means the user has not chosen an override. The
+ * current two-option control still needs a visible selection, so display that
+ * untouched state as Standard without changing the value sent to the backend.
+ */
+export function getDisplayedCodexServiceTier(serviceTier?: string | null): 'standard' | 'fast' {
+    return isFastServiceTier(serviceTier) ? 'fast' : 'standard'
+}

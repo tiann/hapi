@@ -16,6 +16,7 @@ export function resolveAgentSessionIdFromMetadata(
         case 'codex': return metadata.codexSessionId ?? undefined
         case 'gemini': return metadata.geminiSessionId ?? undefined
         case 'opencode': return metadata.opencodeSessionId ?? undefined
+        case 'grok': return metadata.grokSessionId ?? undefined
         case 'cursor': return metadata.cursorSessionId ?? undefined
         case 'kimi': return metadata.kimiSessionId ?? undefined
         case 'pi': return metadata.piSessionId ?? undefined
@@ -34,6 +35,7 @@ export function resolveAgentSessionIdFromMetadata(
 export function inactiveSessionCanResume(
     session: Session,
     userMessageCount: number,
+    cursorChatOnDisk?: boolean,
 ): boolean {
     if (session.active) {
         return true
@@ -42,6 +44,10 @@ export function inactiveSessionCanResume(
         return false
     }
     if (resolveAgentSessionIdFromMetadata(session.metadata)) {
+        const flavor = isKnownFlavor(session.metadata.flavor) ? session.metadata.flavor : 'claude'
+        if (flavor === 'cursor') {
+            return cursorChatOnDisk === true
+        }
         return true
     }
     const flavor = isKnownFlavor(session.metadata.flavor) ? session.metadata.flavor : 'claude'

@@ -1,10 +1,12 @@
-import { AGENT_FLAVORS } from '@hapi/protocol'
+import { CREATABLE_AGENT_FLAVORS } from '@hapi/protocol'
 import type { AgentType } from './types'
 
 const AGENT_STORAGE_KEY = 'hapi:newSession:agent'
 const YOLO_STORAGE_KEY = 'hapi:newSession:yolo'
 
-const VALID_AGENTS = AGENT_FLAVORS
+// Only launchable flavors are valid defaults; a stale 'gemini' preference
+// (no longer creatable) falls back to 'claude'.
+const VALID_AGENTS = CREATABLE_AGENT_FLAVORS
 
 export function loadPreferredAgent(): AgentType {
     try {

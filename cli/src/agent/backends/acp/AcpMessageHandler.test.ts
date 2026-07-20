@@ -377,6 +377,25 @@ describe('AcpMessageHandler', () => {
         expect(messages).toEqual([{ type: 'text', text: 'hello world' }]);
     });
 
+    it('preserves overlapping text chunks in delta mode', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler(
+            (message) => messages.push(message),
+            { textChunkMode: 'delta' }
+        );
+
+        for (const text of ['|-----|', '-----|', '-----|\n']) {
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+                content: { type: 'text', text }
+            });
+        }
+
+        handler.flushText();
+
+        expect(messages).toEqual([{ type: 'text', text: '|-----|-----|-----|\n' }]);
+    });
+
     it('keeps existing tool name when update only has kind fallback', () => {
         const messages: AgentMessage[] = [];
         const handler = new AcpMessageHandler((message) => messages.push(message));
@@ -556,6 +575,232 @@ describe('AcpMessageHandler', () => {
         );
         expect(results).toHaveLength(1);
         expect(results[0].status).toBe('completed');
+    });
+
+    describe('OpenCode rawInput lifecycle (empty {} is not usable input)', () => {
+        it('ignores empty content JSON {} on initial tool_call when rawInput is missing', () => {
+            // Kimi-style content JSON can be `{}`; initial path must not lock that as input.
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'oc-empty-content-1',
+                title: 'other',
+                kind: 'other',
+                status: 'pending',
+                content: [{ type: 'content', content: { type: 'text', text: '{}' } }]
+            });
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                toolCallId: 'oc-empty-content-1',
+                title: 'other',
+                kind: 'other',
+                status: 'in_progress',
+                rawInput: { url: 'https://example.com' }
+            });
+
+            const calls = messages.filter(
+                (m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call'
+            );
+            expect(calls).toHaveLength(2);
+            expect(calls[0].input).toBeNull();
+            expect(calls[1].input).toEqual({ url: 'https://example.com' });
+        });
+
+        it('ignores rawInput: {} on tool start and accepts real args on update', () => {
+            // OpenCode toolStart emits rawInput: {} with title=tool name, then a
+            // running update carries part.state.input.
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'oc-bash-1',
+                title: 'bash',
+                kind: 'execute',
+                status: 'pending',
+                locations: [],
+                rawInput: {}
+            });
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                toolCallId: 'oc-bash-1',
+                title: "echo 'hi'",
+                kind: 'execute',
+                status: 'in_progress',
+                rawInput: { command: "echo 'hi'", description: "Print hi" }
+            });
+
+            const calls = messages.filter(
+                (m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call'
+            );
+            expect(calls).toHaveLength(2);
+            // Start: empty {} must not lock input as {}; title "bash" alone is a weak
+            // execute fallback, but must not block the later real rawInput.
+            expect(calls[0].input).not.toEqual({});
+            expect(calls[1].input).toEqual({ command: "echo 'hi'", description: "Print hi" });
+        });
+
+        it('does not let permission rawInput: {} clobber a previously captured input', () => {
+            // OpenCode #7370: permission request / intermediate update can re-send
+            // rawInput: {} after a good running update.
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'oc-bash-2',
+                title: 'bash',
+                kind: 'execute',
+                status: 'pending',
+                rawInput: {}
+            });
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                toolCallId: 'oc-bash-2',
+                title: 'ls -la',
+                kind: 'execute',
+                status: 'in_progress',
+                rawInput: { command: 'ls -la' }
+            });
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                toolCallId: 'oc-bash-2',
+                title: 'bash',
+                kind: 'execute',
+                status: 'pending',
+                rawInput: {}
+            });
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                toolCallId: 'oc-bash-2',
+                status: 'completed',
+                // completed may omit rawInput entirely
+                content: [{ type: 'content', content: { type: 'text', text: 'ok' } }]
+            });
+
+            const calls = messages.filter(
+                (m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call'
+            );
+            const lastCall = calls[calls.length - 1];
+            expect(lastCall.input).toEqual({ command: 'ls -la' });
+
+            const results = messages.filter(
+                (m): m is Extract<AgentMessage, { type: 'tool_result' }> => m.type === 'tool_result'
+            );
+            expect(results).toHaveLength(1);
+            expect(results[0].status).toBe('completed');
+        });
+
+        it('preserves OpenCode other/fetch/think tool rawInput (MCP, webfetch, task)', () => {
+            // These kinds have no kind+title fallback in HAPI — usable rawInput is
+            // the only path. Empty {} must not be stored in place of later args.
+            const cases: Array<{
+                id: string;
+                kind: string;
+                title: string;
+                rawInput: Record<string, unknown>;
+            }> = [
+                {
+                    id: 'oc-webfetch',
+                    kind: 'fetch',
+                    title: 'webfetch',
+                    rawInput: { url: 'https://example.com', format: 'text' }
+                },
+                {
+                    id: 'oc-task',
+                    kind: 'think',
+                    title: 'task',
+                    rawInput: {
+                        description: 'Explore',
+                        subagent_type: 'explorer',
+                        prompt: 'find null tool input'
+                    }
+                },
+                {
+                    id: 'oc-mcp',
+                    kind: 'other',
+                    title: 'hapi_change_title',
+                    rawInput: { title: 'fixed title' }
+                }
+            ];
+
+            for (const c of cases) {
+                const messages: AgentMessage[] = [];
+                const handler = new AcpMessageHandler((message) => messages.push(message));
+
+                handler.handleUpdate({
+                    sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                    toolCallId: c.id,
+                    title: c.title,
+                    kind: c.kind,
+                    status: 'pending',
+                    rawInput: {}
+                });
+
+                handler.handleUpdate({
+                    sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                    toolCallId: c.id,
+                    title: c.title,
+                    kind: c.kind,
+                    status: 'in_progress',
+                    rawInput: c.rawInput
+                });
+
+                handler.handleUpdate({
+                    sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                    toolCallId: c.id,
+                    status: 'completed',
+                    rawInput: {}
+                });
+
+                const calls = messages.filter(
+                    (m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call'
+                );
+                expect(calls[calls.length - 1].input, c.id).toEqual(c.rawInput);
+            }
+        });
+
+        it('keeps full edit rawInput (filePath/oldString/newString) over locations-only fallback', () => {
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message));
+
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'oc-edit-1',
+                title: 'edit',
+                kind: 'edit',
+                status: 'pending',
+                locations: [],
+                rawInput: {}
+            });
+
+            const fullInput = {
+                filePath: '/tmp/a.ts',
+                oldString: 'foo',
+                newString: 'bar'
+            };
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+                toolCallId: 'oc-edit-1',
+                title: 'a.ts',
+                kind: 'edit',
+                status: 'in_progress',
+                locations: [{ path: '/tmp/a.ts' }],
+                rawInput: fullInput
+            });
+
+            const calls = messages.filter(
+                (m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call'
+            );
+            expect(calls[calls.length - 1].input).toEqual(fullInput);
+        });
     });
 
     it('intercepts rate_limit_event chunk before it enters the text buffer', () => {

@@ -21,6 +21,7 @@ describe('newSessionFormDraft', () => {
             effort: 'auto',
             modelReasoningEffort: 'default',
             yoloMode: false,
+            grokPermissionMode: 'default',
             sessionType: 'simple',
             worktreeName: ''
         })
@@ -33,6 +34,7 @@ describe('newSessionFormDraft', () => {
             effort: 'auto',
             modelReasoningEffort: 'default',
             yoloMode: false,
+            grokPermissionMode: 'default',
             sessionType: 'simple',
             worktreeName: ''
         })
@@ -58,6 +60,7 @@ describe('newSessionFormDraft', () => {
             effort: 'auto',
             modelReasoningEffort: 'default',
             yoloMode: false,
+            grokPermissionMode: 'default',
             sessionType: 'simple',
             worktreeName: ''
         })
@@ -74,10 +77,37 @@ describe('newSessionFormDraft', () => {
             effort: 'auto',
             modelReasoningEffort: 'default',
             yoloMode: false,
+            grokPermissionMode: 'default',
             sessionType: 'simple',
             worktreeName: ''
         })
         const draft = loadNewSessionFormDraft()!
         expect(newSessionDraftMatchesMachine(draft, 'machine-b')).toBe(false)
+    })
+
+    it('coerces a stale uncreatable agent (gemini) to claude and resets dependent fields', () => {
+        saveNewSessionFormDraft({
+            agent: 'gemini',
+            model: 'gemini-2.5-pro',
+            cursorSelectedBase: 'composer-2.5',
+            machineId: 'machine-1',
+            effort: 'high',
+            modelReasoningEffort: 'high',
+            yoloMode: true,
+            grokPermissionMode: 'default',
+            sessionType: 'simple',
+            worktreeName: ''
+        })
+
+        const loaded = loadNewSessionFormDraft()!
+        expect(loaded.agent).toBe('claude')
+        // agent-dependent fields reset so a Gemini model isn't carried into Claude
+        expect(loaded.model).toBe('auto')
+        expect(loaded.cursorSelectedBase).toBe('auto')
+        expect(loaded.effort).toBe('auto')
+        expect(loaded.modelReasoningEffort).toBe('default')
+        // agent-independent fields preserved
+        expect(loaded.yoloMode).toBe(true)
+        expect(loaded.machineId).toBe('machine-1')
     })
 })

@@ -220,6 +220,25 @@ describe('listSlashCommands', () => {
         })
     })
 
+    it('exposes only Grok ACP-native built-ins', async () => {
+        const commands = await listSlashCommands('grok', projectDir)
+        const builtinNames = commands
+            .filter((command) => command.source === 'builtin')
+            .map((command) => command.name)
+
+        expect(builtinNames).toEqual([
+            'compact',
+            'context',
+            'session-info',
+            'goal',
+            'always-approve',
+            'auto',
+        ])
+        for (const composerControl of ['model', 'effort', 'plan', 'view-plan']) {
+            expect(builtinNames).not.toContain(composerControl)
+        }
+    })
+
     it('lets project opencode prompts override same-name built-ins', async () => {
         await writeFile(
             join(projectDir, '.opencode', 'command', 'status.md'),

@@ -8,7 +8,19 @@ export type RequestUserInputOption = {
 export type RequestUserInputQuestion = {
     id: string
     question: string
+    required: boolean
+    multiple: boolean
     options: RequestUserInputOption[]
+}
+
+export type RequestUserInputQuestionAnswer = {
+    selected: string[]
+    userNote: string
+}
+
+export type ParsedRequestUserInput = {
+    questions: RequestUserInputQuestion[]
+    url: string | null
 }
 
 export type RequestUserInputQuestionInfo = {
@@ -23,11 +35,34 @@ export function isRequestUserInputToolName(toolName: string): boolean {
     return toolName === 'request_user_input'
 }
 
-export function parseRequestUserInputInput(input: unknown): { questions: RequestUserInputQuestion[] } {
-    if (!isObject(input)) return { questions: [] }
+export function openRequestUserInputUrl(url: string): boolean {
+    const opened = window.open('about:blank', '_blank')
+    if (!opened) return false
+    try {
+        opened.opener = null
+        opened.location.replace(url)
+        return true
+    } catch {
+        opened.close()
+        return false
+    }
+}
+
+export function parseRequestUserInputInput(input: unknown): ParsedRequestUserInput {
+    if (!isObject(input)) return { questions: [], url: null }
+
+    let url: string | null = null
+    if (typeof input.url === 'string') {
+        try {
+            const parsed = new URL(input.url)
+            if (parsed.protocol === 'https:' || parsed.protocol === 'http:') url = parsed.toString()
+        } catch {
+            // Invalid and non-web URLs must never be opened by the approval UI.
+        }
+    }
 
     const rawQuestions = input.questions
-    if (!Array.isArray(rawQuestions)) return { questions: [] }
+    if (!Array.isArray(rawQuestions)) return { questions: [], url }
 
     const questions: RequestUserInputQuestion[] = []
     for (const raw of rawQuestions) {
@@ -52,11 +87,39 @@ export function parseRequestUserInputInput(input: unknown): { questions: Request
         questions.push({
             id,
             question,
+            required: raw.required !== false,
+            multiple: raw.multiple === true,
             options
         })
     }
 
-    return { questions }
+    return { questions, url }
+}
+
+export function isRequestUserInputUrlConfirmed(
+    parsed: ParsedRequestUserInput,
+    answersByQuestion: Record<string, RequestUserInputQuestionAnswer>
+): boolean {
+    if (!parsed.url) return false
+    return parsed.questions.some((question) => {
+        if (question.id !== '__mcp_url_confirmation') return false
+        const selected = answersByQuestion[question.id]?.selected ?? []
+        return question.options.some((option) => (
+            selected.includes(option.label) && option.description === parsed.url
+        ))
+    })
+}
+
+export function isRequestUserInputQuestionAnswered(
+    question: RequestUserInputQuestion,
+    answer: RequestUserInputQuestionAnswer | undefined
+): boolean {
+    if (!question.required) return true
+    if (!answer) return false
+    if (question.options.length > 0) {
+        return answer.selected.length > 0
+    }
+    return answer.userNote.trim().length > 0
 }
 
 export function extractRequestUserInputQuestionsInfo(input: unknown): RequestUserInputQuestionInfo[] | null {
@@ -83,16 +146,14 @@ export function extractRequestUserInputQuestionsInfo(input: unknown): RequestUse
  * Format: { answers: { [id]: { answers: ["option", "user_note: note text"] } } }
  */
 export function formatRequestUserInputAnswers(
-    answersByQuestion: Record<string, { selected: string | null; userNote: string }>
+    answersByQuestion: Record<string, RequestUserInputQuestionAnswer>
 ): { answers: RequestUserInputAnswers } {
     const answers: RequestUserInputAnswers = {}
 
     for (const [id, answer] of Object.entries(answersByQuestion)) {
         const answerArray: string[] = []
 
-        if (answer.selected) {
-            answerArray.push(answer.selected)
-        }
+        answerArray.push(...answer.selected)
 
         const note = answer.userNote.trim()
         if (note.length > 0) {
@@ -110,13 +171,13 @@ export function formatRequestUserInputAnswers(
  */
 export function parseRequestUserInputAnswers(
     answers: unknown
-): Record<string, { selected: string | null; userNote: string | null }> | null {
+): Record<string, { selected: string[]; userNote: string | null }> | null {
     if (!isObject(answers)) return null
 
     // Handle nested format: { answers: { [id]: { answers: string[] } } }
     const answersObj = isObject(answers.answers) ? answers.answers : answers
 
-    const parsed: Record<string, { selected: string | null; userNote: string | null }> = {}
+    const parsed: Record<string, { selected: string[]; userNote: string | null }> = {}
 
     for (const [id, value] of Object.entries(answersObj)) {
         let answerArray: string[] = []
@@ -127,15 +188,15 @@ export function parseRequestUserInputAnswers(
             answerArray = value.filter((a): a is string => typeof a === 'string')
         }
 
-        let selected: string | null = null
+        const selected: string[] = []
         let userNote: string | null = null
 
         for (const item of answerArray) {
             if (item.startsWith('user_note: ')) {
                 userNote = item.slice('user_note: '.length).trim()
-            } else if (!selected) {
+            } else {
                 // Trim to match option labels which are also trimmed
-                selected = item.trim()
+                selected.push(item.trim())
             }
         }
 

@@ -219,7 +219,7 @@ export interface ClientToServerEvents {
     'messages-consumed': (data: { sid: string; localIds: string[] }) => void
     'update-metadata': (data: { sid: string; expectedVersion: number; metadata: unknown }, cb: (answer: UpdateMetadataAck) => void) => void
     'update-state': (data: { sid: string; expectedVersion: number; agentState: unknown | null }, cb: (answer: UpdateStateAck) => void) => void
-    'machine-alive': (data: { machineId: string; time: number }) => void
+    'machine-alive': (data: { machineId: string; time: number; health?: unknown }) => void
     'machine-update-metadata': (data: { machineId: string; expectedVersion: number; metadata: unknown }, cb: (answer: MachineUpdateMetadataAck) => void) => void
     'machine-update-state': (data: { machineId: string; expectedVersion: number; runnerState: unknown | null }, cb: (answer: MachineUpdateStateAck) => void) => void
     'rpc-register': (data: { method: string }) => void

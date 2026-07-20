@@ -88,7 +88,6 @@ ${chalk.bold('Usage:')}
   hapi auth              Manage authentication
   hapi codex             Start Codex mode
   hapi cursor            Start Cursor Agent mode
-  hapi gemini            Start Gemini ACP mode
   hapi opencode          Start OpenCode ACP mode
   hapi resume [id]       Resume an existing HAPI session locally
   hapi mcp               Start MCP stdio bridge

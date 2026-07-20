@@ -6,6 +6,7 @@ import {
     isKnownFlavor,
     supportsEffort,
     supportsModelChange,
+    isCodexFamilyFlavor,
 } from './flavors'
 
 describe('hasCapability', () => {
@@ -47,6 +48,11 @@ describe('hasCapability', () => {
         expect(hasCapability('kimi', Capabilities.Effort)).toBe(false)
     })
 
+    test('grok supports runtime model and effort switching through ACP', () => {
+        expect(hasCapability('grok', Capabilities.ModelChange)).toBe(true)
+        expect(hasCapability('grok', Capabilities.Effort)).toBe(true)
+    })
+
     test('unknown flavor returns false', () => {
         expect(hasCapability('unknown-flavor', Capabilities.ModelChange)).toBe(false)
     })
@@ -66,6 +72,7 @@ describe('getFlavorLabel', () => {
         expect(getFlavorLabel('opencode')).toBe('OpenCode')
         expect(getFlavorLabel('pi')).toBe('Pi')
         expect(getFlavorLabel('kimi')).toBe('Kimi')
+        expect(getFlavorLabel('grok')).toBe('Grok Build')
     })
 
     test('unknown flavor returns Unknown', () => {
@@ -87,6 +94,7 @@ describe('isKnownFlavor', () => {
         expect(isKnownFlavor('opencode')).toBe(true)
         expect(isKnownFlavor('pi')).toBe(true)
         expect(isKnownFlavor('kimi')).toBe(true)
+        expect(isKnownFlavor('grok')).toBe(true)
     })
 
     test('returns false for unknown/null/undefined', () => {
@@ -97,6 +105,10 @@ describe('isKnownFlavor', () => {
 })
 
 describe('convenience functions', () => {
+    test('treats Grok as a generic ACP/Codex-family permission flow', () => {
+        expect(isCodexFamilyFlavor('grok')).toBe(true)
+    })
+
     test('supportsModelChange matches hasCapability', () => {
         expect(supportsModelChange('claude')).toBe(true)
         expect(supportsModelChange('gemini')).toBe(true)
@@ -113,6 +125,7 @@ describe('convenience functions', () => {
         expect(supportsEffort('codex')).toBe(false)
         expect(supportsEffort('gemini')).toBe(false)
         expect(supportsEffort('pi')).toBe(true)
+        expect(supportsEffort('grok')).toBe(true)
         expect(supportsEffort('kimi')).toBe(false)
         expect(supportsEffort(null)).toBe(false)
     })

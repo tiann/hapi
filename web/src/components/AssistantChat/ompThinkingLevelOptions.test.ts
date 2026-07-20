@@ -93,7 +93,7 @@ describe('getHighestOmpThinkingLevel', () => {
     })
 
     it('falls back to the full standard set when efforts absent', () => {
-        expect(getHighestOmpThinkingLevel(undefined)).toBe('xhigh')
-        expect(getHighestOmpThinkingLevel([])).toBe('xhigh')
+        expect(getHighestOmpThinkingLevel(undefined)).toBe('max')
+        expect(getHighestOmpThinkingLevel([])).toBe('max')
     })
 })

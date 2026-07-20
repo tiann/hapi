@@ -191,10 +191,18 @@ function findWebappDistDir(): { distDir: string; indexHtmlPath: string } {
 }
 
 function serveEmbeddedAsset(asset: EmbeddedWebAsset): Response {
+    const headers: Record<string, string> = {
+        'Content-Type': asset.mimeType
+    }
+
+    if (asset.path === '/sw.js') {
+        headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+        headers['CDN-Cache-Control'] = 'no-store'
+        headers['Cloudflare-CDN-Cache-Control'] = 'no-store'
+    }
+
     return new Response(Bun.file(asset.sourcePath), {
-        headers: {
-            'Content-Type': asset.mimeType
-        }
+        headers
     })
 }
 

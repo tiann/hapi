@@ -8,6 +8,7 @@ type SessionConfigState<TPermissionMode extends PermissionMode = PermissionMode>
     permissionMode?: TPermissionMode
     model?: string | null
     modelReasoningEffort?: string | null
+    effort?: string | null
 }
 
 type RegisterSessionConfigRpcOptions<TPermissionMode extends PermissionMode = PermissionMode> = {
@@ -15,6 +16,7 @@ type RegisterSessionConfigRpcOptions<TPermissionMode extends PermissionMode = Pe
     flavor: AgentFlavor
     modelMode?: 'nullable' | 'ignore' | 'reject'
     modelReasoningEffortMode?: 'nullable' | 'ignore' | 'reject'
+    effortMode?: 'nullable' | 'ignore' | 'reject'
     appliedFallback?: () => Record<string, unknown>
     onApply: (config: SessionConfigState<TPermissionMode>) => void
     onAfterApply?: () => void
@@ -58,6 +60,7 @@ export function registerSessionConfigRpc<TPermissionMode extends PermissionMode>
     flavor,
     modelMode = 'reject',
     modelReasoningEffortMode = 'reject',
+    effortMode = 'reject',
     appliedFallback,
     onApply,
     onAfterApply
@@ -67,7 +70,7 @@ export function registerSessionConfigRpc<TPermissionMode extends PermissionMode>
             throw new Error('Invalid session config payload')
         }
 
-        const config = payload as { permissionMode?: unknown; model?: unknown; modelReasoningEffort?: unknown }
+        const config = payload as { permissionMode?: unknown; model?: unknown; modelReasoningEffort?: unknown; effort?: unknown }
         const applied: Record<string, unknown> = {}
         const next: SessionConfigState<TPermissionMode> = {}
 
@@ -94,6 +97,16 @@ export function registerSessionConfigRpc<TPermissionMode extends PermissionMode>
             if (modelReasoningEffortMode === 'nullable') {
                 next.modelReasoningEffort = resolveNullableSessionModel(config.modelReasoningEffort)
                 applied.modelReasoningEffort = next.modelReasoningEffort
+            }
+        }
+
+        if (config.effort !== undefined) {
+            if (effortMode === 'reject') {
+                throw new Error('Invalid effort')
+            }
+            if (effortMode === 'nullable') {
+                next.effort = resolveNullableSessionModel(config.effort)
+                applied.effort = next.effort
             }
         }
 

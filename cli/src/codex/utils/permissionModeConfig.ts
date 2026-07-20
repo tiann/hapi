@@ -1,8 +1,8 @@
 import type { CodexPermissionMode } from '@hapi/protocol/types';
-import type { ApprovalPolicy, SandboxMode, SandboxPolicy } from '../appServerTypes';
+import type { ApprovalPolicyPreset, SandboxMode, SandboxPolicy } from '../appServerTypes';
 
 export type CodexPermissionModeConfig = {
-    approvalPolicy: ApprovalPolicy;
+    approvalPolicy: ApprovalPolicyPreset;
     sandbox: SandboxMode;
     sandboxPolicy: SandboxPolicy;
 };
@@ -26,8 +26,10 @@ export function resolveCodexPermissionModeConfig(mode: CodexPermissionMode): Cod
             };
         case 'safe-yolo':
             return {
-                // Keep escalation available when the workspace-write sandbox blocks a command.
-                approvalPolicy: 'on-failure',
+                // Current Codex versions reject the removed `on-failure` policy. Keep
+                // escalation available through `on-request`; HAPI auto-approves these
+                // requests in safe-yolo mode.
+                approvalPolicy: 'on-request',
                 sandbox: 'workspace-write',
                 sandboxPolicy: { type: 'workspaceWrite' }
             };

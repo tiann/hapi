@@ -433,6 +433,20 @@ body {
     margin-top: max(0px, calc((var(--app-chat-line-height) - var(--app-message-action-size)) / 2));
 }
 
+@media (hover: hover) and (pointer: fine) {
+    .happy-message-actions {
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 150ms ease;
+    }
+
+    .happy-message:hover .happy-message-actions,
+    .happy-message:focus-within .happy-message-actions {
+        opacity: 1;
+        pointer-events: auto;
+    }
+}
+
 .aui-md :where(.contains-task-list) {
     list-style: none;
     padding-left: 0;

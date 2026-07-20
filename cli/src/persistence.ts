@@ -19,6 +19,8 @@ interface Settings {
   cliApiToken?: string
   // API URL for server connections (priority: env HAPI_API_URL > this > default)
   apiUrl?: string
+  // Extra headers for CLI -> hub requests (priority: env HAPI_EXTRA_HEADERS_JSON > this)
+  extraHeaders?: unknown
   // Legacy field name (for migration, read-only)
   serverUrl?: string
 }
@@ -38,6 +40,8 @@ export interface RunnerLocallyPersistedState {
   startedWithApiUrl?: string;
   startedWithMachineId?: string;
   startedWithCliApiTokenHash?: string;
+  // SHA-256 of canonicalized extra headers. Raw header values must never be persisted here.
+  startedWithExtraHeadersHash?: string;
   /**
    * Original process.argv.slice(2) of the runner process at start time, e.g.
    * ['runner', 'start-sync', '--workspace-root', '/home/user/code'].

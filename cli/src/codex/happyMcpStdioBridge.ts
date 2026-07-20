@@ -17,22 +17,28 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { z } from 'zod';
 
-function parseArgs(argv: string[]): { url: string | null } {
+const DEFAULT_TOOL_NAMES = ['change_title', 'display_image'];
+
+function parseArgs(argv: string[]): { url: string | null; toolNames: Set<string> } {
   let url: string | null = null;
+  let toolNames = new Set(DEFAULT_TOOL_NAMES);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--url' && i + 1 < argv.length) {
       url = argv[i + 1];
       i++;
+    } else if (a === '--tools' && i + 1 < argv.length) {
+      toolNames = new Set(argv[i + 1].split(',').map((name) => name.trim()).filter(Boolean));
+      i++;
     }
   }
-  return { url };
+  return { url, toolNames };
 }
 
 export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
   try {
     // Resolve target HTTP MCP URL
-    const { url: urlFromArgs } = parseArgs(argv);
+    const { url: urlFromArgs, toolNames } = parseArgs(argv);
     const baseUrl = urlFromArgs || process.env.HAPI_HTTP_MCP_URL || '';
 
     if (!baseUrl) {
@@ -69,29 +75,31 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       title: z.string().describe('The new title for the chat session'),
     });
 
-    server.registerTool<any, any>(
-      'change_title',
-      {
-        description: 'Change the title of the current chat session',
-        title: 'Change Chat Title',
-        inputSchema: changeTitleInputSchema,
-      },
-      async (args: Record<string, unknown>) => {
-        try {
-          const client = await ensureHttpClient();
-          const response = await client.callTool({ name: 'change_title', arguments: args });
-          // Pass-through response from HTTP server
-          return response as any;
-        } catch (error) {
-          return {
-            content: [
-              { type: 'text' as const, text: `Failed to change chat title: ${error instanceof Error ? error.message : String(error)}` },
-            ],
-            isError: true,
-          };
+    if (toolNames.has('change_title')) {
+      server.registerTool<any, any>(
+        'change_title',
+        {
+          description: 'Change the title of the current chat session',
+          title: 'Change Chat Title',
+          inputSchema: changeTitleInputSchema,
+        },
+        async (args: Record<string, unknown>) => {
+          try {
+            const client = await ensureHttpClient();
+            const response = await client.callTool({ name: 'change_title', arguments: args });
+            // Pass-through response from HTTP server
+            return response as any;
+          } catch (error) {
+            return {
+              content: [
+                { type: 'text' as const, text: `Failed to change chat title: ${error instanceof Error ? error.message : String(error)}` },
+              ],
+              isError: true,
+            };
+          }
         }
-      }
-    );
+      );
+    }
 
 
 
@@ -100,28 +108,59 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       title: z.string().optional().describe('Optional display title or filename for the image'),
     });
 
-    server.registerTool<any, any>(
-      'display_image',
-      {
-        description: 'Display a local image file inline in the current HAPI chat session',
-        title: 'Display Image',
-        inputSchema: displayImageInputSchema,
-      },
-      async (args: Record<string, unknown>) => {
-        try {
-          const client = await ensureHttpClient();
-          const response = await client.callTool({ name: 'display_image', arguments: args });
-          return response as any;
-        } catch (error) {
-          return {
-            content: [
-              { type: 'text' as const, text: `Failed to display image: ${error instanceof Error ? error.message : String(error)}` },
-            ],
-            isError: true,
-          };
+    if (toolNames.has('display_image')) {
+      server.registerTool<any, any>(
+        'display_image',
+        {
+          description: 'Display a local image file inline in the current HAPI chat session',
+          title: 'Display Image',
+          inputSchema: displayImageInputSchema,
+        },
+        async (args: Record<string, unknown>) => {
+          try {
+            const client = await ensureHttpClient();
+            const response = await client.callTool({ name: 'display_image', arguments: args });
+            return response as any;
+          } catch (error) {
+            return {
+              content: [
+                { type: 'text' as const, text: `Failed to display image: ${error instanceof Error ? error.message : String(error)}` },
+              ],
+              isError: true,
+            };
+          }
         }
-      }
-    );
+      );
+    }
+
+    const skillLookupInputSchema: z.ZodTypeAny = z.object({
+      name: z.string().trim().min(1).max(128).describe('Exact skill name shown by HAPI skill autocomplete'),
+    });
+
+    if (toolNames.has('skill_lookup')) {
+      server.registerTool<any, any>(
+        'skill_lookup',
+        {
+          description: 'Load a HAPI skill by exact name. When a user message starts with $name, call this tool with that name before acting.',
+          title: 'Look Up Skill',
+          inputSchema: skillLookupInputSchema,
+        },
+        async (args: Record<string, unknown>) => {
+          try {
+            const client = await ensureHttpClient();
+            const response = await client.callTool({ name: 'skill_lookup', arguments: args });
+            return response as any;
+          } catch (error) {
+            return {
+              content: [
+                { type: 'text' as const, text: `Failed to look up skill: ${error instanceof Error ? error.message : String(error)}` },
+              ],
+              isError: true,
+            };
+          }
+        }
+      );
+    }
 
     // Start STDIO transport
     const stdio = new StdioServerTransport();

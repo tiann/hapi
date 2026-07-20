@@ -31,7 +31,7 @@ describe('buildCliArgs', () => {
     })
 
     it('prefers --permission-mode over --yolo when both present', () => {
-        const args = buildCliArgs('gemini', {
+        const args = buildCliArgs('cursor', {
             directory: '/tmp',
             permissionMode: 'yolo',
         }, true)
@@ -41,6 +41,10 @@ describe('buildCliArgs', () => {
         const permIdx = args.indexOf('--permission-mode')
         const yoloIdx = args.indexOf('--yolo')
         expect(yoloIdx).toBe(-1)
+    })
+
+    it('throws for the removed gemini agent (no longer launchable)', () => {
+        expect(() => buildCliArgs('gemini', { directory: '/tmp' })).toThrow(/no longer supported/)
     })
 
     it('adds --yolo when no permissionMode and yolo is true', () => {
@@ -88,8 +92,47 @@ describe('buildCliArgs', () => {
         expect(args).not.toContain('--service-tier')
     })
 
+    it('passes existing Hapi session id separately from Codex resume thread', () => {
+        const args = buildCliArgs('codex', {
+            directory: '/tmp',
+            resumeSessionId: 'codex-thread-1',
+            existingSessionId: 'hapi-session-1',
+            model: 'gpt-5.5',
+            modelReasoningEffort: 'low',
+        })
+        expect(args).toEqual([
+            'codex',
+            'resume',
+            'codex-thread-1',
+            '--hapi-starting-mode',
+            'remote',
+            '--started-by',
+            'runner',
+            '--existing-session-id',
+            'hapi-session-1',
+            '--model',
+            'gpt-5.5',
+            '--model-reasoning-effort',
+            'low',
+        ])
+    })
+
+
+
+    it('does not pass Codex-only existing session id flag to non-Codex agents', () => {
+        const args = buildCliArgs('claude', {
+            directory: '/tmp',
+            resumeSessionId: 'claude-session-1',
+            existingSessionId: 'hapi-session-1',
+        })
+        expect(args).toContain('--resume')
+        expect(args).toContain('claude-session-1')
+        expect(args).not.toContain('--existing-session-id')
+        expect(args).not.toContain('hapi-session-1')
+    })
+
     it('validates all known permission modes', () => {
-        for (const mode of ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan', 'ask', 'read-only', 'safe-yolo', 'yolo']) {
+        for (const mode of ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan', 'ask', 'debug', 'autoReview', 'read-only', 'safe-yolo', 'yolo']) {
             const args = buildCliArgs('claude', {
                 directory: '/tmp',
                 permissionMode: mode,
@@ -97,6 +140,34 @@ describe('buildCliArgs', () => {
             expect(args).toContain('--permission-mode')
             expect(args).toContain(mode)
         }
+    })
+
+    it('passes --cursor-worktree for cursor worktree sessions', () => {
+        const args = buildCliArgs('cursor', {
+            directory: '/tmp/repo',
+            sessionType: 'worktree',
+            worktreeName: 'feature-x',
+        })
+        expect(args).toContain('--cursor-worktree')
+        expect(args).toContain('feature-x')
+    })
+
+    it('passes bare --cursor-worktree when name is omitted', () => {
+        const args = buildCliArgs('cursor', {
+            directory: '/tmp/repo',
+            sessionType: 'worktree',
+        })
+        expect(args).toContain('--cursor-worktree')
+        expect(args[args.length - 1]).toBe('--cursor-worktree')
+    })
+
+    it('does not pass --cursor-worktree for non-cursor worktree sessions', () => {
+        const args = buildCliArgs('claude', {
+            directory: '/tmp/repo',
+            sessionType: 'worktree',
+            worktreeName: 'feature-x',
+        })
+        expect(args).not.toContain('--cursor-worktree')
     })
 
     it('uses --session-id for pi resume (not --resume)', () => {
@@ -172,5 +243,25 @@ describe('buildCliArgs', () => {
         })
         expect(args).not.toContain('--permission-mode')
         expect(args).not.toContain('--yolo')
+    })
+
+    it('builds Grok runner resume, model, effort, and permission arguments', () => {
+        const args = buildCliArgs('grok', {
+            directory: '/tmp',
+            resumeSessionId: 'grok-session-1',
+            model: 'grok-4.5',
+            effort: 'low',
+            permissionMode: 'plan'
+        })
+
+        expect(args).toEqual([
+            'grok',
+            '--resume', 'grok-session-1',
+            '--hapi-starting-mode', 'remote',
+            '--started-by', 'runner',
+            '--model', 'grok-4.5',
+            '--effort', 'low',
+            '--permission-mode', 'plan'
+        ])
     })
 })

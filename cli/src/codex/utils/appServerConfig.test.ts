@@ -87,10 +87,18 @@ describe('appServerConfig', () => {
         });
 
         expect(params.sandbox).toBe('danger-full-access');
-        expect(params.approvalPolicy).toBe('never');
+        expect(params.approvalPolicy).toEqual({
+            granular: {
+                sandbox_approval: false,
+                rules: false,
+                skill_approval: false,
+                request_permissions: false,
+                mcp_elicitations: true
+            }
+        });
     });
 
-    it('keeps on-failure approvals for safe-yolo threads', () => {
+    it('keeps supported escalation approvals for safe-yolo threads', () => {
         const params = buildThreadStartParams({
             cwd: '/workspace/project',
             mode: { permissionMode: 'safe-yolo', collaborationMode: 'default' },
@@ -98,7 +106,26 @@ describe('appServerConfig', () => {
         });
 
         expect(params.sandbox).toBe('workspace-write');
-        expect(params.approvalPolicy).toBe('on-failure');
+        expect(params.approvalPolicy).toBe('on-request');
+    });
+
+    it('allows MCP elicitation without enabling sandbox prompts for read-only threads', () => {
+        const params = buildThreadStartParams({
+            cwd: '/workspace/project',
+            mode: { permissionMode: 'read-only', collaborationMode: 'default' },
+            mcpServers
+        });
+
+        expect(params.sandbox).toBe('read-only');
+        expect(params.approvalPolicy).toEqual({
+            granular: {
+                sandbox_approval: false,
+                rules: false,
+                skill_approval: false,
+                request_permissions: false,
+                mcp_elicitations: true
+            }
+        });
     });
 
     it('concatenates custom developer instructions after base instructions', () => {
@@ -123,7 +150,7 @@ describe('appServerConfig', () => {
     it('passes model reasoning effort via thread config', () => {
         const params = buildThreadStartParams({
             cwd: '/workspace/project',
-            mode: { permissionMode: 'default', modelReasoningEffort: 'xhigh', collaborationMode: 'default' },
+            mode: { permissionMode: 'default', modelReasoningEffort: 'ultra', collaborationMode: 'default' },
             mcpServers
         });
 
@@ -133,7 +160,7 @@ describe('appServerConfig', () => {
                 args: ['mcp']
             },
             developer_instructions: codexSystemPrompt,
-            model_reasoning_effort: 'xhigh'
+            model_reasoning_effort: 'ultra'
         });
     });
 
@@ -229,7 +256,15 @@ describe('appServerConfig', () => {
         expect(params.threadId).toBe('thread-1');
         expect(params.cwd).toBe('/workspace/project');
         expect(params.input).toEqual([{ type: 'text', text: 'hello' }]);
-        expect(params.approvalPolicy).toBe('never');
+        expect(params.approvalPolicy).toEqual({
+            granular: {
+                sandbox_approval: false,
+                rules: false,
+                skill_approval: false,
+                request_permissions: false,
+                mcp_elicitations: true
+            }
+        });
         expect(params.sandboxPolicy).toEqual({ type: 'readOnly' });
         expect(params.effort).toBe('high');
         expect(params.summary).toBeUndefined();
@@ -425,7 +460,7 @@ describe('appServerConfig', () => {
             cliOverrides: { sandbox: 'read-only', approvalPolicy: 'never' }
         });
 
-        expect(params.approvalPolicy).toBe('on-failure');
+        expect(params.approvalPolicy).toBe('on-request');
         expect(params.sandboxPolicy).toEqual({ type: 'workspaceWrite' });
         expect(params.collaborationMode).toEqual({
             mode: 'default',

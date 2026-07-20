@@ -32,6 +32,14 @@ export const BUILTIN_SLASH_COMMANDS = {
         { name: 'compress', description: 'Compress the context by replacing it with a summary', source: 'builtin' },
         { name: 'stats', description: 'Check session stats', source: 'builtin' },
     ],
+    grok: [
+        { name: 'compact', description: 'Compress conversation history to save context', source: 'builtin' },
+        { name: 'context', description: 'Show context window usage and session stats', source: 'builtin' },
+        { name: 'session-info', description: 'Show Grok session model, turns, and context usage', source: 'builtin' },
+        { name: 'goal', description: 'Set, manage, or inspect an autonomous goal', source: 'builtin' },
+        { name: 'always-approve', description: 'Toggle automatic tool approval', source: 'builtin' },
+        { name: 'auto', description: 'Let Grok classify safe tool calls for automatic approval', source: 'builtin' },
+    ],
     opencode: [
         { name: 'help', description: 'Show supported HAPI OpenCode slash commands', source: 'builtin' },
         { name: 'status', description: 'Show current OpenCode session config', source: 'builtin' },

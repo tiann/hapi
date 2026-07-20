@@ -33,6 +33,21 @@ function setEarliestStartedAt(block: ToolCallBlock, startedAt: number | null): v
     }
 }
 
+// Mirror of setEarliestStartedAt for the Claude-entry execution-machine start
+// timestamp. Only ever fed a real Claude `agentTimestamp` (never the hub
+// receive time) so the both-or-neither contract in `toolDurationMs` holds; a
+// null argument is a no-op. Takes the earliest so it also backfills correctly
+// when the tool_result entry was processed before the tool_use entry.
+function setEarliestExecStartedAt(block: ToolCallBlock, execStartedAt: number | null): void {
+    if (execStartedAt === null) return
+    const nextExecStartedAt = block.tool.execStartedAt === null
+        ? execStartedAt
+        : Math.min(block.tool.execStartedAt, execStartedAt)
+    if (nextExecStartedAt !== block.tool.execStartedAt) {
+        block.tool = { ...block.tool, execStartedAt: nextExecStartedAt }
+    }
+}
+
 function getAgentRunCardId(event: Record<string, unknown>, fallback: string): string {
     return getEventString(event, 'cardId') ?? getEventString(event, 'card_id') ?? fallback
 }
@@ -383,6 +398,19 @@ export function reduceTimeline(
             toBlock.tool.completedAt = toBlock.tool.completedAt === null
                 ? fromBlock.tool.completedAt
                 : Math.max(toBlock.tool.completedAt, fromBlock.tool.completedAt)
+        }
+        // Keep the exec-timestamp pair merged the same way as startedAt/
+        // completedAt so a merged card never carries a stale exec pair (agent-run
+        // cards currently never carry exec timestamps, but keep the invariant).
+        if (fromBlock.tool.execStartedAt !== null) {
+            toBlock.tool.execStartedAt = toBlock.tool.execStartedAt === null
+                ? fromBlock.tool.execStartedAt
+                : Math.min(toBlock.tool.execStartedAt, fromBlock.tool.execStartedAt)
+        }
+        if (fromBlock.tool.execCompletedAt !== null) {
+            toBlock.tool.execCompletedAt = toBlock.tool.execCompletedAt === null
+                ? fromBlock.tool.execCompletedAt
+                : Math.max(toBlock.tool.execCompletedAt, fromBlock.tool.execCompletedAt)
         }
         toBlock.durationMs = toBlock.durationMs ?? fromBlock.durationMs
         toBlock.usage = toBlock.usage ?? fromBlock.usage
@@ -852,12 +880,23 @@ export function reduceTimeline(
                         name: c.name,
                         input: c.input,
                         description: c.description,
-                        permission
+                        permission,
+                        agentTimestamp: msg.agentTimestamp
                     })
 
                     if (block.tool.state === 'pending') {
-                        block.tool = { ...block.tool, state: 'running', startedAt: msg.createdAt }
+                        block.tool = { ...block.tool, state: 'running' }
                     }
+                    // Backfill both the hub-clock start and the Claude exec start
+                    // regardless of state (not just the pending→running
+                    // transition), so a tool_result reduced before its tool_use
+                    // still lowers startedAt to the (earlier) tool_use receive
+                    // time. Otherwise both hub ends equal the result time and
+                    // toolDurationMs reads 0.0s. setEarliest* take the min; a
+                    // null exec timestamp is a no-op, leaving exec start unset so
+                    // toolDurationMs falls back to hub times on both sides.
+                    setEarliestStartedAt(block, msg.createdAt)
+                    setEarliestExecStartedAt(block, msg.agentTimestamp ?? null)
 
                     if (isSubagentToolName(c.name) && !context.consumedGroupIds.has(msg.id)) {
                         const sidechain = context.groups.get(msg.id) ?? null
@@ -922,12 +961,23 @@ export function reduceTimeline(
                         input: permissionEntry?.input ?? null,
                         description: null,
                         permission
+                        // NOTE: no agentTimestamp seed here. execStartedAt must
+                        // only ever originate from a tool_use entry; the tool_use
+                        // path backfills it via setEarliestExecStartedAt. Seeding
+                        // it from the result entry would, on a reorder with a
+                        // timestamp-less tool_use, leave execStartedAt ===
+                        // execCompletedAt (the result stamp) → a bogus 0 duration
+                        // instead of the correct hub-time fallback.
                     })
 
                     block.tool = {
                         ...block.tool,
                         result: c.content,
                         completedAt: msg.createdAt,
+                        // Only a real Claude timestamp — never the hub receive
+                        // time — so toolDurationMs never subtracts two clocks.
+                        // Null here leaves the tool on the hub-time fallback.
+                        execCompletedAt: msg.agentTimestamp ?? null,
                         state: c.is_error ? 'error' : 'completed'
                     }
                     continue

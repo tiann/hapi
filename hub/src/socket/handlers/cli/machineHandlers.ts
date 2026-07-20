@@ -9,6 +9,7 @@ import type { AccessErrorReason, AccessResult } from './types'
 type MachineAlivePayload = {
     machineId: string
     time: number
+    health?: unknown
 }
 
 type ResolveMachineAccess = (machineId: string) => AccessResult<StoredMachine>

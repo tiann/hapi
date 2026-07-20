@@ -35,8 +35,12 @@ export const MetadataSchema = z.object({
     machineId: z.string().optional(),
     claudeSessionId: z.string().optional(),
     codexSessionId: z.string().optional(),
+    // 原始 Codex thread id。导入 Codex 历史后，HAPI 会 fork 出自己的续写 thread；
+    // codexSessionId 保存 fork 后的 thread，codexSourceSessionId 保留来源 thread 便于同步/展示。
+    codexSourceSessionId: z.string().optional(),
     geminiSessionId: z.string().optional(),
     opencodeSessionId: z.string().optional(),
+    grokSessionId: z.string().optional(),
     cursorSessionId: z.string().optional(),
     cursorSessionProtocol: z.enum(['acp', 'stream-json']).optional(),
     // Drives the web `CursorMigrationBanner`:
@@ -220,7 +224,8 @@ export const SessionSchema = z.object({
     createdAt: z.number(),
     updatedAt: z.number(),
     active: z.boolean(),
-    activeAt: z.number(),
+    // Hub may still emit null for legacy SQLite rows; keep output type number.
+    activeAt: z.number().nullish().transform((value) => value ?? 0),
     metadata: MetadataSchema.nullable(),
     metadataVersion: z.number(),
     agentState: AgentStateSchema.nullable(),
@@ -287,6 +292,17 @@ export const RunnerStateSchema = z.object({
 
 export type RunnerState = z.infer<typeof RunnerStateSchema>
 
+export const MachineHealthSchema = z.object({
+    collectedAt: z.number(),
+    cpuCount: z.number().int().positive().optional(),
+    load1m: z.number().nonnegative().optional(),
+    cpuPercent: z.number().min(0).max(100).optional(),
+    memoryPercent: z.number().min(0).max(100).optional(),
+    uptimeSeconds: z.number().nonnegative().optional()
+}).strict()
+
+export type MachineHealth = z.infer<typeof MachineHealthSchema>
+
 export const MachineSchema = z.object({
     id: z.string(),
     namespace: z.string(),
@@ -298,7 +314,8 @@ export const MachineSchema = z.object({
     metadata: MachineMetadataSchema.nullable(),
     metadataVersion: z.number(),
     runnerState: RunnerStateSchema.nullable(),
-    runnerStateVersion: z.number()
+    runnerStateVersion: z.number(),
+    health: MachineHealthSchema.nullable().optional()
 })
 
 export type Machine = z.infer<typeof MachineSchema>

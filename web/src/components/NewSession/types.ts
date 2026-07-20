@@ -6,12 +6,15 @@ import {
     GEMINI_MODEL_LABELS,
     GEMINI_MODEL_PRESETS
 } from '@hapi/protocol'
-import type { AgentFlavor, ClaudeEffortLevel } from '@hapi/protocol'
+import type { AgentFlavor } from '@hapi/protocol'
 
 export type AgentType = AgentFlavor
 export type SessionType = 'simple' | 'worktree'
-export type CodexReasoningEffort = 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
-export type ClaudeEffort = 'auto' | ClaudeEffortLevel
+// Codex reports supported efforts dynamically; keep this open for new server values.
+export type CodexReasoningEffort = string
+// Grok reports effort values dynamically through ACP, while Claude uses the
+// fixed ClaudeEffortLevel catalog.
+export type LaunchEffort = string
 
 function modelPresetOptions<TModel extends string>(
     presets: readonly TModel[],
@@ -37,6 +40,7 @@ export const MODEL_OPTIONS: Record<AgentType, { value: string; label: string }[]
         ...modelPresetOptions(GEMINI_MODEL_PRESETS, GEMINI_MODEL_LABELS),
     ],
     opencode: [],
+    grok: [],
     pi: [],
     omp: [],
 }
@@ -50,7 +54,14 @@ export const CODEX_REASONING_EFFORT_OPTIONS: { value: CodexReasoningEffort; labe
     { value: 'max', label: 'Max' },
 ]
 
-export const CLAUDE_EFFORT_OPTIONS: { value: ClaudeEffort; label: string }[] = [
+export const CLAUDE_EFFORT_OPTIONS: { value: LaunchEffort; label: string }[] = [
     { value: 'auto', label: 'Auto' },
     ...CLAUDE_EFFORT_LEVELS.map((value) => ({ value, label: CLAUDE_EFFORT_LABELS[value] })),
+]
+
+export const GROK_EFFORT_OPTIONS: { value: LaunchEffort; label: string }[] = [
+    { value: 'auto', label: 'Default' },
+    { value: 'low', label: 'Low' },
+    { value: 'medium', label: 'Medium' },
+    { value: 'high', label: 'High' },
 ]

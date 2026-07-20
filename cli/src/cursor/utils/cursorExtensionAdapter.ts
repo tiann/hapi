@@ -164,19 +164,22 @@ export class CursorExtensionAdapter {
         if (!isObject(params)) return;
         const toolCallId = extractToolCallId(params) ?? `cursor-task-${randomUUID()}`;
         const title = asString(params.title) ?? asString(params.description) ?? 'Cursor task';
+        const status = normalizeTaskStatus(asString(params.status));
         this.onMessage({
             type: 'tool_call',
             id: toolCallId,
             name: 'CursorTask',
-            input: params,
-            status: 'completed'
+            input: { ...params, title },
+            status
         });
-        this.onMessage({
-            type: 'tool_result',
-            id: toolCallId,
-            output: params,
-            status: 'completed'
-        });
+        if (status === 'completed' || status === 'failed') {
+            this.onMessage({
+                type: 'tool_result',
+                id: toolCallId,
+                output: params,
+                status
+            });
+        }
     }
 
     private handleGenerateImage(params: unknown): void {
@@ -253,4 +256,19 @@ function normalizeTodoStatus(status: string | null): PlanItem['status'] {
         return status;
     }
     return 'pending';
+}
+
+function normalizeTaskStatus(status: string | null): 'in_progress' | 'completed' | 'failed' {
+    if (!status) {
+        // Cursor often emits task notifications without an explicit status when done.
+        return 'completed';
+    }
+    const normalized = status.trim().toLowerCase();
+    if (normalized === 'running' || normalized === 'in_progress' || normalized === 'pending' || normalized === 'started') {
+        return 'in_progress';
+    }
+    if (normalized === 'failed' || normalized === 'error' || normalized === 'cancelled' || normalized === 'canceled') {
+        return 'failed';
+    }
+    return 'completed';
 }

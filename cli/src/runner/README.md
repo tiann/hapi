@@ -85,6 +85,7 @@ The runner supports spawning sessions with different AI agents:
 | `claude` (default) | `hapi claude` | `CLAUDE_CODE_OAUTH_TOKEN` |
 | `codex` | `hapi codex` | `CODEX_HOME` (temp directory with `auth.json`) |
 | `gemini` | `hapi gemini` | - |
+| `grok` | `hapi grok` | Grok CLI login or `XAI_API_KEY` |
 | `opencode` | `hapi opencode` | OpenCode config (no token injection) |
 
 ### Token Authentication
@@ -92,6 +93,7 @@ The runner supports spawning sessions with different AI agents:
 When spawning a session with a token:
 - **Claude**: Sets `CLAUDE_CODE_OAUTH_TOKEN` environment variable
 - **Codex**: Creates temp directory at `os.tmpdir()/hapi-codex-*`, writes token to `auth.json`, sets `CODEX_HOME`
+- **Grok Build**: No token injection; relies on Grok CLI login or `XAI_API_KEY` in the runner environment
 - **OpenCode**: No token injection; relies on OpenCode's own configuration
 
 ## 3. Session Management

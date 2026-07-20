@@ -314,7 +314,7 @@ export class MessageQueue2<T> {
      * Wait for messages and return all messages with the same mode as a single string
      * Returns { message: string, mode: T } or null if aborted/closed
      */
-    async waitForMessagesAndGetAsString(abortSignal?: AbortSignal): Promise<{ message: string, mode: T, isolate: boolean, hash: string } | null> {
+    async waitForMessagesAndGetAsString(abortSignal?: AbortSignal): Promise<{ message: string, mode: T, isolate: boolean, hash: string, items: Array<{ message: string, localId?: string }> } | null> {
         // If we have messages, return them immediately
         if (this.queue.length > 0) {
             return this.collectBatch();
@@ -338,7 +338,7 @@ export class MessageQueue2<T> {
     /**
      * Collect a batch of messages with the same mode, respecting isolation requirements
      */
-    private collectBatch(): { message: string, mode: T, hash: string, isolate: boolean } | null {
+    private collectBatch(): { message: string, mode: T, hash: string, isolate: boolean, items: Array<{ message: string, localId?: string }> } | null {
         if (this.queue.length === 0) {
             return null;
         }
@@ -346,6 +346,11 @@ export class MessageQueue2<T> {
         const firstItem = this.queue[0];
         const sameModeMessages: string[] = [];
         const consumedLocalIds: string[] = [];
+        // Per-item breakdown of this batch, preserved alongside the joined
+        // `message` string below so callers that need to requeue individual
+        // messages (e.g. restoring a failed batch with each item's own
+        // localId intact) don't have to re-split an already-joined string.
+        const items: Array<{ message: string, localId?: string }> = [];
         let mode = firstItem.mode;
         let isolate = firstItem.isolate ?? false;
         const targetModeHash = firstItem.modeHash;
@@ -354,6 +359,7 @@ export class MessageQueue2<T> {
         if (firstItem.isolate) {
             const item = this.queue.shift()!;
             sameModeMessages.push(item.message);
+            items.push({ message: item.message, localId: item.localId });
             if (item.localId) consumedLocalIds.push(item.localId);
             logger.debug(`[MessageQueue2] Collected isolated message with mode hash: ${targetModeHash}`);
         } else {
@@ -363,6 +369,7 @@ export class MessageQueue2<T> {
                 !this.queue[0].isolate) {
                 const item = this.queue.shift()!;
                 sameModeMessages.push(item.message);
+                items.push({ message: item.message, localId: item.localId });
                 if (item.localId) consumedLocalIds.push(item.localId);
             }
             logger.debug(`[MessageQueue2] Collected batch of ${sameModeMessages.length} messages with mode hash: ${targetModeHash}`);
@@ -379,7 +386,8 @@ export class MessageQueue2<T> {
             message: combinedMessage,
             mode,
             hash: targetModeHash,
-            isolate
+            isolate,
+            items
         };
     }
 

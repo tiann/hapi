@@ -15,17 +15,6 @@ import type {
 } from './schemas'
 import type { SessionSummary } from './sessionSummary'
 
-export const CreateOrLoadSessionRequestSchema = z.object({
-    tag: z.string().min(1),
-    metadata: z.unknown(),
-    agentState: z.unknown().nullable().optional(),
-    model: z.string().optional(),
-    modelReasoningEffort: z.string().optional(),
-    effort: z.string().optional()
-})
-
-export type CreateOrLoadSessionRequest = z.infer<typeof CreateOrLoadSessionRequestSchema>
-
 export const CreateOrLoadMachineRequestSchema = z.object({
     id: z.string().min(1),
     metadata: z.unknown(),
@@ -33,6 +22,19 @@ export const CreateOrLoadMachineRequestSchema = z.object({
 })
 
 export type CreateOrLoadMachineRequest = z.infer<typeof CreateOrLoadMachineRequestSchema>
+
+export const CreateOrLoadSessionRequestSchema = z.object({
+    id: z.string().uuid().optional(),
+    tag: z.string().min(1),
+    metadata: z.unknown(),
+    agentState: z.unknown().nullable().optional(),
+    model: z.string().optional(),
+    modelReasoningEffort: z.string().optional(),
+    effort: z.string().optional(),
+    machine: CreateOrLoadMachineRequestSchema.optional()
+})
+
+export type CreateOrLoadSessionRequest = z.infer<typeof CreateOrLoadSessionRequestSchema>
 
 export const CliMessagesResponseSchema = z.object({
     messages: z.array(z.object({
@@ -116,6 +118,65 @@ export const ReopenSessionMissingMetadataResponseSchema = z.object({
 })
 
 export type ReopenSessionMissingMetadataResponse = z.infer<typeof ReopenSessionMissingMetadataResponseSchema>
+
+export const CursorChatStoreStatusSchema = z.object({
+    onDisk: z.boolean(),
+    store: z.enum(['legacy', 'acp']).nullable()
+})
+
+export type CursorChatStoreStatus = z.infer<typeof CursorChatStoreStatusSchema>
+
+export const CodexImportedMessageSchema = z.union([
+    z.object({
+        role: z.literal('user'),
+        content: z.object({ type: z.literal('text'), text: z.string() }),
+        meta: z.object({ sentFrom: z.literal('cli') })
+    }),
+    z.object({
+        role: z.literal('agent'),
+        content: z.object({ type: z.literal('codex'), data: z.unknown() }),
+        meta: z.object({ sentFrom: z.literal('cli') })
+    })
+])
+
+export const CodexLocalSessionSummarySchema = z.object({
+    id: z.string().min(1),
+    title: z.string(),
+    lastUserMessage: z.string().nullable().optional(),
+    cwd: z.string().nullable().optional(),
+    file: z.string().min(1),
+    modifiedAt: z.number(),
+    originator: z.string().nullable().optional(),
+    cliVersion: z.string().nullable().optional(),
+    source: z.string().nullable().optional(),
+    threadSource: z.string().nullable().optional(),
+    forkedFromId: z.string().nullable().optional()
+})
+
+export const CodexLocalSessionWithMessagesSchema = CodexLocalSessionSummarySchema.extend({
+    messages: z.array(CodexImportedMessageSchema)
+})
+
+export const ListCodexSessionsRpcRequestSchema = z.object({
+    cwd: z.string().nullable().optional(),
+    sessionIds: z.array(z.string().min(1)).optional()
+})
+
+export const ListCodexSessionsRpcResponseSchema = z.union([
+    z.object({ success: z.literal(true), sessions: z.array(z.union([CodexLocalSessionSummarySchema, CodexLocalSessionWithMessagesSchema])) }),
+    z.object({ success: z.literal(false), error: z.string() })
+])
+
+export const ArchiveCodexSessionRpcRequestSchema = z.object({ sessionId: z.string().min(1) })
+export const ArchiveCodexSessionRpcResponseSchema = z.union([
+    z.object({ success: z.literal(true), archivedPath: z.string() }),
+    z.object({ success: z.literal(false), error: z.string() })
+])
+
+export type ListCodexSessionsRpcRequest = z.infer<typeof ListCodexSessionsRpcRequestSchema>
+export type ListCodexSessionsRpcResponse = z.infer<typeof ListCodexSessionsRpcResponseSchema>
+export type ArchiveCodexSessionRpcRequest = z.infer<typeof ArchiveCodexSessionRpcRequestSchema>
+export type ArchiveCodexSessionRpcResponse = z.infer<typeof ArchiveCodexSessionRpcResponseSchema>
 
 export const SessionCollaborationModeRequestSchema = z.object({
     mode: CodexCollaborationModeSchema
@@ -242,6 +303,20 @@ export const SendMessageRequestSchema = z.object({
 
 export type SendMessageRequest = z.infer<typeof SendMessageRequestSchema>
 
+export const QueuedStateRequestSchema = z.object({
+    localIds: z.array(z.string().min(1)).max(1000)
+})
+
+export type QueuedStateRequest = z.infer<typeof QueuedStateRequestSchema>
+
+export type QueuedStateResponse = {
+    queuedLocalIds: string[]
+    invokedLocalMessages: Array<{
+        localId: string
+        invokedAt: number
+    }>
+}
+
 export const SpawnSessionRequestSchema = z.object({
     directory: z.string().min(1),
     agent: AgentFlavorSchema.optional(),
@@ -249,6 +324,7 @@ export const SpawnSessionRequestSchema = z.object({
     effort: z.string().optional(),
     modelReasoningEffort: z.string().optional(),
     yolo: z.boolean().optional(),
+    permissionMode: PermissionModeSchema.optional(),
     sessionType: z.enum(['simple', 'worktree']).optional(),
     worktreeName: z.string().optional()
 })
@@ -373,6 +449,34 @@ export type OpencodeModelsResponse = {
 }
 
 export type ListOpencodeModelsResponse = OpencodeModelsResponse
+
+export type GrokModelSummary = {
+    modelId: string
+    name?: string
+    reasoningEfforts?: GrokReasoningEffortOption[]
+}
+
+export type GrokReasoningEffortOption = {
+    value: string
+    name?: string
+    isDefault?: boolean
+}
+
+export type GrokModelsResponse = {
+    success: boolean
+    availableModels?: GrokModelSummary[]
+    currentModelId?: string | null
+    autoPermissionModeSupported?: boolean
+    error?: string
+}
+export type ListGrokModelsResponse = GrokModelsResponse
+
+export type GrokReasoningEffortResponse = {
+    success: boolean
+    options?: GrokReasoningEffortOption[]
+    currentValue?: string | null
+    error?: string
+}
 
 export type OpencodeReasoningEffortOption = {
     value: string

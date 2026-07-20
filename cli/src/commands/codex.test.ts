@@ -62,6 +62,20 @@ describe('codexCommand', () => {
         expect(runCodexMock).toHaveBeenCalledWith({})
     })
 
+    it('does not block local Codex startup on Hub auto-start readiness', async () => {
+        maybeAutoStartServerMock.mockImplementationOnce(async () => {
+            await new Promise(() => {})
+        })
+
+        await codexCommand.run(createCommandContext([]))
+
+        expect(runCodexMock).toHaveBeenCalledOnce()
+        expect(maybeAutoStartServerMock).toHaveBeenCalledWith({
+            waitForReady: false,
+            quiet: true
+        })
+    })
+
     it('checks Codex version before resuming a local session', async () => {
         await codexCommand.run(createCommandContext(['resume', 'session-123']))
 
@@ -105,6 +119,20 @@ describe('codexCommand', () => {
             consoleErrorSpy.mockRestore()
             exitSpy.mockRestore()
         }
+    })
+
+    it('accepts and normalizes a dynamic model reasoning effort', async () => {
+        await codexCommand.run(createCommandContext([
+            '--started-by',
+            'runner',
+            '--model-reasoning-effort',
+            ' EXTREME '
+        ]))
+
+        expect(runCodexMock).toHaveBeenCalledWith({
+            startedBy: 'runner',
+            modelReasoningEffort: 'extreme'
+        })
     })
 
     it('prints the upgrade error and exits when the local version check fails', async () => {

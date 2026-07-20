@@ -13,6 +13,29 @@ function normalizeStatus(status: unknown): 'pending' | 'in_progress' | 'complete
     return 'pending';
 }
 
+/**
+ * OpenCode ACP often emits `rawInput: {}` on tool start / permission requests
+ * before (or after) the real arguments arrive. An empty object is not usable
+ * tool input — treating it as valid blocks kind+title/content fallbacks and can
+ * clobber a previously captured non-empty input.
+ */
+function isUsableRawInput(value: unknown): boolean {
+    if (value == null) return false;
+    if (isObject(value) && Object.keys(value).length === 0) return false;
+    return true;
+}
+
+function resolveToolInputFallbacks(
+    kind: string | null,
+    title: string | null,
+    locations: unknown,
+    content: unknown
+): unknown {
+    const fromKindTitle = deriveInputFromKindAndTitle(kind, title, locations);
+    if (fromKindTitle) return fromKindTitle;
+    return extractJsonInputFromContent(content);
+}
+
 type DerivedToolName = ReturnType<typeof deriveToolNameWithSource>;
 
 const REASONING_SNAPSHOT_INTERVAL_MS = 250;
@@ -358,6 +381,8 @@ function normalizePlanEntries(entries: unknown): PlanItem[] {
     return items;
 }
 
+export type AcpTextChunkMode = 'dedupe' | 'delta';
+
 function getSuffixPrefixOverlap(base: string, next: string): number {
     const maxOverlap = Math.min(base.length, next.length);
     for (let length = maxOverlap; length > 0; length -= 1) {
@@ -380,8 +405,14 @@ export class AcpMessageHandler {
     private lastReasoningSnapshotAt: number | null = null;
     private lastReasoningSnapshotText = '';
     private reasoningSnapshotEmitted = false;
+    private readonly textChunkMode: AcpTextChunkMode;
 
-    constructor(private readonly onMessage: (message: AgentMessage) => void) {}
+    constructor(
+        private readonly onMessage: (message: AgentMessage) => void,
+        options: { textChunkMode?: AcpTextChunkMode } = {}
+    ) {
+        this.textChunkMode = options.textChunkMode ?? 'dedupe';
+    }
 
     /**
      * Emits any buffered assistant text as a single message and clears the
@@ -444,6 +475,13 @@ export class AcpMessageHandler {
     }
 
     private appendTextChunk(text: string): void {
+        if (this.textChunkMode === 'delta') {
+            if (text) {
+                this.bufferedText += text;
+            }
+            return;
+        }
+
         if (!text) {
             return;
         }
@@ -643,21 +681,20 @@ export class AcpMessageHandler {
             metaKind: null
         });
         const name = derivedName.name;
-        // Priority: rawInput > kind+title fallback > content JSON fallback.
+        // Priority: usable rawInput > kind+title fallback > content JSON fallback.
+        // Empty `{}` is treated as missing (OpenCode tool-start / permission clobber).
         // Kimi ACP streams tool arguments as JSON text in the content array
         // instead of rawInput/kind. Try all three sources.
-        let input: unknown;
-        if (update.rawInput != null) {
-            input = update.rawInput;
-        } else {
-            const fromKindTitle = deriveInputFromKindAndTitle(asString(update.kind), asString(update.title), update.locations);
-            if (fromKindTitle) {
-                input = fromKindTitle;
-            } else {
-                const fromContent = extractJsonInputFromContent(update.content);
-                input = fromContent;
-            }
-        }
+        const candidate = isUsableRawInput(update.rawInput)
+            ? update.rawInput
+            : resolveToolInputFallbacks(
+                asString(update.kind),
+                asString(update.title),
+                update.locations,
+                update.content
+            );
+        // Content JSON can be `{}` (same as unusable rawInput); never lock that in.
+        const input = isUsableRawInput(candidate) ? candidate : null;
         const status = normalizeStatus(update.status);
 
         this.toolCalls.set(toolCallId, { name, input });
@@ -678,7 +715,7 @@ export class AcpMessageHandler {
         const status = normalizeStatus(update.status);
         const existing = this.toolCalls.get(toolCallId);
 
-        if (update.rawInput != null) {
+        if (isUsableRawInput(update.rawInput)) {
             const derivedName = deriveToolNameFromUpdate(update);
             const name = this.selectToolNameForUpdate(existing?.name ?? null, derivedName);
             const input = update.rawInput;
@@ -692,15 +729,21 @@ export class AcpMessageHandler {
             });
         } else if (existing) {
             // Enrich existing.input from update's kind+title when initial tool_call
-            // had neither rawInput nor a hoistable thought. Re-emit when we just
-            // enriched the input or when the call is still active.
+            // had neither usable rawInput nor a hoistable thought. Never let an
+            // empty `rawInput: {}` (OpenCode permission / start) clobber a good input.
+            // Re-emit when we just enriched the input or when the call is still active.
             let input = existing.input;
             let name = existing.name;
             let rederived = false;
             const updateTitle = asString(update.title);
-            if (input == null || isStaleDerivedInput(input, updateTitle, asString(update.kind))) {
-                const fallback = deriveInputFromKindAndTitle(asString(update.kind), updateTitle, update.locations);
-                if (fallback) {
+            if (!isUsableRawInput(input) || isStaleDerivedInput(input, updateTitle, asString(update.kind))) {
+                const fallback = resolveToolInputFallbacks(
+                    asString(update.kind),
+                    updateTitle,
+                    update.locations,
+                    update.content
+                );
+                if (isUsableRawInput(fallback)) {
                     input = fallback;
                     const derivedName = deriveToolNameFromUpdate(update);
                     name = this.selectToolNameForUpdate(existing.name ?? null, derivedName);
@@ -708,19 +751,7 @@ export class AcpMessageHandler {
                     rederived = true;
                 }
             }
-            // Kimi ACP streams tool arguments as JSON text in the content array.
-            // If we still don't have a useful input, try to parse the content.
-            if (!rederived && (input == null || isStaleDerivedInput(input, updateTitle, asString(update.kind)))) {
-                const fromContent = extractJsonInputFromContent(update.content);
-                if (fromContent && isObject(fromContent)) {
-                    input = fromContent;
-                    const derivedName = deriveToolNameFromUpdate(update);
-                    name = this.selectToolNameForUpdate(existing.name ?? null, derivedName);
-                    this.toolCalls.set(toolCallId, { name, input });
-                    rederived = true;
-                }
-            }
-            const justEnriched = (existing.input == null && input != null) || rederived;
+            const justEnriched = (!isUsableRawInput(existing.input) && isUsableRawInput(input)) || rederived;
             if (status === 'in_progress' || status === 'pending' || justEnriched) {
                 this.onMessage({
                     type: 'tool_call',
@@ -743,9 +774,8 @@ export class AcpMessageHandler {
             //
             // Only runs on status=completed (not failed): a failed write_file must never
             // promote the tool name to Write/Edit, as no diff was actually applied.
-            // Uses == null to catch both undefined and null rawInput (Gemini path).
-            // When rawInput is present the input was already set above and no re-emit needed.
-            if (status === 'completed' && update.rawInput == null && existing) {
+            // Skip when a usable rawInput already supplied the input above.
+            if (status === 'completed' && !isUsableRawInput(update.rawInput) && existing) {
                 const hoisted = hoistDiffContentIntoInput(update.content);
                 if (hoisted) {
                     this.toolCalls.set(toolCallId, { name: hoisted.name, input: hoisted.input });
