@@ -18,6 +18,8 @@ vi.mock('./utils/kimiBackend', () => ({
         cancelPrompt: vi.fn(async () => {}),
         respondToPermission: vi.fn(async () => {}),
         onStderrError: vi.fn(),
+        setSessionInfoUpdateListener: vi.fn(),
+        refreshSessionInfo: vi.fn(async () => {}),
         onPermissionRequest: vi.fn(),
         disconnect: vi.fn(async () => {})
     }))

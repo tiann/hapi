@@ -8,7 +8,7 @@ const harness = vi.hoisted(() => ({
     promptCount: 0,
     promptContents: [] as unknown[],
     refreshSessionInfoCalls: [] as Array<{ sessionId: string; cwd: string }>,
-    bridgeOptions: null as { enableChangeTitle?: boolean } | null,
+    bridgeOptions: null as { enableChangeTitle?: boolean; skillLookup?: { workingDirectory: string; flavor: string } } | null,
     events: [] as string[],
     setModelImpl: null as null | ((sessionId: string, modelId: string) => Promise<void>),
     setConfigOptionImpl: null as null | ((sessionId: string, configId: string, value: string) => Promise<void>),
@@ -59,7 +59,7 @@ vi.mock('./utils/opencodeBackend', () => ({
 }));
 
 vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
-    buildHapiMcpBridge: async (_client: unknown, options?: { enableChangeTitle?: boolean }) => {
+    buildHapiMcpBridge: async (_client: unknown, options?: { enableChangeTitle?: boolean; skillLookup?: { workingDirectory: string; flavor: string } }) => {
         harness.bridgeOptions = options ?? null;
         return {
             server: { stop: () => {} },
@@ -211,7 +211,10 @@ describe('opencodeRemoteLauncher inline model switch', () => {
 
         await opencodeRemoteLauncher(session as never);
 
-        expect(harness.bridgeOptions).toEqual({ enableChangeTitle: false });
+        expect(harness.bridgeOptions).toEqual({
+            enableChangeTitle: false,
+            skillLookup: { workingDirectory: '/tmp/hapi-opencode-test', flavor: 'opencode' }
+        });
         expect(harness.refreshSessionInfoCalls).toEqual([
             { sessionId: 'acp-session-1', cwd: '/tmp/hapi-opencode-test' },
             { sessionId: 'acp-session-1', cwd: '/tmp/hapi-opencode-test' }
