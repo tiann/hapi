@@ -1113,10 +1113,9 @@ export function buildCliArgs(
       // Pi uses --session-id for exact session resume (RPC mode)
       args.push('--session-id', options.resumeSessionId);
     } else if (agent === 'omp') {
-      // OMP resume is dispatched by `hapi omp` via parseRemoteAgentCommandOptions
-      // (--resume -> resumeSessionId), which runOmp forwards to the OMP process
-      // as `--continue` (SessionManager.continueRecent). The bare id is not
-      // passed to the OMP process because OMP has no per-id rpc resume flag.
+      // OMP resume is dispatched by `hapi omp` via parseRemoteAgentCommandOptions.
+      // runOmp then switches the fresh RPC process to the exact session file; OMP
+      // has no per-id RPC resume flag.
       args.push('--resume', options.resumeSessionId);
     } else {
       args.push('--resume', options.resumeSessionId);

@@ -42,6 +42,25 @@ describe('sessionResume', () => {
         })).toBe('omp-1')
     })
 
+    it('resolveAgentSessionIdFromMetadata prefers ompSessionFile for exact resume', () => {
+        expect(resolveAgentSessionIdFromMetadata({
+            path: '/p',
+            host: 'h',
+            flavor: 'omp',
+            ompSessionFile: '/sessions/omp-1.jsonl',
+            ompSessionId: 'omp-1',
+        })).toBe('/sessions/omp-1.jsonl')
+    })
+
+    it('resolveAgentSessionIdFromMetadata returns ompSessionFile when the id is missing', () => {
+        expect(resolveAgentSessionIdFromMetadata({
+            path: '/p',
+            host: 'h',
+            flavor: 'omp',
+            ompSessionFile: '/sessions/omp-1.jsonl',
+        })).toBe('/sessions/omp-1.jsonl')
+    })
+
     it('resolveAgentSessionIdFromMetadata ignores stale cross-flavor ids', () => {
         expect(resolveAgentSessionIdFromMetadata({
             path: '/p',

@@ -20,7 +20,7 @@ export function resolveAgentSessionIdFromMetadata(
         case 'cursor': return metadata.cursorSessionId ?? undefined
         case 'kimi': return metadata.kimiSessionId ?? undefined
         case 'pi': return metadata.piSessionId ?? undefined
-        case 'omp': return metadata.ompSessionId ?? undefined
+        case 'omp': return metadata.ompSessionFile ?? metadata.ompSessionId ?? undefined
         default: return metadata.claudeSessionId ?? undefined
     }
 }
