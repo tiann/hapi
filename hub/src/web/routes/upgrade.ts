@@ -76,6 +76,12 @@ export function createUpgradeCliRoutes(): Hono<CliEnv> {
             return c.json({ error: 'Fleet upgrade disabled' }, 403)
         }
 
+        // Only serve the hub's current offer version — prevents arbitrary-version
+        // compiles and keeps path tokens aligned with a known semver.
+        if (targetVersion !== baseOffer.targetVersion) {
+            return c.json({ error: 'Unsupported artifact version' }, 400)
+        }
+
         try {
             let meta = readArtifactMeta(targetVersion, platform, arch, config.dataDir)
             if (!meta) {
@@ -104,9 +110,11 @@ export function createUpgradeCliRoutes(): Hono<CliEnv> {
                 },
             })
         } catch (error) {
-            return c.json({
-                error: error instanceof Error ? error.message : 'Failed to build artifact',
-            }, 503)
+            const message = error instanceof Error ? error.message : 'Failed to build artifact'
+            if (message.startsWith('Invalid artifact ')) {
+                return c.json({ error: message }, 400)
+            }
+            return c.json({ error: message }, 503)
         }
     })
 

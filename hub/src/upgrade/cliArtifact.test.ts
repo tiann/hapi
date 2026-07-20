@@ -2,7 +2,21 @@ import { describe, expect, it } from 'bun:test'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { withStubEmbeddedAssets } from './cliArtifact'
+import { artifactFileName, withStubEmbeddedAssets } from './cliArtifact'
+
+describe('artifactFileName', () => {
+    it('accepts normal version/platform/arch tokens', () => {
+        expect(artifactFileName('0.23.0', 'linux', 'x64')).toBe('hapi-0.23.0-linux-x64')
+        expect(artifactFileName('1.0.0-beta.1', 'darwin', 'arm64')).toBe('hapi-1.0.0-beta.1-darwin-arm64')
+    })
+
+    it('rejects path traversal and separators in any token', () => {
+        expect(() => artifactFileName('../evil', 'linux', 'x64')).toThrow('Invalid artifact version')
+        expect(() => artifactFileName('0.23.0', 'linux/../tmp', 'x64')).toThrow('Invalid artifact platform')
+        expect(() => artifactFileName('0.23.0', 'linux', 'x64/../../tmp')).toThrow('Invalid artifact arch')
+        expect(() => artifactFileName('0.23.0', 'linux', 'x64 with spaces')).toThrow('Invalid artifact arch')
+    })
+})
 
 describe('withStubEmbeddedAssets', () => {
     it('restores the previous embeddedAssets.generated.ts after the callback', async () => {

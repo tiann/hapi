@@ -40,8 +40,18 @@ function artifactsRoot(dataDir?: string): string {
     return join(dataDir ?? join(homedir(), '.hapi'), 'upgrade-artifacts')
 }
 
+/** Path-safe token: no `/`, `..`, whitespace, or other separators. */
+const ARTIFACT_TOKEN_RE = /^[A-Za-z0-9._+-]+$/
+
+export function artifactToken(name: string, value: string): string {
+    if (!ARTIFACT_TOKEN_RE.test(value)) {
+        throw new Error(`Invalid artifact ${name}`)
+    }
+    return value
+}
+
 export function artifactFileName(version: string, platform: string, arch: string): string {
-    return `hapi-${version}-${platform}-${arch}`
+    return `hapi-${artifactToken('version', version)}-${artifactToken('platform', platform)}-${artifactToken('arch', arch)}`
 }
 
 export function readArtifactMeta(
