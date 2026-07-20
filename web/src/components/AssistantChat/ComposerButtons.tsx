@@ -217,8 +217,10 @@ function ScratchlistToggleIcon() {
             strokeLinecap="round"
             strokeLinejoin="round"
         >
-            <path d="M3.5 2.5h6L12.5 5.5v8a1 1 0 0 1-1 1h-8a1 1 0 0 1-1-1v-10a1 1 0 0 1 1-1Z" />
-            <path d="M9.5 2.5v3h3M5 8.5h6M5 11h4" />
+            <g transform="translate(0.5 -0.5)">
+                <path d="M3.5 2.5h6L12.5 5.5v8a1 1 0 0 1-1 1h-8a1 1 0 0 1-1-1v-10a1 1 0 0 1 1-1Z" />
+                <path d="M9.5 2.5v3h3M5 8.5h6M5 11h4" />
+            </g>
         </svg>
     )
 }
