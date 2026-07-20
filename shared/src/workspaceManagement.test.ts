@@ -31,6 +31,20 @@ describe('workspace management schemas', () => {
         }).success).toBe(true)
     })
 
+    it('rejects option-like Git remote names', () => {
+        const operations = [
+            { kind: 'push', repository: '/workspace/repository', remote: '--all' },
+            { kind: 'fetch', repository: '/workspace/repository', remote: '-n' },
+            { kind: 'set-remote', repository: '/workspace/repository', remote: '--add', url: 'https://example.com/repository.git' },
+            { kind: 'delete-remote-branch', repository: '/workspace/repository', remote: '--mirror', name: 'feature/test' },
+            { kind: 'push', repository: '/workspace/repository', remote: '.' },
+            { kind: 'fetch', repository: '/workspace/repository', remote: '..' }
+        ]
+        for (const operation of operations) {
+            expect(GitOperationSchema.safeParse(operation).success).toBe(false)
+        }
+    })
+
     it('rejects create-file content above the text file limit', () => {
         expect(FileOperationSchema.safeParse({
             kind: 'create-file',

@@ -223,7 +223,14 @@ export const GitInspectResponseSchema = z.object({
 export type GitInspectResponse = z.infer<typeof GitInspectResponseSchema>
 
 const GitPathListSchema = z.array(z.string().min(1)).max(500)
-const GitRemoteNameSchema = z.string().trim().regex(/^[A-Za-z0-9._-]+$/)
+const GitRemoteNameSchema = z.string()
+    .trim()
+    .min(1)
+    .regex(/^[A-Za-z0-9._-]+$/)
+    .refine(
+        (value) => !value.startsWith('-') && value !== '.' && value !== '..',
+        'Invalid remote name'
+    )
 const GitBranchNameSchema = z.string().trim().min(1).max(255).refine(
     (value) => !value.startsWith('-') && !/[\s~^:?*\\[\\]/.test(value) && !value.includes('..') && !value.endsWith('.'),
     'Invalid branch name'
