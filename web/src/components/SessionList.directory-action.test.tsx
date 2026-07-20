@@ -219,6 +219,53 @@ describe('SessionList action menu parity', () => {
     })
 })
 
+describe('SessionList selection', () => {
+    it('does not select the row that moves under the pointer during a live reorder', () => {
+        const onSelect = vi.fn()
+        const first = makeSession({
+            id: 'session-first',
+            active: true,
+            updatedAt: 200,
+            metadata: { path: '/work/hapi', name: 'First session', flavor: 'codex' }
+        })
+        const second = makeSession({
+            id: 'session-second',
+            active: true,
+            updatedAt: 100,
+            metadata: { path: '/work/hapi', name: 'Second session', flavor: 'codex' }
+        })
+
+        const renderList = (sessions: SessionSummary[]) => (
+            <QueryClientProvider client={new QueryClient()}>
+                <I18nProvider>
+                    <SessionList
+                        sessions={sessions}
+                        selectedSessionId={null}
+                        onSelect={onSelect}
+                        onNewSession={vi.fn()}
+                        onRefresh={vi.fn()}
+                        isLoading={false}
+                        renderHeader={false}
+                        api={null}
+                    />
+                </I18nProvider>
+            </QueryClientProvider>
+        )
+
+        const { rerender } = render(renderList([first, second]))
+        fireEvent.mouseDown(screen.getByRole('button', { name: /First session/ }), { button: 0 })
+
+        rerender(renderList([
+            { ...first, updatedAt: 200 },
+            { ...second, updatedAt: 300 }
+        ]))
+
+        fireEvent.mouseUp(screen.getByRole('button', { name: /Second session/ }), { button: 0 })
+
+        expect(onSelect).not.toHaveBeenCalled()
+    })
+})
+
 describe('SessionList collapse behavior', () => {
     function renderSessionList(sessions: SessionSummary[], selectedSessionId = 'session-running') {
         return (
