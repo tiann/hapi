@@ -60,6 +60,7 @@ export default {
   'sessions.timeFilter.close': 'Close date picker',
   'sessions.timeFilter.previousMonth': 'Previous month',
   'sessions.timeFilter.nextMonth': 'Next month',
+  'sessions.timeFilter.dayWithActivity': '{date}, has session activity',
   'sessions.group.showMore': 'Show {n} more',
   'sessions.group.showLess': 'Show less',
   'sessions.group.new': 'New session in this directory',

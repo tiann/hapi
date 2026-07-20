@@ -60,6 +60,7 @@ export default {
   'sessions.timeFilter.close': '关闭日期选择器',
   'sessions.timeFilter.previousMonth': '上个月',
   'sessions.timeFilter.nextMonth': '下个月',
+  'sessions.timeFilter.dayWithActivity': '{date}，有会话活动',
   'sessions.group.showMore': '再显示 {n} 个',
   'sessions.group.showLess': '收起',
   'sessions.group.new': '在此目录新建会话',
