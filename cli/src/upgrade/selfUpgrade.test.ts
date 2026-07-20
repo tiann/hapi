@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { shouldApplyUpgradeOffer } from './selfUpgrade'
 import type { HubUpgradeOffer } from '@hapi/protocol/upgradeChannel'
+import { CURRENT_MACHINE_CAPABILITIES } from '@hapi/protocol/runnerCapabilities'
 
 const baseOffer = (overrides: Partial<HubUpgradeOffer> = {}): HubUpgradeOffer => ({
     channel: 'npm',
@@ -18,10 +19,30 @@ describe('shouldApplyUpgradeOffer', () => {
         })
     })
 
-    it('skips when local version already matches target', () => {
-        expect(shouldApplyUpgradeOffer(baseOffer(), '0.24.0')).toEqual({
+    it('skips when local version and capabilities already match target', () => {
+        expect(shouldApplyUpgradeOffer(
+            baseOffer({
+                targetCapabilities: [...CURRENT_MACHINE_CAPABILITIES],
+            }),
+            '0.24.0',
+            CURRENT_MACHINE_CAPABILITIES,
+        )).toEqual({
             apply: false,
             reason: 'already-current',
+        })
+    })
+
+    it('applies when version matches but target capabilities are missing', () => {
+        expect(shouldApplyUpgradeOffer(
+            baseOffer({
+                targetVersion: '0.24.0',
+                targetCapabilities: ['cursor-chat-store-status', 'runner-self-upgrade'],
+            }),
+            '0.24.0',
+            ['cursor-chat-store-status'],
+        )).toEqual({
+            apply: true,
+            reason: 'upgrade',
         })
     })
 

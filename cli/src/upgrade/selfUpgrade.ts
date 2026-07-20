@@ -9,6 +9,7 @@ import type {
     HubUpgradeOffer,
     RunnerSelfUpgradeResponse,
 } from '@hapi/protocol/upgradeChannel'
+import { CURRENT_MACHINE_CAPABILITIES } from '@hapi/protocol/runnerCapabilities'
 import packageJson from '../../package.json'
 import { logger } from '@/ui/logger'
 import { configuration } from '@/configuration'
@@ -19,9 +20,18 @@ export type ApplyDecision =
     | { apply: true; reason: 'upgrade' }
     | { apply: false; reason: 'already-current' | 'unsupported' }
 
+function hasTargetCapabilities(
+    offer: HubUpgradeOffer,
+    localCapabilities: readonly string[],
+): boolean {
+    const local = new Set(localCapabilities)
+    return offer.targetCapabilities.every((cap) => local.has(cap))
+}
+
 export function shouldApplyUpgradeOffer(
     offer: HubUpgradeOffer,
     localVersion: string,
+    localCapabilities: readonly string[] = CURRENT_MACHINE_CAPABILITIES,
 ): ApplyDecision {
     if (offer.channel === 'off') {
         return { apply: false, reason: 'unsupported' }
@@ -34,7 +44,12 @@ export function shouldApplyUpgradeOffer(
     if (offer.channel === 'npm' && !offer.npmPackage) {
         return { apply: false, reason: 'unsupported' }
     }
-    if (localVersion === offer.targetVersion) {
+    // Fleet upgrade is capability-driven: same semver with missing target
+    // capabilities must still apply (rebuild/relaunch), not report already-current.
+    if (
+        localVersion === offer.targetVersion
+        && hasTargetCapabilities(offer, localCapabilities)
+    ) {
         return { apply: false, reason: 'already-current' }
     }
     return { apply: true, reason: 'upgrade' }
