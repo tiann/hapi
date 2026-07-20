@@ -163,6 +163,10 @@ export default {
   'session.outline.title': '大纲',
   'session.outline.loadOlder': '加载更早',
   'session.outline.empty': '已加载消息中暂无大纲项',
+  'session.outline.searchPlaceholder': '搜索大纲…',
+  'session.outline.searchLabel': '搜索大纲条目',
+  'session.outline.searchResults': '{matched}/{total} 个条目',
+  'session.outline.noSearchResults': '没有匹配的大纲条目',
   'session.outline.kind.user': '用户',
 
   // Session actions

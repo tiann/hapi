@@ -163,6 +163,10 @@ export default {
   'session.outline.title': 'Outline',
   'session.outline.loadOlder': 'Load earlier',
   'session.outline.empty': 'No outline items in loaded messages',
+  'session.outline.searchPlaceholder': 'Search outline...',
+  'session.outline.searchLabel': 'Search outline items',
+  'session.outline.searchResults': '{matched} of {total} items',
+  'session.outline.noSearchResults': 'No matching outline items',
   'session.outline.kind.user': 'User',
 
   // Session actions
