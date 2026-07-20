@@ -53,4 +53,28 @@ describe('resolveUpgradeOffer', () => {
         })
         expect(offer.channel).toBe('off')
     })
+
+    it('reads npm package version from execPath when monorepo is absent', () => {
+        const root = mkdtempSync(join(tmpdir(), 'hapi-npm-pkg-'))
+        try {
+            writeFileSync(join(root, 'package.json'), JSON.stringify({
+                name: '@twsxtd/hapi',
+                version: '0.24.1',
+            }))
+            mkdirSync(join(root, 'bin'), { recursive: true })
+            const execPath = join(root, 'bin', 'hapi.cjs')
+            writeFileSync(execPath, '')
+
+            const offer = resolveUpgradeOffer({
+                hubPackageRoot: join(root, 'hub-missing'),
+                monorepoRoot: null,
+                execPath,
+                envChannel: null,
+            })
+            expect(offer.channel).toBe('npm')
+            expect(offer.targetVersion).toBe('0.24.1')
+        } finally {
+            rmSync(root, { recursive: true, force: true })
+        }
+    })
 })

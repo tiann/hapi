@@ -13,6 +13,7 @@ import packageJson from '../../package.json'
 import { logger } from '@/ui/logger'
 import { configuration } from '@/configuration'
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI'
+import { readRunnerState } from '@/persistence'
 
 export type ApplyDecision =
     | { apply: true; reason: 'upgrade' }
@@ -147,8 +148,16 @@ async function installFromArtifact(
     return finalPath
 }
 
-function scheduleRunnerRelaunch(cliExecutable?: string): void {
-    const env = { ...process.env }
+async function scheduleRunnerRelaunch(cliExecutable?: string): Promise<void> {
+    const state = await readRunnerState()
+    const args = Array.isArray(state?.startedWithArgv) && state.startedWithArgv[0] === 'runner'
+        ? state.startedWithArgv
+        : ['runner', 'start-sync']
+    const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        // Authorized handoff: child must not stopRunner() against this PID.
+        HAPI_RUNNER_HANDOFF_FROM_PID: String(process.pid),
+    }
     if (cliExecutable) {
         env.HAPI_CLI_EXECUTABLE = cliExecutable
     }
@@ -156,12 +165,12 @@ function scheduleRunnerRelaunch(cliExecutable?: string): void {
     // options.env, and in compiled mode overwrites it with the old binary. When we
     // have a freshly downloaded artifact path, spawn that path directly.
     const child = cliExecutable
-        ? spawn(cliExecutable, ['runner', 'start-sync'], {
+        ? spawn(cliExecutable, args, {
             detached: true,
             stdio: 'ignore',
             env,
         })
-        : spawnHappyCLI(['runner', 'start-sync'], {
+        : spawnHappyCLI(args, {
             detached: true,
             stdio: 'ignore',
             env,
@@ -215,7 +224,7 @@ export async function applyRunnerSelfUpgrade(options: {
         }
 
         // Prefer relaunch with new binary; also request graceful runner stop.
-        scheduleRunnerRelaunch(installedExecutable)
+        await scheduleRunnerRelaunch(installedExecutable)
         options.requestShutdown?.()
 
         return {

@@ -15,7 +15,7 @@ import { VisibilityTracker } from './visibility/visibilityTracker'
 import { TunnelManager } from './tunnel'
 import { waitForTunnelTlsReady } from './tunnel/tlsGate'
 import { ServerChanChannel } from './serverchan/channel'
-import { defaultHubPackageRoot, resolveUpgradeOffer } from './upgrade/resolveUpgradeOffer'
+import { defaultHubPackageRoot, resolveUpgradeOffer, setConfiguredUpgradeTargetVersion } from './upgrade/resolveUpgradeOffer'
 import { ensureCliArtifact } from './upgrade/cliArtifact'
 import QRCode from 'qrcode'
 import type { Server as BunServer } from 'bun'
@@ -96,6 +96,8 @@ export interface HubInstance {
 
 export interface StartHubOptions {
     args?: string[]
+    /** CLI package version (e.g. from `@twsxtd/hapi` package.json) for fleet upgrade offers. */
+    cliVersion?: string
 }
 
 export async function startHub(options: StartHubOptions = {}): Promise<HubInstance> {
@@ -109,6 +111,12 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
     let notificationHub: NotificationHub | null = null
     let tunnelManager: TunnelManager | null = null
 
+    const resolveCurrentUpgradeOffer = () => resolveUpgradeOffer({
+        hubPackageRoot: defaultHubPackageRoot(),
+        execPath: process.execPath,
+        targetVersion: options.cliVersion,
+    })
+    setConfiguredUpgradeTargetVersion(options.cliVersion)
     // Load configuration (async - loads from env/file with persistence)
     const relayApiDomain = process.env.HAPI_RELAY_API || 'relay.hapi.run'
     const relayFlag = resolveRelayFlag(options.args ?? process.argv)
@@ -197,10 +205,7 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
     })
 
     syncEngine = new SyncEngine(store, socketServer.io, socketServer.rpcRegistry, sseManager, {
-        getUpgradeOffer: () => resolveUpgradeOffer({
-            hubPackageRoot: defaultHubPackageRoot(),
-            execPath: process.execPath,
-        }),
+        getUpgradeOffer: () => resolveCurrentUpgradeOffer(),
         prepareArtifactOffer: async (offer, platform, arch) => {
             const meta = await ensureCliArtifact({
                 version: offer.targetVersion,
@@ -222,10 +227,7 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
         },
     })
     {
-        const offer = resolveUpgradeOffer({
-            hubPackageRoot: defaultHubPackageRoot(),
-            execPath: process.execPath,
-        })
+        const offer = resolveCurrentUpgradeOffer()
         console.log(`[Hub] fleet upgrade channel=${offer.channel} target=${offer.targetVersion}`)
     }
 

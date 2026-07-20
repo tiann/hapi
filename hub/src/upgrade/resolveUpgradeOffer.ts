@@ -21,6 +21,13 @@ export type ResolveUpgradeOfferOptions = {
     artifact?: HubUpgradeOffer['artifact']
 }
 
+/** Optional CLI version from `hapi hub` startup — used when callers omit targetVersion. */
+let configuredTargetVersion: string | undefined
+
+export function setConfiguredUpgradeTargetVersion(version: string | undefined): void {
+    configuredTargetVersion = version && version.length > 0 ? version : undefined
+}
+
 /**
  * Walk up from hub package root to find a monorepo that contains cli/ + shared/.
  */
@@ -51,6 +58,33 @@ export function readCliPackageVersion(monorepoRoot: string): string | null {
     }
 }
 
+/** Walk parents of execPath for an installed `@twsxtd/hapi` package.json version. */
+export function readInstalledNpmPackageVersion(execPath: string): string | null {
+    let current = resolve(dirname(execPath))
+    for (let i = 0; i < 8; i++) {
+        const pkgPath = join(current, 'package.json')
+        if (existsSync(pkgPath)) {
+            try {
+                const parsed = JSON.parse(readFileSync(pkgPath, 'utf8')) as {
+                    name?: string
+                    version?: string
+                }
+                if (parsed.name === NPM_PACKAGE_NAME && typeof parsed.version === 'string' && parsed.version.length > 0) {
+                    return parsed.version
+                }
+            } catch {
+                // keep walking
+            }
+        }
+        const parent = dirname(current)
+        if (parent === current) {
+            break
+        }
+        current = parent
+    }
+    return null
+}
+
 function looksLikeNpmHapiPath(path: string): boolean {
     return path.replace(/\\/g, '/').includes('/node_modules/@twsxtd/hapi')
 }
@@ -79,7 +113,9 @@ export function resolveUpgradeOffer(options: ResolveUpgradeOfferOptions): HubUpg
     }
 
     const targetVersion = options.targetVersion
+        ?? configuredTargetVersion
         ?? (monorepoRoot ? readCliPackageVersion(monorepoRoot) : null)
+        ?? readInstalledNpmPackageVersion(execPath)
         ?? '0.0.0'
 
     const offer: HubUpgradeOffer = {
