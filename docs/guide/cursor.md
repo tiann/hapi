@@ -46,6 +46,7 @@ Set mode via `--mode` / `--permission-mode` / `--auto-review`, or change from th
 ## Cursor-native worktree & multi-root
 
 - New Session **Worktree** for Cursor uses Cursor's `--worktree` (`~/.cursor/worktrees/<repo>/<name>`), not HAPI's sibling-directory worktree.
+- Exception: if the spawn `directory` is **already** a linked git worktree (HAPI feature worktree, `driver/`, etc.), the runner does **not** pass `--cursor-worktree` — nesting hangs ACP initialize ([#1085](https://github.com/tiann/hapi/issues/1085)). Use the directory as cwd instead.
 - Mid-session: send `/worktree`, `/apply-worktree`, `/delete-worktree`, or `/add-dir <path>` (isolated pass-through).
 - CLI: `hapi cursor --cursor-worktree feature-x --cursor-add-dir ../shared`
 - ACP ignores Cursor's plain-text `Using worktree: …` stdout banner so remote `sessionType: worktree` can initialize (fixed in [#1085](https://github.com/tiann/hapi/issues/1085)). Other non-JSON ACP stdout remains a fatal protocol error.

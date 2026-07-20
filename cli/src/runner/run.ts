@@ -27,6 +27,7 @@ import { buildMachineMetadata } from '@/agent/sessionFactory';
 import { resolveWorkspaceRoots } from '@/utils/workspaceRoot';
 import { hashRunnerCliApiToken, hashRunnerExtraHeaders } from './runnerIdentity';
 import { scheduleCursorModelsPrewarm } from '@/modules/common/cursorModelsPrewarm';
+import { isLinkedGitWorktree } from '@/utils/isLinkedGitWorktree';
 
 export async function startRunner(options: { workspaceRoots?: string[] } = {}): Promise<void> {
   // We don't have cleanup function at the time of server construction
@@ -338,9 +339,17 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       if (sessionType === 'worktree') {
         // Cursor Agent has native `--worktree` under ~/.cursor/worktrees/. Prefer that
         // over HAPI's sibling-directory worktree so Cursor sandbox/skills see the same layout.
+        // Exception: if `directory` is already a linked git worktree (e.g. HAPI feature
+        // worktree or driver/), nesting `--cursor-worktree` hangs ACP initialize (#1085).
         if (agent === 'cursor') {
           spawnDirectory = directory;
-          logger.debug(`[RUNNER RUN] Cursor-native worktree requested (nameHint=${worktreeName ?? '(auto)'})`);
+          if (isLinkedGitWorktree(directory)) {
+            logger.debug(
+              `[RUNNER RUN] Directory is already a linked git worktree; skipping Cursor --worktree (cwd=${directory})`
+            );
+          } else {
+            logger.debug(`[RUNNER RUN] Cursor-native worktree requested (nameHint=${worktreeName ?? '(auto)'})`);
+          }
         } else {
           const worktreeResult = await createWorktree({
             basePath: directory,
@@ -1143,10 +1152,14 @@ export function buildCliArgs(
     }
   }
   if (agent === 'cursor' && options.sessionType === 'worktree') {
-    args.push('--cursor-worktree');
-    const name = options.worktreeName?.trim();
-    if (name) {
-      args.push(name);
+    // Nested Cursor --worktree inside an existing linked git worktree hangs ACP
+    // initialize (banner ignored, but never reaches protocolVersion / cursorSessionId).
+    if (!isLinkedGitWorktree(options.directory)) {
+      args.push('--cursor-worktree');
+      const name = options.worktreeName?.trim();
+      if (name) {
+        args.push(name);
+      }
     }
   }
   return args;
