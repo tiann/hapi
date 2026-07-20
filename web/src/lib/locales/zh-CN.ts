@@ -671,6 +671,8 @@ export default {
   'settings.chat.composerToolbar.emptyGroup': '将操作拖到这里',
   'settings.chat.composerToolbar.moveLeft': '移至左侧分组',
   'settings.chat.composerToolbar.moveRight': '移至右侧分组',
+  'settings.chat.composerToolbar.moveEarlier': '向前移动',
+  'settings.chat.composerToolbar.moveLater': '向后移动',
   'settings.chat.composerToolbar.item.attachment': '添加附件',
   'settings.chat.composerToolbar.item.settings': '会话设置',
   'settings.chat.composerToolbar.item.piModel': 'Pi 模型',

@@ -29,6 +29,7 @@ export function ComposerToolbarLayoutControl() {
     const { t } = useTranslation()
     const { layout, setLayout, resetLayout } = useComposerToolbarLayout()
     const [draggedItem, setDraggedItem] = useState<ComposerToolbarItemId | null>(null)
+    const [selectedItem, setSelectedItem] = useState<ComposerToolbarItemId | null>(null)
 
     const setMode = (mode: ComposerToolbarLayoutMode) => {
         setLayout({ ...layout, mode })
@@ -58,6 +59,14 @@ export function ComposerToolbarLayoutControl() {
         setDraggedItem(null)
     }
 
+    const moveItemByOffset = (item: ComposerToolbarItemId, group: ComposerToolbarGroup, index: number, offset: -1 | 1) => {
+        const targetIndex = Math.max(0, index + offset)
+        const next = layout.mode === 'split'
+            ? moveComposerToolbarItem(layout, item, group, targetIndex)
+            : moveComposerToolbarItemInSingleLayout(layout, item, targetIndex)
+        setLayout(next)
+    }
+
     const renderItem = (item: ComposerToolbarItemId, group: ComposerToolbarGroup, index: number) => {
         const label = t(ITEM_LABEL_KEYS[item])
         return (
@@ -82,7 +91,19 @@ export function ComposerToolbarLayoutControl() {
                     onDrop(event, group, index)
                 }}
                 onDragEnd={() => setDraggedItem(null)}
-                className={`cursor-grab rounded-full transition-colors hover:bg-[var(--app-bg)] active:cursor-grabbing ${draggedItem === item ? 'opacity-35' : ''}`}
+                onClick={() => setSelectedItem((current) => current === item ? null : item)}
+                onKeyDown={(event) => {
+                    if (event.key === 'ArrowLeft' && index > 0) {
+                        event.preventDefault()
+                        moveItemByOffset(item, group, index, -1)
+                    }
+                    if (event.key === 'ArrowRight') {
+                        event.preventDefault()
+                        moveItemByOffset(item, group, index, 1)
+                    }
+                }}
+                aria-pressed={selectedItem === item}
+                className={`cursor-grab rounded-full transition-colors hover:bg-[var(--app-bg)] active:cursor-grabbing ${selectedItem === item ? 'bg-[var(--app-bg)] ring-1 ring-[var(--app-link)]' : ''} ${draggedItem === item ? 'opacity-35' : ''}`}
             >
                 <ComposerToolbarItemPreview item={item} label={label} />
             </button>
@@ -106,6 +127,9 @@ export function ComposerToolbarLayoutControl() {
 
     const singleAlignment = layout.mode === 'center' ? 'justify-center' : layout.mode === 'right' ? 'justify-end' : 'justify-start'
     const singleItems = [...layout.left, ...layout.right]
+    const selectedGroup: ComposerToolbarGroup = selectedItem && layout.right.includes(selectedItem) ? 'right' : 'left'
+    const selectedItems = layout.mode === 'split' ? layout[selectedGroup] : singleItems
+    const selectedIndex = selectedItem ? selectedItems.indexOf(selectedItem) : -1
 
     return (
         <div className="border-t border-[var(--app-divider)] px-3 py-3">
@@ -149,6 +173,44 @@ export function ComposerToolbarLayoutControl() {
                     <span className="ml-1" title={t('composer.send')}><ComposerSendButtonPreview /></span>
                 </div>
             </div>
+            {selectedItem && selectedIndex >= 0 ? (
+                <div className="mt-2 flex items-center justify-between gap-2 rounded-lg bg-[var(--app-subtle-bg)] px-3 py-2 text-sm">
+                    <span className="min-w-0 truncate text-[var(--app-hint)]">{t(ITEM_LABEL_KEYS[selectedItem])}</span>
+                    <span className="flex shrink-0 items-center gap-1">
+                        <button
+                            type="button"
+                            disabled={selectedIndex === 0}
+                            aria-label={t('settings.chat.composerToolbar.moveEarlier')}
+                            title={t('settings.chat.composerToolbar.moveEarlier')}
+                            onClick={() => moveItemByOffset(selectedItem, selectedGroup, selectedIndex, -1)}
+                            className="flex h-8 w-8 items-center justify-center rounded-full hover:bg-[var(--app-bg)] disabled:opacity-35"
+                        >
+                            ←
+                        </button>
+                        <button
+                            type="button"
+                            disabled={selectedIndex === selectedItems.length - 1}
+                            aria-label={t('settings.chat.composerToolbar.moveLater')}
+                            title={t('settings.chat.composerToolbar.moveLater')}
+                            onClick={() => moveItemByOffset(selectedItem, selectedGroup, selectedIndex, 1)}
+                            className="flex h-8 w-8 items-center justify-center rounded-full hover:bg-[var(--app-bg)] disabled:opacity-35"
+                        >
+                            →
+                        </button>
+                        {layout.mode === 'split' ? (
+                            <button
+                                type="button"
+                                aria-label={selectedGroup === 'left' ? t('settings.chat.composerToolbar.moveRight') : t('settings.chat.composerToolbar.moveLeft')}
+                                title={selectedGroup === 'left' ? t('settings.chat.composerToolbar.moveRight') : t('settings.chat.composerToolbar.moveLeft')}
+                                onClick={() => setLayout(moveComposerToolbarItem(layout, selectedItem, selectedGroup === 'left' ? 'right' : 'left', selectedGroup === 'left' ? layout.right.length : layout.left.length))}
+                                className="ml-1 rounded-lg px-2.5 py-1.5 text-xs text-[var(--app-link)] hover:bg-[var(--app-bg)]"
+                            >
+                                {selectedGroup === 'left' ? t('settings.chat.composerToolbar.rightGroup') : t('settings.chat.composerToolbar.leftGroup')}
+                            </button>
+                        ) : null}
+                    </span>
+                </div>
+            ) : null}
         </div>
     )
 }

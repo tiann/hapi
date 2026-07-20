@@ -667,6 +667,8 @@ export default {
   'settings.chat.composerToolbar.emptyGroup': 'Drop actions here',
   'settings.chat.composerToolbar.moveLeft': 'Move to left group',
   'settings.chat.composerToolbar.moveRight': 'Move to right group',
+  'settings.chat.composerToolbar.moveEarlier': 'Move earlier',
+  'settings.chat.composerToolbar.moveLater': 'Move later',
   'settings.chat.composerToolbar.item.attachment': 'Add attachment',
   'settings.chat.composerToolbar.item.settings': 'Session settings',
   'settings.chat.composerToolbar.item.piModel': 'Pi model',
