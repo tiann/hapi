@@ -1,5 +1,6 @@
 import {
     GitInspectRequestSchema,
+    MAX_HOST_FILE_UPLOAD_BYTES,
     HostListDirectoryRequestSchema,
     HostFilePreviewRequestSchema,
     HostFileUploadRequestSchema,
@@ -11,13 +12,30 @@ import {
     MachinePathsExistsRequestSchema,
     SpawnSessionRequestSchema
 } from '@hapi/protocol'
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
+import { bodyLimit } from 'hono/body-limit'
 import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireMachine } from './guards'
 
+const HOST_REQUEST_BODY_BYTES = Math.ceil((MAX_HOST_FILE_UPLOAD_BYTES * 4) / 3) + 8192
+
+async function readJsonBody(c: Context<WebAppEnv>): Promise<unknown> {
+    try {
+        return await c.req.json()
+    } catch (error) {
+        if (error instanceof SyntaxError) return null
+        throw error
+    }
+}
+
 export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
+
+    app.use('/machines/:id/host/*', bodyLimit({
+        maxSize: HOST_REQUEST_BODY_BYTES,
+        onError: (c) => c.json({ error: 'Payload too large' }, 413)
+    }))
 
     app.get('/machines', (c) => {
         const engine = getSyncEngine()
@@ -96,7 +114,7 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const machineId = c.req.param('id')
         const machine = requireMachine(c, engine, machineId)
         if (machine instanceof Response) return machine
-        const parsed = HostListDirectoryRequestSchema.safeParse(await c.req.json().catch(() => null))
+        const parsed = HostListDirectoryRequestSchema.safeParse(await readJsonBody(c))
         if (!parsed.success) return c.json({ error: 'Invalid body' }, 400)
         return c.json(await engine.listHostDirectory(machineId, parsed.data.path, parsed.data.includeHidden))
     })
@@ -107,7 +125,7 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const machineId = c.req.param('id')
         const machine = requireMachine(c, engine, machineId)
         if (machine instanceof Response) return machine
-        const parsed = HostFilePreviewRequestSchema.safeParse(await c.req.json().catch(() => null))
+        const parsed = HostFilePreviewRequestSchema.safeParse(await readJsonBody(c))
         if (!parsed.success) return c.json({ error: 'Invalid body' }, 400)
         return c.json(await engine.readHostFilePreview(machineId, parsed.data.path))
     })
@@ -118,7 +136,7 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const machineId = c.req.param('id')
         const machine = requireMachine(c, engine, machineId)
         if (machine instanceof Response) return machine
-        const parsed = HostFileWriteRequestSchema.safeParse(await c.req.json().catch(() => null))
+        const parsed = HostFileWriteRequestSchema.safeParse(await readJsonBody(c))
         if (!parsed.success) return c.json({ error: 'Invalid body' }, 400)
         return c.json(await engine.writeHostFile(machineId, parsed.data))
     })
@@ -129,7 +147,7 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const machineId = c.req.param('id')
         const machine = requireMachine(c, engine, machineId)
         if (machine instanceof Response) return machine
-        const parsed = HostFileUploadRequestSchema.safeParse(await c.req.json().catch(() => null))
+        const parsed = HostFileUploadRequestSchema.safeParse(await readJsonBody(c))
         if (!parsed.success) return c.json({ error: 'Invalid body' }, 400)
         return c.json(await engine.uploadHostFile(machineId, parsed.data))
     })
@@ -140,7 +158,7 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const machineId = c.req.param('id')
         const machine = requireMachine(c, engine, machineId)
         if (machine instanceof Response) return machine
-        const parsed = HostDownloadPrepareRequestSchema.safeParse(await c.req.json().catch(() => null))
+        const parsed = HostDownloadPrepareRequestSchema.safeParse(await readJsonBody(c))
         if (!parsed.success) return c.json({ error: 'Invalid body' }, 400)
         return c.json(await engine.prepareHostDownload(machineId, parsed.data.path))
     })
@@ -151,7 +169,7 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const machineId = c.req.param('id')
         const machine = requireMachine(c, engine, machineId)
         if (machine instanceof Response) return machine
-        const body = await c.req.json().catch(() => null)
+        const body = await readJsonBody(c)
         const parsed = HostDownloadChunkRequestSchema.safeParse({
             ...(body && typeof body === 'object' ? body : {}),
             id: c.req.param('downloadId')
@@ -178,7 +196,7 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const machineId = c.req.param('id')
         const machine = requireMachine(c, engine, machineId)
         if (machine instanceof Response) return machine
-        const parsed = GitInspectRequestSchema.safeParse(await c.req.json().catch(() => null))
+        const parsed = GitInspectRequestSchema.safeParse(await readJsonBody(c))
         if (!parsed.success) return c.json({ error: 'Invalid body' }, 400)
         return c.json(await engine.inspectHostGit(machineId, parsed.data.path))
     })
@@ -189,7 +207,7 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const machineId = c.req.param('id')
         const machine = requireMachine(c, engine, machineId)
         if (machine instanceof Response) return machine
-        const parsed = HostOperationRequestSchema.safeParse(await c.req.json().catch(() => null))
+        const parsed = HostOperationRequestSchema.safeParse(await readJsonBody(c))
         if (!parsed.success) return c.json({ error: 'Invalid body' }, 400)
         return c.json(await engine.startHostOperation(machineId, parsed.data))
     })

@@ -11,7 +11,7 @@ import { WorkspaceScope } from './workspaceScope'
 
 const CHUNK_BYTES = 256 * 1024
 const MAX_DOWNLOAD_BYTES = 256 * 1024 * 1024
-const MAX_ARCHIVE_FILES = 20_000
+const MAX_ARCHIVE_ENTRIES = 20_000
 const DOWNLOAD_TTL_MS = 15 * 60 * 1000
 
 type PreparedDownload = HostDownloadDescriptor & {
@@ -35,9 +35,9 @@ function isSameFile(left: { dev: number; ino: number }, right: { dev: number; in
     return left.dev === right.dev && left.ino === right.ino
 }
 
-async function writeZipArchive(path: string, archivePath: string, scope: WorkspaceScope): Promise<void> {
+async function writeZipArchive(path: string, archivePath: string, scope: WorkspaceScope, maxEntries: number): Promise<void> {
     let bytes = 0
-    let files = 0
+    let entries = 0
     const rootName = basename(path)
     const zip = new ZipFile()
     const output = createWriteStream(archivePath, { flags: 'wx', mode: 0o600 })
@@ -48,6 +48,11 @@ async function writeZipArchive(path: string, archivePath: string, scope: Workspa
     })
     void archiveError.catch(() => {})
     zip.outputStream.pipe(output)
+
+    const countEntry = (): void => {
+        entries += 1
+        if (entries > maxEntries) throw new Error(`Directory contains more than ${maxEntries} entries`)
+    }
 
     const addFile = async (filePath: string, entryPath: string): Promise<void> => {
         const handle = await open(filePath, 'r')
@@ -60,9 +65,8 @@ async function writeZipArchive(path: string, archivePath: string, scope: Workspa
                 throw new Error('Directory contents changed while being archived')
             }
 
-            files += 1
+            countEntry()
             bytes += openedInfo.size
-            if (files > MAX_ARCHIVE_FILES) throw new Error(`Directory contains more than ${MAX_ARCHIVE_FILES} files`)
             if (bytes > MAX_DOWNLOAD_BYTES) throw new Error(`Download exceeds the ${MAX_DOWNLOAD_BYTES / 1024 / 1024} MiB limit`)
 
             const stream = handle.createReadStream({ autoClose: false })
@@ -84,6 +88,7 @@ async function writeZipArchive(path: string, archivePath: string, scope: Workspa
             throw new Error('Directory contents changed while being archived')
         }
         const relativePath = relative(path, current).replace(/\\/g, '/')
+        countEntry()
         zip.addEmptyDirectory(relativePath ? `${rootName}/${relativePath}` : rootName)
         const directoryEntries = await readdir(directory, { withFileTypes: true })
         const currentDirectory = await scope.resolveReadableNonGitMetadata(current)
@@ -120,7 +125,10 @@ export class DownloadManager {
     private readonly downloads = new Map<string, PreparedDownload>()
     private archiving = false
 
-    constructor(private readonly scope: WorkspaceScope) {}
+    constructor(
+        private readonly scope: WorkspaceScope,
+        private readonly maxArchiveEntries = MAX_ARCHIVE_ENTRIES
+    ) {}
 
     async prepare(rawPath: string): Promise<HostDownloadDescriptor> {
         const path = await this.scope.resolveReadableNonGitMetadata(rawPath)
@@ -152,7 +160,7 @@ export class DownloadManager {
         try {
             tempDirectory = await mkdtemp(join(tmpdir(), 'hapi-download-'))
             const archivePath = join(tempDirectory, `${basename(path)}.zip`)
-            await writeZipArchive(path, archivePath, this.scope)
+            await writeZipArchive(path, archivePath, this.scope, this.maxArchiveEntries)
             const archiveInfo = await stat(archivePath)
             if (archiveInfo.size > MAX_DOWNLOAD_BYTES) {
                 throw new Error(`Archive exceeds the ${MAX_DOWNLOAD_BYTES / 1024 / 1024} MiB limit`)

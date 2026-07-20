@@ -134,6 +134,75 @@ describe('machines routes', () => {
         }])
     })
 
+    it('rejects oversized host request bodies before parsing or RPC', async () => {
+        const machine = createMachine()
+        let called = false
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            uploadHostFile: async () => {
+                called = true
+                return { success: true }
+            }
+        } as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/machines/machine-1/host/files/upload', {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                'content-length': String(32 * 1024 * 1024)
+            },
+            body: '{}'
+        })
+
+        expect(response.status).toBe(413)
+        expect(await response.json()).toEqual({ error: 'Payload too large' })
+        expect(called).toBe(false)
+    })
+
+    it('stops oversized streamed host bodies without a content-length header', async () => {
+        const machine = createMachine()
+        let called = false
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            uploadHostFile: async () => {
+                called = true
+                return { success: true }
+            }
+        } as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+        let remaining = 32 * 1024 * 1024
+        const body = new ReadableStream<Uint8Array>({
+            pull(controller) {
+                if (remaining === 0) {
+                    controller.close()
+                    return
+                }
+                const bytes = Math.min(1024 * 1024, remaining)
+                remaining -= bytes
+                controller.enqueue(new Uint8Array(bytes))
+            }
+        })
+        const request = new Request('http://localhost/api/machines/machine-1/host/files/upload', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body,
+            duplex: 'half'
+        } as RequestInit & { duplex: 'half' })
+
+        const response = await app.request(request)
+
+        expect(response.status).toBe(413)
+        expect(await response.json()).toEqual({ error: 'Payload too large' })
+        expect(called).toBe(false)
+    })
+
     it('forwards Grok Auto permission mode when spawning', async () => {
         const machine = createMachine()
         let capturedPermissionMode: string | undefined

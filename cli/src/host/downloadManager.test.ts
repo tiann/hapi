@@ -153,4 +153,15 @@ describe('DownloadManager', () => {
         await expect(manager.prepare(folder)).rejects.toThrow(/unexpected number of bytes/)
         expect(truncated).toBe(true)
     })
+
+    it('bounds empty directories as archive entries', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'hapi-download-dir-entries-'))
+        created.push(root)
+        const folder = join(root, 'project')
+        await mkdir(join(folder, 'first'), { recursive: true })
+        await mkdir(join(folder, 'second'))
+        const manager = new DownloadManager(await WorkspaceScope.create([root]), 2)
+
+        await expect(manager.prepare(folder)).rejects.toThrow(/more than 2 entries/)
+    })
 })
