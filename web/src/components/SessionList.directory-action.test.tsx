@@ -143,8 +143,12 @@ describe('SessionList time filter', () => {
         expect(screen.getByRole('button', { name: /Old session/ })).toBeInTheDocument()
 
         fireEvent.click(screen.getByRole('button', { name: 'Filter sessions by last activity' }))
-        fireEvent.click(screen.getByRole('button', { name: new Date(2026, 6, 17).toLocaleDateString() }))
-        fireEvent.click(screen.getByRole('button', { name: new Date(2026, 6, 18).toLocaleDateString() }))
+        const emptyDate = screen.getByRole('button', { name: new Date(2026, 6, 17).toLocaleDateString() })
+        const activeDate = screen.getByRole('button', { name: new Date(2026, 6, 18).toLocaleDateString() })
+        expect(emptyDate).toHaveClass('text-[var(--app-hint)]')
+        expect(activeDate).toHaveClass('text-[var(--app-fg)]')
+        fireEvent.click(emptyDate)
+        fireEvent.click(activeDate)
 
         expect(screen.getByRole('button', { name: /Recent session/ })).toBeInTheDocument()
         expect(screen.queryByRole('button', { name: /Old session/ })).toBeNull()
