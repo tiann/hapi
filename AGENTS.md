@@ -115,7 +115,8 @@ Before commit/push/PR: use the **`pre-push-review`** skill (`~/.cursor/skills/pr
 
 1. **Mechanical:** `bun typecheck && bun run test` (matches `.github/workflows/test.yml`)
 2. **Logic:** skim `git diff origin/main...HEAD`; apply `.github/prompts/codex-pr-review.md` as a local Major checklist (no Codex required)
-3. **Style:** optional
+3. **Host security:** for filesystem, workspace, download/upload, Git, or subprocess changes, apply `docs/agents/host-operation-security.md`
+4. **Style:** optional
 
 ## Testing
 
