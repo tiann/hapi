@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { parsePiModels, parsePiCommands, sendPiRpcAndWait, wireTransportEvents } from './loop';
+import { parsePiModels, parsePiCommands, parsePiContextUsage, sendPiRpcAndWait, wireTransportEvents } from './loop';
 import type { PiResponseEvent } from './types';
 import { PiSession } from './session';
 import { PiTransport } from './piTransport';
@@ -19,9 +19,13 @@ vi.mock('@/agent/messageConverter', () => ({
     convertAgentMessage: vi.fn((msg) => msg),
 }));
 
-vi.mock('./PiEventConverter', () => ({
-    convertPiEvent: vi.fn(() => []),
-}));
+vi.mock('./piEventConverter', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('./piEventConverter')>();
+    return {
+        ...actual,
+        convertPiEvent: vi.fn(() => []),
+    };
+});
 
 vi.mock('./piMessageAccumulator', () => {
     return {
@@ -191,6 +195,26 @@ describe('parsePiCommands', () => {
         expect(parsePiCommands(data)).toEqual([{ name: 'cmd', source: 'skill' }]);
     });
 });
+// --- parsePiContextUsage ---
+
+describe('parsePiContextUsage', () => {
+    it('parses Pi authoritative context usage', () => {
+        expect(parsePiContextUsage({
+            contextUsage: { tokens: 101_035, contextWindow: 200_000, percent: 50.5 },
+        })).toEqual({ tokens: 101_035, contextWindow: 200_000 });
+    });
+
+    it('preserves Pi explicit unknown context after compaction', () => {
+        expect(parsePiContextUsage({
+            contextUsage: { tokens: null, contextWindow: 200_000 },
+        })).toBeNull();
+    });
+
+    it('returns unavailable for missing or malformed tokens', () => {
+        expect(parsePiContextUsage({})).toBeUndefined();
+        expect(parsePiContextUsage({ contextUsage: { tokens: '101035' } })).toBeUndefined();
+    });
+});
 
 // --- wireTransportEvents (integration) ---
 
@@ -215,6 +239,10 @@ describe('wireTransportEvents', () => {
         const handler = eventHandlers.get('event');
         expect(handler).toBeDefined();
         handler!(event);
+    }
+
+    function getSentCommand(transport: PiTransport, index = 0): Record<string, unknown> {
+        return (transport.send as ReturnType<typeof vi.fn>).mock.calls[index][0] as Record<string, unknown>;
     }
 
     it('handles get_state response — updates model, provider, thinkingLevel', () => {
@@ -298,14 +326,143 @@ describe('wireTransportEvents', () => {
         expect(session.client.emitMessagesConsumed).toHaveBeenCalledWith(['prompt-1'], undefined);
     });
 
-    it('handles turn_end — stops streaming', () => {
+    it('publishes authoritative context usage after turn_end stats resolve', async () => {
         const transport = createMockTransport();
         wireTransportEvents(transport, session, []);
 
         session.piIsStreaming = true;
-        emitEvent({ type: 'turn_end' });
+        emitEvent({
+            type: 'turn_end',
+            message: {
+                usage: { input: 100, output: 200, cacheRead: 10, cacheWrite: 5, totalTokens: 315 },
+                stopReason: 'stop',
+            },
+        });
 
         expect(session.piIsStreaming).toBe(false);
+        expect(session.client.sendAgentMessage).not.toHaveBeenCalled();
+        const command = getSentCommand(transport);
+        expect(command).toMatchObject({ type: 'get_session_stats' });
+
+        emitEvent({
+            type: 'response',
+            id: command.id,
+            command: 'get_session_stats',
+            success: true,
+            data: { contextUsage: { tokens: 342, contextWindow: 200_000 } },
+        });
+
+        await vi.waitFor(() => {
+            expect(session.client.sendAgentMessage).toHaveBeenCalledWith({
+                type: 'usage',
+                inputTokens: 100,
+                outputTokens: 200,
+                totalTokens: 315,
+                cacheReadTokens: 10,
+                contextTokens: 342,
+                contextWindow: 200_000,
+            });
+        });
+    });
+
+    it('silently falls back to turn totalTokens when stats are unsupported', async () => {
+        const transport = createMockTransport();
+        wireTransportEvents(transport, session, []);
+
+        emitEvent({
+            type: 'turn_end',
+            message: {
+                usage: { input: 100, output: 200, cacheRead: 10, cacheWrite: 5, totalTokens: 315 },
+            },
+        });
+        const command = getSentCommand(transport);
+
+        emitEvent({
+            type: 'response',
+            id: command.id,
+            command: 'get_session_stats',
+            success: false,
+            error: 'Unknown command',
+        });
+
+        await vi.waitFor(() => {
+            expect(session.client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'usage',
+                contextTokens: 315,
+            }));
+        });
+        expect(session.client.sendSessionEvent).not.toHaveBeenCalled();
+    });
+
+    it('falls back to turn totalTokens when stats time out', async () => {
+        vi.useFakeTimers();
+        try {
+            const transport = createMockTransport();
+            wireTransportEvents(transport, session, []);
+
+            emitEvent({
+                type: 'turn_end',
+                message: {
+                    usage: { input: 100, output: 200, cacheRead: 10, cacheWrite: 5, totalTokens: 315 },
+                },
+            });
+
+            expect(session.client.sendAgentMessage).not.toHaveBeenCalled();
+            await vi.advanceTimersByTimeAsync(1_000);
+
+            expect(session.client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'usage',
+                contextTokens: 315,
+            }));
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('discards a stats response from an older completed turn', async () => {
+        const transport = createMockTransport();
+        wireTransportEvents(transport, session, []);
+
+        emitEvent({
+            type: 'turn_end',
+            message: {
+                usage: { input: 10, output: 20, cacheRead: 0, cacheWrite: 0, totalTokens: 30 },
+            },
+        });
+        emitEvent({
+            type: 'turn_end',
+            message: {
+                usage: { input: 40, output: 50, cacheRead: 0, cacheWrite: 0, totalTokens: 90 },
+            },
+        });
+
+        const olderCommand = getSentCommand(transport, 0);
+        const latestCommand = getSentCommand(transport, 1);
+        emitEvent({
+            type: 'response',
+            id: latestCommand.id,
+            command: 'get_session_stats',
+            success: true,
+            data: { contextUsage: { tokens: 120, contextWindow: 200_000 } },
+        });
+
+        await vi.waitFor(() => {
+            expect(session.client.sendAgentMessage).toHaveBeenCalledTimes(1);
+        });
+        expect(session.client.sendAgentMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+            contextTokens: 120,
+        }));
+
+        emitEvent({
+            type: 'response',
+            id: olderCommand.id,
+            command: 'get_session_stats',
+            success: true,
+            data: { contextUsage: { tokens: 45, contextWindow: 200_000 } },
+        });
+        await Promise.resolve();
+
+        expect(session.client.sendAgentMessage).toHaveBeenCalledTimes(1);
     });
 
     it('handles agent_end — stops streaming', () => {

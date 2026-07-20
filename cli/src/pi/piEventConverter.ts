@@ -4,8 +4,41 @@ import type {
     PiAgentEvent,
     PiToolExecutionStartEvent,
     PiToolExecutionEndEvent,
-    PiTurnEndEvent
+    PiTurnEndEvent,
+    PiContextUsage,
+    PiUsage
 } from './types';
+
+function hasMeaningfulUsage(usage: PiUsage | undefined): usage is PiUsage {
+    return usage !== undefined
+        && Number.isFinite(usage.totalTokens)
+        && usage.totalTokens > 0;
+}
+
+/**
+ * Builds the turn usage update after Pi's session stats request settles.
+ *
+ * undefined stats fall back to the turn's totalTokens for older Pi versions.
+ * null means Pi explicitly reported an unknown context size, so the previous
+ * valid HAPI usage state is preserved by not publishing an update.
+ */
+export function convertPiTurnUsage(
+    event: PiTurnEndEvent,
+    contextUsage: PiContextUsage | null | undefined,
+): AgentMessage | null {
+    const usage = event.message?.usage;
+    if (!hasMeaningfulUsage(usage) || contextUsage === null) return null;
+
+    return {
+        type: 'usage',
+        inputTokens: usage.input ?? 0,
+        outputTokens: usage.output ?? 0,
+        totalTokens: usage.totalTokens,
+        cacheReadTokens: usage.cacheRead,
+        contextTokens: contextUsage?.tokens ?? usage.totalTokens,
+        contextWindow: contextUsage?.contextWindow,
+    };
+}
 
 /**
  * Converts Pi AgentEvent to HAPI AgentMessage array.
@@ -40,25 +73,10 @@ export function convertPiEvent(event: PiAgentEvent): AgentMessage[] {
 
             case 'turn_end': {
                 const e = event as PiTurnEndEvent;
-                const messages: AgentMessage[] = [];
-                const usage = e.message?.usage;
-
-                if (usage) {
-                    messages.push({
-                        type: 'usage',
-                        inputTokens: usage.input ?? 0,
-                        outputTokens: usage.output ?? 0,
-                        totalTokens: usage.totalTokens,
-                        cacheReadTokens: usage.cacheRead
-                    });
-                }
-
-                messages.push({
+                return [{
                     type: 'turn_complete',
                     stopReason: e.message?.stopReason ?? 'stop'
-                });
-
-                return messages;
+                }];
             }
 
             // Lifecycle and other events — not converted to AgentMessage.
