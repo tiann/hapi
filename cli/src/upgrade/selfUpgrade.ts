@@ -44,18 +44,24 @@ function upgradeBinDir(): string {
 }
 
 async function runCommand(command: string, args: string[]): Promise<{ ok: boolean; output: string }> {
-    const proc = Bun.spawn([command, ...args], {
-        stdout: 'pipe',
-        stderr: 'pipe',
-        env: process.env,
-    })
-    const [stdout, stderr, exitCode] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-        proc.exited,
-    ])
-    const output = `${stdout}\n${stderr}`.trim()
-    return { ok: exitCode === 0, output }
+    try {
+        const proc = Bun.spawn([command, ...args], {
+            stdout: 'pipe',
+            stderr: 'pipe',
+            env: process.env,
+        })
+        const [stdout, stderr, exitCode] = await Promise.all([
+            new Response(proc.stdout).text(),
+            new Response(proc.stderr).text(),
+            proc.exited,
+        ])
+        const output = `${stdout}\n${stderr}`.trim()
+        return { ok: exitCode === 0, output }
+    } catch (error) {
+        // Missing binary (e.g. no `bun` on PATH) throws before exit codes — treat as
+        // failure so npm-channel installs can fall through to `npm install -g`.
+        return { ok: false, output: error instanceof Error ? error.message : String(error) }
+    }
 }
 
 async function installFromNpm(offer: HubUpgradeOffer): Promise<void> {

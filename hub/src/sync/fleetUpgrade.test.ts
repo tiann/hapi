@@ -31,7 +31,12 @@ describe('SyncEngine fleet upgrade', () => {
 
             engine.getOrCreateMachine(
                 'stale',
-                { host: 'proxmox', platform: 'linux', happyCliVersion: '0.20.0', capabilities: [] },
+                {
+                    host: 'proxmox',
+                    platform: 'linux',
+                    happyCliVersion: '0.20.0',
+                    capabilities: ['runner-self-upgrade'],
+                },
                 null,
                 'default',
             )
@@ -99,7 +104,12 @@ describe('SyncEngine fleet upgrade', () => {
         try {
             engine.getOrCreateMachine(
                 'no-arch',
-                { host: 'teemo', platform: 'win32', happyCliVersion: '0.20.0' },
+                {
+                    host: 'teemo',
+                    platform: 'win32',
+                    happyCliVersion: '0.20.0',
+                    capabilities: ['runner-self-upgrade'],
+                },
                 null,
                 'default',
             )
@@ -157,7 +167,7 @@ describe('SyncEngine fleet upgrade', () => {
                     platform: 'darwin',
                     arch: 'arm64',
                     happyCliVersion: '0.20.0',
-                    capabilities: [],
+                    capabilities: ['runner-self-upgrade'],
                 },
                 null,
                 'default',
@@ -167,6 +177,50 @@ describe('SyncEngine fleet upgrade', () => {
             expect(result.type).toBe('success')
             expect(prepareArtifactOffer).toHaveBeenCalledWith(baseOffer, 'darwin', 'arm64')
             expect(runnerSelfUpgrade).toHaveBeenCalledWith('mac', prepared)
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('refuses upgrade when runner lacks runner-self-upgrade capability', async () => {
+        const offer: HubUpgradeOffer = {
+            channel: 'npm',
+            targetVersion: '0.24.0',
+            targetCapabilities: ['cursor-chat-store-status'],
+            npmPackage: '@twsxtd/hapi',
+        }
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never,
+            { getUpgradeOffer: () => offer },
+        )
+
+        try {
+            const runnerSelfUpgrade = mock(async () => ({
+                status: 'started',
+                message: 'ok',
+                channel: 'npm',
+            }))
+            ;(engine as any).rpcGateway.runnerSelfUpgrade = runnerSelfUpgrade
+
+            engine.getOrCreateMachine(
+                'too-old',
+                { host: 'proxmox', platform: 'linux', happyCliVersion: '0.20.0', capabilities: [] },
+                null,
+                'default',
+            )
+            engine.handleMachineAlive({ machineId: 'too-old', time: Date.now() })
+
+            const result = await engine.upgradeMachineRunner('too-old', 'default')
+            expect(result).toEqual({
+                type: 'error',
+                message: 'Runner does not support self-upgrade; upgrade the CLI manually and restart the runner',
+                code: 'upgrade_unavailable',
+            })
+            expect(runnerSelfUpgrade).not.toHaveBeenCalled()
         } finally {
             engine.stop()
         }

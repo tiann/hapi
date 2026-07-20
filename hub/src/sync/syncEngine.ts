@@ -8,7 +8,7 @@
  */
 
 import { isKnownFlavor, type LocalResumeTarget, type ResumableSession } from '@hapi/protocol'
-import { isMachineCapabilitySkewed } from '@hapi/protocol/runnerCapabilities'
+import { isMachineCapabilitySkewed, MACHINE_CAPABILITIES } from '@hapi/protocol/runnerCapabilities'
 import type { HubUpgradeOffer, RunnerSelfUpgradeResponse } from '@hapi/protocol/upgradeChannel'
 import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, QueuedStateResponse, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, CodexCollaborationMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
@@ -552,6 +552,18 @@ export class SyncEngine {
         let offer = this.getUpgradeOffer()
         if (offer.channel === 'off') {
             return { type: 'error', message: 'Fleet upgrade disabled (HAPI_UPGRADE_CHANNEL=off)', code: 'upgrade_unavailable' }
+        }
+
+        // Live-RPC overlay is already applied by MachineCache.getMachineByNamespace.
+        // Skewed runners that predate this RPC cannot self-upgrade remotely — fail
+        // closed with a clear code so the UI can steer operators to a manual path.
+        const capabilities = machine.metadata?.capabilities ?? []
+        if (!capabilities.includes(MACHINE_CAPABILITIES.RunnerSelfUpgrade)) {
+            return {
+                type: 'error',
+                message: 'Runner does not support self-upgrade; upgrade the CLI manually and restart the runner',
+                code: 'upgrade_unavailable',
+            }
         }
 
         if (offer.channel === 'hub-artifact') {
