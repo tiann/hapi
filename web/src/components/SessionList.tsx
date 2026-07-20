@@ -674,36 +674,34 @@ function SessionListSearch(props: {
     const [datePickerOpen, setDatePickerOpen] = useState(false)
     const hasDateRange = Boolean(props.customStart && props.customEnd)
     return (
-        <div className="px-3 pb-2">
-            <div className="flex items-center gap-2">
-                <div className="relative min-w-0 flex-1">
-                    <div className="pointer-events-none absolute inset-y-0 left-2 flex items-center text-[var(--app-hint)]">
-                        <SearchIcon className="h-3.5 w-3.5" />
-                    </div>
-                    <input
-                        type="search"
-                        value={props.value}
-                        onChange={(event) => props.onChange(event.target.value)}
-                        placeholder={t('sessions.search.placeholder')}
-                        className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] py-1.5 pl-8 pr-8 text-sm text-[var(--app-fg)] outline-none transition-colors placeholder:text-[var(--app-hint)] focus:border-[var(--app-link)] [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-decoration]:hidden"
-                    />
-                    {props.value ? (
-                        <button
-                            type="button"
-                            onClick={() => props.onChange('')}
-                            className="absolute inset-y-0 right-2 flex items-center rounded p-0.5 text-[var(--app-hint)] hover:text-[var(--app-fg)]"
-                            title={t('sessions.search.clear')}
-                        >
-                            <XIcon className="h-3.5 w-3.5" />
-                        </button>
-                    ) : null}
+        <div className="px-2 pb-2">
+            <div className="relative min-w-0">
+                <div className="pointer-events-none absolute inset-y-0 left-2 flex items-center text-[var(--app-hint)]">
+                    <SearchIcon className="h-3.5 w-3.5" />
                 </div>
-                <div className="relative shrink-0">
+                <input
+                    type="search"
+                    value={props.value}
+                    onChange={(event) => props.onChange(event.target.value)}
+                    placeholder={t('sessions.search.placeholder')}
+                    className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] py-1.5 pl-8 pr-16 text-sm text-[var(--app-fg)] outline-none transition-colors placeholder:text-[var(--app-hint)] focus:border-[var(--app-link)] [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-decoration]:hidden"
+                />
+                {props.value ? (
+                    <button
+                        type="button"
+                        onClick={() => props.onChange('')}
+                        className="absolute inset-y-0 right-9 flex items-center rounded p-0.5 text-[var(--app-hint)] hover:text-[var(--app-fg)]"
+                        title={t('sessions.search.clear')}
+                    >
+                        <XIcon className="h-3.5 w-3.5" />
+                    </button>
+                ) : null}
+                <div className="absolute inset-y-0 right-0 flex items-stretch">
                     <button
                         type="button"
                         onClick={() => setDatePickerOpen(open => !open)}
                         className={cn(
-                            'relative rounded-lg p-2 transition-colors hover:bg-[var(--app-subtle-bg)]',
+                            'relative flex items-center rounded-r-lg rounded-l-md px-2 transition-colors hover:bg-[var(--app-subtle-bg)]',
                             hasDateRange ? 'text-[var(--app-link)]' : 'text-[var(--app-hint)]'
                         )}
                         title={hasDateRange ? `${props.customStart} – ${props.customEnd}` : t('sessions.timeFilter.label')}
@@ -1325,7 +1323,7 @@ export function SessionList(props: {
                                                 {/* Level 3: Sessions */}
                                                 <div className="collapsible-panel" data-open={!isCollapsed || undefined}>
                                                     <div className="collapsible-inner">
-                                                    <div className="flex flex-col gap-0.5 ml-3 pl-1 pr-1 py-1">
+                                                    <div className="flex flex-col gap-0.5 ml-3 pl-1 py-1">
                                                         {visibleGroupSessions.map((s) => (
                                                             <SessionItem
                                                                 key={s.id}
@@ -1344,7 +1342,7 @@ export function SessionList(props: {
                                                                     ? showMoreSessions(group)
                                                                     : collapseSessionGroup(group)}
                                                                 className={cn(
-                                                                    'mx-2 my-1 rounded-md px-2 py-1 text-left text-xs text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]',
+                                                                    'mx-2 my-1 rounded-md px-2 py-1 text-center text-xs text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]',
                                                                     hiddenSessionCount > 0 && 'border border-dashed border-[var(--app-border)]'
                                                                 )}
                                                             >
