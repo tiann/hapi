@@ -21,6 +21,7 @@ import { useTranslation } from '@/lib/use-translation'
 import { VoiceProvider } from '@/lib/voice-context'
 import { requireHubUrlForLogin } from '@/lib/runtime-config'
 import { getAppGlobalSseSubscription, getAppSessionSseSubscription } from '@/lib/appSseSubscriptions'
+import { reconcileQueuedStateAfterConnect } from '@/lib/queued-state-reconciliation'
 import { LoginPrompt } from '@/components/LoginPrompt'
 import { InstallPrompt } from '@/components/InstallPrompt'
 import { OfflineBanner } from '@/components/OfflineBanner'
@@ -260,6 +261,16 @@ function AppInner() {
         clearMessageWindow(event.sessionId)
         void fetchLatestMessages(api, event.sessionId)
     }, [api, selectedSessionId])
+
+    const handleSessionSseConnect = useCallback(() => {
+        if (!api || !selectedSessionId) {
+            return
+        }
+        void reconcileQueuedStateAfterConnect(api, selectedSessionId).catch((error) => {
+            console.error('Failed to reconcile queued state after SSE connect:', error)
+        })
+    }, [api, selectedSessionId])
+
     const translateIncomingToast = useCallback((title: string, body: string): { title: string; body: string } => {
         const normalizedTitle = title.trim()
         const normalizedBody = body.trim()
@@ -339,6 +350,7 @@ function AppInner() {
         baseUrl,
         subscription: sessionEventSubscription ?? undefined,
         scope: 'full',
+        onConnect: handleSessionSseConnect,
         onEvent: handleSseEvent
     })
 

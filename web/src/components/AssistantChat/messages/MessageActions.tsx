@@ -22,8 +22,7 @@ export function MessageActions({ align, copyText, metadata }: MessageActionsProp
         <div
             className={cn(
                 'happy-message-actions mt-1 flex h-5 items-center gap-1',
-                align === 'end' ? 'justify-end' : 'justify-start',
-                !canCopy && 'happy-message-actions-desktop-only-row'
+                align === 'end' ? 'justify-end' : 'justify-start'
             )}
         >
             {align === 'end' ? <DesktopTimestamp /> : null}
@@ -46,7 +45,7 @@ export function MessageActions({ align, copyText, metadata }: MessageActionsProp
 
 function DesktopTimestamp() {
     return (
-        <span className="happy-message-actions-desktop-only ml-1 items-center">
+        <span className="inline-flex ml-1 items-center">
             <MessageTimestamp className="text-[10px] leading-none text-[var(--app-hint)]" />
         </span>
     )
@@ -61,7 +60,7 @@ function MessageInfoPopover({ metadata }: { metadata: Omit<MessageMetadataProps,
                     type="button"
                     title={t('message.info')}
                     aria-label={t('message.info')}
-                    className="happy-message-actions-desktop-only h-5 w-5 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]"
+                    className="flex h-5 w-5 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]"
                 >
                     <InfoIcon className="h-3.5 w-3.5" />
                 </button>

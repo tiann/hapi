@@ -186,6 +186,32 @@ export class SessionCache {
         }
     }
 
+    markSessionActive(sessionId: string, time: number = Date.now()): void {
+        const t = clampAliveTime(time) ?? Date.now()
+        const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+        if (!session) return
+
+        const wasActive = session.active
+        session.active = true
+        session.activeAt = Math.max(session.activeAt, t)
+
+        this.lastBroadcastAtBySessionId.set(session.id, Date.now())
+        this.publisher.emit({
+            type: 'session-updated',
+            sessionId: session.id,
+            namespace: session.namespace,
+            data: {
+                active: true,
+                activeAt: session.activeAt,
+                thinking: session.thinking
+            } satisfies SessionPatch
+        })
+
+        if (!wasActive) {
+            this.refreshSession(sessionId)
+        }
+    }
+
     handleSessionAlive(payload: {
         sid: string
         time: number
@@ -401,6 +427,7 @@ export class SessionCache {
         }
 
         session.active = false
+        this.store.sessions.setSessionActive(session.id, false, t, session.namespace)
         session.thinking = false
         session.thinkingAt = t
         session.backgroundTaskCount = 0
@@ -421,6 +448,7 @@ export class SessionCache {
             if (!session.active) continue
             if (now - session.activeAt <= sessionTimeoutMs) continue
             session.active = false
+            this.store.sessions.setSessionActive(session.id, false, now, session.namespace)
             session.thinking = false
             this.pendingThinkingUntilBySessionId.delete(session.id)
             expired.push(session.id)

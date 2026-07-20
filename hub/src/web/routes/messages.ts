@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { MessagesQuerySchema, SendMessageRequestSchema } from '@hapi/protocol'
+import { MessagesQuerySchema, QueuedStateRequestSchema, SendMessageRequestSchema } from '@hapi/protocol'
 import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
@@ -46,6 +46,31 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
 
         const result = await engine.cancelQueuedMessage(sessionId, messageId)
         return c.json(result)
+    })
+
+    app.post('/sessions/:id/messages/queued-state', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        const sessionId = sessionResult.sessionId
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = QueuedStateRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body', issues: parsed.error.flatten() }, 400)
+        }
+
+        const localIds = [...new Set(parsed.data.localIds)]
+        if (localIds.length === 0) {
+            return c.json({ queuedLocalIds: [], invokedLocalMessages: [] })
+        }
+        return c.json(engine.getQueuedState(sessionId, localIds))
     })
 
     app.post('/sessions/:id/messages', async (c) => {

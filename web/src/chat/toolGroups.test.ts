@@ -22,6 +22,8 @@ function makeToolBlock(
             createdAt: 1,
             startedAt: 1,
             completedAt: 2,
+            execStartedAt: null,
+            execCompletedAt: null,
             description: null,
             result: null,
             permission: undefined,
@@ -65,6 +67,8 @@ describe('isEligibleForToolGrouping', () => {
                 createdAt: 1,
                 startedAt: null,
                 completedAt: null,
+                execStartedAt: null,
+                execCompletedAt: null,
                 description: null,
                 permission: {
                     id: 'perm-1',
@@ -84,6 +88,8 @@ describe('isEligibleForToolGrouping', () => {
                 createdAt: 1,
                 startedAt: 1,
                 completedAt: 2,
+                execStartedAt: null,
+                execCompletedAt: null,
                 description: null,
                 permission: {
                     id: 'approved-1',
@@ -101,6 +107,8 @@ describe('isEligibleForToolGrouping', () => {
                 createdAt: 1,
                 startedAt: 1,
                 completedAt: 2,
+                execStartedAt: null,
+                execCompletedAt: null,
                 description: null,
                 permission: {
                     id: 'denied-1',
@@ -121,6 +129,8 @@ describe('isEligibleForToolGrouping', () => {
                 createdAt: 1,
                 startedAt: 1,
                 completedAt: 2,
+                execStartedAt: null,
+                execCompletedAt: null,
                 description: null,
                 permission: {
                     id: 'codex-perm-1',
@@ -202,6 +212,8 @@ describe('buildVisibleChatBlocks', () => {
                 createdAt: 1,
                 startedAt: 1,
                 completedAt: 2,
+                execStartedAt: null,
+                execCompletedAt: null,
                 description: null,
                 result: 'Approved',
                 permission: {
@@ -276,6 +288,8 @@ describe('buildVisibleChatBlocks', () => {
                 createdAt: 1,
                 startedAt: 1,
                 completedAt: 2,
+                execStartedAt: null,
+                execCompletedAt: null,
                 description: null,
                 result: 'Approved',
                 permission: {

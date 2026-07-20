@@ -10,13 +10,25 @@ import SettingsVoicePage from './voice'
 import SettingsVoiceVoicesPage from './voice-voices'
 import SettingsVoiceAdvancedPage from './voice-advanced'
 
-const { navigate, setAppearance, setFontScale, setTerminalFontSize, setComposerEnterBehavior, setVoice } = vi.hoisted(() => ({
+const { navigate, setAppearance, setColorTheme, setFontScale, setTerminalFontSize, setComposerEnterBehavior, setVoice } = vi.hoisted(() => ({
     navigate: vi.fn(),
     setAppearance: vi.fn(),
+    setColorTheme: vi.fn(),
     setFontScale: vi.fn(),
     setTerminalFontSize: vi.fn(),
     setComposerEnterBehavior: vi.fn(),
     setVoice: vi.fn(),
+}))
+
+vi.mock('@/hooks/useColorTheme', () => ({
+    useColorTheme: () => ({ colorTheme: 'default', setColorTheme }),
+    getColorThemeOptions: () => [
+        { value: 'default', labelKey: 'settings.display.colorTheme.default' },
+        { value: 'nord', labelKey: 'settings.display.colorTheme.nord' },
+    ],
+    getColorThemePreview: (theme: string) => theme === 'nord'
+        ? { light: '#eceff4', dark: '#2e3440', accent: '#88c0d0' }
+        : { light: '#ffffff', dark: '#1c1c1e', accent: '#111827' },
 }))
 
 vi.mock('@tanstack/react-router', () => ({
@@ -172,6 +184,8 @@ describe('responsive settings pages', () => {
     it('renders compact display controls without dropdown popovers', () => {
         renderPage(<SettingsDisplayPage />)
         expect(screen.getByRole('radio', { name: 'OLED Black' })).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('radio', { name: 'Nord' }))
+        expect(setColorTheme).toHaveBeenCalledWith('nord')
         expect(screen.getByRole('radio', { name: '120%' })).toBeInTheDocument()
         expect(screen.getByRole('spinbutton', { name: 'Sessions Before Folding' })).toHaveValue(8)
         expect(screen.queryByRole('listbox')).not.toBeInTheDocument()

@@ -134,6 +134,33 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         return c.json({ session: sessionResult.session })
     })
 
+    app.get('/sessions/:id/cursor-chat-store', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const result = await engine.getCursorChatStoreStatus(
+            sessionResult.sessionId,
+            c.get('namespace')
+        )
+        if (result.type === 'error') {
+            const status = result.code === 'session_not_found' ? 404
+                : result.code === 'access_denied' ? 403
+                    : result.code === 'resume_unavailable' ? 409
+                        : result.code === 'no_machine_online' ? 503
+                            : 502
+            return c.json({ error: result.message, code: result.code }, status)
+        }
+
+        return c.json(result.status)
+    })
+
     app.post('/sessions/:id/resume', async (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {

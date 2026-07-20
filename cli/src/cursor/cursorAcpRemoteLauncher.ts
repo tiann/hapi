@@ -30,6 +30,7 @@ import { cursorPassThroughStatusMessage, parseCursorSpecialCommand } from './cur
 import { buildCursorModelsSeedPayload, seedCursorModelsCache } from '@/modules/common/cursorModels';
 import { readSharedCursorModelsCache } from '@/modules/common/cursorModelsSharedCache';
 import type { AcpSdkBackend } from '@/agent/backends/acp';
+import { SKILL_LOOKUP_INSTRUCTION } from '@/modules/common/skillLookupInstruction';
 
 class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CursorSession;
@@ -47,6 +48,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private spawnedWithAutoReview = false;
     /** Avoid re-queueing `/auto-review` on every mid-session mode sync. */
     private autoReviewSlashQueued = false;
+    private skillLookupInstructionSent = false;
 
     constructor(session: CursorSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
@@ -68,7 +70,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         const session = this.session;
         const messageBuffer = this.messageBuffer;
 
-        const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client);
+        const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client, {
+            skillLookup: { workingDirectory: session.path, flavor: 'cursor' }
+        });
         this.happyServer = happyServer;
 
         const autoReview = isCursorAutoReviewMode(session.getPermissionMode() as PermissionMode);
@@ -239,9 +243,15 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             }
             messageBuffer.addMessage(batch.message, 'user');
 
+            let messageText = batch.message;
+            if (!this.skillLookupInstructionSent && !messageText.trimStart().startsWith('/')) {
+                messageText = `${SKILL_LOOKUP_INSTRUCTION}\n\n${messageText}`;
+                this.skillLookupInstructionSent = true;
+            }
+
             const promptContent: PromptContent[] = [{
                 type: 'text',
-                text: batch.message
+                text: messageText
             }];
 
             session.onThinkingChange(true);

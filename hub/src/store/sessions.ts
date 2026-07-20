@@ -539,6 +539,38 @@ export function setSessionEffort(
     }
 }
 
+export function setSessionActive(
+    db: Database,
+    id: string,
+    active: boolean,
+    activeAt: number,
+    namespace: string
+): boolean {
+    try {
+        const result = db.prepare(`
+            UPDATE sessions
+            SET active = @active,
+                active_at = CASE
+                    WHEN active_at IS NULL OR active_at < @active_at THEN @active_at
+                    ELSE active_at
+                END,
+                seq = seq + 1
+            WHERE id = @id
+              AND namespace = @namespace
+              AND (active IS NOT @active OR active_at IS NULL OR active_at < @active_at)
+        `).run({
+            id,
+            namespace,
+            active: active ? 1 : 0,
+            active_at: activeAt
+        })
+
+        return result.changes === 1
+    } catch {
+        return false
+    }
+}
+
 export function touchSessionUpdatedAt(
     db: Database,
     id: string,

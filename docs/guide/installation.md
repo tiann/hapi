@@ -177,7 +177,7 @@ On first run, HAPI:
 |----------|---------|---------------|-------------|
 | `CLI_API_TOKEN` | Auto-generated | `cliApiToken` | Shared secret for authentication |
 | `HAPI_API_URL` | `http://localhost:3006` | `apiUrl` | Hub URL for CLI connections |
-| `HAPI_EXTRA_HEADERS_JSON` | - | - | JSON object of extra outbound headers for CLI → hub HTTP/WebSocket requests |
+| `HAPI_EXTRA_HEADERS_JSON` | - | `extraHeaders` | JSON object of extra outbound headers for CLI → hub HTTP/WebSocket requests |
 | `HAPI_LISTEN_HOST` | `127.0.0.1` | `listenHost` | Hub HTTP bind address |
 | `HAPI_LISTEN_PORT` | `3006` | `listenPort` | Hub HTTP port |
 | `HAPI_PUBLIC_URL` | - | `publicUrl` | Public URL for external access |
@@ -198,13 +198,17 @@ On first run, HAPI:
 Configuration priority: **ENV > settings.json > default**
 
 When ENV values are set and not present in settings.json, they are automatically saved.
+`HAPI_EXTRA_HEADERS_JSON` is not automatically saved, so access credentials are not persisted unexpectedly.
 
 ```json
 {
   "$schema": "https://hapi.run/docs/schemas/settings.schema.json",
   "listenHost": "0.0.0.0",
   "listenPort": 3006,
-  "publicUrl": "https://your-domain.com"
+  "publicUrl": "https://your-domain.com",
+  "extraHeaders": {
+    "Cookie": "CF_Authorization=..."
+  }
 }
 ```
 

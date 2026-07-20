@@ -15,6 +15,13 @@
       "default": "http://localhost:3006",
       "description": "Hub URL for CLI connections. ENV: HAPI_API_URL"
     },
+    "extraHeaders": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Extra headers for CLI to hub HTTP and WebSocket requests. ENV: HAPI_EXTRA_HEADERS_JSON"
+    },
     "listenHost": {
       "type": "string",
       "default": "127.0.0.1",

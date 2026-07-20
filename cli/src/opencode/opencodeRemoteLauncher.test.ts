@@ -178,6 +178,19 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         harness.thoughtLevelOption = null;
     });
 
+    it('injects the skill lookup instruction only on the first prompt', async () => {
+        const { session } = createSessionStub([
+            { message: 'first', mode: createMode() },
+            { message: 'second', mode: createMode() }
+        ]);
+
+        await opencodeRemoteLauncher(session as never);
+
+        expect(JSON.stringify(harness.promptContents[0])).toContain('$name');
+        expect(JSON.stringify(harness.promptContents[0])).toContain('skill_lookup');
+        expect(JSON.stringify(harness.promptContents[1])).not.toContain('skill_lookup');
+    });
+
     it('calls setModel with opencode flavor between turns when the queued model differs', async () => {
         const { session } = createSessionStub([
             { message: 'first', mode: createMode('ollama/exaone:4.5-33b-q8') },

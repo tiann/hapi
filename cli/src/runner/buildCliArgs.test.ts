@@ -109,12 +109,53 @@ describe('buildCliArgs', () => {
         expect(args).not.toContain('--service-tier')
     })
 
+
     it('does not pass --collaboration-mode for non-codex agents', () => {
         const args = buildCliArgs('claude', {
             directory: '/tmp',
             collaborationMode: 'plan',
         })
         expect(args).not.toContain('--collaboration-mode')
+
+    })
+    it('passes existing Hapi session id separately from Codex resume thread', () => {
+        const args = buildCliArgs('codex', {
+            directory: '/tmp',
+            resumeSessionId: 'codex-thread-1',
+            existingSessionId: 'hapi-session-1',
+            model: 'gpt-5.5',
+            modelReasoningEffort: 'low',
+        })
+        expect(args).toEqual([
+            'codex',
+            'resume',
+            'codex-thread-1',
+            '--hapi-starting-mode',
+            'remote',
+            '--started-by',
+            'runner',
+            '--existing-session-id',
+            'hapi-session-1',
+            '--model',
+            'gpt-5.5',
+            '--model-reasoning-effort',
+            'low',
+        ])
+    })
+
+
+
+    it('does not pass Codex-only existing session id flag to non-Codex agents', () => {
+        const args = buildCliArgs('claude', {
+            directory: '/tmp',
+            resumeSessionId: 'claude-session-1',
+            existingSessionId: 'hapi-session-1',
+        })
+        expect(args).toContain('--resume')
+        expect(args).toContain('claude-session-1')
+        expect(args).not.toContain('--existing-session-id')
+        expect(args).not.toContain('hapi-session-1')
+
     })
 
     it('validates all known permission modes', () => {

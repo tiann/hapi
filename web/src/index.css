@@ -433,11 +433,6 @@ body {
     margin-top: max(0px, calc((var(--app-chat-line-height) - var(--app-message-action-size)) / 2));
 }
 
-.happy-message-actions-desktop-only,
-.happy-message-actions-desktop-only-row {
-    display: none;
-}
-
 @media (hover: hover) and (pointer: fine) {
     .happy-message-actions {
         opacity: 0;
@@ -449,14 +444,6 @@ body {
     .happy-message:focus-within .happy-message-actions {
         opacity: 1;
         pointer-events: auto;
-    }
-
-    .happy-message-actions-desktop-only {
-        display: inline-flex;
-    }
-
-    .happy-message-actions-desktop-only-row {
-        display: flex;
     }
 }
 

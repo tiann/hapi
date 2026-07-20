@@ -34,6 +34,7 @@ export function resolveAgentSessionIdFromMetadata(
 export function inactiveSessionCanResume(
     session: Session,
     userMessageCount: number,
+    cursorChatOnDisk?: boolean,
 ): boolean {
     if (session.active) {
         return true
@@ -42,6 +43,10 @@ export function inactiveSessionCanResume(
         return false
     }
     if (resolveAgentSessionIdFromMetadata(session.metadata)) {
+        const flavor = isKnownFlavor(session.metadata.flavor) ? session.metadata.flavor : 'claude'
+        if (flavor === 'cursor') {
+            return cursorChatOnDisk === true
+        }
         return true
     }
     const flavor = isKnownFlavor(session.metadata.flavor) ? session.metadata.flavor : 'claude'

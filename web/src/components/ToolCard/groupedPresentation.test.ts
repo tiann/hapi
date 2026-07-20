@@ -32,6 +32,8 @@ function makeTool(id: string, name: string, input: unknown = {}): ToolCallBlock 
             createdAt: 1,
             startedAt: 1,
             completedAt: 2,
+            execStartedAt: null,
+            execCompletedAt: null,
             description: null,
             result: null,
             permission: undefined,

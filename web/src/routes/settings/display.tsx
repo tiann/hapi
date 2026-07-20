@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from '@/lib/use-translation'
 import { getAppearanceOptions, useAppearance } from '@/hooks/useTheme'
+import { getColorThemeOptions, getColorThemePreview, useColorTheme, type ColorThemePreset } from '@/hooks/useColorTheme'
 import { getFontScaleOptions, useFontScale } from '@/hooks/useFontScale'
 import { getTerminalFontSizeOptions, useTerminalFontSize } from '@/hooks/useTerminalFontSize'
 import { getSessionListStatusModeOptions, useSessionListStatusMode } from '@/hooks/useSessionListStatusMode'
@@ -15,6 +16,46 @@ function MinusIcon() {
 
 function PlusIcon() {
     return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+}
+
+function ColorThemePicker() {
+    const { t } = useTranslation()
+    const { colorTheme, setColorTheme } = useColorTheme()
+
+    return (
+        <fieldset className="px-3 py-3">
+            <legend className="mb-2 text-[var(--app-fg)]">{t('settings.display.colorTheme')}</legend>
+            <div role="radiogroup" aria-label={t('settings.display.colorTheme')} className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {getColorThemeOptions().map((option) => (
+                    <ColorThemeOption
+                        key={option.value}
+                        theme={option.value}
+                        label={t(option.labelKey)}
+                        selected={colorTheme === option.value}
+                        onSelect={setColorTheme}
+                    />
+                ))}
+            </div>
+        </fieldset>
+    )
+}
+
+function ColorThemeOption(props: { theme: ColorThemePreset; label: string; selected: boolean; onSelect: (theme: ColorThemePreset) => void }) {
+    const preview = getColorThemePreview(props.theme)
+    return (
+        <label
+            className={`flex min-w-0 items-center gap-2 rounded-lg border px-2 py-2 text-left text-sm transition-colors ${props.selected
+                ? 'border-[var(--app-link)] bg-[var(--app-subtle-bg)] text-[var(--app-link)]'
+                : 'border-[var(--app-border)] text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)]'}`}
+        >
+            <input type="radio" name="color-theme" value={props.theme} checked={props.selected} onChange={() => props.onSelect(props.theme)} className="sr-only" />
+            <span className="relative h-7 w-7 shrink-0 overflow-hidden rounded-md border border-[var(--app-border)]" style={{ backgroundColor: preview.light }} aria-hidden="true">
+                <span className="absolute inset-y-0 right-0 w-1/2" style={{ backgroundColor: preview.dark }} />
+                <span className="absolute inset-x-1 bottom-1 h-1 rounded-full" style={{ backgroundColor: preview.accent }} />
+            </span>
+            <span className="min-w-0 truncate font-medium">{props.label}</span>
+        </label>
+    )
 }
 
 function SessionPreviewLimitControl() {
@@ -105,6 +146,7 @@ export default function SettingsDisplayPage() {
                     options={getAppearanceOptions().map((option) => ({ value: option.value, label: t(option.labelKey) }))}
                     onChange={setAppearance}
                 />
+                <ColorThemePicker />
                 <ThemeColorControls />
             </SettingsSection>
 

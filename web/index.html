@@ -41,11 +41,30 @@
             (function () {
                 var lightColor = '#ffffff'
                 var darkColor = '#1c1c1e'
+                var oledColor = '#000000'
+                var themeBackgrounds = {
+                    notion: { light: '#fafafa', dark: '#191919' },
+                    one: { light: '#fbfbff', dark: '#1f2433' },
+                    proof: { light: '#f8f7f2', dark: '#18231f' },
+                    raycast: { light: '#ffffff', dark: '#201617' },
+                    'rose-pine': { light: '#fffaf3', dark: '#191724' },
+                    solarized: { light: '#fdf6e3', dark: '#002b36' },
+                    vercel: { light: '#ffffff', dark: '#000000' },
+                    'vs-code-plus': { light: '#ffffff', dark: '#1e1e1e' },
+                    xcode: { light: '#f7f9ff', dark: '#1f2024' },
+                    linear: { light: '#f7f7fb', dark: '#08090d' },
+                    lobster: { light: '#fff7f4', dark: '#161821' },
+                    material: { light: '#fffbfe', dark: '#1c1b1f' },
+                    matrix: { light: '#f5fff7', dark: '#030806' },
+                    monokai: { light: '#f8f7ef', dark: '#272822' },
+                    'night-owl': { light: '#fbfdff', dark: '#011627' },
+                    nord: { light: '#eceff4', dark: '#2e3440' },
+                }
 
                 function getInitialScheme() {
                     try {
                         var appearance = localStorage.getItem('hapi-appearance')
-                        if (appearance === 'dark' || appearance === 'light') return appearance
+                        if (appearance === 'dark' || appearance === 'light' || appearance === 'oled') return appearance
                     } catch (error) {
                         // Ignore storage errors.
                     }
@@ -56,8 +75,20 @@
                 }
 
                 var scheme = getInitialScheme()
-                var color = scheme === 'dark' ? darkColor : lightColor
+                var colorTheme = 'default'
+                try {
+                    var storedColorTheme = localStorage.getItem('hapi-color-theme')
+                    if (storedColorTheme && themeBackgrounds[storedColorTheme]) colorTheme = storedColorTheme
+                } catch (error) {
+                    // Ignore storage errors.
+                }
+                var paletteScheme = scheme === 'light' ? 'light' : 'dark'
+                var color = colorTheme === 'default'
+                    ? (scheme === 'oled' ? oledColor : (scheme === 'dark' ? darkColor : lightColor))
+                    : themeBackgrounds[colorTheme][paletteScheme]
                 document.documentElement.setAttribute('data-theme', scheme)
+                document.documentElement.setAttribute('data-color-theme', colorTheme)
+                document.documentElement.style.backgroundColor = color
                 document.querySelector('meta[name="theme-color"]').setAttribute('content', color)
             })()
         </script>
@@ -65,6 +96,8 @@
         <style>
             html { background: #fff }
             html[data-theme="dark"] { background: #1c1c1e; color-scheme: dark }
+            html[data-theme="oled"] { background: #000; color-scheme: dark }
+            html[data-color-theme]:not([data-color-theme="default"]) { background: inherit }
         </style>
 
         <title>HAPI</title>

@@ -28,6 +28,7 @@ import { useSidebarResize } from '@/hooks/useSidebarResize'
 import { useMessages } from '@/hooks/queries/useMessages'
 import { useMachines } from '@/hooks/queries/useMachines'
 import { useSession } from '@/hooks/queries/useSession'
+import { useCursorChatStoreStatus } from '@/hooks/queries/useCursorChatStoreStatus'
 import { useSessions } from '@/hooks/queries/useSessions'
 import { useSlashCommands } from '@/hooks/queries/useSlashCommands'
 import { useSkills } from '@/hooks/queries/useSkills'
@@ -41,6 +42,7 @@ import { fetchLatestMessages, seedMessageWindowFromSession } from '@/lib/message
 import { clearDraftsAfterSend } from '@/lib/clearDraftsAfterSend'
 import { inactiveSessionCanResume } from '@/lib/sessionResume'
 import { markSessionSeen } from '@/lib/sessionLastSeen'
+import { useSessionBrowserTitle } from '@/hooks/useSessionBrowserTitle'
 import { clearCodexImportedSession, markCodexSessionsImported } from '@/lib/codexImportedSessions'
 import type { Machine, CodexDuplicateSessionGroup, CodexLocalSessionSummary } from '@/types/api'
 import FilesPage from '@/routes/sessions/files'
@@ -58,6 +60,7 @@ import SettingsAboutPage from '@/routes/settings/about'
 import SharePage from '@/routes/share'
 import { setSharePendingTransfer } from '@/lib/sharePendingState'
 import { deleteShareTransfer } from '@/lib/shareTransfer'
+
 
 function BackIcon(props: { className?: string }) {
     return (
@@ -113,6 +116,26 @@ function CodexImportIcon(props: { className?: string }) {
             className={props.className}
         >
             {/* 中文注释：入口图标改成纯更新箭头，弱化“聊天”含义，避免用户误解成会话本身而不是导入动作。 */}
+            <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+            <path d="M21 3v6h-6" />
+        </svg>
+    )
+}
+
+function RefreshIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
             <path d="M21 12a9 9 0 1 1-2.64-6.36" />
             <path d="M21 3v6h-6" />
         </svg>
@@ -176,6 +199,7 @@ function SessionsPage() {
     const { machines } = useMachines(api, true)
     const [isSyncingCodexSession, setIsSyncingCodexSession] = useState(false)
     const [codexSessions, setCodexSessions] = useState<CodexLocalSessionSummary[]>([])
+    const [codexImportMachineId, setCodexImportMachineId] = useState<string | null>(null)
     const [isLoadingCodexSessions, setIsLoadingCodexSessions] = useState(false)
     const [isSyncConfirmOpen, setIsSyncConfirmOpen] = useState(false)
     const [isRestartingCodexDesktop, setIsRestartingCodexDesktop] = useState(false)
@@ -183,10 +207,28 @@ function SessionsPage() {
     const [duplicateSessionGroups, setDuplicateSessionGroups] = useState<CodexDuplicateSessionGroup[]>([])
     const [isDuplicateMergeConfirmOpen, setIsDuplicateMergeConfirmOpen] = useState(false)
     const [isMergingDuplicateSessions, setIsMergingDuplicateSessions] = useState(false)
+    const [codexImportWorkDirectoryOverride, setCodexImportWorkDirectoryOverride] = useState<string | null>(null)
 
     const handleRefresh = useCallback(() => {
-        void refetch()
-    }, [refetch])
+        void (async () => {
+            try {
+                await refetch()
+                addToast({
+                    title: t('sessions.refresh.success.title'),
+                    body: t('sessions.refresh.success.body'),
+                    sessionId: '',
+                    url: ''
+                })
+            } catch (error) {
+                addToast({
+                    title: t('sessions.refresh.failed.title'),
+                    body: error instanceof Error ? error.message : t('dialog.error.default'),
+                    sessionId: '',
+                    url: ''
+                })
+            }
+        })()
+    }, [addToast, refetch, t])
 
     const projectCount = useMemo(() => new Set(sessions.map(s =>
         s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other'
@@ -220,6 +262,10 @@ function SessionsPage() {
     const currentCodexSessionId = selectedSession?.metadata?.flavor === 'codex'
         ? (selectedSession.metadata.agentSessionId ?? null)
         : null
+    const currentWorkDirectory = codexImportWorkDirectoryOverride
+        ?? selectedSession?.metadata?.worktree?.basePath
+        ?? selectedSession?.metadata?.path
+        ?? null
     const isSessionsIndex = pathname === '/sessions' || pathname === '/sessions/'
     const sidebar = useSidebarResize()
     const handleNewSessionInDirectory = useCallback((args: { machineId: string | null; directory: string }) => {
@@ -369,16 +415,19 @@ function SessionsPage() {
         t
     ])
 
-    const openCodexImportDialog = useCallback(async () => {
+    const openCodexImportDialog = useCallback(async (workDirectory?: string | null) => {
+        setCodexImportWorkDirectoryOverride(workDirectory?.trim() || null)
         if (isLoadingCodexSessions) return
 
         setIsSyncConfirmOpen(true)
         setIsLoadingCodexSessions(true)
         try {
-            const result = await api.getCodexSessions()
+            const result = await api.getCodexSessions(workDirectory)
             setCodexSessions(result.sessions)
+            setCodexImportMachineId(result.machineId ?? null)
         } catch (error) {
             setCodexSessions([])
+            setCodexImportMachineId(null)
             const reason = normalizeCodexScriptError(
                 error instanceof Error ? error.message : null,
                 t('dialog.error.default')
@@ -394,13 +443,22 @@ function SessionsPage() {
         }
     }, [addToast, api, formatCodexSyncFailureBody, isLoadingCodexSessions, normalizeCodexScriptError, t])
 
+    const handleArchiveCodexSession = useCallback(async (codexSession: import('@/types/api').CodexLocalSessionSummary) => {
+        if (!api) return
+        const result = await api.archiveCodexSession(codexSession.id, codexImportMachineId)
+        if (!result.success) {
+            throw new Error(result.error)
+        }
+        setCodexSessions((current) => current.filter((session) => session.id !== codexSession.id))
+    }, [api, codexImportMachineId])
+
     const handleImportCodexSessions = useCallback(async (sessionIds: string[]) => {
         if (isSyncingCodexSession || isLoadingCodexSessions) return
 
         setIsSyncingCodexSession(true)
         try {
             // 中文注释：弹窗提交的是本地 Codex thread ID；后端会直接读取这些 transcript 并导入到 Hapi。
-            const result = await api.syncCodexSession({ sessionIds })
+            const result = await api.syncCodexSession({ sessionIds, cwd: currentWorkDirectory, machineId: codexImportMachineId })
             if (!result.success) {
                 throw new Error(normalizeCodexScriptError(result.error, t('codexSync.failed.body')))
             }
@@ -463,6 +521,8 @@ function SessionsPage() {
         addToast,
         api,
         formatCodexSyncFailureBody,
+        codexImportMachineId,
+        currentWorkDirectory,
         isLoadingCodexSessions,
         isSyncingCodexSession,
         normalizeCodexScriptError,
@@ -496,6 +556,17 @@ function SessionsPage() {
                                 title={t('codexSync.tooltip')}
                             >
                                 <CodexImportIcon className={`h-5 w-5 ${isLoadingCodexSessions ? 'animate-spin' : ''}`} />
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleRefresh}
+                                disabled={isLoading}
+                                aria-label={t('button.refresh')}
+                                aria-busy={isLoading}
+                                className="p-1.5 rounded-full text-[var(--app-hint)] hover:text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)] transition-colors disabled:opacity-60 disabled:cursor-wait"
+                                title={t('button.refresh')}
+                            >
+                                <RefreshIcon className={`h-5 w-5 ${isLoading ? 'animate-spin' : ''}`} />
                             </button>
                             <button
                                 type="button"
@@ -567,11 +638,17 @@ function SessionsPage() {
             {/* 中文注释：这里展示的是本地 Codex transcript 列表；默认尝试勾选当前 Hapi 会话关联的 Codex thread。 */}
             <CodexSessionSyncDialog
                 isOpen={isSyncConfirmOpen}
-                onClose={() => setIsSyncConfirmOpen(false)}
+                onClose={() => {
+                    setIsSyncConfirmOpen(false)
+                    setCodexImportWorkDirectoryOverride(null)
+                    setCodexImportMachineId(null)
+                }}
                 sessions={codexSessions}
                 currentCodexSessionId={currentCodexSessionId}
+                currentWorkDirectory={currentWorkDirectory}
                 onConfirm={handleImportCodexSessions}
                 onRestartCodexDesktop={handleRestartCodexDesktop}
+                onArchiveSession={handleArchiveCodexSession}
                 isPending={isSyncingCodexSession}
                 isRestartingCodexDesktop={isRestartingCodexDesktop}
                 isLoading={isLoadingCodexSessions}
@@ -632,6 +709,11 @@ function SessionPage() {
         error: sessionError,
         refetch: refetchSession,
     } = useSession(api, sessionId)
+    const {
+        status: cursorChatStoreStatus,
+        isApplicable: cursorChatStoreApplicable,
+        error: cursorChatStoreError,
+    } = useCursorChatStoreStatus({ api, session })
     const {
         messages,
         pendingMessages,
@@ -727,6 +809,16 @@ function SessionPage() {
         })()
     }, [api, queryClient, navigate, addToast, t])
 
+    const cursorReopenDisabledReason = cursorChatStoreApplicable && cursorChatStoreStatus?.onDisk !== true
+        ? cursorChatStoreError
+            ? t('session.action.reopenCursorCheckFailed')
+            : cursorChatStoreStatus?.onDisk === false
+                ? t('session.action.reopenCursorMissing')
+                : t('session.action.reopenCursorChecking')
+        : undefined
+    const canOfferInactiveReopen = session
+        ? inactiveSessionCanResume(session, messages.length, cursorChatStoreStatus?.onDisk)
+        : false
     const rawSendError = sendErrors[sessionId] ?? null
     const sendError: ComposerSendError | null = rawSendError
         ? {
@@ -734,7 +826,7 @@ function SessionPage() {
             text: rawSendError.text,
             message: rawSendError.message,
             scheduledAt: rawSendError.scheduledAt,
-            action: rawSendError.code === 'session_inactive'
+            action: rawSendError.code === 'session_inactive' && canOfferInactiveReopen
                 ? {
                     label: t('chat.sendError.sessionInactive.action'),
                     onClick: () => reopenFromErrorAffordance(sessionId),
@@ -781,7 +873,7 @@ function SessionPage() {
             if (!api || !session || session.active) {
                 return currentSessionId
             }
-            if (!inactiveSessionCanResume(session, messages.length)) {
+            if (!inactiveSessionCanResume(session, messages.length, cursorChatStoreStatus?.onDisk)) {
                 // #918: surface as a session_inactive ApiError so the
                 // onError consumer's classifier renders the Reopen
                 // affordance.  `status: 409` mirrors the hub guard for
@@ -815,11 +907,11 @@ function SessionPage() {
         onSessionResolved: (resolvedSessionId) => {
             void (async () => {
                 if (api) {
-                    if (session && resolvedSessionId !== session.id) {
-                        seedMessageWindowFromSession(session.id, resolvedSessionId)
-                        queryClient.setQueryData(queryKeys.session(resolvedSessionId), {
-                            session: { ...session, id: resolvedSessionId, active: true }
-                        })
+                    if (session) {
+                        if (resolvedSessionId !== session.id) {
+                            seedMessageWindowFromSession(session.id, resolvedSessionId)
+                        }
+                        void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
                     }
                     try {
                         await Promise.all([
@@ -830,6 +922,13 @@ function SessionPage() {
                             fetchLatestMessages(api, resolvedSessionId),
                         ])
                     } catch {
+                    }
+                    if (session) {
+                        // 中文注释：恢复接口成功后，REST/SSE 可能仍有短暂竞态；最后再乐观置为在线，
+                        // 避免刚 prefetch 到旧 inactive 快照导致状态栏继续显示离线。
+                        queryClient.setQueryData(queryKeys.session(resolvedSessionId), (previous: { session?: typeof session } | undefined) => ({
+                            session: { ...(previous?.session ?? session), id: resolvedSessionId, active: true }
+                        }))
                     }
                 }
                 navigate({
@@ -918,6 +1017,8 @@ function SessionPage() {
         <SessionChat
             api={api}
             session={session}
+            cursorChatOnDisk={cursorChatStoreStatus?.onDisk}
+            reopenDisabledReason={cursorReopenDisabledReason}
             messages={messages}
             pendingMessages={pendingMessages}
             messagesWarning={messagesWarning}
@@ -949,7 +1050,8 @@ function SessionDetailRoute() {
     const pathname = useLocation({ select: location => location.pathname })
     const { sessionId } = useParams({ from: '/sessions/$sessionId' })
     const navigate = useNavigate()
-    const { notFound: sessionNotFound } = useSession(api, sessionId)
+    const { session, notFound: sessionNotFound } = useSession(api, sessionId)
+    useSessionBrowserTitle(session)
     const basePath = `/sessions/${sessionId}`
     const isChat = pathname === basePath || pathname === `${basePath}/`
 

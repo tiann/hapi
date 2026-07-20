@@ -433,6 +433,51 @@ describe('Codex Desktop import routes', () => {
         }
     })
 
+    it('updates an existing forked import when syncing the original Codex session id', async () => {
+        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-source-test-'))
+        const store = new Store(':memory:')
+        const codexSessionId = '12121212-1212-4121-8121-121212121212'
+        process.env.CODEX_HOME = codexHome
+
+        try {
+            createTranscript(codexHome, codexSessionId)
+
+            const first = await importSelectedCodexSessions({
+                codexSessionIds: [codexSessionId],
+                store,
+                namespace: 'default',
+                getSyncEngine: () => null
+            })
+            expect(first.success).toBe(true)
+
+            const imported = store.sessions.getSessionsByNamespace('default')[0]
+            expect(imported).toBeDefined()
+            store.sessions.updateSessionMetadata(imported.id, {
+                ...(imported.metadata ?? {}),
+                codexSessionId: 'fork-session-id',
+                codexSourceSessionId: codexSessionId
+            }, imported.metadataVersion, 'default')
+
+            const second = await importSelectedCodexSessions({
+                codexSessionIds: [codexSessionId],
+                store,
+                namespace: 'default',
+                getSyncEngine: () => null
+            })
+
+            expect(second.success).toBe(true)
+            const sessions = store.sessions.getSessionsByNamespace('default')
+            expect(sessions).toHaveLength(1)
+            expect(sessions[0]?.metadata).toMatchObject({
+                codexSessionId: 'fork-session-id',
+                codexSourceSessionId: codexSessionId
+            })
+        } finally {
+            store.close()
+            rmSync(codexHome, { recursive: true, force: true })
+        }
+    })
+
     it('deduplicates mirrored event_msg and response_item user messages', async () => {
         const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-mirror-test-'))
         const store = new Store(':memory:')
@@ -727,12 +772,6 @@ describe('Codex Desktop import routes', () => {
                 }
             ])
 
-            const app = createRoutesApp('default')
-            const response = await app.request('/api/codex/sessions')
-            expect(response.status).toBe(200)
-            const body = await response.json() as { sessions: Array<{ id: string; title: string }> }
-            expect(body.sessions.find((session) => session.id === codexSessionId)?.title).toBe('new thread title')
-
             const result = await importSelectedCodexSessions({
                 codexSessionIds: [codexSessionId],
                 store,
@@ -761,12 +800,6 @@ describe('Codex Desktop import routes', () => {
 
         try {
             createTranscript(codexHome, codexSessionId)
-
-            const app = createRoutesApp('default')
-            const response = await app.request('/api/codex/sessions')
-            expect(response.status).toBe(200)
-            const body = await response.json() as { sessions: Array<{ id: string; title: string }> }
-            expect(body.sessions.find((session) => session.id === codexSessionId)?.title).toBe('normal user message')
 
             const result = await importSelectedCodexSessions({
                 codexSessionIds: [codexSessionId],
@@ -803,12 +836,6 @@ describe('Codex Desktop import routes', () => {
                     updated_at: '2026-07-07T03:00:00.000000000Z'
                 }
             ])
-
-            const app = createRoutesApp('default')
-            const response = await app.request('/api/codex/sessions')
-            expect(response.status).toBe(200)
-            const body = await response.json() as { sessions: Array<{ id: string; title: string }> }
-            expect(body.sessions.find((session) => session.id === codexSessionId)?.title).toBe('normal user message')
 
             const result = await importSelectedCodexSessions({
                 codexSessionIds: [codexSessionId],
@@ -925,7 +952,7 @@ describe('Codex Desktop import routes', () => {
         }
     })
 
-    it('keeps an existing machineId when updating an imported transcript', async () => {
+    it('does not append a Runner transcript to a session bound to another machine', async () => {
         const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-machine-existing-test-'))
         const store = new Store(':memory:')
         const codexSessionId = '55555555-5555-4555-8555-555555555555'
@@ -947,15 +974,21 @@ describe('Codex Desktop import routes', () => {
                 codexSessionIds: [codexSessionId],
                 store,
                 namespace: 'default',
-                getSyncEngine: () => engine
+                getSyncEngine: () => engine,
+                machineId: 'machine-new'
             })
 
             expect(result.success).toBe(true)
-            const session = store.sessions.getSessionsByNamespace('default')[0]
-            expect(session.metadata).toMatchObject({
-                path: '/home/user/workspace/project',
-                machineId: 'machine-existing'
-            })
+            const sessions = store.sessions.getSessionsByNamespace('default')
+            expect(sessions).toHaveLength(2)
+            expect(sessions.some((session) => (
+                (session.metadata as Record<string, unknown> | null)?.path === '/home/user/workspace/project'
+                && (session.metadata as Record<string, unknown> | null)?.machineId === 'machine-new'
+            ))).toBe(true)
+            expect(sessions.some((session) => (
+                (session.metadata as Record<string, unknown> | null)?.path === '/home/user/workspace/project'
+                && (session.metadata as Record<string, unknown> | null)?.machineId === 'machine-existing'
+            ))).toBe(true)
         } finally {
             store.close()
             rmSync(codexHome, { recursive: true, force: true })
@@ -981,13 +1014,68 @@ describe('Codex Desktop import routes', () => {
             const app = createRoutesApp('default')
             const response = await app.request('/api/codex/sessions')
 
-            expect(response.status).toBe(200)
+            expect(response.status).toBe(503)
             expect(await response.json()).toEqual({
-                success: true,
+                success: false,
+                error: 'No online machine available for Codex history import',
                 sessions: []
             })
         } finally {
             rmSync(codexHome, { recursive: true, force: true })
         }
+    })
+
+    it('does not fall back to another Runner when the requested machine is offline', async () => {
+        const store = new Store(':memory:')
+        let listCalls = 0
+        const engine = {
+            getOnlineMachinesByNamespace: () => [createMachine('online-machine', ['/tmp'])],
+            listCodexSessionsForMachine: async () => {
+                listCalls += 1
+                return { success: true, sessions: [] }
+            }
+        } as unknown as SyncEngine
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => engine }))
+
+        try {
+            const response = await app.request('/api/codex/sessions?machineId=offline-machine')
+            expect(response.status).toBe(503)
+            expect(listCalls).toBe(0)
+        } finally {
+            store.close()
+        }
+    })
+
+    it('treats source and fork ids as the same duplicate-sessions group', async () => {
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        const store = new Store(':memory:')
+        const forkSession = store.sessions.getOrCreateSession('fork-session-id', { codexSessionId: 'fork-session-id', codexSourceSessionId: 'original-session-id' }, {}, 'default')
+        const dupSession = store.sessions.getOrCreateSession('dup-session-id', { codexSessionId: 'original-session-id' }, {}, 'default')
+        app.route('/api', createCodexDesktopRoutes({
+            store,
+            getSyncEngine: () => null
+        }))
+
+        const response = await app.request('/api/codex/duplicate-sessions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ sessionIds: ['original-session-id'] })
+        })
+
+        expect(response.status).toBe(200)
+        const body = await response.json() as { success: true; duplicates: Array<{ codexSessionId: string; hapiSessionIds: string[] }> }
+        expect(body.success).toBe(true)
+        expect(body.duplicates).toHaveLength(1)
+        expect(body.duplicates[0]?.codexSessionId).toBe('original-session-id')
+        expect(body.duplicates[0]?.hapiSessionIds.sort()).toEqual([dupSession.id, forkSession.id].sort())
     })
 })

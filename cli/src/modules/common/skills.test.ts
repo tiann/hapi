@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { listSkills } from './skills'
+import { listSkills, MAX_SKILL_FILE_BYTES, resolveSkill } from './skills'
 
 async function writeSkill(skillDir: string, name: string, description: string): Promise<void> {
     await mkdir(skillDir, { recursive: true })
@@ -326,5 +326,83 @@ describe('listSkills', () => {
             name: 'shared',
             description: 'Local shared skill'
         })
+    })
+
+    it('resolves the same nearest project skill selected by listSkills', async () => {
+        const repoRoot = join(sandboxDir, 'repo')
+        const workingDirectory = join(repoRoot, 'apps', 'web')
+
+        await mkdir(join(repoRoot, '.git'), { recursive: true })
+        await writeSkill(join(homeDir, '.agents', 'skills', 'shared'), 'shared', 'User shared skill')
+        await writeSkill(join(repoRoot, '.agents', 'skills', 'shared'), 'shared', 'Repo shared skill')
+        await writeSkill(join(workingDirectory, '.agents', 'skills', 'shared'), 'shared', 'Local shared skill')
+
+        await expect(resolveSkill('shared', workingDirectory, { flavor: 'opencode' })).resolves.toEqual({
+            name: 'shared',
+            description: 'Local shared skill',
+            body: '# shared'
+        })
+    })
+
+    it('resolves a user skill when no project duplicate exists', async () => {
+        await writeSkill(join(homeDir, '.agents', 'skills', 'user-only'), 'user-only', 'User skill')
+
+        await expect(resolveSkill('user-only', undefined, { flavor: 'kimi' })).resolves.toEqual({
+            name: 'user-only',
+            description: 'User skill',
+            body: '# user-only'
+        })
+    })
+
+    it('returns null for an unknown exact skill name', async () => {
+        await writeSkill(join(homeDir, '.agents', 'skills', 'known'), 'known', 'Known skill')
+
+        await expect(resolveSkill('missing')).resolves.toBeNull()
+    })
+
+    it('preserves support for a symlinked SKILL.md file', async () => {
+        const source = join(sandboxDir, 'shared-skill.md')
+        const skillDir = join(homeDir, '.agents', 'skills', 'linked')
+        await mkdir(skillDir, { recursive: true })
+        await writeFile(source, [
+            '---',
+            'name: linked',
+            'description: Linked skill',
+            '---',
+            '',
+            '# Linked body'
+        ].join('\n'))
+        await symlink(source, join(skillDir, 'SKILL.md'))
+
+        await expect(resolveSkill('linked')).resolves.toEqual({
+            name: 'linked',
+            description: 'Linked skill',
+            body: '# Linked body'
+        })
+    })
+
+    it('rejects path traversal instead of treating it as a skill path', async () => {
+        await expect(resolveSkill('../settings.json')).rejects.toThrow('Invalid skill name')
+        await expect(resolveSkill('nested/skill')).rejects.toThrow('Invalid skill name')
+        await expect(resolveSkill('nested\\skill')).rejects.toThrow('Invalid skill name')
+    })
+
+    it('rejects a skill file that is too large to place in model context', async () => {
+        const skillDir = join(homeDir, '.agents', 'skills', 'huge')
+        await mkdir(skillDir, { recursive: true })
+        await writeFile(join(skillDir, 'SKILL.md'), [
+            '---',
+            'name: huge',
+            'description: Huge skill',
+            '---',
+            '',
+            'x'.repeat(MAX_SKILL_FILE_BYTES)
+        ].join('\n'))
+
+        await expect(listSkills()).resolves.toContainEqual({
+            name: 'huge',
+            description: 'Huge skill'
+        })
+        await expect(resolveSkill('huge')).rejects.toThrow('Skill is too large to load')
     })
 })

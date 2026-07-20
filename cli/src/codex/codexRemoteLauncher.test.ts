@@ -14,7 +14,9 @@ const harness = vi.hoisted(() => ({
     collaborationModeResponse: { data: [{ mode: 'default' }, { mode: 'plan' }] } as unknown,
     failListCollaborationModes: false,
     startThreadIds: [] as string[],
+    startThreadParams: [] as Array<Record<string, unknown>>,
     resumeThreadIds: [] as string[],
+    resumeThreadParams: [] as Array<Record<string, unknown>>,
     startTurnThreadIds: [] as string[],
     startTurnParams: [] as Array<Record<string, unknown>>,
     startTurnErrors: [] as Error[],
@@ -39,6 +41,7 @@ const harness = vi.hoisted(() => ({
     failResumeThreadIds: [] as string[],
     nextThreadSystemErrorMessage: null as string | null,
     failNextCompact: false,
+    deferCompactCompletion: false,
     deferThreadStatusNotifications: false,
     emitChildThreadEvents: false,
     emitChildUsageEvents: false,
@@ -109,15 +112,17 @@ vi.mock('./codexAppServerClient', () => {
             harness.requestHandlers.set(method, handler);
         }
 
-        async startThread(): Promise<{ thread: { id: string }; model: string }> {
+        async startThread(params?: Record<string, unknown>): Promise<{ thread: { id: string }; model: string }> {
             const id = `thread-${harness.startThreadIds.length + 1}`;
             harness.startThreadIds.push(id);
+            harness.startThreadParams.push(params ?? {});
             return { thread: { id }, model: 'gpt-5.4' };
         }
 
-        async resumeThread(params?: { threadId?: string }): Promise<{ thread: { id: string }; model: string }> {
-            const id = params?.threadId ?? 'thread-resumed';
+        async resumeThread(params?: Record<string, unknown>): Promise<{ thread: { id: string }; model: string }> {
+            const id = typeof params?.threadId === 'string' ? params.threadId : 'thread-resumed';
             harness.resumeThreadIds.push(id);
+            harness.resumeThreadParams.push(params ?? {});
             if (harness.failResumeThreadIds.includes(id)) {
                 throw new Error('resume failed');
             }
@@ -130,6 +135,9 @@ vi.mock('./codexAppServerClient', () => {
             if (harness.failNextCompact) {
                 harness.failNextCompact = false;
                 throw new Error('compact failed');
+            }
+            if (harness.deferCompactCompletion) {
+                return {};
             }
             const compacted = { threadId, turnId: `compact-${harness.compactThreadIds.length}` };
             harness.notifications.push({ method: 'thread/compacted', params: compacted });
@@ -908,10 +916,16 @@ function createMode(): EnhancedMode {
     };
 }
 
-function createSessionStub(messages = ['hello from launcher test'], mode = createMode()) {
+function createSessionStub(
+    messages = ['hello from launcher test'],
+    mode = createMode(),
+    isolateMessages = false
+) {
     const queue = new MessageQueue2<EnhancedMode>((mode) => JSON.stringify(mode));
     messages.forEach((message, index) => {
-        if (index === 0 && messages.length > 1) {
+        if (isolateMessages) {
+            queue.pushIsolated(message, mode);
+        } else if (index === 0 && messages.length > 1) {
             queue.pushIsolateAndClear(message, mode);
         } else {
             queue.push(message, mode);
@@ -1041,7 +1055,9 @@ describe('codexRemoteLauncher', () => {
         harness.collaborationModeResponse = { data: [{ mode: 'default' }, { mode: 'plan' }] };
         harness.failListCollaborationModes = false;
         harness.startThreadIds = [];
+        harness.startThreadParams = [];
         harness.resumeThreadIds = [];
+        harness.resumeThreadParams = [];
         harness.startTurnThreadIds = [];
         harness.startTurnParams = [];
         harness.startTurnErrors = [];
@@ -1066,6 +1082,7 @@ describe('codexRemoteLauncher', () => {
         harness.remainingThreadSystemErrors = 0;
         harness.nextThreadSystemErrorMessage = null;
         harness.failNextCompact = false;
+        harness.deferCompactCompletion = false;
         harness.deferThreadStatusNotifications = false;
         harness.emitChildThreadEvents = false;
         harness.emitChildUsageEvents = false;
@@ -1108,6 +1125,8 @@ describe('codexRemoteLauncher', () => {
         expect(exitReason).toBe('exit');
         expect(foundSessionIds).toContain('thread-1');
         expect(getModel()).toBe('gpt-5.4');
+        expect(harness.startThreadParams).toHaveLength(1);
+        expect(harness.startThreadParams[0]?.threadSource).toBe('user');
         expect(harness.initializeCalls).toEqual([{
             clientInfo: {
                 name: 'hapi-codex-client',
@@ -1333,6 +1352,8 @@ describe('codexRemoteLauncher', () => {
 
         expect(exitReason).toBe('exit');
         expect(foundSessionIds).toEqual(['thread-1']);
+        expect(harness.startThreadParams).toHaveLength(1);
+        expect(harness.startThreadParams[0]?.threadSource).toBe('user');
         expect(harness.startTurnParams).toHaveLength(0);
         expect(harness.goalSetCalls).toEqual([{
             threadId: 'thread-1',
@@ -1956,12 +1977,14 @@ describe('codexRemoteLauncher', () => {
 
         expect(exitReason).toBe('exit');
         expect(harness.resumeThreadIds).toEqual(['thread-old']);
+        expect(harness.resumeThreadParams).toHaveLength(1);
+        expect(harness.resumeThreadParams[0]?.threadSource).toBeUndefined();
         expect(harness.startThreadIds).toEqual([]);
         expect(harness.startTurnThreadIds).toEqual([]);
         expect(session.sessionId).toBe('thread-old');
         expect(sessionEvents).toContainEqual({
             type: 'message',
-            message: 'Task failed: Codex conversation thread-old could not be resumed; no new conversation was created'
+            message: 'Task failed: Codex conversation thread-old could not be resumed; no new conversation was created. Reason: resume failed'
         });
         expect(session.thinking).toBe(false);
     });
@@ -2678,6 +2701,45 @@ describe('codexRemoteLauncher', () => {
             type: 'message',
             message: 'Compaction started'
         });
+        expect(sessionEvents).toContainEqual({
+            type: 'message',
+            message: 'Compaction completed'
+        });
+    });
+
+    it('does not start the next turn until manual compaction finishes', async () => {
+        harness.deferCompactCompletion = true;
+        const { session, sessionEvents } = createSessionStub([
+            'first message',
+            '/compact',
+            'after compact'
+        ], createMode(), true);
+
+        const running = codexRemoteLauncher(session as never);
+        await vi.waitFor(() => {
+            expect(harness.compactThreadIds).toEqual(['thread-1']);
+        });
+
+        expect(harness.startTurnMessages).toEqual(['first message']);
+        expect(sessionEvents).not.toContainEqual({
+            type: 'message',
+            message: 'Compaction completed'
+        });
+
+        harness.dispatchNotification?.('item/completed', {
+            threadId: 'thread-1',
+            turnId: 'compact-1',
+            item: { id: 'compact-item-1', type: 'contextCompaction' }
+        });
+        harness.dispatchNotification?.('turn/completed', {
+            threadId: 'thread-1',
+            turn: { id: 'compact-1', status: 'completed' }
+        });
+
+        const exitReason = await running;
+
+        expect(exitReason).toBe('exit');
+        expect(harness.startTurnMessages).toEqual(['first message', 'after compact']);
         expect(sessionEvents).toContainEqual({
             type: 'message',
             message: 'Compaction completed'

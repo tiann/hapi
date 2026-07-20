@@ -93,6 +93,8 @@ export interface ThreadStartParams {
     baseInstructions?: string;
     developerInstructions?: string;
     personality?: string;
+    /** Client-supplied analytics classification persisted with the thread. */
+    threadSource?: string;
     ephemeral?: boolean;
     experimentalRawEvents?: boolean;
 }
@@ -125,8 +127,21 @@ export interface ThreadResumeParams {
 export interface ThreadResumeResponse {
     thread: {
         id: string;
+        turns?: Array<{ items?: ResponseItem[] }>;
     };
     model: string;
+    [key: string]: unknown;
+}
+
+export interface ThreadForkParams extends Omit<ThreadResumeParams, 'history' | 'path'> {
+}
+
+export interface ThreadForkResponse {
+    thread: {
+        id: string;
+        turns?: Array<{ items?: ResponseItem[] }>;
+    };
+    model?: string;
     [key: string]: unknown;
 }
 

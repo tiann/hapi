@@ -63,6 +63,7 @@ function createApp(session: Session, opts?: {
     getSessionExport?: (sessionId: string, session: Session) => unknown
     sessionExists?: boolean
     archiveSession?: (sessionId: string) => Promise<void>
+    getCursorChatStoreStatus?: SyncEngine['getCursorChatStoreStatus']
 }) {
     const applySessionConfigCalls: Array<[string, Record<string, unknown>]> = []
     const applySessionConfig = async (sessionId: string, config: Record<string, unknown>) => {
@@ -135,6 +136,10 @@ function createApp(session: Session, opts?: {
         listGrokReasoningEffortOptionsForSession,
         resumeSession,
         reopenSession,
+        getCursorChatStoreStatus: opts?.getCursorChatStoreStatus ?? (async () => ({
+            type: 'success' as const,
+            status: { onDisk: true, store: 'acp' as const }
+        })),
         archiveSession: archiveSessionMock,
         getSessionExport: opts?.getSessionExport ?? (() => ({
             type: 'success',
@@ -162,6 +167,29 @@ function createApp(session: Session, opts?: {
 }
 
 describe('sessions routes', () => {
+    it('returns the machine-scoped Cursor chat store status', async () => {
+        const session = createSession({
+            active: false,
+            metadata: {
+                path: '/tmp/project',
+                host: 'cursor-host',
+                flavor: 'cursor',
+                cursorSessionId: 'cursor-thread-1'
+            }
+        })
+        const { app } = createApp(session, {
+            getCursorChatStoreStatus: async () => ({
+                type: 'success',
+                status: { onDisk: false, store: null }
+            })
+        })
+
+        const response = await app.request('/api/sessions/session-1/cursor-chat-store')
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ onDisk: false, store: null })
+    })
+
     it('exports an empty session conversation payload', async () => {
         const session = createSession()
         const { app } = createApp(session)

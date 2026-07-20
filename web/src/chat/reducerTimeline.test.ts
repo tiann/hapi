@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { reduceTimeline } from './reducerTimeline'
+import { toolDurationMs } from '@/components/ToolCard/toolDuration'
 import type { TracedMessage } from './tracer'
 
 function makeContext() {
@@ -362,6 +363,125 @@ describe('reduceTimeline', () => {
         const toolBlock = blocks.find(b => b.kind === 'tool-call') as any
         expect(toolBlock).toBeDefined()
         expect(toolBlock.invokedAt).toBe(1_700_000_000_500)
+    })
+
+    describe('exec-timestamp (Claude entry clock) tool duration source', () => {
+        function toolUse(agentTimestamp?: number): TracedMessage {
+            return {
+                id: 'msg-call',
+                localId: null,
+                createdAt: 1_700_000_000_000,
+                role: 'agent',
+                agentTimestamp,
+                content: [{
+                    type: 'tool-call',
+                    id: 'tc-exec',
+                    name: 'Bash',
+                    input: { command: 'sleep 2' },
+                    description: null,
+                    uuid: 'u-call',
+                    parentUUID: null
+                }],
+                isSidechain: false
+            } as TracedMessage
+        }
+
+        function toolResult(agentTimestamp?: number): TracedMessage {
+            return {
+                id: 'msg-result',
+                localId: null,
+                createdAt: 1_700_000_001_800,
+                role: 'agent',
+                agentTimestamp,
+                content: [{
+                    type: 'tool-result',
+                    tool_use_id: 'tc-exec',
+                    content: 'ok',
+                    is_error: false,
+                    uuid: 'u-result',
+                    parentUUID: null
+                }],
+                isSidechain: false
+            } as TracedMessage
+        }
+
+        it('records the Claude exec timestamps distinct from the hub receive times', () => {
+            const { blocks } = reduceTimeline([
+                toolUse(1_700_000_000_100),
+                toolResult(1_700_000_002_100)
+            ], makeContext())
+            const toolBlock = blocks.find(b => b.kind === 'tool-call') as any
+            // hub receive times (createdAt) differ from the Claude entry stamps
+            expect(toolBlock.tool.startedAt).toBe(1_700_000_000_000)
+            expect(toolBlock.tool.completedAt).toBe(1_700_000_001_800)
+            expect(toolBlock.tool.execStartedAt).toBe(1_700_000_000_100)
+            expect(toolBlock.tool.execCompletedAt).toBe(1_700_000_002_100)
+        })
+
+        it('leaves exec timestamps null when no Claude timestamp is present (non-Claude flavor → hub fallback)', () => {
+            const { blocks } = reduceTimeline([toolUse(), toolResult()], makeContext())
+            const toolBlock = blocks.find(b => b.kind === 'tool-call') as any
+            expect(toolBlock.tool.execStartedAt).toBeNull()
+            expect(toolBlock.tool.execCompletedAt).toBeNull()
+            // hub times still recorded so the legacy duration path works
+            expect(toolBlock.tool.startedAt).toBe(1_700_000_000_000)
+            expect(toolBlock.tool.completedAt).toBe(1_700_000_001_800)
+        })
+
+        it('never coalesces a missing Claude timestamp to the hub receive time (both-or-neither)', () => {
+            // tool_use has a real Claude stamp, tool_result does not (e.g. a
+            // hub-synthesized result). execCompletedAt must stay null so the
+            // duration helper does not subtract two different clocks.
+            const { blocks } = reduceTimeline([
+                toolUse(1_700_000_000_100),
+                toolResult()
+            ], makeContext())
+            const toolBlock = blocks.find(b => b.kind === 'tool-call') as any
+            expect(toolBlock.tool.execStartedAt).toBe(1_700_000_000_100)
+            expect(toolBlock.tool.execCompletedAt).toBeNull()
+        })
+
+        it('backfills execStartedAt when the tool_result entry is reduced before the tool_use', () => {
+            // Reorder: result first, then the use. execStartedAt must still land
+            // on the tool_use Claude stamp (earliest), not the result stamp.
+            const { blocks } = reduceTimeline([
+                toolResult(1_700_000_002_100),
+                toolUse(1_700_000_000_100)
+            ], makeContext())
+            const toolBlock = blocks.find(b => b.kind === 'tool-call') as any
+            expect(toolBlock.tool.execStartedAt).toBe(1_700_000_000_100)
+            expect(toolBlock.tool.execCompletedAt).toBe(1_700_000_002_100)
+        })
+
+        it('leaves execStartedAt null on reorder when the tool_use entry has no timestamp (both-or-neither → legacy fallback)', () => {
+            // Case C: result reduced before a tool_use that carries no Claude
+            // stamp. execStartedAt must NOT be seeded from the result entry — it
+            // stays null so toolDurationMs falls back to hub times instead of
+            // collapsing to a bogus zero (execStartedAt === execCompletedAt).
+            const { blocks } = reduceTimeline([
+                toolResult(1_700_000_002_100),
+                toolUse()
+            ], makeContext())
+            const toolBlock = blocks.find(b => b.kind === 'tool-call') as any
+            expect(toolBlock.tool.execStartedAt).toBeNull()
+            expect(toolBlock.tool.execCompletedAt).toBe(1_700_000_002_100)
+        })
+
+        it('backfills the hub startedAt on reorder so a timestamp-less pair is not shown as 0.0s', () => {
+            // Reorder + no Claude timestamps: the block is created from the
+            // tool_result, so the hub startedAt is the result receive time.
+            // Without lowering it to the later tool_use's (earlier) receive
+            // time, both hub ends equal the result time and the duration row
+            // would read 0.0s instead of the real hub receive window.
+            const { blocks } = reduceTimeline([
+                toolResult(),
+                toolUse()
+            ], makeContext())
+            const toolBlock = blocks.find(b => b.kind === 'tool-call') as any
+            expect(toolBlock.tool.startedAt).toBe(1_700_000_000_000)
+            expect(toolBlock.tool.completedAt).toBe(1_700_000_001_800)
+            expect(toolDurationMs(toolBlock.tool)).toBe(1_800)
+        })
     })
 
     it('populates block.children for Agent tool (same as Task)', () => {

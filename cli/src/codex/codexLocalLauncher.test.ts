@@ -247,7 +247,7 @@ describe('codexLocalLauncher', () => {
         expect(harness.launches).toHaveLength(1);
         expect(harness.launches[0]?.codexArgs).toEqual([
             '--ask-for-approval',
-            'on-failure',
+            'on-request',
             '--sandbox',
             'workspace-write',
             '--model',

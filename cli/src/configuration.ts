@@ -11,6 +11,28 @@ import { join } from 'node:path'
 import packageJson from '../package.json'
 import { getCliArgs } from '@/utils/cliArgs'
 
+export function normalizeExtraHeaders(
+    value: unknown,
+    source: string,
+    warn: (message: string) => void = console.warn
+): Record<string, string> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        warn(`[WARN] ${source} must be a JSON object. Ignoring value.`)
+        return {}
+    }
+
+    const entries = Object.entries(value)
+    const headers = Object.fromEntries(
+        entries.filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+    )
+
+    if (Object.keys(headers).length !== entries.length) {
+        warn(`[WARN] ${source} only supports string header values. Ignoring non-string entries.`)
+    }
+
+    return headers
+}
+
 export function parseExtraHeaders(raw: string | undefined, warn: (message: string) => void = console.warn): Record<string, string> {
     if (!raw) {
         return {}
@@ -18,21 +40,7 @@ export function parseExtraHeaders(raw: string | undefined, warn: (message: strin
 
     try {
         const parsed = JSON.parse(raw) as unknown
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-            warn('[WARN] HAPI_EXTRA_HEADERS_JSON must be a JSON object. Ignoring value.')
-            return {}
-        }
-
-        const entries = Object.entries(parsed)
-        const headers = Object.fromEntries(
-            entries.filter((entry): entry is [string, string] => typeof entry[0] === 'string' && typeof entry[1] === 'string')
-        )
-
-        if (Object.keys(headers).length !== entries.length) {
-            warn('[WARN] HAPI_EXTRA_HEADERS_JSON only supports string header values. Ignoring non-string entries.')
-        }
-
-        return headers
+        return normalizeExtraHeaders(parsed, 'HAPI_EXTRA_HEADERS_JSON', warn)
     } catch {
         warn('[WARN] Failed to parse HAPI_EXTRA_HEADERS_JSON. Ignoring value.')
         return {}

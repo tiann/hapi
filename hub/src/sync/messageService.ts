@@ -10,6 +10,7 @@ import {
     unwrapRoleWrappedRecordEnvelope
 } from '@hapi/protocol/messages'
 import { isObject } from '@hapi/protocol'
+import type { QueuedStateResponse } from '@hapi/protocol/apiTypes'
 import type { Server } from 'socket.io'
 import { randomUUID } from 'node:crypto'
 import type { Store, CancelQueuedMessageResult } from '../store'
@@ -89,6 +90,18 @@ export class MessageService {
     getMessages(sessionId: string, limit: number = 200): DecryptedMessage[] {
         const stored = this.store.messages.getMessages(sessionId, limit)
         return toVisibleDecryptedMessages(stored)
+    }
+
+    getQueuedState(sessionId: string, localIds: string[]): QueuedStateResponse {
+        const states = this.store.messages.getLocalMessageStates(sessionId, localIds)
+        return {
+            queuedLocalIds: states
+                .filter((state) => state.invokedAt === null)
+                .map((state) => state.localId),
+            invokedLocalMessages: states.flatMap((state) => state.invokedAt === null
+                ? []
+                : [{ localId: state.localId, invokedAt: state.invokedAt }])
+        }
     }
 
     getSessionExport(

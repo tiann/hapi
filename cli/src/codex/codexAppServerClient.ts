@@ -1,4 +1,5 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { logger } from '@/ui/logger';
 import { JsonLineParser } from '@/utils/jsonLineParser';
 import { killProcessByChildProcess } from '@/utils/process';
@@ -12,6 +13,8 @@ import type {
     ThreadStartResponse,
     ThreadResumeParams,
     ThreadResumeResponse,
+    ThreadForkParams,
+    ThreadForkResponse,
     TurnStartParams,
     TurnStartResponse,
     TurnInterruptParams,
@@ -72,6 +75,84 @@ function createAbortError(): Error {
     return error;
 }
 
+type CodexCommandCandidate = {
+    command: string;
+    source: 'desktop' | 'path';
+    version: number[] | null;
+};
+
+function parseCodexVersion(output: string): number[] | null {
+    const match = /(\d+)\.(\d+)\.(\d+)(?:[-+][^\s]+)?/u.exec(output);
+    if (!match) return null;
+    return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+function getCodexVersion(command: string): number[] | null {
+    try {
+        const output = execFileSync(command, ['--version'], {
+            encoding: 'utf8',
+            timeout: 3_000,
+            stdio: ['ignore', 'pipe', 'ignore']
+        });
+        return parseCodexVersion(output);
+    } catch {
+        return null;
+    }
+}
+
+function compareVersion(a: number[] | null, b: number[] | null): number {
+    if (!a && !b) return 0;
+    if (a && !b) return 1;
+    if (!a && b) return -1;
+    for (let index = 0; index < 3; index += 1) {
+        const diff = (a?.[index] ?? 0) - (b?.[index] ?? 0);
+        if (diff !== 0) return diff;
+    }
+    return 0;
+}
+
+function resolveCodexAppServerCommand(): string {
+    if (process.env.HAPI_CODEX_APP_SERVER_BIN) {
+        return process.env.HAPI_CODEX_APP_SERVER_BIN;
+    }
+
+    const candidates: CodexCommandCandidate[] = [{
+        command: 'codex',
+        source: 'path',
+        version: getCodexVersion('codex')
+    }];
+
+    if (process.platform === 'darwin') {
+        const desktopCodex = '/Applications/Codex.app/Contents/Resources/codex';
+        if (existsSync(desktopCodex)) {
+            candidates.push({
+                command: desktopCodex,
+                source: 'desktop',
+                version: getCodexVersion(desktopCodex)
+            });
+        }
+    }
+
+    // 中文注释：Codex Desktop 与 npm CLI 都可能写 thread-store；恢复时选择版本更新的 app-server，
+    // 避免旧 CLI 读取新 rollout 格式失败。版本相同优先 Desktop，和用户看到的 Codex.app 保持一致。
+    const best = candidates.sort((left, right) => {
+        const versionDiff = compareVersion(right.version, left.version);
+        if (versionDiff !== 0) return versionDiff;
+        if (left.source === right.source) return 0;
+        return left.source === 'desktop' ? -1 : 1;
+    })[0];
+
+    logger.debug('[CodexAppServer] Resolved codex command', {
+        selected: best.command,
+        candidates: candidates.map((candidate) => ({
+            command: candidate.command,
+            source: candidate.source,
+            version: candidate.version?.join('.') ?? null
+        }))
+    });
+    return best.command;
+}
+
 export class CodexAppServerClient extends JsonLineParser {
     private process: ChildProcessWithoutNullStreams | null = null;
     private connected = false;
@@ -93,7 +174,9 @@ export class CodexAppServerClient extends JsonLineParser {
             return;
         }
 
-        this.process = spawn('codex', ['app-server'], {
+        const codexCommand = resolveCodexAppServerCommand();
+        logger.debug(`[CodexAppServer] Starting ${codexCommand} app-server`);
+        this.process = spawn(codexCommand, ['app-server'], {
             env: Object.keys(process.env).reduce((acc, key) => {
                 const value = process.env[key];
                 if (typeof value === 'string') acc[key] = value;
@@ -192,6 +275,14 @@ export class CodexAppServerClient extends JsonLineParser {
             timeoutMs: CodexAppServerClient.DEFAULT_TIMEOUT_MS
         });
         return response as ThreadResumeResponse;
+    }
+
+    async forkThread(params: ThreadForkParams, options?: { signal?: AbortSignal }): Promise<ThreadForkResponse> {
+        const response = await this.sendRequest('thread/fork', params, {
+            signal: options?.signal,
+            timeoutMs: CodexAppServerClient.DEFAULT_TIMEOUT_MS
+        });
+        return response as ThreadForkResponse;
     }
 
     async startTurn(params: TurnStartParams, options?: { signal?: AbortSignal }): Promise<TurnStartResponse> {

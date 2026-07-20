@@ -67,7 +67,9 @@ class GrokRemoteLauncher extends RemoteLauncherBase {
 
     protected async runMainLoop(): Promise<void> {
         const session = this.session
-        const { server, mcpServers } = await buildHapiMcpBridge(session.client)
+        const { server, mcpServers } = await buildHapiMcpBridge(session.client, {
+            skillLookup: { workingDirectory: session.path, flavor: 'grok' }
+        })
         this.happyServer = server
 
         const backend = createGrokBackend({
