@@ -2,15 +2,15 @@ import { useState, type DragEvent } from 'react'
 import { ComposerSendButtonPreview, ComposerToolbarItemPreview } from '@/components/AssistantChat/ComposerButtons'
 import {
     COMPOSER_TOOLBAR_ITEM_IDS,
+    moveComposerToolbarItem,
+    moveComposerToolbarItemInSingleLayout,
     useComposerToolbarLayout,
+    type ComposerToolbarGroup,
     type ComposerToolbarItemId,
-    type ComposerToolbarLayout,
     type ComposerToolbarLayoutMode,
 } from '@/hooks/useComposerToolbarLayout'
 import { useTranslation } from '@/lib/use-translation'
 import { SettingsChoiceGroup } from './SettingsPrimitives'
-
-type Group = 'left' | 'right'
 
 const ITEM_LABEL_KEYS: Record<ComposerToolbarItemId, string> = {
     attachment: 'settings.chat.composerToolbar.item.attachment',
@@ -25,14 +25,6 @@ const ITEM_LABEL_KEYS: Record<ComposerToolbarItemId, string> = {
     schedule: 'settings.chat.composerToolbar.item.schedule',
 }
 
-function moveItem(layout: ComposerToolbarLayout, item: ComposerToolbarItemId, targetGroup: Group, targetIndex: number): ComposerToolbarLayout {
-    const left = layout.left.filter((entry) => entry !== item)
-    const right = layout.right.filter((entry) => entry !== item)
-    const target = targetGroup === 'left' ? left : right
-    target.splice(Math.max(0, Math.min(targetIndex, target.length)), 0, item)
-    return { ...layout, left, right }
-}
-
 export function ComposerToolbarLayoutControl() {
     const { t } = useTranslation()
     const { layout, setLayout, resetLayout } = useComposerToolbarLayout()
@@ -42,9 +34,11 @@ export function ComposerToolbarLayoutControl() {
         setLayout({ ...layout, mode })
     }
 
-    const moveDraggedItem = (group: Group, index: number) => {
+    const moveDraggedItem = (group: ComposerToolbarGroup, index: number) => {
         if (draggedItem) {
-            const next = moveItem(layout, draggedItem, group, index)
+            const next = layout.mode === 'split'
+                ? moveComposerToolbarItem(layout, draggedItem, group, index)
+                : moveComposerToolbarItemInSingleLayout(layout, draggedItem, index)
             const unchanged = next.left.join() === layout.left.join() && next.right.join() === layout.right.join()
             if (!unchanged) {
                 setLayout(next)
@@ -52,16 +46,19 @@ export function ComposerToolbarLayoutControl() {
         }
     }
 
-    const onDrop = (event: DragEvent, group: Group, index: number) => {
+    const onDrop = (event: DragEvent, group: ComposerToolbarGroup, index: number) => {
         event.preventDefault()
         const item = draggedItem ?? event.dataTransfer.getData('text/plain')
         if ((COMPOSER_TOOLBAR_ITEM_IDS as readonly string[]).includes(item)) {
-            setLayout(moveItem(layout, item as ComposerToolbarItemId, group, index))
+            const next = layout.mode === 'split'
+                ? moveComposerToolbarItem(layout, item as ComposerToolbarItemId, group, index)
+                : moveComposerToolbarItemInSingleLayout(layout, item as ComposerToolbarItemId, index)
+            setLayout(next)
         }
         setDraggedItem(null)
     }
 
-    const renderItem = (item: ComposerToolbarItemId, group: Group, index: number) => {
+    const renderItem = (item: ComposerToolbarItemId, group: ComposerToolbarGroup, index: number) => {
         const label = t(ITEM_LABEL_KEYS[item])
         return (
             <button
@@ -92,7 +89,7 @@ export function ComposerToolbarLayoutControl() {
         )
     }
 
-    const renderGroup = (group: Group, items: ComposerToolbarItemId[], alignment: string, grow: boolean) => (
+    const renderGroup = (group: ComposerToolbarGroup, items: ComposerToolbarItemId[], alignment: string, grow: boolean) => (
         <div
             className={`flex min-h-10 min-w-12 items-center gap-1 rounded-lg ${grow ? 'flex-1' : 'shrink-0'} ${alignment}`}
             onDragEnter={(event) => {

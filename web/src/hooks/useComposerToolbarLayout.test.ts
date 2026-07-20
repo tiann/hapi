@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { DEFAULT_COMPOSER_TOOLBAR_LAYOUT, normalizeComposerToolbarLayout } from './useComposerToolbarLayout'
+import {
+    DEFAULT_COMPOSER_TOOLBAR_LAYOUT,
+    moveComposerToolbarItemInSingleLayout,
+    normalizeComposerToolbarLayout,
+} from './useComposerToolbarLayout'
 
 describe('normalizeComposerToolbarLayout', () => {
     beforeEach(() => localStorage.clear())
@@ -19,5 +23,26 @@ describe('normalizeComposerToolbarLayout', () => {
         expect(result.left.slice(0, 2)).toEqual(['settings', 'attachment'])
         expect(result.right).toEqual(['abort', 'schedule'])
         expect([...result.left, ...result.right]).toHaveLength(DEFAULT_COMPOSER_TOOLBAR_LAYOUT.left.length)
+    })
+
+    it('reorders across a hidden split boundary in single-column modes', () => {
+        const layout = normalizeComposerToolbarLayout({
+            mode: 'right',
+            left: ['attachment', 'settings', 'piModel', 'piThinking', 'terminal'],
+            right: ['abort', 'switch', 'voiceMic', 'scratchlist', 'schedule'],
+        })
+        const result = moveComposerToolbarItemInSingleLayout(layout, 'attachment', 7)
+
+        expect([...result.left, ...result.right].slice(0, 8)).toEqual([
+            'settings',
+            'piModel',
+            'piThinking',
+            'terminal',
+            'abort',
+            'switch',
+            'voiceMic',
+            'attachment',
+        ])
+        expect(result.left).toHaveLength(layout.left.length)
     })
 })

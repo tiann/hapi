@@ -15,6 +15,7 @@ export const COMPOSER_TOOLBAR_ITEM_IDS = [
 
 export type ComposerToolbarItemId = typeof COMPOSER_TOOLBAR_ITEM_IDS[number]
 export type ComposerToolbarLayoutMode = 'left' | 'center' | 'right' | 'split'
+export type ComposerToolbarGroup = 'left' | 'right'
 
 export type ComposerToolbarLayout = {
     mode: ComposerToolbarLayoutMode
@@ -26,6 +27,34 @@ export const DEFAULT_COMPOSER_TOOLBAR_LAYOUT: ComposerToolbarLayout = {
     mode: 'left',
     left: [...COMPOSER_TOOLBAR_ITEM_IDS],
     right: [],
+}
+
+export function moveComposerToolbarItem(
+    layout: ComposerToolbarLayout,
+    item: ComposerToolbarItemId,
+    targetGroup: ComposerToolbarGroup,
+    targetIndex: number,
+): ComposerToolbarLayout {
+    const left = layout.left.filter((entry) => entry !== item)
+    const right = layout.right.filter((entry) => entry !== item)
+    const target = targetGroup === 'left' ? left : right
+    target.splice(Math.max(0, Math.min(targetIndex, target.length)), 0, item)
+    return { ...layout, left, right }
+}
+
+export function moveComposerToolbarItemInSingleLayout(
+    layout: ComposerToolbarLayout,
+    item: ComposerToolbarItemId,
+    targetIndex: number,
+): ComposerToolbarLayout {
+    const leftCount = layout.left.length
+    const items = [...layout.left, ...layout.right].filter((entry) => entry !== item)
+    items.splice(Math.max(0, Math.min(targetIndex, items.length)), 0, item)
+    return {
+        ...layout,
+        left: items.slice(0, leftCount),
+        right: items.slice(leftCount),
+    }
 }
 
 const STORAGE_KEY = 'hapi-composer-toolbar-layout'
