@@ -183,6 +183,9 @@ export async function runCursor(opts: {
             model: opts.model,
             sessionMetadata: bootstrap.metadata,
             onModeChange: createModeChangeHandler(session),
+            onPermissionModeChanged: (permissionMode) => {
+                currentPermissionMode = permissionMode;
+            },
             onSessionReady: (instance) => {
                 sessionWrapperRef.current = instance;
                 syncSessionMode();
