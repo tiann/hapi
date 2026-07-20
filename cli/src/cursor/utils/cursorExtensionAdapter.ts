@@ -21,13 +21,17 @@ type PermissionResponseMessage = {
 
 export type CursorExtensionMessageHandler = (message: AgentMessage) => void;
 
+/** Invoked when the operator accepts a CreatePlan request (Yes / Yes for session). */
+export type CursorCreatePlanAcceptedHandler = () => void;
+
 export class CursorExtensionAdapter {
     private readonly pending = new Map<string, PendingExtensionRequest>();
 
     constructor(
         private readonly session: ApiSessionClient,
         private readonly backend: AcpSdkBackend,
-        private readonly onMessage: CursorExtensionMessageHandler
+        private readonly onMessage: CursorExtensionMessageHandler,
+        private readonly onCreatePlanAccepted?: CursorCreatePlanAcceptedHandler
     ) {
         this.registerHandlers();
     }
@@ -115,7 +119,17 @@ export class CursorExtensionAdapter {
         } else if (decision === 'denied') {
             pending.respond(wrapOutcome({ outcome: 'rejected' }));
         } else {
+            // Accept first so Cursor unblocks, then hand off to execute (mode
+            // switch + continue prompt). Without the handoff, Yes ends the turn
+            // with "plan done" instead of continuing the user's task.
             pending.respond(wrapOutcome({ outcome: 'accepted' }));
+            if (pending.tool === 'CursorCreatePlan') {
+                try {
+                    this.onCreatePlanAccepted?.();
+                } catch (error) {
+                    logger.warn('[cursor-acp] onCreatePlanAccepted failed', error);
+                }
+            }
         }
 
         const status = response.approved ? 'approved' : 'denied';

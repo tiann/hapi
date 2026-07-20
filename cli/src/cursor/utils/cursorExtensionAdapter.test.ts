@@ -7,7 +7,7 @@ import { CursorExtensionAdapter } from './cursorExtensionAdapter';
 
 type ExtensionHandler = (params: unknown, requestId: string | number | null) => Promise<unknown>;
 
-function createHarness() {
+function createHarness(options?: { onCreatePlanAccepted?: () => void }) {
     const handlers = new Map<string, ExtensionHandler>();
     let agentState: AgentState = { requests: {}, completedRequests: {} };
     const messages: AgentMessage[] = [];
@@ -24,9 +24,14 @@ function createHarness() {
         }
     } as unknown as AcpSdkBackend;
 
-    const adapter = new CursorExtensionAdapter(session, backend, (message) => {
-        messages.push(message);
-    });
+    const adapter = new CursorExtensionAdapter(
+        session,
+        backend,
+        (message) => {
+            messages.push(message);
+        },
+        options?.onCreatePlanAccepted
+    );
 
     return {
         handlers,
@@ -101,7 +106,8 @@ describe('CursorExtensionAdapter', () => {
         // CreatePlan approval, but the agent received `User cancelled` because the
         // response outcome was returned flat instead of nested. Cursor reads
         // `response.outcome.outcome`, so the envelope MUST be nested.
-        const { handlers, adapter } = createHarness();
+        const onCreatePlanAccepted = vi.fn();
+        const { handlers, adapter } = createHarness({ onCreatePlanAccepted });
         const pending = handlers.get('cursor/create_plan')!({
             toolCallId: 'plan-1',
             plan: '# Plan'
@@ -114,10 +120,12 @@ describe('CursorExtensionAdapter', () => {
         });
 
         await expect(pending).resolves.toEqual({ outcome: { outcome: 'accepted' } });
+        expect(onCreatePlanAccepted).toHaveBeenCalledOnce();
     });
 
     it('resolves create_plan approved_for_session as accepted with nested envelope', async () => {
-        const { handlers, adapter } = createHarness();
+        const onCreatePlanAccepted = vi.fn();
+        const { handlers, adapter } = createHarness({ onCreatePlanAccepted });
         const pending = handlers.get('cursor/create_plan')!({
             toolCallId: 'plan-1b',
             plan: '# Plan'
@@ -130,6 +138,46 @@ describe('CursorExtensionAdapter', () => {
         });
 
         await expect(pending).resolves.toEqual({ outcome: { outcome: 'accepted' } });
+        expect(onCreatePlanAccepted).toHaveBeenCalledOnce();
+    });
+
+    it('does not invoke create-plan continue handoff on denial or abort', async () => {
+        const onCreatePlanAccepted = vi.fn();
+        const { handlers, adapter } = createHarness({ onCreatePlanAccepted });
+        const denied = handlers.get('cursor/create_plan')!({ toolCallId: 'plan-deny' }, null);
+        const aborted = handlers.get('cursor/create_plan')!({ toolCallId: 'plan-abort' }, null);
+
+        await adapter.handlePermissionResponse({
+            id: 'plan-deny',
+            approved: false,
+            decision: 'denied'
+        });
+        await adapter.handlePermissionResponse({
+            id: 'plan-abort',
+            approved: false,
+            decision: 'abort'
+        });
+
+        await expect(denied).resolves.toEqual({ outcome: { outcome: 'rejected' } });
+        await expect(aborted).resolves.toEqual({ outcome: { outcome: 'cancelled' } });
+        expect(onCreatePlanAccepted).not.toHaveBeenCalled();
+    });
+
+    it('does not invoke create-plan continue handoff for ask_question answers', async () => {
+        const onCreatePlanAccepted = vi.fn();
+        const { handlers, adapter } = createHarness({ onCreatePlanAccepted });
+        const pending = handlers.get('cursor/ask_question')!({ toolCallId: 'q-ok' }, null);
+
+        await adapter.handlePermissionResponse({
+            id: 'q-ok',
+            approved: true,
+            answers: { q1: ['a'] }
+        });
+
+        await expect(pending).resolves.toMatchObject({
+            outcome: { outcome: 'answered' }
+        });
+        expect(onCreatePlanAccepted).not.toHaveBeenCalled();
     });
 
     it('resolves create_plan denial as rejected', async () => {
