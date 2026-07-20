@@ -109,6 +109,12 @@ See `src/web/routes/` for all endpoints.
 - `GET /api/machines` - List online machines.
 - `POST /api/machines/:id/spawn` - Spawn new session on machine.
 - `POST /api/machines/:id/paths/exists` - Check if path exists.
+- `POST /api/machines/:id/host/files/list` - List a workspace-root-scoped host directory.
+- `POST /api/machines/:id/host/files/upload` - Upload one bounded file into a workspace directory.
+- `POST /api/machines/:id/host/git/inspect` - Inspect the repository containing a host path.
+- `POST /api/machines/:id/host/operations` - Start a file or Git operation.
+- `GET /api/machines/:id/host/operations/:operationId` - Poll operation progress.
+- `POST /api/machines/:id/host/operations/:operationId/cancel` - Cancel an operation.
 
 ### Git/Files (`src/web/routes/git.ts`)
 

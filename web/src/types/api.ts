@@ -71,6 +71,29 @@ export type {
 
 export type { HapiSessionExport } from '@hapi/protocol/sessionExport'
 
+export type {
+    FileOperation,
+    GitCapabilities,
+    GitFileChange,
+    GitInspectResponse,
+    GitOperation,
+    HostFileEntry,
+    HostFilePreviewResponse,
+    HostFileUploadRequest,
+    HostFileUploadResponse,
+    HostFileWriteRequest,
+    HostFileWriteResponse,
+    HostDownloadChunkResponse,
+    HostDownloadDescriptor,
+    HostDownloadPrepareResponse,
+    HostListDirectoryResponse,
+    HostOperationGetResponse,
+    HostOperationRequest,
+    HostOperationSnapshot,
+    HostOperationStartResponse,
+    RepositorySnapshot
+} from '@hapi/protocol'
+
 export type SessionMetadataSummary = {
     path: string
     host: string

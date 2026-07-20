@@ -828,6 +828,50 @@ export class SyncEngine {
         )
     }
 
+    async listHostDirectory(machineId: string, path: string, includeHidden: boolean) {
+        return await this.rpcGateway.listHostDirectory(machineId, path, includeHidden)
+    }
+
+    async readHostFilePreview(machineId: string, path: string) {
+        return await this.rpcGateway.readHostFilePreview(machineId, path)
+    }
+
+    async writeHostFile(machineId: string, request: import('@hapi/protocol').HostFileWriteRequest) {
+        return await this.rpcGateway.writeHostFile(machineId, request)
+    }
+
+    async uploadHostFile(machineId: string, request: import('@hapi/protocol').HostFileUploadRequest) {
+        return await this.rpcGateway.uploadHostFile(machineId, request)
+    }
+
+    async prepareHostDownload(machineId: string, path: string) {
+        return await this.rpcGateway.prepareHostDownload(machineId, path)
+    }
+
+    async readHostDownloadChunk(machineId: string, id: string, offset: number) {
+        return await this.rpcGateway.readHostDownloadChunk(machineId, id, offset)
+    }
+
+    async releaseHostDownload(machineId: string, id: string) {
+        await this.rpcGateway.releaseHostDownload(machineId, id)
+    }
+
+    async inspectHostGit(machineId: string, path: string) {
+        return await this.rpcGateway.inspectHostGit(machineId, path)
+    }
+
+    async startHostOperation(machineId: string, request: import('@hapi/protocol').HostOperationRequest) {
+        return await this.rpcGateway.startHostOperation(machineId, request)
+    }
+
+    async getHostOperation(machineId: string, id: string) {
+        return await this.rpcGateway.getHostOperation(machineId, id)
+    }
+
+    async cancelHostOperation(machineId: string, id: string) {
+        return await this.rpcGateway.cancelHostOperation(machineId, id)
+    }
+
     private resolveFlavor(session: Session): AgentFlavor {
         const flavor = session.metadata?.flavor
         return isKnownFlavor(flavor) ? flavor : 'claude'

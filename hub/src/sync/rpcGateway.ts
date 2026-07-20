@@ -30,6 +30,20 @@ import type {
 } from '@hapi/protocol/apiTypes'
 import type { Server } from 'socket.io'
 import type { RpcRegistry } from '../socket/rpcRegistry'
+import type {
+    GitInspectResponse,
+    HostListDirectoryResponse,
+    HostFilePreviewResponse,
+    HostFileUploadRequest,
+    HostFileUploadResponse,
+    HostFileWriteRequest,
+    HostFileWriteResponse,
+    HostDownloadChunkResponse,
+    HostDownloadPrepareResponse,
+    HostOperationGetResponse,
+    HostOperationRequest,
+    HostOperationStartResponse
+} from '@hapi/protocol'
 
 const DEFAULT_RPC_TIMEOUT_MS = 30_000
 const MODEL_LIST_RPC_TIMEOUT_MS = 120_000
@@ -220,6 +234,50 @@ export class RpcGateway {
             exists[key] = value === true
         }
         return exists
+    }
+
+    async listHostDirectory(machineId: string, path: string, includeHidden: boolean): Promise<HostListDirectoryResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.HostListDirectory, { path, includeHidden }) as HostListDirectoryResponse
+    }
+
+    async readHostFilePreview(machineId: string, path: string): Promise<HostFilePreviewResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.HostFilePreview, { path }) as HostFilePreviewResponse
+    }
+
+    async writeHostFile(machineId: string, request: HostFileWriteRequest): Promise<HostFileWriteResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.HostFileWrite, request) as HostFileWriteResponse
+    }
+
+    async uploadHostFile(machineId: string, request: HostFileUploadRequest): Promise<HostFileUploadResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.HostFileUpload, request, 5 * 60_000) as HostFileUploadResponse
+    }
+
+    async prepareHostDownload(machineId: string, path: string): Promise<HostDownloadPrepareResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.HostDownloadPrepare, { path }, 5 * 60_000) as HostDownloadPrepareResponse
+    }
+
+    async readHostDownloadChunk(machineId: string, id: string, offset: number): Promise<HostDownloadChunkResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.HostDownloadReadChunk, { id, offset }, 60_000) as HostDownloadChunkResponse
+    }
+
+    async releaseHostDownload(machineId: string, id: string): Promise<void> {
+        await this.machineRpc(machineId, RPC_METHODS.HostDownloadRelease, { id })
+    }
+
+    async inspectHostGit(machineId: string, path: string): Promise<GitInspectResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.HostGitInspect, { path }) as GitInspectResponse
+    }
+
+    async startHostOperation(machineId: string, request: HostOperationRequest): Promise<HostOperationStartResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.HostOperationStart, request) as HostOperationStartResponse
+    }
+
+    async getHostOperation(machineId: string, id: string): Promise<HostOperationGetResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.HostOperationGet, { id }) as HostOperationGetResponse
+    }
+
+    async cancelHostOperation(machineId: string, id: string): Promise<HostOperationGetResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.HostOperationCancel, { id }) as HostOperationGetResponse
     }
 
     async getCursorChatStoreStatus(

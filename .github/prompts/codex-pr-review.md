@@ -62,6 +62,23 @@ fi
 5. **Check tests**: note missing or inadequate coverage.
 6. **Respond** with an evidence-based review comment (no code changes).
 
+## High-risk host operations
+
+When the diff touches host files, workspace scope, uploads/downloads, Git, or
+subprocess execution, apply `docs/agents/host-operation-security.md`. In particular:
+
+- trace every source, destination, local URL, and recursively derived path from its
+  RPC schema to the filesystem or subprocess sink;
+- check workspace containment and `.git` protection across list, read, write,
+  recursive mutation, and archive paths;
+- check symlink and time-of-check/time-of-use behavior when validation and use occur
+  at different times;
+- check every ingress path for size/count bounds and UTF-8 byte semantics where
+  applicable;
+- check user-controlled argv values for option injection and domain-valid names;
+- require tests for the bug class and adjacent operations, including a valid control
+  case for restrictive validators.
+
 ## Response Guidelines
 
 - **Findings first**: order by severity (Blocker/Major/Minor/Nit).

@@ -9,7 +9,7 @@ React Mini App / PWA for monitoring and controlling hapi sessions.
 - Permission approval and denial workflows.
 - Permission mode and model selection.
 - Machine list and remote session spawn.
-- File browser and git status/diff views.
+- Host file manager plus session and host Git views.
 - PWA install prompt and offline banner.
 
 ## Runtime behavior
@@ -69,6 +69,13 @@ See `src/router.tsx` for route definitions.
 - Git status view (staged/unstaged files).
 - File search with ripgrep.
 - Navigate to file viewer.
+
+### Host workspace (`src/components/WorkspaceBrowser.tsx`)
+
+- Machine/workspace-root scoped file listing, including optional hidden files.
+- Create, upload, copy, move, and permanently delete files and folders.
+- Clone, stage, unstage, commit, push, and change Git remotes.
+- Long operations expose progress and cancellation.
 
 ### File viewer (`src/routes/sessions/file.tsx`)
 

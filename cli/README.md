@@ -67,7 +67,8 @@ See `src/commands/auth.ts`.
 Both `start` and `start-sync` accept repeatable `--workspace-root <path>` (or `--workspace-root=<path>`). When set:
 
 - The web `/browse` page surfaces scoped file trees rooted at those paths.
-- The runner refuses `list-directory` and `spawn-session` requests for paths outside the configured roots.
+- The web `/browse` page can create, copy, move, and delete files and manage Git repositories.
+- The runner refuses file, Git, `list-directory`, and `spawn-session` requests for paths outside the configured roots.
 - `~` and `~/foo` are expanded.
 
 Omitting the flag keeps the legacy behavior: no scoping, no `/browse` feature.

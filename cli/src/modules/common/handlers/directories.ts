@@ -1,11 +1,12 @@
 import { logger } from '@/ui/logger'
 import { readdir, stat } from 'fs/promises'
-import { basename, join, resolve } from 'path'
+import { basename, join } from 'path'
 import type { DirectoryEntry, ListDirectoryResponse } from '@hapi/protocol/apiTypes'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import type { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager'
 import { validatePath } from '../pathSecurity'
 import { getErrorMessage, rpcError } from '../rpcResponses'
+import { WorkspaceScope } from '@/host/workspaceScope'
 
 interface ListDirectoryRequest {
     path: string
@@ -32,6 +33,8 @@ interface GetDirectoryTreeResponse {
 }
 
 export function registerDirectoryHandlers(rpcHandlerManager: RpcHandlerManager, workingDirectory: string): void {
+    const scope = WorkspaceScope.create([workingDirectory])
+
     rpcHandlerManager.registerHandler<ListDirectoryRequest, ListDirectoryResponse>(RPC_METHODS.ListDirectory, async (data) => {
         logger.debug('List directory request:', data.path)
 
@@ -43,7 +46,7 @@ export function registerDirectoryHandlers(rpcHandlerManager: RpcHandlerManager, 
         }
 
         try {
-            const resolvedPath = resolve(workingDirectory, targetPath)
+            const resolvedPath = await (await scope).resolveReadable(targetPath)
             const entries = await readdir(resolvedPath, { withFileTypes: true })
 
             const directoryEntries: DirectoryEntry[] = await Promise.all(
@@ -103,8 +106,6 @@ export function registerDirectoryHandlers(rpcHandlerManager: RpcHandlerManager, 
             return rpcError(validation.error ?? 'Invalid directory path')
         }
 
-        const resolvedRoot = resolve(workingDirectory, targetPath)
-
         async function buildTree(path: string, name: string, currentDepth: number): Promise<TreeNode | null> {
             try {
                 const stats = await stat(path)
@@ -157,6 +158,7 @@ export function registerDirectoryHandlers(rpcHandlerManager: RpcHandlerManager, 
                 return rpcError('maxDepth must be non-negative')
             }
 
+            const resolvedRoot = await (await scope).resolveReadable(targetPath)
             const baseName = resolvedRoot === '/' ? '/' : basename(resolvedRoot) || resolvedRoot
             const tree = await buildTree(resolvedRoot, baseName, 0)
 

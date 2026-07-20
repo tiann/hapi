@@ -25,6 +25,7 @@ export default defineConfig({
       { text: 'Cursor Agent', link: '/guide/cursor' },
       { text: 'Grok Build', link: '/guide/grok' },
       { text: 'Voice Assistant', link: '/guide/voice-assistant' },
+      { text: 'Workspace Management', link: '/guide/workspace-management' },
       { text: 'Why HAPI', link: '/guide/why-hapi' },
       { text: 'FAQ', link: '/guide/faq' }
     ],
