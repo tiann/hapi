@@ -400,6 +400,18 @@ export type ListDirectoryResponse = {
 
 export type RpcListDirectoryResponse = ListDirectoryResponse
 
+export type FileMetadataEntry = {
+    path: string
+    size?: number
+    modified?: number
+}
+
+export type StatFilesResponse = {
+    success: boolean
+    entries?: FileMetadataEntry[]
+    error?: string
+}
+
 export type MachineDirectoryEntry = DirectoryEntry & {
     isGitRepo?: boolean
 }

@@ -1,4 +1,4 @@
-import type { DirectoryEntry } from '@/types/api'
+import type { DirectoryEntry, FileSearchItem } from '@/types/api'
 import type { Locale } from '@/lib/use-translation'
 
 export type DirectorySortField = 'name' | 'modified' | 'size'
@@ -35,6 +35,24 @@ export function sortDirectoryEntries(
         if (sort.field === 'name') return byName(left, right, sort.direction)
         if (sort.field === 'size' && leftDirectory) return byName(left, right, 'asc')
 
+        const result = compareOptionalNumbers(left[sort.field], right[sort.field], sort.direction)
+        return result || byName(left, right, 'asc')
+    })
+}
+
+export function sortFileSearchItems(
+    entries: FileSearchItem[],
+    sort: DirectorySort,
+    locale: Locale,
+): FileSearchItem[] {
+    const collator = new Intl.Collator(locale, { numeric: true, sensitivity: 'base' })
+    const byName = (left: FileSearchItem, right: FileSearchItem, direction: DirectorySortDirection) => {
+        const result = collator.compare(left.fileName, right.fileName)
+        return direction === 'asc' ? result : -result
+    }
+
+    return [...entries].sort((left, right) => {
+        if (sort.field === 'name') return byName(left, right, sort.direction)
         const result = compareOptionalNumbers(left[sort.field], right[sort.field], sort.direction)
         return result || byName(left, right, 'asc')
     })
