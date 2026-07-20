@@ -324,7 +324,9 @@ export const knownTools: Record<string, {
             return description ?? 'Launch Agent'
         },
         subtitle: (opts) => {
-            // Subagent invocation: show prompt preview (same as Task)
+            const activity = getInputStringAny(opts.input, ['activity'])
+            if (activity) return truncate(activity, 120)
+            // Subagent invocation: fall back to the prompt preview (same as Task).
             const prompt = getInputStringAny(opts.input, ['prompt'])
             if (prompt) return truncate(prompt, 120)
             const model = getInputStringAny(opts.input, ['subagent_type'])

@@ -22,8 +22,23 @@ import type { OmpModelSummary } from '@hapi/protocol/apiTypes';
 /** 提取 string 值，非 string 或缺失返回 undefined */
 const asOptStr = z.unknown().optional().transform(v => typeof v === 'string' ? v : undefined);
 
+/** 提取并限制 string 长度，避免子进程事件把超大文本写入消息时间线 */
+const asOptBoundedStr = (max: number) => z.unknown().optional().transform(v =>
+    typeof v === 'string' ? v.slice(0, max) : undefined,
+ );
+
+/** 提取 string 值并限制长度，非法类型返回指定默认值 */
+const asBoundedStrOrDef = (def: string, max: number) => z.unknown().optional().transform(v =>
+    typeof v === 'string' ? v.slice(0, max) : def,
+ );
+
 /** 提取 number 值，非 number 或缺失返回 undefined */
 const asOptNum = z.unknown().optional().transform(v => typeof v === 'number' ? v : undefined);
+
+/** 提取有限非负数字，非法值返回指定默认值 */
+const asNonNegativeNumOrDef = (def: number) => z.unknown().optional().transform(v =>
+    typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : def,
+ );
 
 /** 提取 boolean 值，非 boolean 或缺失返回 undefined */
 const asOptBool = z.unknown().optional().transform(v => typeof v === 'boolean' ? v : undefined);
@@ -57,6 +72,69 @@ const asOptEffortMap = z.unknown().optional().transform((v): Record<string, stri
 export const OmpAgentEventSchema = z.object({
     type: z.string(),
 }).passthrough();
+
+const SUBAGENT_LIFECYCLE_STATUSES = ['started', 'completed', 'failed', 'aborted'] as const;
+const SUBAGENT_PROGRESS_STATUSES = ['pending', 'running', 'completed', 'failed', 'aborted'] as const;
+
+/** Runtime validation for OMP's optional progress-level Subagent frames. */
+export const OmpSubagentLifecycleEventSchema = z.object({
+    type: z.literal('subagent_lifecycle'),
+    payload: z.object({
+        id: z.string().trim().min(1).max(256),
+        agent: asBoundedStrOrDef('unknown', 256),
+        agentSource: asOptBoundedStr(128),
+        description: asOptBoundedStr(512),
+        status: z.enum(SUBAGENT_LIFECYCLE_STATUSES),
+        sessionFile: asOptBoundedStr(4096),
+        parentToolCallId: asOptBoundedStr(256),
+        index: asNonNegativeNumOrDef(0),
+        detached: asOptBool,
+    }).passthrough(),
+}).passthrough();
+
+const OmpSubagentRetryStateSchema = z.object({
+    attempt: asNonNegativeNumOrDef(0),
+    maxAttempts: asNonNegativeNumOrDef(0),
+    delayMs: asNonNegativeNumOrDef(0),
+    errorMessage: asOptBoundedStr(512),
+}).passthrough().optional().catch(undefined);
+
+const OmpSubagentRetryFailureSchema = z.object({
+    attempt: asNonNegativeNumOrDef(0),
+    errorMessage: asOptBoundedStr(512),
+}).passthrough().optional().catch(undefined);
+
+export const OmpSubagentProgressEventSchema = z.object({
+    type: z.literal('subagent_progress'),
+    payload: z.object({
+        index: asNonNegativeNumOrDef(0),
+        agent: asBoundedStrOrDef('unknown', 256),
+        agentSource: asOptBoundedStr(128),
+        task: asBoundedStrOrDef('', 8192),
+        parentToolCallId: asOptBoundedStr(256),
+        assignment: asOptBoundedStr(8192),
+        sessionFile: asOptBoundedStr(4096),
+        detached: asOptBool,
+        progress: z.object({
+            id: z.string().trim().min(1).max(256),
+            status: z.enum(SUBAGENT_PROGRESS_STATUSES),
+            description: asOptBoundedStr(512),
+            lastIntent: asOptBoundedStr(512),
+            currentTool: asOptBoundedStr(256),
+            currentToolArgs: asOptBoundedStr(1024),
+            toolCount: asNonNegativeNumOrDef(0),
+            requests: asNonNegativeNumOrDef(0),
+            tokens: asNonNegativeNumOrDef(0),
+            durationMs: asNonNegativeNumOrDef(0),
+            resolvedModel: asOptBoundedStr(256),
+            retryState: OmpSubagentRetryStateSchema,
+            retryFailure: OmpSubagentRetryFailureSchema,
+        }).passthrough(),
+    }).passthrough(),
+}).passthrough();
+
+export type ParsedOmpSubagentLifecycleEvent = z.infer<typeof OmpSubagentLifecycleEventSchema>;
+export type ParsedOmpSubagentProgressEvent = z.infer<typeof OmpSubagentProgressEventSchema>;
 
 // ============================================================================
 // OMP Response Event (stdout response) — id-correlated

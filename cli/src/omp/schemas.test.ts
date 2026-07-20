@@ -6,6 +6,8 @@ import {
     OmpSetModelDataSchema,
     OmpAgentEventSchema,
     OmpResponseEventSchema,
+    OmpSubagentLifecycleEventSchema,
+    OmpSubagentProgressEventSchema,
 } from './schemas';
 
 describe('parseOmpModels', () => {
@@ -193,5 +195,46 @@ describe('OmpResponseEventSchema', () => {
         // skip them instead of hanging the pending RPC.
         expect(OmpResponseEventSchema.safeParse({ type: 'response' }).success).toBe(false);
         expect(OmpResponseEventSchema.safeParse({ type: 'response', command: 'x' }).success).toBe(false);
+    });
+});
+
+describe('OMP Subagent schemas', () => {
+    it('bounds progress text and normalizes invalid counters', () => {
+        const parsed = OmpSubagentProgressEventSchema.safeParse({
+            type: 'subagent_progress',
+            payload: {
+                agent: 'explore',
+                task: 'x'.repeat(9000),
+                progress: {
+                    id: 'child-1',
+                    status: 'running',
+                    description: 'd'.repeat(600),
+                    currentToolArgs: 'a'.repeat(1200),
+                    toolCount: -1,
+                    requests: Number.POSITIVE_INFINITY,
+                    tokens: 42,
+                    durationMs: 10,
+                },
+            },
+        });
+        expect(parsed.success).toBe(true);
+        if (parsed.success) {
+            expect(parsed.data.payload.task).toHaveLength(8192);
+            expect(parsed.data.payload.progress.description).toHaveLength(512);
+            expect(parsed.data.payload.progress.currentToolArgs).toHaveLength(1024);
+            expect(parsed.data.payload.progress.toolCount).toBe(0);
+            expect(parsed.data.payload.progress.requests).toBe(0);
+        }
+    });
+
+    it('rejects invalid lifecycle ids and future statuses', () => {
+        expect(OmpSubagentLifecycleEventSchema.safeParse({
+            type: 'subagent_lifecycle',
+            payload: { id: '', status: 'started' },
+        }).success).toBe(false);
+        expect(OmpSubagentLifecycleEventSchema.safeParse({
+            type: 'subagent_lifecycle',
+            payload: { id: 'child-1', status: 'paused' },
+        }).success).toBe(false);
     });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { parseOmpModels, parseOmpCommands, wireTransportEvents } from './loop';
+import { parseOmpModels, parseOmpCommands, sendOmpRpcAndWait, wireTransportEvents } from './loop';
 import { OmpSession } from './session';
 import { OmpTransport } from './ompTransport';
 
@@ -252,5 +252,175 @@ describe('wireTransportEvents', () => {
         // updateThinkingState(false) calls keepAlive with the runtime arg; when
         // model/thinkingLevel are both unset, runtime is undefined.
         expect(session.client.keepAlive).toHaveBeenCalledWith(false, session.mode, undefined);
+    });
+    it('maps Subagent lifecycle and progress onto one keyed Agent card', () => {
+        const transport = createMockTransport();
+        wireTransportEvents(transport, session, []);
+
+        emitEvent({
+            type: 'subagent_lifecycle',
+            payload: {
+                id: 'child-1',
+                agent: 'explore',
+                agentSource: 'project',
+                description: 'Inspect the bridge',
+                status: 'started',
+                index: 0,
+            },
+        });
+        emitEvent({
+            type: 'subagent_progress',
+            payload: {
+                index: 0,
+                agent: 'explore',
+                agentSource: 'project',
+                task: 'Audit OMP events',
+                progress: {
+                    id: 'child-1',
+                    status: 'running',
+                    lastIntent: 'Reading loop.ts',
+                    currentTool: 'read',
+                    currentToolArgs: 'cli/src/omp/loop.ts',
+                    toolCount: 2,
+                    requests: 3,
+                    tokens: 1200,
+                    durationMs: 4500,
+                    resolvedModel: 'anthropic/claude-sonnet',
+                    retryState: {
+                        attempt: 2,
+                        maxAttempts: 4,
+                        delayMs: 1000,
+                        errorMessage: 'rate limited',
+                        untrustedExtra: 'must not be forwarded',
+                    },
+                },
+            },
+        });
+
+        const calls = (session.client.sendAgentMessage as any).mock.calls.map(([message]: [unknown]) => message);
+        expect(calls).toHaveLength(2);
+        expect(calls[0]).toMatchObject({
+            type: 'tool-call',
+            name: 'Agent',
+            callId: 'omp-subagent:child-1',
+            input: { description: 'Inspect the bridge', activity: 'Starting' },
+        });
+        expect(calls[1]).toMatchObject({
+            type: 'tool-call',
+            name: 'Agent',
+            callId: 'omp-subagent:child-1',
+            input: {
+                description: 'Inspect the bridge',
+                prompt: 'Audit OMP events',
+                activity: 'Retrying 2/4: rate limited',
+                model: 'anthropic/claude-sonnet',
+                current_tool: 'read',
+                retry: {
+                    attempt: 2,
+                    maxAttempts: 4,
+                    delayMs: 1000,
+                    errorMessage: 'rate limited',
+                },
+                tokens: 1200,
+            },
+        });
+
+        emitEvent({
+            type: 'subagent_lifecycle',
+            payload: {
+                id: 'child-1',
+                agent: 'explore',
+                status: 'completed',
+                index: 0,
+            },
+        });
+        emitEvent({
+            type: 'subagent_lifecycle',
+            payload: {
+                id: 'child-1',
+                agent: 'explore',
+                status: 'completed',
+                index: 0,
+            },
+        });
+
+        // A delayed progress frame after terminal lifecycle must not reopen the card.
+        emitEvent({
+            type: 'subagent_progress',
+            payload: {
+                agent: 'explore',
+                task: 'Audit OMP events',
+                progress: { id: 'child-1', status: 'running' },
+            },
+        });
+        expect((session.client.sendAgentMessage as any).mock.calls).toHaveLength(4);
+
+        const results = (session.client.sendAgentMessage as any).mock.calls
+            .map(([message]: [unknown]) => message)
+            .filter((message: any) => message.type === 'tool-call-result');
+        expect(results).toEqual([expect.objectContaining({
+            callId: 'omp-subagent:child-1',
+            is_error: false,
+            output: expect.objectContaining({ status: 'completed', tokens: 1200 }),
+        })]);
+    });
+
+    it('rejects malformed Subagent frames without emitting cards', () => {
+        const transport = createMockTransport();
+        wireTransportEvents(transport, session, []);
+        emitEvent({
+            type: 'subagent_lifecycle',
+            payload: { id: '', status: 'future-status' },
+        });
+        emitEvent({
+            type: 'subagent_progress',
+            payload: { progress: { id: '', status: 'running' } },
+        });
+        expect(session.client.sendAgentMessage).not.toHaveBeenCalled();
+    });
+
+    it('closes active Subagent cards once during session cleanup', () => {
+        const transport = createMockTransport();
+        const cleanup = wireTransportEvents(transport, session, []);
+        emitEvent({
+            type: 'subagent_lifecycle',
+            payload: { id: 'child-2', agent: 'worker', status: 'started', index: 1 },
+        });
+
+        cleanup();
+        cleanup();
+
+        const results = (session.client.sendAgentMessage as any).mock.calls
+            .map(([message]: [unknown]) => message)
+            .filter((message: any) => message.type === 'tool-call-result');
+        expect(results).toEqual([expect.objectContaining({
+            callId: 'omp-subagent:child-2',
+            is_error: true,
+            output: expect.objectContaining({ status: 'aborted' }),
+        })]);
+    });
+
+    it('settles an unsupported Subagent subscription without a user-facing error', async () => {
+        const transport = createMockTransport();
+        wireTransportEvents(transport, session, []);
+        const request = sendOmpRpcAndWait(
+            session,
+            transport,
+            { type: 'set_subagent_subscription', level: 'progress' },
+            100,
+        );
+        const rejection = expect(request).rejects.toThrow('unsupported command');
+        const sent = (transport.send as any).mock.calls[0][0] as { id: string };
+
+        emitEvent({
+            type: 'response',
+            command: 'set_subagent_subscription',
+            success: false,
+            error: 'unsupported command',
+            id: sent.id,
+        });
+
+        await rejection;
+        expect(session.client.sendSessionEvent).not.toHaveBeenCalled();
     });
 });

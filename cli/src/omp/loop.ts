@@ -3,7 +3,17 @@ import { convertAgentMessage } from '@/agent/messageConverter';
 import { OmpTransport } from './ompTransport';
 import { convertOmpEvent } from './ompEventConverter';
 import { OmpMessageAccumulator } from './ompMessageAccumulator';
-import { parseOmpModels, parseOmpCommands, OmpResponseEventSchema, OmpStateDataSchema, OmpSetModelDataSchema, OmpThinkingLevelSchema } from './schemas';
+import {
+    parseOmpModels,
+    parseOmpCommands,
+    OmpResponseEventSchema,
+    OmpStateDataSchema,
+    OmpSetModelDataSchema,
+    OmpThinkingLevelSchema,
+    OmpSubagentLifecycleEventSchema,
+    OmpSubagentProgressEventSchema,
+} from './schemas';
+import type { ParsedOmpSubagentProgressEvent } from './schemas';
 import type { OmpResponseEvent, OmpRpcCommand, OmpAgentEvent, OmpGoalUpdatedEvent, OmpAutoCompactionStartEvent, OmpAutoCompactionEndEvent, OmpThinkingLevelChangedEvent } from './types';
 import type { OmpSession } from './session';
 
@@ -179,6 +189,10 @@ function handleResponse(
         const error = response.error ?? 'Unknown OMP error';
         logger.debug(`[omp] RPC error for ${command}: ${error}`);
         resolvePendingRpc(resolver, response);
+        // Subagent progress is an optional capability. Older OMP versions reject
+        // the subscription command; settle the awaiting RPC without surfacing a
+        // session error to the user, then let runOmp fall back gracefully.
+        if (command === 'set_subagent_subscription') return;
         session.sendSessionEvent({ type: 'message', message: error });
         if (command === 'prompt' && pendingLocalIds.length > 0) {
             const oldestLocalId = pendingLocalIds.shift()!;
@@ -298,11 +312,107 @@ export function wireTransportEvents(
     transport: OmpTransport,
     session: OmpSession,
     pendingLocalIds: string[],
-): void {
+): () => void {
     session.rpcResolver = new OmpRpcResolver();
     const assistantMessageAccumulator = new OmpMessageAccumulator();
+    const activeSubagentCards = new Map<string, Record<string, unknown>>();
+    const terminalSubagentIds = new Set<string>();
+    let disposed = false;
+
+    const sendSubagentToolCall = (id: string, input: Record<string, unknown>): void => {
+        activeSubagentCards.set(id, input);
+        session.sendAgentMessage({
+            type: 'tool-call',
+            name: 'Agent',
+            callId: `omp-subagent:${id}`,
+            input,
+        });
+    };
+
+    const progressActivity = (event: ParsedOmpSubagentProgressEvent): string => {
+        const progress = event.payload.progress;
+        if (progress.retryState) {
+            const { attempt, maxAttempts, errorMessage } = progress.retryState;
+            return `Retrying ${attempt}/${maxAttempts}${errorMessage ? `: ${errorMessage}` : ''}`;
+        }
+        if (progress.retryFailure) {
+            return `Retry failed${progress.retryFailure.errorMessage ? `: ${progress.retryFailure.errorMessage}` : ''}`;
+        }
+        if (progress.lastIntent) return progress.lastIntent;
+        if (progress.currentTool) {
+            return progress.currentToolArgs
+                ? `${progress.currentTool}: ${progress.currentToolArgs}`
+                : `Running ${progress.currentTool}`;
+        }
+        switch (progress.status) {
+            case 'pending': return 'Pending';
+            case 'running': return 'Running';
+            case 'completed': return 'Completed';
+            case 'failed': return 'Failed';
+            case 'aborted': return 'Aborted';
+        }
+    };
+
+    const progressRetry = (event: ParsedOmpSubagentProgressEvent): Record<string, unknown> | undefined => {
+        const { retryState, retryFailure } = event.payload.progress;
+        if (retryState) {
+            return {
+                attempt: retryState.attempt,
+                maxAttempts: retryState.maxAttempts,
+                delayMs: retryState.delayMs,
+                errorMessage: retryState.errorMessage,
+            };
+        }
+        if (retryFailure) {
+            return {
+                attempt: retryFailure.attempt,
+                errorMessage: retryFailure.errorMessage,
+            };
+        }
+        return undefined;
+    };
+
+    const finishSubagentCard = (
+        id: string,
+        status: 'completed' | 'failed' | 'aborted',
+        description?: string,
+    ): void => {
+        terminalSubagentIds.add(id);
+        const existing = activeSubagentCards.get(id);
+        if (!existing) return;
+
+        const activity = { completed: 'Completed', failed: 'Failed', aborted: 'Aborted' }[status];
+        const finalInput: Record<string, unknown> = {
+            ...existing,
+            ...(description ? { description } : {}),
+            status,
+            activity,
+        };
+        session.sendAgentMessage({
+            type: 'tool-call',
+            name: 'Agent',
+            callId: `omp-subagent:${id}`,
+            input: finalInput,
+        });
+        session.sendAgentMessage({
+            type: 'tool-call-result',
+            callId: `omp-subagent:${id}`,
+            output: {
+                status,
+                description: finalInput.description,
+                agent: finalInput.subagent_type,
+                model: finalInput.model,
+                requests: finalInput.requests,
+                tokens: finalInput.tokens,
+                durationMs: finalInput.duration_ms,
+            },
+            is_error: status !== 'completed',
+        });
+        activeSubagentCards.delete(id);
+    };
 
     transport.onEvent((event: OmpAgentEvent) => {
+        if (disposed) return;
         if (event.type !== 'keep_alive') {
             logger.debug(`[omp][event] ${event.type}`);
         }
@@ -364,6 +474,63 @@ export function wireTransportEvents(
             }
             return;
         }
+        if (event.type === 'subagent_lifecycle') {
+            const parsed = OmpSubagentLifecycleEventSchema.safeParse(event);
+            if (!parsed.success) {
+                logger.debug(`[omp] Malformed subagent_lifecycle event, skipping: ${parsed.error.message.slice(0, 200)}`);
+                return;
+            }
+            const { payload } = parsed.data;
+            if (payload.status === 'started') {
+                terminalSubagentIds.delete(payload.id);
+                sendSubagentToolCall(payload.id, {
+                    agent_id: payload.id,
+                    subagent_type: payload.agent,
+                    agent_source: payload.agentSource,
+                    description: payload.description ?? `${payload.agent} agent`,
+                    status: 'running',
+                    activity: 'Starting',
+                    index: payload.index,
+                    detached: payload.detached,
+                });
+            } else {
+                finishSubagentCard(payload.id, payload.status, payload.description);
+            }
+            return;
+        }
+
+        if (event.type === 'subagent_progress') {
+            const parsed = OmpSubagentProgressEventSchema.safeParse(event);
+            if (!parsed.success) {
+                logger.debug(`[omp] Malformed subagent_progress event, skipping: ${parsed.error.message.slice(0, 200)}`);
+                return;
+            }
+            const { payload } = parsed.data;
+            const progress = payload.progress;
+            if (terminalSubagentIds.has(progress.id)) return;
+            const previous = activeSubagentCards.get(progress.id);
+            sendSubagentToolCall(progress.id, {
+                ...previous,
+                agent_id: progress.id,
+                subagent_type: payload.agent,
+                agent_source: payload.agentSource,
+                description: progress.description ?? previous?.description ?? payload.task ?? `${payload.agent} agent`,
+                prompt: payload.assignment ?? payload.task ?? previous?.prompt,
+                status: progress.status,
+                activity: progressActivity(parsed.data),
+                model: progress.resolvedModel,
+                current_tool: progress.currentTool,
+                current_tool_args: progress.currentToolArgs,
+                retry: progressRetry(parsed.data),
+                tool_count: progress.toolCount,
+                requests: progress.requests,
+                tokens: progress.tokens,
+                duration_ms: progress.durationMs,
+                index: payload.index,
+                detached: payload.detached,
+            });
+            return;
+        }
 
         // Accumulate text/thinking deltas into snapshots, flush on message_end
         const accumulated = assistantMessageAccumulator.handleEvent(event);
@@ -402,4 +569,25 @@ export function wireTransportEvents(
             session.updateThinkingState(false);
         }
     });
+
+    return () => {
+        if (disposed) return;
+        disposed = true;
+        for (const [id, input] of activeSubagentCards) {
+            session.sendAgentMessage({
+                type: 'tool-call',
+                name: 'Agent',
+                callId: `omp-subagent:${id}`,
+                input: { ...input, status: 'aborted', activity: 'Session ended' },
+            });
+            session.sendAgentMessage({
+                type: 'tool-call-result',
+                callId: `omp-subagent:${id}`,
+                output: { status: 'aborted', reason: 'OMP session ended before the subagent completed' },
+                is_error: true,
+            });
+        }
+        activeSubagentCards.clear();
+        terminalSubagentIds.clear();
+    };
 }

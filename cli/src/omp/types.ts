@@ -129,6 +129,58 @@ export interface OmpAvailableCommandsUpdateEvent {
 }
 export interface OmpReadyEvent { type: 'ready' }
 
+export interface OmpSubagentLifecycleEvent {
+    type: 'subagent_lifecycle';
+    payload: {
+        id: string;
+        agent: string;
+        agentSource?: string;
+        description?: string;
+        status: 'started' | 'completed' | 'failed' | 'aborted';
+        sessionFile?: string;
+        parentToolCallId?: string;
+        index: number;
+        detached?: boolean;
+    };
+}
+
+export interface OmpSubagentProgressEvent {
+    type: 'subagent_progress';
+    payload: {
+        index: number;
+        agent: string;
+        agentSource?: string;
+        task: string;
+        parentToolCallId?: string;
+        assignment?: string;
+        sessionFile?: string;
+        detached?: boolean;
+        progress: {
+            id: string;
+            status: 'pending' | 'running' | 'completed' | 'failed' | 'aborted';
+            description?: string;
+            lastIntent?: string;
+            currentTool?: string;
+            currentToolArgs?: string;
+            toolCount: number;
+            requests: number;
+            tokens: number;
+            durationMs: number;
+            resolvedModel?: string;
+            retryState?: {
+                attempt: number;
+                maxAttempts: number;
+                delayMs: number;
+                errorMessage?: string;
+            };
+            retryFailure?: {
+                attempt: number;
+                errorMessage?: string;
+            };
+        };
+    };
+}
+
 export type OmpAgentEvent =
     | OmpAgentStartEvent
     | OmpAgentEndEvent
@@ -146,7 +198,9 @@ export type OmpAgentEvent =
     | OmpThinkingLevelChangedEvent
     | OmpAvailableCommandsUpdateEvent
     | OmpReadyEvent
-    | { type: string }; // fallback for unknown events (todo_reminder, notice, auto_retry_*, ttsr_triggered, subagent_*, ...)
+    | OmpSubagentLifecycleEvent
+    | OmpSubagentProgressEvent
+    | { type: string }; // fallback for unknown events (todo_reminder, notice, auto_retry_*, ttsr_triggered, ...)
 
 // ============================================================================
 // OMP RPC Commands (stdin) — superset of Pi
@@ -193,7 +247,8 @@ export type OmpRpcCommand =
     | { type: 'get_session_stats' }
     | { type: 'get_messages' }
     | { type: 'get_last_assistant_text' }
-    | { type: 'get_available_commands' };
+    | { type: 'get_available_commands' }
+    | { type: 'set_subagent_subscription'; level: 'off' | 'progress' | 'events' };
 
 // ============================================================================
 // OMP RPC Responses (stdout) — same shape as Pi (id-correlated)

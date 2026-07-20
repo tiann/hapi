@@ -99,9 +99,11 @@ export async function runOmp(opts: {
     registerLocalHandoffHandler(apiSession.rpcHandlerManager, lifecycle);
 
     let cleanupInitiated = false;
+    let cleanupSubagentCards = () => {};
     const safeCleanup = async () => {
         if (cleanupInitiated) return;
         cleanupInitiated = true;
+        cleanupSubagentCards();
         await lifecycle.cleanupAndExit();
     };
 
@@ -150,7 +152,7 @@ export async function runOmp(opts: {
         }
     }
 
-    wireTransportEvents(transport, ompSession, pendingLocalIds);
+    cleanupSubagentCards = wireTransportEvents(transport, ompSession, pendingLocalIds);
 
     // --- Session config RPC ---
     // OMP manually registers SetSessionConfig (same rationale as Pi): OMP's wire
@@ -490,9 +492,23 @@ export async function runOmp(opts: {
         } else {
             transport.send({ type: 'new_session' });
         }
+
+        // OMP keeps Subagent RPC frames disabled by default. Progress-level
+        // subscription exposes bounded lifecycle/metrics without streaming raw
+        // child transcripts. Older OMP versions reject this optional command;
+        // fall back silently after a short timeout so core chat still starts.
+        try {
+            await sendOmpRpcAndWait(ompSession, transport, {
+                type: 'set_subagent_subscription',
+                level: 'progress',
+            }, 2_000);
+            logger.debug('[omp] Subagent progress subscription enabled');
+        } catch (error) {
+            logger.debug(`[omp] Subagent progress unavailable, continuing without it: ${error instanceof Error ? error.message : String(error)}`);
+        }
+
         transport.send({ type: 'get_state' });
         transport.send({ type: 'get_available_models' });
-
         // Apply the requested startup effort only after OMP confirms
         // set_thinking_level. Detached so the run loop is not blocked; sent
         // after get_state so the authoritative baseline lands first.

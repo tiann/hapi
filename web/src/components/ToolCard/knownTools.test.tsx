@@ -257,3 +257,24 @@ describe('getToolPresentation — request_user_input', () => {
         expect(presentation.subtitle).toBe('Continue?')
     })
 })
+
+describe('getToolPresentation — OMP Agent progress', () => {
+    it('prefers live activity over the original prompt', () => {
+        const presentation = getToolPresentation({
+            toolName: 'Agent',
+            input: {
+                description: 'Inspect the OMP event bridge',
+                prompt: 'Audit Subagent support',
+                activity: 'Running Grep',
+                subagent_type: 'explore'
+            },
+            result: null,
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('Inspect the OMP event bridge')
+        expect(presentation.subtitle).toBe('Running Grep')
+    })
+})
