@@ -778,6 +778,8 @@ export function NewSession(props: {
                     machineId: codexImportMachineId ?? machineId,
                     model: resolvedModel ?? null,
                     modelReasoningEffort: resolvedModelReasoningEffort ?? null,
+                    serviceTier: resolvedServiceTier ?? null,
+                    collaborationMode: resolvedCollaborationMode ?? 'default',
                     yolo: yoloMode
                 })
                 if (result.success) {
