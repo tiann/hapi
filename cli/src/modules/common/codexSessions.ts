@@ -432,7 +432,14 @@ export function listLocalCodexSessionsWithMessagesByIds(ids: Set<string>): Local
         collectJsonlFiles(root, files)
     }
 
-    const results: LocalCodexSessionWithMessages[] = []
+    const resultsById = new Map<string, LocalCodexSessionWithMessages>()
+    const addResult = (session: LocalCodexSessionWithMessages) => {
+        const previous = resultsById.get(session.id)
+        if (!previous || previous.modifiedAt < session.modifiedAt) {
+            resultsById.set(session.id, session)
+        }
+    }
+
     for (const file of files) {
         const idFromName = inferSessionIdFromFileName(file)
         // Skip unrelated transcripts without reading message bodies.
@@ -441,7 +448,7 @@ export function listLocalCodexSessionsWithMessagesByIds(ids: Set<string>): Local
         if (idFromName && ids.has(idFromName)) {
             const session = parseCodexLocalSession(file, true, sessionIndexTitles)
             if (session && Array.isArray((session as LocalCodexSessionWithMessages).messages)) {
-                results.push(session as LocalCodexSessionWithMessages)
+                addResult(session as LocalCodexSessionWithMessages)
             }
             continue
         }
@@ -451,35 +458,23 @@ export function listLocalCodexSessionsWithMessagesByIds(ids: Set<string>): Local
         if (!summary || !ids.has(summary.id)) continue
         const session = parseCodexLocalSession(file, true, sessionIndexTitles)
         if (session && Array.isArray((session as LocalCodexSessionWithMessages).messages)) {
-            results.push(session as LocalCodexSessionWithMessages)
+            addResult(session as LocalCodexSessionWithMessages)
         }
     }
-    return results
+    return Array.from(resultsById.values())
 }
 
 /** Resolve a Codex thread's workspace cwd without loading the full transcript body. */
 export function findCodexSessionPath(sessionId: string): string | null {
-    const normalized = sessionId.trim()
-    if (!normalized) return null
-
-    const files: string[] = []
-    for (const root of getCodexSessionRoots()) {
-        collectJsonlFiles(root, files)
-    }
-
-    for (const file of files) {
-        const idFromName = inferSessionIdFromFileName(file)
-        if (idFromName && idFromName !== normalized) continue
-        const summary = parseCodexLocalSession(file, false)
-        if (summary?.id === normalized) {
-            return summary.cwd ?? null
-        }
-    }
-    return null
+    return findCodexSessionSummary(sessionId)?.cwd ?? null
 }
 
 /** Resolve the on-disk transcript path for a Codex thread id (head-parse only). */
 export function findCodexSessionFile(sessionId: string): string | null {
+    return findCodexSessionSummary(sessionId)?.file ?? null
+}
+
+function findCodexSessionSummary(sessionId: string): LocalCodexSessionSummary | null {
     const normalized = sessionId.trim()
     if (!normalized) return null
 
@@ -488,14 +483,17 @@ export function findCodexSessionFile(sessionId: string): string | null {
         collectJsonlFiles(root, files)
     }
 
+    let best: LocalCodexSessionSummary | null = null
     for (const file of files) {
         const idFromName = inferSessionIdFromFileName(file)
         if (idFromName && idFromName !== normalized) continue
-        if (idFromName === normalized) return file
         const summary = parseCodexLocalSession(file, false)
-        if (summary?.id === normalized) return summary.file
+        if (!summary || summary.id !== normalized) continue
+        if (!best || best.modifiedAt < summary.modifiedAt) {
+            best = summary
+        }
     }
-    return null
+    return best
 }
 
 
