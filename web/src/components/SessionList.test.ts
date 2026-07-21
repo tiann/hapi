@@ -14,6 +14,7 @@ import {
     prepareSidebarSessions,
     sessionMatchesQuery,
     sessionMatchesTimeRange,
+    shouldShowPinnedDivider,
     shouldShowSessionInSidebar
 } from './SessionList'
 
@@ -79,6 +80,27 @@ describe('getWorktreeSessionLabel', () => {
         })
 
         expect(getWorktreeSessionLabel(session)).toBe('fix-resume')
+    })
+})
+
+describe('shouldShowPinnedDivider', () => {
+    it('shows one divider at the visible pinned-to-unpinned boundary', () => {
+        const sessions = [
+            makeSession({ id: 'pinned-a', pinned: true }),
+            makeSession({ id: 'pinned-b', pinned: true }),
+            makeSession({ id: 'regular-a' }),
+            makeSession({ id: 'regular-b' })
+        ]
+
+        expect(sessions.map((_, index) => shouldShowPinnedDivider(sessions, index)))
+            .toEqual([false, false, true, false])
+    })
+
+    it('does not show a divider when all visible sessions have the same pin state', () => {
+        expect(shouldShowPinnedDivider([
+            makeSession({ id: 'a' }),
+            makeSession({ id: 'b' })
+        ], 1)).toBe(false)
     })
 })
 

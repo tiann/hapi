@@ -172,6 +172,8 @@ export default {
 
   // Session actions
   'session.action.rename': 'Rename',
+  'session.action.pin': 'Pin session',
+  'session.action.unpin': 'Unpin session',
   'session.action.export': 'Export conversation',
   'session.action.syncCodex': 'Sync from Codex',
   'session.action.archive': 'Archive',

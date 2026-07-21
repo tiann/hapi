@@ -37,6 +37,7 @@ type SessionGroup = {
     sessions: SessionSummary[]
     latestUpdatedAt: number
     hasActiveSession: boolean
+    hasPinnedSession: boolean
 }
 
 export type SessionTimeRange = {
@@ -128,6 +129,7 @@ type MachineGroup = {
     projectGroups: SessionGroup[]
     totalSessions: number
     hasActiveSession: boolean
+    hasPinnedSession: boolean
     latestUpdatedAt: number
 }
 
@@ -245,6 +247,7 @@ function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
     return Array.from(groups.entries())
         .map(([key, group]) => {
             const sortedSessions = [...group.sessions].sort((a, b) => {
+                if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1
                 const rankA = a.active ? (a.pendingRequestsCount > 0 ? 0 : 1) : 2
                 const rankB = b.active ? (b.pendingRequestsCount > 0 ? 0 : 1) : 2
                 if (rankA !== rankB) return rankA - rankB
@@ -255,6 +258,7 @@ function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
                 -Infinity
             )
             const hasActiveSession = group.sessions.some(s => s.active)
+            const hasPinnedSession = group.sessions.some(s => s.pinned)
             const displayName = getGroupDisplayName(group.directory)
 
             return {
@@ -264,10 +268,14 @@ function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
                 machineId: group.machineId,
                 sessions: sortedSessions,
                 latestUpdatedAt,
-                hasActiveSession
+                hasActiveSession,
+                hasPinnedSession
             }
         })
         .sort((a, b) => {
+            if (a.hasPinnedSession !== b.hasPinnedSession) {
+                return a.hasPinnedSession ? -1 : 1
+            }
             if (a.hasActiveSession !== b.hasActiveSession) {
                 return a.hasActiveSession ? -1 : 1
             }
@@ -313,6 +321,7 @@ function groupByMachine(
                 projectGroups: [],
                 totalSessions: 0,
                 hasActiveSession: false,
+                hasPinnedSession: false,
                 latestUpdatedAt: 0,
             }
             map.set(key, mg)
@@ -320,9 +329,11 @@ function groupByMachine(
         mg.projectGroups.push(g)
         mg.totalSessions += g.sessions.length
         if (g.hasActiveSession) mg.hasActiveSession = true
+        if (g.hasPinnedSession) mg.hasPinnedSession = true
         if (g.latestUpdatedAt > mg.latestUpdatedAt) mg.latestUpdatedAt = g.latestUpdatedAt
     }
     return [...map.values()].sort((a, b) => {
+        if (a.hasPinnedSession !== b.hasPinnedSession) return a.hasPinnedSession ? -1 : 1
         if (a.hasActiveSession !== b.hasActiveSession) return a.hasActiveSession ? -1 : 1
         return b.latestUpdatedAt - a.latestUpdatedAt
     })
@@ -552,6 +563,11 @@ export function getVisibleSessionPreview(
     }
 
     return visible
+}
+
+export function shouldShowPinnedDivider(sessions: SessionSummary[], index: number): boolean {
+    if (index <= 0 || index >= sessions.length) return false
+    return Boolean(sessions[index - 1]?.pinned) && !sessions[index]?.pinned
 }
 
 function CalendarIcon(props: { className?: string }) {
@@ -806,7 +822,7 @@ function SessionItem(props: {
                 : t('session.action.reopenCursorChecking')
         : undefined
 
-    const { archiveSession, reopenSession, renameSession, deleteSession, isPending } = useSessionActions(
+    const { archiveSession, reopenSession, renameSession, deleteSession, setPinned, isPending } = useSessionActions(
         api,
         s.id,
         s.metadata?.flavor ?? null
@@ -941,6 +957,8 @@ function SessionItem(props: {
                 sessionId={s.id}
                 sessionTitle={sessionName}
                 sessionActive={s.active}
+                sessionPinned={s.pinned}
+                onTogglePin={() => void setPinned(!s.pinned)}
                 onRename={() => setRenameOpen(true)}
                 onExport={() => setExportOpen(true)}
                 onArchive={() => setArchiveOpen(true)}
@@ -1347,16 +1365,23 @@ export function SessionList(props: {
                                                 <div className="collapsible-panel" data-open={!isCollapsed || undefined}>
                                                     <div className="collapsible-inner">
                                                     <div className="flex flex-col gap-0.5 ml-3 pl-1 py-1">
-                                                        {visibleGroupSessions.map((s) => (
-                                                            <SessionItem
-                                                                key={s.id}
-                                                                session={s}
-                                                                onSelect={props.onSelect}
-                                                                showPath={false}
-                                                                api={api}
-                                                                selected={s.id === selectedSessionId}
-                                                                showDetailedStatus={showDetailedStatus}
-                                                            />
+                                                        {visibleGroupSessions.map((s, index) => (
+                                                            <div key={s.id} className="contents">
+                                                                {shouldShowPinnedDivider(visibleGroupSessions, index) ? (
+                                                                    <div
+                                                                        className="ml-2 my-1 border-t border-[var(--app-border)]"
+                                                                        aria-hidden="true"
+                                                                    />
+                                                                ) : null}
+                                                                <SessionItem
+                                                                    session={s}
+                                                                    onSelect={props.onSelect}
+                                                                    showPath={false}
+                                                                    api={api}
+                                                                    selected={s.id === selectedSessionId}
+                                                                    showDetailedStatus={showDetailedStatus}
+                                                                />
+                                                            </div>
                                                         ))}
                                                         {!isFiltering && group.sessions.length > sessionPreviewLimit && (hiddenSessionCount > 0 || canCollapseSessions) ? (
                                                             <button

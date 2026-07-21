@@ -23,7 +23,7 @@ export { PushStore } from './pushStore'
 export { SessionStore } from './sessionStore'
 export { UserStore } from './userStore'
 
-const SCHEMA_VERSION: number = 10
+const SCHEMA_VERSION: number = 11
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -124,6 +124,7 @@ export class Store {
             7: () => this.migrateFromV7ToV8(),
             8: () => this.migrateFromV8ToV9(),
             9: () => this.migrateFromV9ToV10(),
+            10: () => this.migrateFromV10ToV11(),
         })
 
         if (currentVersion === 0) {
@@ -178,6 +179,7 @@ export class Store {
                 machine_id TEXT,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
+                pinned INTEGER NOT NULL DEFAULT 0,
                 metadata TEXT,
                 metadata_version INTEGER DEFAULT 1,
                 agent_state TEXT,
@@ -432,6 +434,14 @@ export class Store {
         if (columns.size === 0) return
         if (!columns.has('service_tier')) {
             this.db.exec('ALTER TABLE sessions ADD COLUMN service_tier TEXT')
+        }
+    }
+
+    private migrateFromV10ToV11(): void {
+        const columns = this.getSessionColumnNames()
+        if (columns.size === 0) return
+        if (!columns.has('pinned')) {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0')
         }
     }
 

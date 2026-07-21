@@ -46,6 +46,7 @@ export type SessionSummary = {
     thinking: boolean
     activeAt: number
     updatedAt: number
+    pinned?: boolean
     metadata: SessionSummaryMetadata | null
     todoProgress: { completed: number; total: number } | null
     pendingRequestsCount: number
@@ -138,6 +139,7 @@ export function toSessionSummary(session: Session): SessionSummary {
         thinking: session.thinking,
         activeAt: session.activeAt,
         updatedAt: session.updatedAt,
+        pinned: session.pinned ?? false,
         metadata,
         todoProgress,
         pendingRequestsCount,

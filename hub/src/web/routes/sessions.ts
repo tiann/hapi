@@ -4,6 +4,7 @@ import {
     getPermissionModesForFlavor,
     isPermissionModeAllowedForFlavor,
     RenameSessionRequestSchema,
+    SetSessionPinnedRequestSchema,
     ResumeSessionRequestSchema,
     SessionCollaborationModeRequestSchema,
     SessionEffortRequestSchema,
@@ -70,6 +71,9 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const namespace = c.get('namespace')
         const sessionRecords = engine.getSessionsByNamespace(namespace)
             .sort((a, b) => {
+                if (Boolean(a.pinned) !== Boolean(b.pinned)) {
+                    return a.pinned ? -1 : 1
+                }
                 // Active sessions first
                 if (a.active !== b.active) {
                     return a.active ? -1 : 1
@@ -665,6 +669,23 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             }
             return c.json({ error: message }, 500)
         }
+    })
+
+    app.put('/sessions/:id/pin', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) return sessionResult
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = SetSessionPinnedRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body: pinned is required' }, 400)
+        }
+
+        engine.setSessionPinned(sessionResult.sessionId, parsed.data.pinned)
+        return c.json({ ok: true })
     })
 
     app.delete('/sessions/:id', async (c) => {

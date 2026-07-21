@@ -149,6 +149,7 @@ export class SessionCache {
             seq: stored.seq,
             createdAt: stored.createdAt,
             updatedAt: stored.updatedAt,
+            pinned: stored.pinned,
             active: existing?.active ?? stored.active,
             // Legacy / idle rows may still have active_at NULL in SQLite.
             // Public Session.activeAt is always a number for CLI Zod parse.
@@ -184,6 +185,13 @@ export class SessionCache {
         for (const session of sessions) {
             this.refreshSession(session.id)
         }
+    }
+
+    setSessionPinned(sessionId: string, pinned: boolean): void {
+        const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+        if (!session) throw new Error('Session not found')
+        this.store.sessions.setSessionPinned(sessionId, pinned, session.namespace)
+        this.refreshSession(sessionId)
     }
 
     markSessionActive(sessionId: string, time: number = Date.now()): void {

@@ -5,6 +5,7 @@ export type StoredSession = {
     machineId: string | null
     createdAt: number
     updatedAt: number
+    pinned: boolean
     metadata: unknown | null
     metadataVersion: number
     agentState: unknown | null
