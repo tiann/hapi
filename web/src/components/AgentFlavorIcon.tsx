@@ -1,6 +1,7 @@
 // Deep component imports on purpose: the package root re-exports ./features,
 // which pulls in uninstalled peer deps (@lobehub/ui, antd). The Mono/Color
 // components only depend on react and es-toolkit.
+import AntigravityColor from '@lobehub/icons/es/Antigravity/components/Color'
 import ClaudeColor from '@lobehub/icons/es/Claude/components/Color'
 import CodexColor from '@lobehub/icons/es/Codex/components/Color'
 import CursorMono from '@lobehub/icons/es/Cursor/components/Mono'
@@ -15,6 +16,7 @@ import type { IconType } from '@lobehub/icons/es/types'
 // package ships no Color variant — or where, like KimiColor, the main glyph is
 // hard-coded #fff and would vanish on the default light theme.
 const FLAVOR_LOGOS: Record<string, IconType> = {
+    agy: AntigravityColor,
     claude: ClaudeColor,
     codex: CodexColor,
     cursor: CursorMono,
@@ -27,10 +29,6 @@ const FLAVOR_LOGOS: Record<string, IconType> = {
 // Letter-badge fallback for flavors without a brand logo in @lobehub/icons
 // (pi) and for anything unrecognized.
 const FLAVOR_BADGES: Record<string, { label: string; colors: string }> = {
-    agy: {
-        label: 'Ag',
-        colors: 'bg-[#0891b2] text-white',
-    },
     pi: {
         label: 'Pi',
         colors: 'bg-[#5b21b6] text-white',

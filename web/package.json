@@ -18,7 +18,7 @@
         "@assistant-ui/tap": "^0.9.8",
         "@elevenlabs/react": "^0.13.0",
         "@hapi/protocol": "workspace:*",
-        "@lobehub/icons": "^5.4.0",
+        "@lobehub/icons": "^5.14.0",
         "@radix-ui/react-dialog": "^1.1.15",
         "@radix-ui/react-popover": "^1.1.15",
         "@radix-ui/react-slot": "^1.2.4",
