@@ -26,17 +26,17 @@ afterEach(() => {
 })
 
 describe('fleetUpgradePolicy', () => {
-    it('defaults to auto when nothing is persisted', () => {
+    it('defaults to alert when nothing is persisted', () => {
         initFleetUpgradePolicy({ dataDir: makeDataDir(), persisted: undefined })
-        expect(getFleetUpgradePolicy()).toBe('auto')
+        expect(getFleetUpgradePolicy()).toBe('alert')
     })
 
     it('seeds from a valid persisted value and ignores garbage', () => {
-        initFleetUpgradePolicy({ dataDir: makeDataDir(), persisted: 'alert' })
-        expect(getFleetUpgradePolicy()).toBe('alert')
+        initFleetUpgradePolicy({ dataDir: makeDataDir(), persisted: 'auto' })
+        expect(getFleetUpgradePolicy()).toBe('auto')
 
         initFleetUpgradePolicy({ dataDir: makeDataDir(), persisted: 'nonsense' })
-        expect(getFleetUpgradePolicy()).toBe('auto')
+        expect(getFleetUpgradePolicy()).toBe('alert')
     })
 
     it('persists updates to settings.json and survives re-init', async () => {

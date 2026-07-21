@@ -239,7 +239,7 @@ describe('SyncEngine fleet upgrade', () => {
             {} as never,
             new RpcRegistry(),
             { broadcast() {} } as never,
-            { getUpgradeOffer: () => offer },
+            { getUpgradeOffer: () => offer, getFleetUpgradePolicy: () => 'auto' },
         )
 
         try {
@@ -284,7 +284,7 @@ describe('SyncEngine fleet upgrade', () => {
             {} as never,
             new RpcRegistry(),
             { broadcast() {} } as never,
-            { getUpgradeOffer: () => offer },
+            { getUpgradeOffer: () => offer, getFleetUpgradePolicy: () => 'auto' },
         )
 
         try {
@@ -328,7 +328,7 @@ describe('SyncEngine fleet upgrade', () => {
             {} as never,
             new RpcRegistry(),
             { broadcast() {} } as never,
-            { getUpgradeOffer: () => offer },
+            { getUpgradeOffer: () => offer, getFleetUpgradePolicy: () => 'auto' },
         )
 
         try {
@@ -422,7 +422,7 @@ describe('SyncEngine fleet upgrade', () => {
             {} as never,
             new RpcRegistry(),
             { broadcast() {} } as never,
-            { getUpgradeOffer: () => offer },
+            { getUpgradeOffer: () => offer, getFleetUpgradePolicy: () => 'auto' },
         )
 
         try {

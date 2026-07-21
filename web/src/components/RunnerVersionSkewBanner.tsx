@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { cliBinaryUpdatedOnDisk } from '@hapi/protocol/runnerCapabilities'
-import { machineTrailsUpgradeOffer, type HubUpgradeOffer } from '@hapi/protocol/upgradeChannel'
+import { DEFAULT_FLEET_UPGRADE_POLICY, machineTrailsUpgradeOffer, type HubUpgradeOffer } from '@hapi/protocol/upgradeChannel'
 import type { Machine } from '@/types/api'
 import { useMachines } from '@/hooks/queries/useMachines'
 import { useUpgradeInfo } from '@/hooks/queries/useUpgradeInfo'
@@ -44,7 +44,7 @@ export function RunnerVersionSkewBanner({ topClassName }: { topClassName?: strin
     const { t } = useTranslation()
     const isOnline = useOnlineStatus()
     const { haptic } = usePlatform()
-    const policy = info?.policy ?? 'auto'
+    const policy = info?.policy ?? DEFAULT_FLEET_UPGRADE_POLICY
     const skewed = policy === 'silent' ? [] : listSkewedMachines(machines, info?.offer ?? null)
     const [minimized, setMinimized] = useState(() => isRunnerSkewMinimized())
     const [dismissed, setDismissed] = useState(() => isRunnerSkewTempDismissed())

@@ -119,12 +119,17 @@ export function machineTrailsUpgradeOffer(
  * Orthogonal to {@link UpgradeChannel}: `HAPI_UPGRADE_CHANNEL=off` is a hard
  * kill (no upgrades at all); this policy governs whether the hub acts/alerts
  * when a channel IS available.
+ *
+ * Default is `alert`, not `auto`: mutating someone's remote machines without
+ * an explicit opt-in is too aggressive for the 99% single-machine case. A
+ * dismissible banner is the safe default; multi-machine operators opt into
+ * `auto` ("set and forget") in Settings > General > Runner management.
  */
 export type FleetUpgradePolicy = 'silent' | 'alert' | 'auto'
 
 export const FLEET_UPGRADE_POLICIES: readonly FleetUpgradePolicy[] = ['silent', 'alert', 'auto']
 
-export const DEFAULT_FLEET_UPGRADE_POLICY: FleetUpgradePolicy = 'auto'
+export const DEFAULT_FLEET_UPGRADE_POLICY: FleetUpgradePolicy = 'alert'
 
 export function isFleetUpgradePolicy(value: unknown): value is FleetUpgradePolicy {
     return typeof value === 'string' && (FLEET_UPGRADE_POLICIES as readonly string[]).includes(value)
