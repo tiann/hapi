@@ -1,5 +1,44 @@
 import { describe, expect, it } from 'vitest'
-import { getEventPresentation, formatMessageTimestamp, formatResetTime } from './presentation'
+import { getEventPresentation, formatMessageTimestamp, formatOutlineTimestamp, formatResetTime } from './presentation'
+
+describe('formatOutlineTimestamp', () => {
+    it('shows only the time for same-day messages', () => {
+        const date = new Date(2026, 6, 21, 9, 55)
+        const now = new Date(2026, 6, 21, 12, 0)
+
+        expect(formatOutlineTimestamp(date, 'en', now)).toBe(
+            date.toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+        )
+    })
+
+    it('zero-pads Chinese dates within the current year', () => {
+        const date = new Date(2026, 8, 9, 10, 31)
+        const now = new Date(2026, 6, 21, 12, 0)
+
+        expect(formatOutlineTimestamp(date, 'zh-CN', now)).toBe(
+            `09月09日 ${date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })}`
+        )
+    })
+
+    it('uses a zero-padded numeric date in English', () => {
+        const date = new Date(2026, 9, 1, 10, 31)
+        const now = new Date(2026, 6, 21, 12, 0)
+
+        expect(formatOutlineTimestamp(date, 'en', now)).toBe(
+            `10/01 ${date.toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })}`
+        )
+    })
+
+    it('includes the year for older years in both locales', () => {
+        const date = new Date(2025, 8, 9, 10, 31)
+        const now = new Date(2026, 6, 21, 12, 0)
+        const zhTime = date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+        const enTime = date.toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+
+        expect(formatOutlineTimestamp(date, 'zh-CN', now)).toBe(`2025年09月09日 ${zhTime}`)
+        expect(formatOutlineTimestamp(date, 'en', now)).toBe(`2025/09/09 ${enTime}`)
+    })
+})
 
 describe('getEventPresentation — agent errors', () => {
     it('formats error events with warning icon and message text', () => {

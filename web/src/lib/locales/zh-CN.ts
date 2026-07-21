@@ -163,7 +163,6 @@ export default {
   'session.outline.title': '大纲',
   'session.outline.loadOlder': '加载更早',
   'session.outline.empty': '已加载消息中暂无大纲项',
-  'session.outline.kind.user': '用户',
 
   // Session actions
   'session.action.rename': '重命名',

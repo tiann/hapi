@@ -163,7 +163,6 @@ export default {
   'session.outline.title': 'Outline',
   'session.outline.loadOlder': 'Load earlier',
   'session.outline.empty': 'No outline items in loaded messages',
-  'session.outline.kind.user': 'User',
 
   // Session actions
   'session.action.rename': 'Rename',

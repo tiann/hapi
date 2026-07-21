@@ -4,6 +4,7 @@ import type { ApiClient } from '@/api/client'
 import type { SessionMetadataSummary } from '@/types/api'
 import type { ConversationOutlineItem } from '@/chat/outline'
 import { getConversationMessageAnchorId } from '@/chat/outline'
+import { formatMessageTimestampTitle, formatOutlineTimestamp } from '@/chat/presentation'
 import { HappyChatProvider } from '@/components/AssistantChat/context'
 import { HappyAssistantMessage } from '@/components/AssistantChat/messages/AssistantMessage'
 import { HappyUserMessage } from '@/components/AssistantChat/messages/UserMessage'
@@ -157,7 +158,7 @@ export function ConversationOutlinePanel(props: {
     onSelect: (item: ConversationOutlineItem) => void
     onClose: () => void
 }) {
-    const { t } = useTranslation()
+    const { t, locale } = useTranslation()
 
     return (
         <aside
@@ -213,21 +214,26 @@ export function ConversationOutlinePanel(props: {
                 ) : (
                     <div className="space-y-1">
                         {props.items.map((item) => {
+                            const createdAt = new Date(item.createdAt)
                             return (
                                 <button
                                     key={item.id}
                                     type="button"
                                     onClick={() => props.onSelect(item)}
-                                    className="group flex w-full min-w-0 items-start gap-2 rounded-md px-2 py-2 text-left transition-colors hover:bg-[var(--app-subtle-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                                    className="group block w-full min-w-0 rounded-md px-2 py-2 text-left transition-colors hover:bg-[var(--app-subtle-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
                                 >
-                                    <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-[var(--app-button)]" aria-hidden="true" />
-                                    <span className="min-w-0 flex-1">
-                                        <span className="block truncate text-[11px] font-medium uppercase text-[var(--app-hint)]">
-                                            {t('session.outline.kind.user')}
-                                        </span>
-                                        <span className="line-clamp-2 text-sm leading-snug text-[var(--app-fg)]">
-                                            {item.label}
-                                        </span>
+                                    <span className="flex min-w-0 items-center gap-2 text-[11px] font-medium tabular-nums text-[var(--app-hint)]">
+                                        <span className="h-2 w-2 shrink-0 rounded-full bg-[var(--app-button)]" aria-hidden="true" />
+                                        <time
+                                            dateTime={createdAt.toISOString()}
+                                            title={formatMessageTimestampTitle(createdAt)}
+                                            className="truncate"
+                                        >
+                                            {formatOutlineTimestamp(createdAt, locale)}
+                                        </time>
+                                    </span>
+                                    <span className="mt-0.5 line-clamp-2 pl-4 text-sm leading-snug text-[var(--app-fg)]">
+                                        {item.label}
                                     </span>
                                 </button>
                             )
