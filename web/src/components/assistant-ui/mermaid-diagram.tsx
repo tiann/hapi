@@ -92,16 +92,51 @@ async function ensureMermaid(theme: 'light' | 'dark') {
     return mermaid
 }
 
+/**
+ * Result of attempting to render a Mermaid block. On failure `error` carries a
+ * human-readable reason so the UI can surface *why* the diagram fell back to
+ * source instead of swallowing it (see #1117). `error` is null only on success.
+ */
+export type MermaidRenderOutcome =
+    | { svg: string; error: null }
+    | { svg: null; error: string }
+
+function toMermaidErrorMessage(err: unknown): string {
+    if (err instanceof Error && err.message) return err.message
+    if (typeof err === 'string' && err.trim()) return err.trim()
+    return 'Mermaid could not render this diagram.'
+}
+
 export async function renderMermaidSvg(
     code: string,
     elementId: string,
     theme: 'light' | 'dark',
-): Promise<string | null> {
+): Promise<MermaidRenderOutcome> {
     const mermaid = await ensureMermaid(theme)
+
+    // Primary validation gate (unchanged from #785/#813): parse with
+    // suppressErrors so Mermaid never injects its own error SVG or fires global
+    // parse-error side effects. A falsy result means invalid syntax.
     const isValid = await mermaid.parse(code, { suppressErrors: true })
-    if (!isValid) return null
-    const result = await mermaid.render(elementId, code)
-    return result.svg
+    if (!isValid) {
+        // Re-parse WITHOUT suppression purely to capture the reason. The
+        // parse-error handler is a no-op and suppressErrorRendering is on, so
+        // this has no rendering/side-effect cost - it just lets the thrown
+        // error surface its message for diagnostics.
+        try {
+            await mermaid.parse(code)
+        } catch (err) {
+            return { svg: null, error: toMermaidErrorMessage(err) }
+        }
+        return { svg: null, error: 'Mermaid rejected this diagram but gave no reason.' }
+    }
+
+    try {
+        const result = await mermaid.render(elementId, code)
+        return { svg: result.svg, error: null }
+    } catch (err) {
+        return { svg: null, error: toMermaidErrorMessage(err) }
+    }
 }
 
 export function getMermaidSvgLayoutSize(svg: string): { width: number; height: number } | null {
@@ -153,18 +188,35 @@ export function normalizeMermaidSvgForStandaloneDisplay(svg: string): string {
     return result
 }
 
-function MermaidFallback(props: ComponentPropsWithoutRef<'pre'> & { code: string }) {
-    const { code, className, ...rest } = props
+function MermaidFallback(
+    props: ComponentPropsWithoutRef<'div'> & { code: string; error?: string | null },
+) {
+    const { code, error, className, ...rest } = props
+    const { t } = useTranslation()
     return (
-        <pre
+        <div
             {...rest}
-            className={cn(
-                'aui-mermaid-fallback m-0 overflow-x-auto rounded-b-xl bg-[var(--app-code-bg)] p-4 text-sm text-[var(--app-fg)]',
-                className
-            )}
+            data-mermaid-error={error ?? undefined}
+            className={cn('aui-mermaid-fallback-wrapper overflow-hidden rounded-b-xl bg-[var(--app-code-bg)]', className)}
         >
-            <code>{code}</code>
-        </pre>
+            {/*
+              Only show the failure notice on an actual failure. During the brief
+              async load window the component also renders this fallback (svg not
+              ready yet) with error=null - suppressing the notice there avoids a
+              "Could not render" flash before the diagram appears.
+            */}
+            {error ? (
+                <div className="aui-mermaid-fallback-notice flex flex-col gap-1 border-b border-[var(--app-divider)] px-4 py-2 text-xs text-[var(--app-hint)]">
+                    <span className="font-medium text-[var(--app-fg)]">{t('mermaid.renderError')}</span>
+                    <span className="aui-mermaid-fallback-reason break-words font-mono text-[var(--app-hint)]">
+                        {error}
+                    </span>
+                </div>
+            ) : null}
+            <pre className="aui-mermaid-fallback m-0 overflow-x-auto p-4 text-sm text-[var(--app-fg)]">
+                <code>{code}</code>
+            </pre>
+        </div>
     )
 }
 
@@ -242,6 +294,7 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
     const e2eCaseId = readMermaidE2eCaseId(props.code)
     const [theme, setTheme] = useState<'light' | 'dark'>(() => resolveTheme())
     const [renderError, setRenderError] = useState(false)
+    const [errorReason, setErrorReason] = useState<string | null>(null)
     const [svg, setSvg] = useState<string | null>(null)
     const [lightboxOpen, setLightboxOpen] = useState(false)
     const [lightboxFitSize, setLightboxFitSize] = useState<{ width: number; height: number } | null>(null)
@@ -284,19 +337,22 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
 
         const render = async () => {
             try {
-                const nextSvg = await renderMermaidSvg(props.code, `mermaid-${id}`, theme)
+                const outcome = await renderMermaidSvg(props.code, `mermaid-${id}`, theme)
                 if (cancelled) return
-                if (!nextSvg) {
+                if (!outcome.svg) {
                     setSvg(null)
                     setRenderError(true)
+                    setErrorReason(outcome.error)
                     return
                 }
-                setSvg(nextSvg)
+                setSvg(outcome.svg)
                 setRenderError(false)
-            } catch {
+                setErrorReason(null)
+            } catch (err) {
                 if (cancelled) return
                 setSvg(null)
                 setRenderError(true)
+                setErrorReason(toMermaidErrorMessage(err))
             }
         }
 
@@ -310,7 +366,14 @@ export function MermaidDiagram(props: SyntaxHighlighterProps) {
     const lightboxLayoutSize = lightboxFitSize ?? (svg ? getMermaidSvgLayoutSize(svg) : null)
 
     if (renderError || !svg) {
-        return <MermaidFallback code={props.code} data-mermaid-diagram data-rendered="false" />
+        return (
+            <MermaidFallback
+                code={props.code}
+                error={errorReason}
+                data-mermaid-diagram
+                data-rendered="false"
+            />
+        )
     }
 
     return (
