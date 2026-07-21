@@ -730,7 +730,10 @@ function SessionListSearch(props: {
     )
 }
 
-function formatCodexImportedRelativeTime(value: number, t: (key: string, params?: Record<string, string | number>) => string): string | null {
+function formatCodexImportedRelativeTime(
+    value: number,
+    t: (key: string, params?: Record<string, string | number>) => string
+): string | null {
     const ms = value < 1_000_000_000_000 ? value * 1000 : value
     if (!Number.isFinite(ms)) return null
     const delta = Date.now() - ms
@@ -741,10 +744,13 @@ function formatCodexImportedRelativeTime(value: number, t: (key: string, params?
     if (hours < 24) return t('session.time.importedFromCodex.hoursAgo', { n: hours })
     const days = Math.floor(hours / 24)
     if (days < 7) return t('session.time.importedFromCodex.daysAgo', { n: days })
-    return new Date(ms).toLocaleDateString()
+    return formatRelativeTime(value, t)
 }
 
-function getSessionTimeLabel(session: SessionSummary, t: (key: string, params?: Record<string, string | number>) => string): string | null {
+function getSessionTimeLabel(
+    session: SessionSummary,
+    t: (key: string, params?: Record<string, string | number>) => string
+): string | null {
     const codexSessionId = session.metadata?.agentSessionId
     const importedAt = session.metadata?.flavor === 'codex'
         ? getCodexImportedAt(codexSessionId)
@@ -904,7 +910,7 @@ function SessionItem(props: {
                                 {t('session.item.pending')} {s.pendingRequestsCount}
                             </span>
                         ) : null}
-                        <span className="text-[var(--app-hint)]">
+                        <span className="tabular-nums text-[var(--app-hint)]">
                             {getSessionTimeLabel(s, t)}
                         </span>
                     </div>
