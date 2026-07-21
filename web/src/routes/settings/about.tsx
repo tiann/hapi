@@ -13,6 +13,12 @@ export default function SettingsAboutPage() {
                 <SettingsRow label={t('settings.about.appVersion')} trailing={<span className="text-[var(--app-hint)]">{__APP_VERSION__}</span>} />
                 <SettingsRow label={t('settings.about.protocolVersion')} trailing={<span className="text-[var(--app-hint)]">{PROTOCOL_VERSION}</span>} />
             </SettingsSection>
+            <SettingsSection title={t('settings.about.runnerMgmt.title')} description={t('settings.about.runnerMgmt.body')}>
+                <SettingsRow
+                    label={t('settings.about.runnerMgmt.optOutLabel')}
+                    description={t('settings.about.runnerMgmt.optOutBody')}
+                />
+            </SettingsSection>
         </SettingsPageContent>
     )
 }

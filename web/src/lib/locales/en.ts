@@ -809,6 +809,10 @@ export default {
   'settings.about.website': 'Website',
   'settings.about.appVersion': 'App Version',
   'settings.about.protocolVersion': 'Protocol Version',
+  'settings.about.runnerMgmt.title': 'Runner management',
+  'settings.about.runnerMgmt.body': 'This hub keeps connected runners on its own HAPI CLI version automatically. When the hub upgrades, runners self-update to match — no SSH, each runner installs on itself.',
+  'settings.about.runnerMgmt.optOutLabel': 'Want a runner ahead of the hub?',
+  'settings.about.runnerMgmt.optOutBody': 'Auto-management pulls runners back to match the hub, so a deliberately newer runner would be downgraded. To pin a runner to a different version, disable auto-upgrade: set HAPI_UPGRADE_CHANNEL=off on the hub (affects every runner), or HAPI_DISABLE_VERSION_HANDOFF=1 on that one runner, then restart it.',
 
   // Browse / Workspace
   'browse.title': 'Browse',
