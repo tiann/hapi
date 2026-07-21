@@ -72,7 +72,7 @@ export function HoverTooltip(props: {
                 id={props.id}
                 className={cn(
                     'pointer-events-none absolute z-30 whitespace-normal',
-                    spansRow ? 'max-w-none' : 'max-w-[14rem]',
+                    spansRow ? 'max-w-none' : 'w-max max-w-[14rem]',
                     'rounded-md border border-[var(--app-border)] bg-[var(--app-secondary-bg)]',
                     'px-2 py-1 text-xs leading-snug text-[var(--app-fg)] shadow-lg',
                     side === 'top' ? 'bottom-full mb-1' : 'top-full mt-1',
