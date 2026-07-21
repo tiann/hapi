@@ -50,7 +50,13 @@ vi.mock('@/ui/logger', () => ({
     }
 }))
 
-import { bootstrapExistingSession, bootstrapLazySession, buildSessionMetadata } from './sessionFactory'
+import {
+    HAPI_SESSION_ID_ENV,
+    bootstrapExistingSession,
+    bootstrapLazySession,
+    bootstrapSession,
+    buildSessionMetadata
+} from './sessionFactory'
 
 function createSession(): Session {
     return {
@@ -91,6 +97,7 @@ describe('bootstrapExistingSession', () => {
         sessionSyncClientMock.mockReset()
         notifyRunnerSessionStartedMock.mockClear()
         readSettingsMock.mockReset()
+        delete process.env[HAPI_SESSION_ID_ENV]
     })
 
     it('loads an existing HAPI session and reports it to the runner', async () => {
@@ -110,6 +117,7 @@ describe('bootstrapExistingSession', () => {
         })
 
         expect(result.sessionInfo.id).toBe('hapi-session-1')
+        expect(process.env[HAPI_SESSION_ID_ENV]).toBe('hapi-session-1')
         expect(result.workingDirectory).toBe('/tmp/project')
         expect(sessionSyncClientMock).toHaveBeenCalledWith(session)
         expect(sessionClient.updateMetadata).toHaveBeenCalledOnce()
@@ -210,6 +218,23 @@ describe('bootstrapLazySession', () => {
         sessionSyncClientMock.mockReset()
         notifyRunnerSessionStartedMock.mockClear()
         readSettingsMock.mockReset()
+        delete process.env[HAPI_SESSION_ID_ENV]
+    })
+
+    it('exports HAPI_SESSION_ID for the provisional session id before materialization', async () => {
+        const pendingClient = { isPending: () => true }
+        sessionSyncClientMock.mockReturnValue(pendingClient)
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+
+        const result = await bootstrapLazySession({
+            flavor: 'codex',
+            startedBy: 'terminal',
+            workingDirectory: '/tmp/project',
+            agentState: { controlledByUser: false }
+        })
+
+        expect(process.env[HAPI_SESSION_ID_ENV]).toBe(result.sessionInfo.id)
+        expect(process.env[HAPI_SESSION_ID_ENV]).toMatch(/^[0-9a-f-]{36}$/)
     })
 
     it('does not persist a machine or session until materialization', async () => {
@@ -262,5 +287,33 @@ describe('bootstrapLazySession', () => {
             provisional.id,
             expect.objectContaining({ codexSessionId: 'codex-thread-1' })
         )
+    })
+})
+
+describe('bootstrapSession HAPI_SESSION_ID export', () => {
+    beforeEach(() => {
+        getOrCreateSessionMock.mockReset()
+        getOrCreateMachineMock.mockReset()
+        sessionSyncClientMock.mockReset()
+        notifyRunnerSessionStartedMock.mockClear()
+        readSettingsMock.mockReset()
+        delete process.env[HAPI_SESSION_ID_ENV]
+    })
+
+    it('exports the hub session id so spawned agents inherit it', async () => {
+        const session = createSession()
+        session.id = 'hub-session-42'
+        getOrCreateSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue({ isPending: () => false })
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+
+        const result = await bootstrapSession({
+            flavor: 'claude',
+            workingDirectory: '/tmp/project'
+        })
+
+        expect(result.sessionInfo.id).toBe('hub-session-42')
+        expect(process.env[HAPI_SESSION_ID_ENV]).toBe('hub-session-42')
     })
 })

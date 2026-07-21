@@ -116,6 +116,31 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
     return preserved
 }
 
+/**
+ * Canonical env var name exported into the wrapped agent / CLI child process so
+ * it can self-target its own hub session (REST, shell helpers) without listing
+ * `/api/sessions`. See tiann/hapi#1119.
+ */
+export const HAPI_SESSION_ID_ENV = 'HAPI_SESSION_ID';
+
+/**
+ * Publish the hub session id into `process.env` so every downstream agent spawn
+ * inherits it. HAPI runs one hub session per CLI process (the runner forks a
+ * fresh `hapi` child per session, and local invocations are 1:1), and every
+ * flavor's agent spawn derives its child env from `process.env` — so setting it
+ * here covers claude / codex / cursor / gemini / opencode / kimi / grok / pi at
+ * once, including future flavors, without touching each launcher.
+ *
+ * Prefer the MCP `display_image` tool for inline media when it is available;
+ * `HAPI_SESSION_ID` is the deterministic fallback for hub REST and shell tooling.
+ */
+export function exportHapiSessionEnv(sessionId: string): void {
+    if (!sessionId) {
+        return;
+    }
+    process.env[HAPI_SESSION_ID_ENV] = sessionId;
+}
+
 async function getMachineIdOrExit(): Promise<string> {
     const settings = await readSettings()
     const machineId = settings?.machineId
@@ -173,6 +198,8 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
     })
 
     const session = api.sessionSyncClient(sessionInfo)
+
+    exportHapiSessionEnv(sessionInfo.id)
 
     await reportSessionStarted(sessionInfo.id, metadata)
 
@@ -258,6 +285,10 @@ export async function bootstrapLazySession(options: SessionBootstrapOptions): Pr
         }
     })
 
+    // The lazy session id is generated locally and asserted stable against the
+    // hub on materialization, so it is safe to export before the agent spawns.
+    exportHapiSessionEnv(requestedId)
+
     return {
         api,
         session,
@@ -306,6 +337,9 @@ export async function bootstrapExistingSession(options: {
 
     const session = api.sessionSyncClient(sessionInfo)
     session.updateMetadata(buildUpdatedMetadata)
+
+    exportHapiSessionEnv(sessionInfo.id)
+
     await reportSessionStarted(sessionInfo.id, metadata)
 
     return {
