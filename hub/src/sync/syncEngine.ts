@@ -8,8 +8,8 @@
  */
 
 import { isKnownFlavor, type LocalResumeTarget, type ResumableSession } from '@hapi/protocol'
-import { isMachineCapabilitySkewed, MACHINE_CAPABILITIES } from '@hapi/protocol/runnerCapabilities'
-import type { HubUpgradeOffer, RunnerSelfUpgradeResponse } from '@hapi/protocol/upgradeChannel'
+import { MACHINE_CAPABILITIES } from '@hapi/protocol/runnerCapabilities'
+import { machineTrailsUpgradeOffer, type HubUpgradeOffer, type RunnerSelfUpgradeResponse } from '@hapi/protocol/upgradeChannel'
 import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, QueuedStateResponse, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, CodexCollaborationMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
@@ -478,7 +478,10 @@ export class SyncEngine {
         if (machine.metadata.versionHandoffDisabled === true) {
             return
         }
-        if (!isMachineCapabilitySkewed(machine.metadata.capabilities)) {
+        // Auto-fire on capability skew OR pure semver drift ("set and forget"):
+        // a runner behind the hub's target version is nudged even when it's
+        // missing no required capability. The 0.0.0/off guards live in the helper.
+        if (!machineTrailsUpgradeOffer(offer, machine.metadata.happyCliVersion, machine.metadata.capabilities)) {
             return
         }
         const last = this.fleetUpgradeAttemptAt.get(machineId) ?? 0

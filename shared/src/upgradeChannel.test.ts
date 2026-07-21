@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { detectUpgradeChannel } from './upgradeChannel'
+import { detectUpgradeChannel, machineTrailsUpgradeOffer, type HubUpgradeOffer } from './upgradeChannel'
 
 describe('detectUpgradeChannel', () => {
     it('honors explicit override', () => {
@@ -61,5 +61,41 @@ describe('detectUpgradeChannel', () => {
             projectPath: '/tmp',
             monorepoRootExists: false,
         })).toBe('npm')
+    })
+})
+
+describe('machineTrailsUpgradeOffer', () => {
+    const offer: HubUpgradeOffer = {
+        channel: 'npm',
+        targetVersion: '0.24.0',
+        targetCapabilities: ['cursor-chat-store-status', 'runner-self-upgrade'],
+        npmPackage: '@twsxtd/hapi',
+    }
+
+    it('trails on pure semver drift even with all target capabilities', () => {
+        expect(machineTrailsUpgradeOffer(offer, '0.23.1', ['cursor-chat-store-status', 'runner-self-upgrade'])).toBe(true)
+    })
+
+    it('trails on a missing target capability even at the target version', () => {
+        expect(machineTrailsUpgradeOffer(offer, '0.24.0', ['cursor-chat-store-status'])).toBe(true)
+    })
+
+    it('does not trail when version matches and all target capabilities present', () => {
+        expect(machineTrailsUpgradeOffer(offer, '0.24.0', ['cursor-chat-store-status', 'runner-self-upgrade'])).toBe(false)
+    })
+
+    it('never chases the 0.0.0 fallback target', () => {
+        const unknown: HubUpgradeOffer = { ...offer, targetVersion: '0.0.0' }
+        expect(machineTrailsUpgradeOffer(unknown, '0.23.1', [])).toBe(false)
+    })
+
+    it('never fires when channel is off', () => {
+        const off: HubUpgradeOffer = { ...offer, channel: 'off' }
+        expect(machineTrailsUpgradeOffer(off, '0.1.0', [])).toBe(false)
+    })
+
+    it('falls back to capability check when version is unknown', () => {
+        expect(machineTrailsUpgradeOffer(offer, null, ['cursor-chat-store-status', 'runner-self-upgrade'])).toBe(false)
+        expect(machineTrailsUpgradeOffer(offer, undefined, ['cursor-chat-store-status'])).toBe(true)
     })
 })

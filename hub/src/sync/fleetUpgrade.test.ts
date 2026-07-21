@@ -226,6 +226,139 @@ describe('SyncEngine fleet upgrade', () => {
         }
     })
 
+    it('auto fleet upgrade fires on pure semver drift (set and forget)', async () => {
+        const offer: HubUpgradeOffer = {
+            channel: 'npm',
+            targetVersion: '0.24.0',
+            targetCapabilities: ['cursor-chat-store-status'],
+            npmPackage: '@twsxtd/hapi',
+        }
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never,
+            { getUpgradeOffer: () => offer },
+        )
+
+        try {
+            const runnerSelfUpgrade = mock(async () => ({
+                status: 'started',
+                message: 'ok',
+                channel: 'npm',
+            }))
+            ;(engine as any).rpcGateway.runnerSelfUpgrade = runnerSelfUpgrade
+
+            // Missing NO required capability, just behind on version.
+            engine.getOrCreateMachine(
+                'behind',
+                {
+                    host: 'proxmox',
+                    platform: 'linux',
+                    happyCliVersion: '0.23.1',
+                    capabilities: ['cursor-chat-store-status', 'runner-self-upgrade'],
+                },
+                null,
+                'default',
+            )
+            engine.handleMachineAlive({ machineId: 'behind', time: Date.now() })
+            await Promise.resolve()
+            await new Promise((resolve) => setTimeout(resolve, 10))
+            expect(runnerSelfUpgrade).toHaveBeenCalledWith('behind', offer)
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('auto fleet upgrade skips a runner already at target version + capabilities', async () => {
+        const offer: HubUpgradeOffer = {
+            channel: 'npm',
+            targetVersion: '0.24.0',
+            targetCapabilities: ['cursor-chat-store-status'],
+            npmPackage: '@twsxtd/hapi',
+        }
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never,
+            { getUpgradeOffer: () => offer },
+        )
+
+        try {
+            const runnerSelfUpgrade = mock(async () => ({
+                status: 'already-current',
+                message: 'ok',
+                channel: 'npm',
+            }))
+            ;(engine as any).rpcGateway.runnerSelfUpgrade = runnerSelfUpgrade
+
+            engine.getOrCreateMachine(
+                'current',
+                {
+                    host: 'proxmox',
+                    platform: 'linux',
+                    happyCliVersion: '0.24.0',
+                    capabilities: ['cursor-chat-store-status', 'runner-self-upgrade'],
+                },
+                null,
+                'default',
+            )
+            engine.handleMachineAlive({ machineId: 'current', time: Date.now() })
+            await Promise.resolve()
+            await new Promise((resolve) => setTimeout(resolve, 10))
+            expect(runnerSelfUpgrade).not.toHaveBeenCalled()
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('auto fleet upgrade does not chase the 0.0.0 fallback target', async () => {
+        const offer: HubUpgradeOffer = {
+            channel: 'npm',
+            targetVersion: '0.0.0',
+            targetCapabilities: ['cursor-chat-store-status'],
+            npmPackage: '@twsxtd/hapi',
+        }
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never,
+            { getUpgradeOffer: () => offer },
+        )
+
+        try {
+            const runnerSelfUpgrade = mock(async () => ({
+                status: 'started',
+                message: 'ok',
+                channel: 'npm',
+            }))
+            ;(engine as any).rpcGateway.runnerSelfUpgrade = runnerSelfUpgrade
+
+            engine.getOrCreateMachine(
+                'unknown-target',
+                {
+                    host: 'proxmox',
+                    platform: 'linux',
+                    happyCliVersion: '0.23.1',
+                    capabilities: ['cursor-chat-store-status', 'runner-self-upgrade'],
+                },
+                null,
+                'default',
+            )
+            engine.handleMachineAlive({ machineId: 'unknown-target', time: Date.now() })
+            await Promise.resolve()
+            await new Promise((resolve) => setTimeout(resolve, 10))
+            expect(runnerSelfUpgrade).not.toHaveBeenCalled()
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('skips auto fleet upgrade when runner advertised versionHandoffDisabled', async () => {
         const offer: HubUpgradeOffer = {
             channel: 'npm',
