@@ -359,6 +359,56 @@ describe('SyncEngine fleet upgrade', () => {
         }
     })
 
+    it('does not auto-fire when policy is not auto (alert/silent)', async () => {
+        const offer: HubUpgradeOffer = {
+            channel: 'npm',
+            targetVersion: '0.24.0',
+            targetCapabilities: ['cursor-chat-store-status'],
+            npmPackage: '@twsxtd/hapi',
+        }
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never,
+            { getUpgradeOffer: () => offer, getFleetUpgradePolicy: () => 'alert' },
+        )
+
+        try {
+            const runnerSelfUpgrade = mock(async () => ({
+                status: 'started',
+                message: 'ok',
+                channel: 'npm',
+            }))
+            ;(engine as any).rpcGateway.runnerSelfUpgrade = runnerSelfUpgrade
+
+            engine.getOrCreateMachine(
+                'behind',
+                {
+                    host: 'proxmox',
+                    platform: 'linux',
+                    happyCliVersion: '0.20.0',
+                    capabilities: ['cursor-chat-store-status', 'runner-self-upgrade'],
+                },
+                null,
+                'default',
+            )
+            engine.handleMachineAlive({ machineId: 'behind', time: Date.now() })
+            await Promise.resolve()
+            await new Promise((resolve) => setTimeout(resolve, 10))
+            // alert policy surfaces the banner but never self-initiates the RPC.
+            expect(runnerSelfUpgrade).not.toHaveBeenCalled()
+
+            // Manual upgrade still works under 'alert' (banner button path).
+            const result = await engine.upgradeMachineRunner('behind', 'default')
+            expect(result.type).toBe('success')
+            expect(runnerSelfUpgrade).toHaveBeenCalledWith('behind', offer)
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('skips auto fleet upgrade when runner advertised versionHandoffDisabled', async () => {
         const offer: HubUpgradeOffer = {
             channel: 'npm',

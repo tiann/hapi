@@ -17,6 +17,8 @@ import { waitForTunnelTlsReady } from './tunnel/tlsGate'
 import { ServerChanChannel } from './serverchan/channel'
 import { defaultHubPackageRoot, resolveUpgradeOffer, setConfiguredUpgradeTargetVersion } from './upgrade/resolveUpgradeOffer'
 import { ensureCliArtifact } from './upgrade/cliArtifact'
+import { readSettings } from './config/settings'
+import { getFleetUpgradePolicy, initFleetUpgradePolicy } from './upgrade/fleetUpgradePolicy'
 import QRCode from 'qrcode'
 import type { Server as BunServer } from 'bun'
 import type { WebSocketData } from '@socket.io/bun-engine'
@@ -122,6 +124,8 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
     const relayFlag = resolveRelayFlag(options.args ?? process.argv)
     const officialWebUrl = process.env.HAPI_OFFICIAL_WEB_URL || 'https://app.hapi.run'
     const config = await createConfiguration()
+    const persistedSettings = await readSettings(config.settingsFile)
+    initFleetUpgradePolicy({ dataDir: config.dataDir, persisted: persistedSettings?.fleetUpgradePolicy })
     const baseCorsOrigins = normalizeOrigins(config.corsOrigins)
     const relayCorsOrigin = normalizeOrigin(officialWebUrl)
     const corsOrigins = relayFlag.enabled
@@ -149,6 +153,7 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
     console.log(`[Hub] HAPI_LISTEN_HOST: ${config.listenHost} (${formatSource(config.sources.listenHost)})`)
     console.log(`[Hub] HAPI_LISTEN_PORT: ${config.listenPort} (${formatSource(config.sources.listenPort)})`)
     console.log(`[Hub] HAPI_PUBLIC_URL: ${config.publicUrl} (${formatSource(config.sources.publicUrl)})`)
+    console.log(`[Hub] Fleet upgrade policy: ${getFleetUpgradePolicy()}`)
 
     if (!config.telegramEnabled) {
         console.log('[Hub] Telegram: disabled (no TELEGRAM_BOT_TOKEN)')
@@ -206,6 +211,7 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
 
     syncEngine = new SyncEngine(store, socketServer.io, socketServer.rpcRegistry, sseManager, {
         getUpgradeOffer: () => resolveCurrentUpgradeOffer(),
+        getFleetUpgradePolicy: () => getFleetUpgradePolicy(),
         prepareArtifactOffer: async (offer, platform, arch) => {
             const meta = await ensureCliArtifact({
                 version: offer.targetVersion,

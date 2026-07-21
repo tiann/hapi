@@ -1,9 +1,11 @@
 import { existsSync } from 'node:fs'
 import { Hono } from 'hono'
 import { z } from 'zod'
+import { FLEET_UPGRADE_POLICIES } from '@hapi/protocol/upgradeChannel'
 import type { WebAppEnv } from '../middleware/auth'
 import { ensureCliArtifact, readArtifactMeta } from '../../upgrade/cliArtifact'
 import { defaultHubPackageRoot, resolveUpgradeOffer } from '../../upgrade/resolveUpgradeOffer'
+import { getFleetUpgradePolicy, setFleetUpgradePolicy } from '../../upgrade/fleetUpgradePolicy'
 import { getConfiguration } from '../../configuration'
 import { constantTimeEquals } from '../../utils/crypto'
 import { parseAccessToken } from '../../utils/accessToken'
@@ -21,7 +23,18 @@ export function createUpgradeRoutes(): Hono<WebAppEnv> {
             hubPackageRoot: defaultHubPackageRoot(),
             execPath: process.execPath,
         })
-        return c.json({ offer })
+        return c.json({ offer, policy: getFleetUpgradePolicy() })
+    })
+
+    const policyBody = z.object({ policy: z.enum(FLEET_UPGRADE_POLICIES as unknown as [string, ...string[]]) })
+
+    app.put('/upgrade/policy', async (c) => {
+        const parsed = policyBody.safeParse(await c.req.json().catch(() => null))
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid policy' }, 400)
+        }
+        await setFleetUpgradePolicy(parsed.data.policy as (typeof FLEET_UPGRADE_POLICIES)[number])
+        return c.json({ policy: getFleetUpgradePolicy() })
     })
 
     return app

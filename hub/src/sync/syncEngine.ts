@@ -9,7 +9,7 @@
 
 import { isKnownFlavor, type LocalResumeTarget, type ResumableSession } from '@hapi/protocol'
 import { MACHINE_CAPABILITIES } from '@hapi/protocol/runnerCapabilities'
-import { machineTrailsUpgradeOffer, type HubUpgradeOffer, type RunnerSelfUpgradeResponse } from '@hapi/protocol/upgradeChannel'
+import { DEFAULT_FLEET_UPGRADE_POLICY, machineTrailsUpgradeOffer, type FleetUpgradePolicy, type HubUpgradeOffer, type RunnerSelfUpgradeResponse } from '@hapi/protocol/upgradeChannel'
 import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, QueuedStateResponse, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, CodexCollaborationMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
@@ -147,6 +147,8 @@ export type SyncEngineOptions = {
     getUpgradeOffer?: () => HubUpgradeOffer
     /** Ensure hub-artifact bytes exist; returns offer with sha256 filled. */
     prepareArtifactOffer?: (offer: HubUpgradeOffer, platform: string, arch: string) => Promise<HubUpgradeOffer>
+    /** Operator policy: only `auto` lets the hub auto-fire fleet upgrades. */
+    getFleetUpgradePolicy?: () => FleetUpgradePolicy
     /** Data dir for cooldowns only — optional. */
 }
 
@@ -163,6 +165,7 @@ export class SyncEngine {
     private static readonly FLEET_UPGRADE_COOLDOWN_MS = 15 * 60_000
     private readonly getUpgradeOffer: (() => HubUpgradeOffer) | null
     private readonly prepareArtifactOffer: SyncEngineOptions['prepareArtifactOffer']
+    private readonly getFleetUpgradePolicy: () => FleetUpgradePolicy
 
     constructor(
         private readonly store: Store,
@@ -173,6 +176,7 @@ export class SyncEngine {
     ) {
         this.getUpgradeOffer = options?.getUpgradeOffer ?? null
         this.prepareArtifactOffer = options?.prepareArtifactOffer
+        this.getFleetUpgradePolicy = options?.getFleetUpgradePolicy ?? (() => DEFAULT_FLEET_UPGRADE_POLICY)
         this.eventPublisher = new EventPublisher(sseManager, (event) => this.resolveNamespace(event))
         this.sessionCache = new SessionCache(store, this.eventPublisher)
         this.machineCache = new MachineCache(store, this.eventPublisher, rpcRegistry)
@@ -467,6 +471,11 @@ export class SyncEngine {
         }
         const offer = this.getUpgradeOffer()
         if (offer.channel === 'off') {
+            return
+        }
+        // Only the 'auto' policy lets the hub self-initiate upgrades. 'alert'
+        // surfaces the banner but waits for a manual click; 'silent' does neither.
+        if (this.getFleetUpgradePolicy() !== 'auto') {
             return
         }
         const machine = this.machineCache.getMachine(machineId)

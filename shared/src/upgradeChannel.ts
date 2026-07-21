@@ -110,6 +110,26 @@ export function machineTrailsUpgradeOffer(
     return missingCapability || versionDrift
 }
 
+/**
+ * Operator-facing fleet-management policy (3-pole switch in Settings):
+ * - silent: hub neither alerts nor auto-upgrades drifted runners
+ * - alert: hub surfaces the skew banner; operator upgrades manually
+ * - auto: hub auto-upgrades drifted runners AND surfaces the banner
+ *
+ * Orthogonal to {@link UpgradeChannel}: `HAPI_UPGRADE_CHANNEL=off` is a hard
+ * kill (no upgrades at all); this policy governs whether the hub acts/alerts
+ * when a channel IS available.
+ */
+export type FleetUpgradePolicy = 'silent' | 'alert' | 'auto'
+
+export const FLEET_UPGRADE_POLICIES: readonly FleetUpgradePolicy[] = ['silent', 'alert', 'auto']
+
+export const DEFAULT_FLEET_UPGRADE_POLICY: FleetUpgradePolicy = 'auto'
+
+export function isFleetUpgradePolicy(value: unknown): value is FleetUpgradePolicy {
+    return typeof value === 'string' && (FLEET_UPGRADE_POLICIES as readonly string[]).includes(value)
+}
+
 export type RunnerSelfUpgradeRequest = {
     offer: HubUpgradeOffer
 }

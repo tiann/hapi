@@ -814,9 +814,16 @@ export default {
   'settings.about.appVersion': '应用版本',
   'settings.about.protocolVersion': '协议版本',
   'settings.about.runnerMgmt.title': '运行器管理',
-  'settings.about.runnerMgmt.body': '本 Hub 会自动让已连接的运行器保持与自身相同的 HAPI CLI 版本。当 Hub 升级时，运行器会自行更新以匹配 — 无需 SSH，每个运行器自行安装。',
+  'settings.about.runnerMgmt.body': '本 Hub 可以让已连接的运行器保持与自身相同的 HAPI CLI 版本。当 Hub 升级时，运行器会自行更新以匹配 — 无需 SSH，每个运行器自行安装。',
+  'settings.about.runnerMgmt.policyLabel': '当运行器版本与 Hub 不一致时',
+  'settings.about.runnerMgmt.policySilent': '不提醒',
+  'settings.about.runnerMgmt.policySilentHint': '忽略差异',
+  'settings.about.runnerMgmt.policyAlert': '提醒',
+  'settings.about.runnerMgmt.policyAlertHint': '显示横幅；手动升级',
+  'settings.about.runnerMgmt.policyAuto': '自动升级',
+  'settings.about.runnerMgmt.policyAutoHint': '自动帮我升级',
   'settings.about.runnerMgmt.optOutLabel': '想让某个运行器版本高于 Hub？',
-  'settings.about.runnerMgmt.optOutBody': '自动管理会把运行器拉回与 Hub 一致，因此刻意更新的运行器会被降级。若要将某个运行器固定到不同版本，请关闭自动升级：在 Hub 上设置 HAPI_UPGRADE_CHANNEL=off（影响所有运行器），或在该运行器上设置 HAPI_DISABLE_VERSION_HANDOFF=1，然后重启它。',
+  'settings.about.runnerMgmt.optOutBody': '自动升级会把运行器拉回与 Hub 一致，因此刻意更新的运行器会被降级。若要让某个运行器保持更高版本，请在上方选择“不提醒”或“提醒”（影响整个集群），或仅在该运行器上设置 HAPI_DISABLE_VERSION_HANDOFF=1 并重启它。在 Hub 上设置 HAPI_UPGRADE_CHANNEL=off 会完全禁用所有升级。',
 
   // Browse / Workspace
   'browse.title': '浏览',

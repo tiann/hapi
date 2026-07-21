@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CURRENT_MACHINE_CAPABILITIES } from '@hapi/protocol/runnerCapabilities'
+import type { FleetUpgradePolicy } from '@hapi/protocol/upgradeChannel'
 import type { Machine } from '@/types/api'
 import {
     RunnerVersionSkewBanner,
@@ -14,7 +15,15 @@ import {
     setRunnerSkewMinimized,
 } from '@/lib/runnerSkewBannerState'
 
+const TEST_OFFER = {
+    channel: 'npm' as const,
+    targetVersion: '0.23.0',
+    targetCapabilities: [...CURRENT_MACHINE_CAPABILITIES],
+    npmPackage: '@twsxtd/hapi',
+}
+type UpgradeInfoMockResult = { info: { offer: typeof TEST_OFFER; policy: FleetUpgradePolicy }; isLoading: boolean }
 const useMachinesMock = vi.fn()
+const useUpgradeInfoMock = vi.fn((..._args: unknown[]): UpgradeInfoMockResult => ({ info: { offer: TEST_OFFER, policy: 'auto' }, isLoading: false }))
 const restartMachineRunnerMock = vi.fn(async () => ({ message: 'ok' }))
 const upgradeMachineRunnerMock = vi.fn(async () => ({ message: 'ok' }))
 const useAppContextMock = vi.fn(() => ({
@@ -28,6 +37,10 @@ const useAppContextMock = vi.fn(() => ({
 
 vi.mock('@/hooks/queries/useMachines', () => ({
     useMachines: (...args: unknown[]) => useMachinesMock(...args),
+}))
+
+vi.mock('@/hooks/queries/useUpgradeInfo', () => ({
+    useUpgradeInfo: (...args: unknown[]) => useUpgradeInfoMock(...args),
 }))
 
 vi.mock('@/lib/app-context', () => ({
@@ -67,7 +80,7 @@ function makeMachine(overrides: Partial<Machine> & { id: string }): Machine {
 }
 
 describe('listSkewedMachines', () => {
-    it('flags online machines without required capabilities', () => {
+    it('flags online machines that trail the hub offer (version or capability drift)', () => {
         const skewed = listSkewedMachines([
             makeMachine({ id: 'old', metadata: { host: 'proxmox', platform: 'linux', happyCliVersion: '0.20.0' } }),
             makeMachine({
@@ -84,8 +97,14 @@ describe('listSkewedMachines', () => {
                 active: false,
                 metadata: { host: 'ha', platform: 'linux', happyCliVersion: '0.19.0' },
             }),
-        ])
+        ], TEST_OFFER)
         expect(skewed.map((m) => m.id)).toEqual(['old'])
+    })
+
+    it('returns nothing without an offer', () => {
+        expect(listSkewedMachines([
+            makeMachine({ id: 'old', metadata: { host: 'proxmox', platform: 'linux', happyCliVersion: '0.20.0' } }),
+        ], null)).toEqual([])
     })
 
     it('uses displayName when present', () => {
@@ -109,6 +128,7 @@ describe('RunnerVersionSkewBanner', () => {
         clearRunnerSkewTempDismiss()
         restartMachineRunnerMock.mockClear()
         upgradeMachineRunnerMock.mockClear()
+        useUpgradeInfoMock.mockReturnValue({ info: { offer: TEST_OFFER, policy: 'auto' }, isLoading: false })
     })
 
     afterEach(() => {
@@ -271,6 +291,27 @@ describe('RunnerVersionSkewBanner', () => {
 
         expect(() => fireEvent.click(screen.getByTestId('runner-version-skew-minimize'))).not.toThrow()
         expect(screen.getByTestId('runner-version-skew-banner')).toHaveAttribute('data-state', 'minimized')
+    })
+
+    it('hides entirely when policy is silent, even with a drifted runner', async () => {
+        useUpgradeInfoMock.mockReturnValue({ info: { offer: TEST_OFFER, policy: 'silent' }, isLoading: false })
+        useMachinesMock.mockReturnValue({
+            machines: [
+                makeMachine({ id: 'old', metadata: { host: 'proxmox', platform: 'linux', happyCliVersion: '0.20.0' } }),
+            ],
+            isLoading: false,
+            error: null,
+        })
+
+        render(
+            <I18nProvider>
+                <RunnerVersionSkewBanner />
+            </I18nProvider>,
+        )
+
+        await waitFor(() => {
+            expect(screen.queryByTestId('runner-version-skew-banner')).not.toBeInTheDocument()
+        })
     })
 
     it('hides when all online machines advertise required capabilities', async () => {

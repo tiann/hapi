@@ -37,6 +37,15 @@ vi.mock('@tanstack/react-router', () => ({
 
 vi.mock('@hapi/protocol', () => ({ PROTOCOL_VERSION: 1 }))
 
+vi.mock('@/lib/app-context', () => ({
+    useAppContext: () => ({ api: null }),
+}))
+
+vi.mock('@/hooks/queries/useUpgradeInfo', () => ({
+    useUpgradeInfo: () => ({ info: null, isLoading: false }),
+    useSetFleetUpgradePolicy: () => ({ mutate: vi.fn() }),
+}))
+
 vi.mock('@/hooks/useTheme', () => ({
     useAppearance: () => ({ appearance: 'system', setAppearance }),
     getAppearanceOptions: () => [

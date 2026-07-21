@@ -46,6 +46,12 @@ import type {
 } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor } from '@hapi/protocol'
 import type { CancelMessageResponse } from '@hapi/protocol/schemas'
+import type { FleetUpgradePolicy, HubUpgradeOffer } from '@hapi/protocol/upgradeChannel'
+
+export type UpgradeInfoResponse = {
+    offer: HubUpgradeOffer
+    policy: FleetUpgradePolicy
+}
 
 type ApiClientOptions = {
     baseUrl?: string
@@ -604,6 +610,17 @@ export class ApiClient {
         return await this.request<{ message: string; response?: unknown }>(
             `/api/machines/${encodeURIComponent(machineId)}/upgrade-runner`,
             { method: 'POST', body: '{}' }
+        )
+    }
+
+    async getUpgradeInfo(): Promise<UpgradeInfoResponse> {
+        return await this.request<UpgradeInfoResponse>('/api/upgrade/offer')
+    }
+
+    async setFleetUpgradePolicy(policy: FleetUpgradePolicy): Promise<{ policy: FleetUpgradePolicy }> {
+        return await this.request<{ policy: FleetUpgradePolicy }>(
+            '/api/upgrade/policy',
+            { method: 'PUT', body: JSON.stringify({ policy }) }
         )
     }
 

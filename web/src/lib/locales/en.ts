@@ -810,9 +810,16 @@ export default {
   'settings.about.appVersion': 'App Version',
   'settings.about.protocolVersion': 'Protocol Version',
   'settings.about.runnerMgmt.title': 'Runner management',
-  'settings.about.runnerMgmt.body': 'This hub keeps connected runners on its own HAPI CLI version automatically. When the hub upgrades, runners self-update to match — no SSH, each runner installs on itself.',
+  'settings.about.runnerMgmt.body': 'This hub can keep connected runners on its own HAPI CLI version. When the hub upgrades, runners self-update to match — no SSH, each runner installs on itself.',
+  'settings.about.runnerMgmt.policyLabel': 'When a runner drifts from the hub version',
+  'settings.about.runnerMgmt.policySilent': 'No alert',
+  'settings.about.runnerMgmt.policySilentHint': 'Ignore drift',
+  'settings.about.runnerMgmt.policyAlert': 'Alert',
+  'settings.about.runnerMgmt.policyAlertHint': 'Show a banner; upgrade by hand',
+  'settings.about.runnerMgmt.policyAuto': 'Auto-upgrade',
+  'settings.about.runnerMgmt.policyAutoHint': 'Upgrade runners for me',
   'settings.about.runnerMgmt.optOutLabel': 'Want a runner ahead of the hub?',
-  'settings.about.runnerMgmt.optOutBody': 'Auto-management pulls runners back to match the hub, so a deliberately newer runner would be downgraded. To pin a runner to a different version, disable auto-upgrade: set HAPI_UPGRADE_CHANNEL=off on the hub (affects every runner), or HAPI_DISABLE_VERSION_HANDOFF=1 on that one runner, then restart it.',
+  'settings.about.runnerMgmt.optOutBody': 'Auto-upgrade pulls runners back to match the hub, so a deliberately newer runner would be downgraded. To keep one ahead, choose No alert or Alert above (fleet-wide), or set HAPI_DISABLE_VERSION_HANDOFF=1 on just that runner and restart it. HAPI_UPGRADE_CHANNEL=off on the hub disables all upgrades regardless.',
 
   // Browse / Workspace
   'browse.title': 'Browse',

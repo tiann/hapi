@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import { isMachineCapabilitySkewed, cliBinaryUpdatedOnDisk } from '@hapi/protocol/runnerCapabilities'
+import { cliBinaryUpdatedOnDisk } from '@hapi/protocol/runnerCapabilities'
+import { machineTrailsUpgradeOffer, type HubUpgradeOffer } from '@hapi/protocol/upgradeChannel'
 import type { Machine } from '@/types/api'
 import { useMachines } from '@/hooks/queries/useMachines'
+import { useUpgradeInfo } from '@/hooks/queries/useUpgradeInfo'
 import { useTranslation } from '@/lib/use-translation'
 import { useAppContext } from '@/lib/app-context'
 import { useOnlineStatus } from '@/hooks/useOnlineStatus'
@@ -21,10 +23,13 @@ export function machineDisplayHost(machine: Machine): string {
         ?? machine.id
 }
 
-export function listSkewedMachines(machines: Machine[]): Machine[] {
+export function listSkewedMachines(machines: Machine[], offer: HubUpgradeOffer | null): Machine[] {
+    if (!offer) {
+        return []
+    }
     return machines.filter((machine) => (
         machine.active
-        && isMachineCapabilitySkewed(machine.metadata?.capabilities)
+        && machineTrailsUpgradeOffer(offer, machine.metadata?.happyCliVersion, machine.metadata?.capabilities)
     ))
 }
 
@@ -35,10 +40,12 @@ export function listSkewedMachines(machines: Machine[]): Machine[] {
 export function RunnerVersionSkewBanner({ topClassName }: { topClassName?: string } = {}) {
     const { api } = useAppContext()
     const { machines } = useMachines(api, true)
+    const { info } = useUpgradeInfo(api, true)
     const { t } = useTranslation()
     const isOnline = useOnlineStatus()
     const { haptic } = usePlatform()
-    const skewed = listSkewedMachines(machines)
+    const policy = info?.policy ?? 'auto'
+    const skewed = policy === 'silent' ? [] : listSkewedMachines(machines, info?.offer ?? null)
     const [minimized, setMinimized] = useState(() => isRunnerSkewMinimized())
     const [dismissed, setDismissed] = useState(() => isRunnerSkewTempDismissed())
     const [busyId, setBusyId] = useState<string | null>(null)
