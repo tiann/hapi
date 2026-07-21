@@ -306,7 +306,23 @@ export function HappyComposer(props: {
     const textareaRef = useRef<HTMLTextAreaElement>(null)
     const prevControlledByUser = useRef(controlledByUser)
 
-    useComposerDraft(sessionId, composerText, (text) => api.composer().setText(text))
+    const attachmentDrafts = attachments.flatMap((attachment) => {
+        if (!attachment.file) return []
+        const upload = attachment as typeof attachment & { path?: string; previewUrl?: string }
+        return [{
+            id: attachment.id,
+            file: attachment.file,
+            path: upload.path,
+            previewUrl: upload.previewUrl,
+        }]
+    })
+    useComposerDraft(
+        sessionId,
+        composerText,
+        attachmentDrafts,
+        (text) => api.composer().setText(text),
+        (file) => api.composer().addAttachment(file),
+    )
 
     // assistant-ui clears `composer.text` synchronously the moment a send is
     // invoked AND `SessionChat.handleSend` clears `pendingSchedule` the
