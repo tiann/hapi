@@ -118,6 +118,14 @@ See `src/configuration.ts` for all options.
 
 - `HAPI_SESSION_ID` - The hub session id for the current run, exported into the wrapped agent/CLI child environment at spawn for every flavor (claude / codex / cursor / gemini / opencode / kimi / grok / pi), both runner-spawned and locally started sessions. Agents can read it to self-target "this chat" over the hub REST API or shell helpers without listing `/api/sessions`. Prefer the MCP `display_image` tool for inline media when it is available; use `HAPI_SESSION_ID` for hub REST / shell tooling where MCP is not.
 
+  Example (shell fallback when MCP is unavailable) — path-only, self-targets the current session:
+
+  ```bash
+  bun scripts/tooling/hapi-display-image.mjs /absolute/path/to/image.png "optional title"
+  ```
+
+  Explicit other session (prefix or full uuid) still works; that path may list sessions.
+
 ## Storage
 
 Data is stored in `~/.hapi/` (or `$HAPI_HOME`):
