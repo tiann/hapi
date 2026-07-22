@@ -117,7 +117,9 @@ describe('PwaUpdateBanner', () => {
             </I18nProvider>,
         )
 
-        expect(screen.getByTestId('pwa-update-banner')).toHaveClass('top-12')
+        expect(screen.getByTestId('pwa-update-banner')).toHaveClass(
+            'top-[calc(env(safe-area-inset-top)+3rem)]'
+        )
     })
 
     it('expands the rationale section when the disclosure is opened', () => {

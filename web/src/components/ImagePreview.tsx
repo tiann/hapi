@@ -240,7 +240,7 @@ export function ImagePreview(props: {
                     aria-modal="true"
                     aria-label={props.label}
                 >
-                    <div className="flex items-center gap-2 border-b border-white/10 bg-black/50 px-3 py-2">
+                    <div className="flex items-center gap-2 border-b border-white/10 bg-black/50 px-3 pb-2 pt-[calc(env(safe-area-inset-top)+0.5rem)]">
                         <div className="min-w-0 flex-1 truncate text-sm font-medium">{props.fileName}</div>
                         <button
                             type="button"
