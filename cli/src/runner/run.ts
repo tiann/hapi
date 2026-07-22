@@ -1115,7 +1115,10 @@ export function buildCliArgs(
     }
   }
   args.push('--hapi-starting-mode', 'remote', '--started-by', 'runner');
-  if (agent === 'codex') {
+  // Codex import/resume (#1088) and Cursor ACP remote resume (#991) both reuse
+  // the original HAPI row via --existing-session-id so the hub does not depend
+  // on session-ready over a remote socket before merge.
+  if (agent === 'codex' || agent === 'cursor') {
     const existingSessionId = options.existingSessionId ?? options.sessionId;
     if (existingSessionId) {
       args.push('--existing-session-id', existingSessionId);
