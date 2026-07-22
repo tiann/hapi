@@ -559,12 +559,20 @@ export function HappyThread(props: {
         return loadPromise
     }, [isInitialScrollSettling, settlePendingLoad])
 
+    const loadOlderFromUserAction = useCallback((): Promise<boolean> => {
+        // Initial settling protects the automatic top sentinel from racing the
+        // first scroll-to-bottom pass. It must not swallow an explicit click.
+        initialScrollDeadlineRef.current = 0
+        clearInitialScrollTimers()
+        return loadOlderPreservingScroll()
+    }, [clearInitialScrollTimers, loadOlderPreservingScroll])
+
     const handleOutlineSelect = useCallback(async (item: ConversationOutlineItem) => {
         const target = await locateOutlineTargetMessage({
             targetMessageId: item.targetMessageId,
             findTarget: (anchorId) => document.getElementById(anchorId),
             hasMoreMessages: () => hasMoreMessagesRef.current,
-            loadOlderPreservingScroll
+            loadOlderPreservingScroll: loadOlderFromUserAction
         })
         if (target) {
             target.scrollIntoView({ block: 'start', behavior: 'smooth' })
@@ -572,7 +580,7 @@ export function HappyThread(props: {
         }
         props.onOutlineItemClick?.(item)
         props.onOutlineOpenChange(false)
-    }, [loadOlderPreservingScroll, props.onOutlineItemClick, props.onOutlineOpenChange])
+    }, [loadOlderFromUserAction, props.onOutlineItemClick, props.onOutlineOpenChange])
 
     useEffect(() => {
         handleLoadMoreRef.current = () => {
@@ -684,7 +692,7 @@ export function HappyThread(props: {
             onRetryMessage: props.onRetryMessage,
             hasMoreMessages: props.hasMoreMessages,
             isLoadingMoreMessages: props.isLoadingMoreMessages,
-            loadOlderMessagesPreservingScroll: loadOlderPreservingScroll
+            loadOlderMessagesPreservingScroll: loadOlderFromUserAction
         }}>
             <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col relative">
                 <ThreadPrimitive.Viewport
@@ -714,7 +722,7 @@ export function HappyThread(props: {
                                                     variant="outline"
                                                     size="sm"
                                                     onClick={() => {
-                                                        void loadOlderPreservingScroll()
+                                                        void loadOlderFromUserAction()
                                                     }}
                                                     disabled={props.isLoadingMoreMessages || props.isLoadingMessages}
                                                     aria-busy={props.isLoadingMoreMessages}
@@ -764,7 +772,7 @@ export function HappyThread(props: {
                             hasMoreMessages={props.hasMoreMessages}
                             isLoadingMoreMessages={props.isLoadingMoreMessages}
                             onLoadMore={() => {
-                                void loadOlderPreservingScroll()
+                                void loadOlderFromUserAction()
                             }}
                             onSelect={handleOutlineSelect}
                             onClose={() => props.onOutlineOpenChange(false)}
