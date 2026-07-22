@@ -163,7 +163,7 @@ export const ListCodexSessionsRpcRequestSchema = z.object({
 })
 
 export const ListCodexSessionsRpcResponseSchema = z.union([
-    z.object({ success: z.literal(true), sessions: z.array(z.union([CodexLocalSessionSummarySchema, CodexLocalSessionWithMessagesSchema])) }),
+    z.object({ success: z.literal(true), sessions: z.array(z.union([CodexLocalSessionWithMessagesSchema, CodexLocalSessionSummarySchema])) }),
     z.object({ success: z.literal(false), error: z.string() })
 ])
 

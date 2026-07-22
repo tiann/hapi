@@ -1051,6 +1051,267 @@ describe('Codex Desktop import routes', () => {
         }
     })
 
+    it('does not append imports to an archived Codex session', async () => {
+        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-archived-target-test-'))
+        const store = new Store(':memory:')
+        const codexSessionId = '15151515-1515-4515-8515-151515151515'
+        process.env.CODEX_HOME = codexHome
+
+        try {
+            createTranscript(codexHome, codexSessionId)
+            const archived = store.sessions.getOrCreateSession('archived-session', {
+                path: 'C:\\work\\project',
+                flavor: 'codex',
+                codexSessionId,
+                lifecycleState: 'archived'
+            }, {}, 'default')
+            store.messages.addMessage(archived.id, { type: 'text', text: 'archived old message' }, 'archived-1')
+
+            const result = await importSelectedCodexSessions({
+                codexSessionIds: [codexSessionId],
+                store,
+                namespace: 'default',
+                getSyncEngine: () => null
+            })
+
+            expect(result.success).toBe(true)
+            const sessions = store.sessions.getSessionsByNamespace('default')
+            expect(sessions).toHaveLength(2)
+            expect(result.hapiSessionIds?.[0]).not.toBe(archived.id)
+            expect(store.messages.getAllMessages(archived.id)).toHaveLength(1)
+            expect(store.messages.getAllMessages(result.hapiSessionIds![0]!)).toHaveLength(2)
+        } finally {
+            store.close()
+            rmSync(codexHome, { recursive: true, force: true })
+        }
+    })
+
+    it('does not treat one session with duplicate Codex import ids as a duplicate group', async () => {
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('imported-session', {
+            codexSessionId: 'codex-thread-1',
+            codexSourceSessionId: 'codex-thread-1',
+            lifecycleState: 'imported'
+        }, {}, 'default')
+        store.messages.addMessage(session.id, { type: 'text', text: 'imported message' }, 'message-1')
+        app.route('/api', createCodexDesktopRoutes({
+            store,
+            getSyncEngine: () => null
+        }))
+
+        try {
+            const duplicateResponse = await app.request('/api/codex/duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-1'] })
+            })
+
+            expect(duplicateResponse.status).toBe(200)
+            const duplicateBody = await duplicateResponse.json() as { success: true; duplicates: unknown[] }
+            expect(duplicateBody.success).toBe(true)
+            expect(duplicateBody.duplicates).toEqual([])
+
+            const mergeResponse = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-1'] })
+            })
+
+            expect(mergeResponse.status).toBe(200)
+            const mergeBody = await mergeResponse.json() as { success: true; merged: unknown[]; mergedCount: number }
+            expect(mergeBody.success).toBe(true)
+            expect(mergeBody.merged).toEqual([])
+            expect(mergeBody.mergedCount).toBe(0)
+            expect(store.sessions.getSessionByNamespace(session.id, 'default')).toBeDefined()
+            expect(store.messages.getAllMessages(session.id)).toHaveLength(1)
+        } finally {
+            store.close()
+        }
+    })
+
+    it('does not treat archived Codex sessions as mergeable duplicates', async () => {
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        const store = new Store(':memory:')
+        const archived = store.sessions.getOrCreateSession('archived-session', {
+            codexSessionId: 'codex-thread-1',
+            lifecycleState: 'archived'
+        }, {}, 'default')
+        const imported = store.sessions.getOrCreateSession('imported-session', { codexSessionId: 'codex-thread-1' }, {}, 'default')
+        app.route('/api', createCodexDesktopRoutes({
+            store,
+            getSyncEngine: () => null
+        }))
+
+        try {
+            const duplicateResponse = await app.request('/api/codex/duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-1'] })
+            })
+
+            expect(duplicateResponse.status).toBe(200)
+            const duplicateBody = await duplicateResponse.json() as { success: true; duplicates: unknown[] }
+            expect(duplicateBody.success).toBe(true)
+            expect(duplicateBody.duplicates).toEqual([])
+
+            const mergeResponse = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-1'] })
+            })
+
+            expect(mergeResponse.status).toBe(200)
+            const mergeBody = await mergeResponse.json() as { success: true; merged: unknown[]; mergedCount: number }
+            expect(mergeBody.success).toBe(true)
+            expect(mergeBody.merged).toEqual([])
+            expect(mergeBody.mergedCount).toBe(0)
+            expect(store.sessions.getSessionsByNamespace('default').map((session) => session.id).sort()).toEqual([archived.id, imported.id].sort())
+        } finally {
+            store.close()
+        }
+    })
+
+    it('does not treat engine-only sessions as mergeable Codex duplicates', async () => {
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        const store = new Store(':memory:')
+        const storedSession = store.sessions.getOrCreateSession('stored-session', { codexSessionId: 'codex-thread-1' }, {}, 'default')
+        const engineOnlySession = {
+            id: 'engine-only-session',
+            active: false,
+            updatedAt: storedSession.updatedAt + 1,
+            metadata: { codexSessionId: 'codex-thread-1' }
+        }
+        const engine = {
+            getSessionsByNamespace: () => [engineOnlySession]
+        } as unknown as SyncEngine
+        app.route('/api', createCodexDesktopRoutes({
+            store,
+            getSyncEngine: () => engine
+        }))
+
+        try {
+            const duplicateResponse = await app.request('/api/codex/duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-1'] })
+            })
+
+            expect(duplicateResponse.status).toBe(200)
+            const duplicateBody = await duplicateResponse.json() as { success: true; duplicates: unknown[] }
+            expect(duplicateBody.success).toBe(true)
+            expect(duplicateBody.duplicates).toEqual([])
+
+            const mergeResponse = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-1'] })
+            })
+
+            expect(mergeResponse.status).toBe(200)
+            const mergeBody = await mergeResponse.json() as { success: true; merged: unknown[]; mergedCount: number }
+            expect(mergeBody.success).toBe(true)
+            expect(mergeBody.merged).toEqual([])
+            expect(mergeBody.mergedCount).toBe(0)
+            expect(store.sessions.getSessionsByNamespace('default').map((session) => session.id)).toEqual([storedSession.id])
+        } finally {
+            store.close()
+        }
+    })
+
+    it('detects duplicate sessions from both SyncEngine cache and persistent store', async () => {
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        const store = new Store(':memory:')
+        const storedSession = store.sessions.getOrCreateSession('stored-session', { codexSessionId: 'codex-thread-1' }, {}, 'default')
+        const engineSession = store.sessions.getOrCreateSession('engine-session', { codexSessionId: 'codex-thread-1' }, {}, 'default')
+        const engine = {
+            getSessionsByNamespace: () => [engineSession]
+        } as unknown as SyncEngine
+        app.route('/api', createCodexDesktopRoutes({
+            store,
+            getSyncEngine: () => engine
+        }))
+
+        try {
+            const response = await app.request('/api/codex/duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-1'] })
+            })
+
+            expect(response.status).toBe(200)
+            const body = await response.json() as { success: true; duplicates: Array<{ codexSessionId: string; hapiSessionIds: string[] }> }
+            expect(body.success).toBe(true)
+            expect(body.duplicates).toHaveLength(1)
+            expect(body.duplicates[0]?.hapiSessionIds.sort()).toEqual([storedSession.id, engineSession.id].sort())
+        } finally {
+            store.close()
+        }
+    })
+
+    it('merges duplicate sessions discovered across SyncEngine cache and persistent store', async () => {
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        const store = new Store(':memory:')
+        const storedSession = store.sessions.getOrCreateSession('stored-session', { codexSessionId: 'codex-thread-1' }, {}, 'default')
+        const engineSession = store.sessions.getOrCreateSession('engine-session', { codexSessionId: 'codex-thread-1' }, {}, 'default')
+        store.messages.addMessage(storedSession.id, { type: 'text', text: 'first stored message' }, 'stored-1')
+        store.messages.addMessage(storedSession.id, { type: 'text', text: 'second stored message' }, 'stored-2')
+        store.messages.addMessage(engineSession.id, { type: 'text', text: 'engine-only message' }, 'engine-1')
+        const engine = {
+            getSessionsByNamespace: () => [engineSession],
+            deleteSession: async (sessionId: string) => {
+                store.sessions.deleteSession(sessionId, 'default')
+            },
+            handleRealtimeEvent: () => {},
+            recordSessionActivity: (sessionId: string, updatedAt: number) => {
+                store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
+            }
+        } as unknown as SyncEngine
+        app.route('/api', createCodexDesktopRoutes({
+            store,
+            getSyncEngine: () => engine
+        }))
+
+        try {
+            const response = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-1'] })
+            })
+
+            expect(response.status).toBe(200)
+            const body = await response.json() as { success: true; merged: Array<{ canonicalSessionId?: string; removedSessionIds?: string[] }> }
+            expect(body.success).toBe(true)
+            expect(body.merged[0]?.canonicalSessionId).toBe(storedSession.id)
+            expect(body.merged[0]?.removedSessionIds).toEqual([engineSession.id])
+            const sessions = store.sessions.getSessionsByNamespace('default')
+            expect(sessions.map((session) => session.id)).toEqual([storedSession.id])
+            expect(store.messages.getAllMessages(storedSession.id)).toHaveLength(3)
+        } finally {
+            store.close()
+        }
+    })
+
     it('treats source and fork ids as the same duplicate-sessions group', async () => {
         const app = new Hono<WebAppEnv>()
         app.use('*', async (c, next) => {

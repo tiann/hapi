@@ -117,6 +117,7 @@ type ImportCandidate = {
     active: boolean
     updatedAt: number
     metadata: Record<string, unknown> | null
+    persisted: boolean
 }
 
 type ImportTargetSelection = {
@@ -1087,27 +1088,43 @@ function collectImportCandidates(
     namespace: string,
     getSyncEngine?: () => SyncEngine | null
 ): ImportCandidate[] {
-    const engineSessions = getSyncEngine?.()?.getSessionsByNamespace(namespace) ?? []
-    if (engineSessions.length > 0) {
-        return engineSessions.map((session) => ({
+    const candidatesBySessionId = new Map<string, ImportCandidate>()
+    for (const session of store.sessions.getSessionsByNamespace(namespace)) {
+        candidatesBySessionId.set(session.id, {
             sessionId: session.id,
             active: session.active,
             updatedAt: session.updatedAt,
-            metadata: asRecord(session.metadata)
-        }))
+            metadata: asRecord(session.metadata),
+            persisted: true
+        })
     }
 
-    return store.sessions.getSessionsByNamespace(namespace).map((session) => ({
-        sessionId: session.id,
-        active: session.active,
-        updatedAt: session.updatedAt,
-        metadata: asRecord(session.metadata)
-    }))
+    const engineSessions = getSyncEngine?.()?.getSessionsByNamespace(namespace) ?? []
+    for (const session of engineSessions) {
+        const existing = candidatesBySessionId.get(session.id)
+        candidatesBySessionId.set(session.id, {
+            sessionId: session.id,
+            active: session.active || Boolean(existing?.active),
+            updatedAt: Math.max(session.updatedAt, existing?.updatedAt ?? 0),
+            metadata: asRecord(session.metadata) ?? existing?.metadata ?? null,
+            persisted: Boolean(existing?.persisted)
+        })
+    }
+
+    return Array.from(candidatesBySessionId.values())
 }
 
 function getCodexImportIds(metadata: Record<string, unknown> | null | undefined): string[] {
-    return [metadata?.codexSessionId, metadata?.codexSourceSessionId]
-        .filter((id): id is string => typeof id === 'string' && id.length > 0)
+    return Array.from(new Set([metadata?.codexSessionId, metadata?.codexSourceSessionId]
+        .filter((id): id is string => typeof id === 'string' && id.length > 0)))
+}
+
+function isImportCandidateReusable(candidate: ImportCandidate): boolean {
+    const lifecycleState = candidate.metadata?.lifecycleState
+    if (lifecycleState === 'archived' || lifecycleState === 'deleted') {
+        return false
+    }
+    return true
 }
 
 function selectImportTargetSession(
@@ -1118,6 +1135,7 @@ function selectImportTargetSession(
     sourceMachineId?: string | null
 ): ImportTargetSelection {
     const relatedCandidates = candidates
+        .filter((candidate) => candidate.persisted && isImportCandidateReusable(candidate))
         .filter((candidate) => (
             candidate.metadata?.codexSessionId === codexSessionId
             || candidate.metadata?.codexSourceSessionId === codexSessionId
@@ -1178,6 +1196,9 @@ function listDuplicateCodexSessionGroups(
 
     const groups = new Map<string, ImportCandidate[]>()
     for (const candidate of collectImportCandidates(store, namespace, getSyncEngine)) {
+        if (!candidate.persisted || !isImportCandidateReusable(candidate)) {
+            continue
+        }
         for (const codexSessionId of getCodexImportIds(candidate.metadata)) {
             if (!requestedSessionIds.has(codexSessionId)) {
                 continue
@@ -1245,7 +1266,8 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
     getSyncEngine?: () => SyncEngine | null
 }): Promise<CodexDuplicateSessionGroup> {
     const engine = options.getSyncEngine?.() ?? null
-    const sessionStates = options.group.sessions
+    const uniqueSessions = Array.from(new Map(options.group.sessions.map((session) => [session.sessionId, session])).values())
+    const sessionStates = uniqueSessions
         .map((candidate) => ({
             ...candidate,
             storedMessages: options.store.messages.getAllMessages(candidate.sessionId),
