@@ -770,8 +770,10 @@ describe('cursorAcpRemoteLauncher', () => {
         await cursorAcpRemoteLauncher(session);
 
         expect(harness.promptCalls).toBe(2);
-        expect(JSON.stringify(harness.prompts[0])).toContain('$name');
-        expect(JSON.stringify(harness.prompts[0])).toContain('skill_lookup');
+        expect(JSON.stringify(harness.prompts[0])).toContain('first');
+        expect(JSON.stringify(harness.prompts[0])).not.toContain('skill_lookup');
+        expect(JSON.stringify(harness.prompts[0])).not.toContain('$name');
+        expect(JSON.stringify(harness.prompts[1])).toContain('second');
         expect(JSON.stringify(harness.prompts[1])).not.toContain('skill_lookup');
     });
 });

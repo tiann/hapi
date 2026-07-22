@@ -361,7 +361,7 @@ describe('codexLocalLauncher', () => {
         });
     });
 
-    it('falls back to fresh transcript activity when SessionStart does not arrive', async () => {
+    it('falls back to the top-level review transcript when a review subagent is active', async () => {
         const originalCodexHome = process.env.CODEX_HOME;
         process.env.CODEX_HOME = tempDir;
         const now = new Date();
@@ -373,8 +373,9 @@ describe('codexLocalLauncher', () => {
             String(now.getUTCDate()).padStart(2, '0')
         );
         await mkdir(sessionDirectory, { recursive: true });
-        const transcriptPath = join(sessionDirectory, 'rollout-fallback-thread.jsonl');
-        const { session, userMessages } = createSessionStub(
+        const transcriptPath = join(sessionDirectory, 'rollout-review-primary.jsonl');
+        const reviewSubagentPath = join(sessionDirectory, 'rollout-review-subagent.jsonl');
+        const { session, userMessages, agentMessages } = createSessionStub(
             'default',
             ['--cd', '/tmp/effective-codex-cwd'],
             '/tmp/worktree',
@@ -392,27 +393,66 @@ describe('codexLocalLauncher', () => {
             await vi.waitFor(() => expect(harness.launches).toHaveLength(1));
             expect(session.sessionId).toBeNull();
 
-            await writeFile(transcriptPath, [
-                JSON.stringify({
-                    type: 'session_meta',
-                    payload: { id: 'fallback-thread', cwd: '/tmp/effective-codex-cwd' }
-                }),
-                JSON.stringify({
-                    timestamp: new Date().toISOString(),
-                    type: 'event_msg',
-                    payload: { type: 'user_message', message: 'fallback prompt' }
-                })
-            ].join('\n') + '\n');
+            await Promise.all([
+                writeFile(transcriptPath, [
+                    JSON.stringify({
+                        type: 'session_meta',
+                        payload: {
+                            id: 'review-primary',
+                            cwd: '/tmp/effective-codex-cwd',
+                            source: 'cli'
+                        }
+                    }),
+                    JSON.stringify({
+                        timestamp: new Date().toISOString(),
+                        type: 'event_msg',
+                        payload: { type: 'user_message', message: '/review' }
+                    }),
+                    JSON.stringify({
+                        timestamp: new Date().toISOString(),
+                        type: 'event_msg',
+                        payload: { type: 'agent_message', message: 'final review result' }
+                    })
+                ].join('\n') + '\n'),
+                writeFile(reviewSubagentPath, [
+                    JSON.stringify({
+                        type: 'session_meta',
+                        payload: {
+                            id: 'review-subagent',
+                            cwd: '/tmp/effective-codex-cwd',
+                            source: { subagent: 'review' }
+                        }
+                    }),
+                    JSON.stringify({
+                        timestamp: new Date().toISOString(),
+                        type: 'event_msg',
+                        payload: { type: 'user_message', message: 'review instructions' }
+                    }),
+                    JSON.stringify({
+                        timestamp: new Date().toISOString(),
+                        type: 'event_msg',
+                        payload: { type: 'agent_message', message: 'internal review work' }
+                    })
+                ].join('\n') + '\n')
+            ]);
 
             await vi.waitFor(
-                () => expect(session.sessionId).toBe('fallback-thread'),
+                () => expect(session.sessionId).toBe('review-primary'),
                 { timeout: 3_000, interval: 50 }
             );
             if (releaseRunBarrier) releaseRunBarrier();
             await launcherPromise;
 
             expect(session.transcriptPath).toBe(transcriptPath);
-            expect(userMessages).toContain('fallback prompt');
+            expect(userMessages).toContain('/review');
+            expect(agentMessages).toContainEqual(expect.objectContaining({
+                type: 'message',
+                message: 'final review result'
+            }));
+            expect(agentMessages).not.toContainEqual(expect.objectContaining({
+                type: 'message',
+                message: 'internal review work'
+            }));
         } finally {
             if (releaseRunBarrier) releaseRunBarrier();
             if (originalCodexHome === undefined) {
@@ -459,7 +499,7 @@ describe('codexLocalLauncher', () => {
         });
     });
 
-    it('replays semantic chat events once and keeps a same-turn preface before its plan', async () => {
+    it('replays semantic chat and tool events once and keeps a same-turn preface before its plan', async () => {
         const transcriptPath = join(tempDir, 'codex-import-response-item-transcript.jsonl');
         const { session, userMessages, agentMessages, getUserActivityCount } = createSessionStub('default', undefined, '/tmp/worktree', null, true);
         let releaseRunBarrier: (() => void) | undefined;
@@ -482,6 +522,111 @@ describe('codexLocalLauncher', () => {
                 JSON.stringify({
                     type: 'event_msg',
                     payload: { type: 'user_message', message: 'visible user message' }
+                }),
+                JSON.stringify({
+                    type: 'response_item',
+                    payload: {
+                        type: 'function_call',
+                        name: 'LegacyTool',
+                        call_id: 'call-function',
+                        arguments: '{"path":"README.md"}'
+                    }
+                }),
+                JSON.stringify({
+                    type: 'response_item',
+                    payload: {
+                        type: 'function_call_output',
+                        call_id: 'call-function',
+                        output: { ok: true }
+                    }
+                }),
+                JSON.stringify({
+                    type: 'response_item',
+                    payload: {
+                        type: 'custom_tool_call',
+                        call_id: 'call-exec',
+                        name: 'exec',
+                        input: 'pwd'
+                    }
+                }),
+                JSON.stringify({
+                    type: 'event_msg',
+                    payload: {
+                        type: 'exec_command_end',
+                        call_id: 'call-exec',
+                        output: '/tmp/worktree'
+                    }
+                }),
+                JSON.stringify({
+                    type: 'response_item',
+                    payload: {
+                        type: 'custom_tool_call_output',
+                        call_id: 'call-exec',
+                        output: [{ type: 'input_text', text: '/tmp/worktree' }]
+                    }
+                }),
+                JSON.stringify({
+                    type: 'response_item',
+                    payload: {
+                        type: 'custom_tool_call',
+                        call_id: 'call-patch',
+                        name: 'apply_patch',
+                        input: '*** Begin Patch\n*** End Patch'
+                    }
+                }),
+                JSON.stringify({
+                    type: 'event_msg',
+                    payload: {
+                        type: 'patch_apply_end',
+                        call_id: 'call-patch',
+                        output: 'Done!'
+                    }
+                }),
+                JSON.stringify({
+                    type: 'response_item',
+                    payload: {
+                        type: 'custom_tool_call_output',
+                        call_id: 'call-patch',
+                        output: 'Done!'
+                    }
+                }),
+                JSON.stringify({
+                    type: 'response_item',
+                    payload: {
+                        type: 'tool_search_call',
+                        call_id: 'call-tool-search',
+                        arguments: { query: 'hapi change title', limit: 5 }
+                    }
+                }),
+                JSON.stringify({
+                    type: 'response_item',
+                    payload: {
+                        type: 'tool_search_output',
+                        call_id: 'call-tool-search',
+                        execution: 'client',
+                        status: 'completed',
+                        tools: [{ name: 'mcp__hapi', description: 'Hapi tools' }]
+                    }
+                }),
+                JSON.stringify({
+                    type: 'response_item',
+                    payload: {
+                        type: 'web_search_call',
+                        status: 'failed',
+                        action: {
+                            type: 'search',
+                            query: 'Codex transcript format',
+                            queries: ['Codex transcript format']
+                        }
+                    }
+                }),
+                JSON.stringify({
+                    type: 'event_msg',
+                    payload: { type: 'web_search_end', query: 'Codex transcript format' }
+                }),
+                JSON.stringify({
+                    type: 'event_msg',
+                    payload: { type: 'mcp_tool_call_end', call_id: 'call-mcp-summary' }
                 }),
                 JSON.stringify({
                     type: 'event_msg',
@@ -546,6 +691,69 @@ describe('codexLocalLauncher', () => {
         expect(userMessages).toEqual(['visible user message']);
         expect(getUserActivityCount()).toBe(0);
         expect(agentMessages).toEqual([{
+            type: 'tool-call',
+            name: 'LegacyTool',
+            callId: 'call-function',
+            input: { path: 'README.md' },
+            id: expect.any(String)
+        }, {
+            type: 'tool-call-result',
+            callId: 'call-function',
+            output: { ok: true },
+            id: expect.any(String)
+        }, {
+            type: 'tool-call',
+            name: 'exec',
+            callId: 'call-exec',
+            input: 'pwd',
+            id: expect.any(String)
+        }, {
+            type: 'tool-call-result',
+            callId: 'call-exec',
+            output: [{ type: 'input_text', text: '/tmp/worktree' }],
+            id: expect.any(String)
+        }, {
+            type: 'tool-call',
+            name: 'apply_patch',
+            callId: 'call-patch',
+            input: '*** Begin Patch\n*** End Patch',
+            id: expect.any(String)
+        }, {
+            type: 'tool-call-result',
+            callId: 'call-patch',
+            output: 'Done!',
+            id: expect.any(String)
+        }, {
+            type: 'tool-call',
+            name: 'ToolSearch',
+            callId: 'call-tool-search',
+            input: { query: 'hapi change title', limit: 5 },
+            id: expect.any(String)
+        }, {
+            type: 'tool-call-result',
+            callId: 'call-tool-search',
+            output: {
+                execution: 'client',
+                tools: [{ name: 'mcp__hapi', description: 'Hapi tools' }]
+            },
+            id: expect.any(String)
+        }, {
+            type: 'tool-call',
+            name: 'WebSearch',
+            callId: expect.any(String),
+            input: {
+                type: 'search',
+                query: 'Codex transcript format',
+                queries: ['Codex transcript format']
+            },
+            id: expect.any(String)
+        }, {
+            type: 'tool-call-result',
+            callId: expect.any(String),
+            output: null,
+            id: expect.any(String),
+            is_error: true
+        }, {
             type: 'message',
             message: 'visible assistant preface',
             id: expect.any(String)
@@ -561,6 +769,9 @@ describe('codexLocalLauncher', () => {
             output: null,
             id: 'plan-1:result'
         }]);
+        expect(agentMessages[9]).toMatchObject({
+            callId: (agentMessages[8] as { callId: string }).callId
+        });
     });
 
     it('replays a plan-only turn when the turn completes', async () => {

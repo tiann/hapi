@@ -151,12 +151,12 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                 } else if (converted?.userActivity) {
                     session.notifyUserActivity();
                 }
-                if (converted?.message) {
-                    if (converted.message.type === 'proposed_plan') {
+                for (const message of converted?.messages ?? []) {
+                    if (message.type === 'proposed_plan') {
                         // Codex may complete the Plan item before emitting its final text preface.
-                        pendingPlansByTurnId.set(converted.message.turnId, converted.message);
+                        pendingPlansByTurnId.set(message.turnId, message);
                     } else {
-                        session.sendAgentMessage(converted.message);
+                        session.sendAgentMessage(message);
                     }
                 }
                 if (converted?.finishedTurnId) {
