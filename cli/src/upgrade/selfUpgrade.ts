@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { chmodSync, createWriteStream, existsSync, mkdirSync, renameSync } from 'node:fs'
+import { chmodSync, copyFileSync, createWriteStream, existsSync, mkdirSync, renameSync, unlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pipeline } from 'node:stream/promises'
@@ -130,9 +130,14 @@ async function installFromArtifact(
 
     const dir = upgradeBinDir()
     mkdirSync(dir, { recursive: true })
-    const tmpPath = join(dir, `hapi-${offer.targetVersion}.download`)
-    const finalPath = join(dir, `hapi-${offer.targetVersion}`)
-    const linkPath = join(dir, 'hapi')
+    // Windows CreateProcess needs a .exe suffix; keep the versioned binary and
+    // the "current" link name with .exe so relaunch + scheduled tasks work.
+    const isWin = process.platform === 'win32'
+    const versionedName = isWin ? `hapi-${offer.targetVersion}.exe` : `hapi-${offer.targetVersion}`
+    const currentName = isWin ? 'hapi.exe' : 'hapi'
+    const tmpPath = join(dir, `${versionedName}.download`)
+    const finalPath = join(dir, versionedName)
+    const linkPath = join(dir, currentName)
 
     const nodeStream = Readable.fromWeb(response.body as import('stream/web').ReadableStream)
     await pipeline(nodeStream, createWriteStream(tmpPath))
@@ -142,7 +147,9 @@ async function installFromArtifact(
         throw new Error(`artifact sha256 mismatch (got ${digest}, expected ${artifact.sha256})`)
     }
 
-    chmodSync(tmpPath, 0o755)
+    if (!isWin) {
+        chmodSync(tmpPath, 0o755)
+    }
     renameSync(tmpPath, finalPath)
     try {
         if (existsSync(linkPath)) {
@@ -152,12 +159,23 @@ async function installFromArtifact(
         // best-effort
     }
     try {
-        // relative symlink hapi -> hapi-VERSION
         await Bun.write(join(dir, '.hapi-upgrade-target'), finalPath)
-        // Use copy via spawn ln -sfn for atomic replace
-        await runCommand('ln', ['-sfn', finalPath, linkPath])
+        if (isWin) {
+            // No ln -sfn on Windows; copy so `hapi.exe` is a real PE the
+            // scheduled task / start scripts can launch.
+            copyFileSync(finalPath, linkPath)
+            try {
+                if (existsSync(`${linkPath}.prev`)) {
+                    unlinkSync(`${linkPath}.prev`)
+                }
+            } catch {
+                // best-effort cleanup of previous current binary
+            }
+        } else {
+            await runCommand('ln', ['-sfn', finalPath, linkPath])
+        }
     } catch (error) {
-        logger.debug('[SELF-UPGRADE] symlink failed; binary still at versioned path', error)
+        logger.debug('[SELF-UPGRADE] current-binary link failed; binary still at versioned path', error)
     }
 
     return finalPath

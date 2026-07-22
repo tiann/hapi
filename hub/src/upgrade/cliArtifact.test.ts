@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'bun:test'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { artifactFileName, withStubEmbeddedAssets } from './cliArtifact'
+import {
+    artifactFileName,
+    bunCompileTarget,
+    normalizeCompiledArtifactPath,
+    withStubEmbeddedAssets,
+} from './cliArtifact'
 
 describe('artifactFileName', () => {
     it('accepts normal version/platform/arch tokens', () => {
@@ -15,6 +20,47 @@ describe('artifactFileName', () => {
         expect(() => artifactFileName('0.23.0', 'linux/../tmp', 'x64')).toThrow('Invalid artifact platform')
         expect(() => artifactFileName('0.23.0', 'linux', 'x64/../../tmp')).toThrow('Invalid artifact arch')
         expect(() => artifactFileName('0.23.0', 'linux', 'x64 with spaces')).toThrow('Invalid artifact arch')
+    })
+})
+
+describe('bunCompileTarget', () => {
+    it('maps fleet platforms including Windows (cross-compile from Linux hub)', () => {
+        expect(bunCompileTarget('linux', 'x64')).toBe('bun-linux-x64-baseline')
+        expect(bunCompileTarget('linux', 'arm64')).toBe('bun-linux-arm64')
+        expect(bunCompileTarget('win32', 'x64')).toBe('bun-windows-x64')
+        expect(bunCompileTarget('win32', 'arm64')).toBe('bun-windows-arm64')
+        expect(bunCompileTarget('darwin', 'arm64')).toBe('bun-darwin-arm64')
+    })
+
+    it('rejects unsupported platform/arch instead of inventing a Bun target', () => {
+        expect(() => bunCompileTarget('freebsd', 'x64')).toThrow('Unsupported compile target')
+        expect(() => bunCompileTarget('win32', 'ia32')).toThrow('Unsupported compile target')
+    })
+})
+
+describe('normalizeCompiledArtifactPath', () => {
+    it('renames Bun-auto-suffixed .exe back to the extensionless artifact path', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-artifact-exe-'))
+        try {
+            const outPath = join(dir, 'hapi-0.23.1-win32-x64')
+            writeFileSync(`${outPath}.exe`, 'PE-bytes')
+            expect(normalizeCompiledArtifactPath(outPath, 'win32')).toBe(outPath)
+            expect(existsSync(outPath)).toBe(true)
+            expect(existsSync(`${outPath}.exe`)).toBe(false)
+        } finally {
+            rmSync(dir, { recursive: true, force: true })
+        }
+    })
+
+    it('leaves non-Windows paths alone', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-artifact-nix-'))
+        try {
+            const outPath = join(dir, 'hapi-0.23.1-linux-x64')
+            writeFileSync(outPath, 'ELF-bytes')
+            expect(normalizeCompiledArtifactPath(outPath, 'linux')).toBe(outPath)
+        } finally {
+            rmSync(dir, { recursive: true, force: true })
+        }
     })
 })
 

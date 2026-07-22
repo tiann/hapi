@@ -82,14 +82,46 @@ function featureFlagFor(platform: string, arch: string): string {
     return `HAPI_TARGET_${platformToken}_${arch.toUpperCase()}`
 }
 
-function bunCompileTarget(platform: string, arch: string): string {
+/**
+ * Map Node's process.platform/arch to a Bun `--compile --target=` string.
+ * Bun cross-compiles these from any host (Linux→Windows is the common
+ * fleet-upgrade case: hub on oos-linux, runners on Teemo/OOS-VR2).
+ */
+export function bunCompileTarget(platform: string, arch: string): string {
     if (platform === 'linux' && arch === 'x64') {
         return 'bun-linux-x64-baseline'
     }
-    if (platform === 'win32') {
+    if (platform === 'linux' && arch === 'arm64') {
+        return 'bun-linux-arm64'
+    }
+    if (platform === 'win32' && (arch === 'x64' || arch === 'arm64')) {
         return `bun-windows-${arch}`
     }
-    return `bun-${platform}-${arch}`
+    if (platform === 'darwin' && (arch === 'x64' || arch === 'arm64')) {
+        return `bun-darwin-${arch}`
+    }
+    throw new Error(`Unsupported compile target: ${platform}/${arch}`)
+}
+
+/**
+ * Bun auto-appends `.exe` for Windows targets when the outfile has no
+ * extension. Prefer an explicit `.exe` outfile, then normalize back to the
+ * extensionless artifact path we serve (download bytes don't care about
+ * the hub-side filename; Windows runners rename on install).
+ */
+export function normalizeCompiledArtifactPath(outPath: string, platform: string): string {
+    if (platform !== 'win32') {
+        return outPath
+    }
+    const withExe = `${outPath}.exe`
+    if (existsSync(outPath)) {
+        return outPath
+    }
+    if (existsSync(withExe)) {
+        renameSync(withExe, outPath)
+        return outPath
+    }
+    return outPath
 }
 
 function tunwgBinaryPath(monorepoRoot: string, platform: string, arch: string): string {
@@ -230,11 +262,10 @@ export async function ensureCliArtifact(options: {
             return cached
         }
 
-        if (options.platform !== process.platform || options.arch !== process.arch) {
-            throw new Error(
-                `Cross-compile not supported yet (hub is ${process.platform}/${process.arch}, requested ${options.platform}/${options.arch})`,
-            )
-        }
+        // Resolve (and validate) the Bun target up front — throws for
+        // unsupported platform/arch. Same-host used to be required; Bun now
+        // cross-compiles win32/darwin/linux from any host.
+        const target = bunCompileTarget(options.platform, options.arch)
 
         const hubRoot = options.hubPackageRoot ?? defaultHubPackageRoot()
         const monorepo = findMonorepoRoot(hubRoot)
@@ -261,7 +292,8 @@ export async function ensureCliArtifact(options: {
         const dir = artifactsRoot(options.dataDir)
         mkdirSync(dir, { recursive: true })
         const outPath = join(dir, artifactFileName(options.version, options.platform, options.arch))
-        const target = bunCompileTarget(options.platform, options.arch)
+        // Explicit .exe so Bun doesn't surprise us with an auto-suffix we then miss.
+        const compileOut = options.platform === 'win32' ? `${outPath}.exe` : outPath
         const feature = featureFlagFor(options.platform, options.arch)
 
         await withStubEmbeddedAssets(monorepo, async () => {
@@ -272,7 +304,7 @@ export async function ensureCliArtifact(options: {
                 '--no-compile-autoload-dotenv',
                 `--feature=${feature}`,
                 `--target=${target}`,
-                `--outfile=${outPath}`,
+                `--outfile=${compileOut}`,
                 entry,
             ], {
                 cwd: cliRoot,
@@ -285,7 +317,8 @@ export async function ensureCliArtifact(options: {
                 new Response(proc.stderr).text(),
                 proc.exited,
             ])
-            if (code !== 0 || !existsSync(outPath)) {
+            const produced = normalizeCompiledArtifactPath(outPath, options.platform)
+            if (code !== 0 || !existsSync(produced)) {
                 throw new Error(`bun compile failed: ${stderr || stdout}`)
             }
         })
