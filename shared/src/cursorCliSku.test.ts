@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
     cursorCliSkuBaseId,
     findBestCliSkuForAcpWire,
+    isCursorAcpCatalogModelId,
     isCursorAcpWireModelId,
+    isCursorCliSkuVariantId,
     matchCliSkuToAcpWireId
 } from './cursorCliSku';
 
@@ -107,8 +109,46 @@ describe('round-trip (regression for #883: "selected but no response")', () => {
 });
 
 describe('isCursorAcpWireModelId', () => {
-    it('detects wire ids', () => {
+    it('detects parameterized wire ids only', () => {
         expect(isCursorAcpWireModelId('gpt-5.5[fast=false]')).toBe(true);
+        expect(isCursorAcpWireModelId('default[]')).toBe(true);
+        expect(isCursorAcpWireModelId('composer-2.5')).toBe(false);
         expect(isCursorAcpWireModelId('gpt-5.5-high-fast')).toBe(false);
+    });
+});
+
+describe('isCursorCliSkuVariantId', () => {
+    it('detects effort/speed CLI SKU slugs', () => {
+        expect(isCursorCliSkuVariantId('gpt-5.5-high-fast')).toBe(true);
+        expect(isCursorCliSkuVariantId('composer-2.5-fast')).toBe(true);
+        expect(isCursorCliSkuVariantId('claude-opus-4-8-thinking-high-fast')).toBe(true);
+        expect(isCursorCliSkuVariantId('composer-2.5')).toBe(false);
+        expect(isCursorCliSkuVariantId('composer-2.5[fast=true]')).toBe(false);
+    });
+});
+
+describe('isCursorAcpCatalogModelId', () => {
+    it('accepts parameterized wires and bare non-default ACP bases', () => {
+        expect(isCursorAcpCatalogModelId('composer-2.5[fast=false]')).toBe(true);
+        expect(isCursorAcpCatalogModelId('default[]')).toBe(true);
+        expect(isCursorAcpCatalogModelId('composer-2.5')).toBe(true);
+        expect(isCursorAcpCatalogModelId('claude-opus-4-8')).toBe(true);
+    });
+
+    it('rejects CLI effort/speed SKUs and default tokens', () => {
+        expect(isCursorAcpCatalogModelId('gpt-5.5-high-fast')).toBe(false);
+        expect(isCursorAcpCatalogModelId('composer-2.5-fast')).toBe(false);
+        expect(isCursorAcpCatalogModelId('default')).toBe(false);
+        expect(isCursorAcpCatalogModelId('auto')).toBe(false);
+        expect(isCursorAcpCatalogModelId('')).toBe(false);
+    });
+});
+
+describe('matchCliSkuToAcpWireId with bare ACP catalog (#1129)', () => {
+    it('maps CLI SKUs onto bare same-base ACP ids', () => {
+        const bare = [{ modelId: 'composer-2.5' }, { modelId: 'gpt-5.5' }];
+        expect(matchCliSkuToAcpWireId('composer-2.5-fast', bare)).toBe('composer-2.5');
+        expect(matchCliSkuToAcpWireId('composer-2.5', bare)).toBe('composer-2.5');
+        expect(matchCliSkuToAcpWireId('gpt-5.5-high-fast', bare)).toBe('gpt-5.5');
     });
 });

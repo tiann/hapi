@@ -55,6 +55,25 @@ describe('runCursorAcpModelProbe', () => {
         expect(createCursorAcpBackend).toHaveBeenCalledWith({ cwd: '/tmp/project' });
     });
 
+    test('returns bare ACP catalog without bracket wires (#1129)', async () => {
+        harness.snapshot = {
+            availableModels: [
+                { modelId: 'composer-2.5', name: 'composer-2.5' },
+                { modelId: 'claude-opus-4-8', name: 'claude-opus-4-8' }
+            ],
+            currentModelId: 'default'
+        };
+
+        const result = await runCursorAcpModelProbe('/tmp/project');
+
+        expect(result.success).toBe(true);
+        expect(result.availableModels?.map((row) => row.modelId)).toEqual([
+            'composer-2.5',
+            'claude-opus-4-8'
+        ]);
+        expect(cursorProbeResponseHasWireCatalog(result)).toBe(true);
+    });
+
     test('returns error when ACP initialize fails', async () => {
         harness.initializeError = new Error('agent acp unavailable');
 

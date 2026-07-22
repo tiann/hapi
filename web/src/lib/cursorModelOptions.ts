@@ -1,4 +1,9 @@
-import { cursorCliSkuBaseId, findBestCliSkuForAcpWire } from '@hapi/protocol'
+import {
+    cursorCliSkuBaseId,
+    findBestCliSkuForAcpWire,
+    isCursorAcpCatalogModelId,
+    isCursorAcpWireModelId as isSharedCursorAcpWireModelId
+} from '@hapi/protocol'
 import type { CursorModelSummary } from '@/types/api'
 
 export type CursorModelOption = { value: string | null; label: string }
@@ -228,7 +233,7 @@ export function buildCursorModelCatalog(
     }
 
     const normalizedCurrent = normalizeCurrentModel(options?.currentModel)
-    if (normalizedCurrent && isCursorAcpWireModelId(normalizedCurrent) && !wireToBase.has(normalizedCurrent)) {
+    if (normalizedCurrent && isCursorAcpCatalogModelId(normalizedCurrent) && !wireToBase.has(normalizedCurrent)) {
         addWire(normalizedCurrent)
     }
 
@@ -328,10 +333,9 @@ export function cursorBaseHasMultipleVariants(
     return (catalog.variantsByBase.get(baseKey)?.length ?? 0) > 1
 }
 
-/** ACP wire ids use bracket params; CLI probe slugs (e.g. gpt-5.5-high-fast) are not picker rows. */
+/** ACP parameterized wire ids use bracket params; re-export shared predicate. */
 export function isCursorAcpWireModelId(modelId: string): boolean {
-    const trimmed = modelId.trim()
-    return trimmed === 'default[]' || trimmed.includes('[')
+    return isSharedCursorAcpWireModelId(modelId)
 }
 
 /** Dual pickers only when at least one base has multiple ACP wire ids. */

@@ -1,4 +1,4 @@
-/** ACP wire ids use bracket params; CLI `agent --list-models` slugs do not. */
+/** ACP parameterized wire ids use bracket params; CLI `agent --list-models` slugs do not. */
 export function isCursorAcpWireModelId(modelId: string): boolean {
     const trimmed = modelId.trim();
     return trimmed === 'default[]' || trimmed.includes('[');
@@ -49,6 +49,41 @@ export function cursorCliSkuBaseId(slug: string): string {
         }
     }
     return base;
+}
+
+/**
+ * CLI probe SKUs that carry effort/speed suffixes (e.g. `gpt-5.5-high-fast`).
+ * Base-only slugs like `composer-2.5` are not variant SKUs.
+ */
+export function isCursorCliSkuVariantId(modelId: string): boolean {
+    const trimmed = modelId.trim();
+    if (!trimmed || isCursorAcpWireModelId(trimmed)) {
+        return false;
+    }
+    return cursorCliSkuBaseId(trimmed) !== trimmed;
+}
+
+/**
+ * Picker/catalog-eligible ACP model ids.
+ * Accepts parameterized wires and bare non-default ACP bases (current Cursor ACP).
+ * Rejects CLI effort/speed SKU slugs so they stay variant rows, not top-level bases.
+ */
+export function isCursorAcpCatalogModelId(modelId: string): boolean {
+    const trimmed = modelId.trim();
+    if (!trimmed) {
+        return false;
+    }
+    const lower = trimmed.toLowerCase();
+    if (lower === 'auto' || lower === 'default') {
+        return false;
+    }
+    if (isCursorAcpWireModelId(trimmed)) {
+        return true;
+    }
+    if (isCursorCliSkuVariantId(trimmed)) {
+        return false;
+    }
+    return true;
 }
 
 function parseWireParams(modelId: string): Record<string, string> {
@@ -168,7 +203,7 @@ export function matchCliSkuToAcpWireId(
 
     const skuBase = cursorCliSkuBaseId(trimmed);
     const wires = available.filter(
-        (entry) => isCursorAcpWireModelId(entry.modelId) && cursorModelBaseId(entry.modelId) === skuBase
+        (entry) => isCursorAcpCatalogModelId(entry.modelId) && cursorModelBaseId(entry.modelId) === skuBase
     );
     if (wires.length === 0) {
         return null;
