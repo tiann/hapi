@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { SessionSummary } from '@/types/api'
 import {
     getProjectGroupActionAvailability,
+    isOldInactiveSession,
     isSessionArchivable,
     isSessionArchived
 } from './projectGroupActions'
@@ -73,19 +74,19 @@ describe('getProjectGroupActionAvailability', () => {
         expect(canDelete).toBe(false)
     })
 
-    it('allows delete only when every session is archived', () => {
+    it('allows delete when every session is inactive', () => {
         const { canArchiveAll, canDelete } = getProjectGroupActionAvailability([
             archived('a'),
-            archived('b')
+            completedStub('b')
         ])
         expect(canArchiveAll).toBe(false)
         expect(canDelete).toBe(true)
     })
 
-    it('blocks delete when an inactive-but-unarchived stub is present', () => {
+    it('blocks delete when an active session is present', () => {
         const { canDelete } = getProjectGroupActionAvailability([
             archived('a'),
-            completedStub('b')
+            running('b')
         ])
         expect(canDelete).toBe(false)
     })
@@ -94,5 +95,18 @@ describe('getProjectGroupActionAvailability', () => {
         const { canArchiveAll, canDelete } = getProjectGroupActionAvailability([])
         expect(canArchiveAll).toBe(false)
         expect(canDelete).toBe(false)
+    })
+})
+
+describe('isOldInactiveSession', () => {
+    const now = 10 * 24 * 60 * 60 * 1000
+
+    it('matches inactive sessions at least seven days old', () => {
+        expect(isOldInactiveSession(makeSession({ id: 'old', updatedAt: now - 7 * 24 * 60 * 60 * 1000 }), now)).toBe(true)
+    })
+
+    it('rejects recent inactive sessions and old active sessions', () => {
+        expect(isOldInactiveSession(makeSession({ id: 'recent', updatedAt: now - 6 * 24 * 60 * 60 * 1000 }), now)).toBe(false)
+        expect(isOldInactiveSession(makeSession({ id: 'active', active: true, updatedAt: 0 }), now)).toBe(false)
     })
 })

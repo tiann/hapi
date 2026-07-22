@@ -12,6 +12,8 @@ function renderMenu(overrides: Partial<React.ComponentProps<typeof ProjectGroupA
         onCopyPath: vi.fn(),
         onArchiveAll: vi.fn(),
         canArchiveAll: true,
+        onCleanOldSessions: vi.fn(),
+        oldSessionCount: 0,
         onDelete: vi.fn(),
         canDelete: false,
         anchorPoint: { x: 0, y: 0 },
@@ -30,11 +32,26 @@ function renderMenu(overrides: Partial<React.ComponentProps<typeof ProjectGroupA
 beforeEach(() => vi.clearAllMocks())
 
 describe('ProjectGroupActionMenu', () => {
-    it('renders all three actions', () => {
+    it('renders all four actions', () => {
         renderMenu()
         expect(screen.getByRole('menuitem', { name: /Copy Path/ })).toBeInTheDocument()
         expect(screen.getByRole('menuitem', { name: /Archive All Sessions/ })).toBeInTheDocument()
+        expect(screen.getByRole('menuitem', { name: /Clean Old Sessions/ })).toBeInTheDocument()
         expect(screen.getByRole('menuitem', { name: /Delete Group/ })).toBeInTheDocument()
+    })
+
+    it('disables Clean Old Sessions when no matching sessions exist', () => {
+        renderMenu({ oldSessionCount: 0 })
+        expect(screen.getByRole('menuitem', { name: /Clean Old Sessions/ })).toBeDisabled()
+    })
+
+    it('runs Clean Old Sessions when matching sessions exist', () => {
+        const onCleanOldSessions = vi.fn()
+        const onClose = vi.fn()
+        renderMenu({ oldSessionCount: 2, onCleanOldSessions, onClose })
+        fireEvent.click(screen.getByRole('menuitem', { name: /Clean Old Sessions/ }))
+        expect(onCleanOldSessions).toHaveBeenCalledTimes(1)
+        expect(onClose).toHaveBeenCalledTimes(1)
     })
 
     it('fires onCopyPath and closes on Copy Path click', () => {
@@ -59,7 +76,7 @@ describe('ProjectGroupActionMenu', () => {
         expect(onArchiveAll).not.toHaveBeenCalled()
     })
 
-    it('disables Delete Group until every session is archived', () => {
+    it('disables Delete Group while any session is active', () => {
         const onDelete = vi.fn()
         renderMenu({ canDelete: false, onDelete })
 

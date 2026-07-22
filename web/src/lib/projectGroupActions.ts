@@ -24,8 +24,7 @@ export function isSessionArchivable(session: SessionSummary): boolean {
 export type ProjectGroupActionAvailability = {
     /** At least one session can be archived. */
     canArchiveAll: boolean
-    /** Every session is already archived — the precondition for deleting the
-     *  whole group (deliberate two-step: archive everything, then delete). */
+    /** Every session is inactive — matches the delete route's guard. */
     canDelete: boolean
 }
 
@@ -34,6 +33,17 @@ export function getProjectGroupActionAvailability(
 ): ProjectGroupActionAvailability {
     return {
         canArchiveAll: sessions.some(isSessionArchivable),
-        canDelete: sessions.length > 0 && sessions.every(isSessionArchived)
+        canDelete: sessions.length > 0 && sessions.every(session => !session.active)
     }
+}
+
+export const OLD_SESSION_AGE_MS = 7 * 24 * 60 * 60 * 1000
+
+/** Old-session cleanup intentionally requires both conditions: inactive and
+ *  not updated within the last seven days. */
+export function isOldInactiveSession(
+    session: SessionSummary,
+    now: number = Date.now()
+): boolean {
+    return !session.active && session.updatedAt <= now - OLD_SESSION_AGE_MS
 }

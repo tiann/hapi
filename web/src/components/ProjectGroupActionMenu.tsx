@@ -9,6 +9,8 @@ type ProjectGroupActionMenuProps = {
     onCopyPath: () => void
     onArchiveAll: () => void
     canArchiveAll: boolean
+    onCleanOldSessions: () => void
+    oldSessionCount: number
     onDelete: () => void
     canDelete: boolean
     anchorPoint: { x: number; y: number }
@@ -67,6 +69,8 @@ export function ProjectGroupActionMenu(props: ProjectGroupActionMenuProps) {
         onCopyPath,
         onArchiveAll,
         canArchiveAll,
+        onCleanOldSessions,
+        oldSessionCount,
         onDelete,
         canDelete,
         anchorPoint,
@@ -90,6 +94,11 @@ export function ProjectGroupActionMenu(props: ProjectGroupActionMenuProps) {
     const handleDelete = () => {
         onClose()
         onDelete()
+    }
+
+    const handleCleanOldSessions = () => {
+        onClose()
+        onCleanOldSessions()
     }
 
     if (!isOpen) return null
@@ -136,6 +145,20 @@ export function ProjectGroupActionMenu(props: ProjectGroupActionMenuProps) {
                 >
                     <ArchiveIcon className={canArchiveAll ? 'text-red-500' : 'text-[var(--app-hint)]'} />
                     {t('sessions.group.archiveAll')}
+                </button>
+
+                <button
+                    type="button"
+                    role="menuitem"
+                    disabled={oldSessionCount === 0}
+                    title={oldSessionCount === 0 ? t('sessions.group.cleanOldHint') : undefined}
+                    className={`${baseItemClassName} ${oldSessionCount > 0
+                        ? 'hover:bg-[var(--app-subtle-bg)]'
+                        : 'cursor-not-allowed text-[var(--app-hint)] opacity-50'}`}
+                    onClick={handleCleanOldSessions}
+                >
+                    <TrashIcon className="text-[var(--app-hint)]" />
+                    {t('sessions.group.cleanOld', { count: oldSessionCount })}
                 </button>
 
                 <div className="my-1 h-px bg-[var(--app-border)]" role="separator" />

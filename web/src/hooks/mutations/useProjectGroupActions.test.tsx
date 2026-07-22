@@ -107,3 +107,28 @@ describe('useProjectGroupActions - deleteAll', () => {
         expect(deleteSession).toHaveBeenCalledTimes(2)
     })
 })
+
+describe('useProjectGroupActions - cleanOldSessions', () => {
+    it('deletes only inactive sessions at least seven days old', async () => {
+        const now = Date.now()
+        const day = 24 * 60 * 60 * 1000
+        const deleteSession = vi.fn(async (_id: string) => {})
+        const api = { deleteSession } as unknown as ApiClient
+        const sessions = [
+            makeSession({ id: 'old', updatedAt: now - 8 * day }),
+            makeSession({ id: 'boundary', updatedAt: now - 7 * day - 1000 }),
+            makeSession({ id: 'recent', updatedAt: now - 6 * day }),
+            makeSession({ id: 'active-old', active: true, updatedAt: now - 20 * day }),
+        ]
+
+        const { result } = renderHook(() => useProjectGroupActions(api, sessions), { wrapper: createWrapper() })
+
+        await act(async () => {
+            await result.current.cleanOldSessions()
+        })
+
+        expect(deleteSession).toHaveBeenCalledTimes(2)
+        expect(deleteSession).toHaveBeenNthCalledWith(1, 'old')
+        expect(deleteSession).toHaveBeenNthCalledWith(2, 'boundary')
+    })
+})
