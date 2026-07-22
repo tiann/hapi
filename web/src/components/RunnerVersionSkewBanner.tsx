@@ -29,6 +29,10 @@ export function listSkewedMachines(machines: Machine[], offer: HubUpgradeOffer |
     }
     return machines.filter((machine) => (
         machine.active
+        // Soup / rebuild-only hosts advertise versionHandoffDisabled — they are
+        // not fleet-Upgrade candidates (ops decision B, 2026-07-22). Showing
+        // Upgrade for them lies: systemd keeps running hapi-runner-from-active.
+        && machine.metadata?.versionHandoffDisabled !== true
         && machineTrailsUpgradeOffer(offer, machine.metadata?.happyCliVersion, machine.metadata?.capabilities)
     ))
 }

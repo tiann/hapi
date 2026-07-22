@@ -566,6 +566,17 @@ export class SyncEngine {
             return { type: 'error', message: 'Fleet upgrade disabled (HAPI_UPGRADE_CHANNEL=off)', code: 'upgrade_unavailable' }
         }
 
+        // Soup / rebuild-only hosts (and any runner with HAPI_DISABLE_VERSION_HANDOFF=1)
+        // opt out of hub-initiated Upgrade. Fail closed on the manual path too so the
+        // UI cannot "succeed" while systemd keeps the soup entrypoint.
+        if (machine.metadata?.versionHandoffDisabled === true) {
+            return {
+                type: 'error',
+                message: 'Runner opted out of version handoff (soup/rebuild-only or HAPI_DISABLE_VERSION_HANDOFF=1); rematerialize soup or clear the opt-out',
+                code: 'upgrade_unavailable',
+            }
+        }
+
         // Live-RPC overlay is already applied by MachineCache.getMachineByNamespace.
         // Skewed runners that predate this RPC cannot self-upgrade remotely — fail
         // closed with a clear code so the UI can steer operators to a manual path.

@@ -107,6 +107,25 @@ describe('listSkewedMachines', () => {
         ], null)).toEqual([])
     })
 
+    it('excludes versionHandoffDisabled machines (soup / rebuild-only)', () => {
+        const skewed = listSkewedMachines([
+            makeMachine({
+                id: 'soup',
+                metadata: {
+                    host: 'proxmox',
+                    platform: 'linux',
+                    happyCliVersion: '0.20.0',
+                    versionHandoffDisabled: true,
+                },
+            }),
+            makeMachine({
+                id: 'binary',
+                metadata: { host: 'teemo', platform: 'win32', happyCliVersion: '0.20.0' },
+            }),
+        ], TEST_OFFER)
+        expect(skewed.map((m) => m.id)).toEqual(['binary'])
+    })
+
     it('uses displayName when present', () => {
         expect(machineDisplayHost(makeMachine({
             id: 'm1',
