@@ -1034,13 +1034,15 @@ export function ingestIncomingMessages(sessionId: string, incoming: DecryptedMes
 
         let state = prev
         if (agentMessages.length > 0) {
-            const merged = mergeMessages(state.messages, agentMessages)
-            const { kept, dropped } = trimVisibleWithDropped(merged, 'append')
-            const pending = filterPendingAgainstVisible(state.pending, kept)
+            // Do not compact an expanded history window while the user is reading it.
+            // Streaming agent events are frequent; trimming from the front on every
+            // event used to evict the older page that had just been loaded, making the
+            // user repeatedly click "Load older". Compact once they return to bottom.
+            const messages = mergeMessages(state.messages, agentMessages)
+            const pending = filterPendingAgainstVisible(state.pending, messages)
             state = buildState(state, {
-                messages: kept,
-                pending,
-                ...cursorUpdatesAfterAppendTrim(kept, dropped)
+                messages,
+                pending
             })
         }
         if (userMessages.length > 0) {
@@ -1084,7 +1086,15 @@ export function setAtBottom(sessionId: string, atBottom: boolean): void {
         if (prev.atBottom === atBottom) {
             return prev
         }
-        return buildState(prev, { atBottom })
+        if (!atBottom) {
+            return buildState(prev, { atBottom: false })
+        }
+        const { kept, dropped } = trimVisibleWithDropped(prev.messages, 'append')
+        return buildState(prev, {
+            messages: kept,
+            atBottom: true,
+            ...cursorUpdatesAfterAppendTrim(kept, dropped)
+        })
     }, true)
 }
 

@@ -641,6 +641,38 @@ describe('message-window-store visible trimming', () => {
         expect(state.oldestSeq).toBe(2)
     })
 
+    it('keeps loaded history while agent output streams above the bottom', () => {
+        const baseTime = 1_700_000_150_000
+        const history = Array.from({ length: VISIBLE_WINDOW_SIZE }, (_, index) => makeAgentMessage({
+            id: `history-${index}`,
+            seq: index + 1,
+            createdAt: baseTime + index
+        }))
+        ingestIncomingMessages(SESSION_ID, history)
+        setAtBottom(SESSION_ID, false)
+
+        ingestIncomingMessages(SESSION_ID, [
+            makeAgentMessage({
+                id: 'streaming-update',
+                seq: VISIBLE_WINDOW_SIZE + 1,
+                createdAt: baseTime + VISIBLE_WINDOW_SIZE
+            })
+        ])
+
+        const whileReading = getMessageWindowState(SESSION_ID)
+        expect(whileReading.messages).toHaveLength(VISIBLE_WINDOW_SIZE + 1)
+        expect(whileReading.messages.some((message) => message.id === 'history-0')).toBe(true)
+
+        setAtBottom(SESSION_ID, true)
+
+        const atBottom = getMessageWindowState(SESSION_ID)
+        expect(atBottom.messages).toHaveLength(VISIBLE_WINDOW_SIZE)
+        expect(atBottom.messages.some((message) => message.id === 'history-0')).toBe(false)
+        expect(atBottom.messages.some((message) => message.id === 'streaming-update')).toBe(true)
+        expect(atBottom.hasMore).toBe(true)
+        expect(atBottom.oldestSeq).toBe(2)
+    })
+
     it('backfills cold latest load when the newest page is filled by Codex subagent events', async () => {
         const baseTime = 1_700_000_200_000
         const latestAgentRuns: DecryptedMessage[] = []
