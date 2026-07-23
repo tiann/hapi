@@ -8,10 +8,6 @@ import { useFue } from '@/lib/use-fue'
 import { FueCallout, FueDot } from '@/components/Fue'
 import { useRef, useState } from 'react'
 
-function ChevronIcon() {
-    return <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M2.5 3.75L5 6.25L7.5 3.75" /></svg>
-}
-
 function VoiceAssistantIcon() {
     return (
         <svg
@@ -461,15 +457,6 @@ export function ComposerButtons(props: {
     // The composer must surface that constraint at UI time so the user never
     // builds a submission the hub will reject — see hub/web/routes/messages.ts.
     hasAttachments?: boolean
-    // Pi-specific toolbar buttons
-    piModelLabel?: string
-    piModelDisabled?: boolean
-    piModelOpen?: boolean
-    onPiModelToggle?: () => void
-    piThinkingLabel?: string
-    piThinkingDisabled?: boolean
-    piThinkingOpen?: boolean
-    onPiThinkingToggle?: () => void
     // Scratchlist drawer toggle. When `onScratchlistToggle` is provided, a
     // notepad icon appears next to the schedule-send icon. Click toggles
     // composer-send-routing between chat and scratchlist; SessionChat owns
@@ -508,42 +495,6 @@ export function ComposerButtons(props: {
                         disabled={props.controlsDisabled}
                     >
                         <SettingsIcon />
-                    </button>
-                ) : null}
-
-                {props.piModelLabel ? (
-                    <button
-                        type="button"
-                        aria-label={props.piModelLabel}
-                        title={props.piModelLabel}
-                        className={`flex h-8 items-center gap-1 rounded-full px-3 text-xs font-medium transition-colors ${
-                            props.piModelOpen
-                                ? 'bg-[var(--app-secondary-bg)] text-[var(--app-link)]'
-                                : 'text-[var(--app-fg)]/60 hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)]'
-                        }`}
-                        onClick={props.onPiModelToggle}
-                        disabled={props.piModelDisabled}
-                    >
-                        {props.piModelLabel}
-                        <ChevronIcon />
-                    </button>
-                ) : null}
-
-                {props.piThinkingLabel ? (
-                    <button
-                        type="button"
-                        aria-label={props.piThinkingLabel}
-                        title={props.piThinkingLabel}
-                        className={`flex h-8 items-center gap-1 rounded-full px-3 text-xs font-medium transition-colors ${
-                            props.piThinkingOpen
-                                ? 'bg-[var(--app-secondary-bg)] text-[var(--app-link)]'
-                                : 'text-[var(--app-fg)]/60 hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)]'
-                        }`}
-                        onClick={props.onPiThinkingToggle}
-                        disabled={props.piThinkingDisabled}
-                    >
-                        {props.piThinkingLabel}
-                        <ChevronIcon />
                     </button>
                 ) : null}
 

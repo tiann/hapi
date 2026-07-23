@@ -20,8 +20,7 @@ import { useActiveSuggestions } from '@/hooks/useActiveSuggestions'
 import { applySuggestion } from '@/utils/applySuggestion'
 import { usePlatform } from '@/hooks/usePlatform'
 import { usePWAInstall } from '@/hooks/usePWAInstall'
-import { supportsEffort, supportsModelChange, PI_THINKING_LEVEL_LABELS } from '@hapi/protocol'
-import type { PiThinkingLevel } from '@hapi/protocol'
+import { supportsEffort, supportsModelChange } from '@hapi/protocol'
 import { markSkillUsed } from '@/lib/recent-skills'
 import { useComposerDraft } from '@/hooks/useComposerDraft'
 import { useComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
@@ -38,8 +37,6 @@ import { getCodexComposerReasoningEffortOptions } from './codexReasoningEffortOp
 import { getDisplayedCodexServiceTier } from './codexFastMode'
 import { getPiThinkingLevelOptions, getHighestThinkingLevel, isThinkingLevelSupported } from './piThinkingLevelOptions'
 import { groupModelsByProvider } from './piModelGroups'
-import { PiModelPanel } from './PiModelPanel'
-import { PiThinkingLevelPanel } from './PiThinkingLevelPanel'
 
 export interface TextInputState {
     text: string
@@ -292,8 +289,6 @@ export function HappyComposer(props: {
         selection: { start: 0, end: 0 }
     })
     const [showSettings, setShowSettings] = useState(false)
-    const [showPiModelPanel, setShowPiModelPanel] = useState(false)
-    const [showPiThinkingPanel, setShowPiThinkingPanel] = useState(false)
     const [isAborting, setIsAborting] = useState(false)
     const [isSwitching, setIsSwitching] = useState(false)
     const [showContinueHint, setShowContinueHint] = useState(false)
@@ -626,7 +621,7 @@ export function HappyComposer(props: {
             // Pi needs { provider, modelId } to disambiguate duplicate model IDs,
             // but this generic cycler only emits a bare modelId (or null), which
             // would lose the provider and can pick the wrong cached match or clear
-            // the model. Pi model changes go only through the dedicated PiModelPanel.
+            // the model.
             if (agentFlavor === 'pi') return
             if (e.key === 'm' && (e.metaKey || e.ctrlKey) && onModelChange && supportsModelChange(agentFlavor)) {
                 e.preventDefault()
@@ -760,16 +755,22 @@ export function HappyComposer(props: {
 
     const showCollaborationSettings = Boolean(onCollaborationModeChange && collaborationModeOptions.length > 0)
     const showPermissionSettings = Boolean(onPermissionModeChange && permissionModeOptions.length > 0)
-    const showModelSettings = Boolean(onModelChange && supportsModelChange(agentFlavor) && (piModels && piModels.length > 0 || modelOptions.length > 0))
+    const showModelSettings = Boolean(
+        onModelChange
+        && supportsModelChange(agentFlavor)
+        && (agentFlavor === 'pi' ? piModels : modelOptions)?.length
+    )
     const showModelEffortSettings = Boolean(
         (onModelEffortChange ?? onModelChange)
         && modelEffortOptions
         && modelEffortOptions.length > 0
     )
     const showModelReasoningEffortSettings = Boolean(onModelReasoningEffortChange && codexReasoningEffortOptions.length > 0)
-    // For Pi: hide effort when selected model explicitly has reasoning: false
-    const piEffortHidden = piModels && selectedPiModel && selectedPiModel.reasoning === false
-    const showEffortSettings = Boolean(onEffortChange && supportsEffort(agentFlavor) && !piEffortHidden)
+    const showEffortSettings = Boolean(
+        onEffortChange
+        && supportsEffort(agentFlavor)
+        && (agentFlavor !== 'pi' || selectedPiModel?.reasoning === true)
+    )
     const showFastModeSettings = Boolean(onServiceTierChange)
     const showSettingsButton = Boolean(
         showCollaborationSettings
@@ -797,89 +798,8 @@ export function HappyComposer(props: {
         // the error context while the new attempt is in flight.
     }, [api])
 
-    // Pi: selected model info for UI labels and thinking level filtering
-    const piModelLabel = agentFlavor === 'pi'
-        ? (selectedPiModel?.name ?? selectedPiModel?.modelId ?? 'Model')
-        : undefined
-    const piThinkingLabel = agentFlavor === 'pi'
-        ? (() => {
-            if (!selectedPiModel) return 'Thinking'
-            const effectiveLevel = effort && isThinkingLevelSupported(effort, selectedPiModel.thinkingLevelMap)
-                ? effort
-                : getHighestThinkingLevel(selectedPiModel.thinkingLevelMap)
-            return effectiveLevel
-                ? (PI_THINKING_LEVEL_LABELS[effectiveLevel as PiThinkingLevel] ?? effectiveLevel)
-                : 'Thinking'
-        })()
-        : undefined
-    const piHasModels = piModels && piModels.length > 0
-
-    const closeAllPanels = useCallback(() => {
-        setShowSettings(false)
-        setShowPiModelPanel(false)
-        setShowPiThinkingPanel(false)
-    }, [])
-
-    const handlePiModelToggle = useCallback(() => {
-        if (controlsDisabled) return
-        setShowPiModelPanel((v) => !v)
-        setShowSettings(false)
-        setShowPiThinkingPanel(false)
-        haptic('light')
-    }, [controlsDisabled, haptic])
-
-    const handlePiThinkingToggle = useCallback(() => {
-        if (controlsDisabled) return
-        setShowPiThinkingPanel((v) => !v)
-        setShowSettings(false)
-        setShowPiModelPanel(false)
-        haptic('light')
-    }, [controlsDisabled, haptic])
-
     const overlays = useMemo(() => {
-        // Pi flavor: separate floating panels for model and thinking level.
-        // (Pi RPC mode has no runtime permission switching → no permission panel.)
-        if (agentFlavor === 'pi') {
-            const panels: React.ReactNode[] = []
-
-            // Model selection panel
-            if (showPiModelPanel && piModels && piModels.length > 0) {
-                const currentPiModel = selectedPiModel ?? null
-                panels.push(
-                    <div key="model" className="absolute bottom-[100%] mb-2 left-2 w-64">
-                        <PiModelPanel
-                            models={piModels}
-                            currentModel={currentPiModel ? { provider: currentPiModel.provider, modelId: currentPiModel.modelId } : null}
-                            controlsDisabled={controlsDisabled}
-                            onSelect={(piModel) => {
-                                handleModelChange({ provider: piModel.provider, modelId: piModel.modelId })
-                            }}
-                            onClose={closeAllPanels}
-                        />
-                    </div>
-                )
-            }
-
-            // Thinking level panel
-            if (showPiThinkingPanel && selectedPiModel?.reasoning !== false) {
-                panels.push(
-                    <div key="thinking" className="absolute bottom-[100%] mb-2 left-2 w-48">
-                        <PiThinkingLevelPanel
-                            currentLevel={effort}
-                            reasoning={selectedPiModel?.reasoning}
-                            thinkingLevelMap={selectedPiModel?.thinkingLevelMap}
-                            controlsDisabled={controlsDisabled}
-                            onSelect={(level) => handleEffortChange(level)}
-                            onClose={closeAllPanels}
-                        />
-                    </div>
-                )
-            }
-
-            if (panels.length > 0) return <>{panels}</>
-        }
-
-        // Non-Pi flavors: original unified gear menu
+        // Unified gear menu
         if (showSettings && (showCollaborationSettings || showPermissionSettings || showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings || showEffortSettings || showFastModeSettings)) {
             return (
                 <div className="absolute bottom-[100%] mb-2 w-full">
@@ -977,9 +897,11 @@ export function HappyComposer(props: {
                                             <div className="px-3 pt-2 pb-0.5 text-xs font-medium text-[var(--app-hint)]">
                                                 {group.label}
                                             </div>
-                                            {group.models.map((piModel) => (
+                                            {group.models.map((piModel) => {
+                                                const selected = selectedPiModel?.provider === piModel.provider && selectedPiModel?.modelId === piModel.modelId
+                                                return (
                                                 <button
-                                                    key={piModel.modelId}
+                                                    key={`${piModel.provider}:${piModel.modelId}`}
                                                     type="button"
                                                     disabled={controlsDisabled}
                                                     className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
@@ -992,20 +914,21 @@ export function HappyComposer(props: {
                                                 >
                                                     <div
                                                         className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
-                                                            model === piModel.modelId
+                                                            selected
                                                                 ? 'border-[var(--app-link)]'
                                                                 : 'border-[var(--app-hint)]'
                                                     }`}
                                                     >
-                                                        {model === piModel.modelId && (
+                                                        {selected && (
                                                             <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
                                                         )}
                                                     </div>
-                                                    <span className={model === piModel.modelId ? 'text-[var(--app-link)]' : ''}>
+                                                    <span className={selected ? 'text-[var(--app-link)]' : ''}>
                                                         {piModel.name ?? piModel.modelId}
                                                     </span>
                                                 </button>
-                                            ))}
+                                                )
+                                            })}
                                         </div>
                                     ))
                                 ) : (
@@ -1209,12 +1132,9 @@ export function HappyComposer(props: {
         return null
     }, [
         showSettings,
-        showPiModelPanel,
-        showPiThinkingPanel,
         agentFlavor,
         piModels,
         selectedPiModel,
-        closeAllPanels,
         showCollaborationSettings,
         showPermissionSettings,
         showModelSettings,
@@ -1352,14 +1272,6 @@ export function HappyComposer(props: {
                             onSchedule={setPendingSchedule}
                             onClearSchedule={isControlled ? onClearScheduleProp : () => setPendingScheduleLocal(null)}
                             hasAttachments={hasAttachments}
-                            piModelLabel={piModelLabel}
-                            piModelDisabled={controlsDisabled || !piHasModels}
-                            piModelOpen={showPiModelPanel}
-                            onPiModelToggle={handlePiModelToggle}
-                            piThinkingLabel={piThinkingLabel}
-                            piThinkingDisabled={controlsDisabled || !piHasModels || !selectedPiModel || selectedPiModel.reasoning === false}
-                            piThinkingOpen={showPiThinkingPanel}
-                            onPiThinkingToggle={handlePiThinkingToggle}
                             scratchlistMode={props.scratchlistMode}
                             scratchlistCount={props.scratchlistCount}
                             onScratchlistToggle={props.onScratchlistToggle}
