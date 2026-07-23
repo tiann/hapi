@@ -416,6 +416,8 @@ export default {
   'tool.trace.callsSuffix': 'calls',
   'tool.result': 'Result',
   'tool.duration': 'Duration',
+  'tool.startedAt': 'Started',
+  'tool.completedAt': 'Finished',
   'tool.semanticTitle.readFile': 'Read file',
   'tool.semanticTitle.runShell': 'Run shell',
   'tool.semanticTitle.search': 'Search',
