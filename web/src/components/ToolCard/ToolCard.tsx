@@ -174,9 +174,13 @@ function renderTaskSummary(
 
 function renderToolInput(block: ToolCallBlock, surface: 'inline' | 'dialog' = 'inline'): ReactNode {
     const collapseLongContent = surface === 'inline'
+    // The inline surface renders inside a role="button" preview, so the
+    // wrap toggle's <button> would nest inside an interactive ancestor
+    // (invalid HTML / hydration violation). Suppress it for inline; the
+    // dialog surface (button-free) keeps the toggle.
     const codeBlockSurfaceProps = surface === 'dialog'
         ? { size: 'comfortable' as const, scrollY: true }
-        : {}
+        : { showWrapToggle: false }
     const toolName = block.tool.name
     const input = block.tool.input
 

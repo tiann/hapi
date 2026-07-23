@@ -327,6 +327,8 @@ export default {
   // Code block
   'code.copy': '复制',
   'code.truncated': '预览已截断 — 打开详情查看完整输出',
+  'code.wrap.enable': '开启自动换行',
+  'code.wrap.disable': '关闭自动换行',
 
   // Diff view
   'diff.title': '差异',
