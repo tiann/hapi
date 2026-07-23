@@ -4,6 +4,7 @@ import {
     deduplicateSessionsByAgentId,
     expandSelectedSessionCollapseOverrides,
     filterActiveSessionsOnly,
+    getGroupedSidebarSessionOrder,
     getSessionTimeRange,
     getNextSessionVisibleCount,
     getSessionDedupKey,
@@ -14,7 +15,6 @@ import {
     prepareSidebarSessions,
     sessionMatchesQuery,
     sessionMatchesTimeRange,
-    shouldShowPinnedDivider,
     shouldShowSessionInSidebar
 } from './SessionList'
 
@@ -83,24 +83,23 @@ describe('getWorktreeSessionLabel', () => {
     })
 })
 
-describe('shouldShowPinnedDivider', () => {
-    it('shows one divider at the visible pinned-to-unpinned boundary', () => {
+describe('getGroupedSidebarSessionOrder', () => {
+    it('keeps every pinned session ahead of unpinned sessions across projects and machines', () => {
         const sessions = [
-            makeSession({ id: 'pinned-a', pinned: true }),
-            makeSession({ id: 'pinned-b', pinned: true }),
-            makeSession({ id: 'regular-a' }),
-            makeSession({ id: 'regular-b' })
+            makeSession({ id: 'project-a-pinned', pinned: true, metadata: { path: '/a', machineId: 'm1' } }),
+            makeSession({ id: 'project-a-regular', metadata: { path: '/a', machineId: 'm1' } }),
+            makeSession({ id: 'project-b-pinned', pinned: true, metadata: { path: '/b', machineId: 'm1' } }),
+            makeSession({ id: 'machine-b-pinned', pinned: true, metadata: { path: '/c', machineId: 'm2' } }),
+            makeSession({ id: 'machine-b-regular', metadata: { path: '/c', machineId: 'm2' } })
         ]
 
-        expect(sessions.map((_, index) => shouldShowPinnedDivider(sessions, index)))
-            .toEqual([false, false, true, false])
-    })
-
-    it('does not show a divider when all visible sessions have the same pin state', () => {
-        expect(shouldShowPinnedDivider([
-            makeSession({ id: 'a' }),
-            makeSession({ id: 'b' })
-        ], 1)).toBe(false)
+        expect(getGroupedSidebarSessionOrder(sessions)).toEqual([
+            'project-a-pinned',
+            'project-b-pinned',
+            'machine-b-pinned',
+            'project-a-regular',
+            'machine-b-regular'
+        ])
     })
 })
 

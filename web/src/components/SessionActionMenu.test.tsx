@@ -52,6 +52,8 @@ describe('SessionActionMenu - Pin action', () => {
                 <SessionActionMenu
                     isOpen={true}
                     onClose={vi.fn()}
+                    sessionId="session-1"
+                    sessionTitle="Session 1"
                     sessionActive={false}
                     sessionPinned={true}
                     onTogglePin={onTogglePin}
