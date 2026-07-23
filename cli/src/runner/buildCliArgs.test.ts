@@ -210,6 +210,41 @@ describe('buildCliArgs', () => {
         expect(args).toContain('high')
     })
 
+    it('spawns the omp agent command (not claude) for omp flavor', () => {
+        // Guard: without an omp branch, buildCliArgs('omp', ...) fell through
+        // to 'claude' and the runner started Claude instead of `hapi omp`.
+        const args = buildCliArgs('omp', { directory: '/tmp' })
+        expect(args[0]).toBe('omp')
+    })
+
+    it('passes --resume for omp (hapi omp parses it; runOmp forwards --continue)', () => {
+        const args = buildCliArgs('omp', {
+            directory: '/tmp',
+            resumeSessionId: 'omp-session-id',
+        })
+        expect(args[0]).toBe('omp')
+        expect(args).toContain('--resume')
+        expect(args).toContain('omp-session-id')
+    })
+
+    it('passes --effort for omp agent', () => {
+        const args = buildCliArgs('omp', {
+            directory: '/tmp',
+            effort: 'xhigh',
+        })
+        expect(args).toContain('--effort')
+        expect(args).toContain('xhigh')
+    })
+
+    it('does not pass permission flags to omp (rpc mode fixes --approval-mode at spawn)', () => {
+        const args = buildCliArgs('omp', {
+            directory: '/tmp',
+            permissionMode: 'yolo',
+        })
+        expect(args).not.toContain('--permission-mode')
+        expect(args).not.toContain('--yolo')
+    })
+
     it('builds Grok runner resume, model, effort, and permission arguments', () => {
         const args = buildCliArgs('grok', {
             directory: '/tmp',

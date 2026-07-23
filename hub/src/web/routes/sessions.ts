@@ -955,5 +955,38 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         )
     )
 
+    // Helper: guard + flavor check + error handling for OMP session endpoints
+    async function withOmpSession(
+        c: Context<WebAppEnv>,
+        handler: (ctx: { sessionId: string; engine: SyncEngine }) => Promise<Response>
+    ): Promise<Response> {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) return sessionResult
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (flavor !== 'omp') {
+            return c.json({ success: false, error: 'Not an OMP session' }, 400)
+        }
+
+        try {
+            return await handler({ sessionId: sessionResult.sessionId, engine })
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Internal error'
+            }, 500)
+        }
+    }
+
+    // --- OMP models ---
+    app.get('/sessions/:id/omp-models', (c) =>
+        withOmpSession(c, async ({ sessionId, engine }) =>
+            c.json(await engine.callOmpRpc(sessionId, RPC_METHODS.ListOmpModels, {}, 120_000))
+        )
+    )
+
     return app
 }

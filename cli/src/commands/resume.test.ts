@@ -12,6 +12,7 @@ const {
     runClaudeMock,
     runGrokMock,
     runPiMock,
+    runOmpMock,
     assertCodexLocalSupportedMock,
     existsSyncMock
 } = vi.hoisted(() => ({
@@ -26,6 +27,7 @@ const {
     runClaudeMock: vi.fn(async () => {}),
     runGrokMock: vi.fn(async () => {}),
     runPiMock: vi.fn(async () => {}),
+    runOmpMock: vi.fn(async () => {}),
     assertCodexLocalSupportedMock: vi.fn(),
     existsSyncMock: vi.fn(() => true)
 }))
@@ -50,6 +52,7 @@ vi.mock('@/codex/runCodex', () => ({ runCodex: runCodexMock }))
 vi.mock('@/claude/runClaude', () => ({ runClaude: runClaudeMock }))
 vi.mock('@/grok/runGrok', () => ({ runGrok: runGrokMock }))
 vi.mock('@/pi/runPi', () => ({ runPi: runPiMock }))
+vi.mock('@/omp/runOmp', () => ({ runOmp: runOmpMock }))
 vi.mock('@/codex/utils/codexVersion', () => ({ assertCodexLocalSupported: assertCodexLocalSupportedMock }))
 vi.mock('node:fs', () => ({ existsSync: existsSyncMock }))
 
@@ -80,6 +83,7 @@ describe('resumeCommand', () => {
         runClaudeMock.mockClear()
         runGrokMock.mockClear()
         runPiMock.mockClear()
+        runOmpMock.mockClear()
         assertCodexLocalSupportedMock.mockClear()
         existsSyncMock.mockReturnValue(true)
     })
@@ -342,6 +346,35 @@ describe('resumeCommand', () => {
             startingMode: 'remote',
             model: 'deepseek-v3',
             effort: 'high'
+        })
+    })
+
+    it('resumes an OMP target with effort', async () => {
+        getLocalResumeTargetMock.mockResolvedValue({
+            sessionId: 'hapi-session-omp',
+            flavor: 'omp',
+            directory: '/tmp/project',
+            machineId: 'machine-1',
+            active: false,
+            thinking: false,
+            controlledByUser: false,
+            agentSessionId: 'omp-session-456',
+            model: 'glm-5.2',
+            effort: 'xhigh'
+        })
+
+        await resumeCommand.run(createContext(['hapi-session-omp']))
+
+        expect(handoffSessionToLocalMock).not.toHaveBeenCalled()
+        expect(runOmpMock).toHaveBeenCalledWith({
+            existingSessionId: 'hapi-session-omp',
+            workingDirectory: '/tmp/project',
+            resumeSessionId: 'omp-session-456',
+            startedBy: 'terminal',
+            // OMP has no local TUI input path (same as Pi), so resume defaults to remote.
+            startingMode: 'remote',
+            model: 'glm-5.2',
+            effort: 'xhigh'
         })
     })
 

@@ -25,11 +25,15 @@ const FLAVOR_LOGOS: Record<string, IconType> = {
 }
 
 // Letter-badge fallback for flavors without a brand logo in @lobehub/icons
-// (pi) and for anything unrecognized.
+// (Pi and OMP) and for anything unrecognized.
 const FLAVOR_BADGES: Record<string, { label: string; colors: string }> = {
     pi: {
         label: 'Pi',
         colors: 'bg-[#5b21b6] text-white',
+    },
+    omp: {
+        label: 'Om',
+        colors: 'bg-[#0ea5e9] text-white',
     },
 }
 

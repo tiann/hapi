@@ -31,12 +31,24 @@ export const RPC_METHODS = {
     ArchiveCodexSession: 'archiveCodexSession',
     ListCursorModels: 'listCursorModels',
     ListPiModels: 'listPiModels',
+    ListOmpModels: 'listOmpModels',
     ListOpencodeModels: 'listOpencodeModels',
     ListOpencodeModelsForCwd: 'listOpencodeModelsForCwd',
     ListGrokModelsForCwd: 'listGrokModelsForCwd',
     ListGrokModels: 'listGrokModels',
     ListGrokReasoningEffortOptions: 'listGrokReasoningEffortOptions',
-    ListOpencodeReasoningEffortOptions: 'listOpencodeReasoningEffortOptions'
+    ListOpencodeReasoningEffortOptions: 'listOpencodeReasoningEffortOptions',
+    // OMP superset RPCs (hapi → OMP, single-direction). OMP shares Pi's RPC
+    // protocol family but exposes extra commands; these surface the load-bearing
+    // ones (compaction, steering/interrupt modes, model/thinking cycling,
+    // session stats) to the hub/web.
+    OmpCompact: 'omp-compact',
+    OmpSetSteeringMode: 'omp-set-steering-mode',
+    OmpSetInterruptMode: 'omp-set-interrupt-mode',
+    OmpSetFollowUpMode: 'omp-set-follow-up-mode',
+    OmpCycleModel: 'omp-cycle-model',
+    OmpCycleThinkingLevel: 'omp-cycle-thinking-level',
+    OmpGetSessionStats: 'omp-get-session-stats'
 } as const
 
 export type RpcMethod = typeof RPC_METHODS[keyof typeof RPC_METHODS]

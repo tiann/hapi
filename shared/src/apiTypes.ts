@@ -531,6 +531,51 @@ export type PiCommandsResponse = {
     error?: string
 }
 
+// ============================================================================
+// OMP (Oh My Pi) — same RPC protocol family as Pi (shared pi-agent-core),
+// but OMP's Model object carries thinking info under `model.thinking.efforts`
+// / `effortMap` / `defaultLevel` (per-model level list), not a flat map.
+// ============================================================================
+
+/** Per-model thinking levels OMP exposes (subset of ThinkingLevel the model supports). */
+export type OmpThinkingLevelMap = Partial<Record<string, string | null>>
+
+export type OmpModelSummary = {
+    provider: string
+    modelId: string
+    name?: string
+    contextWindow?: number
+    /** Whether the model supports reasoning/thinking */
+    reasoning?: boolean
+    /** Thinking levels this model supports (OMP `model.thinking.efforts`). */
+    efforts?: string[]
+    /** Maps thinking levels to provider values; null = unsupported. */
+    effortMap?: OmpThinkingLevelMap
+    /** OMP `model.thinking.defaultLevel`. */
+    defaultLevel?: string
+}
+
+export type OmpModelsResponse = {
+    success: boolean
+    availableModels?: OmpModelSummary[]
+    currentModelId?: string | null
+    error?: string
+}
+
+export type ListOmpModelsResponse = OmpModelsResponse
+
+export type OmpCommandSummary = {
+    name: string
+    description?: string
+    source: 'builtin' | 'extension' | 'skill' | 'prompt' | 'custom' | 'mcp_prompt' | 'file'
+}
+
+export type OmpCommandsResponse = {
+    success: boolean
+    commands?: OmpCommandSummary[]
+    error?: string
+}
+
 export type SlashCommand = {
     name: string
     description?: string
