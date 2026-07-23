@@ -9,6 +9,7 @@ import type {
     SessionPermissionMode
 } from '@/api/types';
 import { logger } from '@/ui/logger';
+import type { CodexPersonality } from '@hapi/protocol/modes';
 
 export type AgentSessionBaseOptions<Mode> = {
     api: ApiClient;
@@ -28,6 +29,7 @@ export type AgentSessionBaseOptions<Mode> = {
     effort?: SessionEffort;
     serviceTier?: string | null;
     collaborationMode?: SessionCollaborationMode;
+    personality?: CodexPersonality | null;
 };
 
 export class AgentSessionBase<Mode> {
@@ -53,6 +55,7 @@ export class AgentSessionBase<Mode> {
     protected effort?: SessionEffort;
     protected serviceTier?: string | null;
     protected collaborationMode?: SessionCollaborationMode;
+    protected personality?: CodexPersonality | null;
 
     constructor(opts: AgentSessionBaseOptions<Mode>) {
         this.path = opts.path;
@@ -72,6 +75,7 @@ export class AgentSessionBase<Mode> {
         this.effort = opts.effort;
         this.serviceTier = opts.serviceTier;
         this.collaborationMode = opts.collaborationMode;
+        this.personality = opts.personality;
 
         this.queue.onBatchConsumed = (localIds) => this.client.emitMessagesConsumed(localIds);
 
@@ -142,6 +146,7 @@ export class AgentSessionBase<Mode> {
             effort?: SessionEffort
             serviceTier?: string | null
             collaborationMode?: SessionCollaborationMode
+            personality?: CodexPersonality | null
         } | undefined {
         if (
             this.permissionMode === undefined
@@ -150,6 +155,7 @@ export class AgentSessionBase<Mode> {
             && this.effort === undefined
             && this.serviceTier === undefined
             && this.collaborationMode === undefined
+            && this.personality === undefined
         ) {
             return undefined;
         }
@@ -159,7 +165,8 @@ export class AgentSessionBase<Mode> {
             modelReasoningEffort: this.modelReasoningEffort,
             effort: this.effort,
             serviceTier: this.serviceTier,
-            collaborationMode: this.collaborationMode
+            collaborationMode: this.collaborationMode,
+            personality: this.personality
         };
     }
 
@@ -190,4 +197,7 @@ export class AgentSessionBase<Mode> {
     getCollaborationMode(): SessionCollaborationMode | undefined {
         return this.collaborationMode;
     }
+
+    getPersonality(): CodexPersonality | null | undefined { return this.personality; }
+    setPersonality(personality: CodexPersonality | null): void { this.personality = personality; this.pushKeepAlive(); }
 }

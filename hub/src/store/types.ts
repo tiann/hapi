@@ -1,3 +1,5 @@
+import type { CodexPersonality } from '@hapi/protocol/types'
+
 export type StoredSession = {
     id: string
     tag: string | null
@@ -13,6 +15,7 @@ export type StoredSession = {
     modelReasoningEffort: string | null
     effort: string | null
     serviceTier: string | null
+    personality: CodexPersonality | null
     todos: unknown | null
     todosUpdatedAt: number | null
     teamState: unknown | null

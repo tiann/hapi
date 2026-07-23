@@ -33,7 +33,8 @@ function createSession(overrides?: Partial<Session>): Session {
         effort: null,
         serviceTier: null,
         permissionMode: 'default',
-        collaborationMode: 'default'
+        collaborationMode: 'default',
+        personality: null
     }
 
     return {
@@ -326,6 +327,48 @@ describe('sessions routes', () => {
         expect(applySessionConfigCalls).toEqual([
             ['session-1', { collaborationMode: 'plan' }]
         ])
+    })
+
+    it('applies and clears personality for remote Codex sessions', async () => {
+        const { app, applySessionConfigCalls } = createApp(createSession())
+
+        const selectResponse = await app.request('/api/sessions/session-1/personality', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ personality: 'friendly' })
+        })
+        const clearResponse = await app.request('/api/sessions/session-1/personality', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ personality: null })
+        })
+
+        expect(selectResponse.status).toBe(200)
+        expect(clearResponse.status).toBe(200)
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { personality: 'friendly' }],
+            ['session-1', { personality: null }]
+        ])
+    })
+
+    it('rejects personality changes for local Codex sessions', async () => {
+        const session = createSession({
+            agentState: {
+                controlledByUser: true,
+                requests: {},
+                completedRequests: {}
+            }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/personality', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ personality: 'pragmatic' })
+        })
+
+        expect(response.status).toBe(409)
+        expect(applySessionConfigCalls).toEqual([])
     })
 
     it('rejects model reasoning effort changes for unsupported sessions', async () => {

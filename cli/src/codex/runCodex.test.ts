@@ -7,6 +7,7 @@ const mockCodexSession = vi.hoisted(() => ({
     setModelReasoningEffort: vi.fn(),
     setServiceTier: vi.fn(),
     setCollaborationMode: vi.fn(),
+    setPersonality: vi.fn(),
     stopKeepAlive: vi.fn()
 }))
 
@@ -126,6 +127,7 @@ describe('runCodex', () => {
         mockCodexSession.setModelReasoningEffort.mockReset()
         mockCodexSession.setServiceTier.mockReset()
         mockCodexSession.setCollaborationMode.mockReset()
+        mockCodexSession.setPersonality.mockReset()
         lifecycleMock.registerProcessHandlers.mockClear()
         lifecycleMock.cleanupAndExit.mockClear()
         lifecycleMock.markCrash.mockClear()
@@ -209,6 +211,33 @@ describe('runCodex', () => {
         // Untouched (account-default) sessions must omit the tier entirely so
         // the keepalive never persists serviceTier: null over the default.
         expect(mockCodexSession.setServiceTier).not.toHaveBeenCalled()
+    })
+
+    it('restores persisted personality into keepalive and app-server mode', async () => {
+        harness.sessionInfo = { serviceTier: null, personality: 'friendly' }
+
+        await runCodexImpl({
+            existingSessionId: 'hapi-session-1',
+            workingDirectory: '/tmp/project',
+            resumeSessionId: 'codex-thread-1'
+        } as Parameters<typeof runCodex>[0])
+
+        expect(mockCodexSession.setPersonality).toHaveBeenCalledWith('friendly')
+        expect(harness.loopArgs[0]).toEqual(expect.objectContaining({ personality: 'friendly' }))
+    })
+
+    it('lets an explicit default personality override a persisted selection', async () => {
+        harness.sessionInfo = { serviceTier: null, personality: 'pragmatic' }
+
+        await runCodexImpl({
+            existingSessionId: 'hapi-session-1',
+            workingDirectory: '/tmp/project',
+            resumeSessionId: 'codex-thread-1',
+            personality: null
+        } as Parameters<typeof runCodex>[0])
+
+        expect(mockCodexSession.setPersonality).toHaveBeenCalledWith(null)
+        expect(harness.loopArgs[0]).toEqual(expect.objectContaining({ personality: null }))
     })
 
     it('uses lazy bootstrap for a fresh terminal launch', async () => {

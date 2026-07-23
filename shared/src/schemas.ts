@@ -1,8 +1,9 @@
 import { z } from 'zod'
-import { CODEX_COLLABORATION_MODES, PERMISSION_MODES } from './modes'
+import { CODEX_COLLABORATION_MODES, CODEX_PERSONALITIES, PERMISSION_MODES } from './modes'
 
 export const PermissionModeSchema = z.enum(PERMISSION_MODES)
 export const CodexCollaborationModeSchema = z.enum(CODEX_COLLABORATION_MODES)
+export const CodexPersonalitySchema = z.enum(CODEX_PERSONALITIES)
 export const SessionEndReasonSchema = z.enum(['completed', 'terminated', 'error', 'handoff'])
 export type SessionEndReason = z.infer<typeof SessionEndReasonSchema>
 
@@ -231,7 +232,8 @@ export const SessionSchema = z.object({
     effort: z.string().nullable().optional().default(null),
     serviceTier: z.string().nullable().optional().default(null),
     permissionMode: PermissionModeSchema.optional(),
-    collaborationMode: CodexCollaborationModeSchema.optional()
+    collaborationMode: CodexCollaborationModeSchema.optional(),
+    personality: CodexPersonalitySchema.nullable().optional()
 })
 
 export type Session = z.infer<typeof SessionSchema>
@@ -247,6 +249,7 @@ export const SessionPatchSchema = z.object({
     serviceTier: z.string().nullable().optional(),
     permissionMode: PermissionModeSchema.optional(),
     collaborationMode: CodexCollaborationModeSchema.optional(),
+    personality: CodexPersonalitySchema.nullable().optional(),
     backgroundTaskCount: z.number().optional()
 }).strict()
 

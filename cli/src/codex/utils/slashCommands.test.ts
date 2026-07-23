@@ -91,6 +91,21 @@ describe('resolveCodexSlashCommand', () => {
         });
     });
 
+    it('shows, sets, clears, and validates Codex personality', () => {
+        expect(resolveCodexSlashCommand('/personality', state)).toEqual({
+            kind: 'handled', message: 'Codex personality: default'
+        });
+        expect(resolveCodexSlashCommand('/personality friendly', state)).toMatchObject({
+            updates: { personality: 'friendly' }
+        });
+        expect(resolveCodexSlashCommand('/personality default', { ...state, personality: 'pragmatic' })).toMatchObject({
+            updates: { personality: null }
+        });
+        expect(resolveCodexSlashCommand('/personality loud', state)).toEqual({
+            kind: 'handled', message: 'Unknown Codex personality: loud'
+        });
+    });
+
     it('resolves Codex goal commands for native handling', () => {
         expect(resolveCodexSlashCommand('/goal', state)).toEqual({
             kind: 'goal',

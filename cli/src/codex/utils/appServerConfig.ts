@@ -165,6 +165,9 @@ export function buildThreadStartParams(args: {
     if (args.mode.model) {
         params.model = args.mode.model;
     }
+    if (args.mode.personality) {
+        params.personality = args.mode.personality;
+    }
 
     const threadServiceTier = toAppServerServiceTier(args.mode.serviceTier);
     if (threadServiceTier !== undefined) {
@@ -216,6 +219,9 @@ export function buildTurnStartParams(args: {
         : args.mode?.collaborationMode;
     const model = args.overrides?.model ?? args.mode?.model;
     const modelReasoningEffort = args.mode?.modelReasoningEffort;
+    if (args.mode?.personality) {
+        params.personality = args.mode.personality;
+    }
 
     if (modelReasoningEffort) {
         params.effort = modelReasoningEffort;

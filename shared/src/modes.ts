@@ -28,6 +28,16 @@ export type CodexPermissionMode = typeof CODEX_PERMISSION_MODES[number]
 export const CODEX_COLLABORATION_MODES = ['default', 'plan'] as const
 export type CodexCollaborationMode = typeof CODEX_COLLABORATION_MODES[number]
 
+export const CODEX_PERSONALITIES = ['friendly', 'pragmatic', 'none'] as const
+export type CodexPersonality = typeof CODEX_PERSONALITIES[number]
+export const CodexPersonalitySchema = z.enum(CODEX_PERSONALITIES)
+export const CODEX_PERSONALITY_OPTIONS = [
+    { value: null, label: 'Default' },
+    { value: 'friendly', label: 'Friendly' },
+    { value: 'pragmatic', label: 'Pragmatic' },
+    { value: 'none', label: 'None' }
+] as const
+
 export const GEMINI_PERMISSION_MODES = ['default', 'read-only', 'safe-yolo', 'yolo'] as const
 export type GeminiPermissionMode = typeof GEMINI_PERMISSION_MODES[number]
 

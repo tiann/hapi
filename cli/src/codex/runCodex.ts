@@ -19,6 +19,7 @@ import type { ReasoningEffort } from './appServerTypes';
 import { parseCodexSpecialCommand } from './codexSpecialCommands';
 import { listSlashCommands } from '@/modules/common/slashCommands';
 import { resolveCodexSlashCommand } from './utils/slashCommands';
+import type { CodexPersonality } from '@hapi/protocol/modes';
 import { parseReasoningEffortValue } from './utils/reasoningEffort';
 
 export { emitReadyIfIdle } from './utils/emitReadyIfIdle';
@@ -32,6 +33,7 @@ export async function runCodex(opts: {
     modelReasoningEffort?: ReasoningEffort;
     serviceTier?: string;
     collaborationMode?: EnhancedMode['collaborationMode'];
+    personality?: CodexPersonality | null;
     existingSessionId?: string;
     workingDirectory?: string;
 }): Promise<void> {
@@ -73,7 +75,8 @@ export async function runCodex(opts: {
         model: mode.model,
         modelReasoningEffort: mode.modelReasoningEffort,
         collaborationMode: mode.collaborationMode,
-        serviceTier: mode.serviceTier
+        serviceTier: mode.serviceTier,
+        personality: mode.personality
     }));
 
     const codexCliOverrides = parseCodexCliOverrides(opts.codexArgs);
@@ -96,6 +99,9 @@ export async function runCodex(opts: {
     // thread immediately runs with the right tier; otherwise seed from the
     // persisted session. A persisted/absent `null` stays untouched (omitted).
     let currentServiceTier: string | null | undefined = opts.serviceTier ?? sessionInfo.serviceTier ?? undefined;
+    let currentPersonality: CodexPersonality | null | undefined = opts.personality !== undefined
+        ? opts.personality
+        : sessionInfo.personality ?? undefined;
 
     const lifecycle = createRunnerLifecycle({
         session,
@@ -124,6 +130,7 @@ export async function runCodex(opts: {
             sessionInstance.setServiceTier(currentServiceTier);
         }
         sessionInstance.setCollaborationMode(currentCollaborationMode);
+        if (currentPersonality !== undefined) sessionInstance.setPersonality(currentPersonality);
         logger.debug(
             `[Codex] Synced session config for keepalive: ` +
             `permissionMode=${currentPermissionMode}, model=${currentModel ?? 'auto'}, ` +
@@ -137,6 +144,7 @@ export async function runCodex(opts: {
         modelReasoningEffort?: ReasoningEffort | null;
         collaborationMode?: EnhancedMode['collaborationMode'];
         serviceTier?: string | null;
+        personality?: CodexPersonality | null;
     } | undefined): void => {
         if (!updates) return;
         if (updates.permissionMode !== undefined) {
@@ -154,6 +162,7 @@ export async function runCodex(opts: {
         if (updates.serviceTier !== undefined) {
             currentServiceTier = updates.serviceTier;
         }
+        if (updates.personality !== undefined) currentPersonality = updates.personality;
         applyCurrentConfigToSession();
     };
 
@@ -178,6 +187,8 @@ export async function runCodex(opts: {
         if (sessionServiceTier !== undefined) {
             currentServiceTier = sessionServiceTier;
         }
+        const sessionPersonality = sessionWrapperRef.current?.getPersonality();
+        if (sessionPersonality !== undefined) currentPersonality = sessionPersonality;
     };
 
     let userMessageChain: Promise<void> = Promise.resolve();
@@ -194,7 +205,8 @@ export async function runCodex(opts: {
                     collaborationMode: currentCollaborationMode,
                     model: currentModel,
                     modelReasoningEffort: currentModelReasoningEffort,
-                    serviceTier: currentServiceTier
+                    serviceTier: currentServiceTier,
+                    personality: currentPersonality
                 });
                 if (slash.kind === 'goal') {
                     if (slash.message) {
@@ -214,7 +226,8 @@ export async function runCodex(opts: {
                         model: currentModel,
                         modelReasoningEffort: currentModelReasoningEffort,
                         collaborationMode: currentCollaborationMode,
-                        serviceTier: currentServiceTier
+                        serviceTier: currentServiceTier,
+                        personality: currentPersonality
                     }, localId);
                     return;
                 }
@@ -253,7 +266,8 @@ export async function runCodex(opts: {
                     model: currentModel,
                     modelReasoningEffort: currentModelReasoningEffort,
                     collaborationMode: currentCollaborationMode,
-                    serviceTier: currentServiceTier
+                    serviceTier: currentServiceTier,
+                    personality: currentPersonality
                 };
                 if (isolatedCommandText) {
                     messageQueue.pushIsolateAndClear(isolatedCommandText, enhancedMode, localId);
@@ -267,7 +281,8 @@ export async function runCodex(opts: {
                     model: currentModel,
                     modelReasoningEffort: currentModelReasoningEffort,
                     collaborationMode: currentCollaborationMode,
-                    serviceTier: currentServiceTier
+                    serviceTier: currentServiceTier,
+                    personality: currentPersonality
                 };
                 messageQueue.push(formatMessageWithAttachments(message.content.text, message.content.attachments), enhancedMode, localId);
             }
@@ -346,7 +361,7 @@ export async function runCodex(opts: {
         if (!payload || typeof payload !== 'object') {
             throw new Error('Invalid session config payload');
         }
-        const config = payload as { permissionMode?: unknown; model?: unknown; modelReasoningEffort?: unknown; collaborationMode?: unknown; serviceTier?: unknown };
+        const config = payload as { permissionMode?: unknown; model?: unknown; modelReasoningEffort?: unknown; collaborationMode?: unknown; serviceTier?: unknown; personality?: unknown };
 
         if (config.permissionMode !== undefined) {
             currentPermissionMode = resolvePermissionMode(config.permissionMode);
@@ -368,6 +383,10 @@ export async function runCodex(opts: {
         if (config.serviceTier !== undefined) {
             currentServiceTier = resolveServiceTier(config.serviceTier);
         }
+        if (config.personality !== undefined) {
+            if (config.personality !== null && !['friendly', 'pragmatic', 'none'].includes(String(config.personality))) throw new Error('Invalid Codex personality');
+            currentPersonality = config.personality as CodexPersonality | null;
+        }
 
         applyCurrentConfigToSession({ syncModel: shouldSyncModel });
         const applied: {
@@ -376,11 +395,13 @@ export async function runCodex(opts: {
             modelReasoningEffort: ReasoningEffort | null;
             collaborationMode: EnhancedMode['collaborationMode'];
             serviceTier: string | null;
+            personality: CodexPersonality | null;
         } = {
             permissionMode: currentPermissionMode,
             modelReasoningEffort: currentModelReasoningEffort ?? null,
             collaborationMode: currentCollaborationMode,
-            serviceTier: currentServiceTier ?? null
+            serviceTier: currentServiceTier ?? null,
+            personality: currentPersonality ?? null
         };
         if (shouldSyncModel) {
             applied.model = currentModel ?? null;
@@ -406,6 +427,7 @@ export async function runCodex(opts: {
             model: currentModel,
             modelReasoningEffort: currentModelReasoningEffort,
             collaborationMode: currentCollaborationMode,
+            personality: currentPersonality,
             resumeSessionId: opts.resumeSessionId,
             sourceSessionId: codexSourceSessionId,
             replayTranscriptHistoryOnStart,

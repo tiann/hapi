@@ -164,6 +164,26 @@ describe('appServerConfig', () => {
         });
     });
 
+    it('passes personality to thread and turn params only when selected', () => {
+        const thread = buildThreadStartParams({
+            cwd: '/workspace/project',
+            mode: { permissionMode: 'default', collaborationMode: 'default', personality: 'friendly' },
+            mcpServers
+        });
+        const turn = buildTurnStartParams({
+            threadId: 'thread-1', message: 'hello', cwd: '/workspace/project',
+            mode: { permissionMode: 'default', collaborationMode: 'default', model: 'gpt-5.5', personality: 'pragmatic' }
+        });
+        const unset = buildTurnStartParams({
+            threadId: 'thread-1', message: 'hello', cwd: '/workspace/project',
+            mode: { permissionMode: 'default', collaborationMode: 'default', model: 'gpt-5.5', personality: null }
+        });
+
+        expect(thread.personality).toBe('friendly');
+        expect(turn.personality).toBe('pragmatic');
+        expect('personality' in unset).toBe(false);
+    });
+
     it('translates Fast to the advertised app-server tier (priority) in thread params', () => {
         const params = buildThreadStartParams({
             cwd: '/workspace/project',

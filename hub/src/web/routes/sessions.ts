@@ -6,6 +6,7 @@ import {
     RenameSessionRequestSchema,
     ResumeSessionRequestSchema,
     SessionCollaborationModeRequestSchema,
+    SessionPersonalityRequestSchema,
     SessionEffortRequestSchema,
     SessionModelReasoningEffortRequestSchema,
     SessionServiceTierRequestSchema,
@@ -486,6 +487,23 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to apply collaboration mode'
             return c.json({ error: message }, 409)
+        }
+    })
+
+    app.post('/sessions/:id/personality', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) return sessionResult
+        if ((sessionResult.session.metadata?.flavor ?? 'claude') !== 'codex') return c.json({ error: 'Personality is only supported for Codex sessions' }, 400)
+        if (sessionResult.session.agentState?.controlledByUser === true) return c.json({ error: 'Personality can only be changed for remote Codex sessions' }, 409)
+        const parsed = SessionPersonalityRequestSchema.safeParse(await c.req.json().catch(() => null))
+        if (!parsed.success) return c.json({ error: 'Invalid body' }, 400)
+        try {
+            await engine.applySessionConfig(sessionResult.sessionId, { personality: parsed.data.personality })
+            return c.json({ ok: true })
+        } catch (error) {
+            return c.json({ error: error instanceof Error ? error.message : 'Failed to apply personality' }, 409)
         }
     })
 

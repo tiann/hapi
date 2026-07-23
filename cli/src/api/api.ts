@@ -117,7 +117,8 @@ export class ApiClient {
             effort: raw.effort,
             serviceTier: raw.serviceTier,
             permissionMode: raw.permissionMode,
-            collaborationMode: raw.collaborationMode
+            collaborationMode: raw.collaborationMode,
+            personality: raw.personality
         }
     }
 
@@ -167,7 +168,8 @@ export class ApiClient {
             effort: raw.effort,
             serviceTier: raw.serviceTier,
             permissionMode: raw.permissionMode,
-            collaborationMode: raw.collaborationMode
+            collaborationMode: raw.collaborationMode,
+            personality: raw.personality
         }
     }
 

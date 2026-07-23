@@ -1,4 +1,4 @@
-import { getCodexCollaborationModeOptions, getPermissionModeOptionsForFlavor } from '@hapi/protocol'
+import { CODEX_PERSONALITY_OPTIONS, getCodexCollaborationModeOptions, getPermissionModeOptionsForFlavor } from '@hapi/protocol'
 import { ComposerPrimitive, useAssistantApi, useAssistantState } from '@assistant-ui/react'
 import {
     type ChangeEvent as ReactChangeEvent,
@@ -22,6 +22,7 @@ import { usePlatform } from '@/hooks/usePlatform'
 import { usePWAInstall } from '@/hooks/usePWAInstall'
 import { supportsEffort, supportsModelChange, PI_THINKING_LEVEL_LABELS } from '@hapi/protocol'
 import type { PiThinkingLevel } from '@hapi/protocol'
+import type { CodexPersonality } from '@hapi/protocol'
 import { markSkillUsed } from '@/lib/recent-skills'
 import { useComposerDraft } from '@/hooks/useComposerDraft'
 import { useComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
@@ -138,6 +139,7 @@ export function HappyComposer(props: {
     disabled?: boolean
     permissionMode?: PermissionMode
     collaborationMode?: CodexCollaborationMode
+    personality?: CodexPersonality | null
     threadGoal?: ThreadGoal | null
     model?: string | null
     modelReasoningEffort?: string | null
@@ -167,6 +169,7 @@ export function HappyComposer(props: {
     /** Cursor: effort/variant wire ids for the selected base model. */
     modelEffortOptions?: Array<{ value: string; label: string }>
     onCollaborationModeChange?: (mode: CodexCollaborationMode) => void
+    onPersonalityChange?: (personality: CodexPersonality | null) => void
     onPermissionModeChange?: (mode: PermissionMode) => void
     onModelChange?: (model: { provider: string; modelId: string } | string | null) => void
     /** Cursor: effort/variant wire id (separate from base model change). */
@@ -232,6 +235,8 @@ export function HappyComposer(props: {
         selectedModelVariant,
         modelEffortOptions,
         onCollaborationModeChange,
+        personality = null,
+        onPersonalityChange,
         onPermissionModeChange,
         onModelChange,
         onModelEffortChange,
@@ -880,7 +885,7 @@ export function HappyComposer(props: {
         }
 
         // Non-Pi flavors: original unified gear menu
-        if (showSettings && (showCollaborationSettings || showPermissionSettings || showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings || showEffortSettings || showFastModeSettings)) {
+        if (showSettings && (showCollaborationSettings || onPersonalityChange || showPermissionSettings || showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings || showEffortSettings || showFastModeSettings)) {
             return (
                 <div className="absolute bottom-[100%] mb-2 w-full">
                     <FloatingOverlay maxHeight={320}>
@@ -916,6 +921,17 @@ export function HappyComposer(props: {
                                         <span className={collaborationMode === option.mode ? 'text-[var(--app-link)]' : ''}>
                                             {option.label}
                                         </span>
+                                    </button>
+                                ))}
+                            </div>
+                        ) : null}
+
+                        {onPersonalityChange ? (
+                            <div className="py-2">
+                                <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">Personality</div>
+                                {CODEX_PERSONALITY_OPTIONS.map((option) => (
+                                    <button key={option.label} type="button" disabled={controlsDisabled} className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-[var(--app-secondary-bg)]" onClick={() => onPersonalityChange(option.value)} onMouseDown={(e) => e.preventDefault()}>
+                                        <span className={personality === option.value ? 'text-[var(--app-link)]' : ''}>{personality === option.value ? '● ' : '○ '}{option.label}</span>
                                     </button>
                                 ))}
                             </div>
@@ -1247,6 +1263,8 @@ export function HappyComposer(props: {
         handleEffortChange,
         handleServiceTierChange,
         handleSuggestionSelect,
+        personality,
+        onPersonalityChange,
         t
     ])
 

@@ -1,4 +1,5 @@
 import type { Database } from 'bun:sqlite'
+import type { CodexPersonality } from '@hapi/protocol/types'
 import { randomUUID } from 'node:crypto'
 
 import type { StoredSession, VersionedUpdateResult } from './types'
@@ -145,6 +146,7 @@ type DbSessionRow = {
     model_reasoning_effort: string | null
     effort: string | null
     service_tier: string | null
+    personality: CodexPersonality | null
     todos: string | null
     todos_updated_at: number | null
     team_state: string | null
@@ -170,6 +172,7 @@ function toStoredSession(row: DbSessionRow): StoredSession {
         modelReasoningEffort: row.model_reasoning_effort,
         effort: row.effort,
         serviceTier: row.service_tier,
+        personality: row.personality,
         todos: safeJsonParse(row.todos),
         todosUpdatedAt: row.todos_updated_at,
         teamState: safeJsonParse(row.team_state),
@@ -496,6 +499,39 @@ export function setSessionServiceTier(
             id,
             namespace,
             service_tier: serviceTier,
+            updated_at: now,
+            touch_updated_at: touchUpdatedAt ? 1 : 0
+        })
+
+        return result.changes === 1
+    } catch {
+        return false
+    }
+}
+
+export function setSessionPersonality(
+    db: Database,
+    id: string,
+    personality: string | null,
+    namespace: string,
+    options?: { touchUpdatedAt?: boolean }
+): boolean {
+    const now = Date.now()
+    const touchUpdatedAt = options?.touchUpdatedAt === true
+
+    try {
+        const result = db.prepare(`
+            UPDATE sessions
+            SET personality = @personality,
+                updated_at = CASE WHEN @touch_updated_at = 1 THEN @updated_at ELSE updated_at END,
+                seq = seq + 1
+            WHERE id = @id
+              AND namespace = @namespace
+              AND personality IS NOT @personality
+        `).run({
+            id,
+            namespace,
+            personality,
             updated_at: now,
             touch_updated_at: touchUpdatedAt ? 1 : 0
         })

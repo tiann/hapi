@@ -849,6 +849,7 @@ export class ApiSessionClient extends EventEmitter {
             effort?: string | null
             serviceTier?: string | null
             collaborationMode?: SessionCollaborationMode
+            personality?: import('@hapi/protocol/modes').CodexPersonality | null
         }
     ): void {
         if (this.state !== 'active') {

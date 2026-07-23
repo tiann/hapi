@@ -40,6 +40,31 @@ describe('alive incremental events', () => {
         expect(update.data).toEqual(expect.objectContaining({ active: true }))
     })
 
+    it('includes personality changes in session alive updates', () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+        const session = cache.getOrCreateSession(
+            'session-personality-alive',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            { requests: {}, completedRequests: {} },
+            'default'
+        )
+
+        events.length = 0
+        cache.handleSessionAlive({
+            sid: session.id,
+            time: Date.now(),
+            thinking: false,
+            personality: 'pragmatic'
+        })
+
+        const update = events.find((event) => event.type === 'session-updated')
+        expect(update).toBeDefined()
+        if (!update || update.type !== 'session-updated') return
+        expect(update.data).toEqual(expect.objectContaining({ personality: 'pragmatic' }))
+    })
+
     it('emits full active machine object on machine alive', () => {
         const store = new Store(':memory:')
         const events: SyncEvent[] = []

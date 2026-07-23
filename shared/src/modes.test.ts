@@ -1,6 +1,9 @@
 import { describe, expect, it, test } from 'bun:test'
 import {
     AGENT_FLAVORS,
+    CODEX_PERSONALITIES,
+    CODEX_PERSONALITY_OPTIONS,
+    CodexPersonalitySchema,
     AgentFlavorSchema,
     CREATABLE_AGENT_FLAVORS,
     getPermissionModeLabel,
@@ -9,6 +12,18 @@ import {
     getPermissionModesForFlavor,
     isPermissionModeAllowedForFlavor,
 } from './modes'
+
+describe('Codex personality options', () => {
+    test('offers default plus every app-server personality', () => {
+        expect(CODEX_PERSONALITY_OPTIONS.map((option) => option.value)).toEqual([
+            null,
+            ...CODEX_PERSONALITIES
+        ])
+        for (const personality of CODEX_PERSONALITIES) {
+            expect(CodexPersonalitySchema.safeParse(personality).success).toBe(true)
+        }
+    })
+})
 
 describe('Gemini CLI sunset (read-only, not creatable)', () => {
     test('gemini stays a valid flavor so existing stored sessions still validate/load', () => {

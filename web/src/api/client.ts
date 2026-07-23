@@ -529,6 +529,10 @@ export class ApiClient {
         })
     }
 
+    async setPersonality(sessionId: string, personality: import('@hapi/protocol').CodexPersonality | null): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/personality`, { method: 'POST', body: JSON.stringify({ personality }) })
+    }
+
     async setModel(sessionId: string, model: { provider: string; modelId: string } | string | null): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/model`, {
             method: 'POST',
