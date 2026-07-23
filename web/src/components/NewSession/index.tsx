@@ -963,7 +963,28 @@ export function NewSession(props: {
         }
     }
 
-    const canCreate = Boolean(machineId && trimmedDirectory && !isFormDisabled && !missingWorktreeDirectory)
+    const isLaunchPreferenceValidationPending =
+        (agent === 'codex'
+            && (model !== 'auto' || modelReasoningEffort !== 'default')
+            && codexModelsState.isLoading)
+        || (agent === 'cursor'
+            && (model !== 'auto' || cursorSelectedBase !== 'auto')
+            && cursorModelsState.isLoading)
+        || (agent === 'grok'
+            && deferredDirectoryExists === true
+            && (model !== 'auto' || effort !== 'auto')
+            && grokModelsState.isLoading)
+        || (agent === 'opencode'
+            && deferredDirectoryExists === true
+            && opencodeSelectedModel !== null
+            && opencodeModelsState.isLoading)
+    const canCreate = Boolean(
+        machineId
+        && trimmedDirectory
+        && !isFormDisabled
+        && !missingWorktreeDirectory
+        && !isLaunchPreferenceValidationPending
+    )
 
     return (
         <div className="flex flex-col divide-y divide-[var(--app-divider)]">

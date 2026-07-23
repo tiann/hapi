@@ -12,7 +12,8 @@ import {
 const mocks = vi.hoisted(() => ({
     spawnSession: vi.fn(),
     onSuccess: vi.fn(),
-    notification: vi.fn()
+    notification: vi.fn(),
+    codexModelsLoading: false
 }))
 
 vi.mock('@/lib/use-translation', () => ({
@@ -67,7 +68,7 @@ vi.mock('@/hooks/queries/useCodexModels', () => ({
                 supportedReasoningEfforts: ['low', 'high', 'max']
             }
         ],
-        isLoading: false,
+        isLoading: mocks.codexModelsLoading,
         error: null
     })
 }))
@@ -150,6 +151,7 @@ describe('NewSession launch preferences', () => {
         mocks.spawnSession.mockReset()
         mocks.onSuccess.mockReset()
         mocks.notification.mockReset()
+        mocks.codexModelsLoading = false
         savePreferredAgent('codex')
     })
 
@@ -176,6 +178,36 @@ describe('NewSession launch preferences', () => {
             expect(screen.getByTestId('model')).toHaveTextContent('gpt-5.6-sol')
             expect(screen.getByTestId('reasoning')).toHaveTextContent('xhigh')
         })
+    })
+
+    it.each([
+        ['model', 'gpt-5.6-sol', 'default'],
+        ['reasoning effort', 'auto', 'xhigh']
+    ])('disables creation while a remembered dynamic %s is being validated', async (
+        _setting,
+        model,
+        modelReasoningEffort
+    ) => {
+        mocks.codexModelsLoading = true
+        savePreferredLaunchSettings('machine-1', 'codex', {
+            model,
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort
+        })
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => expect(screen.getByTestId('create')).toBeDisabled())
     })
 
     it('saves changed launch settings only after creation succeeds', async () => {
