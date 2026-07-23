@@ -359,8 +359,10 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             replayExistingHistory: true,
             onEvent: (event) => {
                 const converted = convertCodexEvent(event);
-                if (converted?.message?.type === 'token_count') {
-                    this.session.recordCodexUsage(converted.message);
+                for (const message of converted?.messages ?? []) {
+                    if (message.type === 'token_count') {
+                        this.session.recordCodexUsage(message);
+                    }
                 }
             }
         });
