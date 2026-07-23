@@ -141,6 +141,12 @@ export type EventPresentation = {
 }
 
 export function getEventPresentation(event: AgentEvent): EventPresentation {
+    if (event.type === 'error') {
+        const message = typeof (event as { message?: unknown }).message === 'string'
+            ? (event as { message: string }).message
+            : 'Agent error'
+        return { icon: '⚠️', text: message }
+    }
     if (event.type === 'api-error') {
         const { retryAttempt, maxRetries } = event as { retryAttempt: number; maxRetries: number }
         if (maxRetries > 0 && retryAttempt >= maxRetries) {
