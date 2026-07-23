@@ -52,7 +52,7 @@ import { homedir, hostname, platform, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { AcpVerifyProbe, type AcpProbeOptions } from './acpVerifyProbe'
-import { listLegacyChatStoreCandidates, readLegacyMetaLastUsedModel } from './cursorLegacyMigrator'
+import { listLegacyChatStoreCandidates, readLegacyMetaLastUsedModel, checkpointLegacySqliteStore } from './cursorLegacyMigrator'
 import type {
     CursorImportableSessionSummary,
     CursorImportRefusalReason,
@@ -638,6 +638,53 @@ export async function importCursorSession(options: {
     // owner-private.
     if (sourceFormat === 'legacy') {
         try {
+            try {
+                checkpointLegacySqliteStore(sourceStorePath)
+            } catch (err) {
+                return failure(
+                    'internal_error',
+                    `wal_checkpoint failed before import: ${err instanceof Error ? err.message : String(err)}`
+                )
+            }
+            try {
+                const walSt = statSync(`${sourceStorePath}-wal`)
+                if (walSt.size > 0) {
+                    return failure(
+                        'internal_error',
+                        'store.db-wal grew between checkpoint and copy; retry after Cursor exits'
+                    )
+                }
+            } catch (err) {
+                const code = (err as NodeJS.ErrnoException).code
+                if (code !== 'ENOENT') {
+                    return failure(
+                        'internal_error',
+                        `could not stat store.db-wal post-checkpoint: ${err instanceof Error ? err.message : String(err)}`
+                    )
+                }
+            }
+
+            type FileFp = { exists: true; mtimeMs: number; size: number } | { exists: false }
+            const fpOf = (p: string): FileFp => {
+                try {
+                    const st = statSync(p)
+                    return { exists: true, mtimeMs: st.mtimeMs, size: st.size }
+                } catch {
+                    return { exists: false }
+                }
+            }
+            const fpEqual = (a: FileFp, b: FileFp): boolean => {
+                if (!a.exists && !b.exists) return true
+                if (!a.exists || !b.exists) return false
+                return a.mtimeMs === b.mtimeMs && a.size === b.size
+            }
+            const fingerprint = () => ({
+                main: fpOf(sourceStorePath),
+                wal: fpOf(`${sourceStorePath}-wal`),
+                shm: fpOf(`${sourceStorePath}-shm`)
+            })
+            const before = fingerprint()
+
             mkdirSync(join(options.home, '.cursor', 'acp-sessions'), { recursive: true })
             try {
                 mkdirSync(acpSessionDir, { recursive: false, mode: 0o700 })
@@ -649,6 +696,18 @@ export async function importCursorSession(options: {
                 throw err
             }
             copyFileSync(sourceStorePath, join(acpSessionDir, 'store.db'))
+            const after = fingerprint()
+            if (
+                !fpEqual(before.main, after.main)
+                || !fpEqual(before.wal, after.wal)
+                || !fpEqual(before.shm, after.shm)
+            ) {
+                rmtreeSafe(acpSessionDir)
+                return failure(
+                    'internal_error',
+                    'legacy store changed during import; retry after Cursor exits'
+                )
+            }
             try { chmodSync(join(acpSessionDir, 'store.db'), 0o600) } catch {}
             const titleFromMeta = readMetaTitleSafe(sourceStorePath)
             const sidecar: Record<string, unknown> = {
