@@ -8,6 +8,7 @@
 import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { getHappyCliCommand } from '@/utils/spawnHappyCLI';
 import type { ApiSessionClient } from '@/api/apiSession';
+import { exportHapiSessionEnv } from '@/agent/hapiSessionEnv';
 
 /**
  * MCP server entry configuration.
@@ -56,11 +57,25 @@ export interface HapiMcpBridgeOptions {
  *
  * This is the single source of truth for MCP bridge setup,
  * used by both local and remote launchers.
+ *
+ * Lazy Codex sessions stay pending until first materialization. We materialize
+ * here (before startHappyServer / agent spawn) so:
+ * - the hub row exists for REST self-targeting via HAPI_SESSION_ID
+ * - hapiMcpUrl from startHappyServer is persisted to the hub, not only local pending state
  */
 export async function buildHapiMcpBridge(
     client: ApiSessionClient,
     options: HapiMcpBridgeOptions = {}
 ): Promise<HapiMcpBridge> {
+    if (client.isPending()) {
+        const materialized = await client.materialize();
+        if (!materialized) {
+            throw new Error(`Failed to materialize HAPI session ${client.sessionId} before MCP bridge start`);
+        }
+    }
+    // Belt-and-suspenders: onMaterialized already exports; keep env set for non-lazy too.
+    exportHapiSessionEnv(client.sessionId);
+
     const happyServer = await startHappyServer(client, {
         emitTitleSummary: options.emitTitleSummary,
         skillLookup: options.skillLookup

@@ -221,7 +221,7 @@ describe('bootstrapLazySession', () => {
         delete process.env[HAPI_SESSION_ID_ENV]
     })
 
-    it('exports HAPI_SESSION_ID for the provisional session id before materialization', async () => {
+    it('does not export HAPI_SESSION_ID until the hub row is materialized', async () => {
         const pendingClient = { isPending: () => true }
         sessionSyncClientMock.mockReturnValue(pendingClient)
         readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
@@ -233,8 +233,18 @@ describe('bootstrapLazySession', () => {
             agentState: { controlledByUser: false }
         })
 
+        expect(process.env[HAPI_SESSION_ID_ENV]).toBeUndefined()
+        expect(result.sessionInfo.id).toMatch(/^[0-9a-f-]{36}$/)
+
+        const [, options] = sessionSyncClientMock.mock.calls[0]
+        const materialized = createSession()
+        materialized.id = result.sessionInfo.id
+        options.onMaterialized(materialized, {
+            metadata: result.metadata,
+            agentState: { controlledByUser: false }
+        })
+
         expect(process.env[HAPI_SESSION_ID_ENV]).toBe(result.sessionInfo.id)
-        expect(process.env[HAPI_SESSION_ID_ENV]).toMatch(/^[0-9a-f-]{36}$/)
     })
 
     it('does not persist a machine or session until materialization', async () => {

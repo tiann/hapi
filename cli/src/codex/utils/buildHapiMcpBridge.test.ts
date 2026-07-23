@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ApiSessionClient } from '@/api/apiSession'
+import { HAPI_SESSION_ID_ENV } from '@/agent/hapiSessionEnv'
 
 const harness = vi.hoisted(() => ({
     startOptions: null as unknown,
-    cliArgs: [] as string[]
+    cliArgs: [] as string[],
+    materialize: vi.fn(async () => true)
 }))
 
 vi.mock('@/claude/utils/startHappyServer', () => ({
@@ -28,12 +30,28 @@ vi.mock('@/utils/spawnHappyCLI', () => ({
 
 import { buildHapiMcpBridge } from './buildHapiMcpBridge'
 
-describe('buildHapiMcpBridge skill lookup config', () => {
-    const client = {} as ApiSessionClient
+function createClient(options?: { pending?: boolean; sessionId?: string }): ApiSessionClient {
+    let pending = options?.pending ?? false
+    return {
+        sessionId: options?.sessionId ?? 'hub-session-1',
+        isPending: () => pending,
+        materialize: async () => {
+            const ok = await harness.materialize()
+            if (ok) {
+                pending = false
+            }
+            return ok
+        }
+    } as unknown as ApiSessionClient
+}
 
+describe('buildHapiMcpBridge skill lookup config', () => {
     beforeEach(() => {
         harness.startOptions = null
         harness.cliArgs = []
+        harness.materialize.mockReset()
+        harness.materialize.mockResolvedValue(true)
+        delete process.env[HAPI_SESSION_ID_ENV]
     })
 
     it('forwards the enabled HTTP tool through STDIO and auto-approves it', async () => {
@@ -42,7 +60,7 @@ describe('buildHapiMcpBridge skill lookup config', () => {
             flavor: 'opencode'
         }
 
-        const bridge = await buildHapiMcpBridge(client, { skillLookup })
+        const bridge = await buildHapiMcpBridge(createClient(), { skillLookup })
 
         expect(harness.startOptions).toEqual({
             emitTitleSummary: undefined,
@@ -62,11 +80,31 @@ describe('buildHapiMcpBridge skill lookup config', () => {
     })
 
     it('does not expose skill_lookup for native-skill bridge callers', async () => {
-        const bridge = await buildHapiMcpBridge(client)
+        const bridge = await buildHapiMcpBridge(createClient())
 
         expect(harness.cliArgs.at(-1)).toBe('change_title,display_image')
         expect(bridge.mcpServers.hapi.tools).toEqual({
             change_title: { approval_mode: 'approve' }
         })
+    })
+
+    it('materializes pending lazy sessions before starting the MCP server', async () => {
+        const client = createClient({ pending: true, sessionId: 'lazy-session-1' })
+
+        await buildHapiMcpBridge(client)
+
+        expect(harness.materialize).toHaveBeenCalledOnce()
+        expect(process.env[HAPI_SESSION_ID_ENV]).toBe('lazy-session-1')
+        expect(client.isPending()).toBe(false)
+    })
+
+    it('fails closed when pending materialization fails', async () => {
+        harness.materialize.mockResolvedValue(false)
+        const client = createClient({ pending: true, sessionId: 'lazy-session-fail' })
+
+        await expect(buildHapiMcpBridge(client)).rejects.toThrow(
+            'Failed to materialize HAPI session lazy-session-fail before MCP bridge start'
+        )
+        expect(process.env[HAPI_SESSION_ID_ENV]).toBeUndefined()
     })
 })

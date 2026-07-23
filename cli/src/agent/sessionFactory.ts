@@ -12,7 +12,10 @@ import { logger } from '@/ui/logger'
 import { runtimePath } from '@/projectPath'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { readWorktreeEnv } from '@/utils/worktreeEnv'
+import { exportHapiSessionEnv } from '@/agent/hapiSessionEnv'
 import packageJson from '../../package.json'
+
+export { HAPI_SESSION_ID_ENV, exportHapiSessionEnv } from '@/agent/hapiSessionEnv'
 
 export type SessionStartedBy = 'runner' | 'terminal'
 
@@ -114,31 +117,6 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
     if (metadata.piSelectedModel !== undefined) preserved.piSelectedModel = metadata.piSelectedModel
 
     return preserved
-}
-
-/**
- * Canonical env var name exported into the wrapped agent / CLI child process so
- * it can self-target its own hub session (REST, shell helpers) without listing
- * `/api/sessions`. See tiann/hapi#1119.
- */
-export const HAPI_SESSION_ID_ENV = 'HAPI_SESSION_ID';
-
-/**
- * Publish the hub session id into `process.env` so every downstream agent spawn
- * inherits it. HAPI runs one hub session per CLI process (the runner forks a
- * fresh `hapi` child per session, and local invocations are 1:1), and every
- * flavor's agent spawn derives its child env from `process.env` — so setting it
- * here covers claude / codex / cursor / gemini / opencode / kimi / grok / pi at
- * once, including future flavors, without touching each launcher.
- *
- * Prefer the MCP `display_image` tool for inline media when it is available;
- * `HAPI_SESSION_ID` is the deterministic fallback for hub REST and shell tooling.
- */
-export function exportHapiSessionEnv(sessionId: string): void {
-    if (!sessionId) {
-        return;
-    }
-    process.env[HAPI_SESSION_ID_ENV] = sessionId;
 }
 
 async function getMachineIdOrExit(): Promise<string> {
@@ -281,13 +259,13 @@ export async function bootstrapLazySession(options: SessionBootstrapOptions): Pr
             return materialized
         },
         onMaterialized: (materialized, snapshot) => {
+            // Export only after the hub row exists. Exporting the provisional id at
+            // bootstrap lets agents inherit HAPI_SESSION_ID before GET /api/sessions/:id
+            // can resolve (and before hapiMcpUrl is persisted) — #1119 / PR #1121 Major.
+            exportHapiSessionEnv(materialized.id)
             void reportSessionStarted(materialized.id, snapshot.metadata ?? metadata)
         }
     })
-
-    // The lazy session id is generated locally and asserted stable against the
-    // hub on materialization, so it is safe to export before the agent spawns.
-    exportHapiSessionEnv(requestedId)
 
     return {
         api,
