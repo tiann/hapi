@@ -154,6 +154,13 @@ function handleResponse(
     switch (command) {
         case 'get_state': {
             handleGetState(response.data, session);
+            // Pi has finished startup init (this is the response that persists
+            // metadata.piSessionId — the signal working callers already wait
+            // for). Release any prompts buffered during the spawn window so they
+            // reach an initialized Pi session instead of wedging (issue #1143).
+            // markReady is idempotent; a missing sessionId still flips ready so
+            // buffered prompts are never swallowed forever.
+            session.markReady();
             break;
         }
         case 'set_model': {

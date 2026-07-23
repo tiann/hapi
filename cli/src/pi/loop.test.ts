@@ -241,6 +241,39 @@ describe('wireTransportEvents', () => {
         expect(session.client.updateMetadata).toHaveBeenCalledWith(expect.any(Function));
     });
 
+    it('marks session ready on get_state response (drains buffered sends) — issue #1143', () => {
+        const transport = createMockTransport();
+        wireTransportEvents(transport, session, []);
+
+        // A prompt buffered before Pi finished startup must not run yet.
+        const buffered = vi.fn();
+        session.runWhenReady(buffered);
+        expect(buffered).not.toHaveBeenCalled();
+        expect(session.isReady).toBe(false);
+
+        emitEvent({
+            type: 'response',
+            command: 'get_state',
+            success: true,
+            data: { sessionId: 'pi-session-ready' },
+        });
+
+        // get_state landing is the ready signal — buffered work drains.
+        expect(session.isReady).toBe(true);
+        expect(buffered).toHaveBeenCalledTimes(1);
+    });
+
+    it('marks session ready on get_state even when sessionId is absent', () => {
+        // Robustness: readiness must not hinge on Pi always echoing sessionId,
+        // otherwise a missing field would buffer prompts forever.
+        const transport = createMockTransport();
+        wireTransportEvents(transport, session, []);
+
+        emitEvent({ type: 'response', command: 'get_state', success: true, data: {} });
+
+        expect(session.isReady).toBe(true);
+    });
+
     it('handles error response — sends session event', () => {
         const transport = createMockTransport();
         wireTransportEvents(transport, session, []);
