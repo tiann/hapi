@@ -180,8 +180,10 @@ describe('runAgentSession', () => {
 
         const firstPrompt = JSON.stringify(harness.prompts[0])
         const secondPrompt = JSON.stringify(harness.prompts[1])
-        expect(firstPrompt).toContain('$name')
-        expect(firstPrompt).toContain('skill_lookup')
+        expect(firstPrompt).toContain('first')
+        expect(firstPrompt).not.toContain('skill_lookup')
+        expect(firstPrompt).not.toContain('$name')
+        expect(secondPrompt).toContain('second')
         expect(secondPrompt).not.toContain('skill_lookup')
     })
 })

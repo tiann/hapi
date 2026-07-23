@@ -41,11 +41,12 @@ export type CodexMessage = {
     callId: string;
     output: unknown;
     id: string;
+    is_error?: boolean;
 };
 
 export type CodexConversionResult = {
     sessionId?: string;
-    message?: CodexMessage;
+    messages?: CodexMessage[];
     userMessage?: string;
     userActivity?: true;
     finishedTurnId?: string;
@@ -72,7 +73,7 @@ function parseArguments(value: unknown): unknown {
         try {
             return JSON.parse(trimmed);
         } catch (error) {
-            logger.debug('[codexEventConverter] Failed to parse function_call arguments as JSON:', error);
+            logger.debug('[codexEventConverter] Failed to parse tool call input as JSON:', error);
         }
     }
 
@@ -141,11 +142,11 @@ export function convertCodexEvent(rawEvent: unknown): CodexConversionResult | nu
                 return null;
             }
             return {
-                message: {
+                messages: [{
                     type: 'message',
                     message,
                     id: randomUUID()
-                }
+                }]
             };
         }
 
@@ -158,12 +159,12 @@ export function convertCodexEvent(rawEvent: unknown): CodexConversionResult | nu
                 return null;
             }
             return {
-                message: {
+                messages: [{
                     type: 'proposed_plan',
                     plan: message,
                     id: asString(item?.id) ?? randomUUID(),
                     turnId
-                }
+                }]
             };
         }
 
@@ -178,11 +179,11 @@ export function convertCodexEvent(rawEvent: unknown): CodexConversionResult | nu
                 return null;
             }
             return {
-                message: {
+                messages: [{
                     type: 'reasoning',
                     message,
                     id: randomUUID()
-                }
+                }]
             };
         }
 
@@ -192,10 +193,10 @@ export function convertCodexEvent(rawEvent: unknown): CodexConversionResult | nu
                 return null;
             }
             return {
-                message: {
+                messages: [{
                     type: 'reasoning-delta',
                     delta
-                }
+                }]
             };
         }
 
@@ -205,11 +206,11 @@ export function convertCodexEvent(rawEvent: unknown): CodexConversionResult | nu
                 return null;
             }
             return {
-                message: {
+                messages: [{
                     type: 'token_count',
                     info,
                     id: randomUUID()
-                }
+                }]
             };
         }
 
@@ -234,13 +235,13 @@ export function convertCodexEvent(rawEvent: unknown): CodexConversionResult | nu
                 return null;
             }
             return {
-                message: {
+                messages: [{
                     type: 'tool-call',
                     name,
                     callId,
                     input: parseArguments(payloadRecord.arguments),
                     id: randomUUID()
-                }
+                }]
             };
         }
 
@@ -250,12 +251,100 @@ export function convertCodexEvent(rawEvent: unknown): CodexConversionResult | nu
                 return null;
             }
             return {
-                message: {
+                messages: [{
                     type: 'tool-call-result',
                     callId,
                     output: payloadRecord.output,
                     id: randomUUID()
-                }
+                }]
+            };
+        }
+
+        if (itemType === 'custom_tool_call') {
+            const name = asString(payloadRecord.name);
+            const callId = extractCallId(payloadRecord);
+            if (!name || !callId) {
+                return null;
+            }
+            return {
+                messages: [{
+                    type: 'tool-call',
+                    name,
+                    callId,
+                    input: parseArguments(payloadRecord.input),
+                    id: randomUUID()
+                }]
+            };
+        }
+
+        if (itemType === 'custom_tool_call_output') {
+            const callId = extractCallId(payloadRecord);
+            if (!callId) {
+                return null;
+            }
+            return {
+                messages: [{
+                    type: 'tool-call-result',
+                    callId,
+                    output: payloadRecord.output,
+                    id: randomUUID()
+                }]
+            };
+        }
+
+        if (itemType === 'tool_search_call') {
+            const callId = extractCallId(payloadRecord);
+            if (!callId) {
+                return null;
+            }
+            return {
+                messages: [{
+                    type: 'tool-call',
+                    name: 'ToolSearch',
+                    callId,
+                    input: parseArguments(payloadRecord.arguments),
+                    id: randomUUID()
+                }]
+            };
+        }
+
+        if (itemType === 'tool_search_output') {
+            const callId = extractCallId(payloadRecord);
+            if (!callId) {
+                return null;
+            }
+            return {
+                messages: [{
+                    type: 'tool-call-result',
+                    callId,
+                    output: {
+                        execution: payloadRecord.execution,
+                        tools: payloadRecord.tools
+                    },
+                    id: randomUUID()
+                }]
+            };
+        }
+
+        if (itemType === 'web_search_call') {
+            // Transcript web searches have neither a call id nor a separate output item.
+            const callId = randomUUID();
+            const status = asString(payloadRecord.status)?.toLowerCase();
+            const isError = status === 'failed' || status === 'error';
+            return {
+                messages: [{
+                    type: 'tool-call',
+                    name: 'WebSearch',
+                    callId,
+                    input: payloadRecord.action ?? {},
+                    id: randomUUID()
+                }, {
+                    type: 'tool-call-result',
+                    callId,
+                    output: null,
+                    id: randomUUID(),
+                    ...(isError ? { is_error: true } : {})
+                }]
             };
         }
 

@@ -129,6 +129,42 @@ describe('codexTranscriptLocator', () => {
         expect(new Set(ambiguous[0])).toEqual(new Set([first, second]));
     });
 
+    it('ignores a review subagent and waits for the top-level review transcript', async () => {
+        const located: string[] = [];
+        const ambiguous: string[][] = [];
+        locator = createCodexTranscriptLocator({
+            cwd: '/tmp/project',
+            startupTimestampMs: Date.now(),
+            intervalMs: 25,
+            settlementMs: 50,
+            onLocated: (result) => located.push(result.transcriptPath),
+            onAmbiguous: (paths) => ambiguous.push(paths)
+        });
+        await locator.ready;
+        const reviewSubagent = await createTranscript(
+            'thread-review-subagent',
+            '/tmp/project',
+            { subagent: 'review' }
+        );
+        const userEvent = (message: string) => `${JSON.stringify({
+            timestamp: new Date().toISOString(),
+            type: 'event_msg',
+            payload: { type: 'user_message', message }
+        })}\n`;
+
+        await appendFile(reviewSubagent, userEvent('review instructions'));
+        await wait(100);
+        expect(located).toEqual([]);
+        expect(ambiguous).toEqual([]);
+
+        const primary = await createTranscript('thread-review-primary', '/tmp/project', 'cli');
+        await appendFile(primary, userEvent('/review'));
+        await wait(150);
+
+        expect(located).toEqual([primary]);
+        expect(ambiguous).toEqual([]);
+    });
+
     it('rejects candidates whose activity arrives in adjacent polling cycles', async () => {
         const located: string[] = [];
         const ambiguous: string[][] = [];
@@ -208,9 +244,13 @@ describe('codexTranscriptLocator', () => {
         expect(located).toEqual([]);
     });
 
-    it('polls only the exact resume transcript once it is found', async () => {
+    it('polls only the exact resume transcript once it is found, including a subagent', async () => {
         const unrelated = await createTranscript('thread-unrelated', '/tmp/project');
-        const target = await createTranscript('thread-resume', '/tmp/original-project');
+        const target = await createTranscript(
+            'thread-resume',
+            '/tmp/original-project',
+            { subagent: 'review' }
+        );
         await appendFile(unrelated, `${JSON.stringify({
             timestamp: new Date().toISOString(),
             type: 'event_msg',
@@ -239,11 +279,15 @@ describe('codexTranscriptLocator', () => {
         expect(ambiguous).toEqual([]);
     });
 
-    async function createTranscript(sessionId: string, cwd: string): Promise<string> {
+    async function createTranscript(sessionId: string, cwd: string, source?: unknown): Promise<string> {
         const transcriptPath = join(sessionDirectory, `rollout-${sessionId}.jsonl`);
         await writeFile(transcriptPath, `${JSON.stringify({
             type: 'session_meta',
-            payload: { id: sessionId, cwd }
+            payload: {
+                id: sessionId,
+                cwd,
+                ...(source === undefined ? {} : { source })
+            }
         })}\n`);
         return transcriptPath;
     }

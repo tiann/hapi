@@ -73,12 +73,13 @@ describe('kimiRemoteLauncher skill lookup instruction', () => {
         harness.prompts = []
     })
 
-    it('injects the instruction only on the first prompt', async () => {
+    it('does not prepend skill_lookup instructions onto user turns', async () => {
         await kimiRemoteLauncher(createSession() as never, { model: 'kimi-k2' })
 
         expect(harness.prompts).toHaveLength(2)
-        expect(JSON.stringify(harness.prompts[0])).toContain('$name')
-        expect(JSON.stringify(harness.prompts[0])).toContain('skill_lookup')
+        expect(JSON.stringify(harness.prompts[0])).toContain('first')
+        expect(JSON.stringify(harness.prompts[0])).not.toContain('skill_lookup')
+        expect(JSON.stringify(harness.prompts[0])).not.toContain('$name')
         expect(JSON.stringify(harness.prompts[1])).not.toContain('skill_lookup')
     })
 })
