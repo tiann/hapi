@@ -340,6 +340,24 @@ describe('importCursorSession refusals', () => {
         expect(out.message).toContain('requires workspacePath')
     })
 
+    it('refuses ambiguous_legacy_store for ACP stores whose meta.json has no cwd', async () => {
+        const uuid = '11111111-2222-3333-4444-555555555555'
+        h.placeAcpStore(uuid, { name: 'no cwd' })
+        writeFileSync(join(h.acpSessionsDir, uuid, 'meta.json'), JSON.stringify({ schemaVersion: 1 }))
+
+        const out = await importCursorSession({
+            uuid,
+            store: h.store,
+            namespace: 'default',
+            home: h.home,
+            deps: makeDeps(h)
+        })
+        expect(out.ok).toBe(false)
+        if (out.ok) return
+        expect(out.reason).toBe('ambiguous_legacy_store')
+        expect(out.message).toContain('requires workspacePath')
+    })
+
     it('refuses corrupted_store when store.db is not valid sqlite', async () => {
         const uuid = '11111111-2222-3333-4444-888888888888'
         const dir = join(h.acpSessionsDir, uuid)

@@ -541,10 +541,12 @@ export async function importCursorSession(options: {
         }
     }
 
-    if (sourceFormat === 'legacy' && !resolvedWorkspacePath?.trim()) {
+    if (!resolvedWorkspacePath?.trim()) {
+        // ACP meta.json may omit cwd; legacy drawers need an explicit path. Empty
+        // metadata.path makes resolveLocalResumeTarget return resume_unavailable.
         return failure(
             'ambiguous_legacy_store',
-            'Legacy Cursor import requires workspacePath so the imported HAPI session can be resumed'
+            `Cursor import (${sourceFormat}) requires workspacePath so the imported HAPI session can be resumed`
         )
     }
 
