@@ -169,7 +169,9 @@ export async function getDraftAttachments(sessionId: string): Promise<File[]> {
 
 export function saveDraftAttachments(sessionId: string, attachments: AttachmentDraftInput[]): void {
     if (attachments.length === 0) {
-        cache.delete(sessionId)
+        // Keep an empty cache entry as a tombstone until the queued IndexedDB
+        // delete completes, so a fast remount cannot read and restore stale files.
+        setCachedFiles(sessionId, [])
         queueWrite(null, sessionId)
         return
     }

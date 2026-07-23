@@ -46,6 +46,21 @@ describe('composer-attachment-drafts', () => {
         expect(await mod.getDraftAttachments('session-1')).toEqual([])
     })
 
+    it('does not read stale IndexedDB data while a clear is being persisted', async () => {
+        const mod = await import('./composer-attachment-drafts')
+        mod.saveDraftAttachments('session-1', [{ id: 'x', file: new File(['x'], 'x.txt') }])
+        mod.clearDraftAttachments('session-1')
+        await new Promise((resolve) => setTimeout(resolve, 0))
+
+        const open = vi.fn(() => {
+            throw new Error('cleared drafts must be served from the cache tombstone')
+        })
+        vi.stubGlobal('indexedDB', { open })
+
+        expect(await mod.getDraftAttachments('session-1')).toEqual([])
+        expect(open).not.toHaveBeenCalled()
+    })
+
     it('retains completed upload metadata on restored files', async () => {
         const mod = await import('./composer-attachment-drafts')
         const file = new File(['image'], 'ready.png', { type: 'image/png' })
