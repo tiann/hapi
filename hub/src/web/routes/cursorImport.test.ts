@@ -541,6 +541,24 @@ describe('importCursorSession happy paths', () => {
             expect(badRow.reason).toBe('missing_on_disk_store')
         }
     })
+
+    it('importSelectedCursorSessions honors per-row workspacePath from selections', async () => {
+        const uuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+        h.placeAcpStore(uuid, { name: 'selection path', cwd: '/workspace/from-meta' })
+
+        const out = await importSelectedCursorSessions({
+            selections: [{ uuid, workspacePath: '/workspace/from-ui' }],
+            store: h.store,
+            namespace: 'default',
+            home: h.home,
+            deps: makeDeps(h)
+        })
+        expect(out.importedCount).toBe(1)
+        expect(out.results[0]?.ok).toBe(true)
+        const session = h.store.sessions.getSessionsByNamespace('default')[0]
+        const metadata = session.metadata as Record<string, unknown>
+        expect(metadata.path).toBe('/workspace/from-ui')
+    })
 })
 
 /* ---------- route shape ---------- */
@@ -628,27 +646,25 @@ describe('Cursor import HTTP routes', () => {
 
     it('POST /api/cursor/import accepts selections with per-row workspacePath', async () => {
         const app = createRoutesApp({ namespace: 'default', store: h.store })
-        const uuid = '88888888-8888-8888-8888-888888888888'
-        h.placeAcpStore(uuid, { name: 'selection path', cwd: '/workspace/from-meta' })
         const res = await app.request('/api/cursor/import', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
-                selections: [{ uuid, workspacePath: '/workspace/from-ui' }]
+                selections: [{ uuid: 'not-on-disk-uuid', workspacePath: '/workspace/from-ui' }]
             })
         })
+        // Route accepts the selections shape; refusal is still per-row (no agent probe needed).
         expect(res.status).toBe(200)
         const body = await res.json() as {
             success: true
-            results: Array<{ ok: boolean; uuid: string }>
+            results: Array<{ ok: boolean; reason?: string; uuid: string }>
             importedCount: number
         }
         expect(body.success).toBe(true)
-        expect(body.importedCount).toBe(1)
-        expect(body.results[0]?.ok).toBe(true)
-        const session = h.store.sessions.getSessionsByNamespace('default')[0]
-        const metadata = session.metadata as Record<string, unknown>
-        // Explicit selection path wins over discovery meta for resume binding.
-        expect(metadata.path).toBe('/workspace/from-ui')
+        expect(body.importedCount).toBe(0)
+        expect(body.results).toHaveLength(1)
+        expect(body.results[0]?.ok).toBe(false)
+        expect(body.results[0]?.reason).toBe('missing_on_disk_store')
+        expect(body.results[0]?.uuid).toBe('not-on-disk-uuid')
     })
 })
