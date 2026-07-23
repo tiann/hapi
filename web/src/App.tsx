@@ -331,6 +331,7 @@ function AppInner() {
         [selectedSessionId]
     )
     const sseEnabled = Boolean(api && token)
+    const showReconnectingBanner = sseDisconnected && !isSyncing
 
     const { subscriptionId: globalSubscriptionId } = useSSE({
         enabled: sseEnabled,
@@ -449,15 +450,18 @@ function AppInner() {
             <VoiceProvider>
                 <PwaUpdateBannerWithStatusOffset
                     isSyncing={isSyncing}
-                    isReconnecting={sseDisconnected && !isSyncing}
+                    isReconnecting={showReconnectingBanner}
                 />
                 <SyncingBanner isSyncing={isSyncing} />
                 <ReconnectingBanner
-                    isReconnecting={sseDisconnected && !isSyncing}
+                    isReconnecting={showReconnectingBanner}
                     reason={sseDisconnectReason}
                 />
                 <VoiceErrorBanner />
-                <OfflineBanner />
+                <OfflineBanner
+                    isHubConnected={globalSubscriptionId !== null}
+                    isReconnecting={showReconnectingBanner}
+                />
                 <div className="h-full min-h-0 flex flex-col">
                     <Outlet />
                 </div>

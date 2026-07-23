@@ -1,11 +1,17 @@
 import { useOnlineStatus } from '@/hooks/useOnlineStatus'
 import { useTranslation } from '@/lib/use-translation'
 
-export function OfflineBanner() {
+export function OfflineBanner({
+    isHubConnected,
+    isReconnecting
+}: {
+    isHubConnected: boolean
+    isReconnecting: boolean
+}) {
     const { t } = useTranslation()
     const isOnline = useOnlineStatus()
 
-    if (isOnline) {
+    if (isOnline || isHubConnected || isReconnecting) {
         return null
     }
 
