@@ -19,6 +19,7 @@ interface RenderOpts {
     isPendingCodex?: boolean
     onConfirmCodex?: (sessionIds: string[]) => Promise<void>
     onRestartCodexDesktop?: () => Promise<void>
+    onArchiveCodexSession?: (session: CodexLocalSessionSummary) => Promise<void>
     cursorSessions?: CursorImportableSessionSummary[]
     isLoadingCursor?: boolean
     isPendingCursor?: boolean
@@ -36,6 +37,7 @@ function renderDialog(opts: RenderOpts = {}) {
     const onConfirmCodex = opts.onConfirmCodex ?? vi.fn(async () => {})
     const onConfirmCursor = opts.onConfirmCursor ?? vi.fn(async () => {})
     const onConfirmClaude = opts.onConfirmClaude ?? vi.fn(async () => {})
+    const onArchiveCodexSession = opts.onArchiveCodexSession
     const view = render(
         <I18nProvider>
             <AgentSessionImportDialog
@@ -50,6 +52,7 @@ function renderDialog(opts: RenderOpts = {}) {
                 isRestartingCodexDesktop={false}
                 onConfirmCodex={onConfirmCodex}
                 onRestartCodexDesktop={opts.onRestartCodexDesktop ?? vi.fn()}
+                onArchiveCodexSession={onArchiveCodexSession}
                 cursorSessions={opts.cursorSessions ?? []}
                 isLoadingCursor={opts.isLoadingCursor ?? false}
                 isPendingCursor={opts.isPendingCursor ?? false}
@@ -63,7 +66,7 @@ function renderDialog(opts: RenderOpts = {}) {
             />
         </I18nProvider>
     )
-    return { ...view, onChangeFlavor, onConfirmCodex, onConfirmCursor, onConfirmClaude }
+    return { ...view, onChangeFlavor, onConfirmCodex, onConfirmCursor, onConfirmClaude, onArchiveCodexSession }
 }
 
 const codexSampleSession: CodexLocalSessionSummary = {
@@ -209,6 +212,24 @@ describe('AgentSessionImportDialog', () => {
         fireEvent.click(screen.getByText('Import'))
         await waitFor(() => expect(onConfirmCodex).toHaveBeenCalled())
         expect(onConfirmCodex).toHaveBeenCalledWith(['codex-session-1'])
+    })
+
+    it('opens archive menu on context menu and archives the selected Codex session', async () => {
+        const onArchiveCodexSession = vi.fn(async () => {})
+        renderDialog({
+            flavor: 'codex',
+            codexSessions: [codexSampleSession],
+            onArchiveCodexSession
+        })
+
+        fireEvent.contextMenu(screen.getByText('Codex session title'))
+        fireEvent.click(await screen.findByRole('button', { name: 'Archive in Codex' }))
+
+        await waitFor(() => {
+            expect(onArchiveCodexSession).toHaveBeenCalledWith(
+                expect.objectContaining({ id: 'codex-session-1' })
+            )
+        })
     })
 
     it('shows the loading state on the active flavor', () => {

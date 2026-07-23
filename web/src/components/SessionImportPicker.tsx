@@ -66,6 +66,10 @@ export function SessionImportPicker(props: {
     isSessionDisabled?: (session: ImportSessionSummary) => boolean
     renderSessionBadges?: (session: ImportSessionSummary) => ReactNode
     renderSessionFooter?: (session: ImportSessionSummary) => ReactNode
+    /** Optional row context-menu / long-press archive (Codex import surface). */
+    onArchiveSession?: (session: ImportSessionSummary) => Promise<void>
+    /** i18n key for the archive action button; required when onArchiveSession is set. */
+    archiveActionLabel?: string
 }) {
     const { t } = useTranslation()
     const {
@@ -79,10 +83,15 @@ export function SessionImportPicker(props: {
         labels,
         isSessionDisabled,
         renderSessionBadges,
-        renderSessionFooter
+        renderSessionFooter,
+        onArchiveSession,
+        archiveActionLabel
     } = props
     const [hasInitializedSelection, setHasInitializedSelection] = useState(false)
     const [workdirFilter, setWorkdirFilter] = useState(ALL_WORKDIR_FILTER)
+    const [archiveMenuSessionId, setArchiveMenuSessionId] = useState<string | null>(null)
+    const [archiveError, setArchiveError] = useState<string | null>(null)
+    const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
     const wasOpenRef = useRef(false)
 
     const sessionIdSet = useMemo(
@@ -112,6 +121,8 @@ export function SessionImportPicker(props: {
             onSelectionChange([])
             setHasInitializedSelection(false)
             setWorkdirFilter(ALL_WORKDIR_FILTER)
+            setArchiveMenuSessionId(null)
+            setArchiveError(null)
             return
         }
 
@@ -120,10 +131,30 @@ export function SessionImportPicker(props: {
             onSelectionChange([])
             setHasInitializedSelection(false)
             setWorkdirFilter(ALL_WORKDIR_FILTER)
+            setArchiveMenuSessionId(null)
+            setArchiveError(null)
         }
         // 中文注释：仅在弹窗开/关切换时重置；onSelectionChange 故意不入依赖以避免父组件每次渲染触发重置。
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isOpen])
+
+    const clearLongPressTimer = () => {
+        if (longPressTimerRef.current) {
+            clearTimeout(longPressTimerRef.current)
+            longPressTimerRef.current = null
+        }
+    }
+
+    const handleArchive = async (session: ImportSessionSummary) => {
+        if (!onArchiveSession || isPending || isLoading) return
+        setArchiveMenuSessionId(null)
+        setArchiveError(null)
+        try {
+            await onArchiveSession(session)
+        } catch (error) {
+            setArchiveError(error instanceof Error ? error.message : t('codexSync.failed.body'))
+        }
+    }
 
     useEffect(() => {
         if (workdirFilter === ALL_WORKDIR_FILTER) return
@@ -170,6 +201,11 @@ export function SessionImportPicker(props: {
 
     return (
         <div className="mt-4 space-y-3">
+            {archiveError ? (
+                <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-600">
+                    {archiveError}
+                </div>
+            ) : null}
             <div className="flex items-center justify-between gap-2">
                 <div className="text-xs text-[var(--app-hint)]">
                     {t(labels.selectedCount, { n: selectedSessionIds.length })}
@@ -239,13 +275,26 @@ export function SessionImportPicker(props: {
                             const preview = getSessionPreview(session)
                             const cwd = getSessionCwd(session)
                             return (
-                                <label
+                                <div
                                     key={session.id}
-                                    className={`flex items-start gap-3 px-3 py-2 transition-colors ${
+                                    className={`relative flex items-start gap-3 px-3 py-2 transition-colors ${
                                         disabled
                                             ? 'cursor-not-allowed opacity-60'
                                             : 'cursor-pointer hover:bg-[var(--app-subtle-bg)]'
                                     }`}
+                                    onContextMenu={onArchiveSession ? (event) => {
+                                        event.preventDefault()
+                                        setArchiveMenuSessionId(session.id)
+                                    } : undefined}
+                                    onPointerDown={onArchiveSession ? () => {
+                                        clearLongPressTimer()
+                                        longPressTimerRef.current = setTimeout(() => {
+                                            setArchiveMenuSessionId(session.id)
+                                        }, 500)
+                                    } : undefined}
+                                    onPointerUp={onArchiveSession ? clearLongPressTimer : undefined}
+                                    onPointerLeave={onArchiveSession ? clearLongPressTimer : undefined}
+                                    onPointerCancel={onArchiveSession ? clearLongPressTimer : undefined}
                                 >
                                     <input
                                         type="checkbox"
@@ -284,7 +333,25 @@ export function SessionImportPicker(props: {
                                         ) : null}
                                         {renderSessionFooter?.(session)}
                                     </div>
-                                </label>
+                                    {archiveMenuSessionId === session.id && onArchiveSession && archiveActionLabel ? (
+                                        <div className="absolute right-3 top-3 z-10 min-w-36 rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] p-1 shadow-lg">
+                                            <button
+                                                type="button"
+                                                className="block w-full rounded px-3 py-2 text-left text-sm text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)]"
+                                                onClick={() => { void handleArchive(session) }}
+                                            >
+                                                {t(archiveActionLabel)}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className="block w-full rounded px-3 py-2 text-left text-sm text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)]"
+                                                onClick={() => setArchiveMenuSessionId(null)}
+                                            >
+                                                {t('button.cancel')}
+                                            </button>
+                                        </div>
+                                    ) : null}
+                                </div>
                             )
                         })}
                     </div>

@@ -805,6 +805,7 @@ function SessionsPage() {
                 isRestartingCodexDesktop={isRestartingCodexDesktop}
                 onConfirmCodex={handleImportCodexSessions}
                 onRestartCodexDesktop={handleRestartCodexDesktop}
+                onArchiveCodexSession={handleArchiveCodexSession}
                 cursorSessions={cursorSessions}
                 isLoadingCursor={isLoadingCursorSessions}
                 isPendingCursor={isImportingCursorSessions}

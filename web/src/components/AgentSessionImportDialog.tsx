@@ -107,6 +107,7 @@ export function AgentSessionImportDialog(props: {
     isRestartingCodexDesktop: boolean
     onConfirmCodex: (sessionIds: string[]) => Promise<void>
     onRestartCodexDesktop: () => Promise<void>
+    onArchiveCodexSession?: (session: CodexLocalSessionSummary) => Promise<void>
     cursorSessions: CursorImportableSessionSummary[]
     isLoadingCursor: boolean
     isPendingCursor: boolean
@@ -131,6 +132,7 @@ export function AgentSessionImportDialog(props: {
         isRestartingCodexDesktop,
         onConfirmCodex,
         onRestartCodexDesktop,
+        onArchiveCodexSession,
         cursorSessions,
         isLoadingCursor,
         isPendingCursor,
@@ -300,6 +302,14 @@ export function AgentSessionImportDialog(props: {
                         isPending={isPendingCodex}
                         isLoading={isLoadingCodex}
                         labels={CODEX_IMPORT_PICKER_LABELS}
+                        archiveActionLabel="codexSync.confirm.archiveAction"
+                        onArchiveSession={onArchiveCodexSession
+                            ? async (session) => {
+                                const raw = codexSessions.find((entry) => entry.id === session.id)
+                                if (!raw) return
+                                await onArchiveCodexSession(raw)
+                            }
+                            : undefined}
                     />
                 ) : flavor === 'cursor' ? (
                     <>
