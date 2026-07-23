@@ -570,6 +570,9 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         // the session) cannot be fixed by identical relaunches.
                         const unrecoverable = isUnrecoverableClaudeResumeError(e);
                         if (unrecoverable) {
+                            // nextMessage() already dequeued into inFlightMessage;
+                            // restore so a failed live-agent probe does not eat the prompt.
+                            restoreInFlightMessage();
                             const reason = `Cannot resume session: ${detail}`;
                             logger.debug(`[remote]: launch unrecoverable; stopping`);
                             session.client.sendSessionEvent({ type: 'message', message: reason });
