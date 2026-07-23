@@ -34,6 +34,10 @@ export const MetadataSchema = z.object({
     summary: MetadataSummarySchema.optional(),
     machineId: z.string().optional(),
     claudeSessionId: z.string().optional(),
+    // Source session ID when this session was created by forking a live one
+    // (`claude --resume <id> --fork-session`). Lets the web list mark the new
+    // session as a branch of `<id>` instead of an unrelated duplicate.
+    forkedFrom: z.string().optional(),
     codexSessionId: z.string().optional(),
     // 原始 Codex thread id。导入 Codex 历史后，HAPI 会 fork 出自己的续写 thread；
     // codexSessionId 保存 fork 后的 thread，codexSourceSessionId 保留来源 thread 便于同步/展示。

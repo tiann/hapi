@@ -18,6 +18,7 @@ import {
     type RemoteLauncherDisplayContext,
     type RemoteLauncherExitReason
 } from "@/modules/common/remote/RemoteLauncherBase";
+import { isUnrecoverableClaudeResumeError } from "./utils/claudeResumeError";
 
 interface PermissionsField {
     date: number;
@@ -448,8 +449,8 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
 
                             return null;
                         },
-                        onSessionFound: (sessionId) => {
-                            session.onSessionFound(sessionId);
+                        onSessionFound: (sessionId, extras) => {
+                            session.onSessionFound(sessionId, extras);
                             // The one-time --resume flag must only be dropped once we know
                             // Claude actually captured a session id from it. If claudeRemote()
                             // bails out before this fires (e.g. the initial nextMessage() came
@@ -501,6 +502,9 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         },
                         signal: controller.signal,
                     });
+
+                    // consumeOneTimeFlags stays in onSessionFound (main): only drop
+                    // --resume once Claude actually captured a session id.
 
                     if (!this.exitReason && controller.signal.aborted) {
                         session.client.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
@@ -561,6 +565,20 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
 
                     if (!this.exitReason) {
                         const detail = e instanceof Error ? e.message : String(e);
+
+                        // Unrecoverable resume failures (e.g. live agent holding
+                        // the session) cannot be fixed by identical relaunches.
+                        const unrecoverable = isUnrecoverableClaudeResumeError(e);
+                        if (unrecoverable) {
+                            // nextMessage() already dequeued into inFlightMessage;
+                            // restore so a failed live-agent probe does not eat the prompt.
+                            restoreInFlightMessage();
+                            const reason = `Cannot resume session: ${detail}`;
+                            logger.debug(`[remote]: launch unrecoverable; stopping`);
+                            session.client.sendSessionEvent({ type: 'message', message: reason });
+                            this.exitReason = 'exit';
+                            break;
+                        }
 
                         if (reachedReadyThisAttempt) {
                             immediateFailureCount = 0;
