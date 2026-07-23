@@ -51,7 +51,7 @@ describe('useComposerDraft', () => {
         mockGetDraft.mockReturnValue('saved text')
         const setText = vi.fn()
 
-        renderHook(() => useComposerDraft('session-1', '', [], setText, vi.fn()))
+        renderHook(() => useComposerDraft('session-1', '', [], true, setText, vi.fn()))
 
         // Before rAF fires, setText should not have been called
         expect(setText).not.toHaveBeenCalled()
@@ -66,7 +66,7 @@ describe('useComposerDraft', () => {
         mockGetDraft.mockReturnValue('saved text')
         const setText = vi.fn()
 
-        renderHook(() => useComposerDraft('session-1', 'user is typing', [], setText, vi.fn()))
+        renderHook(() => useComposerDraft('session-1', 'user is typing', [], true, setText, vi.fn()))
 
         await act(async () => flushRAF())
         expect(setText).not.toHaveBeenCalled()
@@ -76,7 +76,7 @@ describe('useComposerDraft', () => {
         mockGetDraft.mockReturnValue('')
         const setText = vi.fn()
 
-        renderHook(() => useComposerDraft('session-1', '', [], setText, vi.fn()))
+        renderHook(() => useComposerDraft('session-1', '', [], true, setText, vi.fn()))
 
         await act(async () => flushRAF())
         expect(setText).not.toHaveBeenCalled()
@@ -87,7 +87,7 @@ describe('useComposerDraft', () => {
         const setText = vi.fn()
 
         const { unmount, rerender } = renderHook(
-            ({ text }) => useComposerDraft('session-1', text, [], setText, vi.fn()),
+            ({ text }) => useComposerDraft('session-1', text, [], true, setText, vi.fn()),
             { initialProps: { text: '' } },
         )
 
@@ -108,7 +108,7 @@ describe('useComposerDraft', () => {
         const setText = vi.fn()
 
         const { unmount } = renderHook(
-            () => useComposerDraft('session-1', 'some text', [], setText, vi.fn()),
+            () => useComposerDraft('session-1', 'some text', [], true, setText, vi.fn()),
         )
 
         // Unmount before rAF fires (draftReady is still false)
@@ -122,7 +122,7 @@ describe('useComposerDraft', () => {
         const setText = vi.fn()
 
         const { unmount } = renderHook(
-            () => useComposerDraft(undefined, 'text', [], setText, vi.fn()),
+            () => useComposerDraft(undefined, 'text', [], true, setText, vi.fn()),
         )
 
         await act(async () => flushRAF())
@@ -138,7 +138,7 @@ describe('useComposerDraft', () => {
         mockGetDraftAttachments.mockResolvedValue([file])
         const addAttachment = vi.fn(async () => {})
 
-        renderHook(() => useComposerDraft('session-1', '', [], vi.fn(), addAttachment))
+        renderHook(() => useComposerDraft('session-1', '', [], true, vi.fn(), addAttachment))
         await act(async () => flushRAF())
 
         expect(addAttachment).toHaveBeenCalledWith(file)
@@ -150,9 +150,25 @@ describe('useComposerDraft', () => {
         mockGetDraftAttachments.mockResolvedValue([saved])
         const addAttachment = vi.fn(async () => {})
 
-        renderHook(() => useComposerDraft('session-1', '', [{ id: 'current', file: current }], vi.fn(), addAttachment))
+        renderHook(() => useComposerDraft('session-1', '', [{ id: 'current', file: current }], true, vi.fn(), addAttachment))
         await act(async () => flushRAF())
 
         expect(addAttachment).not.toHaveBeenCalled()
+    })
+
+    it('preserves saved attachments while the attachment adapter is unavailable', async () => {
+        const saved = new File(['saved'], 'saved.png', { type: 'image/png' })
+        mockGetDraftAttachments.mockResolvedValue([saved])
+        const addAttachment = vi.fn(async () => {})
+
+        const { unmount } = renderHook(() => (
+            useComposerDraft('session-1', '', [], false, vi.fn(), addAttachment)
+        ))
+        await act(async () => flushRAF())
+        unmount()
+
+        expect(mockGetDraftAttachments).not.toHaveBeenCalled()
+        expect(addAttachment).not.toHaveBeenCalled()
+        expect(mockSaveDraftAttachments).not.toHaveBeenCalled()
     })
 })

@@ -19,6 +19,7 @@ export function useComposerDraft(
     sessionId: string | undefined,
     composerText: string,
     attachments: readonly AttachmentDraftInput[],
+    canRestoreAttachments: boolean,
     setText: (text: string) => void,
     addAttachment: (file: File) => Promise<void>,
 ): void {
@@ -40,18 +41,20 @@ export function useComposerDraft(
                 setText(draft)
             }
             draftReadyRef.current = true
-            void getDraftAttachments(sessionId).then(async (files) => {
-                if (!disposed && attachmentsRef.current.length === 0) {
-                    for (const file of files) {
-                        if (disposed) break
-                        await addAttachment(file)
+            if (canRestoreAttachments) {
+                void getDraftAttachments(sessionId).then(async (files) => {
+                    if (!disposed && attachmentsRef.current.length === 0) {
+                        for (const file of files) {
+                            if (disposed) break
+                            await addAttachment(file)
+                        }
                     }
-                }
-            }).catch(() => {
-                // Attachment draft restoration is best effort.
-            }).finally(() => {
-                if (!disposed) attachmentsReadyRef.current = true
-            })
+                }).catch(() => {
+                    // Attachment draft restoration is best effort.
+                }).finally(() => {
+                    if (!disposed) attachmentsReadyRef.current = true
+                })
+            }
         })
 
         return () => {
@@ -60,11 +63,11 @@ export function useComposerDraft(
             if (draftReadyRef.current) {
                 saveDraft(sessionId, composerTextRef.current)
             }
-            if (attachmentsReadyRef.current || attachmentsRef.current.length > 0) {
+            if (attachmentsRef.current.length > 0 || (canRestoreAttachments && attachmentsReadyRef.current)) {
                 saveDraftAttachments(sessionId, [...attachmentsRef.current])
             }
             draftReadyRef.current = false
             attachmentsReadyRef.current = false
         }
-    }, [sessionId]) // eslint-disable-line react-hooks/exhaustive-deps
+    }, [sessionId, canRestoreAttachments]) // eslint-disable-line react-hooks/exhaustive-deps
 }

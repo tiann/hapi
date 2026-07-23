@@ -320,6 +320,7 @@ export function HappyComposer(props: {
         sessionId,
         composerText,
         attachmentDrafts,
+        active,
         (text) => api.composer().setText(text),
         (file) => api.composer().addAttachment(file),
     )
