@@ -174,3 +174,34 @@ describe('remarkFilePathLinks — explicit markdown links', () => {
         expect(link.url).toBe(url)
     })
 })
+
+// ── standalone gate: rewriteExplicitLinks:false (file-preview surface) ────────
+// The standalone renderer has no HappyChatContext, so a hapi-file: link would
+// collapse to plain text. It disables explicit-link rewrite but keeps bare-path
+// and inlineCode autolinks (already inert on that surface, so no regression).
+
+describe('remarkFilePathLinks — rewriteExplicitLinks:false', () => {
+    function transformStandalone(children: TestNode[]): TestNode[] {
+        const tree: TestNode = { type: 'root', children: [{ type: 'paragraph', children }] }
+        remarkFilePathLinks({ rewriteExplicitLinks: false })(tree)
+        return tree.children?.[0]?.children ?? []
+    }
+
+    it('leaves explicit markdown links untouched', () => {
+        const nodes = transformStandalone([
+            { type: 'link', url: 'docs/foo.md', children: [{ type: 'text', value: 'the docs' }] }
+        ])
+        const link = nodes.find((node) => node.type === 'link')!
+        expect(link.url).toBe('docs/foo.md')
+        expect(decodeFilePathHref(link.url as string)).toBeNull()
+    })
+
+    it('still autolinks bare paths and inlineCode', () => {
+        const nodes = transformStandalone([
+            { type: 'text', value: 'see docs/flow.mmd and ' },
+            { type: 'inlineCode', value: 'web/src/router.tsx' }
+        ])
+        const links = nodes.filter((node) => node.type === 'link')
+        expect(links.map(linkedPath)).toEqual(['docs/flow.mmd', 'web/src/router.tsx'])
+    })
+})

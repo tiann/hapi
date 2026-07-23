@@ -180,7 +180,21 @@ function rewriteFileLinkNode(node: MarkdownNode): void {
     node.url = createFileHref(target)
 }
 
-function visit(node: MarkdownNode, parentType: string | null = null): void {
+export type RemarkFilePathLinksOptions = {
+    // Rewrite explicit markdown links `[label](relative/file.ext)` → `hapi-file:`.
+    // Routing a `hapi-file:` href needs session context (FilePathAnchor); surfaces
+    // that render without HappyChatContext (standalone file-preview) must disable
+    // this or the anchor collapses to plain text (`A` returns props.children when
+    // `!chat`). Bare-path / inlineCode autolinks are unaffected — they were already
+    // plain text on those surfaces. Default: true (chat surface).
+    rewriteExplicitLinks?: boolean
+}
+
+function visit(
+    node: MarkdownNode,
+    parentType: string | null,
+    rewriteExplicitLinks: boolean
+): void {
     if (!node.children) return
     if (parentType === 'link' || parentType === 'linkReference') return
 
@@ -195,16 +209,17 @@ function visit(node: MarkdownNode, parentType: string | null = null): void {
             continue
         }
         if (child.type === 'link') {
-            rewriteFileLinkNode(child)
+            if (rewriteExplicitLinks) rewriteFileLinkNode(child)
             nextChildren.push(child)
             continue
         }
-        visit(child, child.type ?? null)
+        visit(child, child.type ?? null, rewriteExplicitLinks)
         nextChildren.push(child)
     }
     node.children = nextChildren
 }
 
-export function remarkFilePathLinks() {
-    return (tree: MarkdownNode) => visit(tree)
+export function remarkFilePathLinks(options: RemarkFilePathLinksOptions = {}) {
+    const rewriteExplicitLinks = options.rewriteExplicitLinks !== false
+    return (tree: MarkdownNode) => visit(tree, null, rewriteExplicitLinks)
 }
