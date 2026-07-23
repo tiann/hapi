@@ -207,7 +207,15 @@ export class SDKToLogConverter {
         if (sdkMessage.parent_tool_use_id) {
             isSidechain = true;
             parentUuid = this.sidechainLastUUID.get((sdkMessage as any).parent_tool_use_id) ?? null;
-            this.sidechainLastUUID.set((sdkMessage as any).parent_tool_use_id!, uuid);
+            // System init messages are skipped by the web UI normalizer, so their
+            // UUIDs are never registered in the tracer's uuidToSidechainId map.
+            // If we update the chain here, subsequent messages chain to a UUID
+            // the tracer can never resolve, orphaning the entire sidechain.
+            const isInvisibleToTracer = sdkMessage.type === 'system'
+                && ((sdkMessage as SDKSystemMessage).subtype === 'init' || (sdkMessage as SDKSystemMessage).subtype === 'result');
+            if (!isInvisibleToTracer) {
+                this.sidechainLastUUID.set((sdkMessage as any).parent_tool_use_id!, uuid);
+            }
         }
         const baseFields = {
             parentUuid: parentUuid,
