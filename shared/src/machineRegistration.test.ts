@@ -38,6 +38,23 @@ describe('machineRegistration', () => {
         )).toBe(false)
     })
 
+    it('refreshes when incoming omits capabilities that were previously stored', () => {
+        expect(machineRegistrationNeedsRefresh(
+            {
+                host: 'teemo',
+                platform: 'linux',
+                happyCliVersion: '0.23.0',
+                capabilities: ['cursor-chat-store-status', 'runner-self-upgrade'],
+            },
+            {
+                host: 'teemo',
+                platform: 'linux',
+                happyCliVersion: '0.20.0',
+                // downgraded runner omitted the field entirely
+            },
+        )).toBe(true)
+    })
+
     it('preserves displayName when incoming omits it', () => {
         expect(mergeMachineRegistrationMetadata(
             {
@@ -58,6 +75,29 @@ describe('machineRegistration', () => {
             happyCliVersion: '0.23.0',
             displayName: 'Teemo lab',
             capabilities: ['cursor-chat-store-status'],
+        })
+    })
+
+    it('does not keep stale capabilities when incoming omits them', () => {
+        expect(mergeMachineRegistrationMetadata(
+            {
+                host: 'proxmox',
+                platform: 'linux',
+                happyCliVersion: '0.23.3',
+                capabilities: ['cursor-chat-store-status', 'runner-self-upgrade'],
+                workspaceRoots: ['/home/heavygee/coding'],
+            },
+            {
+                host: 'proxmox',
+                platform: 'linux',
+                happyCliVersion: '0.20.0',
+            },
+        )).toEqual({
+            host: 'proxmox',
+            platform: 'linux',
+            happyCliVersion: '0.20.0',
+            capabilities: [],
+            workspaceRoots: ['/home/heavygee/coding'],
         })
     })
 })

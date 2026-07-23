@@ -209,9 +209,9 @@ async function scheduleRunnerRelaunch(cliExecutable?: string): Promise<void> {
             env,
         })
     child.unref()
-    setTimeout(() => {
-        process.exit(0)
-    }, 250)
+    // Do not process.exit here. ApiMachineClient delays requestShutdown by
+    // ~500ms so runner lock/state cleanup can run; a 250ms hard exit races that
+    // and skips cleanup. Caller invokes requestShutdown after this returns.
 }
 
 /**
@@ -256,9 +256,16 @@ export async function applyRunnerSelfUpgrade(options: {
             }
         }
 
-        // Prefer relaunch with new binary; also request graceful runner stop.
+        // Spawn replacement first, then request graceful shutdown so cleanup
+        // runs. Only hard-exit when no shutdown hook was provided (direct calls).
         await scheduleRunnerRelaunch(installedExecutable)
-        options.requestShutdown?.()
+        if (options.requestShutdown) {
+            options.requestShutdown()
+        } else {
+            setTimeout(() => {
+                process.exit(0)
+            }, 500)
+        }
 
         return {
             status: 'started',

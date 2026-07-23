@@ -231,7 +231,7 @@ function createWebApp(options: {
     const corsOriginOption = corsOrigins.includes('*') ? '*' : corsOrigins
     const corsMiddleware = cors({
         origin: corsOriginOption,
-        allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+        allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
         allowHeaders: ['authorization', 'content-type']
     })
     app.use('/api/*', corsMiddleware)

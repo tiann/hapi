@@ -6,6 +6,10 @@
  * capabilities until something else wrote metadata. Compare + merge here so
  * register and reconnect paths can refresh identity fields without wiping
  * operator-set displayName.
+ *
+ * Merge starts from the registering payload (not stored+incoming spread) so a
+ * downgraded runner that omits `capabilities` cannot keep a prior generation's
+ * `runner-self-upgrade` advertisement on the hub.
  */
 
 const IDENTITY_KEYS = [
@@ -68,7 +72,9 @@ export function machineRegistrationNeedsRefresh(existing: unknown, incoming: unk
             return true
         }
     }
-    if (next.capabilities !== undefined && !capabilitiesEqual(current.capabilities, next.capabilities)) {
+    // Always compare capabilities: omitted on incoming means [] (no advertised
+    // RPCs), so a downgrade that stops sending the field still refreshes.
+    if (!capabilitiesEqual(current.capabilities, next.capabilities)) {
         return true
     }
     if (next.workspaceRoots !== undefined && !workspaceRootsEqual(current.workspaceRoots, next.workspaceRoots)) {
@@ -78,18 +84,24 @@ export function machineRegistrationNeedsRefresh(existing: unknown, incoming: unk
 }
 
 /**
- * Merge registration metadata: incoming wins for identity fields; preserve
- * operator displayName when the client did not send one.
+ * Merge registration metadata from the registering runner's payload.
+ * Incoming wins for identity; preserve operator displayName (and workspace
+ * roots) when the client did not send them.
  */
 export function mergeMachineRegistrationMetadata(existing: unknown, incoming: unknown): Record<string, unknown> {
     const current = asRecord(existing) ?? {}
     const next = asRecord(incoming) ?? {}
+    // Start from incoming so omitted identity fields (especially capabilities)
+    // do not inherit a prior runner generation's advertisements.
     const merged: Record<string, unknown> = {
-        ...current,
         ...next,
+        capabilities: sortedCapabilities(next.capabilities),
     }
     if (next.displayName === undefined && current.displayName !== undefined) {
         merged.displayName = current.displayName
+    }
+    if (next.workspaceRoots === undefined && current.workspaceRoots !== undefined) {
+        merged.workspaceRoots = current.workspaceRoots
     }
     return merged
 }
