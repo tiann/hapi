@@ -376,7 +376,11 @@ export function useSSE(options: {
                     active: patch.active ?? current.active,
                     thinking: patch.thinking ?? current.thinking,
                     activeAt: patch.activeAt ?? current.activeAt,
-                    updatedAt: patch.updatedAt ?? current.updatedAt,
+                    // Monotonic: stale versioned-patch replays can carry an
+                    // older updatedAt; never move the list clock backward.
+                    updatedAt: patch.updatedAt !== undefined
+                        ? Math.max(current.updatedAt, patch.updatedAt)
+                        : current.updatedAt,
                     backgroundTaskCount: Object.prototype.hasOwnProperty.call(patch, 'backgroundTaskCount')
                         ? patch.backgroundTaskCount ?? 0
                         : current.backgroundTaskCount,
@@ -442,7 +446,11 @@ export function useSSE(options: {
                 if (patch.active !== undefined) nextSession.active = patch.active
                 if (patch.thinking !== undefined) nextSession.thinking = patch.thinking
                 if (patch.activeAt !== undefined) nextSession.activeAt = patch.activeAt
-                if (patch.updatedAt !== undefined) nextSession.updatedAt = patch.updatedAt
+                // Monotonic with hub applySessionPatch: a rejected stale
+                // metadata/agentState replay must not rewind updatedAt.
+                if (patch.updatedAt !== undefined) {
+                    nextSession.updatedAt = Math.max(nextSession.updatedAt, patch.updatedAt)
+                }
                 if (patch.model !== undefined) nextSession.model = patch.model
                 if (patch.modelReasoningEffort !== undefined) nextSession.modelReasoningEffort = patch.modelReasoningEffort
                 if (patch.effort !== undefined) nextSession.effort = patch.effort
