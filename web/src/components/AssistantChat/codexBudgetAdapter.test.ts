@@ -67,8 +67,8 @@ describe('toCodexBudgetState', () => {
         expect(state?.effective).toBe('amber')
         expect(state?.effectiveReason).toContain('credits covering')
         expect(state?.operationalAxisId).toBe('context')
-        // Dominant should still be weekly (highest-pressure non-credits axis)
-        expect(state?.dominantAxisId).toBe('weekly')
+        // Covered weekly is excluded from dominant; active worst is context.
+        expect(state?.dominantAxisId).toBe('context')
         const creditsAxis = state?.axes.find((axis) => axis.id === 'credits')
         expect(creditsAxis?.covering).toBe(true)
         expect(creditsAxis?.valueText).toBe('246')
@@ -90,6 +90,7 @@ describe('toCodexBudgetState', () => {
         expect(state?.effective).toBe('red')
         expect(state?.effectiveReason).toContain('Context Window')
         expect(state?.operationalAxisId).toBe('context')
+        expect(state?.dominantAxisId).toBe('context')
         const creditsAxis = state?.axes.find((axis) => axis.id === 'credits')
         expect(creditsAxis?.covering).toBe(true)
     })
