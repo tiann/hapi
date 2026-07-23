@@ -20,11 +20,6 @@ import {
 } from "@/modules/common/remote/RemoteLauncherBase";
 import { isUnrecoverableClaudeResumeError } from "./utils/claudeResumeError";
 
-// Bound on consecutive automatic relaunches after an unexpected claudeRemote
-// failure. Mirrors codex's SAME_THREAD_MAX_RETRIES. Prevents an unforeseen
-// persistent failure (e.g. a reject we did not classify) from spinning forever.
-const MAX_LAUNCH_RETRIES = 3;
-
 interface PermissionsField {
     date: number;
     result: 'approved' | 'denied';
@@ -325,7 +320,6 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
 
             let previousSessionId: string | null = null;
             let immediateFailureCount = 0;
-            let launchRetryCount = 0;
             while (!this.exitReason) {
                 logger.debug('[remote]: launch');
                 messageBuffer.addMessage('═'.repeat(40), 'status');
@@ -509,11 +503,8 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         signal: controller.signal,
                     });
 
-                    // Clean run (the session ended normally and we loop to await
-                    // the next message): forget any prior error-retry budget.
                     // consumeOneTimeFlags stays in onSessionFound (main): only drop
                     // --resume once Claude actually captured a session id.
-                    launchRetryCount = 0;
 
                     if (!this.exitReason && controller.signal.aborted) {
                         session.client.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
@@ -609,15 +600,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 message: `Process exited unexpectedly ${MAX_IMMEDIATE_RESPAWN_FAILURES} times in a row: ${detail}. Dropping the queued message; resolve the issue and resend it.`
                             });
                             immediateFailureCount = 0;
-                            launchRetryCount = 0;
-                        } else if (launchRetryCount >= MAX_LAUNCH_RETRIES) {
-                            const reason = `Session failed to start after ${MAX_LAUNCH_RETRIES} attempts: ${detail}`;
-                            logger.debug(`[remote]: launch retries exhausted; stopping`);
-                            session.client.sendSessionEvent({ type: 'message', message: reason });
-                            this.exitReason = 'exit';
-                            break;
                         } else {
-                            launchRetryCount += 1;
                             restoreInFlightMessage();
                             session.client.sendSessionEvent({ type: 'message', message: `Process exited unexpectedly: ${detail}` });
                             await this.respawnBackoff(getRespawnBackoffMs(), controller.signal);

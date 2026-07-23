@@ -1,13 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 /**
- * Wiring test for the launch retry loop in claudeRemoteLauncher (design §4.3,
- * AC4). The two predicates are unit-tested in utils/claudeResumeError.test.ts;
- * this exercises how the launcher acts on them inside runMainLoop:
- *   - unrecoverable error  -> stop immediately (no retry, exit)
- *   - recoverable error    -> retry up to MAX_LAUNCH_RETRIES, then stop
- *   - clean run after fails -> retry budget resets
- * This is the regression guard for the original "infinite respawn" bug.
+ * Wiring test for unrecoverable resume errors in claudeRemoteLauncher
+ * (fork-resume / #942). Recoverable immediate-failure / drop-message behavior
+ * is covered by claudeRemoteLauncher.launchFailure.test.ts (main).
  */
 
 const harness = vi.hoisted(() => ({
@@ -95,7 +91,8 @@ function createSessionStub() {
         removeSessionFoundCallback: () => {},
         consumeOneTimeFlags: () => {},
         onSessionFound: () => {},
-        clearSessionId: () => {}
+        clearSessionId: () => {},
+        getModel: () => null
     };
     return { session, events };
 }
@@ -133,57 +130,5 @@ describe('claudeRemoteLauncher launch retry wiring', () => {
         expect(msgs.some(m => m.includes('currently running as a background agent'))).toBe(true);
         // A recoverable "Process exited unexpectedly" retry message must NOT appear.
         expect(msgs.some(m => m.startsWith('Process exited unexpectedly'))).toBe(false);
-    }, 15_000);
-
-    it('retries a recoverable error up to MAX_LAUNCH_RETRIES then stops', async () => {
-        // Always throw a transient (recoverable) error so the budget is the
-        // only thing that stops the loop.
-        const transient = async () => { throw new Error('Claude Code process exited with code 1'); };
-        harness.behaviors = Array.from({ length: 10 }, () => transient);
-        const { session, events } = createSessionStub();
-
-        const exitReason = await claudeRemoteLauncher(session as never);
-
-        // MAX_LAUNCH_RETRIES = 3: attempts are the initial try + 3 retries = 4,
-        // and the 4th is where budgetExhausted trips and the loop breaks.
-        expect(harness.callIndex).toBe(4);
-        expect(exitReason).toBe('exit');
-        const msgs = messages(events);
-        const retries = msgs.filter(m => m.startsWith('Process exited unexpectedly'));
-        expect(retries).toHaveLength(3);
-        expect(msgs.some(m => m.includes('failed to start after 3 attempts'))).toBe(true);
-    }, 15_000);
-
-    it('resets the retry budget after a clean run', async () => {
-        // The launch loop only ends when exitReason is set (the mocked
-        // claudeRemote returns synchronously, so a clean run alone re-loops).
-        // To prove the budget RESET, we burn 2 retries, do a clean run (reset),
-        // then need a *full* fresh budget (3 more retries) before exhaustion.
-        // If the reset were missing, exhaustion would trip far sooner.
-        const transient = () => { throw new Error('Claude Code process exited with code 1'); };
-        let cleanRunHappened = false;
-        harness.behaviors = [
-            async () => transient(),            // attempt 1: retry 1
-            async () => transient(),            // attempt 2: retry 2
-            async () => { cleanRunHappened = true; }, // attempt 3: clean -> budget reset
-            async () => transient(),            // attempt 4: retry 1 (post-reset)
-            async () => transient(),            // attempt 5: retry 2 (post-reset)
-            async () => transient(),            // attempt 6: retry 3 (post-reset)
-            async () => transient()             // attempt 7: budget exhausted -> break
-        ];
-        const { session, events } = createSessionStub();
-
-        const exitReason = await claudeRemoteLauncher(session as never);
-
-        expect(cleanRunHappened).toBe(true);
-        // Without the reset, MAX_LAUNCH_RETRIES(=3) would trip at attempt 4
-        // (2 pre + 1 post). The reset lets the loop reach attempt 7.
-        expect(harness.callIndex).toBe(7);
-        expect(exitReason).toBe('exit');
-        const msgs = messages(events);
-        // 2 retries before the clean run + 3 retries after = 5 transient messages.
-        expect(msgs.filter(m => m.startsWith('Process exited unexpectedly'))).toHaveLength(5);
-        // Exhaustion fires exactly once, on the post-reset budget.
-        expect(msgs.filter(m => m.includes('failed to start after 3 attempts'))).toHaveLength(1);
     }, 15_000);
 });
