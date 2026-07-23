@@ -352,8 +352,11 @@ body {
     }
 }
 
-/* Desktop sidebar: use custom width from CSS variable */
-@media (min-width: 1024px) {
+/* Desktop sidebar: use custom width from CSS variable.
+   Kept in sync with the Tailwind `split` breakpoint (see tailwind.config.ts)
+   so the sidebar width/resize applies as soon as the split view appears on
+   compact tablets. */
+@media (min-width: 920px) {
     .desktop-scrollbar-left {
         direction: rtl;
     }
