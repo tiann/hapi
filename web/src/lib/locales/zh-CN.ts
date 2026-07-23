@@ -433,6 +433,7 @@ export default {
   'tool.question': '问题',
   'tool.selectOption': '请至少选择一个选项或输入答案。',
   'tool.waitingForApproval': '等待审批…',
+  'tool.waitingForLocalApproval': '请在本地终端中审批，或先切换到远程模式。',
   'tool.canceled': '已取消',
   'tool.approvedForSession': '本会话已批准',
   'tool.aborted': '已中止',

@@ -101,6 +101,7 @@ export function PermissionFooter(props: {
     metadata: SessionMetadataSummary | null
     tool: ChatToolCall
     disabled: boolean
+    controlledByUser?: boolean
     onDone: () => void
 }) {
     const { t } = useTranslation()
@@ -118,9 +119,11 @@ export function PermissionFooter(props: {
 
     const summary = formatPermissionSummary(permission, props.tool.name, props.tool.input, codex, t)
     const isPending = permission.status === 'pending'
+    const localOnly = props.controlledByUser === true
+    const actionsDisabled = props.disabled || localOnly
 
     const run = async (action: () => Promise<void>, hapticType: 'success' | 'error') => {
-        if (props.disabled) return
+        if (actionsDisabled) return
         setError(null)
         try {
             await action()
@@ -217,7 +220,9 @@ export function PermissionFooter(props: {
 
     return (
         <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
-            <div className="text-xs font-medium text-[var(--app-hint)]">{summary}</div>
+            <div className="text-xs font-medium text-[var(--app-hint)]">
+                {localOnly ? t('tool.waitingForLocalApproval') : summary}
+            </div>
 
             {error ? (
                 <div className="mt-2 rounded-xl border border-[var(--app-badge-error-border)] bg-[var(--app-badge-error-bg)] px-3 py-2 text-xs text-[var(--app-badge-error-text)]">
@@ -225,68 +230,70 @@ export function PermissionFooter(props: {
                 </div>
             ) : null}
 
-            <div className="mt-3 flex flex-col gap-1.5">
-                {codex ? (
-                    <>
-                        <PermissionRowButton
-                            label={t('tool.yes')}
-                            tone="allow"
-                            loading={loading === 'allow'}
-                            disabled={props.disabled || loading !== null || loadingForSession}
-                            onClick={() => codexApprove('approved')}
-                        />
-                        <PermissionRowButton
-                            label={t('tool.yesForSession')}
-                            tone="muted"
-                            loading={loadingForSession}
-                            disabled={props.disabled || loading !== null || loadingForSession}
-                            onClick={() => codexApprove('approved_for_session')}
-                        />
-                        <PermissionRowButton
-                            label={t('tool.abortLabel')}
-                            tone="deny"
-                            loading={loading === 'abort'}
-                            disabled={props.disabled || loading !== null || loadingForSession}
-                            onClick={codexAbort}
-                        />
-                    </>
-                ) : (
-                    <>
-                        <PermissionRowButton
-                            label={t('tool.allow')}
-                            tone="allow"
-                            loading={loading === 'allow'}
-                            disabled={props.disabled || loading !== null || loadingAllEdits || loadingForSession}
-                            onClick={approve}
-                        />
-                        {canAllowForSession ? (
+            {!localOnly ? (
+                <div className="mt-3 flex flex-col gap-1.5">
+                    {codex ? (
+                        <>
                             <PermissionRowButton
-                                label={t('tool.allowForSession')}
+                                label={t('tool.yes')}
+                                tone="allow"
+                                loading={loading === 'allow'}
+                                disabled={actionsDisabled || loading !== null || loadingForSession}
+                                onClick={() => codexApprove('approved')}
+                            />
+                            <PermissionRowButton
+                                label={t('tool.yesForSession')}
                                 tone="muted"
                                 loading={loadingForSession}
-                                disabled={props.disabled || loading !== null || loadingAllEdits || loadingForSession}
-                                onClick={approveForSession}
+                                disabled={actionsDisabled || loading !== null || loadingForSession}
+                                onClick={() => codexApprove('approved_for_session')}
                             />
-                        ) : null}
-                        {canAllowAllEdits ? (
                             <PermissionRowButton
-                                label={t('tool.allowAll')}
-                                tone="muted"
-                                loading={loadingAllEdits}
-                                disabled={props.disabled || loading !== null || loadingAllEdits || loadingForSession}
-                                onClick={approveAllEdits}
+                                label={t('tool.abortLabel')}
+                                tone="deny"
+                                loading={loading === 'abort'}
+                                disabled={actionsDisabled || loading !== null || loadingForSession}
+                                onClick={codexAbort}
                             />
-                        ) : null}
-                        <PermissionRowButton
-                            label={t('tool.deny')}
-                            tone="deny"
-                            loading={loading === 'deny'}
-                            disabled={props.disabled || loading !== null || loadingAllEdits || loadingForSession}
-                            onClick={deny}
-                        />
-                    </>
-                )}
-            </div>
+                        </>
+                    ) : (
+                        <>
+                            <PermissionRowButton
+                                label={t('tool.allow')}
+                                tone="allow"
+                                loading={loading === 'allow'}
+                                disabled={actionsDisabled || loading !== null || loadingAllEdits || loadingForSession}
+                                onClick={approve}
+                            />
+                            {canAllowForSession ? (
+                                <PermissionRowButton
+                                    label={t('tool.allowForSession')}
+                                    tone="muted"
+                                    loading={loadingForSession}
+                                    disabled={actionsDisabled || loading !== null || loadingAllEdits || loadingForSession}
+                                    onClick={approveForSession}
+                                />
+                            ) : null}
+                            {canAllowAllEdits ? (
+                                <PermissionRowButton
+                                    label={t('tool.allowAll')}
+                                    tone="muted"
+                                    loading={loadingAllEdits}
+                                    disabled={actionsDisabled || loading !== null || loadingAllEdits || loadingForSession}
+                                    onClick={approveAllEdits}
+                                />
+                            ) : null}
+                            <PermissionRowButton
+                                label={t('tool.deny')}
+                                tone="deny"
+                                loading={loading === 'deny'}
+                                disabled={actionsDisabled || loading !== null || loadingAllEdits || loadingForSession}
+                                onClick={deny}
+                            />
+                        </>
+                    )}
+                </div>
+            ) : null}
         </div>
     )
 }

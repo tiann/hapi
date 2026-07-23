@@ -583,12 +583,13 @@ function SessionChatInner(props: SessionChatProps) {
     const opencodeModelsState = useOpencodeModels({
         api: props.api,
         sessionId: props.session.id,
-        enabled: agentFlavor === 'opencode' && props.session.active
+        // Local mode has no session RPC handlers for models/effort lists.
+        enabled: agentFlavor === 'opencode' && props.session.active && !controlledByUser
     })
     const opencodeReasoningEffortState = useOpencodeReasoningEffortOptions({
         api: props.api,
         sessionId: props.session.id,
-        enabled: agentFlavor === 'opencode' && props.session.active
+        enabled: agentFlavor === 'opencode' && props.session.active && !controlledByUser
     })
     const opencodeModelOptions = useMemo(() => {
         if (agentFlavor !== 'opencode') {
@@ -786,15 +787,23 @@ function SessionChatInner(props: SessionChatProps) {
             getSession: () => props.session as { agentState?: { requests?: Record<string, unknown> } } | null,
             sendMessage: (_sessionId: string, message: string) => props.onSend(message),
             approvePermission: async (_sessionId: string, requestId: string) => {
+                // Local mode has no permission RPC / reverse channel; refuse rather than
+                // letting voice tools look like remote approval succeeded.
+                if (props.session.agentState?.controlledByUser === true) {
+                    throw new Error(t('tool.waitingForLocalApproval'))
+                }
                 await props.api.approvePermission(props.session.id, requestId)
                 props.onRefresh()
             },
             denyPermission: async (_sessionId: string, requestId: string) => {
+                if (props.session.agentState?.controlledByUser === true) {
+                    throw new Error(t('tool.waitingForLocalApproval'))
+                }
                 await props.api.denyPermission(props.session.id, requestId)
                 props.onRefresh()
             }
         })
-    }, [props.session, props.api, props.onSend, props.onRefresh])
+    }, [props.session, props.api, props.onSend, props.onRefresh, t])
 
     useEffect(() => {
         registerVoiceHooksStore(
@@ -839,6 +848,12 @@ function SessionChatInner(props: SessionChatProps) {
         const requests = props.session.agentState?.requests ?? {}
         const currentIds = new Set(Object.keys(requests))
 
+        // Local-mode permissions are terminal-only; do not prompt voice to approve them.
+        if (props.session.agentState?.controlledByUser === true) {
+            prevRequestIdsRef.current = currentIds
+            return
+        }
+
         for (const [requestId, request] of Object.entries(requests)) {
             if (!prevRequestIdsRef.current.has(requestId)) {
                 voiceHooks.onPermissionRequested(
@@ -851,7 +866,7 @@ function SessionChatInner(props: SessionChatProps) {
         }
 
         prevRequestIdsRef.current = currentIds
-    }, [props.session.agentState?.requests, props.session.id])
+    }, [props.session.agentState?.requests, props.session.agentState?.controlledByUser, props.session.id])
 
     const handleVoiceToggle = useCallback(async () => {
         if (!voice) return
@@ -1265,6 +1280,7 @@ function SessionChatInner(props: SessionChatProps) {
                         sessionId={props.session.id}
                         metadata={props.session.metadata}
                         disabled={sessionInactive}
+                        controlledByUser={controlledByUser}
                         onRefresh={props.onRefresh}
                         onRetryMessage={props.onRetryMessage}
                         onFlushPending={props.onFlushPending}

@@ -429,6 +429,7 @@ export default {
   'tool.question': 'Question',
   'tool.selectOption': 'Please select at least one option or type an answer.',
   'tool.waitingForApproval': 'Waiting for approval…',
+  'tool.waitingForLocalApproval': 'Approve this in the local terminal, or switch to remote mode first.',
   'tool.canceled': 'Canceled',
   'tool.approvedForSession': 'Approved For Session',
   'tool.aborted': 'Aborted',
