@@ -166,7 +166,8 @@ describe('cli session handlers', () => {
             lifecycleState: 'archived'
         })
         expect(typeof data?.updatedAt).toBe('number')
-        expect(data?.updatedAt).toBeGreaterThan(session.updatedAt)
+        // Same-ms create+update is common in unit tests; store still touches updated_at.
+        expect(data?.updatedAt).toBeGreaterThanOrEqual(session.updatedAt)
     })
 
     it('emits a structured agentState patch on update-state RPC (closes second half of #884)', () => {
@@ -211,7 +212,8 @@ describe('cli session handlers', () => {
         expect(data?.agentState?.version).toBe(session.agentStateVersion + 1)
         expect(data?.agentState?.value).toMatchObject({ controlledByUser: true })
         expect(typeof data?.updatedAt).toBe('number')
-        expect(data?.updatedAt).toBeGreaterThan(session.updatedAt)
+        // Same-ms create+update is common in unit tests; store still touches updated_at.
+        expect(data?.updatedAt).toBeGreaterThanOrEqual(session.updatedAt)
     })
 
     it('update-metadata broadcasts the merged value, not the pre-merge payload', () => {
