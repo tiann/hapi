@@ -1,4 +1,5 @@
 import type { ChatBlock, ToolCallBlock } from '@/chat/types'
+import { getCodexCommandActions, isCodexExplorationTool } from '@/chat/codexCommandPresentation'
 import { isSubagentToolName } from '@/chat/subagentTool'
 import { isAskUserQuestionToolName } from '@/components/ToolCard/askUserQuestion'
 import { isRequestUserInputToolName } from '@/components/ToolCard/requestUserInput'
@@ -31,6 +32,7 @@ export type ToolGroupBlock = {
     historyState: 'complete' | 'needs-older-history'
     needsOlderHistory: boolean
     activityTitle?: string | null
+    presentationMode?: 'default' | 'codex-exploration'
     summary: ToolGroupSummary
 }
 
@@ -202,7 +204,15 @@ export function isEligibleForToolGrouping(block: ToolCallBlock): boolean {
     if (PLAN_TOOL_NAMES.has(block.tool.name)) return false
     if (MILESTONE_TOOL_NAMES.has(block.tool.name)) return false
     if (isInteractiveToolBlock(block)) return false
+    if (block.tool.name === 'CodexBash' && getCodexCommandActions(block).length > 0) {
+        return isCodexExplorationTool(block)
+    }
     return true
+}
+
+function getGroupingFamily(block: ToolCallBlock): 'default' | 'codex-exploration' | null {
+    if (!isEligibleForToolGrouping(block)) return null
+    return isCodexExplorationTool(block) ? 'codex-exploration' : 'default'
 }
 
 function createToolGroupId(
@@ -236,7 +246,12 @@ export function buildVisibleChatBlocks(
 
     for (let index = 0; index < blocks.length; index += 1) {
         const block = blocks[index]
-        if (block.kind !== 'tool-call' || !isEligibleForToolGrouping(block)) {
+        if (block.kind !== 'tool-call') {
+            visibleBlocks.push(block)
+            continue
+        }
+        const groupingFamily = getGroupingFamily(block)
+        if (!groupingFamily) {
             visibleBlocks.push(block)
             continue
         }
@@ -245,14 +260,14 @@ export function buildVisibleChatBlocks(
         let cursor = index + 1
         while (cursor < blocks.length) {
             const candidate = blocks[cursor]
-            if (candidate.kind !== 'tool-call' || !isEligibleForToolGrouping(candidate)) {
+            if (candidate.kind !== 'tool-call' || getGroupingFamily(candidate) !== groupingFamily) {
                 break
             }
             tools.push(candidate)
             cursor += 1
         }
 
-        if (tools.length < 2) {
+        if (tools.length < 2 && groupingFamily !== 'codex-exploration') {
             visibleBlocks.push(block)
             continue
         }
@@ -272,10 +287,11 @@ export function buildVisibleChatBlocks(
             firstToolId: tools[0].id,
             lastToolId: tools[tools.length - 1].id,
             tools,
-            defaultOpen: false,
+            defaultOpen: groupingFamily === 'codex-exploration',
             historyState: needsOlderHistory ? 'needs-older-history' : 'complete',
             needsOlderHistory,
             activityTitle,
+            presentationMode: groupingFamily,
             summary: summarizeToolGroup(tools)
         })
         index = cursor - 1

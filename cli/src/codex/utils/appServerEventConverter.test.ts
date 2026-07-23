@@ -132,27 +132,49 @@ describe('AppServerEventConverter', () => {
 
     it('maps command execution items and output deltas', () => {
         const converter = new AppServerEventConverter();
+        const commandActions = [{
+            type: 'listFiles',
+            command: 'ls',
+            path: '.'
+        }];
 
         const started = converter.handleNotification('item/started', {
-            item: { id: 'cmd-1', type: 'commandExecution', command: 'ls' }
+            item: {
+                id: 'cmd-1',
+                type: 'commandExecution',
+                command: 'ls',
+                source: 'agent',
+                commandActions
+            }
         });
         expect(started).toEqual([{
             type: 'exec_command_begin',
             call_id: 'cmd-1',
-            command: 'ls'
+            command: 'ls',
+            command_actions: commandActions,
+            command_source: 'agent'
         }]);
 
         converter.handleNotification('item/commandExecution/outputDelta', { itemId: 'cmd-1', delta: 'ok' });
         const completed = converter.handleNotification('item/completed', {
-            item: { id: 'cmd-1', type: 'commandExecution', exitCode: 0 }
+            item: {
+                id: 'cmd-1',
+                type: 'commandExecution',
+                aggregatedOutput: 'final output',
+                exitCode: 0,
+                durationMs: 42
+            }
         });
 
         expect(completed).toEqual([{
             type: 'exec_command_end',
             call_id: 'cmd-1',
             command: 'ls',
-            output: 'ok',
-            exit_code: 0
+            command_actions: commandActions,
+            command_source: 'agent',
+            output: 'final output',
+            exit_code: 0,
+            duration_ms: 42
         }]);
     });
 

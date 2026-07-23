@@ -478,6 +478,12 @@ export default {
   'toolGroup.rowStatus.running': '运行中',
   'toolGroup.rowStatus.pending': '等待中',
   'toolGroup.rowStatus.error': '错误',
+  'toolGroup.codex.exploring': '正在探索',
+  'toolGroup.codex.explored': '已探索',
+  'toolGroup.codex.read': '读取',
+  'toolGroup.codex.list': '列出',
+  'toolGroup.codex.search': '搜索',
+  'toolGroup.codex.searchIn': '在 {path} 中搜索 {query}',
 
   // Composer buttons
   'composer.settings': '设置',

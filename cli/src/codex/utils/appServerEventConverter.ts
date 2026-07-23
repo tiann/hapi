@@ -920,10 +920,18 @@ export class AppServerEventConverter {
                     const command = extractCommand(item.command ?? item.cmd ?? item.args);
                     const cwd = asString(item.cwd ?? item.workingDirectory ?? item.working_directory);
                     const autoApproved = asBoolean(item.autoApproved ?? item.auto_approved);
+                    const commandActions = Array.isArray(item.commandActions)
+                        ? item.commandActions
+                        : Array.isArray(item.command_actions)
+                            ? item.command_actions
+                            : null;
+                    const source = asString(item.source);
                     const meta: Record<string, unknown> = {};
                     if (command) meta.command = command;
                     if (cwd) meta.cwd = cwd;
                     if (autoApproved !== null) meta.auto_approved = autoApproved;
+                    if (commandActions) meta.command_actions = commandActions;
+                    if (source) meta.command_source = source;
                     this.commandMeta.set(itemId, meta);
 
                     events.push(scoped({
@@ -935,10 +943,12 @@ export class AppServerEventConverter {
 
                 if (method === 'item/completed') {
                     const meta = this.commandMeta.get(itemId) ?? {};
-                    const output = asString(item.output ?? item.result ?? item.stdout) ?? this.commandOutputBuffers.get(itemId);
+                    const output = asString(item.aggregatedOutput ?? item.aggregated_output ?? item.output ?? item.result ?? item.stdout)
+                        ?? this.commandOutputBuffers.get(itemId);
                     const stderr = asString(item.stderr);
                     const error = asString(item.error);
                     const exitCode = asNumber(item.exitCode ?? item.exit_code ?? item.exitcode);
+                    const durationMs = asNumber(item.durationMs ?? item.duration_ms);
                     const status = asString(item.status);
 
                     events.push(scoped({
@@ -949,6 +959,7 @@ export class AppServerEventConverter {
                         ...(stderr ? { stderr } : {}),
                         ...(error ? { error } : {}),
                         ...(exitCode !== null ? { exit_code: exitCode } : {}),
+                        ...(durationMs !== null ? { duration_ms: durationMs } : {}),
                         ...(status ? { status } : {})
                     }));
 

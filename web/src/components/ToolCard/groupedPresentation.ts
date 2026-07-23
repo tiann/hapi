@@ -1,5 +1,6 @@
 import type { ToolGroupBlock } from '@/chat/toolGroups'
 import type { ToolCallBlock } from '@/chat/types'
+import { isCodexExplorationTool } from '@/chat/codexCommandPresentation'
 import { getInputStringAny } from '@/lib/toolInputUtils'
 
 type Translator = (key: string, params?: Record<string, string | number>) => string
@@ -30,7 +31,7 @@ function truncateLabel(value: string): string {
         : normalized
 }
 
-function safeLabelValue(value: string | null): string | null {
+export function safeGroupedLabelValue(value: string | null): string | null {
     if (!value || SENSITIVE_TEXT_RE.test(value)) return null
     return truncateLabel(value)
 }
@@ -50,7 +51,7 @@ function getInspectionCommandTarget(command: string): string | null {
     if (!parts || parts.length < 2) return null
     const target = [...parts].reverse().find((part) => !part.startsWith('-') && !/^['"]?\d+(?:,\d+)?p['"]?$/.test(part))
     if (!target || target === parts[0]) return null
-    return safeLabelValue(target.replace(/^['"]|['"]$/g, ''))
+    return safeGroupedLabelValue(target.replace(/^['"]|['"]$/g, ''))
 }
 
 function getSearchCommandPattern(command: string): string | null {
@@ -60,7 +61,7 @@ function getSearchCommandPattern(command: string): string | null {
     if (executableIndex < 0) return null
     for (let index = executableIndex + 1; index < parts.length; index += 1) {
         const part = parts[index]
-        if (!part.startsWith('-')) return safeLabelValue(part.replace(/^['"]|['"]$/g, ''))
+        if (!part.startsWith('-')) return safeGroupedLabelValue(part.replace(/^['"]|['"]$/g, ''))
         if (SEARCH_OPTIONS_WITH_VALUE.has(part)) index += 1
     }
     return null
@@ -156,13 +157,13 @@ function getPrimaryIntent(block: ToolGroupBlock): GroupedSummaryIntent {
 function formatSpecificIntentTitle(block: ToolGroupBlock, intent: GroupedSummaryIntent, t: Translator): string | null {
     const matching = block.tools.filter((tool) => inferGroupedSummaryIntent(tool) === intent)
     const described = matching
-        .map((tool) => safeLabelValue(tool.tool.description))
+        .map((tool) => safeGroupedLabelValue(tool.tool.description))
         .find((value): value is string => value !== null)
     if (described) return described
 
     if (intent === 'inspect-files' || intent === 'modify-files') {
         for (const tool of matching) {
-            const target = safeLabelValue(getInputStringAny(tool.tool.input, ['file_path', 'path', 'file', 'filePath', 'notebook_path']))
+            const target = safeGroupedLabelValue(getInputStringAny(tool.tool.input, ['file_path', 'path', 'file', 'filePath', 'notebook_path']))
             if (target) {
                 return t(intent === 'modify-files' ? 'toolGroup.friendly.editTarget' : 'toolGroup.friendly.inspectTarget', {
                     target: basename(target)
@@ -178,7 +179,7 @@ function formatSpecificIntentTitle(block: ToolGroupBlock, intent: GroupedSummary
 
     if (intent === 'search-content') {
         for (const tool of matching) {
-            const pattern = safeLabelValue(getInputStringAny(tool.tool.input, ['pattern', 'query']))
+            const pattern = safeGroupedLabelValue(getInputStringAny(tool.tool.input, ['pattern', 'query']))
             if (pattern) return t('toolGroup.friendly.searchTarget', { target: pattern })
             const command = getCommandText(tool.tool.input)
             const commandPattern = command ? getSearchCommandPattern(command) : null
@@ -188,7 +189,7 @@ function formatSpecificIntentTitle(block: ToolGroupBlock, intent: GroupedSummary
 
     if (intent === 'run-project-command') {
         for (const tool of matching) {
-            const command = safeLabelValue(getCommandText(tool.tool.input))
+            const command = safeGroupedLabelValue(getCommandText(tool.tool.input))
             if (command && SAFE_PROJECT_COMMAND_RE.test(command)) {
                 return t('toolGroup.friendly.runTarget', { target: command })
             }
@@ -199,7 +200,12 @@ function formatSpecificIntentTitle(block: ToolGroupBlock, intent: GroupedSummary
 }
 
 export function formatGroupedHeaderTitle(block: ToolGroupBlock, t: Translator): string {
-    const activityTitle = safeLabelValue(block.activityTitle ?? null)
+    if (block.presentationMode === 'codex-exploration') {
+        return block.tools.some((tool) => tool.tool.state === 'running' || tool.tool.state === 'pending')
+            ? t('toolGroup.codex.exploring')
+            : t('toolGroup.codex.explored')
+    }
+    const activityTitle = safeGroupedLabelValue(block.activityTitle ?? null)
     if (activityTitle) return activityTitle
     const primaryIntent = getPrimaryIntent(block)
     const specificTitle = formatSpecificIntentTitle(block, primaryIntent, t)
@@ -211,6 +217,7 @@ export function formatGroupedHeaderTitle(block: ToolGroupBlock, t: Translator): 
 }
 
 export function formatGroupedHeaderSubtitle(block: ToolGroupBlock, t: Translator): string | null {
+    if (block.presentationMode === 'codex-exploration') return null
     const parts: string[] = []
 
     if (block.summary.countsByKind.command > 0) {
@@ -236,5 +243,6 @@ export function formatGroupedHeaderSubtitle(block: ToolGroupBlock, t: Translator
 }
 
 export function formatGroupedRowLabel(tool: ToolCallBlock, t: Translator): string {
+    if (isCodexExplorationTool(tool)) return t('toolGroup.codex.explored')
     return getIntentLabel(inferGroupedSummaryIntent(tool), t)
 }
