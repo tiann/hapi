@@ -8,7 +8,7 @@ import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import { Store } from '../../store'
 import type { Machine, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
-import { createCodexDesktopRoutes, importSelectedCodexSessions } from './codexDesktop'
+import { createCodexDesktopRoutes, getDarwinCodexOpenArgs, importSelectedCodexSessions } from './codexDesktop'
 
 const originalCodexHome = process.env.CODEX_HOME
 
@@ -1338,5 +1338,15 @@ describe('Codex Desktop import routes', () => {
         expect(body.duplicates).toHaveLength(1)
         expect(body.duplicates[0]?.codexSessionId).toBe('original-session-id')
         expect(body.duplicates[0]?.hapiSessionIds.sort()).toEqual([dupSession.id, forkSession.id].sort())
+    })
+})
+
+describe('Codex Desktop restart helpers', () => {
+    it('opens a concrete macOS app bundle path directly', () => {
+        expect(getDarwinCodexOpenArgs('/Applications/Codex.app')).toEqual(['/Applications/Codex.app'])
+    })
+
+    it('uses open -a for a macOS application name', () => {
+        expect(getDarwinCodexOpenArgs('Codex')).toEqual(['-a', 'Codex'])
     })
 })
