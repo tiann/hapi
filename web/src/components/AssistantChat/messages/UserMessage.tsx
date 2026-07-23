@@ -7,9 +7,11 @@ import { UserBubbleContent, getUserBubbleClassName, shouldShowMessageStatus } fr
 import { CliOutputBlock } from '@/components/CliOutputBlock'
 import { getConversationMessageAnchorId } from '@/chat/outline'
 import { MessageActions } from '@/components/AssistantChat/messages/MessageActions'
+import { useTranslation } from '@/lib/use-translation'
 
 export function HappyUserMessage() {
     const ctx = useHappyChatContext()
+    const { t } = useTranslation()
     const role = useAssistantState(({ message }) => message.role)
     const messageId = useAssistantState(({ message }) => message.id)
     const text = useAssistantState(({ message }) => {
@@ -40,6 +42,7 @@ export function HappyUserMessage() {
         if (custom?.kind !== 'cli-output') return ''
         return message.content.find((part) => part.type === 'text')?.text ?? ''
     })
+    const steered = useAssistantState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.steered === true)
     if (role !== 'user') return null
     const canRetry = status === 'failed' && typeof localId === 'string' && Boolean(ctx.onRetryMessage)
     const onRetry = canRetry ? () => ctx.onRetryMessage!(localId) : undefined
@@ -80,7 +83,20 @@ export function HappyUserMessage() {
                     )}
                 </div>
             </div>
-            <MessageActions align="end" copyText={hasText ? text : undefined} />
+            <div className="flex items-center justify-end gap-2">
+                {steered && (
+                    <span
+                        title={t('queuedMessages.steeredBadgeTitle')}
+                        className="inline-flex items-center gap-0.5 text-[10px] leading-none text-[var(--app-hint)]"
+                    >
+                        {t('queuedMessages.steeredBadge')}
+                    </span>
+                )}
+                <MessageActions
+                    align="end"
+                    copyText={hasText ? text : undefined}
+                />
+            </div>
         </MessagePrimitive.Root>
     )
 }

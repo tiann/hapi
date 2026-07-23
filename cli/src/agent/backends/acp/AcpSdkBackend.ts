@@ -516,6 +516,57 @@ export class AcpSdkBackend implements AgentBackend {
         this.transport.sendNotification('session/cancel', { sessionId });
     }
 
+    /**
+     * Soft-inject a follow-up `session/prompt` while another prompt is in flight.
+     *
+     * Used for Cursor mid-turn steer (GUI "Send" / next-opportune soft send).
+     * Does **not** cancel the active prompt and does **not** swap message handlers —
+     * `session/update` notifications keep flowing to the in-flight turn's handler.
+     *
+     * Awaits the full concurrent `session/prompt` JSON-RPC response (turn completion
+     * for that inject). Do **not** call this from the hub `SteerQueuedMessage` handler —
+     * that RPC uses a 30s Socket.IO timeout. Use {@link beginSoftSteerPrompt} there.
+     */
+    async softSteerPrompt(sessionId: string, content: PromptContent[]): Promise<void> {
+        if (!this.transport) {
+            throw new Error('ACP transport not initialized');
+        }
+        if (!this.isProcessingMessage) {
+            throw new Error('No active ACP prompt to soft-steer into');
+        }
+
+        await this.transport.sendRequest('session/prompt', {
+            sessionId,
+            prompt: content
+        }, { timeoutMs: Infinity });
+    }
+
+    /**
+     * Kick off a soft steer without blocking the hub RPC on turn completion.
+     * Returns a promise that settles when the concurrent `session/prompt` finishes
+     * (or fails) so callers can keep the launcher busy until then. The promise is
+     * also logged on failure; callers may `void` it after recording the waiter.
+     */
+    beginSoftSteerPrompt(sessionId: string, content: PromptContent[]): Promise<void> {
+        if (!this.transport) {
+            throw new Error('ACP transport not initialized');
+        }
+        if (!this.isProcessingMessage) {
+            throw new Error('No active ACP prompt to soft-steer into');
+        }
+
+        const pending = this.transport.sendRequest('session/prompt', {
+            sessionId,
+            prompt: content
+        }, { timeoutMs: Infinity }).then(() => undefined);
+
+        void pending.catch((error) => {
+            logger.warn('[ACP] soft-steer session/prompt failed', error);
+        });
+
+        return pending;
+    }
+
     async respondToPermission(
         _sessionId: string,
         request: PermissionRequest,

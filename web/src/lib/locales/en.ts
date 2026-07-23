@@ -491,8 +491,18 @@ export default {
   'composer.scheduleSpecificHint': 'Max 7 days. Requires the hub running; the CLI catches up the next time it connects after that time.',
   'composer.scheduleErrorPast': 'Scheduled time must be in the future.',
   'composer.scheduleErrorTooFar': 'Maximum schedule time is 7 days.',
+  'queuedMessages.title': 'Queued',
+  'queuedMessages.listAriaLabel': 'Queued messages',
+  'queuedMessages.pendingAriaLabel': '{count} queued messages pending',
+  'queuedMessages.edit': 'Edit',
+  'queuedMessages.cancel': 'Cancel',
   'queuedMessages.scheduledFor': 'Scheduled for {time}',
   'queuedMessages.editAlreadyInvoked': "Message already sent — it can't be edited",
+  'queuedMessages.steerNow': 'Steer',
+  'queuedMessages.steerFailed': 'Could not steer message',
+  'queuedMessages.steerAlreadyInvoked': 'Message already sent',
+  'queuedMessages.steeredBadge': '↳ Steered',
+  'queuedMessages.steeredBadgeTitle': 'Steered into the active turn',
 
   // Scratchlist (per-session workbench, issue #11)
   'scratchlist.title': 'Scratchlist',

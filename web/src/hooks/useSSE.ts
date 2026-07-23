@@ -467,7 +467,7 @@ export function useSSE(options: {
                 // reconnect gaps or while another session is selected, only the global
                 // connection may be alive — still clear the queued bar / optimistic rows.
                 if (event.type === 'messages-consumed') {
-                    markMessagesConsumed(event.sessionId, event.localIds, event.invokedAt)
+                    markMessagesConsumed(event.sessionId, event.localIds, event.invokedAt, event.steered)
                 }
                 if (event.type === 'message-cancelled') {
                     removeOptimisticMessage(event.sessionId, event.messageId)
@@ -477,7 +477,7 @@ export function useSSE(options: {
             }
 
             if (event.type === 'messages-consumed') {
-                markMessagesConsumed(event.sessionId, event.localIds, event.invokedAt)
+                markMessagesConsumed(event.sessionId, event.localIds, event.invokedAt, event.steered)
             }
 
             if (event.type === 'message-cancelled') {

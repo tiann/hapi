@@ -495,8 +495,18 @@ export default {
   'composer.scheduleSpecificHint': '最多 7 天。需 Hub 运行；CLI 下次连接时会接收消息。',
   'composer.scheduleErrorPast': '发送时间必须在未来。',
   'composer.scheduleErrorTooFar': '最多只能定时 7 天。',
+  'queuedMessages.title': '排队中',
+  'queuedMessages.listAriaLabel': '排队消息',
+  'queuedMessages.pendingAriaLabel': '{count} 条排队消息待发送',
+  'queuedMessages.edit': '编辑',
+  'queuedMessages.cancel': '取消',
   'queuedMessages.scheduledFor': '定时发送: {time}',
   'queuedMessages.editAlreadyInvoked': '消息已发送，无法编辑',
+  'queuedMessages.steerNow': '立即发出',
+  'queuedMessages.steerFailed': '无法立即发出',
+  'queuedMessages.steerAlreadyInvoked': '消息已发出',
+  'queuedMessages.steeredBadge': '↳ 已介入',
+  'queuedMessages.steeredBadgeTitle': '已介入当前进行中的回合',
 
   // Scratchlist (per-session workbench, issue #11)
   'scratchlist.title': '草稿夹',
