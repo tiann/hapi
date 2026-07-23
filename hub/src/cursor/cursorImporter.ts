@@ -497,6 +497,66 @@ function findAgentBinary(home: string): string | null {
  * before the HAPI row is written returns a structured outcome with no
  * mutation of disk state outside the per-verify temp dir.
  */
+
+type SqliteStoreFileFp = { exists: true; mtimeMs: number; size: number } | { exists: false }
+
+function fpOfSqliteSibling(p: string): SqliteStoreFileFp {
+    try {
+        const st = statSync(p)
+        return { exists: true, mtimeMs: st.mtimeMs, size: st.size }
+    } catch {
+        return { exists: false }
+    }
+}
+
+function fpEqualSqliteSibling(a: SqliteStoreFileFp, b: SqliteStoreFileFp): boolean {
+    if (!a.exists && !b.exists) return true
+    if (!a.exists || !b.exists) return false
+    return a.mtimeMs === b.mtimeMs && a.size === b.size
+}
+
+function fingerprintSqliteStoreFamily(storeDbPath: string): {
+    main: SqliteStoreFileFp
+    wal: SqliteStoreFileFp
+    shm: SqliteStoreFileFp
+} {
+    return {
+        main: fpOfSqliteSibling(storeDbPath),
+        wal: fpOfSqliteSibling(`${storeDbPath}-wal`),
+        shm: fpOfSqliteSibling(`${storeDbPath}-shm`)
+    }
+}
+
+function prepareLegacyStoreForImport(storeDbPath: string): { ok: true; fingerprint: ReturnType<typeof fingerprintSqliteStoreFamily> } | { ok: false; message: string } {
+    try {
+        checkpointLegacySqliteStore(storeDbPath)
+    } catch (err) {
+        return {
+            ok: false,
+            message: `wal_checkpoint failed before import: ${err instanceof Error ? err.message : String(err)}`
+        }
+    }
+    try {
+        const walSt = statSync(`${storeDbPath}-wal`)
+        if (walSt.size > 0) {
+            return {
+                ok: false,
+                message: 'store.db-wal grew between checkpoint and copy; retry after Cursor exits'
+            }
+        }
+    } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code
+        if (code !== 'ENOENT') {
+            return {
+                ok: false,
+                message: `could not stat store.db-wal post-checkpoint: ${err instanceof Error ? err.message : String(err)}`
+            }
+        }
+    }
+    return { ok: true, fingerprint: fingerprintSqliteStoreFamily(storeDbPath) }
+}
+
+
 export async function importCursorSession(options: {
     uuid: string
     workspacePath?: string | null
@@ -600,6 +660,17 @@ export async function importCursorSession(options: {
         return failure('agent_binary_not_found', `\`agent\` binary not found under ${options.home}/.local/bin, ${options.home}/.npm-global/bin, or PATH (${pathHint.length > 0 ? pathHint : '<empty>'})`)
     }
 
+    // Legacy: flush WAL into store.db BEFORE verify so the probe and the
+    // later transplant see the same main-file snapshot (migrator parity).
+    let legacyBaseline: ReturnType<typeof fingerprintSqliteStoreFamily> | null = null
+    if (sourceFormat === 'legacy') {
+        const prepared = prepareLegacyStoreForImport(sourceStorePath)
+        if (!prepared.ok) {
+            return failure('internal_error', prepared.message)
+        }
+        legacyBaseline = prepared.fingerprint
+    }
+
     // Verify-probe against an isolated $HOME. STRICT REFUSAL CONTRACT:
     // any non-ok outcome aborts before creating a HAPI row.
     const verifyCwd = resolvedWorkspacePath && resolvedWorkspacePath.length > 0
@@ -638,53 +709,6 @@ export async function importCursorSession(options: {
     // owner-private.
     if (sourceFormat === 'legacy') {
         try {
-            try {
-                checkpointLegacySqliteStore(sourceStorePath)
-            } catch (err) {
-                return failure(
-                    'internal_error',
-                    `wal_checkpoint failed before import: ${err instanceof Error ? err.message : String(err)}`
-                )
-            }
-            try {
-                const walSt = statSync(`${sourceStorePath}-wal`)
-                if (walSt.size > 0) {
-                    return failure(
-                        'internal_error',
-                        'store.db-wal grew between checkpoint and copy; retry after Cursor exits'
-                    )
-                }
-            } catch (err) {
-                const code = (err as NodeJS.ErrnoException).code
-                if (code !== 'ENOENT') {
-                    return failure(
-                        'internal_error',
-                        `could not stat store.db-wal post-checkpoint: ${err instanceof Error ? err.message : String(err)}`
-                    )
-                }
-            }
-
-            type FileFp = { exists: true; mtimeMs: number; size: number } | { exists: false }
-            const fpOf = (p: string): FileFp => {
-                try {
-                    const st = statSync(p)
-                    return { exists: true, mtimeMs: st.mtimeMs, size: st.size }
-                } catch {
-                    return { exists: false }
-                }
-            }
-            const fpEqual = (a: FileFp, b: FileFp): boolean => {
-                if (!a.exists && !b.exists) return true
-                if (!a.exists || !b.exists) return false
-                return a.mtimeMs === b.mtimeMs && a.size === b.size
-            }
-            const fingerprint = () => ({
-                main: fpOf(sourceStorePath),
-                wal: fpOf(`${sourceStorePath}-wal`),
-                shm: fpOf(`${sourceStorePath}-shm`)
-            })
-            const before = fingerprint()
-
             mkdirSync(join(options.home, '.cursor', 'acp-sessions'), { recursive: true })
             try {
                 mkdirSync(acpSessionDir, { recursive: false, mode: 0o700 })
@@ -696,11 +720,12 @@ export async function importCursorSession(options: {
                 throw err
             }
             copyFileSync(sourceStorePath, join(acpSessionDir, 'store.db'))
-            const after = fingerprint()
+            const after = fingerprintSqliteStoreFamily(sourceStorePath)
             if (
-                !fpEqual(before.main, after.main)
-                || !fpEqual(before.wal, after.wal)
-                || !fpEqual(before.shm, after.shm)
+                !legacyBaseline
+                || !fpEqualSqliteSibling(legacyBaseline.main, after.main)
+                || !fpEqualSqliteSibling(legacyBaseline.wal, after.wal)
+                || !fpEqualSqliteSibling(legacyBaseline.shm, after.shm)
             ) {
                 rmtreeSafe(acpSessionDir)
                 return failure(
