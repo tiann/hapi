@@ -52,6 +52,23 @@ export function isNewerVersionedPatch(patchVersion: number, currentVersion: numb
     return patchVersion > currentVersion
 }
 
+/**
+ * Versioned metadata/agentState summary patches need a detail-cache version
+ * source. Without it, defaulting to version 0 would let a stale buffered SSE
+ * patch overwrite a freshly refetched session list (and suppress list
+ * invalidation because `patched` stayed true). Non-versioned fields (active,
+ * todos, …) do not need this gate.
+ */
+export function canApplyVersionedSummaryPatch(
+    patch: Pick<SessionPatch, 'metadata' | 'agentState'>,
+    detailPresent: boolean
+): boolean {
+    if (patch.metadata === undefined && patch.agentState === undefined) {
+        return true
+    }
+    return detailPresent
+}
+
 type VisibilityState = 'visible' | 'hidden'
 
 type ToastEvent = Extract<SyncEvent, { type: 'toast' }>
@@ -382,9 +399,16 @@ export function useSSE(options: {
                 // reflects the new version — use `>=` so summary matches it.
                 // When detail rejects (stale), detail cache still holds the
                 // older-at-write-but-newer-than-patch version, and `>=` keeps
-                // summary aligned with detail's rejection. Missing detail
-                // cache => default to 0 (allow patch).
+                // summary aligned with detail's rejection.
+                //
+                // Missing detail + versioned fields: refuse the whole summary
+                // patch (return previous → patched=false → list invalidation).
+                // Defaulting versions to 0 would apply stale buffered SSE onto
+                // a freshly refetched list and suppress that invalidation.
                 const detailForVersion = queryClient.getQueryData<SessionResponse>(queryKeys.session(sessionId))?.session
+                if (!canApplyVersionedSummaryPatch(patch, detailForVersion !== undefined)) {
+                    return previous
+                }
                 const detailMetadataVersion = detailForVersion?.metadataVersion ?? 0
                 const detailAgentStateVersion = detailForVersion?.agentStateVersion ?? 0
                 if (patch.todos !== undefined) {

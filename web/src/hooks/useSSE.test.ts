@@ -1,5 +1,40 @@
 import { describe, expect, it } from 'vitest'
-import { isGlobalScopedMessageStreamEvent, isNewerVersionedPatch } from './useSSE'
+import {
+    canApplyVersionedSummaryPatch,
+    isGlobalScopedMessageStreamEvent,
+    isNewerVersionedPatch
+} from './useSSE'
+
+describe('canApplyVersionedSummaryPatch (PR #897 review, HAPI Bot 2026-07-23 Major)', () => {
+    it('allows non-versioned patches without a detail cache', () => {
+        expect(canApplyVersionedSummaryPatch({}, false)).toBe(true)
+        expect(canApplyVersionedSummaryPatch({ metadata: undefined, agentState: undefined }, false)).toBe(true)
+    })
+
+    it('refuses metadata/agentState summary patches when detail version source is missing', () => {
+        expect(
+            canApplyVersionedSummaryPatch(
+                { metadata: { version: 1, value: null } },
+                false
+            )
+        ).toBe(false)
+        expect(
+            canApplyVersionedSummaryPatch(
+                { agentState: { version: 1, value: null } },
+                false
+            )
+        ).toBe(false)
+    })
+
+    it('allows versioned summary patches when detail is present', () => {
+        expect(
+            canApplyVersionedSummaryPatch(
+                { metadata: { version: 2, value: null } },
+                true
+            )
+        ).toBe(true)
+    })
+})
 
 describe('isNewerVersionedPatch (PR #897 review, HAPI Bot 2026-06-16 Major)', () => {
     // Pin the version-monotonicity contract for structured metadata /
