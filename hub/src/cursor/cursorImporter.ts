@@ -341,12 +341,16 @@ function buildImportedSessionMetadata(args: {
     workspacePath: string | null
     title: string
     hostName: string
+    homeDir: string
 }): Record<string, unknown> {
     const now = Date.now()
     return {
         // MetadataSchema (shared/src/schemas.ts) requires path + host.
         path: args.workspacePath ?? '',
         host: args.hostName,
+        // Persist the Cursor owner home used for import/verify so resume
+        // preflight probes the same ~/.cursor (service-account / override).
+        homeDir: args.homeDir,
         os: platform(),
         name: args.title,
         summary: { text: args.title, updatedAt: now },
@@ -761,7 +765,8 @@ export async function importCursorSession(options: {
         uuid: options.uuid,
         workspacePath: resolvedWorkspacePath,
         title,
-        hostName: hostNameFn()
+        hostName: hostNameFn(),
+        homeDir: options.home
     })
     let hapiSessionId: string
     try {

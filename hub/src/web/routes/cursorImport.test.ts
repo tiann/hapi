@@ -541,6 +541,7 @@ describe('importCursorSession happy paths', () => {
         const metadata = session.metadata as Record<string, unknown>
         expect(metadata.flavor).toBe('cursor')
         expect(metadata.cursorSessionId).toBe(uuid)
+        expect(metadata.homeDir).toBe(h.home)
         // STRICT contract: any HAPI row produced by this import path is
         // ACP from birth.
         expect(metadata.cursorSessionProtocol).toBe('acp')
