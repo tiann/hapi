@@ -5,6 +5,7 @@ import { maybeAutoStartServer } from '@/utils/autoStartServer'
 import type { CommandDefinition } from './types'
 import { CODEX_PERMISSION_MODES } from '@hapi/protocol/modes'
 import type { CodexPermissionMode } from '@hapi/protocol/types'
+import { CodexCollaborationModeSchema } from '@hapi/protocol/schemas'
 import type { ReasoningEffort } from '@/codex/appServerTypes'
 import { assertCodexLocalSupported } from '@/codex/utils/codexVersion'
 import { parseReasoningEffortValue } from '@/codex/utils/reasoningEffort'
@@ -17,6 +18,14 @@ function parseServiceTier(value: string): 'fast' | 'standard' {
         return normalized
     }
     throw new Error('Invalid --service-tier value')
+}
+
+function parseCollaborationMode(value: string): 'default' | 'plan' {
+    const parsed = CodexCollaborationModeSchema.safeParse(value.trim().toLowerCase())
+    if (!parsed.success) {
+        throw new Error('Invalid --collaboration-mode value')
+    }
+    return parsed.data
 }
 
 export const codexCommand: CommandDefinition = {
@@ -35,6 +44,7 @@ export const codexCommand: CommandDefinition = {
                 model?: string
                 modelReasoningEffort?: ReasoningEffort
                 serviceTier?: string
+                collaborationMode?: 'default' | 'plan'
             } = {}
             const unknownArgs: string[] = []
             let hasExplicitPermissionMode = false
@@ -87,6 +97,12 @@ export const codexCommand: CommandDefinition = {
                         throw new Error('Missing --service-tier value')
                     }
                     options.serviceTier = parseServiceTier(tier)
+                } else if (arg === '--collaboration-mode') {
+                    const mode = commandArgs[++i]
+                    if (!mode) {
+                        throw new Error('Missing --collaboration-mode value')
+                    }
+                    options.collaborationMode = parseCollaborationMode(mode)
                 } else {
                     unknownArgs.push(arg)
                 }

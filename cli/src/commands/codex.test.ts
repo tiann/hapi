@@ -103,6 +103,15 @@ describe('codexCommand', () => {
         })
     })
 
+    it('forwards a valid --collaboration-mode to runCodex', async () => {
+        await codexCommand.run(createCommandContext(['--started-by', 'runner', '--collaboration-mode', 'plan']))
+
+        expect(runCodexMock).toHaveBeenCalledWith({
+            startedBy: 'runner',
+            collaborationMode: 'plan'
+        })
+    })
+
     it('rejects an unsupported --service-tier value', async () => {
         const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
         const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {

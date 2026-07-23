@@ -51,7 +51,9 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             parsed.data.worktreeName,
             undefined,
             parsed.data.effort,
-            parsed.data.permissionMode
+            parsed.data.permissionMode,
+            parsed.data.serviceTier,
+            parsed.data.collaborationMode
         )
         return c.json(result)
     })

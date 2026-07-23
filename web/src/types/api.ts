@@ -1,4 +1,5 @@
 import type {
+    CodexCollaborationMode,
     DecryptedMessage as ProtocolDecryptedMessage,
     Machine,
     RunnerState,
@@ -217,6 +218,8 @@ export type CodexDesktopSyncRequest = {
     machineId?: string | null
     model?: string | null
     modelReasoningEffort?: string | null
+    serviceTier?: string | null
+    collaborationMode?: CodexCollaborationMode
     yolo?: boolean
 }
 

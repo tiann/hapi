@@ -255,6 +255,8 @@ export default {
   'newSession.opencodeModel.empty': 'No OpenCode models discovered for this directory',
   'newSession.opencodeModel.default': 'Default',
   'newSession.reasoningEffort': 'Reasoning effort',
+  'newSession.collaborationMode': 'Collaboration mode',
+  'newSession.fastMode': 'Fast mode',
   'newSession.yolo': 'YOLO mode',
   'newSession.yolo.title': 'Bypass approvals and sandbox',
   'newSession.yolo.desc': 'Uses dangerous agent flags when spawning.',

@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { homedir, hostname, platform } from 'node:os'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
+import type { CodexCollaborationMode } from '@hapi/protocol/types'
 import { Hono } from 'hono'
 import type { Machine, SyncEngine } from '../../sync/syncEngine'
 import type { Store, StoredMessage } from '../../store'
@@ -131,6 +132,8 @@ type SyncSessionRequestParseResult = {
     machineId?: string | null
     model?: string | null
     modelReasoningEffort?: string | null
+    serviceTier?: string | null
+    collaborationMode?: CodexCollaborationMode
     yolo?: boolean
     error?: string
 }
@@ -1701,7 +1704,7 @@ function parseSyncSessionRequest(body: unknown): SyncSessionRequestParseResult {
         return { sessionIds: [] }
     }
 
-    const bodyRecord = body as { sessionIds?: unknown; cwd?: unknown; machineId?: unknown; model?: unknown; modelReasoningEffort?: unknown; yolo?: unknown }
+    const bodyRecord = body as { sessionIds?: unknown; cwd?: unknown; machineId?: unknown; model?: unknown; modelReasoningEffort?: unknown; serviceTier?: unknown; collaborationMode?: unknown; yolo?: unknown }
     const rawSessionIds = bodyRecord.sessionIds
     if (!Array.isArray(rawSessionIds)) {
         return { sessionIds: [], error: 'Invalid sessionIds' }
@@ -1720,6 +1723,14 @@ function parseSyncSessionRequest(body: unknown): SyncSessionRequestParseResult {
 
     const hasModel = Object.prototype.hasOwnProperty.call(bodyRecord, 'model')
     const hasModelReasoningEffort = Object.prototype.hasOwnProperty.call(bodyRecord, 'modelReasoningEffort')
+    const hasServiceTier = Object.prototype.hasOwnProperty.call(bodyRecord, 'serviceTier')
+    const hasCollaborationMode = Object.prototype.hasOwnProperty.call(bodyRecord, 'collaborationMode')
+    if (hasServiceTier && bodyRecord.serviceTier !== null && bodyRecord.serviceTier !== 'fast' && bodyRecord.serviceTier !== 'standard') {
+        return { sessionIds: [], error: 'Invalid serviceTier' }
+    }
+    if (hasCollaborationMode && bodyRecord.collaborationMode !== 'default' && bodyRecord.collaborationMode !== 'plan') {
+        return { sessionIds: [], error: 'Invalid collaborationMode' }
+    }
 
     // 中文注释：前端允许多选，这里按 Codex thread 去重，避免重复导入同一条本地 transcript。
     return {
@@ -1728,6 +1739,8 @@ function parseSyncSessionRequest(body: unknown): SyncSessionRequestParseResult {
         machineId: typeof bodyRecord.machineId === 'string' && bodyRecord.machineId.trim() ? bodyRecord.machineId.trim() : null,
         model: hasModel ? (typeof bodyRecord.model === 'string' && bodyRecord.model.trim() ? bodyRecord.model.trim() : null) : undefined,
         modelReasoningEffort: hasModelReasoningEffort ? (typeof bodyRecord.modelReasoningEffort === 'string' && bodyRecord.modelReasoningEffort.trim() ? bodyRecord.modelReasoningEffort.trim() : null) : undefined,
+        serviceTier: hasServiceTier ? bodyRecord.serviceTier as 'fast' | 'standard' | null : undefined,
+        collaborationMode: hasCollaborationMode ? bodyRecord.collaborationMode as CodexCollaborationMode : undefined,
         yolo: bodyRecord.yolo === true
     }
 }
@@ -1952,6 +1965,8 @@ export async function importSelectedCodexSessions(options: {
     localSessions?: RemoteCodexSession[]
     model?: string | null
     modelReasoningEffort?: string | null
+    serviceTier?: string | null
+    collaborationMode?: CodexCollaborationMode
     yolo?: boolean
     machineId?: string | null
 }): Promise<ScriptLaunchResponse> {
@@ -1975,6 +1990,23 @@ export async function importSelectedCodexSessions(options: {
             machineId: options.machineId
         })
         results.push(result)
+
+        if (result.success && (options.serviceTier !== undefined || options.collaborationMode !== undefined)) {
+            const importedSessionId = result.hapiSessionIds?.[0]
+            const engine = options.getSyncEngine?.() ?? null
+            if (!importedSessionId || !engine) {
+                return createImportErrorResponse(codexSessionIds, 'Imported session config could not be applied before resume')
+            }
+            try {
+                await engine.applySessionConfig(importedSessionId, {
+                    ...(options.serviceTier !== undefined ? { serviceTier: options.serviceTier } : {}),
+                    ...(options.collaborationMode !== undefined ? { collaborationMode: options.collaborationMode } : {})
+                })
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error)
+                return createImportErrorResponse(codexSessionIds, `Failed to apply imported session config: ${message}`)
+            }
+        }
 
         if (!result.success) {
             return {
@@ -2110,6 +2142,8 @@ export function createCodexDesktopRoutes(options: {
             machineId: remote.machineId ?? null,
             model: parsed.model,
             modelReasoningEffort: parsed.modelReasoningEffort,
+            serviceTier: parsed.serviceTier,
+            collaborationMode: parsed.collaborationMode,
             yolo: parsed.yolo
         })
         return c.json({

@@ -277,6 +277,65 @@ describe('ApiMachineClient listOpencodeModelsForCwd handler', () => {
     })
 })
 
+describe('ApiMachineClient SpawnHappySession handler', () => {
+    let workspaceRoot: string
+
+    beforeEach(() => {
+        ioMock.mockReset()
+        workspaceRoot = mkdtempSync(join(tmpdir(), 'hapi-machine-spawn-'))
+    })
+
+    afterEach(() => {
+        rmSync(workspaceRoot, { recursive: true, force: true })
+    })
+
+    async function callSpawnHappySession(
+        client: ApiMachineClient,
+        machineId: string,
+        params: Record<string, unknown>
+    ): Promise<unknown> {
+        const manager = (client as unknown as {
+            rpcHandlerManager: { handleRequest: (req: { method: string; params: string }) => Promise<string> }
+        }).rpcHandlerManager
+        const raw = await manager.handleRequest({
+            method: `${machineId}:spawn-happy-session`,
+            params: JSON.stringify(params)
+        })
+        return JSON.parse(raw) as unknown
+    }
+
+    it('forwards collaborationMode and serviceTier to spawnSession', async () => {
+        const machine = makeMachine('machine-spawn-1')
+        const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
+        const spawnSession = vi.fn(async () => ({ type: 'success' as const, sessionId: 'session-1' }))
+
+        client.setRPCHandlers({
+            spawnSession,
+            stopSession: vi.fn(() => true),
+            requestShutdown: vi.fn()
+        })
+
+        try {
+            const result = await callSpawnHappySession(client, machine.id, {
+                directory: workspaceRoot,
+                agent: 'codex',
+                serviceTier: 'fast',
+                collaborationMode: 'plan'
+            })
+
+            expect(result).toEqual({ type: 'success', sessionId: 'session-1' })
+            expect(spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+                directory: workspaceRoot,
+                agent: 'codex',
+                serviceTier: 'fast',
+                collaborationMode: 'plan'
+            }))
+        } finally {
+            client.shutdown()
+        }
+    })
+})
+
 describe('ApiMachineClient listGrokModelsForCwd handler', () => {
     let workspaceRoot: string
 
