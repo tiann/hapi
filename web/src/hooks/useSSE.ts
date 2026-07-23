@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { isObject, toSessionSummary } from '@hapi/protocol'
+import {
+    computePendingRequestKinds,
+    computePendingRequests,
+    computePendingRequestsCount,
+    computeTodoProgress,
+    isObject,
+    toSessionSummary,
+    toSessionSummaryMetadata
+} from '@hapi/protocol'
 import { MachinePatchSchema, MachineSchema, SessionPatchSchema, SessionSchema } from '@hapi/protocol/schemas'
 import type {
     Machine,
@@ -32,6 +40,33 @@ const MESSAGE_STREAM_EVENT_TYPES = new Set<SyncEvent['type']>([
 
 export function isGlobalScopedMessageStreamEvent(scope: SSEScope, eventType: SyncEvent['type']): boolean {
     return scope === 'global' && MESSAGE_STREAM_EVENT_TYPES.has(eventType)
+}
+
+// Version-monotonicity gate for structured patches carrying metadata or
+// agentState. SSE reconnects + per-query invalidation can leave the cache
+// holding state that's NEWER than a buffered older patch about to replay;
+// applying that older patch would regress resume / session-id / pending-
+// requests state. Mirrors the CLI room handler contract: strictly newer
+// only. Exported so the rule is unit-testable in isolation from the hook.
+export function isNewerVersionedPatch(patchVersion: number, currentVersion: number): boolean {
+    return patchVersion > currentVersion
+}
+
+/**
+ * Versioned metadata/agentState summary patches need a detail-cache version
+ * source. Without it, defaulting to version 0 would let a stale buffered SSE
+ * patch overwrite a freshly refetched session list (and suppress list
+ * invalidation because `patched` stayed true). Non-versioned fields (active,
+ * todos, …) do not need this gate.
+ */
+export function canApplyVersionedSummaryPatch(
+    patch: Pick<SessionPatch, 'metadata' | 'agentState'>,
+    detailPresent: boolean
+): boolean {
+    if (patch.metadata === undefined && patch.agentState === undefined) {
+        return true
+    }
+    return detailPresent
 }
 
 type VisibilityState = 'visible' | 'hidden'
@@ -341,7 +376,11 @@ export function useSSE(options: {
                     active: patch.active ?? current.active,
                     thinking: patch.thinking ?? current.thinking,
                     activeAt: patch.activeAt ?? current.activeAt,
-                    updatedAt: patch.updatedAt ?? current.updatedAt,
+                    // Monotonic: stale versioned-patch replays can carry an
+                    // older updatedAt; never move the list clock backward.
+                    updatedAt: patch.updatedAt !== undefined
+                        ? Math.max(current.updatedAt, patch.updatedAt)
+                        : current.updatedAt,
                     backgroundTaskCount: Object.prototype.hasOwnProperty.call(patch, 'backgroundTaskCount')
                         ? patch.backgroundTaskCount ?? 0
                         : current.backgroundTaskCount,
@@ -350,6 +389,42 @@ export function useSSE(options: {
                         ? patch.modelReasoningEffort ?? null
                         : current.modelReasoningEffort,
                     effort: Object.prototype.hasOwnProperty.call(patch, 'effort') ? patch.effort ?? null : current.effort
+                }
+
+                // Structured-patch fields (todos / agentState / metadata) feed
+                // the SessionSummary derivations. Recompute the touched fields
+                // so the session list stays consistent with the detail cache.
+                //
+                // Version-monotonicity gate, derived from the detail cache
+                // (the source of truth for metadata/agentState versions; the
+                // SessionSummary doesn't carry them). The callsite below runs
+                // `patchSessionDetail` BEFORE `patchSessionSummary`, so when
+                // detail accepts a newer patch the detail cache already
+                // reflects the new version — use `>=` so summary matches it.
+                // When detail rejects (stale), detail cache still holds the
+                // older-at-write-but-newer-than-patch version, and `>=` keeps
+                // summary aligned with detail's rejection.
+                //
+                // Missing detail + versioned fields: refuse the whole summary
+                // patch (return previous → patched=false → list invalidation).
+                // Defaulting versions to 0 would apply stale buffered SSE onto
+                // a freshly refetched list and suppress that invalidation.
+                const detailForVersion = queryClient.getQueryData<SessionResponse>(queryKeys.session(sessionId))?.session
+                if (!canApplyVersionedSummaryPatch(patch, detailForVersion !== undefined)) {
+                    return previous
+                }
+                const detailMetadataVersion = detailForVersion?.metadataVersion ?? 0
+                const detailAgentStateVersion = detailForVersion?.agentStateVersion ?? 0
+                if (patch.todos !== undefined) {
+                    nextSummary.todoProgress = computeTodoProgress(patch.todos)
+                }
+                if (patch.agentState !== undefined && patch.agentState.version >= detailAgentStateVersion) {
+                    nextSummary.pendingRequestsCount = computePendingRequestsCount(patch.agentState.value)
+                    nextSummary.pendingRequestKinds = computePendingRequestKinds(patch.agentState.value)
+                    nextSummary.pendingRequests = computePendingRequests(patch.agentState.value, nextSummary.updatedAt)
+                }
+                if (patch.metadata !== undefined && patch.metadata.version >= detailMetadataVersion) {
+                    nextSummary.metadata = toSessionSummaryMetadata(patch.metadata.value)
                 }
 
                 patched = true
@@ -367,12 +442,57 @@ export function useSSE(options: {
                     return previous
                 }
                 patched = true
+                const nextSession: Session = { ...previous.session }
+                if (patch.active !== undefined) nextSession.active = patch.active
+                if (patch.thinking !== undefined) nextSession.thinking = patch.thinking
+                if (patch.activeAt !== undefined) nextSession.activeAt = patch.activeAt
+                // Monotonic with hub applySessionPatch: a rejected stale
+                // metadata/agentState replay must not rewind updatedAt.
+                if (patch.updatedAt !== undefined) {
+                    nextSession.updatedAt = Math.max(nextSession.updatedAt, patch.updatedAt)
+                }
+                if (patch.model !== undefined) nextSession.model = patch.model
+                if (patch.modelReasoningEffort !== undefined) nextSession.modelReasoningEffort = patch.modelReasoningEffort
+                if (patch.effort !== undefined) nextSession.effort = patch.effort
+                if (Object.prototype.hasOwnProperty.call(patch, 'serviceTier')) {
+                    nextSession.serviceTier = patch.serviceTier ?? null
+                }
+                if (patch.permissionMode !== undefined) nextSession.permissionMode = patch.permissionMode
+                if (patch.collaborationMode !== undefined) nextSession.collaborationMode = patch.collaborationMode
+                if (patch.backgroundTaskCount !== undefined) nextSession.backgroundTaskCount = patch.backgroundTaskCount
+                if (patch.todos !== undefined) nextSession.todos = patch.todos
+                // teamState uses `null` on the wire as the explicit clear
+                // signal (TeamDelete events). hasOwnProperty discriminates
+                // "field absent" vs "field is null"; null → undefined to
+                // match the cached Session.teamState shape.
+                if (Object.prototype.hasOwnProperty.call(patch, 'teamState')) {
+                    nextSession.teamState = patch.teamState ?? undefined
+                }
+                // Versioned fields arrive as { version, value } — unwrap into
+                // the Session's flat metadata/metadataVersion pair (same for
+                // agentState). Spreading the patch wholesale would corrupt
+                // session.metadata with a { version, value } object.
+                //
+                // Version-monotonicity gate (PR #897 review, HAPI Bot
+                // 2026-06-16 Major): on SSE reconnect the per-query
+                // invalidation path can repopulate the detail cache via a
+                // fresh REST refetch BEFORE a buffered older patch replays.
+                // Applying the older patch would regress resume / session-id
+                // / pending-requests state. Mirror the CLI room handler's
+                // `incoming.version > currentVersion` guard so the cache
+                // only moves forward. `nextSession.metadataVersion` is the
+                // pre-patch value because it was just spread from `previous`.
+                if (patch.metadata !== undefined && isNewerVersionedPatch(patch.metadata.version, nextSession.metadataVersion)) {
+                    nextSession.metadata = patch.metadata.value
+                    nextSession.metadataVersion = patch.metadata.version
+                }
+                if (patch.agentState !== undefined && isNewerVersionedPatch(patch.agentState.version, nextSession.agentStateVersion)) {
+                    nextSession.agentState = patch.agentState.value
+                    nextSession.agentStateVersion = patch.agentState.version
+                }
                 return {
                     ...previous,
-                    session: {
-                        ...previous.session,
-                        ...patch
-                    }
+                    session: nextSession
                 }
             })
             return patched

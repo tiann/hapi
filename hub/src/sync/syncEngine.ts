@@ -348,12 +348,51 @@ export class SyncEngine {
 
     handleRealtimeEvent(event: SyncEvent): void {
         if (event.type === 'session-updated' && event.sessionId) {
-            // Snapshot agent session IDs before refresh — safe because JS is single-threaded
-            // and refreshSession replaces the Map entry with a new object.
+            // Closes the second half of #884: when a CLI handler emits a
+            // structured patch (todos / teamState / metadata / agentState),
+            // apply it in place and forward the patch as-is. This skips both
+            // the DB re-read AND the full-Session SSE broadcast that the
+            // legacy no-data path went through. Web clients hit
+            // getSessionPatch's truthy path and patch the cache instead of
+            // falling through to the per-session REST invalidation that drove
+            // the refetch storm.
+            //
+            // `applySessionPatch` MUTATES the cached Session in place (it
+            // reassigns `session.metadata = patch.metadata.value`), so we
+            // MUST snapshot the metadata reference BEFORE calling it.
+            // Reading `before?.metadata` after the mutation would see the
+            // new value and `hasSameAgentSessionIds` would always return
+            // true — breaking the dedup-on-metadata-id-change trigger that
+            // the legacy `refreshSession` path got for free (refresh
+            // REPLACES the cache entry, leaving the old object reference
+            // intact for the caller). Use the snapshot for BOTH branches
+            // so the comparison contract is identical.
             const before = this.sessionCache.getSession(event.sessionId)
+            const beforeMetadata = before?.metadata ?? null
+            const patchApplied = event.data
+                ? this.sessionCache.applySessionPatch(event.sessionId, event.data, event.namespace)
+                : false
+
+            if (patchApplied) {
+                this.eventPublisher.emit(event)
+                const after = this.sessionCache.getSession(event.sessionId)
+                if (after?.metadata && !this.hasSameAgentSessionIds(beforeMetadata, after.metadata)) {
+                    if (!this.canRunCursorDedup(after)) {
+                        return
+                    }
+                    void this.sessionCache.deduplicateByAgentSessionId(event.sessionId).catch(() => {
+                        // best-effort: dedup failure is harmless, web-side safety net hides remaining duplicates
+                    })
+                }
+                return
+            }
+
+            // No-data event (or data we can't apply directly, e.g. full
+            // Session payload from a different emitter): fall back to the
+            // legacy refresh-from-DB-and-broadcast path.
             this.sessionCache.refreshSession(event.sessionId)
             const after = this.sessionCache.getSession(event.sessionId)
-            if (after?.metadata && !this.hasSameAgentSessionIds(before?.metadata ?? null, after.metadata)) {
+            if (after?.metadata && !this.hasSameAgentSessionIds(beforeMetadata, after.metadata)) {
                 if (!this.canRunCursorDedup(after)) {
                     return
                 }
