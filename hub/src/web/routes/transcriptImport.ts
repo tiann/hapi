@@ -810,7 +810,8 @@ export function importSingleSession(options: {
                 existingStored.id,
                 metadata,
                 existingStored.metadataVersion,
-                options.namespace
+                options.namespace,
+                { touchUpdatedAt: false }
             )
             if (updatedMetadata.result !== 'success') {
                 throw new Error(`Failed to update metadata for Hapi session: ${existingStored.id}`)
@@ -841,19 +842,26 @@ export function importSingleSession(options: {
 
         // 中文注释：更新 Hapi 会话的 updatedAt，并在已有会话追加时广播新增消息，让当前打开的聊天页立刻显示客户端新增内容。
         // 取这批消息里最大的真实时间戳作为最后活跃时间，避免个别乱序记录把会话排到错误位置。
-        const latestMessageCreatedAt = appendedMessages.length > 0
-            ? appendedMessages.reduce((max, message) => Math.max(max, message.invokedAt ?? message.createdAt), 0)
-            : Date.now()
+        // 已有会话且本轮零追加时不碰 updated_at：metadata 更新也用 touchUpdatedAt:false，否则会把旧会话顶成“今天活跃”。
         if (created) {
+            const latestMessageCreatedAt = appendedMessages.length > 0
+                ? appendedMessages.reduce((max, message) => Math.max(max, message.invokedAt ?? message.createdAt), 0)
+                : transcript.modifiedAt
             // 中文注释：新建的导入会话出生时间是 now（今天），而真实最后活动在历史里；recordSessionActivity /
             // touchSessionUpdatedAt 只前进不后退，无法把 updated_at 调回过去，否则历史会话会一直排在列表顶端
             // 显示成“今天刚活跃”。这里对刚建好的导入会话无条件回填真实最后活动时间，再刷新引擎缓存。
             options.store.sessions.setImportedSessionActivity(sessionId, latestMessageCreatedAt, options.namespace)
             engine?.handleRealtimeEvent({ type: 'session-updated', sessionId })
-        } else if (engine) {
-            engine.recordSessionActivity(sessionId, latestMessageCreatedAt)
-        } else {
-            options.store.sessions.touchSessionUpdatedAt(sessionId, latestMessageCreatedAt, options.namespace)
+        } else if (appendedMessages.length > 0) {
+            const latestMessageCreatedAt = appendedMessages.reduce(
+                (max, message) => Math.max(max, message.invokedAt ?? message.createdAt),
+                0
+            )
+            if (engine) {
+                engine.recordSessionActivity(sessionId, latestMessageCreatedAt)
+            } else {
+                options.store.sessions.touchSessionUpdatedAt(sessionId, latestMessageCreatedAt, options.namespace)
+            }
         }
         if (!created) {
             emitImportedMessageEvents(engine, sessionId, appendedMessages)

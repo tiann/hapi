@@ -541,6 +541,13 @@ export async function importCursorSession(options: {
         }
     }
 
+    if (sourceFormat === 'legacy' && !resolvedWorkspacePath?.trim()) {
+        return failure(
+            'ambiguous_legacy_store',
+            'Legacy Cursor import requires workspacePath so the imported HAPI session can be resumed'
+        )
+    }
+
     // Cheap sanity: store.db opens as SQLite + has at least one table.
     // Avoids spending a verify spawn on a corrupted/truncated file.
     const sanity = sanityCheckStore(sourceStorePath)

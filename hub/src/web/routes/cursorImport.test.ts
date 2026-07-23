@@ -323,6 +323,23 @@ describe('importCursorSession refusals', () => {
         expect(out.reason).toBe('ambiguous_legacy_store')
     })
 
+    it('refuses ambiguous_legacy_store for a single legacy drawer without workspacePath', async () => {
+        const uuid = '11111111-2222-3333-4444-666666666666'
+        h.placeLegacyStore(uuid, { workspaceHash: 'cccccccccccccccccccccccccccccccc', name: 'solo' })
+
+        const out = await importCursorSession({
+            uuid,
+            store: h.store,
+            namespace: 'default',
+            home: h.home,
+            deps: makeDeps(h)
+        })
+        expect(out.ok).toBe(false)
+        if (out.ok) return
+        expect(out.reason).toBe('ambiguous_legacy_store')
+        expect(out.message).toContain('requires workspacePath')
+    })
+
     it('refuses corrupted_store when store.db is not valid sqlite', async () => {
         const uuid = '11111111-2222-3333-4444-888888888888'
         const dir = join(h.acpSessionsDir, uuid)
@@ -409,6 +426,7 @@ describe('importCursorSession refusals', () => {
 
         const out = await importCursorSession({
             uuid,
+            workspacePath: '/workspace/stale-acp-twin',
             store: h.store,
             namespace: 'default',
             home: h.home,
