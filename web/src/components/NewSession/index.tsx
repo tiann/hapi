@@ -971,13 +971,19 @@ export function NewSession(props: {
             && (model !== 'auto' || cursorSelectedBase !== 'auto')
             && cursorModelsState.isLoading)
         || (agent === 'grok'
-            && deferredDirectoryExists === true
+            && deferredDirectory !== ''
             && (model !== 'auto' || effort !== 'auto')
-            && grokModelsState.isLoading)
+            && (
+                deferredDirectoryExists === undefined
+                || (deferredDirectoryExists === true && grokModelsState.isLoading)
+            ))
         || (agent === 'opencode'
-            && deferredDirectoryExists === true
+            && deferredDirectory !== ''
             && opencodeSelectedModel !== null
-            && opencodeModelsState.isLoading)
+            && (
+                deferredDirectoryExists === undefined
+                || (deferredDirectoryExists === true && opencodeModelsState.isLoading)
+            ))
     const canCreate = Boolean(
         machineId
         && trimmedDirectory

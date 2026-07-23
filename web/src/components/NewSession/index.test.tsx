@@ -13,7 +13,8 @@ const mocks = vi.hoisted(() => ({
     spawnSession: vi.fn(),
     onSuccess: vi.fn(),
     notification: vi.fn(),
-    codexModelsLoading: false
+    codexModelsLoading: false,
+    directoryExists: undefined as boolean | undefined
 }))
 
 vi.mock('@/lib/use-translation', () => ({
@@ -42,8 +43,8 @@ vi.mock('@/hooks/useRecentPaths', () => ({
 }))
 vi.mock('@/hooks/useMachinePathsExists', () => ({
     useMachinePathsExists: () => ({
-        pathExistence: { 'C:\\repo': true },
-        checkPathsExists: async () => ({ 'C:\\repo': true })
+        pathExistence: { 'C:\\repo': mocks.directoryExists },
+        checkPathsExists: async () => ({ 'C:\\repo': mocks.directoryExists })
     })
 }))
 vi.mock('@/hooks/useDirectorySuggestions', () => ({
@@ -152,6 +153,7 @@ describe('NewSession launch preferences', () => {
         mocks.onSuccess.mockReset()
         mocks.notification.mockReset()
         mocks.codexModelsLoading = false
+        mocks.directoryExists = true
         savePreferredAgent('codex')
     })
 
@@ -195,6 +197,41 @@ describe('NewSession launch preferences', () => {
             effort: 'auto',
             modelReasoningEffort
         })
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => expect(screen.getByTestId('create')).toBeDisabled())
+    })
+
+    it.each([
+        ['grok', {
+            model: 'grok-4',
+            cursorSelectedBase: 'auto',
+            effort: 'high',
+            modelReasoningEffort: 'default'
+        }],
+        ['opencode', {
+            model: 'provider/model',
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort: 'high'
+        }]
+    ] as const)('disables creation while %s cwd existence is unresolved', async (
+        agent,
+        settings
+    ) => {
+        mocks.directoryExists = undefined
+        savePreferredAgent(agent)
+        savePreferredLaunchSettings('machine-1', agent, settings)
 
         render(
             <NewSession
