@@ -11,23 +11,102 @@ import type { ReasoningEffort } from './appServerTypes';
 import { resolveCodexCommand } from './utils/codexExecutable';
 import type { McpServersConfig } from './utils/buildHapiMcpBridge';
 
+const CODEX_OPTIONS_WITH_VALUE = new Set([
+    '-a',
+    '--add-dir',
+    '--ask-for-approval',
+    '-C',
+    '--cd',
+    '-c',
+    '--config',
+    '--disable',
+    '--enable',
+    '--local-provider',
+    '-m',
+    '--model',
+    '-p',
+    '--profile',
+    '--remote',
+    '--remote-auth-token-env',
+    '-s',
+    '--sandbox'
+]);
+// -i/--image is intentionally omitted because it accepts a variable number of files.
+
+function findResumeSubcommandIndex(args: string[]): number {
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+
+        if (arg === '--') {
+            return -1;
+        }
+        if (arg === 'resume') {
+            return i;
+        }
+        if (!arg.startsWith('-')) {
+            return -1;
+        }
+        if (!arg.includes('=') && CODEX_OPTIONS_WITH_VALUE.has(arg)) {
+            i += 1;
+        }
+    }
+
+    return -1;
+}
+
+function findResumeSessionIdIndex(args: string[], resumeIndex: number): number {
+    for (let i = resumeIndex + 1; i < args.length; i++) {
+        const arg = args[i];
+
+        if (arg === '--') {
+            return -1;
+        }
+        if (!arg.startsWith('-')) {
+            return i;
+        }
+        if (!arg.includes('=') && CODEX_OPTIONS_WITH_VALUE.has(arg)) {
+            i += 1;
+        }
+    }
+
+    return -1;
+}
+
 /**
- * Filter out 'resume' subcommand which is managed internally by hapi.
- * Codex CLI format is `codex resume <session-id>`, so subcommand is always first.
+ * Filter out the Codex resume selector which is managed internally by hapi.
+ * Codex accepts global options before the subcommand, for example
+ * `codex --sandbox danger-full-access resume --last`.
  */
 export function filterResumeSubcommand(args: string[]): string[] {
-    if (args.length === 0 || args[0] !== 'resume') {
+    const resumeIndex = findResumeSubcommandIndex(args);
+    if (resumeIndex === -1) {
         return args;
     }
 
-    // First arg is 'resume', filter it and optional session ID
-    if (args.length > 1 && !args[1].startsWith('-')) {
-        logger.debug(`[CodexLocal] Filtered 'resume ${args[1]}' - session managed by hapi`);
-        return args.slice(2);
+    const optionTerminatorIndex = args.indexOf('--', resumeIndex + 1);
+    const lastIndex = args.findIndex((arg, index) => (
+        arg === '--last'
+        && index > resumeIndex
+        && (optionTerminatorIndex === -1 || index < optionTerminatorIndex)
+    ));
+    const sessionIdIndex = lastIndex === -1
+        ? findResumeSessionIdIndex(args, resumeIndex)
+        : -1;
+    const filtered = args.filter((_, index) => (
+        index !== resumeIndex
+        && index !== lastIndex
+        && index !== sessionIdIndex
+    ));
+
+    if (lastIndex !== -1) {
+        logger.debug("[CodexLocal] Filtered 'resume --last' - session managed by hapi");
+    } else if (sessionIdIndex !== -1) {
+        logger.debug(`[CodexLocal] Filtered 'resume ${args[sessionIdIndex]}' - session managed by hapi`);
+    } else {
+        logger.debug("[CodexLocal] Filtered 'resume' - session managed by hapi");
     }
 
-    logger.debug(`[CodexLocal] Filtered 'resume' - session managed by hapi`);
-    return args.slice(1);
+    return filtered;
 }
 
 export async function codexLocal(opts: {
@@ -77,7 +156,12 @@ export async function codexLocal(opts: {
     args.push(...buildDeveloperInstructionsArg(codexSystemPrompt));
 
     if (opts.codexArgs) {
-        const safeArgs = filterResumeSubcommand(opts.codexArgs);
+        // Before the first launch, Codex still needs the user's selector (for
+        // example `resume --last`). Once hapi has the concrete session ID, it
+        // prepends that ID above and removes the original selector here.
+        const safeArgs = opts.sessionId
+            ? filterResumeSubcommand(opts.codexArgs)
+            : opts.codexArgs;
         args.push(...safeArgs);
     }
 
