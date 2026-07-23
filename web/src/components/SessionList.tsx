@@ -858,10 +858,13 @@ function SessionItem(props: {
                 aria-current={selected ? 'page' : undefined}
                 aria-describedby={describedBy}
             >
-                <div className={`flex items-center justify-between gap-3 ${!s.active ? 'opacity-50' : ''}`}>
-                    <div className="flex items-center gap-2 min-w-0">
+                <div className={`grid grid-cols-[minmax(9rem,1fr)_minmax(0,max-content)] items-center gap-2 ${!s.active ? 'opacity-50' : ''}`}>
+                    <div className="flex min-w-0 items-center gap-2">
                         <AgentFlavorIcon flavor={s.metadata?.flavor} className="h-4 w-4 shrink-0" />
-                        <div className={`truncate text-sm font-medium ${s.active ? 'text-[var(--app-fg)]' : 'text-[var(--app-hint)]'}`}>
+                        <div
+                            className={`min-w-0 flex-1 truncate text-sm font-medium ${s.active ? 'text-[var(--app-fg)]' : 'text-[var(--app-hint)]'}`}
+                            title={sessionName}
+                        >
                             {sessionName}
                         </div>
                         {s.active && s.thinking ? (
@@ -892,19 +895,19 @@ function SessionItem(props: {
                             </HoverTooltip>
                         ) : null}
                     </div>
-                    <div className="flex items-center gap-2 shrink-0 text-xs">
+                    <div className="flex min-w-0 items-center justify-end gap-2 overflow-hidden text-xs">
                         {todoProgress ? (
-                            <span className="flex items-center gap-1 text-[var(--app-hint)]">
+                            <span className="flex shrink-0 items-center gap-1 text-[var(--app-hint)]">
                                 <BulbIcon className="h-3 w-3" />
                                 {todoProgress.completed}/{todoProgress.total}
                             </span>
                         ) : null}
                         {!attention && s.pendingRequestsCount > 0 ? (
-                            <span className="text-[var(--app-badge-warning-text)]">
+                            <span className="shrink-0 text-[var(--app-badge-warning-text)]">
                                 {t('session.item.pending')} {s.pendingRequestsCount}
                             </span>
                         ) : null}
-                        <span className="text-[var(--app-hint)]">
+                        <span className="min-w-0 truncate whitespace-nowrap text-[var(--app-hint)]">
                             {getSessionTimeLabel(s, t)}
                         </span>
                     </div>
