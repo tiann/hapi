@@ -61,7 +61,6 @@ export class AcpStdioTransport {
     private stderrErrorHandler: ((error: AcpStderrError) => void) | null = null;
     private buffer = '';
     private nextId = 1;
-    private protocolError: Error | null = null;
     private guardReleased = false;
     private closed = false;
     private closeError: Error | null = null;
@@ -217,9 +216,6 @@ export class AcpStdioTransport {
     }
 
     private handleLine(line: string): void {
-        if (this.protocolError) {
-            return;
-        }
         let message: JsonRpcRequest | JsonRpcResponse | JsonRpcNotification | null = null;
         try {
             const parsed = JSON.parse(line);
@@ -231,10 +227,17 @@ export class AcpStdioTransport {
             }
             message = parsed as JsonRpcRequest | JsonRpcResponse | JsonRpcNotification;
         } catch (error) {
+            // Cursor `--worktree` prints `Using worktree: …` on stdout before ACP
+            // JSON-RPC. Only that known banner is noise; other parse failures stay fatal
+            // so pending requests (incl. session/prompt with infinite timeout) fail fast.
+            if (this.shouldGuardAgentCli && line.startsWith('Using worktree:')) {
+                logger.debug('[ACP] Ignoring Cursor worktree stdout banner', { line });
+                return;
+            }
+
             const protocolError = new Error('Failed to parse JSON-RPC from ACP agent');
-            this.protocolError = protocolError;
             logger.debug('[ACP] Failed to parse JSON-RPC line', { line, error });
-            this.rejectAllPending(protocolError);
+            this.markClosed(protocolError);
             this.process.stdin.end();
             void killProcessByChildProcess(this.process);
             return;

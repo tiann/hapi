@@ -1,4 +1,8 @@
 import { describe, it, expect } from 'vitest'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { execFileSync } from 'node:child_process'
 import { buildCliArgs } from './run'
 
 describe('buildCliArgs', () => {
@@ -159,6 +163,40 @@ describe('buildCliArgs', () => {
         })
         expect(args).toContain('--cursor-worktree')
         expect(args[args.length - 1]).toBe('--cursor-worktree')
+    })
+
+    it('skips --cursor-worktree when directory is already a linked git worktree', () => {
+        const main = mkdtempSync(join(tmpdir(), 'hapi-cliargs-main-'))
+        const linkedParent = mkdtempSync(join(tmpdir(), 'hapi-cliargs-wt-'))
+        const linked = join(linkedParent, 'feature')
+        const gitEnv = {
+            ...process.env,
+            GIT_AUTHOR_NAME: 'test',
+            GIT_AUTHOR_EMAIL: 'test@example.com',
+            GIT_COMMITTER_NAME: 'test',
+            GIT_COMMITTER_EMAIL: 'test@example.com'
+        }
+        const git = (cwd: string, args: string[]) => {
+            execFileSync('git', args, { cwd, stdio: ['ignore', 'ignore', 'pipe'], env: gitEnv })
+        }
+        try {
+            git(main, ['init'])
+            writeFileSync(join(main, 'README'), 'x\n')
+            git(main, ['add', 'README'])
+            git(main, ['commit', '-m', 'init'])
+            git(main, ['worktree', 'add', '-b', 'feature', linked])
+
+            const args = buildCliArgs('cursor', {
+                directory: linked,
+                sessionType: 'worktree',
+                worktreeName: 'should-not-appear',
+            })
+            expect(args).not.toContain('--cursor-worktree')
+            expect(args).not.toContain('should-not-appear')
+        } finally {
+            rmSync(linkedParent, { recursive: true, force: true })
+            rmSync(main, { recursive: true, force: true })
+        }
     })
 
     it('does not pass --cursor-worktree for non-cursor worktree sessions', () => {
