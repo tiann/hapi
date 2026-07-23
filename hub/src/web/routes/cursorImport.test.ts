@@ -35,6 +35,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import { Hono } from 'hono'
+import { createHash } from 'node:crypto'
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -199,18 +200,32 @@ describe('listImportableCursorSessions', () => {
     })
 
     it('discovers legacy + acp stores and dedups by uuid (acp wins)', () => {
+        const legacyPath = '/workspace/legacy-list'
+        const legacyHash = createHash('md5').update(legacyPath).digest('hex')
         // Legacy-only chat.
-        h.placeLegacyStore('11111111-1111-1111-1111-111111111111', { name: 'legacy chat' })
+        h.placeLegacyStore('11111111-1111-1111-1111-111111111111', {
+            workspaceHash: legacyHash,
+            name: 'legacy chat'
+        })
         // ACP-only chat.
         h.placeAcpStore('22222222-2222-2222-2222-222222222222', { name: 'acp chat', title: 'acp display title' })
         // Same uuid in both — acp wins.
-        h.placeLegacyStore('33333333-3333-3333-3333-333333333333', { name: 'legacy version' })
+        h.placeLegacyStore('33333333-3333-3333-3333-333333333333', {
+            workspaceHash: legacyHash,
+            name: 'legacy version'
+        })
         h.placeAcpStore('33333333-3333-3333-3333-333333333333', { name: 'acp version', title: 'acp version' })
 
-        const out = listImportableCursorSessions({ store: h.store, namespace: 'default', home: h.home })
+        const out = listImportableCursorSessions({
+            store: h.store,
+            namespace: 'default',
+            home: h.home,
+            candidateWorkspacePaths: [legacyPath]
+        })
         expect(out).toHaveLength(3)
         const byId = new Map(out.map((r) => [r.id, r]))
         expect(byId.get('11111111-1111-1111-1111-111111111111')?.sourceFormat).toBe('legacy')
+        expect(byId.get('11111111-1111-1111-1111-111111111111')?.workspacePath).toBe(legacyPath)
         expect(byId.get('22222222-2222-2222-2222-222222222222')?.sourceFormat).toBe('acp')
         expect(byId.get('33333333-3333-3333-3333-333333333333')?.sourceFormat).toBe('acp')
         // Title fallthrough from legacy meta record.
@@ -220,10 +235,16 @@ describe('listImportableCursorSessions', () => {
     })
 
     it('flags already-imported uuids with the existing Hapi session id', () => {
-        h.placeLegacyStore('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', { name: 'already imported' })
-        // Plant a HAPI session that references this cursor uuid.
+        const legacyPath = '/workspace/x'
+        const legacyHash = createHash('md5').update(legacyPath).digest('hex')
+        h.placeLegacyStore('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', {
+            workspaceHash: legacyHash,
+            name: 'already imported'
+        })
+        // Plant a HAPI session that references this cursor uuid (path also
+        // feeds candidateWorkspacePaths so the legacy drawer resolves).
         const created = h.store.sessions.getOrCreateSession('hapi-existing-tag', {
-            path: '/workspace/x',
+            path: legacyPath,
             host: 'test-host',
             flavor: 'cursor',
             cursorSessionId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
@@ -234,6 +255,16 @@ describe('listImportableCursorSessions', () => {
         const row = out.find((r) => r.id === 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')
         expect(row).toBeDefined()
         expect(row?.alreadyImportedHapiSessionId).toBe(created.id)
+        expect(row?.workspacePath).toBe(legacyPath)
+    })
+
+    it('omits pathless legacy drawers from the importable list', () => {
+        h.placeLegacyStore('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', {
+            workspaceHash: 'deadbeefdeadbeefdeadbeefdeadbeef',
+            name: 'unresolvable legacy'
+        })
+        const out = listImportableCursorSessions({ store: h.store, namespace: 'default', home: h.home })
+        expect(out.find((r) => r.id === 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb')).toBeUndefined()
     })
 
     it('ignores non-uuid-ish basenames (path-traversal guard)', () => {

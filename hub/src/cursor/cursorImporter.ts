@@ -195,6 +195,29 @@ function buildAlreadyImportedIndex(store: Store, namespace: string): Map<string,
 }
 
 /**
+ * Gather workspace paths already known to this namespace so legacy
+ * `<md5(path)>` drawers can reverse-lookup a real cwd at discovery time.
+ */
+export function collectCandidateWorkspacePaths(store: Store, namespace: string): string[] {
+    const paths = new Set<string>()
+    for (const session of store.sessions.getSessionsByNamespace(namespace)) {
+        const metadata = session.metadata as Record<string, unknown> | null
+        if (!metadata) continue
+        if (typeof metadata.path === 'string' && metadata.path.trim()) {
+            paths.add(metadata.path.trim())
+        }
+        const worktree = metadata.worktree
+        if (worktree && typeof worktree === 'object' && !Array.isArray(worktree)) {
+            const basePath = (worktree as Record<string, unknown>).basePath
+            if (typeof basePath === 'string' && basePath.trim()) {
+                paths.add(basePath.trim())
+            }
+        }
+    }
+    return Array.from(paths)
+}
+
+/**
  * Discover importable cursor sessions from both the legacy and ACP
  * on-disk locations. Returns a deduped, mtime-sorted list capped at
  * `limit` entries. ACP entries take precedence over legacy entries for
@@ -211,6 +234,10 @@ export function listImportableCursorSessions(options: {
     const home = options.home
     const limit = options.limit ?? DEFAULT_LIST_LIMIT
     const alreadyImportedById = buildAlreadyImportedIndex(options.store, options.namespace)
+    const candidateWorkspacePaths = [
+        ...(options.candidateWorkspacePaths ?? []),
+        ...collectCandidateWorkspacePaths(options.store, options.namespace)
+    ]
     const byUuid = new Map<string, CursorImportableSessionSummary>()
 
     // ACP entries first.
@@ -286,7 +313,7 @@ export function listImportableCursorSessions(options: {
                     continue
                 }
                 const title = readMetaTitleSafe(storeDbPath)
-                const workspacePath = reverseLookupWorkspacePath(wsh, options.candidateWorkspacePaths ?? [])
+                const workspacePath = reverseLookupWorkspacePath(wsh, candidateWorkspacePaths)
                 byUuid.set(uuid, summarizeSession({
                     uuid,
                     storeDbPath,
@@ -301,7 +328,10 @@ export function listImportableCursorSessions(options: {
         }
     }
 
+    // Import requires a resolvable workspace path (resume needs metadata.path).
+    // Hide pathless rows so the dialog never offers a guaranteed refusal.
     return Array.from(byUuid.values())
+        .filter((session) => Boolean(session.workspacePath?.trim()))
         .sort((a, b) => b.modifiedAt - a.modifiedAt)
         .slice(0, limit)
 }

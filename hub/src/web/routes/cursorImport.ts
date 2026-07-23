@@ -159,9 +159,10 @@ export function createCursorImportRoutes(options: {
 
     app.get('/cursor/importable-sessions', (c) => {
         const home = getHome()
+        const namespace = c.get('namespace')
         const sessions = listImportableCursorSessions({
             store: options.store,
-            namespace: c.get('namespace'),
+            namespace,
             home
         })
         return c.json({
