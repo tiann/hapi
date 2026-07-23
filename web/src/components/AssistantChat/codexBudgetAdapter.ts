@@ -148,6 +148,31 @@ function deriveEffectiveState(
         (axis) => (axis.id === 'fiveHour' || axis.id === 'weekly') && axis.pressure >= 100
     )
     const creditsCovering = axes.some((axis) => axis.id === 'credits' && axis.covering === true)
+
+    // Credits pressure==0 means 'available and not covering' - ignore it for
+    // color. Subscription windows at 100% while credits are covering are also
+    // not active constraints (billing fell back to credits); exclude them so
+    // a near-full context window can still paint red instead of getting stuck
+    // behind the covering-amber early return.
+    const pressureCandidates = axes.filter((axis) => {
+        if (axis.id === 'credits' && axis.pressure === 0) return false
+        if (creditsCovering && (axis.id === 'fiveHour' || axis.id === 'weekly') && axis.pressure >= 100) {
+            return false
+        }
+        return true
+    })
+    const maxPressure = pressureCandidates.length > 0
+        ? Math.max(...pressureCandidates.map((axis) => axis.pressure))
+        : 0
+
+    if (maxPressure >= 95) {
+        const dominantAxis = pressureCandidates.find((axis) => axis.pressure === maxPressure)
+        return {
+            effective: 'red',
+            reason: dominantAxis ? `${dominantAxis.label} ${Math.round(maxPressure)}%` : 'Near cap'
+        }
+    }
+
     if (subscriptionCapped && creditsCovering) {
         const cappedAxis = axes.find(
             (axis) => (axis.id === 'fiveHour' || axis.id === 'weekly') && axis.pressure >= 100
@@ -159,19 +184,6 @@ function deriveEffectiveState(
         }
     }
 
-    // Credits axis pressure==0 means 'available and not covering' - it
-    // should not push the gauge into amber/red by itself.
-    const pressureCandidates = axes.filter((axis) => axis.id !== 'credits' || axis.pressure > 0)
-    const maxPressure = pressureCandidates.length > 0
-        ? Math.max(...pressureCandidates.map((axis) => axis.pressure))
-        : 0
-    if (maxPressure >= 95) {
-        const dominantAxis = pressureCandidates.find((axis) => axis.pressure === maxPressure)
-        return {
-            effective: 'red',
-            reason: dominantAxis ? `${dominantAxis.label} ${Math.round(maxPressure)}%` : 'Near cap'
-        }
-    }
     if (maxPressure >= 60) {
         const dominantAxis = pressureCandidates.find((axis) => axis.pressure === maxPressure)
         return {
