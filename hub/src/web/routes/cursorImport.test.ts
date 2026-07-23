@@ -625,4 +625,30 @@ describe('Cursor import HTTP routes', () => {
         expect(body.results[0].ok).toBe(false)
         expect(body.importedCount).toBe(0)
     })
+
+    it('POST /api/cursor/import accepts selections with per-row workspacePath', async () => {
+        const app = createRoutesApp({ namespace: 'default', store: h.store })
+        const uuid = '88888888-8888-8888-8888-888888888888'
+        h.placeAcpStore(uuid, { name: 'selection path', cwd: '/workspace/from-meta' })
+        const res = await app.request('/api/cursor/import', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                selections: [{ uuid, workspacePath: '/workspace/from-ui' }]
+            })
+        })
+        expect(res.status).toBe(200)
+        const body = await res.json() as {
+            success: true
+            results: Array<{ ok: boolean; uuid: string }>
+            importedCount: number
+        }
+        expect(body.success).toBe(true)
+        expect(body.importedCount).toBe(1)
+        expect(body.results[0]?.ok).toBe(true)
+        const session = h.store.sessions.getSessionsByNamespace('default')[0]
+        const metadata = session.metadata as Record<string, unknown>
+        // Explicit selection path wins over discovery meta for resume binding.
+        expect(metadata.path).toBe('/workspace/from-ui')
+    })
 })

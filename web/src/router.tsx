@@ -508,7 +508,11 @@ function SessionsPage() {
         if (isImportingCursorSessions || isLoadingCursorSessions) return
         setIsImportingCursorSessions(true)
         try {
-            const result = await api.importCursorSessions({ uuids })
+            const selections = uuids.map((uuid) => {
+                const session = cursorSessions.find((entry) => entry.id === uuid)
+                return { uuid, workspacePath: session?.workspacePath ?? null }
+            })
+            const result = await api.importCursorSessions({ selections })
             if (!result.success) {
                 throw new Error(result.error || t('cursorSync.failed.body'))
             }
@@ -546,6 +550,7 @@ function SessionsPage() {
     }, [
         addToast,
         api,
+        cursorSessions,
         isImportingCursorSessions,
         isLoadingCursorSessions,
         loadCursorImportableSessions,

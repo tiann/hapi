@@ -675,7 +675,8 @@ export async function importCursorSession(options: {
  * results uniformly.
  */
 export async function importSelectedCursorSessions(options: {
-    uuids: string[]
+    uuids?: string[]
+    selections?: Array<{ uuid: string; workspacePath?: string | null }>
     workspacePath?: string | null
     store: Store
     namespace: string
@@ -683,11 +684,18 @@ export async function importSelectedCursorSessions(options: {
     getSyncEngine?: () => SyncEngine | null
     deps?: CursorImporterDeps
 }): Promise<{ results: CursorImportRowOutcome[]; importedCount: number }> {
-    const results: CursorImportRowOutcome[] = []
-    for (const uuid of options.uuids) {
-        const outcome = await importCursorSession({
+    const selections = options.selections?.length
+        ? options.selections
+        : (options.uuids ?? []).map((uuid) => ({
             uuid,
-            workspacePath: options.workspacePath,
+            workspacePath: options.workspacePath
+        }))
+
+    const results: CursorImportRowOutcome[] = []
+    for (const selection of selections) {
+        const outcome = await importCursorSession({
+            uuid: selection.uuid,
+            workspacePath: selection.workspacePath ?? options.workspacePath,
             store: options.store,
             namespace: options.namespace,
             home: options.home,

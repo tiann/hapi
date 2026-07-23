@@ -95,18 +95,30 @@ export type CursorImportRowOutcome =
         durationMs: number
     }
 
+export interface CursorImportSelection {
+    uuid: string
+    /**
+     * Per-row workspace path from discovery. Required for legacy drawers that
+     * can land under multiple `<wsh>` hashes; also used so import metadata
+     * keeps a resumable `path` instead of `''`.
+     */
+    workspacePath?: string | null
+}
+
 export interface CursorImportRequest {
     /**
-     * One or more cursor uuids to import. Multi-select mirrors codex but
-     * each row's outcome is independent (one failing does not abort the
-     * batch).
+     * Preferred shape: one entry per selected row with its discovered
+     * workspace path. Takes precedence over `uuids` when present.
      */
-    uuids: string[]
+    selections?: CursorImportSelection[]
     /**
-     * Optional explicit workspace path. Used by the ambiguity check
-     * (`workspaceHashFromPath` in `cursorLegacyMigrator`) when the same
-     * uuid exists in multiple `<wsh>` drawers. If omitted, the row's own
-     * `workspacePath` (from discovery) is used.
+     * Legacy batch shape (uuid-only). Prefer `selections` so legacy imports
+     * do not lose the workspace path the importer needs to resume.
+     */
+    uuids?: string[]
+    /**
+     * Optional global workspace path applied to every uuid when using the
+     * legacy `uuids` shape (or as a fallback when a selection omits its own).
      */
     workspacePath?: string | null
 }

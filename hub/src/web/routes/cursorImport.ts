@@ -10,7 +10,11 @@
  *
  * Endpoints:
  *   GET  /api/cursor/importable-sessions  → list local cursor chats
- *   POST /api/cursor/import { uuids[], workspacePath? } → import N rows
+ *   POST /api/cursor/import { selections[] } | { uuids[], workspacePath? } → import N rows
+ *
+ * Prefer `selections` (uuid + discovered workspacePath per row) so legacy
+ * drawers stay resumable. `uuids` + optional global `workspacePath` remains
+ * for older clients / tests.
  *
  * The strict ACP-only refusal contract lives in `cursorImporter.ts`.
  * This module is namespace-gated to `default` (matching codex), proxies
@@ -60,40 +64,81 @@ function appendImportLog(message: string): void {
 }
 
 interface CursorImportRequestParseResult {
-    uuids: string[]
-    workspacePath: string | null
+    selections: Array<{ uuid: string; workspacePath: string | null }>
     error?: string
+}
+
+function parseWorkspacePath(value: unknown): { ok: true; value: string | null } | { ok: false } {
+    if (value === undefined || value === null) {
+        return { ok: true, value: null }
+    }
+    if (typeof value !== 'string') {
+        return { ok: false }
+    }
+    const trimmed = value.trim()
+    return { ok: true, value: trimmed.length > 0 ? trimmed : null }
 }
 
 function parseImportRequest(body: unknown): CursorImportRequestParseResult {
     if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-        return { uuids: [], workspacePath: null }
+        return { selections: [] }
     }
     const record = body as Record<string, unknown>
+
+    const globalPath = parseWorkspacePath(record.workspacePath)
+    if (!globalPath.ok) {
+        return { selections: [], error: 'Invalid workspacePath' }
+    }
+
+    if (Array.isArray(record.selections)) {
+        const selections: Array<{ uuid: string; workspacePath: string | null }> = []
+        const seen = new Set<string>()
+        for (const entry of record.selections) {
+            if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+                return { selections: [], error: 'Invalid selections' }
+            }
+            const row = entry as Record<string, unknown>
+            if (typeof row.uuid !== 'string') {
+                return { selections: [], error: 'Invalid selections' }
+            }
+            const uuid = row.uuid.trim()
+            if (!uuid || seen.has(uuid)) {
+                continue
+            }
+            const rowPath = parseWorkspacePath(row.workspacePath)
+            if (!rowPath.ok) {
+                return { selections: [], error: 'Invalid workspacePath' }
+            }
+            seen.add(uuid)
+            selections.push({
+                uuid,
+                workspacePath: rowPath.value ?? globalPath.value
+            })
+        }
+        return { selections }
+    }
+
     const rawUuids = record.uuids
     let uuids: string[] = []
     if (Array.isArray(rawUuids)) {
         for (const value of rawUuids) {
             if (typeof value !== 'string') {
-                return { uuids: [], workspacePath: null, error: 'Invalid uuids' }
+                return { selections: [], error: 'Invalid uuids' }
             }
             const trimmed = value.trim()
             if (trimmed) uuids.push(trimmed)
         }
     } else if (rawUuids !== undefined) {
-        return { uuids: [], workspacePath: null, error: 'Invalid uuids' }
+        return { selections: [], error: 'Invalid uuids' }
     }
     uuids = Array.from(new Set(uuids))
 
-    let workspacePath: string | null = null
-    if (typeof record.workspacePath === 'string') {
-        const trimmed = record.workspacePath.trim()
-        workspacePath = trimmed.length > 0 ? trimmed : null
-    } else if (record.workspacePath != null && record.workspacePath !== undefined) {
-        return { uuids: [], workspacePath: null, error: 'Invalid workspacePath' }
+    return {
+        selections: uuids.map((uuid) => ({
+            uuid,
+            workspacePath: globalPath.value
+        }))
     }
-
-    return { uuids, workspacePath }
 }
 
 export function createCursorImportRoutes(options: {
@@ -135,7 +180,7 @@ export function createCursorImportRoutes(options: {
                 error: parsed.error
             }, 400)
         }
-        if (parsed.uuids.length === 0) {
+        if (parsed.selections.length === 0) {
             appendImportLog(`FAILED: ${NO_CURSOR_SESSION_SELECTED_ERROR}`)
             return c.json({
                 success: false,
@@ -145,8 +190,7 @@ export function createCursorImportRoutes(options: {
 
         const home = getHome()
         const result = await importSelectedCursorSessions({
-            uuids: parsed.uuids,
-            workspacePath: parsed.workspacePath,
+            selections: parsed.selections,
             store: options.store,
             namespace: c.get('namespace'),
             home,
@@ -154,7 +198,7 @@ export function createCursorImportRoutes(options: {
         })
 
         appendImportLog(
-            `imported=${result.importedCount}/${parsed.uuids.length}; uuids=${parsed.uuids.join(',')}; outcomes=${result.results.map(rowToLog).join('|')}`
+            `imported=${result.importedCount}/${parsed.selections.length}; uuids=${parsed.selections.map((s) => s.uuid).join(',')}; outcomes=${result.results.map(rowToLog).join('|')}`
         )
 
         const response: CursorImportResponse = {
