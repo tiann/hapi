@@ -129,6 +129,20 @@ function formatCreditsValue(credits: NonNullable<CodexUsage['credits']>): string
     return '-'
 }
 
+// Axes that still constrain the user. Covered subscription windows at 100%
+// are billing-fallback noise (credits are paying), and idle credits
+// (pressure 0) are not a constraint - exclude both from color + dominant.
+function activePressureCandidates(axes: AgentBudgetAxis[]): AgentBudgetAxis[] {
+    const creditsCovering = axes.some((axis) => axis.id === 'credits' && axis.covering === true)
+    return axes.filter((axis) => {
+        if (axis.id === 'credits' && axis.pressure === 0) return false
+        if (creditsCovering && (axis.id === 'fiveHour' || axis.id === 'weekly') && axis.pressure >= 100) {
+            return false
+        }
+        return true
+    })
+}
+
 // Codex-specific effective-state logic. Honours the Pro-tier billing
 // rule that exhausted subscription windows fall back to credit-billing,
 // so weekly=100% with credits>0 is amber (covering scenario) rather than
@@ -148,23 +162,12 @@ function deriveEffectiveState(
         (axis) => (axis.id === 'fiveHour' || axis.id === 'weekly') && axis.pressure >= 100
     )
     const creditsCovering = axes.some((axis) => axis.id === 'credits' && axis.covering === true)
-
-    // Credits pressure==0 means 'available and not covering' - ignore it for
-    // color. Subscription windows at 100% while credits are covering are also
-    // not active constraints (billing fell back to credits); exclude them so
-    // a near-full context window can still paint red instead of getting stuck
-    // behind the covering-amber early return.
-    const pressureCandidates = axes.filter((axis) => {
-        if (axis.id === 'credits' && axis.pressure === 0) return false
-        if (creditsCovering && (axis.id === 'fiveHour' || axis.id === 'weekly') && axis.pressure >= 100) {
-            return false
-        }
-        return true
-    })
+    const pressureCandidates = activePressureCandidates(axes)
     const maxPressure = pressureCandidates.length > 0
         ? Math.max(...pressureCandidates.map((axis) => axis.pressure))
         : 0
 
+    // Worst active constraint wins before "credits covering" amber.
     if (maxPressure >= 95) {
         const dominantAxis = pressureCandidates.find((axis) => axis.pressure === maxPressure)
         return {
@@ -290,7 +293,7 @@ export function toCodexBudgetState(usage: CodexUsage | null | undefined): AgentB
         ? 'context'
         : axes.reduce((best, axis) => (axis.pressure > best.pressure ? axis : best), axes[0]).id
 
-    const dominantCandidates = axes.filter((axis) => !(axis.id === 'credits' && axis.pressure === 0))
+    const dominantCandidates = activePressureCandidates(axes)
     const dominant = dominantCandidates.length > 0
         ? dominantCandidates.reduce((best, axis) => (axis.pressure > best.pressure ? axis : best), dominantCandidates[0])
         : undefined
