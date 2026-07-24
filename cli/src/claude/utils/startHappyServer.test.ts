@@ -126,8 +126,8 @@ describe('startHappyServer skill_lookup', () => {
         await mcp.connect(new StreamableHTTPClientTransport(new URL(server.url)))
         const tools = await mcp.listTools()
 
-        expect(server.toolNames).toEqual(['display_image'])
-        expect(tools.tools.map((tool) => tool.name)).toEqual(['display_image'])
+        expect(server.toolNames).toEqual(['display_image', 'display_video'])
+        expect(tools.tools.map((tool) => tool.name)).toEqual(['display_image', 'display_video'])
     })
 
 })
