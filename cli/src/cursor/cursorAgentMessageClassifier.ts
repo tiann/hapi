@@ -216,8 +216,20 @@ export function classifyAcpRpcRejection(error: unknown): CursorAgentStreamFailur
     const raw = error instanceof Error ? error.message : String(error)
     const lower = raw.toLowerCase()
 
+    // gRPC / agent text shapes can arrive as JSON-RPC error.message (including
+    // "... [canceled] Operation aborted"). Classify those BEFORE the user-abort
+    // filter — a bare `aborted` substring must not swallow real model cancels.
+    const textMatch = classifyCursorAgentMessage(raw)
+    if (textMatch) {
+        return { ...textMatch, source: 'rpc' }
+    }
+
     // Programmer/user signals that should NOT fire modelError.
-    if (lower.includes('aborted') || lower.includes('user cancelled') || lower.includes('user canceled')) {
+    if (
+        lower.includes('aborted by user')
+        || lower.includes('user cancelled')
+        || lower.includes('user canceled')
+    ) {
         return null
     }
 
@@ -240,16 +252,6 @@ export function classifyAcpRpcRejection(error: unknown): CursorAgentStreamFailur
     // Request-level timeout (DEFAULT_TIMEOUT_MS in AcpStdioTransport).
     if (lower.includes('timed out after') || lower.includes('timeout')) {
         return { kind: 'rpc_timeout', transient: true, raw, source: 'rpc' }
-    }
-
-    // The text-classifier patterns are also worth running on RPC error
-    // bodies, because cursor-agent sometimes returns the gRPC status as a
-    // JSON-RPC `error.message` instead of stringifying it as a text
-    // message. Map those through with source='rpc' so the operator sees
-    // it came from a structural signal, not from free-text matching.
-    const textMatch = classifyCursorAgentMessage(raw)
-    if (textMatch) {
-        return { ...textMatch, source: 'rpc' }
     }
 
     // Catch-all: the prompt rejected for SOME reason. Conservative:
