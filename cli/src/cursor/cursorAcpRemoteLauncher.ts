@@ -31,6 +31,8 @@ import { buildCursorModelsSeedPayload, seedCursorModelsCache } from '@/modules/c
 import { readSharedCursorModelsCache } from '@/modules/common/cursorModelsSharedCache';
 import type { AcpSdkBackend } from '@/agent/backends/acp';
 import { registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
+import { installCursorMcpOverlay, type CursorMcpOverlayHandle } from './utils/cursorMcpOverlay';
+
 class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CursorSession;
     private backend: ReturnType<typeof createCursorAcpBackend> | null = null;
@@ -47,6 +49,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private spawnedWithAutoReview = false;
     /** Avoid re-queueing `/auto-review` on every mid-session mode sync. */
     private autoReviewSlashQueued = false;
+    private cursorMcpOverlay: CursorMcpOverlayHandle | null = null;
+
     constructor(session: CursorSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
         this.session = session;
@@ -72,6 +76,22 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             skillLookup: { workingDirectory: session.path, flavor: 'cursor' }
         });
         this.happyServer = happyServer;
+
+        const hapiBridge = mcpServers.hapi;
+        if (hapiBridge) {
+            try {
+                this.cursorMcpOverlay = installCursorMcpOverlay(session.path, {
+                    command: hapiBridge.command,
+                    args: hapiBridge.args,
+                });
+            } catch (error) {
+                logger.warn(
+                    '[cursor-acp] failed to install HAPI MCP overlay; continuing without inline media',
+                    error,
+                );
+                this.cursorMcpOverlay = { cleanup: () => {} };
+            }
+        }
 
         const autoReview = isCursorAutoReviewMode(session.getPermissionMode() as PermissionMode);
         this.spawnedWithAutoReview = autoReview;
@@ -127,7 +147,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         );
 
         const resumeSessionId = session.sessionId;
-        const mcpServerList = toAcpMcpServers(mcpServers);
+        // Cursor ACP ignores session/new|load mcpServers; native .cursor/mcp.json is wired above.
+        const mcpServerList: McpServerStdio[] = [];
         let acpSessionId: string;
 
         if (resumeSessionId && backend.supportsLoadSession()) {
@@ -137,7 +158,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 acpSessionId = await backend.loadSession({
                     sessionId: resumeSessionId,
                     cwd: session.path,
-                    mcpServers: mcpServerList
+                    mcpServers: mcpServerList,
                 });
             } catch (error) {
                 logger.warn('[cursor-acp] session/load failed', formatAcpLoadError(error));
@@ -301,6 +322,11 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             this.happyServer = null;
         }
 
+        if (this.cursorMcpOverlay) {
+            this.cursorMcpOverlay.cleanup();
+            this.cursorMcpOverlay = null;
+        }
+
         setCursorAcpModelsSnapshot(null);
     }
 
@@ -329,6 +355,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 break;
             case 'error':
                 this.messageBuffer.addMessage(message.message, 'status');
+                break;
+            case 'generated_image':
+                this.messageBuffer.addMessage(`Generated image: ${message.fileName}`, 'assistant');
                 break;
             case 'turn_complete':
                 break;
@@ -586,15 +615,6 @@ function syncCursorModelsFromAcp(backend: AcpSdkBackend, acpSessionId: string): 
     const payload = buildCursorModelsSeedPayload(snapshot, readSharedCursorModelsCache());
     setCursorAcpModelsSnapshot(snapshot);
     seedCursorModelsCache(payload);
-}
-
-function toAcpMcpServers(config: Record<string, { command: string; args: string[] }>): McpServerStdio[] {
-    return Object.entries(config).map(([name, entry]) => ({
-        name,
-        command: entry.command,
-        args: entry.args,
-        env: []
-    }));
 }
 
 export async function cursorAcpRemoteLauncher(session: CursorSession): Promise<'switch' | 'exit'> {

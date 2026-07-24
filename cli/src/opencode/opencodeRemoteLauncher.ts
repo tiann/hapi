@@ -271,7 +271,6 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             this.applyDisplayMode(batch.mode.permissionMode);
             messageBuffer.addMessage(batch.message, 'user');
 
-            // Inject title instructions on first prompt
             let messageText = batch.message;
             if (batch.mode.permissionMode === 'plan') {
                 messageText = `${PLAN_MODE_INSTRUCTION}\n\n${messageText}`;
@@ -283,7 +282,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
 
             const promptContent: PromptContent[] = [{
                 type: 'text',
-                text: messageText
+                text: messageText,
             }];
 
             session.onThinkingChange(true);
@@ -365,6 +364,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 break;
             case 'error':
                 this.messageBuffer.addMessage(message.message, 'status');
+                break;
+            case 'generated_image':
+                this.messageBuffer.addMessage(`Generated image: ${message.fileName}`, 'assistant');
                 break;
             case 'turn_complete':
                 this.messageBuffer.addMessage('Turn complete', 'status');

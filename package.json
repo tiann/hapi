@@ -32,9 +32,9 @@
         "release-all": "cd cli && bun run release-all"
     },
     "devDependencies": {
-        "@playwright/test": "^1.60.0",
+        "@playwright/test": "^1.61.0",
         "concurrently": "^9.2.1",
-        "playwright": "1.60.0",
+        "playwright": "1.61.0",
         "react-devtools-core": "^7.0.1",
         "vite-plugin-pwa": "^1.2.0"
     }

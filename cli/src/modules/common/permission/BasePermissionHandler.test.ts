@@ -36,3 +36,33 @@ describe('resolveToolAutoApprovalDecision skill_lookup', () => {
         )).toBeNull()
     })
 })
+
+describe('resolveToolAutoApprovalDecision display media', () => {
+    it.each([
+        'display_image',
+        'display_video',
+        'hapi_display_image',
+        'hapi_display_video',
+        'mcp__hapi__display_image',
+        'mcp__hapi__display_video',
+    ])('does not auto-approve display media tool %s in default mode', (toolName) => {
+        expect(resolveToolAutoApprovalDecision(
+            'default',
+            toolName,
+            'call-1'
+        )).toBeNull()
+    })
+
+    it('does not approve substring lookalikes or forged call ids', () => {
+        expect(resolveToolAutoApprovalDecision(
+            'default',
+            'dangerous_display_image_upload',
+            'call-1'
+        )).toBeNull()
+        expect(resolveToolAutoApprovalDecision(
+            'default',
+            'dangerous_tool',
+            'display_video-forged-id'
+        )).toBeNull()
+    })
+})

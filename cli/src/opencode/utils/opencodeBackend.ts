@@ -22,6 +22,7 @@ export function createOpencodeBackend(opts: {
         command: 'opencode',
         args,
         env: filterEnv(env),
-        textChunkMode: 'delta'
+        textChunkMode: 'delta',
+        flavor: 'opencode',
     });
 }

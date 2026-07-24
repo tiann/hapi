@@ -30,7 +30,7 @@ const AUTO_APPROVE_EXACT_TOOL_NAMES = new Set([
     'skill_lookup',
     'hapi_skill_lookup',
     'happy__skill_lookup',
-    'mcp__hapi__skill_lookup'
+    'mcp__hapi__skill_lookup',
 ]);
 const AUTO_APPROVE_TOOL_ID_HINTS = ['change_title', 'save_memory'];
 const AUTO_APPROVE_WRITE_TOOL_HINTS = ['write', 'edit', 'create', 'delete', 'patch', 'fs-edit'];

@@ -1,5 +1,8 @@
-import type { AgentMessage, PlanItem } from '@/agent/types';
 import { randomUUID } from 'node:crypto';
+import { logger } from '@/ui/logger';
+import type { AgentMessage, PlanItem } from '@/agent/types';
+import { registerGeneratedImageFromAcpBlock } from '@/modules/common/generatedImages';
+import type { InlineMediaSource } from '@/modules/common/inlineMediaSource';
 import { asString, isObject } from '@hapi/protocol';
 import { deriveToolNameWithSource, isPlaceholderToolName } from '@/agent/utils';
 import { parseRateLimitText } from '@/agent/rateLimitParser';
@@ -409,9 +412,9 @@ export class AcpMessageHandler {
 
     constructor(
         private readonly onMessage: (message: AgentMessage) => void,
-        options: { textChunkMode?: AcpTextChunkMode } = {}
+        private readonly options: { textChunkMode?: AcpTextChunkMode; flavor?: string } = {}
     ) {
-        this.textChunkMode = options.textChunkMode ?? 'dedupe';
+        this.textChunkMode = this.options.textChunkMode ?? 'dedupe';
     }
 
     /**
@@ -566,7 +569,7 @@ export class AcpMessageHandler {
         this.reasoningSnapshotEmitted = false;
     }
 
-    handleUpdate(update: unknown): void {
+    async handleUpdate(update: unknown): Promise<void> {
         if (!isObject(update)) return;
         const updateType = asString(update.sessionUpdate);
         if (!updateType) return;
@@ -592,6 +595,12 @@ export class AcpMessageHandler {
 
         if (updateType === ACP_SESSION_UPDATE_TYPES.agentMessageChunk) {
             const content = update.content;
+            if (isObject(content) && content.type === 'image') {
+                this.flushReasoning();
+                this.flushText();
+                await this.emitGeneratedImageFromAcpContent(content);
+                return;
+            }
             const text = extractTextContent(content);
             if (text) {
                 // Check once whether the buffered text is a prefix of this
@@ -665,6 +674,35 @@ export class AcpMessageHandler {
                 this.onMessage({ type: 'plan', items });
             }
         }
+    }
+
+    private async emitGeneratedImageFromAcpContent(content: Record<string, unknown>): Promise<void> {
+        try {
+            const image = await registerGeneratedImageFromAcpBlock(content);
+            if (!image) {
+                return;
+            }
+            this.onMessage({
+                type: 'generated_image',
+                imageId: image.id,
+                fileName: image.fileName,
+                mimeType: image.mimeType,
+                source: this.buildAcpInlineMediaSource(),
+            });
+        } catch (error) {
+            logger.debug(
+                '[AcpMessageHandler] Failed to register ACP image block:',
+                error instanceof Error ? error.message : String(error)
+            );
+        }
+    }
+
+    private buildAcpInlineMediaSource(): InlineMediaSource {
+        const source: InlineMediaSource = { ingress: 'acp' };
+        if (this.options?.flavor) {
+            source.flavor = this.options.flavor;
+        }
+        return source;
     }
 
     private handleToolCall(update: Record<string, unknown>): void {
