@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, utimesSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { archiveLocalCodexSession, listLocalCodexSessionSummaries, listLocalCodexSessionsWithMessagesByIds } from './codexSessions'
@@ -178,6 +178,33 @@ describe('listLocalCodexSessionSummaries', () => {
 
         expect(sessions.map((session) => session.id)).toEqual(['wanted-session-id'])
         expect(sessions[0]?.messages).toHaveLength(1)
+        rmSync(root, { recursive: true, force: true })
+    })
+
+    it('dedupes requested-id matches to the newest transcript by modifiedAt', () => {
+        const root = mkdtempSync(join(tmpdir(), 'codex-home-'))
+        process.env.CODEX_HOME = root
+        const sessionsDir = join(root, 'sessions', '2026', '06', '27')
+        mkdirSync(sessionsDir, { recursive: true })
+
+        const older = join(sessionsDir, 'older.jsonl')
+        const newer = join(sessionsDir, 'newer.jsonl')
+        writeFileSync(older, [
+            JSON.stringify({ type: 'session_meta', payload: { id: 'dup-session-id', cwd: '/tmp/old' } }),
+            JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'older' }] } })
+        ].join('\n'))
+        writeFileSync(newer, [
+            JSON.stringify({ type: 'session_meta', payload: { id: 'dup-session-id', cwd: '/tmp/new' } }),
+            JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'newer' }] } })
+        ].join('\n'))
+        utimesSync(older, new Date('2026-06-27T10:00:00Z'), new Date('2026-06-27T10:00:00Z'))
+        utimesSync(newer, new Date('2026-06-27T12:00:00Z'), new Date('2026-06-27T12:00:00Z'))
+
+        const sessions = listLocalCodexSessionsWithMessagesByIds(new Set(['dup-session-id']))
+        expect(sessions).toHaveLength(1)
+        expect(sessions[0]?.cwd).toBe('/tmp/new')
+        expect(sessions[0]?.file).toBe(newer)
+
         rmSync(root, { recursive: true, force: true })
     })
 })

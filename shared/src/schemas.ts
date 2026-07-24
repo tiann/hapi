@@ -25,6 +25,62 @@ export const WorktreeMetadataSchema = z.object({
 
 export type WorktreeMetadata = z.infer<typeof WorktreeMetadataSchema>
 
+export const CodexTokenUsageSchema = z.object({
+    inputTokens: z.number(),
+    cachedInputTokens: z.number(),
+    outputTokens: z.number(),
+    reasoningOutputTokens: z.number(),
+    totalTokens: z.number()
+})
+
+export type CodexTokenUsage = z.infer<typeof CodexTokenUsageSchema>
+
+export const CodexUsageRateLimitSchema = z.object({
+    usedPercent: z.number(),
+    windowMinutes: z.number(),
+    resetAt: z.number().optional()
+})
+
+export type CodexUsageRateLimit = z.infer<typeof CodexUsageRateLimitSchema>
+
+// Credit-based plans (e.g. Codex Pro on `limit_id: premium`) bill from a
+// balance instead of a 5h/weekly rolling window. When the subscription
+// is also exhausted the codex transcript shows primary=null + secondary=null
+// + credits.has_credits=false; the indicator needs to surface that
+// distinctly from a fresh-account "no rate-limit data yet" state.
+export const CodexUsageCreditsSchema = z.object({
+    hasCredits: z.boolean().optional(),
+    unlimited: z.boolean().optional(),
+    balance: z.string().optional()
+})
+
+export type CodexUsageCredits = z.infer<typeof CodexUsageCreditsSchema>
+
+export const CodexUsageSchema = z.object({
+    contextWindow: z.object({
+        usedTokens: z.number(),
+        limitTokens: z.number(),
+        percent: z.number(),
+        updatedAt: z.number()
+    }).optional(),
+    rateLimits: z.object({
+        fiveHour: CodexUsageRateLimitSchema.optional(),
+        weekly: CodexUsageRateLimitSchema.optional()
+    }).optional().default({}),
+    credits: CodexUsageCreditsSchema.optional(),
+    // Codex surfaces 'primary' / 'secondary' / 'credits' as the canonical
+    // names. Carry through as-is so the UI can render the exact phrase
+    // (e.g. 'You have exceeded your weekly limit', or 'You have run out
+    // of credits') without re-deriving from the boolean state.
+    rateLimitReachedType: z.string().optional(),
+    planType: z.string().optional(),
+    limitId: z.string().optional(),
+    totalTokenUsage: CodexTokenUsageSchema.optional(),
+    lastTokenUsage: CodexTokenUsageSchema.optional()
+})
+
+export type CodexUsage = z.infer<typeof CodexUsageSchema>
+
 export const MetadataSchema = z.object({
     path: z.string(),
     host: z.string(),
@@ -77,7 +133,8 @@ export const MetadataSchema = z.object({
     // field stores only modelId (shared across all flavors); this preserves
     // the provider so web can resolve the exact model when two providers
     // share a modelId.
-    piSelectedModel: z.object({ provider: z.string(), modelId: z.string() }).nullable().optional()
+    piSelectedModel: z.object({ provider: z.string(), modelId: z.string() }).nullable().optional(),
+    codexUsage: CodexUsageSchema.optional()
 })
 
 export type Metadata = z.infer<typeof MetadataSchema>
@@ -241,6 +298,8 @@ export const SessionPatchSchema = z.object({
     thinking: z.boolean().optional(),
     activeAt: z.number().optional(),
     updatedAt: z.number().optional(),
+    metadata: MetadataSchema.nullable().optional(),
+    metadataVersion: z.number().optional(),
     model: z.string().nullable().optional(),
     modelReasoningEffort: z.string().nullable().optional(),
     effort: z.string().nullable().optional(),

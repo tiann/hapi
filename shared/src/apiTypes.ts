@@ -326,7 +326,8 @@ export const SpawnSessionRequestSchema = z.object({
     yolo: z.boolean().optional(),
     permissionMode: PermissionModeSchema.optional(),
     sessionType: z.enum(['simple', 'worktree']).optional(),
-    worktreeName: z.string().optional()
+    worktreeName: z.string().optional(),
+    resumeSessionId: z.string().optional()
 })
 
 export type SpawnSessionRequest = z.infer<typeof SpawnSessionRequestSchema>

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { basename, dirname, join, relative } from 'node:path'
 import { homedir } from 'node:os'
@@ -6,6 +6,8 @@ import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import { isCodexSubagentSource } from '@/codex/utils/codexSessionMetadata'
 
 const DEFAULT_CODEX_SESSION_SCAN_LIMIT = 200
+/** Head window for summary listing — enough for session_meta + early user/title events. */
+const CODEX_SUMMARY_HEAD_BYTES = 256 * 1024
 
 type CodexSessionIndexTitle = {
     threadName: string
@@ -94,6 +96,22 @@ function collectJsonlFiles(root: string, files: string[]): void {
         const fullPath = join(root, entry.name)
         if (entry.isDirectory()) collectJsonlFiles(fullPath, files)
         else if (entry.isFile() && fullPath.toLowerCase().endsWith('.jsonl')) files.push(fullPath)
+    }
+}
+
+function readFileHead(filePath: string, maxBytes: number): string | null {
+    let fd: number | undefined
+    try {
+        fd = openSync(filePath, 'r')
+        const buffer = Buffer.alloc(Math.max(1, maxBytes))
+        const bytesRead = readSync(fd, buffer, 0, buffer.length, 0)
+        return buffer.subarray(0, bytesRead).toString('utf-8')
+    } catch {
+        return null
+    } finally {
+        if (fd !== undefined) {
+            try { closeSync(fd) } catch { /* ignore */ }
+        }
     }
 }
 
@@ -304,8 +322,12 @@ function parseCodexLocalSession(
     includeMessages: boolean,
     sessionIndexTitles = new Map<string, CodexSessionIndexTitle>()
 ): LocalCodexSessionWithMessages | LocalCodexSessionSummary | null {
-    let content: string
-    try { content = readFileSync(filePath, 'utf-8') } catch { return null }
+    // Summary listing must not load entire transcripts into memory — only a head window.
+    // Full-file reads are reserved for explicit import (includeMessages=true).
+    const content = includeMessages
+        ? (() => { try { return readFileSync(filePath, 'utf-8') } catch { return null } })()
+        : readFileHead(filePath, CODEX_SUMMARY_HEAD_BYTES)
+    if (content === null) return null
     const lines = content.split(/\r?\n/).filter(Boolean)
     const headLines = lines.slice(0, 200)
     let sessionId: string | null = null
@@ -356,8 +378,10 @@ function parseCodexLocalSession(
     sessionId = sessionId ?? inferSessionIdFromFileName(filePath)
     if (!sessionId) return null
     const sessionIndexTitle = sessionIndexTitles.get(sessionId)?.threadName ?? null
-    const changedTitle = getLatestCodexChangedTitle(lines)
-    const lastUserMessage = getLatestCodexUserMessage(lines)
+    // Title/last-user scans stay on the same line set we already loaded (head for
+    // summaries, full file only when importing messages).
+    const changedTitle = getLatestCodexChangedTitle(includeMessages ? lines : headLines)
+    const lastUserMessage = getLatestCodexUserMessage(includeMessages ? lines : headLines)
     let modifiedAt = Date.now()
     try { modifiedAt = statSync(filePath).mtimeMs } catch {}
     const summary = {
@@ -403,10 +427,73 @@ export function listLocalCodexSessionsWithMessages(limit = DEFAULT_CODEX_SESSION
 export function listLocalCodexSessionsWithMessagesByIds(ids: Set<string>): LocalCodexSessionWithMessages[] {
     if (ids.size === 0) return []
     const sessionIndexTitles = readCodexSessionIndexTitles()
-    return listLocalCodexSessionSummaries(Number.MAX_SAFE_INTEGER)
-        .filter((session) => ids.has(session.id))
-        .map((session) => parseCodexLocalSession(session.file, true, sessionIndexTitles))
-        .filter((session): session is LocalCodexSessionWithMessages => Boolean(session))
+    const files: string[] = []
+    for (const root of getCodexSessionRoots()) {
+        collectJsonlFiles(root, files)
+    }
+
+    const resultsById = new Map<string, LocalCodexSessionWithMessages>()
+    const addResult = (session: LocalCodexSessionWithMessages) => {
+        const previous = resultsById.get(session.id)
+        if (!previous || previous.modifiedAt < session.modifiedAt) {
+            resultsById.set(session.id, session)
+        }
+    }
+
+    for (const file of files) {
+        const idFromName = inferSessionIdFromFileName(file)
+        // Skip unrelated transcripts without reading message bodies.
+        if (idFromName && !ids.has(idFromName)) continue
+
+        if (idFromName && ids.has(idFromName)) {
+            const session = parseCodexLocalSession(file, true, sessionIndexTitles)
+            if (session && Array.isArray((session as LocalCodexSessionWithMessages).messages)) {
+                addResult(session as LocalCodexSessionWithMessages)
+            }
+            continue
+        }
+
+        // Filename lacked a UUID — head-parse for id, then full-load only on match.
+        const summary = parseCodexLocalSession(file, false, sessionIndexTitles)
+        if (!summary || !ids.has(summary.id)) continue
+        const session = parseCodexLocalSession(file, true, sessionIndexTitles)
+        if (session && Array.isArray((session as LocalCodexSessionWithMessages).messages)) {
+            addResult(session as LocalCodexSessionWithMessages)
+        }
+    }
+    return Array.from(resultsById.values())
+}
+
+/** Resolve a Codex thread's workspace cwd without loading the full transcript body. */
+export function findCodexSessionPath(sessionId: string): string | null {
+    return findCodexSessionSummary(sessionId)?.cwd ?? null
+}
+
+/** Resolve the on-disk transcript path for a Codex thread id (head-parse only). */
+export function findCodexSessionFile(sessionId: string): string | null {
+    return findCodexSessionSummary(sessionId)?.file ?? null
+}
+
+function findCodexSessionSummary(sessionId: string): LocalCodexSessionSummary | null {
+    const normalized = sessionId.trim()
+    if (!normalized) return null
+
+    const files: string[] = []
+    for (const root of getCodexSessionRoots()) {
+        collectJsonlFiles(root, files)
+    }
+
+    let best: LocalCodexSessionSummary | null = null
+    for (const file of files) {
+        const idFromName = inferSessionIdFromFileName(file)
+        if (idFromName && idFromName !== normalized) continue
+        const summary = parseCodexLocalSession(file, false)
+        if (!summary || summary.id !== normalized) continue
+        if (!best || best.modifiedAt < summary.modifiedAt) {
+            best = summary
+        }
+    }
+    return best
 }
 
 

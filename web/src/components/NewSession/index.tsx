@@ -849,12 +849,19 @@ export function NewSession(props: {
     }, [suggestions, selectedIndex, moveUp, moveDown, clearSuggestions, handleSuggestionSelect])
 
     async function handleCreate() {
-        if (!machineId || !trimmedDirectory) return
+        if (!machineId) return
+
+        // When importing a Codex session, prefer that session's recorded workspace cwd.
+        const spawnDirectory = (agent === 'codex' && selectedCodexImportSession?.cwd)
+            ? selectedCodexImportSession.cwd
+            : trimmedDirectory
+
+        if (!spawnDirectory) return
 
         setError(null)
         try {
-            const existsResult = await checkPathsExists([trimmedDirectory])
-            const directoryExists = existsResult[trimmedDirectory]
+            const existsResult = await checkPathsExists([spawnDirectory])
+            const directoryExists = existsResult[spawnDirectory]
 
             if (sessionType === 'worktree' && directoryExists === false) {
                 haptic.notification('error')
@@ -933,7 +940,7 @@ export function NewSession(props: {
 
             const result = await spawnSession({
                 machineId,
-                directory: trimmedDirectory,
+                directory: spawnDirectory,
                 agent,
                 model: resolvedModel,
                 effort: resolvedEffort,
@@ -949,7 +956,7 @@ export function NewSession(props: {
                 savePreferredLaunchSettings(machineId, agent, preferredLaunchSettings)
                 clearNewSessionFormDraft()
                 setLastUsedMachineId(machineId)
-                addRecentPath(machineId, trimmedDirectory)
+                addRecentPath(machineId, spawnDirectory)
                 props.onSuccess(result.sessionId)
                 return
             }
@@ -984,9 +991,14 @@ export function NewSession(props: {
                 deferredDirectoryExists === undefined
                 || (deferredDirectoryExists === true && opencodeModelsState.isLoading)
             ))
+    const hasSpawnDirectory = Boolean(
+        (agent === 'codex' && selectedCodexImportSession?.cwd)
+            ? selectedCodexImportSession.cwd
+            : trimmedDirectory
+    )
     const canCreate = Boolean(
         machineId
-        && trimmedDirectory
+        && hasSpawnDirectory
         && !isFormDisabled
         && !missingWorktreeDirectory
         && !isLaunchPreferenceValidationPending

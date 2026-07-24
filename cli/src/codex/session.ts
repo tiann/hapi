@@ -5,6 +5,7 @@ import type { EnhancedMode, PermissionMode } from './loop';
 import type { CodexCliOverrides } from './utils/codexCliOverrides';
 import type { LocalLaunchExitReason } from '@/agent/localLaunchPolicy';
 import type { Metadata, SessionModel, SessionModelReasoningEffort } from '@/api/types';
+import { normalizeCodexUsage } from './utils/codexUsage';
 
 type LocalLaunchFailure = {
     message: string;
@@ -113,7 +114,13 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
             // mergeSessionMetadata. The value is `null` on the wire only;
             // MetadataSchema parses `string().optional()`, so the
             // post-merge persisted blob carries no key.
+            //
+            // `codexUsage` is NOT a carry-forward field, so omit/delete is
+            // enough to drop the prior thread's context/budget snapshot
+            // (otherwise the web keeps rendering stale usage after /clear
+            // until the next token_count).
             const updated: Record<string, unknown> = { ...metadata, codexSessionId: null };
+            delete updated.codexUsage;
             return updated as unknown as Metadata;
         });
     }
@@ -128,6 +135,17 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
 
     setModelReasoningEffort = (modelReasoningEffort: SessionModelReasoningEffort): void => {
         this.modelReasoningEffort = modelReasoningEffort;
+    };
+
+    recordCodexUsage = (payload: unknown): void => {
+        const codexUsage = normalizeCodexUsage(payload);
+        if (!codexUsage) {
+            return;
+        }
+        this.client.updateMetadata((metadata) => ({
+            ...metadata,
+            codexUsage
+        }));
     };
 
     setCollaborationMode = (mode: EnhancedMode['collaborationMode']): void => {

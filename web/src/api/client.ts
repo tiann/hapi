@@ -629,6 +629,7 @@ export class ApiClient {
         sessionType?: 'simple' | 'worktree',
         worktreeName?: string,
         effort?: string,
+        resumeSessionId?: string,
         permissionMode?: PermissionMode
     ): Promise<SpawnResponse> {
         return await this.request<SpawnResponse>(`/api/machines/${encodeURIComponent(machineId)}/spawn`, {
@@ -642,6 +643,7 @@ export class ApiClient {
                 sessionType,
                 worktreeName,
                 effort,
+                resumeSessionId,
                 permissionMode
             })
         })

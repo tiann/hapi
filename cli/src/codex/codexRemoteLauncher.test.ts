@@ -37,6 +37,10 @@ const harness = vi.hoisted(() => ({
     emitSafetyBuffering: false,
     safetyBufferingFasterModel: null as string | null,
     emitModelSafetyNotices: false,
+    transcriptPathByThreadId: new Map<string, string>(),
+    scannerStarts: [] as Array<{ transcriptPath: string | null; replayExistingHistory?: boolean }>,
+    scannerCleanups: 0,
+    scannerEvents: [] as Array<(event: unknown) => void>,
     startTurnMessages: [] as string[],
     failResumeThreadIds: [] as string[],
     nextThreadSystemErrorMessage: null as string | null,
@@ -944,6 +948,30 @@ vi.mock('./utils/buildHapiMcpBridge', () => ({
     }
 }));
 
+vi.mock('@/modules/common/codexSessions', () => ({
+    findCodexSessionFile: async (threadId: string) => harness.transcriptPathByThreadId.get(threadId) ?? `/tmp/${threadId}.jsonl`
+}));
+
+vi.mock('./utils/codexSessionScanner', () => ({
+    createCodexSessionScanner: async (opts: {
+        transcriptPath: string | null;
+        replayExistingHistory?: boolean;
+        onEvent: (event: unknown) => void;
+    }) => {
+        harness.scannerStarts.push({
+            transcriptPath: opts.transcriptPath,
+            replayExistingHistory: opts.replayExistingHistory
+        });
+        harness.scannerEvents.push(opts.onEvent);
+        return {
+            cleanup: async () => {
+                harness.scannerCleanups += 1;
+            },
+            setTranscriptPath: async () => {}
+        };
+    }
+}));
+
 import { codexRemoteLauncher } from './codexRemoteLauncher';
 
 type FakeAgentState = {
@@ -979,6 +1007,7 @@ function createSessionStub(
     const sessionEvents: Array<{ type: string; [key: string]: unknown }> = [];
     const codexMessages: unknown[] = [];
     const summaryMessages: unknown[] = [];
+    const usagePayloads: unknown[] = [];
     const thinkingChanges: boolean[] = [];
     const foundSessionIds: string[] = [];
     const resetThreadCalls: string[] = [];
@@ -1062,6 +1091,9 @@ function createSessionStub(
         },
         sendUserMessage(text: string) {
             client.sendUserMessage(text);
+        },
+        recordCodexUsage(payload: unknown) {
+            usagePayloads.push(payload);
         }
     };
 
@@ -1081,7 +1113,8 @@ function createSessionStub(
         getModelReasoningEffort: () => currentModelReasoningEffort,
         getCollaborationMode: () => currentCollaborationMode,
         collaborationModes,
-        getAgentState: () => agentState
+        getAgentState: () => agentState,
+        usagePayloads
     };
 }
 
@@ -1153,6 +1186,10 @@ describe('codexRemoteLauncher', () => {
         harness.emitCompletedChildTurnBeforeSuppressedParent = false;
         harness.emitTurnAbortedOnInterrupt = false;
         harness.bridgeOptions = [];
+        harness.transcriptPathByThreadId = new Map();
+        harness.scannerStarts = [];
+        harness.scannerCleanups = 0;
+        harness.scannerEvents = [];
     });
 
     it('finishes a turn and emits ready when task lifecycle events include turn_id', async () => {
@@ -2874,5 +2911,49 @@ describe('codexRemoteLauncher', () => {
             type: 'message',
             message: '/compact does not accept arguments'
         });
+    });
+
+    it('tails remote Codex transcript for usage without replaying transcript messages', async () => {
+        harness.transcriptPathByThreadId.set('thread-1', '/tmp/codex-thread-1.jsonl');
+        const { session, codexMessages, usagePayloads } = createSessionStub();
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(harness.scannerStarts).toEqual([{
+            transcriptPath: '/tmp/codex-thread-1.jsonl',
+            replayExistingHistory: true
+        }]);
+
+        harness.scannerEvents[0]?.({
+            type: 'event_msg',
+            payload: {
+                type: 'token_count',
+                info: {
+                    total_token_usage: { total_tokens: 42000 },
+                    model_context_window: 128000
+                }
+            }
+        });
+        harness.scannerEvents[0]?.({
+            type: 'event_msg',
+            payload: {
+                type: 'agent_message',
+                message: 'transcript duplicate'
+            }
+        });
+
+        expect(usagePayloads).toHaveLength(1);
+        expect(usagePayloads[0]).toMatchObject({
+            type: 'token_count',
+            info: {
+                total_token_usage: { total_tokens: 42000 },
+                model_context_window: 128000
+            }
+        });
+        expect(codexMessages).not.toContainEqual(expect.objectContaining({
+            message: 'transcript duplicate'
+        }));
+        expect(harness.scannerCleanups).toBe(1);
     });
 });
