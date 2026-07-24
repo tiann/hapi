@@ -332,6 +332,16 @@ describe('classifyAcpRpcRejection (structural RPC signal)', () => {
         expect(out?.source).toBe('rpc')
     })
 
+    it('classifies [canceled] Operation aborted via text path before user-abort filter', () => {
+        // Bare "aborted" must not null out real gRPC canceled shapes that
+        // happen to include that word in the status message.
+        const err = new Error('Error: T: [canceled] Operation aborted')
+        const out = classifyAcpRpcRejection(err)
+        expect(out).not.toBeNull()
+        expect(out?.kind).toBe('canceled')
+        expect(out?.source).toBe('rpc')
+    })
+
     it('falls through to prompt_failed for unrecognised RPC errors', () => {
         const err = new Error('Some weird internal SDK assertion failed')
         const out = classifyAcpRpcRejection(err)
