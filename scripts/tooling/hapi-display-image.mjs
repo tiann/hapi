@@ -18,7 +18,7 @@
  * Prefer the MCP tools when available; this script is the shell fallback.
  */
 
-import { readFileSync, lstatSync } from 'node:fs'
+import { closeSync, openSync, readSync, readFileSync, lstatSync } from 'node:fs'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 
@@ -52,8 +52,19 @@ function sessionMatchesPrefix(session, prefix) {
     return agentIds.some((id) => typeof id === 'string' && id.startsWith(prefix))
 }
 
+function readHeader(path, length = 16) {
+    const fd = openSync(path, 'r')
+    try {
+        const head = Buffer.alloc(length)
+        const bytesRead = readSync(fd, head, 0, head.length, 0)
+        return head.subarray(0, bytesRead)
+    } finally {
+        closeSync(fd)
+    }
+}
+
 function detectMediaTool(path) {
-    const head = readFileSync(path).subarray(0, 16)
+    const head = readHeader(path)
     if (head.length >= 12 && head.subarray(4, 8).toString('ascii') === 'ftyp') {
         const brand = head.subarray(8, 12).toString('ascii')
         return brand === 'avif' || brand === 'avis' ? 'display_image' : 'display_video'

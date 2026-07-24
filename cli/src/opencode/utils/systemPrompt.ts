@@ -7,10 +7,14 @@
 
 import { trimIdent } from '@/utils/trimIdent';
 import { HAPI_MCP_BRIDGE_PROMPT } from '@/modules/common/hapiMcpBridgePrompt';
+import {
+    DISPLAY_IMAGE_PROMPT_HAPI_MCP,
+    DISPLAY_VIDEO_PROMPT_HAPI_MCP,
+} from '@/modules/common/displayImagePrompt';
 import { SKILL_LOOKUP_INSTRUCTION } from '@/modules/common/skillLookupInstruction';
 
 /**
- * Title and display_image instructions for OpenCode to call the hapi MCP tools.
+ * Title and display_image / display_video instructions for OpenCode to call the hapi MCP tools.
  */
 export const TITLE_INSTRUCTION = trimIdent(`
     ${HAPI_MCP_BRIDGE_PROMPT}
@@ -22,7 +26,8 @@ export const TITLE_INSTRUCTION = trimIdent(`
  * advertise only the MCP tools that remain available to the model.
  */
 export const OPENCODE_NATIVE_TOOL_INSTRUCTION = trimIdent(`
-    When you create or find a local image file that the user should see, call the tool "hapi_display_image" with the image path so HAPI can show it inline.
+    ${DISPLAY_IMAGE_PROMPT_HAPI_MCP}
+    ${DISPLAY_VIDEO_PROMPT_HAPI_MCP}
     ${SKILL_LOOKUP_INSTRUCTION}
 `);
 
