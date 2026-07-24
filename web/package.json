@@ -35,6 +35,7 @@
         "clsx": "^2.1.1",
         "diff": "^8.0.2",
         "hast-util-to-jsx-runtime": "^2.3.6",
+        "html2canvas-pro": "^2.0.4",
         "katex": "^0.16.45",
         "mermaid": "^11.12.0",
         "react": "^19.2.3",

@@ -13,6 +13,7 @@ import { Spinner } from '@/components/Spinner'
 import { useTerminalToolDisplayMode } from '@/hooks/useTerminalToolDisplayMode'
 import { useTranslation } from '@/lib/use-translation'
 import { CloseIcon } from '@/components/icons'
+import { ShareTurnDialog } from '@/components/AssistantChat/ShareTurnDialog'
 
 type ScrollAnchor = {
     id: string
@@ -23,6 +24,57 @@ type PendingScrollRestore = {
     anchor: ScrollAnchor | null
     scrollTop: number
     scrollHeight: number
+}
+
+type ShareTurnState = {
+    id: number
+    snapshots: ShareTurnSnapshot[]
+    title: string
+    subtitle: string
+} | null
+
+type ShareTurnSnapshot = {
+    html: string
+    text: string
+    role?: 'user' | 'assistant'
+}
+
+function findNearestMessageElement(content: HTMLElement, clientY?: number): HTMLElement | null {
+    const messages = Array.from(content.querySelectorAll('.happy-thread-messages > [id]'))
+        .filter((element): element is HTMLElement => element instanceof HTMLElement)
+    if (messages.length === 0) return null
+    if (typeof clientY !== 'number' || !Number.isFinite(clientY)) {
+        return messages[messages.length - 1] ?? null
+    }
+
+    let best: HTMLElement | null = null
+    let bestDistance = Number.POSITIVE_INFINITY
+    for (const message of messages) {
+        const rect = message.getBoundingClientRect()
+        const distance = clientY < rect.top
+            ? rect.top - clientY
+            : clientY > rect.bottom
+                ? clientY - rect.bottom
+                : 0
+        if (distance < bestDistance) {
+            best = message
+            bestDistance = distance
+        }
+    }
+    return best
+}
+
+export function prependMissingUserSnapshot(
+    snapshots: ShareTurnSnapshot[],
+    fallbackSnapshot?: ShareTurnSnapshot
+): ShareTurnSnapshot[] {
+    const hasUser = snapshots.some((snapshot) =>
+        snapshot.role === 'user' || snapshot.html.includes('data-hapi-message-role="user"')
+    )
+    if (hasUser || fallbackSnapshot?.role !== 'user' || fallbackSnapshot.text.trim().length === 0) {
+        return snapshots
+    }
+    return [fallbackSnapshot, ...snapshots]
 }
 
 const MESSAGE_ANCHOR_SELECTOR = '.happy-thread-messages > [id]'
@@ -304,6 +356,8 @@ export function HappyThread(props: {
     const { terminalToolDisplayMode } = useTerminalToolDisplayMode()
     const viewportRef = useRef<HTMLDivElement | null>(null)
     const contentRef = useRef<HTMLDivElement | null>(null)
+    const [shareTurn, setShareTurn] = useState<ShareTurnState>(null)
+    const shareTurnIdRef = useRef(0)
     const topSentinelRef = useRef<HTMLDivElement | null>(null)
     const loadLockRef = useRef(false)
     const pendingScrollRef = useRef<PendingScrollRestore | null>(null)
@@ -716,6 +770,72 @@ export function HappyThread(props: {
     }, [props.isLoadingMoreMessages, settlePendingLoad])
 
     const showSkeleton = props.isLoadingMessages && props.rawMessagesCount === 0 && props.pendingCount === 0
+    const handleShareTurn = useCallback((
+        messageTarget: HTMLElement | string | null,
+        clientY?: number,
+        fallbackSnapshot?: ShareTurnSnapshot
+    ) => {
+        const content = contentRef.current
+        if (!content) return
+
+        let target: HTMLElement | null = typeof messageTarget === 'string'
+            ? document.getElementById(messageTarget)
+            : messageTarget
+        if (!(target instanceof HTMLElement) || !content.contains(target)) {
+            target = findNearestMessageElement(content, clientY)
+        }
+        if (!(target instanceof HTMLElement) || !content.contains(target)) {
+            setShareTurn({
+                id: ++shareTurnIdRef.current,
+                snapshots: fallbackSnapshot ? [fallbackSnapshot] : [],
+                title: props.metadata?.summary?.text ?? props.metadata?.name ?? props.metadata?.path ?? props.sessionId.slice(0, 8),
+                subtitle: [props.metadata?.flavor, props.metadata?.host].filter(Boolean).join(' · ') || props.sessionId
+            })
+            return
+        }
+
+        let start: Element | null = target
+        while (start?.previousElementSibling && start.getAttribute('data-hapi-message-role') !== 'user') {
+            start = start.previousElementSibling
+        }
+        if (!start || start.getAttribute('data-hapi-message-role') !== 'user') {
+            start = target
+        }
+
+        const snapshots: ShareTurnSnapshot[] = []
+        let current: Element | null = start
+        while (current instanceof HTMLElement) {
+            if (current !== start && current.getAttribute('data-hapi-message-role') === 'user') {
+                break
+            }
+            const role = current.getAttribute('data-hapi-message-role')
+            if (role === 'user' || role === 'assistant') {
+                snapshots.push({
+                    html: current.outerHTML,
+                    text: (current.innerText || current.textContent || '').trim()
+                })
+            }
+            current = current.nextElementSibling
+        }
+
+        if (snapshots.length === 0 && target instanceof HTMLElement) {
+            snapshots.push({
+                html: target.outerHTML,
+                text: (target.innerText || target.textContent || '').trim()
+            })
+        }
+        if (snapshots.length === 0 && fallbackSnapshot) {
+            snapshots.push(fallbackSnapshot)
+        }
+        const completeSnapshots = prependMissingUserSnapshot(snapshots, fallbackSnapshot)
+
+        setShareTurn({
+            id: ++shareTurnIdRef.current,
+            snapshots: completeSnapshots,
+            title: props.metadata?.summary?.text ?? props.metadata?.name ?? props.metadata?.path ?? props.sessionId.slice(0, 8),
+            subtitle: [props.metadata?.flavor, props.metadata?.host].filter(Boolean).join(' · ') || props.sessionId
+        })
+    }, [props.metadata, props.sessionId])
 
     return (
         <HappyChatProvider value={{
@@ -726,6 +846,7 @@ export function HappyThread(props: {
             disabled: props.disabled,
             onRefresh: props.onRefresh,
             onRetryMessage: props.onRetryMessage,
+            onShareTurn: handleShareTurn,
             hasMoreMessages: props.hasMoreMessages,
             isLoadingMoreMessages: props.isLoadingMoreMessages,
             loadOlderMessagesPreservingScroll: loadOlderFromUserAction
@@ -814,6 +935,14 @@ export function HappyThread(props: {
                         />
                     </>
                 ) : null}
+                <ShareTurnDialog
+                    key={shareTurn?.id ?? 'closed'}
+                    isOpen={shareTurn !== null}
+                    title={shareTurn?.title ?? ''}
+                    subtitle={shareTurn?.subtitle ?? ''}
+                    sourceSnapshots={shareTurn?.snapshots ?? []}
+                    onClose={() => setShareTurn(null)}
+                />
             </ThreadPrimitive.Root>
         </HappyChatProvider>
     )
