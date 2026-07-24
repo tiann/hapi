@@ -114,7 +114,13 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
             // mergeSessionMetadata. The value is `null` on the wire only;
             // MetadataSchema parses `string().optional()`, so the
             // post-merge persisted blob carries no key.
+            //
+            // `codexUsage` is NOT a carry-forward field, so omit/delete is
+            // enough to drop the prior thread's context/budget snapshot
+            // (otherwise the web keeps rendering stale usage after /clear
+            // until the next token_count).
             const updated: Record<string, unknown> = { ...metadata, codexSessionId: null };
+            delete updated.codexUsage;
             return updated as unknown as Metadata;
         });
     }
