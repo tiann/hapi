@@ -30,7 +30,7 @@ describe('mergeCursorModelSummaries', () => {
         ])
     })
 
-    it('drops CLI probe slugs without bracket wire params', () => {
+    it('drops CLI effort/speed SKU slugs but keeps bare ACP bases', () => {
         const merged = mergeCursorModelSummaries(
             [{ modelId: 'gpt-5.5[context=272k,reasoning=medium,fast=false]', name: 'gpt-5.5' }],
             [
@@ -39,7 +39,8 @@ describe('mergeCursorModelSummaries', () => {
             ]
         )
         expect(merged.map((entry) => entry.modelId)).toEqual([
-            'gpt-5.5[context=272k,reasoning=medium,fast=false]'
+            'gpt-5.5[context=272k,reasoning=medium,fast=false]',
+            'composer-2.5'
         ])
     })
 })
@@ -106,6 +107,96 @@ describe('buildCursorPickerState', () => {
         })
         expect(picker.showEffortPicker).toBe(true)
         expect(picker.baseKey).toBe('composer-2.5')
+    })
+})
+
+describe('live bare ACP catalog (#1129)', () => {
+    /** Live Cursor ACP shape (2026-07-22): bare bases, no brackets, empty cliModelSkus. */
+    const LIVE_BARE_ACP_IDS = [
+        'composer-2',
+        'composer-2.5',
+        'gpt-5.5',
+        'gpt-5.4',
+        'gpt-5.3-codex',
+        'claude-opus-4-8',
+        'claude-opus-4-7',
+        'claude-sonnet-4-6',
+        'claude-sonnet-4-5',
+        'claude-haiku-4-5',
+        'gemini-3.1-pro',
+        'gemini-3-flash',
+        'grok-4-20',
+        'kimi-k2.5',
+        'o3',
+        'o4-mini',
+        'gpt-4.1',
+        'gpt-4o',
+        'claude-4-sonnet',
+        'claude-4-opus',
+        'claude-3.7-sonnet',
+        'claude-3.5-sonnet',
+        'claude-3.5-haiku',
+        'gemini-2.5-pro',
+        'gemini-2.5-flash',
+        'deepseek-r1',
+        'deepseek-v3.1',
+        'cheetah',
+        'auto',
+        'default',
+        // Accidental CLI SKU leakage into availableModels must not become a top-level row.
+        'composer-2.5-fast'
+    ] as const
+
+    it('builds a non-empty flat picker from live-shaped bare ACP ids', () => {
+        expect(LIVE_BARE_ACP_IDS).toHaveLength(31)
+        const sessionModels = LIVE_BARE_ACP_IDS.map((modelId) => ({ modelId }))
+        const catalog = buildCursorCatalogFromSources({
+            sessionModels,
+            machineModels: [],
+            cliModelSkus: [],
+            currentWireId: 'default',
+            defaultValue: null
+        })
+        const picker = buildCursorPickerState({
+            catalog,
+            currentWireId: 'default',
+            defaultValue: null
+        })
+
+        expect(catalog.variantsByBase.size).toBeGreaterThan(0)
+        expect(picker.modelOptions.length).toBeGreaterThan(1)
+        expect(picker.modelOptions.some((row) => row.value === 'composer-2.5')).toBe(true)
+        expect(picker.modelOptions.some((row) => row.value === 'claude-opus-4-8')).toBe(true)
+        // CLI effort/speed SKUs must not become top-level bases.
+        expect(picker.modelOptions.some((row) => row.value === 'composer-2.5-fast')).toBe(false)
+        // Default tokens stay out of the catalog rows (Default row is synthetic auto).
+        expect(picker.modelOptions.some((row) => row.value === 'default')).toBe(false)
+        expect(picker.modelOptions[0]).toEqual({ value: 'auto', label: 'Default' })
+    })
+
+    it('attaches CLI SKUs under bare ACP bases for dual/nested variant UX', () => {
+        const catalog = buildCursorCatalogFromSources({
+            sessionModels: [
+                { modelId: 'composer-2.5' },
+                { modelId: 'gpt-5.5' }
+            ],
+            cliModelSkus: [
+                { modelId: 'composer-2.5', name: 'Composer 2.5' },
+                { modelId: 'composer-2.5-fast', name: 'Composer 2.5 Fast' },
+                { modelId: 'gpt-5.5-high-fast', name: 'GPT-5.5 High Fast' },
+                { modelId: 'gpt-5.5-medium', name: 'GPT-5.5 1M' }
+            ],
+            defaultValue: null
+        })
+        const picker = buildCursorPickerState({
+            catalog,
+            currentWireId: 'composer-2.5',
+            defaultValue: null
+        })
+        expect(picker.mode).toBe('dual')
+        expect(picker.modelOptions.some((row) => row.value === 'composer-2.5')).toBe(true)
+        expect(picker.showEffortPicker).toBe(true)
+        expect(picker.effortOptions.some((row) => row.value === 'composer-2.5-fast')).toBe(true)
     })
 })
 

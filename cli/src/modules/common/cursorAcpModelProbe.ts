@@ -1,15 +1,11 @@
+import { isCursorAcpCatalogModelId } from '@hapi/protocol';
 import { createCursorAcpBackend } from '@/cursor/utils/cursorAcpBackend';
 import { buildCursorModelsSnapshotFromAcp } from '@/cursor/utils/cursorAcpModelsSnapshot';
 import type { ListCursorModelsResponse } from './cursorModels';
 import { getErrorMessage } from './rpcResponses';
 
-function isCursorAcpWireModelId(modelId: string): boolean {
-    const trimmed = modelId.trim();
-    return trimmed === 'default[]' || trimmed.includes('[');
-}
-
 function hasAcpWireCatalog(response: ListCursorModelsResponse): boolean {
-    return (response.availableModels ?? []).some((model) => isCursorAcpWireModelId(model.modelId));
+    return (response.availableModels ?? []).some((model) => isCursorAcpCatalogModelId(model.modelId));
 }
 
 /**

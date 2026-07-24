@@ -1,3 +1,4 @@
+import { isCursorAcpCatalogModelId } from '@hapi/protocol'
 import type { CursorModelSummary } from '@/types/api'
 import {
     appendCliSkusToCatalog,
@@ -5,7 +6,6 @@ import {
     buildCursorModelCatalog,
     buildFlatCursorModelPickerOptions,
     cursorModelDedupeKey,
-    isCursorAcpWireModelId,
     resolveCursorBaseKey,
     resolveCursorVariantOptions,
     shouldUseCursorDualPickers,
@@ -46,11 +46,14 @@ export type CursorPickerState = {
     showEffortPicker: boolean
 }
 
-/** Only ACP wire ids (and default[]); never CLI probe slugs without bracket params. */
+/**
+ * ACP catalog rows for the picker: parameterized wires and bare non-default bases.
+ * Never CLI effort/speed SKU slugs (those attach as variants under a base).
+ */
 export function pickCursorModelsForPicker(
     availableModels: readonly CursorModelSummary[]
 ): CursorModelSummary[] {
-    return availableModels.filter((model) => isCursorAcpWireModelId(model.modelId))
+    return availableModels.filter((model) => isCursorAcpCatalogModelId(model.modelId))
 }
 
 /**
@@ -66,7 +69,7 @@ export function mergeCursorModelSummaries(
 
     const add = (model: CursorModelSummary) => {
         const modelId = model.modelId.trim()
-        if (!modelId || !isCursorAcpWireModelId(modelId)) {
+        if (!modelId || !isCursorAcpCatalogModelId(modelId)) {
             return
         }
         if (!merged.has(modelId)) {
@@ -82,7 +85,7 @@ export function mergeCursorModelSummaries(
     }
 
     const trimmedCurrent = currentWireId?.trim()
-    if (trimmedCurrent && isCursorAcpWireModelId(trimmedCurrent) && !merged.has(trimmedCurrent)) {
+    if (trimmedCurrent && isCursorAcpCatalogModelId(trimmedCurrent) && !merged.has(trimmedCurrent)) {
         merged.set(trimmedCurrent, { modelId: trimmedCurrent })
     }
 
@@ -105,7 +108,7 @@ export function buildCursorCatalogFromSources(args: {
         args.machineModels ?? [],
         wireHint
     )
-    const injectCurrent = wireHint && isCursorAcpWireModelId(wireHint) ? wireHint : null
+    const injectCurrent = wireHint && isCursorAcpCatalogModelId(wireHint) ? wireHint : null
     const catalog = buildCursorModelCatalog(pickCursorModelsForPicker(merged), {
         currentModel: injectCurrent,
         defaultValue: args.defaultValue

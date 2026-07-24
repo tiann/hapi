@@ -82,20 +82,77 @@ export type ComposerSendError = {
 
 const defaultSuggestionHandler = async (): Promise<Suggestion[]> => []
 
+/**
+ * Prefer session `selectedModelVariant` only when it is still among the rows
+ * currently shown. After a multi-variant base switch, session state can lag
+ * while `cursorDrillDownDefaultVariant` already points at the new base's
+ * default — stale variants must not win highlight.
+ */
+export function resolveVisibleModelEffortSelectedValue(args: {
+    options: ReadonlyArray<{ value: string }> | null | undefined
+    selectedModelVariant?: string | null
+    cursorDrillDownDefaultVariant?: string | null
+    model?: string | null
+}): string | null | undefined {
+    const {
+        options,
+        selectedModelVariant,
+        cursorDrillDownDefaultVariant,
+        model
+    } = args
+    const selectedVisibleVariant = options?.some((option) => option.value === selectedModelVariant)
+        ? selectedModelVariant
+        : null
+    return selectedVisibleVariant ?? cursorDrillDownDefaultVariant ?? model
+}
+
 export function ModelEffortSettingsSection(props: {
     agentFlavor?: string | null
     options: Array<{ value: string; label: string }>
     selectedValue: string | null | undefined
     controlsDisabled: boolean
     onChange: (value: string) => void
+    /** Override the section title (e.g. Cursor base id during nested drill-down). */
+    title?: string | null
+    /** When set, show a back control above the title (Cursor nested variant drill-down). */
+    onBack?: () => void
+    backLabel?: string
 }) {
     const { t } = useTranslation()
-    const { agentFlavor, options, selectedValue, controlsDisabled, onChange } = props
+    const {
+        agentFlavor,
+        options,
+        selectedValue,
+        controlsDisabled,
+        onChange,
+        title,
+        onBack,
+        backLabel
+    } = props
+
+    const heading = title
+        ?? (agentFlavor === 'cursor' ? t('misc.variant') : t('misc.effort'))
 
     return (
         <div className="py-2">
+            {onBack ? (
+                <button
+                    type="button"
+                    disabled={controlsDisabled}
+                    className={`flex w-full items-center px-3 pb-1 text-left text-xs text-[var(--app-hint)] transition-colors ${
+                        controlsDisabled
+                            ? 'cursor-not-allowed opacity-50'
+                            : 'cursor-pointer hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-link)]'
+                    }`}
+                    onClick={onBack}
+                    onMouseDown={(e) => e.preventDefault()}
+                    aria-label={backLabel ?? t('misc.backToModelList')}
+                >
+                    {backLabel ?? t('misc.backToModelList')}
+                </button>
+            ) : null}
             <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
-                {agentFlavor === 'cursor' ? t('misc.variant') : t('misc.effort')}
+                {heading}
             </div>
             {options.map((option) => {
                 const isSelected = selectedValue === option.value
@@ -166,6 +223,8 @@ export function HappyComposer(props: {
     selectedModelVariant?: string | null
     /** Cursor: effort/variant wire ids for the selected base model. */
     modelEffortOptions?: Array<{ value: string; label: string }>
+    /** Cursor: variant rows for a base key (used for in-place drill-down before parent re-renders). */
+    resolveModelVariantsForBase?: (baseKey: string) => readonly { value: string; label: string }[]
     onCollaborationModeChange?: (mode: CodexCollaborationMode) => void
     onPermissionModeChange?: (mode: PermissionMode) => void
     onModelChange?: (model: { provider: string; modelId: string } | string | null) => void
@@ -231,6 +290,7 @@ export function HappyComposer(props: {
         selectedModelBase,
         selectedModelVariant,
         modelEffortOptions,
+        resolveModelVariantsForBase,
         onCollaborationModeChange,
         onPermissionModeChange,
         onModelChange,
@@ -485,6 +545,30 @@ export function HappyComposer(props: {
         () => getModelOptionsForFlavor(agentFlavor, model, availableModelOptions),
         [agentFlavor, model, availableModelOptions]
     )
+
+    // Cursor dual picker: after choosing a multi-variant base, drill into variant
+    // rows in-place (picker stays open). Variant pick dismisses; back returns to
+    // the full base list.
+    const [cursorDrillDownBase, setCursorDrillDownBase] = useState<string | null>(null)
+    const [cursorDrillDownDefaultVariant, setCursorDrillDownDefaultVariant] = useState<string | null>(null)
+    useEffect(() => {
+        if (!selectedModelBase || selectedModelBase === 'auto') {
+            setCursorDrillDownBase(null)
+            setCursorDrillDownDefaultVariant(null)
+        }
+    }, [selectedModelBase])
+
+    const cursorDrillDownVariantOptions = useMemo(() => {
+        if (!cursorDrillDownBase || !resolveModelVariantsForBase) {
+            return null
+        }
+        const options = resolveModelVariantsForBase(cursorDrillDownBase)
+        return options.length > 1 ? options : null
+    }, [cursorDrillDownBase, resolveModelVariantsForBase])
+
+    const cursorVariantDrillDownActive = agentFlavor === 'cursor' && cursorDrillDownVariantOptions !== null
+
+    const visibleModelEffortOptions = cursorDrillDownVariantOptions ?? modelEffortOptions
     const codexReasoningEffortOptions = useMemo(
         () => agentFlavor === 'codex' || agentFlavor === 'opencode'
             ? getCodexComposerReasoningEffortOptions(
@@ -707,8 +791,72 @@ export function HappyComposer(props: {
 
     const handleSettingsToggle = useCallback(() => {
         haptic('light')
-        setShowSettings(prev => !prev)
+        setShowSettings((prev) => {
+            if (prev) {
+                setCursorDrillDownBase(null)
+                setCursorDrillDownDefaultVariant(null)
+            }
+            return !prev
+        })
     }, [haptic])
+
+    const clearCursorDrillDown = useCallback(() => {
+        setCursorDrillDownBase(null)
+        setCursorDrillDownDefaultVariant(null)
+    }, [])
+
+    const dismissSettings = useCallback(() => {
+        clearCursorDrillDown()
+        setShowSettings(false)
+    }, [clearCursorDrillDown])
+
+    const handleModelChange = useCallback((nextModel: { provider: string; modelId: string } | string | null) => {
+        if (!onModelChange || controlsDisabled) return
+        onModelChange(nextModel)
+        dismissSettings()
+        haptic('light')
+    }, [onModelChange, controlsDisabled, haptic, dismissSettings])
+
+    const handleCursorModelRowClick = useCallback((nextModel: string | null) => {
+        if (!onModelChange || controlsDisabled) return
+
+        const variants = nextModel && nextModel !== 'auto' && resolveModelVariantsForBase
+            ? resolveModelVariantsForBase(nextModel)
+            : []
+
+        const isMultiVariantBasePick = selectedModelBase !== undefined
+            && nextModel !== null
+            && nextModel !== 'auto'
+            && !nextModel.includes('[')
+            && variants.length > 1
+
+        if (isMultiVariantBasePick) {
+            setCursorDrillDownBase(nextModel)
+            setCursorDrillDownDefaultVariant(variants[0]?.value ?? null)
+            onModelChange(nextModel)
+            haptic('light')
+            return
+        }
+
+        onModelChange(nextModel)
+        dismissSettings()
+        haptic('light')
+    }, [
+        onModelChange,
+        controlsDisabled,
+        resolveModelVariantsForBase,
+        selectedModelBase,
+        haptic,
+        dismissSettings
+    ])
+
+    const handleModelEffortChange = useCallback((nextWireId: string | null) => {
+        const handler = onModelEffortChange ?? onModelChange
+        if (!handler || controlsDisabled) return
+        handler(nextWireId)
+        dismissSettings()
+        haptic('light')
+    }, [onModelEffortChange, onModelChange, controlsDisabled, haptic, dismissSettings])
 
     const handleSubmit = useCallback((event?: ReactFormEvent<HTMLFormElement>) => {
         event?.preventDefault()
@@ -721,52 +869,37 @@ export function HappyComposer(props: {
     const handlePermissionChange = useCallback((mode: PermissionMode) => {
         if (!onPermissionModeChange || controlsDisabled) return
         onPermissionModeChange(mode)
-        setShowSettings(false)
+        dismissSettings()
         haptic('light')
-    }, [onPermissionModeChange, controlsDisabled, haptic])
+    }, [onPermissionModeChange, controlsDisabled, haptic, dismissSettings])
 
     const handleCollaborationChange = useCallback((mode: CodexCollaborationMode) => {
         if (!onCollaborationModeChange || controlsDisabled) return
         onCollaborationModeChange(mode)
-        setShowSettings(false)
+        dismissSettings()
         haptic('light')
-    }, [onCollaborationModeChange, controlsDisabled, haptic])
-
-    const handleModelChange = useCallback((nextModel: { provider: string; modelId: string } | string | null) => {
-        if (!onModelChange || controlsDisabled) return
-        onModelChange(nextModel)
-        setShowSettings(false)
-        haptic('light')
-    }, [onModelChange, controlsDisabled, haptic])
-
-    const handleModelEffortChange = useCallback((nextWireId: string | null) => {
-        const handler = onModelEffortChange ?? onModelChange
-        if (!handler || controlsDisabled) return
-        handler(nextWireId)
-        setShowSettings(false)
-        haptic('light')
-    }, [onModelEffortChange, onModelChange, controlsDisabled, haptic])
+    }, [onCollaborationModeChange, controlsDisabled, haptic, dismissSettings])
 
     const handleModelReasoningEffortChange = useCallback((nextModelReasoningEffort: string | null) => {
         if (!onModelReasoningEffortChange || controlsDisabled) return
         onModelReasoningEffortChange(nextModelReasoningEffort)
-        setShowSettings(false)
+        dismissSettings()
         haptic('light')
-    }, [onModelReasoningEffortChange, controlsDisabled, haptic])
+    }, [onModelReasoningEffortChange, controlsDisabled, haptic, dismissSettings])
 
     const handleEffortChange = useCallback((nextEffort: string | null) => {
         if (!onEffortChange || controlsDisabled) return
         onEffortChange(nextEffort)
-        setShowSettings(false)
+        dismissSettings()
         haptic('light')
-    }, [onEffortChange, controlsDisabled, haptic])
+    }, [onEffortChange, controlsDisabled, haptic, dismissSettings])
 
     const handleServiceTierChange = useCallback((nextServiceTier: string | null) => {
         if (!onServiceTierChange || controlsDisabled) return
         onServiceTierChange(nextServiceTier)
-        setShowSettings(false)
+        dismissSettings()
         haptic('light')
-    }, [onServiceTierChange, controlsDisabled, haptic])
+    }, [onServiceTierChange, controlsDisabled, haptic, dismissSettings])
 
     // 'standard' (not null) is the explicit Fast-off choice so it persists
     // distinctly from an untouched/account-default session.
@@ -778,11 +911,14 @@ export function HappyComposer(props: {
     const showCollaborationSettings = Boolean(onCollaborationModeChange && collaborationModeOptions.length > 0)
     const showPermissionSettings = Boolean(onPermissionModeChange && permissionModeOptions.length > 0)
     const showModelSettings = Boolean(onModelChange && supportsModelChange(agentFlavor) && (piModels && piModels.length > 0 || modelOptions.length > 0))
-    const showModelEffortSettings = Boolean(
-        (onModelEffortChange ?? onModelChange)
-        && modelEffortOptions
-        && modelEffortOptions.length > 0
-    )
+        && !cursorVariantDrillDownActive
+    const showModelEffortSettings = cursorVariantDrillDownActive
+        ? Boolean((onModelEffortChange ?? onModelChange) && visibleModelEffortOptions && visibleModelEffortOptions.length > 0)
+        : Boolean(
+            (onModelEffortChange ?? onModelChange)
+            && modelEffortOptions
+            && modelEffortOptions.length > 1
+        )
     const showModelReasoningEffortSettings = Boolean(onModelReasoningEffortChange && codexReasoningEffortOptions.length > 0)
     // For Pi: hide effort when selected model explicitly has reasoning: false
     const piEffortHidden = piModels && selectedPiModel && selectedPiModel.reasoning === false
@@ -832,10 +968,11 @@ export function HappyComposer(props: {
     const piHasModels = piModels && piModels.length > 0
 
     const closeAllPanels = useCallback(() => {
+        clearCursorDrillDown()
         setShowSettings(false)
         setShowPiModelPanel(false)
         setShowPiThinkingPanel(false)
-    }, [])
+    }, [clearCursorDrillDown])
 
     const handlePiModelToggle = useCallback(() => {
         if (controlsDisabled) return
@@ -1040,7 +1177,13 @@ export function HappyComposer(props: {
                                                     ? 'cursor-not-allowed opacity-50'
                                                     : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
                                             }`}
-                                            onClick={() => handleModelChange(option.value)}
+                                            onClick={() => {
+                                                if (resolveModelVariantsForBase) {
+                                                    handleCursorModelRowClick(option.value)
+                                                } else {
+                                                    handleModelChange(option.value)
+                                                }
+                                            }}
                                             onMouseDown={(e) => e.preventDefault()}
                                         >
                                             <div
@@ -1071,18 +1214,23 @@ export function HappyComposer(props: {
                         {showModelEffortSettings ? (
                             <ModelEffortSettingsSection
                                 agentFlavor={agentFlavor}
-                                options={modelEffortOptions!}
-                                selectedValue={selectedModelVariant ?? model}
+                                options={[...(visibleModelEffortOptions ?? [])]}
+                                selectedValue={resolveVisibleModelEffortSelectedValue({
+                                    options: visibleModelEffortOptions,
+                                    selectedModelVariant,
+                                    cursorDrillDownDefaultVariant,
+                                    model
+                                })}
                                 controlsDisabled={controlsDisabled}
                                 onChange={handleModelEffortChange}
+                                title={cursorVariantDrillDownActive && cursorDrillDownBase
+                                    ? cursorDrillDownBase
+                                    : undefined}
+                                onBack={cursorVariantDrillDownActive ? clearCursorDrillDown : undefined}
                             />
                         ) : null}
 
                         {(showModelSettings || showModelEffortSettings) && showModelReasoningEffortSettings ? (
-                            <div className="mx-3 h-px bg-[var(--app-divider)]" />
-                        ) : null}
-
-                        {(showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings) && showEffortSettings ? (
                             <div className="mx-3 h-px bg-[var(--app-divider)]" />
                         ) : null}
 
@@ -1236,12 +1384,18 @@ export function HappyComposer(props: {
         showPermissionSettings,
         showModelSettings,
         showModelEffortSettings,
+        visibleModelEffortOptions,
+        cursorVariantDrillDownActive,
+        cursorDrillDownBase,
+        cursorDrillDownDefaultVariant,
         modelEffortOptions,
+        piModelGroups,
         selectedModelBase,
         selectedModelVariant,
         showModelReasoningEffortSettings,
         showEffortSettings,
         showFastModeSettings,
+        agentFlavor,
         modelOptions,
         codexReasoningEffortOptions,
         claudeEffortOptions,
@@ -1260,9 +1414,13 @@ export function HappyComposer(props: {
         handleCollaborationChange,
         handlePermissionChange,
         handleModelChange,
+        handleCursorModelRowClick,
+        handleModelEffortChange,
         handleModelReasoningEffortChange,
         handleEffortChange,
         handleServiceTierChange,
+        clearCursorDrillDown,
+        resolveModelVariantsForBase,
         handleSuggestionSelect,
         t
     ])

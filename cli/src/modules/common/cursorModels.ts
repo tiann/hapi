@@ -11,6 +11,7 @@ import {
 import {
     cursorCliSkuBaseId,
     cursorModelBaseId,
+    isCursorAcpCatalogModelId,
     isCursorAcpWireModelId
 } from '@hapi/protocol';
 import {
@@ -66,6 +67,7 @@ function filterCliSkusForWireBases(
 
     return cliSkus.filter((entry) => {
         const modelId = entry.modelId.trim();
+        // Keep bare base SKUs (composer-2.5); drop parameterized ACP wires only.
         if (!modelId || modelId === 'auto' || isCursorAcpWireModelId(modelId)) {
             return false;
         }
@@ -77,7 +79,7 @@ function attachCliSkusToResponse(
     response: ListCursorModelsResponse,
     cliSkus: readonly CursorModelSummary[]
 ): ListCursorModelsResponse {
-    const wires = (response.availableModels ?? []).filter((entry) => isCursorAcpWireModelId(entry.modelId));
+    const wires = (response.availableModels ?? []).filter((entry) => isCursorAcpCatalogModelId(entry.modelId));
     const filtered = filterCliSkusForWireBases([...cliSkus], wires);
     const merged = mergeCliModelSkus(response.cliModelSkus ?? [], filtered);
     if (merged.length === 0) {
@@ -92,7 +94,7 @@ function attachCliSkusToResponse(
 async function enrichCursorModelsWithCliSkus(
     response: ListCursorModelsResponse
 ): Promise<ListCursorModelsResponse> {
-    const wires = (response.availableModels ?? []).filter((entry) => isCursorAcpWireModelId(entry.modelId));
+    const wires = (response.availableModels ?? []).filter((entry) => isCursorAcpCatalogModelId(entry.modelId));
     if (wires.length === 0) {
         return response;
     }
@@ -121,6 +123,11 @@ async function enrichCursorModelsWithCliSkus(
 }
 
 export type ListCursorModelsResponse = CursorModelsResponse;
+
+function responseHasParameterizedWireIds(response: ListCursorModelsResponse): boolean {
+    // CLI `--list-models` returns bare/SKU slugs; only treat bracket wires as an ACP catalog.
+    return (response.availableModels ?? []).some((model) => isCursorAcpWireModelId(model.modelId));
+}
 
 interface CacheEntry {
     expiresAt: number;
@@ -291,7 +298,8 @@ export async function listCursorModels(): Promise<ListCursorModelsResponse> {
             let probeResponse: ListCursorModelsResponse | null = null;
             if (!isAgentAcpTransportActive()) {
                 probeResponse = await runCursorModelProbe();
-                if (cursorProbeResponseHasWireCatalog(probeResponse)) {
+                // Never promote CLI `--list-models` slug catalogs into the ACP wire cache.
+                if (responseHasParameterizedWireIds(probeResponse)) {
                     return applyInMemoryCache(probeResponse);
                 }
             }
