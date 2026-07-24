@@ -406,8 +406,12 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         }
         this.turnHasModelError = true;
 
-        const priorAssistantClaimsDone = this.lastAssistantText !== null
-            && isCompletionClaim(this.lastAssistantText);
+        // Same-message case: Cursor often appends `Error: T: ...` onto the
+        // assistant block that already claimed "Done." — lastAssistantText is
+        // still null because we classify before storing. Check failure.raw too.
+        const priorAssistantClaimsDone = (this.lastAssistantText !== null
+            && isCompletionClaim(this.lastAssistantText))
+            || (failure.source === 'text' && isCompletionClaim(failure.raw));
         const rawSnippet = failure.raw.slice(0, 400);
         const atTs = Date.now();
 
