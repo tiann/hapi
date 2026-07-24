@@ -218,15 +218,16 @@ export function ConversationOutlinePanel(props: {
                             )}
                         </Button>
                     ) : null}
-                    <button
+                    <Button
+                        variant="outline"
                         type="button"
                         onClick={props.onClose}
                         aria-label={t('button.close')}
                         title={t('button.close')}
-                        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                        className="h-9 w-9 shrink-0 px-0"
                     >
                         <CloseIcon className="h-4 w-4" />
-                    </button>
+                    </Button>
                 </div>
                 {normalizedSearchQuery.length > 0 ? (
                     <div className="mt-1.5 text-right text-xs text-[var(--app-hint)]" aria-live="polite">

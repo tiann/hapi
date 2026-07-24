@@ -107,7 +107,9 @@ describe('ConversationOutlinePanel', () => {
         const onClose = vi.fn()
         renderPanel({ onClose })
 
-        fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+        const closeButton = screen.getByRole('button', { name: 'Close' })
+        expect(closeButton).toHaveClass('border', 'rounded-md', 'h-9', 'w-9')
+        fireEvent.click(closeButton)
 
         expect(onClose).toHaveBeenCalledTimes(1)
     })
