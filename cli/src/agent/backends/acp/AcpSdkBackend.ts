@@ -670,13 +670,15 @@ export class AcpSdkBackend implements AgentBackend {
         }
         this.lastSessionUpdateAt = Date.now();
         const update = params.update;
+        // Title/usage/commands stay synchronous (#1028). Only message-handler
+        // work is queued so async image registration preserves event order.
+        if (sessionId) {
+            this.captureAvailableCommands(sessionId, update);
+        }
+        this.forwardSessionInfoUpdate(sessionId, update);
+        this.captureUsageUpdate(update);
         this.sessionUpdateQueue = this.sessionUpdateQueue
             .then(async () => {
-                if (sessionId) {
-                    this.captureAvailableCommands(sessionId, update);
-                }
-                this.forwardSessionInfoUpdate(sessionId, update);
-                this.captureUsageUpdate(update);
                 await this.messageHandler?.handleUpdate(update);
             })
             .catch((error) => {
