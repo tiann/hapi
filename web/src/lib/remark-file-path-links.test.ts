@@ -48,9 +48,18 @@ describe('remarkFilePathLinks', () => {
         expect(links.map(linkedPath)).toEqual(['screenshot.png', 'README.md'])
     })
 
+    it('links Windows absolute paths so the session host can validate and read them', () => {
+        const nodes = transform('Open C:\\Users\\dev\\project\\handoff.md and D:/work/app/src/main.ts:12')
+        const links = nodes.filter((node) => node.type === 'link')
 
-    it('does not link paths that are outside the session workspace', () => {
-        const nodes = transform('Skip /Users/dev/project/a.png, ~/a.png, ../a.png and C:\\tmp\\a.png')
+        expect(links.map(linkedPath)).toEqual([
+            'C:\\Users\\dev\\project\\handoff.md',
+            'D:/work/app/src/main.ts'
+        ])
+    })
+
+    it('does not link other absolute or parent paths', () => {
+        const nodes = transform('Skip /Users/dev/project/a.png, ~/a.png and ../a.png')
 
         expect(nodes.some((node) => node.type === 'link')).toBe(false)
     })
@@ -108,6 +117,18 @@ describe('remarkFilePathLinks — inlineCode', () => {
     })
 
     it.each([
+        'C:\\Users\\dev\\project\\handoff.md',
+        'D:/work/app/src/main.ts:12'
+    ])('links Windows absolute inlineCode path %s', (value) => {
+        const nodes = transformNodes([{ type: 'inlineCode', value }])
+        const link = nodes.find((node) => node.type === 'link')!
+
+        expect(linkedPath(link)).toBe(value.replace(/:\d+(?::\d+)?$/, ''))
+        expect(link.children?.[0]?.type).toBe('inlineCode')
+        expect(link.children?.[0]?.value).toBe(value)
+    })
+
+    it.each([
         'npm run build',
         'str.split()',
         'Math.PI',
@@ -122,7 +143,7 @@ describe('remarkFilePathLinks — inlineCode', () => {
     })
 
     it('does not link unsafe paths inside inlineCode', () => {
-        for (const value of ['/etc/passwd.sh', '~/secrets.env', '../escape.ts', 'C:\\win.ini']) {
+        for (const value of ['/etc/passwd.sh', '~/secrets.env', '../escape.ts']) {
             const nodes = transformNodes([{ type: 'inlineCode', value }])
             expect(nodes.some((node) => node.type === 'link')).toBe(false)
         }
@@ -155,13 +176,22 @@ describe('remarkFilePathLinks — explicit markdown links', () => {
     })
 
     it.each([
+        'C:\\Users\\dev\\project\\handoff.md',
+        'D:/work/app/src/main.ts:12'
+    ])('rewrites a Windows absolute file link %s', (url) => {
+        const nodes = transformNodes([linkNode(url)])
+        const link = nodes.find((node) => node.type === 'link')!
+
+        expect(linkedPath(link)).toBe(url.replace(/:\d+(?::\d+)?$/, ''))
+    })
+
+    it.each([
         'https://example.com/a.md',
         'mailto:dev@example.com',
         'obsidian://open?file=a.md',
         '/abs/path.md',
         '~/home.md',
         '../escape.md',
-        'C:\\win\\a.md',
         'foo:bar.md',
         '/settings',
         './relative-route',

@@ -1,6 +1,6 @@
 const FILE_PATH_HREF_PREFIX = 'hapi-file:'
 
-const PATH_PATTERN = /(?:\.\/|[A-Za-z0-9_.-]+\/)[^\s`"\'<>]*?\.(?:[A-Za-z0-9]{1,12}|lock)(?::\d+(?::\d+)?)?|(?:[A-Za-z0-9_.-]+\.(?:[A-Za-z0-9]{1,12}|lock))(?::\d+(?::\d+)?)?/g
+const PATH_PATTERN = /(?:[A-Za-z]:[\\/]|\.\/|[A-Za-z0-9_.-]+\/)[^\s`"\'<>]*?\.(?:[A-Za-z0-9]{1,12}|lock)(?::\d+(?::\d+)?)?|(?:[A-Za-z0-9_.-]+\.(?:[A-Za-z0-9]{1,12}|lock))(?::\d+(?::\d+)?)?/g
 
 const TRAILING_PUNCTUATION = new Set(['.', ',', ';', ':', '!', '?'])
 // Extensions that autolink to the session file viewer. Kept intentionally
@@ -77,13 +77,17 @@ function hasKnownFileExtension(value: string): boolean {
     return COMMON_FILE_EXTENSIONS.has(ext)
 }
 
+function isWindowsAbsolutePath(value: string): boolean {
+    return /^[A-Za-z]:[\\/]/.test(value)
+}
+
 function shouldLinkPath(value: string): boolean {
     if (value.includes('://')) return false
     const path = stripLineSuffix(value)
     if (path.length < 3) return false
     if (path.startsWith('/') || path.startsWith('~/')) return false
     if (path.startsWith('../') || path.includes('/../')) return false
-    if (/^[A-Za-z]:[\\/]/.test(path)) return false
+    if (isWindowsAbsolutePath(path)) return hasKnownFileExtension(path)
     if (path.includes('/')) return hasKnownFileExtension(path)
     return hasKnownFileExtension(path)
 }
@@ -163,10 +167,11 @@ function linkInlineCodeNode(node: MarkdownNode): MarkdownNode | null {
 // a repo-relative allowlisted file path into a `hapi-file:` href so it opens the
 // session file viewer instead of dead-ending in the SPA router.
 //
-// Security: reuses shouldLinkPath (rejects abs / `~/` / `../` / Windows drive /
-// `scheme://`) and additionally rejects any residual colon after the line-suffix
-// strip, so scheme-bearing urls (mailto:, obsidian://, foo:bar.md) are left for
-// the deny-scheme layer. The visible label is preserved untouched.
+// Security: reuses shouldLinkPath (rejects POSIX abs / `~/` / `../` / `scheme://`)
+// and rejects residual colons for non-Windows targets after the line-suffix strip,
+// so scheme-bearing urls (mailto:, obsidian://, foo:bar.md) are left for the
+// deny-scheme layer. Windows absolute paths are routed through the session file
+// viewer; the CLI still enforces that they stay inside the session workspace.
 function rewriteFileLinkNode(node: MarkdownNode): void {
     if (node.type !== 'link') return
     const url = node.url
@@ -174,7 +179,7 @@ function rewriteFileLinkNode(node: MarkdownNode): void {
     if (url.startsWith(FILE_PATH_HREF_PREFIX)) return
 
     const target = stripLineSuffix(url)
-    if (target.includes(':')) return
+    if (!isWindowsAbsolutePath(target) && target.includes(':')) return
     if (!shouldLinkPath(target)) return
 
     node.url = createFileHref(target)
