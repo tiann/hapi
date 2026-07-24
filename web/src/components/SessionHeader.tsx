@@ -9,6 +9,7 @@ import { SessionExportDialog } from '@/components/SessionExportDialog'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { formatReopenError } from '@/lib/reopenError'
+import { retargetSharePendingTransfer } from '@/lib/sharePendingState'
 import { formatCodexReasoningLabel, shouldShowCodexReasoningLabel } from '@/lib/codexStatusLabels'
 import { getSessionModelLabel } from '@/lib/sessionModelLabel'
 import { useTranslation } from '@/lib/use-translation'
@@ -145,6 +146,7 @@ export function SessionHeader(props: {
         try {
             const result = await reopenSession()
             if (result.sessionId && result.sessionId !== session.id) {
+                retargetSharePendingTransfer(session.id, result.sessionId)
                 onSessionReopened?.(result.sessionId)
             }
         } catch (error) {
