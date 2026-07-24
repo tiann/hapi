@@ -336,10 +336,14 @@ export function ScratchlistDrawerHost(props: {
         // Promote-to-queue bypasses the scratchlist-mode wrapper by
         // calling props.onSend directly (the chat send), so the queue
         // entry lands in the conversation regardless of scratchlist
-        // mode. Mode itself stays on - the operator may still be
-        // capturing related notes.
-        return await props.onSend(text)
-    }, [props.onSend])
+        // mode. After a successful send, exit scratchlist mode so the
+        // operator can continue normal chat (issue #959).
+        const accepted = await props.onSend(text)
+        if (accepted) {
+            props.onExitScratchlistMode()
+        }
+        return accepted
+    }, [props.onSend, props.onExitScratchlistMode])
     return (
         <ScratchlistDrawer
             entries={props.entries}
