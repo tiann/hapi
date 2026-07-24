@@ -36,6 +36,11 @@ import { updateVersionedField } from './versionedUpdates'
 //     write-once-keep semantics. Mirror of pickExistingSessionMetadata
 //     in cli/src/agent/sessionFactory.ts.
 //
+//   - ALERT_STATE_FIELDS: durable operator-facing alert state that must
+//     survive sparse metadata writes (e.g. archive). Without this,
+//     lastModelError (banner / amber dot / ack) vanishes when a write
+//     omits it — the user never dismissed the error.
+//
 // `cursorSessionProtocol` is paired with `cursorSessionId`: protocol is
 // tied to a specific chat id, so a write that explicitly sets a new
 // `cursorSessionId` must drop a stale prior protocol. Handled in
@@ -62,6 +67,8 @@ const SIMPLE_RESUME_TOKENS = [
     'cursorSessionId',
     'kimiSessionId'
 ] as const
+
+const ALERT_STATE_FIELDS = ['lastModelError'] as const
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -126,6 +133,7 @@ export function mergeSessionMetadata(prior: unknown, next: unknown): unknown {
     merged = carryForwardIfMissing(prior, next, merged, PARSE_IDENTITY_FIELDS)
     merged = carryForwardIfMissing(prior, next, merged, ROUTING_FIELDS)
     merged = carryForwardIfMissing(prior, next, merged, SIMPLE_RESUME_TOKENS)
+    merged = carryForwardIfMissing(prior, next, merged, ALERT_STATE_FIELDS)
     merged = preserveCursorProtocolPair(prior, next, merged)
     return merged ?? next
 }
