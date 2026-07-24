@@ -368,6 +368,12 @@ describe('isCompletionClaim', () => {
         expect(isCompletionClaim('DONE everything')).toBe(true)
         expect(isCompletionClaim('all done')).toBe(true)
     })
+    it('matches Done when Error: T is appended to the same block', () => {
+        // Cursor free-text path: completion claim + gRPC error in one message.
+        expect(isCompletionClaim(
+            'Done.\n\nError: T: [canceled] Operation aborted'
+        )).toBe(true)
+    })
     it('does not match non-completion phrases', () => {
         expect(isCompletionClaim("Here's the plan")).toBe(false)
         expect(isCompletionClaim("I'm working on it")).toBe(false)
