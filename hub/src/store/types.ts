@@ -64,6 +64,14 @@ export type StoredPushSubscription = {
     createdAt: number
 }
 
+export type StoredScratchlistEntry = {
+    sessionId: string
+    entryId: string
+    text: string
+    createdAt: number
+    updatedAt: number
+}
+
 export type VersionedUpdateResult<T> =
     | { result: 'success'; version: number; value: T }
     | { result: 'version-mismatch'; version: number; value: T }

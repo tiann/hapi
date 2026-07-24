@@ -137,7 +137,8 @@ export function useSSE(options: {
         sessions: boolean
         machines: boolean
         sessionIds: Set<string>
-    }>({ sessions: false, machines: false, sessionIds: new Set() })
+        scratchlistSessionIds: Set<string>
+    }>({ sessions: false, machines: false, sessionIds: new Set(), scratchlistSessionIds: new Set() })
     const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
     const reconnectAttemptRef = useRef(0)
     const lastActivityAtRef = useRef(0)
@@ -182,6 +183,7 @@ export function useSSE(options: {
             pendingInvalidationsRef.current.sessions = false
             pendingInvalidationsRef.current.machines = false
             pendingInvalidationsRef.current.sessionIds.clear()
+            pendingInvalidationsRef.current.scratchlistSessionIds.clear()
             if (reconnectTimerRef.current) {
                 clearTimeout(reconnectTimerRef.current)
                 reconnectTimerRef.current = null
@@ -240,17 +242,24 @@ export function useSSE(options: {
 
         const flushInvalidations = () => {
             const pending = pendingInvalidationsRef.current
-            if (!pending.sessions && !pending.machines && pending.sessionIds.size === 0) {
+            if (
+                !pending.sessions
+                && !pending.machines
+                && pending.sessionIds.size === 0
+                && pending.scratchlistSessionIds.size === 0
+            ) {
                 return
             }
 
             const shouldInvalidateSessions = pending.sessions
             const shouldInvalidateMachines = pending.machines
             const sessionIds = Array.from(pending.sessionIds)
+            const scratchlistSessionIds = Array.from(pending.scratchlistSessionIds)
 
             pending.sessions = false
             pending.machines = false
             pending.sessionIds.clear()
+            pending.scratchlistSessionIds.clear()
 
             const tasks: Array<Promise<unknown>> = []
             if (shouldInvalidateSessions) {
@@ -258,6 +267,9 @@ export function useSSE(options: {
             }
             for (const sessionId of sessionIds) {
                 tasks.push(queryClient.invalidateQueries({ queryKey: queryKeys.session(sessionId) }))
+            }
+            for (const sessionId of scratchlistSessionIds) {
+                tasks.push(queryClient.invalidateQueries({ queryKey: queryKeys.scratchlist(sessionId) }))
             }
             if (shouldInvalidateMachines) {
                 tasks.push(queryClient.invalidateQueries({ queryKey: queryKeys.machines }))
@@ -286,6 +298,11 @@ export function useSSE(options: {
 
         const queueSessionDetailInvalidation = (sessionId: string) => {
             pendingInvalidationsRef.current.sessionIds.add(sessionId)
+            scheduleInvalidationFlush()
+        }
+
+        const queueScratchlistInvalidation = (sessionId: string) => {
+            pendingInvalidationsRef.current.scratchlistSessionIds.add(sessionId)
             scheduleInvalidationFlush()
         }
 
@@ -509,6 +526,13 @@ export function useSSE(options: {
                         }
                         if (!summaryPatched) {
                             queueSessionListInvalidation()
+                        }
+                        // tiann/hapi#893: piggybacked scratchlist token.
+                        // The patch itself does not carry the entries -
+                        // the timestamp is the change-detection signal,
+                        // which triggers the dedicated query refetch.
+                        if (Object.prototype.hasOwnProperty.call(patch, 'scratchlistUpdatedAt')) {
+                            queueScratchlistInvalidation(event.sessionId)
                         }
                     } else {
                         queueSessionDetailInvalidation(event.sessionId)
