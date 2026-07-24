@@ -33,7 +33,7 @@ function makeBlock(tool: Partial<ChatToolCall>): ToolCallBlock {
     }
 }
 
-describe('ToolDetailDialogContent — duration row', () => {
+describe('ToolDetailDialogContent — execution timing', () => {
     it('shows a Duration row for a completed tool', () => {
         renderWithI18n(<ToolDetailDialogContent block={makeBlock({ state: 'completed', startedAt: 1000, completedAt: 3500 })} metadata={null} />)
         expect(screen.getByText('Duration')).toBeTruthy()
@@ -46,9 +46,11 @@ describe('ToolDetailDialogContent — duration row', () => {
         expect(screen.getByText('0.8s')).toBeTruthy()
     })
 
-    it('does not show a Duration row while running (no completedAt)', () => {
+    it('shows start and live duration but no finish while running', () => {
         renderWithI18n(<ToolDetailDialogContent block={makeBlock({ state: 'running', startedAt: 1000, completedAt: null })} metadata={null} />)
-        expect(screen.queryByText('Duration')).toBeNull()
+        expect(screen.getByText('Started')).toBeTruthy()
+        expect(screen.getByText('Duration')).toBeTruthy()
+        expect(screen.queryByText('Finished')).toBeNull()
     })
 
     it('does not show a Duration row on clock skew (completedAt precedes startedAt)', () => {
@@ -120,5 +122,16 @@ describe('ToolDetailDialogContent — duration row', () => {
         })} metadata={null} />)
         expect(screen.getByText('Duration')).toBeTruthy()
         expect(screen.getByText('2.5s')).toBeTruthy()
+    })
+
+    it('shows start and finish timestamps for a completed tool', () => {
+        renderWithI18n(<ToolDetailDialogContent block={makeBlock({
+            state: 'completed',
+            startedAt: 1_700_000_000_000,
+            completedAt: 1_700_000_002_500,
+        })} metadata={null} />)
+        expect(screen.getByText('Started')).toBeTruthy()
+        expect(screen.getByText('Finished')).toBeTruthy()
+        expect(screen.getByText('Duration')).toBeTruthy()
     })
 })

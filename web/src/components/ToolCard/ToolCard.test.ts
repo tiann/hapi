@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatSubagentModelLabel, getSubagentModel, shouldShowInlineToolCardBody, shouldUseCompactTerminalToolCard } from '@/components/ToolCard/ToolCard'
+import { formatSubagentModelLabel, getSubagentModel, getToolTimingDetails, shouldShowInlineToolCardBody, shouldUseCompactTerminalToolCard } from '@/components/ToolCard/ToolCard'
 import type { AgentTextBlock, ChatBlock, ToolCallBlock } from '@/chat/types'
 
 function makeAgentTextBlock(overrides: Partial<AgentTextBlock> = {}): AgentTextBlock {
@@ -61,6 +61,83 @@ describe('ToolCard terminal display mode helpers', () => {
         expect(shouldShowInlineToolCardBody('Task', false, 'detailed')).toBe(false)
         expect(shouldShowInlineToolCardBody('Agent', false, 'detailed')).toBe(false)
         expect(shouldShowInlineToolCardBody('Read', true, 'detailed')).toBe(false)
+    })
+})
+
+describe('getToolTimingDetails', () => {
+    it('shows start, finish, and duration for completed tools', () => {
+        const tool = makeToolCallChild({
+            tool: {
+                ...makeToolCallChild().tool,
+                createdAt: 900,
+                startedAt: 1_000,
+                completedAt: 4_000,
+                execStartedAt: 1_500,
+                execCompletedAt: 3_500,
+            },
+        }).tool
+
+        expect(getToolTimingDetails(tool, 10_000)).toEqual({
+            startedAt: 1_500,
+            completedAt: 3_500,
+            durationMs: 2_000,
+        })
+    })
+
+    it('shows a live duration and omits finish while a tool is running', () => {
+        const tool = makeToolCallChild({
+            tool: {
+                ...makeToolCallChild().tool,
+                state: 'running',
+                createdAt: 900,
+                startedAt: 1_000,
+                completedAt: null,
+                execStartedAt: 1_200,
+                execCompletedAt: null,
+            },
+        }).tool
+
+        expect(getToolTimingDetails(tool, 4_000)).toEqual({
+            startedAt: 1_000,
+            completedAt: null,
+            durationMs: 3_000,
+        })
+    })
+
+    it('keeps start, finish, and duration on the hub clock when exec timing is incomplete', () => {
+        const tool = makeToolCallChild({
+            tool: {
+                ...makeToolCallChild().tool,
+                createdAt: 900,
+                startedAt: 1_000,
+                completedAt: 4_000,
+                execStartedAt: 1_500,
+                execCompletedAt: null,
+            },
+        }).tool
+
+        expect(getToolTimingDetails(tool, 10_000)).toEqual({
+            startedAt: 1_000,
+            completedAt: 4_000,
+            durationMs: 3_000,
+        })
+    })
+
+    it('does not present a pending tool as started', () => {
+        const tool = makeToolCallChild({
+            tool: {
+                ...makeToolCallChild().tool,
+                state: 'pending',
+                startedAt: null,
+                completedAt: null,
+            },
+        }).tool
+
+        expect(getToolTimingDetails(tool, 4_000)).toEqual({
+            startedAt: null,
+            completedAt: null,
+            durationMs: null,
+        })
     })
 })
 
