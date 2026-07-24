@@ -237,7 +237,7 @@ describe('ToolGroupCard', () => {
             }
         }))
 
-        expect(within(view.container).getByRole('button', { name: /^explored$/i })).toHaveAttribute('aria-expanded', 'true')
+        expect(within(view.container).getByRole('button', { name: /^explored\b/i })).toHaveAttribute('aria-expanded', 'true')
         expect(screen.getByText('Read')).toBeInTheDocument()
         expect(screen.getByText('package.json')).toBeInTheDocument()
         expect(screen.getByText('Search')).toBeInTheDocument()
