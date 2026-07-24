@@ -6,8 +6,9 @@ import type { ModelErrorNotification } from './notificationTypes'
  * glance, browser toast, and chat message all read the same.
  *
  * Title is the GLANCE line: short, scannable, kind-specific. The body
- * (separate) carries the priorAssistantClaimsDone alert, agent + session
- * names, and an optional excerpt of the raw error.
+ * (separate) carries the priorAssistantClaimsDone alert and agent +
+ * session names. Raw provider/RPC text stays in the authenticated web
+ * banner only — never in push/Telegram (prompt text, paths, auth crumbs).
  *
  * Unknown kinds fall through to "Model error" so we never ship a
  * notification with `[object Object]` or an internal kind string.
@@ -35,16 +36,16 @@ export function formatModelErrorTitle(kind: string): string {
 }
 
 /**
- * Body line strategy:
+ * Body line strategy (external channels only — Web Push / Telegram / FCM):
  *   - If priorAssistantClaimsDone, lead with the lying-completion warning
  *     ("agent claimed completion before this error -- work likely
  *     INCOMPLETE"). This is the high-value disambiguator from the
  *     operator's POV: an "all done" green dot followed by an error means
  *     the agent walked away from a half-finished task.
  *   - Append agent/session context.
- *   - Append a short excerpt of the raw error (first ~140 chars) so the
- *     glance still hints at WHICH failure shape this is without
- *     requiring the operator to open the session.
+ *   - Do NOT append rawSnippet: that text is provider/RPC stderr and can
+ *     contain prompt fragments, paths, or auth material. Operators see the
+ *     full excerpt in the authenticated ModelErrorBanner.
  */
 export function formatModelErrorBody(
     notification: ModelErrorNotification,
@@ -55,22 +56,8 @@ export function formatModelErrorBody(
         lines.push('Agent claimed completion before this error - work likely INCOMPLETE.')
     }
     lines.push(`${context.agentName} - ${context.sessionName}`)
-    const excerpt = excerptRaw(notification.rawSnippet)
-    if (excerpt) {
-        lines.push(excerpt)
-    }
     if (notification.transient) {
         lines.push('(transient - safe to retry)')
     }
     return lines.join('\n')
-}
-
-const RAW_EXCERPT_LIMIT = 140
-
-function excerptRaw(raw: string): string {
-    const collapsed = raw.replace(/\s+/g, ' ').trim()
-    if (collapsed.length === 0) return ''
-    return collapsed.length > RAW_EXCERPT_LIMIT
-        ? collapsed.slice(0, RAW_EXCERPT_LIMIT - 3).trimEnd() + '...'
-        : collapsed
 }

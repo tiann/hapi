@@ -278,7 +278,7 @@ export class HappyBot implements NotificationChannel {
         const sessionName = getSessionName(session)
         const title = formatModelErrorTitle(notification.kind)
         const body = formatModelErrorBody(notification, { agentName, sessionName })
-        // Plain text (no parse_mode): sessionName and rawSnippet can contain
+        // Plain text (no parse_mode): sessionName can contain
         // Markdown metacharacters; Telegram drops the whole message on parse errors.
         const text = `\u{1F6A8} Model error - ${title}\n\n${body}`
         const url = buildMiniAppDeepLink(this.publicUrl, `session_${session.id}`)
