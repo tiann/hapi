@@ -168,7 +168,6 @@ export default {
   'session.outline.searchLabel': 'Search outline items',
   'session.outline.searchResults': '{matched} of {total} items',
   'session.outline.noSearchResults': 'No matching outline items',
-  'session.outline.kind.user': 'User',
 
   // Session actions
   'session.action.rename': 'Rename',

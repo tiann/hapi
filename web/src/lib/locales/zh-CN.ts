@@ -168,7 +168,6 @@ export default {
   'session.outline.searchLabel': '搜索大纲条目',
   'session.outline.searchResults': '{matched}/{total} 个条目',
   'session.outline.noSearchResults': '没有匹配的大纲条目',
-  'session.outline.kind.user': '用户',
 
   // Session actions
   'session.action.rename': '重命名',

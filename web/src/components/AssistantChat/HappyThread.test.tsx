@@ -68,6 +68,16 @@ describe('ConversationOutlinePanel', () => {
         expect(onSelect).toHaveBeenCalledWith(outlineItems[0])
     })
 
+    it('shows each message time instead of a redundant user label', () => {
+        const { container } = renderPanel()
+
+        const timestamps = container.querySelectorAll('time')
+        expect(timestamps).toHaveLength(outlineItems.length)
+        expect(timestamps[0]).toHaveAttribute('dateTime', new Date(outlineItems[0].createdAt).toISOString())
+        expect(timestamps[0]).toHaveAttribute('title')
+        expect(screen.queryByText('User')).not.toBeInTheDocument()
+    })
+
     it('shows load earlier when older messages exist', () => {
         const onLoadMore = vi.fn()
         renderPanel({ hasMoreMessages: true, onLoadMore })
