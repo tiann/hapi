@@ -126,6 +126,17 @@ vi.mock('@/hooks/useChatSurfaceColors', () => ({
     toCustomChatSurfaceColorPreference: (value: string) => `custom:${value}`,
 }))
 
+vi.mock('@/lib/app-context', () => ({
+    useAppContext: () => ({
+        api: {},
+        baseUrl: 'http://127.0.0.1:3006',
+    }),
+}))
+
+vi.mock('@/components/settings/CompanionPairing', () => ({
+    CompanionPairing: () => <div>Companion pairing</div>,
+}))
+
 vi.mock('@/components/settings/VoiceAdvancedControls', () => ({
     VoiceRespondsControls: () => <div>Response length controls</div>,
     VoiceSoundsControls: () => <div>Sound controls</div>,
@@ -200,6 +211,8 @@ describe('responsive settings pages', () => {
 
     it('renders About metadata on its own route page', () => {
         renderPage(<SettingsAboutPage />)
+        expect(screen.getByText('Companion')).toBeInTheDocument()
+        expect(screen.getByText('Companion pairing')).toBeInTheDocument()
         expect(screen.getByText('App Version')).toBeInTheDocument()
         expect(screen.getByText(String(__APP_VERSION__))).toBeInTheDocument()
         expect(screen.getByText('Protocol Version')).toBeInTheDocument()

@@ -1,5 +1,6 @@
 import type { Session } from '../sync/syncEngine'
 import type { NotificationChannel, TaskNotification } from '../notifications/notificationTypes'
+import type { NotificationSendContext } from '../notifications/notificationSendContext'
 import { getAgentName, getSessionName } from '../notifications/sessionInfo'
 import type { SSEManager } from '../sse/sseManager'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
@@ -13,15 +14,27 @@ export class PushNotificationChannel implements NotificationChannel {
         _appUrl: string
     ) {}
 
-    async sendPermissionRequest(session: Session): Promise<void> {
+    /**
+     * Debug observability: gated on `HAPI_NOTIFY_DEBUG=1`. Lets the operator
+     * see which branch each notification took so we can root-cause "still
+     * getting PWA notifications" reports without committing permanent log
+     * spam to the hub journal.
+     */
+    private logBranch(method: string, namespace: string, branch: string, extra: string = ''): void {
+        if (process.env.HAPI_NOTIFY_DEBUG !== '1') return
+        const note = extra ? ` ${extra}` : ''
+        console.log(`[Push.${method}] ns=${namespace} ${branch}${note}`)
+    }
+
+    async sendPermissionRequest(session: Session, ctx?: NotificationSendContext): Promise<void> {
         if (!session.active) {
             return
         }
 
         const name = getSessionName(session)
-        const request = session.agentState?.requests
-            ? Object.values(session.agentState.requests)[0]
-            : null
+        const requests = session.agentState?.requests ?? null
+        const requestEntries = requests ? Object.entries(requests) : []
+        const [requestId, request] = requestEntries[0] ?? [undefined, null]
         const toolName = request?.tool ? ` (${request.tool})` : ''
 
         const payload: PushPayload = {
@@ -31,30 +44,15 @@ export class PushNotificationChannel implements NotificationChannel {
             data: {
                 type: 'permission-request',
                 sessionId: session.id,
-                url: this.buildSessionPath(session.id)
+                url: this.buildSessionPath(session.id),
+                requestId
             }
         }
 
-        const url = payload.data?.url ?? this.buildSessionPath(session.id)
-        if (this.visibilityTracker.hasVisibleConnection(session.namespace)) {
-            const delivered = await this.sseManager.sendToast(session.namespace, {
-                type: 'toast',
-                data: {
-                    title: payload.title,
-                    body: payload.body,
-                    sessionId: session.id,
-                    url
-                }
-            })
-            if (delivered > 0) {
-                return
-            }
-        }
-
-        await this.pushService.sendToNamespace(session.namespace, payload)
+        await this.deliverWebOrToast(session, payload, ctx, 'permission')
     }
 
-    async sendReady(session: Session): Promise<void> {
+    async sendReady(session: Session, ctx?: NotificationSendContext): Promise<void> {
         if (!session.active) {
             return
         }
@@ -73,26 +71,10 @@ export class PushNotificationChannel implements NotificationChannel {
             }
         }
 
-        const url = payload.data?.url ?? this.buildSessionPath(session.id)
-        if (this.visibilityTracker.hasVisibleConnection(session.namespace)) {
-            const delivered = await this.sseManager.sendToast(session.namespace, {
-                type: 'toast',
-                data: {
-                    title: payload.title,
-                    body: payload.body,
-                    sessionId: session.id,
-                    url
-                }
-            })
-            if (delivered > 0) {
-                return
-            }
-        }
-
-        await this.pushService.sendToNamespace(session.namespace, payload)
+        await this.deliverWebOrToast(session, payload, ctx, 'ready')
     }
 
-    async sendTaskNotification(session: Session, notification: TaskNotification): Promise<void> {
+    async sendTaskNotification(session: Session, notification: TaskNotification, ctx?: NotificationSendContext): Promise<void> {
         if (!session.active) {
             return
         }
@@ -115,6 +97,20 @@ export class PushNotificationChannel implements NotificationChannel {
             }
         }
 
+        await this.deliverWebOrToast(session, payload, ctx, 'task')
+    }
+
+    private async deliverWebOrToast(
+        session: Session,
+        payload: PushPayload,
+        ctx: NotificationSendContext | undefined,
+        method: 'permission' | 'ready' | 'task'
+    ): Promise<void> {
+        if (ctx?.nativeGate?.sent) {
+            this.logBranch(method, session.namespace, 'defer-to-native', 'fcm-delivered-this-dispatch')
+            return
+        }
+
         const url = payload.data?.url ?? this.buildSessionPath(session.id)
         if (this.visibilityTracker.hasVisibleConnection(session.namespace)) {
             const delivered = await this.sseManager.sendToast(session.namespace, {
@@ -127,10 +123,15 @@ export class PushNotificationChannel implements NotificationChannel {
                 }
             })
             if (delivered > 0) {
+                this.logBranch(method, session.namespace, 'sse-toast-delivered', `count=${delivered}`)
                 return
             }
+            this.logBranch(method, session.namespace, 'sse-toast-zero', 'visible but delivered=0')
+        } else {
+            this.logBranch(method, session.namespace, 'not-visible')
         }
 
+        this.logBranch(method, session.namespace, 'web-push-fired')
         await this.pushService.sendToNamespace(session.namespace, payload)
     }
 
