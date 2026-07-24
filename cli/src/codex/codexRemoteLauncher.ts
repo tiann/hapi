@@ -328,13 +328,13 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             return this.usageScannerSetup ?? Promise.resolve();
         }
 
-        const setupTask = this.replaceUsageScanner(threadId);
-        this.usageScannerSetup = setupTask.finally(() => {
+        const setupTask = this.replaceUsageScanner(threadId).finally(() => {
             if (this.usageScannerSetup === setupTask) {
                 this.usageScannerSetup = null;
             }
         });
-        return this.usageScannerSetup;
+        this.usageScannerSetup = setupTask;
+        return setupTask;
     }
 
     private async replaceUsageScanner(threadId: string): Promise<void> {
