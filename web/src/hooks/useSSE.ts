@@ -46,6 +46,9 @@ const RECONNECT_JITTER_MS = 500
 const INVALIDATION_BATCH_MS = 16
 
 function sortSessionSummaries(left: SessionSummary, right: SessionSummary): number {
+    if (Boolean(left.pinned) !== Boolean(right.pinned)) {
+        return left.pinned ? -1 : 1
+    }
     if (left.active !== right.active) {
         return left.active ? -1 : 1
     }

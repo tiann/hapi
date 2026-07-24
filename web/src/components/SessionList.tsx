@@ -37,6 +37,7 @@ type SessionGroup = {
     sessions: SessionSummary[]
     latestUpdatedAt: number
     hasActiveSession: boolean
+    hasPinnedSession: boolean
 }
 
 export type SessionTimeRange = {
@@ -123,11 +124,13 @@ function SessionsEmptyState(props: {
 }
 
 type MachineGroup = {
+    key: string
     machineId: string | null
     label: string
     projectGroups: SessionGroup[]
     totalSessions: number
     hasActiveSession: boolean
+    hasPinnedSession: boolean
     latestUpdatedAt: number
 }
 
@@ -231,7 +234,8 @@ function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
     sessions.forEach(session => {
         const path = session.metadata?.worktree?.basePath ?? session.metadata?.path ?? 'Other'
         const machineId = session.metadata?.machineId ?? null
-        const key = `${machineId ?? UNKNOWN_MACHINE_ID}::${path}`
+        const projectKey = `${machineId ?? UNKNOWN_MACHINE_ID}::${path}`
+        const key = session.pinned ? `${projectKey}::pinned` : projectKey
         if (!groups.has(key)) {
             groups.set(key, {
                 directory: path,
@@ -245,6 +249,7 @@ function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
     return Array.from(groups.entries())
         .map(([key, group]) => {
             const sortedSessions = [...group.sessions].sort((a, b) => {
+                if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1
                 const rankA = a.active ? (a.pendingRequestsCount > 0 ? 0 : 1) : 2
                 const rankB = b.active ? (b.pendingRequestsCount > 0 ? 0 : 1) : 2
                 if (rankA !== rankB) return rankA - rankB
@@ -255,6 +260,7 @@ function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
                 -Infinity
             )
             const hasActiveSession = group.sessions.some(s => s.active)
+            const hasPinnedSession = group.sessions.every(s => s.pinned)
             const displayName = getGroupDisplayName(group.directory)
 
             return {
@@ -264,15 +270,25 @@ function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
                 machineId: group.machineId,
                 sessions: sortedSessions,
                 latestUpdatedAt,
-                hasActiveSession
+                hasActiveSession,
+                hasPinnedSession
             }
         })
         .sort((a, b) => {
+            if (a.hasPinnedSession !== b.hasPinnedSession) {
+                return a.hasPinnedSession ? -1 : 1
+            }
             if (a.hasActiveSession !== b.hasActiveSession) {
                 return a.hasActiveSession ? -1 : 1
             }
             return b.latestUpdatedAt - a.latestUpdatedAt
         })
+}
+
+export function getGroupedSidebarSessionOrder(sessions: SessionSummary[]): string[] {
+    return groupByMachine(groupSessionsByDirectory(sessions), () => '')
+        .flatMap(machine => machine.projectGroups)
+        .flatMap(group => group.sessions.map(session => session.id))
 }
 
 
@@ -304,15 +320,18 @@ function groupByMachine(
 ): MachineGroup[] {
     const map = new Map<string, MachineGroup>()
     for (const g of groups) {
-        const key = g.machineId ?? UNKNOWN_MACHINE_ID
+        const machineId = g.machineId ?? UNKNOWN_MACHINE_ID
+        const key = `${machineId}::${g.hasPinnedSession ? 'pinned' : 'unpinned'}`
         let mg = map.get(key)
         if (!mg) {
             mg = {
+                key,
                 machineId: g.machineId,
                 label: resolveMachineLabel(g.machineId),
                 projectGroups: [],
                 totalSessions: 0,
                 hasActiveSession: false,
+                hasPinnedSession: false,
                 latestUpdatedAt: 0,
             }
             map.set(key, mg)
@@ -320,9 +339,11 @@ function groupByMachine(
         mg.projectGroups.push(g)
         mg.totalSessions += g.sessions.length
         if (g.hasActiveSession) mg.hasActiveSession = true
+        if (g.hasPinnedSession) mg.hasPinnedSession = true
         if (g.latestUpdatedAt > mg.latestUpdatedAt) mg.latestUpdatedAt = g.latestUpdatedAt
     }
     return [...map.values()].sort((a, b) => {
+        if (a.hasPinnedSession !== b.hasPinnedSession) return a.hasPinnedSession ? -1 : 1
         if (a.hasActiveSession !== b.hasActiveSession) return a.hasActiveSession ? -1 : 1
         return b.latestUpdatedAt - a.latestUpdatedAt
     })
@@ -806,7 +827,7 @@ function SessionItem(props: {
                 : t('session.action.reopenCursorChecking')
         : undefined
 
-    const { archiveSession, reopenSession, renameSession, deleteSession, isPending } = useSessionActions(
+    const { archiveSession, reopenSession, renameSession, deleteSession, setPinned, isPending } = useSessionActions(
         api,
         s.id,
         s.metadata?.flavor ?? null
@@ -941,6 +962,8 @@ function SessionItem(props: {
                 sessionId={s.id}
                 sessionTitle={sessionName}
                 sessionActive={s.active}
+                sessionPinned={s.pinned}
+                onTogglePin={() => void setPinned(!s.pinned)}
                 onRename={() => setRenameOpen(true)}
                 onExport={() => setExportOpen(true)}
                 onArchive={() => setArchiveOpen(true)}
@@ -1080,6 +1103,9 @@ export function SessionList(props: {
         () => groupSessionsByDirectory(allSessions),
         [allSessions]
     )
+    const projectCount = useMemo(() => new Set(allGroups.map(group => (
+        `${group.machineId ?? UNKNOWN_MACHINE_ID}::${group.directory}`
+    ))).size, [allGroups])
     const groups = useMemo(
         () => groupSessionsByDirectory(visibleSessions),
         [visibleSessions]
@@ -1239,7 +1265,7 @@ export function SessionList(props: {
                     <div className="text-xs text-[var(--app-hint)]">
                         {isFiltering
                             ? t('sessions.search.count', { n: visibleSessions.length, total: allSessions.length })
-                            : t('sessions.count', { n: allSessions.length, m: allGroups.length })}
+                            : t('sessions.count', { n: allSessions.length, m: projectCount })}
                     </div>
                     <button
                         type="button"
@@ -1280,7 +1306,7 @@ export function SessionList(props: {
             ) : null}
 
             <div className="flex flex-col gap-3 px-2 pt-1 pb-2">
-                {machineGroups.map((mg) => {
+                {machineGroups.map((mg, machineIndex) => {
                     const machineCollapsed = isMachineCollapsed(mg)
                     const machine = mg.machineId ? machinesById[mg.machineId] : undefined
                     const healthPresentation = presentMachineHealth(
@@ -1288,7 +1314,12 @@ export function SessionList(props: {
                         getMachinePlatform(machine)
                     )
                     return (
-                        <div key={mg.machineId ?? UNKNOWN_MACHINE_ID}>
+                        <div key={mg.key}>
+                            {machineIndex > 0
+                                && machineGroups[machineIndex - 1]?.hasPinnedSession
+                                && !mg.hasPinnedSession ? (
+                                    <div className="mx-2 mb-3 border-t border-[var(--app-border)]" aria-hidden="true" />
+                                ) : null}
                             <MachineGroupHeader
                                 label={mg.label}
                                 sessionCount={mg.totalSessions}
@@ -1348,15 +1379,16 @@ export function SessionList(props: {
                                                     <div className="collapsible-inner">
                                                     <div className="flex flex-col gap-0.5 ml-3 pl-1 py-1">
                                                         {visibleGroupSessions.map((s) => (
-                                                            <SessionItem
-                                                                key={s.id}
-                                                                session={s}
-                                                                onSelect={props.onSelect}
-                                                                showPath={false}
-                                                                api={api}
-                                                                selected={s.id === selectedSessionId}
-                                                                showDetailedStatus={showDetailedStatus}
-                                                            />
+                                                            <div key={s.id} className="contents">
+                                                                <SessionItem
+                                                                    session={s}
+                                                                    onSelect={props.onSelect}
+                                                                    showPath={false}
+                                                                    api={api}
+                                                                    selected={s.id === selectedSessionId}
+                                                                    showDetailedStatus={showDetailedStatus}
+                                                                />
+                                                            </div>
                                                         ))}
                                                         {!isFiltering && group.sessions.length > sessionPreviewLimit && (hiddenSessionCount > 0 || canCollapseSessions) ? (
                                                             <button

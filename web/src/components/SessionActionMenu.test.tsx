@@ -39,6 +39,35 @@ beforeEach(() => {
     vi.clearAllMocks()
 })
 
+describe('SessionActionMenu - Pin action', () => {
+    it('renders pin and unpin labels and invokes the action', () => {
+        const onTogglePin = vi.fn()
+        const { rerender } = renderMenu({ onTogglePin, sessionPinned: false })
+
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Pin session' }))
+        expect(onTogglePin).toHaveBeenCalledOnce()
+
+        rerender(
+            <I18nProvider>
+                <SessionActionMenu
+                    isOpen={true}
+                    onClose={vi.fn()}
+                    sessionId="session-1"
+                    sessionTitle="Session 1"
+                    sessionActive={false}
+                    sessionPinned={true}
+                    onTogglePin={onTogglePin}
+                    onRename={vi.fn()}
+                    onArchive={vi.fn()}
+                    onDelete={vi.fn()}
+                    anchorPoint={{ x: 0, y: 0 }}
+                />
+            </I18nProvider>
+        )
+        expect(screen.getByRole('menuitem', { name: 'Unpin session' })).toBeInTheDocument()
+    })
+})
+
 describe('SessionActionMenu - Reopen action', () => {
     it('renders the Reopen item on inactive sessions when onReopen is provided', () => {
         renderMenu({ sessionActive: false })

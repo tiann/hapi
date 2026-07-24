@@ -172,6 +172,8 @@ export default {
 
   // Session actions
   'session.action.rename': '重命名',
+  'session.action.pin': '置顶会话',
+  'session.action.unpin': '取消置顶',
   'session.action.export': '导出对话',
   'session.action.syncCodex': '从 Codex 同步',
   'session.action.archive': '归档',

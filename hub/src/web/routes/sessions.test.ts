@@ -64,6 +64,7 @@ function createApp(session: Session, opts?: {
     sessionExists?: boolean
     archiveSession?: (sessionId: string) => Promise<void>
     getCursorChatStoreStatus?: SyncEngine['getCursorChatStoreStatus']
+    setSessionPinned?: (sessionId: string, pinned: boolean) => void
 }) {
     const applySessionConfigCalls: Array<[string, Record<string, unknown>]> = []
     const applySessionConfig = async (sessionId: string, config: Record<string, unknown>) => {
@@ -141,6 +142,7 @@ function createApp(session: Session, opts?: {
             status: { onDisk: true, store: 'acp' as const }
         })),
         archiveSession: archiveSessionMock,
+        setSessionPinned: opts?.setSessionPinned ?? (() => {}),
         getSessionExport: opts?.getSessionExport ?? (() => ({
             type: 'success',
             payload: {
@@ -167,6 +169,33 @@ function createApp(session: Session, opts?: {
 }
 
 describe('sessions routes', () => {
+    it('updates the persisted pin state', async () => {
+        const calls: Array<[string, boolean]> = []
+        const { app } = createApp(createSession(), {
+            setSessionPinned: (sessionId, pinned) => calls.push([sessionId, pinned])
+        })
+
+        const response = await app.request('/api/sessions/session-1/pin', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pinned: true })
+        })
+
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([['session-1', true]])
+    })
+
+    it('rejects an invalid pin body', async () => {
+        const { app } = createApp(createSession())
+        const response = await app.request('/api/sessions/session-1/pin', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pinned: 'yes' })
+        })
+
+        expect(response.status).toBe(400)
+    })
+
     it('returns the machine-scoped Cursor chat store status', async () => {
         const session = createSession({
             active: false,

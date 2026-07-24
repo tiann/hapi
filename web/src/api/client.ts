@@ -734,6 +734,13 @@ export class ApiClient {
         })
     }
 
+    async setSessionPinned(sessionId: string, pinned: boolean): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/pin`, {
+            method: 'PUT',
+            body: JSON.stringify({ pinned })
+        })
+    }
+
     async deleteSession(sessionId: string): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}`, {
             method: 'DELETE'

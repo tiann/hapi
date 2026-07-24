@@ -137,6 +137,7 @@ type DbSessionRow = {
     machine_id: string | null
     created_at: number
     updated_at: number
+    pinned: number
     metadata: string | null
     metadata_version: number
     agent_state: string | null
@@ -162,6 +163,7 @@ function toStoredSession(row: DbSessionRow): StoredSession {
         machineId: row.machine_id,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
+        pinned: row.pinned === 1,
         metadata: safeJsonParse(row.metadata),
         metadataVersion: row.metadata_version,
         agentState: safeJsonParse(row.agent_state),
@@ -569,6 +571,15 @@ export function setSessionActive(
     } catch {
         return false
     }
+}
+
+export function setSessionPinned(db: Database, id: string, pinned: boolean, namespace: string): boolean {
+    const result = db.prepare(`
+        UPDATE sessions
+        SET pinned = @pinned
+        WHERE id = @id AND namespace = @namespace AND pinned != @pinned
+    `).run({ id, namespace, pinned: pinned ? 1 : 0 })
+    return result.changes === 1
 }
 
 export function touchSessionUpdatedAt(
