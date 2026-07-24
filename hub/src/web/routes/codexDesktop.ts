@@ -927,7 +927,7 @@ function resolveCodexImportMachineId(
         const resolved = resolveImportMachineId(cwd, namespace, engine)
         if (resolved) return resolved
     }
-    return onlineMachines.length === 1 ? onlineMachines[0].id : null
+    return onlineMachines.length >= 1 ? onlineMachines[0].id : null
 }
 
 function asRemoteCodexSessions(value: unknown, requireMessages: boolean): RemoteCodexSession[] {
