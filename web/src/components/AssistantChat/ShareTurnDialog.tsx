@@ -400,6 +400,7 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
     const [copied, setCopied] = useState(false)
     const [restoreTick, setRestoreTick] = useState(0)
     const [ready, setReady] = useState(false)
+    const [preparedBlob, setPreparedBlob] = useState<Blob | null>(null)
     const showNativeShareButton = true
 
     useLayoutEffect(() => {
@@ -448,7 +449,56 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
         return undefined
     }, [props.isOpen, props.sourceSnapshots, restoreTick])
 
-    const withPng = async (action: (blob: Blob) => Promise<void> | void, mode: 'copy' | 'download' | 'share') => {
+    useEffect(() => {
+        const capture = captureRef.current
+        if (!props.isOpen || !ready || !capture) {
+            setPreparedBlob(null)
+            return undefined
+        }
+
+        let cancelled = false
+        setPreparedBlob(null)
+        void elementToPngBlob(capture).then((blob) => {
+            if (!cancelled) setPreparedBlob(blob)
+        }).catch((err) => {
+            if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to create image')
+        })
+        return () => {
+            cancelled = true
+        }
+    }, [props.isOpen, props.sourceSnapshots, ready, restoreTick])
+
+    const runBlobAction = (
+        blob: Blob,
+        action: (prepared: Blob) => Promise<void> | void,
+        mode: 'copy' | 'download' | 'share'
+    ) => {
+        // Invoke the action before yielding so navigator.share() stays in the
+        // direct click activation window. PNG rendering happens eagerly above.
+        setBusy(mode)
+        setError(null)
+        let result: Promise<void> | void
+        try {
+            result = action(blob)
+        } catch (err) {
+            setError(err instanceof Error ? err.message : 'Failed to create image')
+            setBusy(null)
+            return
+        }
+        void Promise.resolve(result).then(() => {
+            if (mode === 'copy') setCopied(true)
+        }).catch((err) => {
+            setError(err instanceof Error ? err.message : 'Failed to create image')
+        }).finally(() => {
+            setBusy(null)
+        })
+    }
+
+    const withPng = async (action: (blob: Blob) => Promise<void> | void, mode: 'copy' | 'download') => {
+        if (preparedBlob) {
+            runBlobAction(preparedBlob, action, mode)
+            return
+        }
         const capture = captureRef.current
         if (!capture || !ready) return
         setBusy(mode)
@@ -518,8 +568,10 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
                     {showNativeShareButton ? (
                         <button
                             type="button"
-                            onClick={() => { void withPng(shareImageBlob, 'share') }}
-                            disabled={busy !== null || !ready}
+                            onClick={() => {
+                                if (preparedBlob) runBlobAction(preparedBlob, shareImageBlob, 'share')
+                            }}
+                            disabled={busy !== null || !preparedBlob}
                             className="rounded-md border border-[var(--app-border)] px-3 py-2 text-sm text-[var(--app-fg)] hover:bg-[var(--app-secondary-bg)] disabled:opacity-50 sm:w-32"
                         >
                             {busy === 'share' ? t('shareTurn.sharing') : t('shareTurn.share')}

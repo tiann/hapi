@@ -131,3 +131,40 @@ test('localizes the share dialog and exported badge in Chinese', async ({ page }
     await expect(dialog.getByRole('button', { name: '分享文件' })).toBeVisible()
     await expect(dialog.getByRole('button', { name: '下载 PNG' })).toBeVisible()
 })
+
+test('uses a prepared PNG while native share still has click activation', async ({ page }) => {
+    await page.addInitScript(() => {
+        const state = { calls: 0, active: false, fileType: '' }
+        Object.defineProperty(window, '__hapiShareTest', { value: state, configurable: true })
+        Object.defineProperty(navigator, 'canShare', {
+            configurable: true,
+            value: () => true
+        })
+        Object.defineProperty(navigator, 'share', {
+            configurable: true,
+            value: (data: ShareData) => {
+                state.calls += 1
+                state.active = navigator.userActivation?.isActive ?? false
+                state.fileType = data.files?.[0]?.type ?? ''
+                return Promise.resolve()
+            }
+        })
+    })
+    await page.goto('/e2e-fixtures/share-turn-fixture.html')
+    await page.getByRole('button', { name: 'Open share preview' }).click()
+
+    const shareButton = page.getByRole('dialog').getByRole('button', { name: 'Share file' })
+    await expect(shareButton).toBeEnabled()
+    await shareButton.click()
+
+    await expect.poll(() => page.evaluate(() => {
+        return (window as typeof window & { __hapiShareTest: { calls: number } }).__hapiShareTest.calls
+    })).toBe(1)
+    const result = await page.evaluate(() => {
+        return (window as typeof window & {
+            __hapiShareTest: { active: boolean; fileType: string }
+        }).__hapiShareTest
+    })
+    expect(result.active).toBe(true)
+    expect(result.fileType).toBe('image/png')
+})
