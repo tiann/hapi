@@ -98,8 +98,27 @@ describe('getToolTimingDetails', () => {
         }).tool
 
         expect(getToolTimingDetails(tool, 4_000)).toEqual({
-            startedAt: 1_200,
+            startedAt: 1_000,
             completedAt: null,
+            durationMs: 3_000,
+        })
+    })
+
+    it('keeps start, finish, and duration on the hub clock when exec timing is incomplete', () => {
+        const tool = makeToolCallChild({
+            tool: {
+                ...makeToolCallChild().tool,
+                createdAt: 900,
+                startedAt: 1_000,
+                completedAt: 4_000,
+                execStartedAt: 1_500,
+                execCompletedAt: null,
+            },
+        }).tool
+
+        expect(getToolTimingDetails(tool, 10_000)).toEqual({
+            startedAt: 1_000,
+            completedAt: 4_000,
             durationMs: 3_000,
         })
     })

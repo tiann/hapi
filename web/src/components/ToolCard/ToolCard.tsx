@@ -55,9 +55,14 @@ export function getToolTimingDetails(tool: ChatToolCall, now: number): {
     }
 
     const active = tool.state === 'running'
-    const startedAt = tool.execStartedAt ?? tool.startedAt ?? tool.createdAt
-    const completedAt = active ? null : (tool.execCompletedAt ?? tool.completedAt)
-    const liveDurationMs = active ? Math.max(0, now - (tool.startedAt ?? tool.createdAt)) : null
+    const hasExecPair = tool.execStartedAt != null && tool.execCompletedAt != null
+    const startedAt = active || !hasExecPair
+        ? (tool.startedAt ?? tool.createdAt)
+        : tool.execStartedAt
+    const completedAt = active
+        ? null
+        : (hasExecPair ? tool.execCompletedAt : tool.completedAt)
+    const liveDurationMs = active && startedAt != null ? Math.max(0, now - startedAt) : null
 
     return {
         startedAt,
