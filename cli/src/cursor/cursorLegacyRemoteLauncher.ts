@@ -19,6 +19,16 @@ import type { EnhancedMode } from './loop';
 import type { CursorStreamEvent } from './utils/cursorLegacyEventConverter';
 import { parseCursorEvent, convertCursorEventToAgentMessage } from './utils/cursorLegacyEventConverter';
 import { cursorPassThroughStatusMessage, parseCursorSpecialCommand } from './cursorSpecialCommands';
+// NOTE: model-error detection (cursorAgentMessageClassifier) is intentionally
+// NOT wired into the legacy launcher. The hub auto-migrates legacy stream-json
+// sessions to ACP at resume time via maybeAutoMigrateLegacyCursorSession (PR
+// #844). The legacy launcher is reached only when migration soft-fails — a
+// degraded fallback path, not a supported flow. Carrying duplicate
+// model-error logic here would (a) double the surface for bugs in the
+// model-error contract, (b) imply legacy is a real path that needs feature
+// parity, and (c) be dead code in practice. New cursor sessions are ACP from
+// inception. If you find yourself wanting model-error detection on this
+// path, fix the migration failure case instead.
 
 // Transient `agent` failures (auth expiry, rate limits, transient network) come back
 // as exit code 1 with a recognisable stderr signature. We requeue and retry instead

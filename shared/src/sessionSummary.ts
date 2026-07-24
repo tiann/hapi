@@ -38,6 +38,15 @@ export type SessionSummaryMetadata = {
     worktree?: WorktreeMetadata
     agentSessionId?: string
     lifecycleState?: string
+    lastModelError?: {
+        kind: string
+        transient: boolean
+        rawSnippet: string
+        atTs: number
+        priorAssistantClaimsDone: boolean
+        retriedAndFailed?: boolean
+        acknowledgedAt?: number
+    }
 }
 
 export type SessionSummary = {
@@ -124,7 +133,8 @@ export function toSessionSummary(session: Session): SessionSummary {
             ?? session.metadata.cursorSessionId
             ?? session.metadata.kimiSessionId
             ?? undefined,
-        lifecycleState: session.metadata.lifecycleState
+        lifecycleState: session.metadata.lifecycleState,
+        lastModelError: session.metadata.lastModelError
     } : null
 
     const todoProgress = session.todos?.length ? {

@@ -461,6 +461,44 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
         expect(metadata?.lifecycleState).toBe('archived')
     })
 
+    it('preserves lastModelError across sparse archive (durable alert state)', () => {
+        const store = makeStore()
+        const lastModelError = {
+            kind: 'quota_exhausted',
+            transient: false,
+            rawSnippet: 'Error: T: [resource_exhausted]',
+            atTs: 1_700_000_000_000,
+            priorAssistantClaimsDone: false
+        }
+        const session = store.sessions.getOrCreateSession(
+            'cursor-model-error-survives',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                cursorSessionId: 'err-uuid',
+                lastModelError
+            },
+            null,
+            'default'
+        )
+
+        store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                lifecycleState: 'archived',
+                archivedBy: 'cli',
+                archiveReason: 'Session crashed'
+            },
+            session.metadataVersion,
+            'default'
+        )
+
+        const metadata = getMetadata(store, session.id) as Record<string, unknown> | null
+        expect(metadata?.lastModelError).toEqual(lastModelError)
+        expect(metadata?.lifecycleState).toBe('archived')
+    })
+
     it('does not invent path or host when prior had none', () => {
         const store = makeStore()
         // create with minimal raw metadata (path is technically required by

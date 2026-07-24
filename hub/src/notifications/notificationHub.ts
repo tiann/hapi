@@ -1,6 +1,11 @@
 import type { Session, SyncEngine, SyncEvent } from '../sync/syncEngine'
 import type { SessionEndReason } from '@hapi/protocol'
-import type { NotificationChannel, NotificationHubOptions, TaskNotification } from './notificationTypes'
+import type {
+    ModelErrorNotification,
+    NotificationChannel,
+    NotificationHubOptions,
+    TaskNotification
+} from './notificationTypes'
 import { extractMessageEventType, extractTaskNotification } from './eventParsing'
 
 export class NotificationHub {
@@ -10,6 +15,15 @@ export class NotificationHub {
     private readonly lastKnownRequests: Map<string, Set<string>> = new Map()
     private readonly notificationDebounce: Map<string, NodeJS.Timeout> = new Map()
     private readonly lastReadyNotificationAt: Map<string, number> = new Map()
+    /**
+     * sessionId -> the `atTs` of the last `lastModelError` we already
+     * notified for. Lets us fire ONCE per distinct error event (the field
+     * is purely additive on the metadata; subsequent `session-updated`
+     * events for the same session shouldn't re-trigger). atTs is set by
+     * the launcher's recordModelError; new error in the same session =
+     * new atTs.
+     */
+    private readonly lastModelErrorNotifiedAt: Map<string, number> = new Map()
     private unsubscribeSyncEvents: (() => void) | null = null
 
     constructor(
@@ -37,6 +51,7 @@ export class NotificationHub {
         this.notificationDebounce.clear()
         this.lastKnownRequests.clear()
         this.lastReadyNotificationAt.clear()
+        this.lastModelErrorNotifiedAt.clear()
     }
 
     private handleSyncEvent(event: SyncEvent): void {
@@ -47,6 +62,10 @@ export class NotificationHub {
                 return
             }
             this.checkForPermissionNotification(session)
+            // Model-error gating: fire when metadata.lastModelError.atTs
+            // is newer than what we last notified for this session. Inactive
+            // sessions are filtered above (no-op for archived rows).
+            this.checkForModelErrorNotification(session)
             return
         }
 
@@ -89,6 +108,38 @@ export class NotificationHub {
         }
         this.lastKnownRequests.delete(sessionId)
         this.lastReadyNotificationAt.delete(sessionId)
+        this.lastModelErrorNotifiedAt.delete(sessionId)
+    }
+
+    private checkForModelErrorNotification(session: Session): void {
+        const lastModelError = session.metadata?.lastModelError
+        if (!lastModelError || typeof lastModelError.atTs !== 'number') {
+            return
+        }
+        // Don't ping for already-acknowledged errors. The web UI sets
+        // acknowledgedAt when the operator dismisses the banner; if they
+        // dismissed and the row gets re-emitted (e.g. a different metadata
+        // field changed), we don't want to re-ring the wrist.
+        if (typeof lastModelError.acknowledgedAt === 'number') {
+            return
+        }
+        const lastNotifiedAt = this.lastModelErrorNotifiedAt.get(session.id) ?? 0
+        if (lastModelError.atTs <= lastNotifiedAt) {
+            return
+        }
+        this.lastModelErrorNotifiedAt.set(session.id, lastModelError.atTs)
+
+        const notification: ModelErrorNotification = {
+            kind: lastModelError.kind,
+            transient: lastModelError.transient,
+            rawSnippet: lastModelError.rawSnippet,
+            priorAssistantClaimsDone: Boolean(lastModelError.priorAssistantClaimsDone),
+            atTs: lastModelError.atTs
+        }
+
+        this.notifyModelError(session, notification).catch((error) => {
+            console.error('[NotificationHub] Failed to send model-error notification:', error)
+        })
     }
 
     private getNotifiableSession(sessionId: string): Session | null {
@@ -220,6 +271,19 @@ export class NotificationHub {
                 await channel.sendSessionCompletion(session, reason)
             } catch (error) {
                 console.error('[NotificationHub] Failed to send session completion notification:', error)
+            }
+        }
+    }
+
+    private async notifyModelError(session: Session, notification: ModelErrorNotification): Promise<void> {
+        for (const channel of this.channels) {
+            if (typeof channel.sendModelError !== 'function') {
+                continue
+            }
+            try {
+                await channel.sendModelError(session, notification)
+            } catch (error) {
+                console.error('[NotificationHub] Failed to send model-error notification:', error)
             }
         }
     }

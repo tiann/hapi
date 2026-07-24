@@ -151,6 +151,15 @@ export default {
   'session.cursorMigration.bannerAmbiguous.title': 'Cursor 会话升级需要人工处理',
   'session.cursorMigration.bannerAmbiguous.body': '此会话在磁盘上的多个工作区下存在，或本地存储大小与已同步的历史记录不匹配，因此 HAPI 拒绝自动迁移。请在 hub 日志中搜索 "[migrator] ambiguous legacy store" 或 "[migrator] size sanity check refused" 获取候选列表，删除 ~/.cursor/chats/ 下的陈旧目录后，再重新打开此会话。',
 
+  // Model error banner
+  'session.modelError.banner.title': '模型错误 — {kind}',
+  'session.modelError.banner.subtitle.transient': '暂时性',
+  'session.modelError.banner.subtitle.nonTransient': '非暂时性',
+  'session.modelError.banner.claimedDone': '代理在此错误之前声称任务已完成。工作可能未完成。',
+  'session.modelError.banner.midExecution': '上一轮代理在执行过程中失败。',
+  'session.modelError.banner.dismiss': '忽略',
+  'session.modelError.banner.viewRaw': '查看原始错误',
+
   // Session inactive
   'session.inactive.autoResume': '此会话已停止。发送消息即可恢复。',
   'session.inactive.cannotResume': '此会话已停止，无法恢复。',
