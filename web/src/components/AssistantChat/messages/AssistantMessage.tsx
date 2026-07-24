@@ -8,6 +8,7 @@ import { getAssistantCopyText } from '@/components/AssistantChat/messages/assist
 import { getConversationMessageAnchorId } from '@/chat/outline'
 import { CodexReviewCard } from '@/components/AssistantChat/messages/CodexReviewCard'
 import { MessageActions } from '@/components/AssistantChat/messages/MessageActions'
+import { useOptionalHappyChatContext } from '@/components/AssistantChat/context'
 
 const TOOL_COMPONENTS = {
     Fallback: HappyToolMessage
@@ -21,6 +22,7 @@ const MESSAGE_PART_COMPONENTS = {
 } as const
 
 export function HappyAssistantMessage() {
+    const chat = useOptionalHappyChatContext()
     const messageId = useAssistantState(({ message }) => message.id)
     const isCliOutput = useAssistantState(({ message }) => {
         const custom = message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
@@ -49,6 +51,7 @@ export function HappyAssistantMessage() {
     const usage = useAssistantState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.usage)
     const messageModel = useAssistantState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.model)
     const turnCount = useAssistantState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.turnCount)
+    const replyToMessageId = useAssistantState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.replyToMessageId)
 
     const metadata = { durationMs, usage, model: messageModel ?? null, turnCount }
 
@@ -66,7 +69,23 @@ export function HappyAssistantMessage() {
                 : codexReview
                     ? <CodexReviewCard review={codexReview} />
                     : <MessagePrimitive.Content components={MESSAGE_PART_COMPONENTS} />}
-            <MessageActions align="start" copyText={copyText || undefined} metadata={metadata} />
+            <MessageActions
+                align="start"
+                copyText={copyText || undefined}
+                metadata={metadata}
+                onJumpToPrompt={chat
+                    ? () => {
+                        if (!replyToMessageId || !chat.scrollToMessage(replyToMessageId)) {
+                            void chat.scrollToPromptForMessage(messageId)
+                        }
+                    }
+                    : undefined}
+                onJumpToConversationStart={chat
+                    ? () => { void chat.scrollToConversationStart() }
+                    : undefined}
+                isLoadingConversationStart={chat?.isLoadingConversationStart}
+                isLoadingPrompt={chat?.loadingPromptMessageId === messageId}
+            />
         </MessagePrimitive.Root>
     )
 }

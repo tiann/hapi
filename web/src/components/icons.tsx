@@ -73,6 +73,28 @@ export function InfoIcon(props: IconProps) {
     )
 }
 
+export function ReplyPromptIcon(props: IconProps) {
+    return createIcon(
+        <>
+            <path d="M12 19V5" />
+            <path d="m5 12 7-7 7 7" />
+        </>,
+        props,
+        2
+    )
+}
+
+export function ConversationStartIcon(props: IconProps) {
+    return createIcon(
+        <>
+            <path d="m6 11 6-6 6 6" />
+            <path d="m6 18 6-6 6 6" />
+        </>,
+        props,
+        2
+    )
+}
+
 /** Composer schedule-send clock — circle + hands (matches ComposerButtons). */
 export function ScheduleIcon(props: IconProps) {
     return createIcon(

@@ -85,6 +85,11 @@ function renderCard(block: ToolGroupBlock, options?: { loadOlder?: () => Promise
                 hasMoreMessages: options?.hasMore ?? false,
                 isLoadingMoreMessages: options?.isLoadingMore ?? false,
                 loadOlderMessagesPreservingScroll,
+                scrollToMessage: vi.fn(() => true),
+                scrollToPromptForMessage: vi.fn(async () => true),
+                loadingPromptMessageId: null,
+                scrollToConversationStart: vi.fn(async () => true),
+                isLoadingConversationStart: false,
             }}>
                 <ToolGroupCard block={block} metadata={{ path: 'repo', host: 'local' }} />
             </HappyChatProvider>
@@ -244,6 +249,11 @@ describe('ToolGroupCard', () => {
                         hasMoreMessages: hasMore,
                         isLoadingMoreMessages: false,
                         loadOlderMessagesPreservingScroll,
+                        scrollToMessage: vi.fn(() => true),
+                        scrollToPromptForMessage: vi.fn(async () => true),
+                        loadingPromptMessageId: null,
+                        scrollToConversationStart: vi.fn(async () => true),
+                        isLoadingConversationStart: false,
                     }}>
                         <ToolGroupCard
                             block={makeGroup({
@@ -304,6 +314,11 @@ describe('ToolGroupCard', () => {
                         hasMoreMessages: hasMore,
                         isLoadingMoreMessages: isLoadingMore,
                         loadOlderMessagesPreservingScroll,
+                        scrollToMessage: vi.fn(() => true),
+                        scrollToPromptForMessage: vi.fn(async () => true),
+                        loadingPromptMessageId: null,
+                        scrollToConversationStart: vi.fn(async () => true),
+                        isLoadingConversationStart: false,
                     }}>
                         <ToolGroupCard
                             block={makeGroup({
@@ -359,6 +374,11 @@ describe('ToolGroupCard', () => {
                         hasMoreMessages: hasMore,
                         isLoadingMoreMessages: isLoadingMore,
                         loadOlderMessagesPreservingScroll,
+                        scrollToMessage: vi.fn(() => true),
+                        scrollToPromptForMessage: vi.fn(async () => true),
+                        loadingPromptMessageId: null,
+                        scrollToConversationStart: vi.fn(async () => true),
+                        isLoadingConversationStart: false,
                     }}>
                         <ToolGroupCard
                             block={makeGroup({
