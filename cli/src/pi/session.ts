@@ -53,7 +53,10 @@ export class PiSession {
     // are queued via runWhenReady() and drained FIFO once markReady() fires (on
     // the first get_state response).
     private piReady = false;
-    private readyQueue: Array<() => void> = [];
+    // Buffered sends carry their localId so a cancel-queued-message that arrives
+    // while a prompt is still held (before drain) can drop it instead of firing
+    // a cancelled prompt on markReady (issue #1143 review — MAJOR).
+    private readyQueue: Array<{ localId?: string; fn: () => void }> = [];
 
     private keepAliveInterval: NodeJS.Timeout | null = null;
 
@@ -93,14 +96,28 @@ export class PiSession {
     /**
      * Run `fn` now if Pi startup is ready, else buffer it FIFO until markReady().
      * Used to gate outbound prompt/steer sends so they never reach Pi before its
-     * session is initialized (issue #1143).
+     * session is initialized (issue #1143). Pass the message `localId` so a
+     * cancel-queued-message can drop it while still buffered.
      */
-    runWhenReady(fn: () => void): void {
+    runWhenReady(fn: () => void, localId?: string): void {
         if (this.piReady) {
             fn();
             return;
         }
-        this.readyQueue.push(fn);
+        this.readyQueue.push({ localId, fn });
+    }
+
+    /**
+     * Drop a still-buffered send by localId (cancel-queued-message contract).
+     * Returns true if it was buffered and removed (so the hub un-queues the row),
+     * false if it was already drained/sent to Pi or never buffered (best-effort,
+     * mirrors the other agents' queue.cancelByLocalId semantics).
+     */
+    cancelBufferedMessage(localId: string): boolean {
+        const idx = this.readyQueue.findIndex((item) => item.localId === localId);
+        if (idx === -1) return false;
+        this.readyQueue.splice(idx, 1);
+        return true;
     }
 
     /**
@@ -113,7 +130,7 @@ export class PiSession {
         this.piReady = true;
         const queued = this.readyQueue;
         this.readyQueue = [];
-        for (const fn of queued) fn();
+        for (const { fn } of queued) fn();
     }
 
     startKeepAlive(): void {

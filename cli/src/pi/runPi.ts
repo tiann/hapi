@@ -335,8 +335,18 @@ export async function runPi(opts: {
                 if (localId) pendingLocalIds.push(localId);
                 transport.send({ type: 'prompt', message: formattedText });
             }
-        });
+        }, localId);
     });
+
+    // --- Cancel-queued-message handler ---
+    // A prompt buffered during the startup window (runWhenReady) can be cancelled
+    // by the hub before it drains. Without this, ApiSessionClient acks
+    // removed:false, the hub marks the row invoked, yet the closure would still
+    // fire the cancelled prompt on get_state. Dropping it from the buffer keeps
+    // the queued-message cancel contract intact (issue #1143 review — MAJOR).
+    // Once sent to Pi it cannot be recalled — return false (best-effort), which
+    // matches the other agents' queue.cancelByLocalId semantics.
+    apiSession.onCancelQueuedMessage((localId) => piSession.cancelBufferedMessage(localId));
 
     // --- Abort handler ---
     // Only cancel the current turn, keep session alive for next prompt.

@@ -90,3 +90,44 @@ describe('PiSession ready gate', () => {
         expect(order).toEqual(['buffered-1', 'buffered-2', 'live-3']);
     });
 });
+
+// --- cancel-queued-message contract (issue #1143 review — MAJOR) ---
+//
+// A prompt buffered during the startup window can be cancelled by the hub
+// before it drains. cancelBufferedMessage must drop it (so it never fires) and
+// report removed:true; anything already drained or unknown reports false so the
+// hub keeps the row as invoked (best-effort, like the other agents).
+
+describe('PiSession cancelBufferedMessage', () => {
+    it('drops a buffered send by localId so it never drains', () => {
+        const session = createMockSession();
+        const fired: string[] = [];
+
+        session.runWhenReady(() => fired.push('keep-1'), 'id-1');
+        session.runWhenReady(() => fired.push('cancel-2'), 'id-2');
+        session.runWhenReady(() => fired.push('keep-3'), 'id-3');
+
+        expect(session.cancelBufferedMessage('id-2')).toBe(true);
+
+        session.markReady();
+
+        // Cancelled prompt never fired; FIFO preserved for survivors.
+        expect(fired).toEqual(['keep-1', 'keep-3']);
+    });
+
+    it('returns false when the localId is not buffered', () => {
+        const session = createMockSession();
+        session.runWhenReady(() => {}, 'id-1');
+
+        expect(session.cancelBufferedMessage('unknown')).toBe(false);
+    });
+
+    it('returns false after the message has already drained', () => {
+        const session = createMockSession();
+        session.runWhenReady(() => {}, 'id-1');
+        session.markReady();
+
+        // Already sent to Pi — cannot be recalled.
+        expect(session.cancelBufferedMessage('id-1')).toBe(false);
+    });
+});
