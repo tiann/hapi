@@ -8,6 +8,7 @@ import type { CodexPermissionMode } from '@hapi/protocol/types'
 import type { ReasoningEffort } from '@/codex/appServerTypes'
 import { assertCodexLocalSupported } from '@/codex/utils/codexVersion'
 import { parseReasoningEffortValue } from '@/codex/utils/reasoningEffort'
+import { applyProviderSelection } from '@/host/applyProviderSelection'
 
 // Mirror the web /service-tier endpoint's enum so the internal resume spawn
 // path can never seed/persist an unsupported tier string.
@@ -38,6 +39,7 @@ export const codexCommand: CommandDefinition = {
             } = {}
             const unknownArgs: string[] = []
             let hasExplicitPermissionMode = false
+            let providerProfileId: string | null | undefined
 
             for (let i = 0; i < commandArgs.length; i++) {
                 const arg = commandArgs[i]
@@ -52,6 +54,10 @@ export const codexCommand: CommandDefinition = {
                 }
                 if (arg === '--started-by') {
                     options.startedBy = commandArgs[++i] as 'runner' | 'terminal'
+                } else if (arg === '--hapi-provider') {
+                    const provider = commandArgs[++i]
+                    if (!provider) throw new Error('Missing --hapi-provider value')
+                    providerProfileId = provider === 'system' ? null : provider
                 } else if (arg === '--existing-session-id') {
                     const sessionId = commandArgs[++i]
                     if (!sessionId) {
@@ -106,6 +112,8 @@ export const codexCommand: CommandDefinition = {
                 void maybeAutoStartServer({ waitForReady: false, quiet: true })
             }
             await authAndSetupMachineIfNeeded()
+            const providerLaunch = await applyProviderSelection('codex', providerProfileId)
+            if (!options.model && providerLaunch?.defaultModel) options.model = providerLaunch.defaultModel
             await runCodex(options)
         } catch (error) {
             console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')

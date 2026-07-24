@@ -32,6 +32,7 @@ See `src/router.tsx` for route definitions.
 - `/sessions/$sessionId/terminal` - Terminal interface.
 - `/settings` - Settings category hub (mobile) and responsive master-detail shell.
 - `/settings/general` - Language preferences.
+- `/settings/providers` - Machine-local Claude Code, Codex, and Grok Build API providers.
 - `/settings/display` - Appearance, typography, colors, and session list preferences.
 - `/settings/chat` - Message input, tool card, and conversation color preferences.
 - `/settings/voice` - Everyday voice assistant preferences.

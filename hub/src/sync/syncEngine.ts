@@ -809,6 +809,7 @@ export class SyncEngine {
         effort?: string,
         permissionMode?: PermissionMode,
         serviceTier?: string,
+        providerProfileId?: string | null,
         existingSessionId?: string
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
         return await this.rpcGateway.spawnSession(
@@ -824,8 +825,29 @@ export class SyncEngine {
             effort,
             permissionMode,
             serviceTier,
+            providerProfileId,
             existingSessionId
         )
+    }
+
+    async listProviderProfiles(machineId: string, agent?: import('@hapi/protocol').AgentProvider) {
+        return await this.rpcGateway.listProviderProfiles(machineId, agent)
+    }
+
+    async createProviderProfile(machineId: string, input: import('@hapi/protocol').ProviderProfileInput) {
+        return await this.rpcGateway.createProviderProfile(machineId, input)
+    }
+
+    async updateProviderProfile(machineId: string, id: string, patch: import('@hapi/protocol').ProviderProfileUpdate) {
+        return await this.rpcGateway.updateProviderProfile(machineId, id, patch)
+    }
+
+    async setDefaultProvider(machineId: string, agent: import('@hapi/protocol').AgentProvider, id: string | null) {
+        return await this.rpcGateway.setDefaultProvider(machineId, agent, id)
+    }
+
+    async checkProviderHealth(machineId: string, id: string, refreshModels: boolean) {
+        return await this.rpcGateway.checkProviderHealth(machineId, id, refreshModels)
     }
 
     private resolveFlavor(session: Session): AgentFlavor {
@@ -888,6 +910,7 @@ export class SyncEngine {
                 thinking: session.thinking,
                 controlledByUser: session.agentState?.controlledByUser === true,
                 agentSessionId,
+                providerProfileId: metadata.providerProfileId,
                 model: session.model ?? null,
                 effort: session.effort ?? null,
                 modelReasoningEffort: session.modelReasoningEffort ?? null,
@@ -1296,6 +1319,7 @@ export class SyncEngine {
             session.effort ?? undefined,
             preferredPermissionMode,
             session.serviceTier ?? undefined,
+            metadata.providerProfileId,
             access.sessionId
         )
 

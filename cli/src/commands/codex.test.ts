@@ -5,12 +5,19 @@ const {
     maybeAutoStartServerMock,
     authAndSetupMachineIfNeededMock,
     assertCodexLocalSupportedMock,
+    applyProviderSelectionMock,
     runCodexMock
 } = vi.hoisted(() => ({
     initializeTokenMock: vi.fn(async () => {}),
     maybeAutoStartServerMock: vi.fn(async () => {}),
     authAndSetupMachineIfNeededMock: vi.fn(async () => {}),
     assertCodexLocalSupportedMock: vi.fn(),
+    applyProviderSelectionMock: vi.fn(async (): Promise<null | {
+        env: Record<string, string>
+        args: string[]
+        defaultModel?: string
+        profile: { id: string; name: string; revision: number }
+    }> => null),
     runCodexMock: vi.fn(async () => {})
 }))
 
@@ -34,6 +41,10 @@ vi.mock('@/codex/runCodex', () => ({
     runCodex: runCodexMock
 }))
 
+vi.mock('@/host/applyProviderSelection', () => ({
+    applyProviderSelection: applyProviderSelectionMock
+}))
+
 import { codexCommand } from './codex'
 
 function createCommandContext(commandArgs: string[]) {
@@ -49,6 +60,8 @@ describe('codexCommand', () => {
         maybeAutoStartServerMock.mockClear()
         authAndSetupMachineIfNeededMock.mockClear()
         assertCodexLocalSupportedMock.mockClear()
+        applyProviderSelectionMock.mockReset()
+        applyProviderSelectionMock.mockResolvedValue(null)
         runCodexMock.mockClear()
     })
 
@@ -101,6 +114,30 @@ describe('codexCommand', () => {
             startedBy: 'runner',
             serviceTier: 'fast'
         })
+    })
+
+    it('selects a managed provider and uses its default model', async () => {
+        applyProviderSelectionMock.mockResolvedValueOnce({
+            env: {},
+            args: [],
+            defaultModel: 'provider-model',
+            profile: { id: '11111111-1111-4111-8111-111111111111', name: 'Provider', revision: 1 }
+        })
+
+        await codexCommand.run(createCommandContext([
+            '--hapi-provider',
+            '11111111-1111-4111-8111-111111111111'
+        ]))
+
+        expect(applyProviderSelectionMock).toHaveBeenCalledWith('codex', '11111111-1111-4111-8111-111111111111')
+        expect(runCodexMock).toHaveBeenCalledWith({ model: 'provider-model' })
+    })
+
+    it('allows an explicit system-provider selection', async () => {
+        await codexCommand.run(createCommandContext(['--hapi-provider', 'system']))
+
+        expect(applyProviderSelectionMock).toHaveBeenCalledWith('codex', null)
+        expect(runCodexMock).toHaveBeenCalledWith({})
     })
 
     it('rejects an unsupported --service-tier value', async () => {

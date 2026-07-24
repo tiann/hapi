@@ -8,6 +8,7 @@ type SpawnInput = {
     machineId: string
     directory: string
     agent?: AgentFlavor
+    providerProfileId?: string | null
     model?: string
     effort?: string
     modelReasoningEffort?: string
@@ -39,7 +40,8 @@ export function useSpawnSession(api: ApiClient | null): {
                 input.sessionType,
                 input.worktreeName,
                 input.effort,
-                input.permissionMode
+                input.permissionMode,
+                input.providerProfileId
             )
         },
         onSuccess: () => {

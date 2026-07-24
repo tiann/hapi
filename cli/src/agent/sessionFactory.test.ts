@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Session } from '@/api/types'
 
 const {
@@ -51,6 +51,10 @@ vi.mock('@/ui/logger', () => ({
 }))
 
 import { bootstrapExistingSession, bootstrapLazySession, buildSessionMetadata } from './sessionFactory'
+
+afterEach(() => {
+    vi.unstubAllEnvs()
+})
 
 function createSession(): Session {
     return {
@@ -200,6 +204,45 @@ describe('bootstrapExistingSession', () => {
         })
 
         expect(metadata.capabilities?.terminal).toBe(true)
+    })
+
+    it('records managed provider identity without persisting its secret', () => {
+        vi.stubEnv('HAPI_PROVIDER_PROFILE_ID', '11111111-1111-4111-8111-111111111111')
+        vi.stubEnv('HAPI_PROVIDER_PROFILE_NAME', 'Codex proxy')
+        vi.stubEnv('HAPI_PROVIDER_PROFILE_REVISION', '3')
+        vi.stubEnv('HAPI_CODEX_PROVIDER_API_KEY', 'do-not-persist')
+
+        const metadata = buildSessionMetadata({
+            flavor: 'codex',
+            startedBy: 'runner',
+            workingDirectory: '/tmp/project',
+            machineId: 'machine-1'
+        })
+
+        expect(metadata).toMatchObject({
+            providerProfileId: '11111111-1111-4111-8111-111111111111',
+            providerProfileName: 'Codex proxy',
+            providerProfileRevision: 3
+        })
+        expect(JSON.stringify(metadata)).not.toContain('do-not-persist')
+    })
+
+    it('records an explicit system-provider selection without stale managed metadata', () => {
+        vi.stubEnv('HAPI_PROVIDER_PROFILE_SYSTEM', '1')
+        vi.stubEnv('HAPI_PROVIDER_PROFILE_ID', '11111111-1111-4111-8111-111111111111')
+        vi.stubEnv('HAPI_PROVIDER_PROFILE_NAME', 'Stale profile')
+        vi.stubEnv('HAPI_PROVIDER_PROFILE_REVISION', '2')
+
+        const metadata = buildSessionMetadata({
+            flavor: 'claude',
+            startedBy: 'runner',
+            workingDirectory: '/tmp/project',
+            machineId: 'machine-1'
+        })
+
+        expect(metadata.providerProfileId).toBeNull()
+        expect(metadata.providerProfileName).toBeUndefined()
+        expect(metadata.providerProfileRevision).toBeUndefined()
     })
 })
 

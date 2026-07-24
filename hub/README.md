@@ -109,6 +109,10 @@ See `src/web/routes/` for all endpoints.
 - `GET /api/machines` - List online machines.
 - `POST /api/machines/:id/spawn` - Spawn new session on machine.
 - `POST /api/machines/:id/paths/exists` - Check if path exists.
+- `GET|POST /api/machines/:id/providers` - List or create machine-local provider profiles.
+- `PATCH /api/machines/:id/providers/:providerId` - Update a provider profile.
+- `POST /api/machines/:id/providers/default` - Select an Agent default provider.
+- `POST /api/machines/:id/providers/:providerId/health` - Check a provider and refresh its model list.
 
 ### Git/Files (`src/web/routes/git.ts`)
 

@@ -14,6 +14,7 @@ import { maybeAutoStartServer } from '@/utils/autoStartServer'
 import { withBunRuntimeEnv } from '@/utils/bunRuntime'
 import { extractErrorInfo } from '@/utils/errorUtils'
 import type { CommandDefinition } from './types'
+import { applyProviderSelection } from '@/host/applyProviderSelection'
 
 export const claudeCommand: CommandDefinition = {
     name: 'default',
@@ -29,6 +30,7 @@ export const claudeCommand: CommandDefinition = {
         let showHelp = false
         const unknownArgs: string[] = []
         let hasExplicitPermissionMode = false
+        let providerProfileId: string | null | undefined
 
         for (let i = 0; i < args.length; i++) {
             const arg = args[i]
@@ -45,6 +47,10 @@ export const claudeCommand: CommandDefinition = {
                 }
                 options.permissionMode = mode as StartOptions['permissionMode']
                 hasExplicitPermissionMode = true
+            } else if (arg === '--hapi-provider') {
+                const provider = args[++i]
+                if (!provider) throw new Error('Missing --hapi-provider value')
+                providerProfileId = provider === 'system' ? null : provider
             } else if (arg === '--yolo' && !hasExplicitPermissionMode) {
                 options.permissionMode = 'bypassPermissions'
                 unknownArgs.push('--dangerously-skip-permissions')
@@ -105,6 +111,7 @@ ${chalk.bold('Examples:')}
   hapi auth login         Configure CLI_API_TOKEN interactively
   hapi --yolo             Start with bypassing permissions
                             hapi sugar for --dangerously-skip-permissions
+  hapi --hapi-provider ID Use a managed provider profile (or "system")
   hapi auth status        Show direct-connect status
   hapi doctor             Run diagnostics
 
@@ -154,6 +161,11 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
 
             await new Promise(resolve => setTimeout(resolve, 200))
         }
+
+        // Resolve credentials only after background processes have started so
+        // a session-scoped provider secret is never inherited by the runner.
+        const providerLaunch = await applyProviderSelection('claude', providerProfileId)
+        if (!options.model && providerLaunch?.defaultModel) options.model = providerLaunch.defaultModel
 
         try {
             const { runClaude } = await import('@/claude/runClaude')

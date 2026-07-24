@@ -30,6 +30,14 @@ import type {
 } from '@hapi/protocol/apiTypes'
 import type { Server } from 'socket.io'
 import type { RpcRegistry } from '../socket/rpcRegistry'
+import type {
+    AgentProvider,
+    ProviderListResponse,
+    ProviderHealthCheckResponse,
+    ProviderMutationResponse,
+    ProviderProfileInput,
+    ProviderProfileUpdate
+} from '@hapi/protocol'
 
 const DEFAULT_RPC_TIMEOUT_MS = 30_000
 const MODEL_LIST_RPC_TIMEOUT_MS = 120_000
@@ -155,13 +163,14 @@ export class RpcGateway {
         effort?: string,
         permissionMode?: PermissionMode,
         serviceTier?: string,
+        providerProfileId?: string | null,
         existingSessionId?: string
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
         try {
             const result = await this.machineRpc(
                 machineId,
                 RPC_METHODS.SpawnHappySession,
-                { type: 'spawn-in-directory', directory, agent, model, modelReasoningEffort, yolo, sessionType, worktreeName, resumeSessionId, effort, permissionMode, serviceTier, existingSessionId, sessionId: existingSessionId }
+                { type: 'spawn-in-directory', directory, agent, providerProfileId, model, modelReasoningEffort, yolo, sessionType, worktreeName, resumeSessionId, effort, permissionMode, serviceTier, existingSessionId, sessionId: existingSessionId }
             )
             if (result && typeof result === 'object') {
                 const obj = result as Record<string, unknown>
@@ -220,6 +229,26 @@ export class RpcGateway {
             exists[key] = value === true
         }
         return exists
+    }
+
+    async listProviderProfiles(machineId: string, agent?: AgentProvider): Promise<ProviderListResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.ProviderList, { agent }) as ProviderListResponse
+    }
+
+    async createProviderProfile(machineId: string, input: ProviderProfileInput): Promise<ProviderMutationResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.ProviderCreate, input) as ProviderMutationResponse
+    }
+
+    async updateProviderProfile(machineId: string, id: string, patch: ProviderProfileUpdate): Promise<ProviderMutationResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.ProviderUpdate, { id, patch }) as ProviderMutationResponse
+    }
+
+    async setDefaultProvider(machineId: string, agent: AgentProvider, id: string | null): Promise<ProviderMutationResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.ProviderSetDefault, { agent, id }) as ProviderMutationResponse
+    }
+
+    async checkProviderHealth(machineId: string, id: string, refreshModels: boolean): Promise<ProviderHealthCheckResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.ProviderHealthCheck, { id, refreshModels }) as ProviderHealthCheckResponse
     }
 
     async getCursorChatStoreStatus(
