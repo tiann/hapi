@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { basename, dirname, join, relative } from 'node:path'
 import { homedir } from 'node:os'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
+import { isCodexSubagentSource } from '@/codex/utils/codexSessionMetadata'
 
 const DEFAULT_CODEX_SESSION_SCAN_LIMIT = 200
 
@@ -76,11 +77,6 @@ function truncateText(value: string, maxLength: number): string {
 function shouldIgnoreSyntheticUserMessage(text: string): boolean {
     const normalized = text.trim()
     return normalized.startsWith('# AGENTS.md instructions') || normalized.startsWith('<environment_context>')
-}
-
-function isSubagentSource(value: unknown): boolean {
-    const record = asRecord(value)
-    return Boolean(record && Object.prototype.hasOwnProperty.call(record, 'subagent'))
 }
 
 function inferSessionIdFromFileName(filePath: string): string | null {
@@ -338,7 +334,7 @@ function parseCodexLocalSession(
             if (!record) continue
             if (record.type === 'session_meta') {
                 const payload = asRecord(record.payload)
-                if (isSubagentSource(payload?.source)) return null
+                if (isCodexSubagentSource(payload?.source)) return null
                 if (!sessionId && typeof payload?.id === 'string') sessionId = payload.id
                 if (!cwd && typeof payload?.cwd === 'string') cwd = payload.cwd
                 if (!originator && typeof payload?.originator === 'string') originator = payload.originator

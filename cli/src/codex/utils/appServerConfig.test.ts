@@ -3,6 +3,7 @@ import type { EnhancedMode } from '../loop';
 import {
     buildThreadStartParams,
     buildTurnStartParams,
+    buildUserInputFromMessage,
     codexCollaborationSpawnAgentInstructions,
     supportsReasoningSummary
 } from './appServerConfig';
@@ -504,5 +505,35 @@ describe('appServerConfig', () => {
 
         expect(params.collaborationMode).toBeUndefined();
         expect(params.model).toBe('o3');
+    });
+
+    it('builds mention inputs from quoted @file tokens', () => {
+        expect(buildUserInputFromMessage('please inspect @"src/index.ts" now')).toEqual([
+            { type: 'text', text: 'please inspect ' },
+            { type: 'mention', name: 'index.ts', path: 'src/index.ts' },
+            { type: 'text', text: ' now' }
+        ]);
+    });
+
+    it('builds mention inputs from quoted @file tokens with spaces', () => {
+        expect(buildUserInputFromMessage('please inspect @"docs/My File.md" now')).toEqual([
+            { type: 'text', text: 'please inspect ' },
+            { type: 'mention', name: 'My File.md', path: 'docs/My File.md' },
+            { type: 'text', text: ' now' }
+        ]);
+    });
+
+    it('builds mention inputs from quoted root-level @file tokens', () => {
+        expect(buildUserInputFromMessage('please inspect @"package.json" now')).toEqual([
+            { type: 'text', text: 'please inspect ' },
+            { type: 'mention', name: 'package.json', path: 'package.json' },
+            { type: 'text', text: ' now' }
+        ]);
+    });
+
+    it('keeps literal at-mentions as text', () => {
+        expect(buildUserInputFromMessage('please ask @alice to upgrade @types/node.')).toEqual([
+            { type: 'text', text: 'please ask @alice to upgrade @types/node.' }
+        ]);
     });
 });

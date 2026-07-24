@@ -44,7 +44,8 @@ export const codexCommand: CommandDefinition = {
                 if (i === 0 && arg === 'resume') {
                     const candidate = commandArgs[i + 1]
                     if (!candidate || candidate.startsWith('-')) {
-                        throw new Error('resume requires a session id')
+                        unknownArgs.push(arg)
+                        continue
                     }
                     options.resumeSessionId = candidate
                     i += 1

@@ -5,6 +5,8 @@ import { Children, isValidElement, useMemo, type ComponentPropsWithoutRef, type 
 import ReactMarkdown, { type Components } from 'react-markdown'
 import {
     MARKDOWN_PLUGINS,
+    MARKDOWN_PLUGINS_STANDALONE,
+    MARKDOWN_PLUGINS_STANDALONE_WITH_BREAKS,
     MARKDOWN_PLUGINS_WITH_BREAKS,
     MARKDOWN_REHYPE_PLUGINS,
     MARKDOWN_COMPONENTS_BY_LANGUAGE,
@@ -79,7 +81,7 @@ function StandaloneMarkdownContent(props: MarkdownRendererProps) {
         <UriConfirmProvider>
             <div className={cn(MARKDOWN_CLASSNAME, props.className)}>
                 <ReactMarkdown
-                    remarkPlugins={props.preserveSingleLineBreaks ? MARKDOWN_PLUGINS_WITH_BREAKS : MARKDOWN_PLUGINS}
+                    remarkPlugins={props.preserveSingleLineBreaks ? MARKDOWN_PLUGINS_STANDALONE_WITH_BREAKS : MARKDOWN_PLUGINS_STANDALONE}
                     rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
                     components={components}
                     urlTransform={denyOnlyTransform}

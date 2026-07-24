@@ -11,8 +11,16 @@ import { parseCodexCliOverrides, stripCodexCliOverrides } from './utils/codexCli
 import { buildCodexPermissionModeCliArgs } from './utils/permissionModeConfig';
 import { BaseLocalLauncher } from '@/modules/common/launcher/BaseLocalLauncher';
 import { createCodexTranscriptLocator, type CodexTranscriptLocator } from './utils/codexTranscriptLocator';
+import { CodexToolHookBridge, isCodexToolHookEvent } from './utils/codexToolHookBridge';
+import { countHookCoveredExecCalls } from './utils/codexExecWrapper';
 
 type ProposedPlanMessage = Extract<CodexMessage, { type: 'proposed_plan' }>;
+type ToolCallMessage = Extract<CodexMessage, { type: 'tool-call' }>;
+
+type PendingExecWrapper = {
+    message: ToolCallMessage;
+    turnId?: string;
+};
 
 export async function codexLocalLauncher(session: CodexSession): Promise<'switch' | 'exit'> {
     const resumeSessionId = session.sessionId;
@@ -25,6 +33,8 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
     let transcriptLocator: CodexTranscriptLocator | null = null;
     let scannerTranscriptPath: string | null = null;
     const pendingPlansByTurnId = new Map<string, ProposedPlanMessage>();
+    const pendingExecWrappers = new Map<string, PendingExecWrapper>();
+    const toolHookBridge = new CodexToolHookBridge();
     const permissionMode = session.getPermissionMode();
     const managedPermissionMode = permissionMode === 'read-only' || permissionMode === 'safe-yolo' || permissionMode === 'yolo'
         ? permissionMode
@@ -97,6 +107,30 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
         }
     };
 
+    const flushPendingExecWrapper = (callId: string, result?: CodexMessage): void => {
+        const pending = pendingExecWrappers.get(callId);
+        if (!pending) return;
+        pendingExecWrappers.delete(callId);
+        session.sendAgentMessage(pending.message);
+        if (result) {
+            session.sendAgentMessage(result);
+        }
+    };
+
+    const flushAllPendingExecWrappers = (): void => {
+        for (const [callId, pending] of pendingExecWrappers) {
+            session.sendAgentMessage(pending.message);
+            session.sendAgentMessage({
+                type: 'tool-call-result',
+                callId,
+                output: { error: 'Codex ended before the exec wrapper returned a result.' },
+                is_error: true,
+                id: `${pending.message.id}:incomplete`
+            });
+        }
+        pendingExecWrappers.clear();
+    };
+
     const bindPrimarySession = (sessionId: string, transcriptPath: string, allowSwitch = false): void => {
         if (primarySessionId && primarySessionId !== sessionId && !allowSwitch) {
             logger.debug(`[codex-local]: Ignoring non-primary SessionStart hook ${sessionId}; primary is ${primarySessionId}`);
@@ -151,16 +185,36 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                 } else if (converted?.userActivity) {
                     session.notifyUserActivity();
                 }
-                if (converted?.message) {
-                    if (converted.message.type === 'proposed_plan') {
+                for (const message of converted?.messages ?? []) {
+                    if (message.type === 'proposed_plan') {
                         // Codex may complete the Plan item before emitting its final text preface.
-                        pendingPlansByTurnId.set(converted.message.turnId, converted.message);
+                        pendingPlansByTurnId.set(message.turnId, message);
+                    } else if (message.type === 'tool-call' && message.name === 'exec') {
+                        if (countHookCoveredExecCalls(message.input) === null) {
+                            session.sendAgentMessage(message);
+                        } else {
+                            pendingExecWrappers.set(message.callId, {
+                                message,
+                                ...(converted?.turnId ? { turnId: converted.turnId } : {})
+                            });
+                        }
+                    } else if (message.type === 'tool-call-result' && pendingExecWrappers.has(message.callId)) {
+                        const pending = pendingExecWrappers.get(message.callId);
+                        const turnId = pending?.turnId ?? converted?.turnId;
+                        if (pending && toolHookBridge.hasCompletedAllObservedNestedTools(turnId)) {
+                            pendingExecWrappers.delete(message.callId);
+                        } else {
+                            flushPendingExecWrapper(message.callId, message);
+                        }
                     } else {
-                        session.sendAgentMessage(converted.message);
+                        session.sendAgentMessage(message);
                     }
                 }
                 if (converted?.finishedTurnId) {
                     flushPendingPlan(converted.finishedTurnId);
+                    for (const message of toolHookBridge.finishTurn(converted.finishedTurnId)) {
+                        session.sendAgentMessage(message);
+                    }
                 }
             }
         });
@@ -215,6 +269,15 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
     const hookServer = await startHookServer({
         onSessionHook: (sessionId, data) => {
             if (shuttingDown) {
+                return;
+            }
+            if (isCodexToolHookEvent(data)) {
+                if (primarySessionId && primarySessionId !== sessionId) {
+                    return;
+                }
+                for (const message of toolHookBridge.handle(data)) {
+                    session.sendAgentMessage(message);
+                }
                 return;
             }
             handleSessionHook(sessionId, data);
@@ -296,6 +359,10 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
         const activeScanner = scanner as CodexSessionScanner | null;
         if (activeScanner) {
             await activeScanner.cleanup();
+        }
+        flushAllPendingExecWrappers();
+        for (const message of toolHookBridge.finish()) {
+            session.sendAgentMessage(message);
         }
         flushAllPendingPlans();
         happyServer.stop();

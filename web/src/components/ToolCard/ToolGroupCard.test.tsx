@@ -100,7 +100,7 @@ describe('ToolGroupCard', () => {
     it('renders a collapsed target-first header', () => {
         const view = renderCard(makeGroup())
 
-        expect(screen.getByRole('button', { name: /inspect project files/i })).toHaveAttribute('aria-expanded', 'false')
+        expect(screen.getByRole('button', { name: /inspect a\.ts/i })).toHaveAttribute('aria-expanded', 'false')
         expect(screen.getByText('Run 1 · Read 1')).toBeInTheDocument()
         expect(screen.getByText('2 actions')).toBeInTheDocument()
         expect(screen.queryByText('src/a.ts')).not.toBeInTheDocument()
@@ -111,7 +111,7 @@ describe('ToolGroupCard', () => {
 
     it('expands to show compact rows and opens a detail dialog per row', async () => {
         const view = renderCard(makeGroup())
-        const groupToggle = within(view.container).getByRole('button', { name: /inspect project files/i })
+        const groupToggle = within(view.container).getByRole('button', { name: /inspect a\.ts/i })
 
         expect(view.container.querySelector('svg[data-state="closed"]')).toBeInTheDocument()
         fireEvent.click(groupToggle)
@@ -136,6 +136,53 @@ describe('ToolGroupCard', () => {
         expect(screen.getAllByText('src/a.ts')[0]).toBeInTheDocument()
         expect(within(dialog).getAllByText('Input').length).toBeGreaterThan(0)
         expect(within(dialog).getAllByText('Result').length).toBeGreaterThan(0)
+    })
+
+    it('shows structured Codex exploration actions by default without a generic action count', () => {
+        const tools = [
+            makeToolBlock('codex-read', 'CodexBash', {
+                command: 'cat package.json',
+                command_actions: [{
+                    type: 'read',
+                    command: 'cat package.json',
+                    name: 'package.json',
+                    path: '/repo/package.json'
+                }]
+            }),
+            makeToolBlock('codex-search', 'CodexBash', {
+                command: 'rg nativeTitle web/src',
+                command_actions: [{
+                    type: 'search',
+                    command: 'rg nativeTitle web/src',
+                    query: 'nativeTitle',
+                    path: 'web/src'
+                }]
+            })
+        ]
+        const view = renderCard(makeGroup({
+            tools,
+            defaultOpen: true,
+            presentationMode: 'codex-exploration',
+            summary: {
+                totalTools: 2,
+                countsByKind: { read: 0, search: 0, command: 2, mutation: 0, web: 0, other: 0 },
+                fileTargets: [],
+                commandTargets: ['cat package.json', 'rg nativeTitle web/src'],
+                searchTargets: [],
+                urlTargets: [],
+                otherTargets: [],
+                errorCount: 0,
+                runningCount: 0,
+                pendingCount: 0,
+            }
+        }))
+
+        expect(within(view.container).getByRole('button', { name: /^explored$/i })).toHaveAttribute('aria-expanded', 'true')
+        expect(screen.getByText('Read')).toBeInTheDocument()
+        expect(screen.getByText('package.json')).toBeInTheDocument()
+        expect(screen.getByText('Search')).toBeInTheDocument()
+        expect(screen.getByText('nativeTitle in web/src')).toBeInTheDocument()
+        expect(screen.queryByText('2 actions')).not.toBeInTheDocument()
     })
 
     it('uses a neutral header for all-generic tool groups without duplicate counters', () => {
@@ -212,7 +259,7 @@ describe('ToolGroupCard', () => {
         }
 
         const view = render(<Harness />)
-        const groupToggle = within(view.container).getByRole('button', { name: /inspect project files/i })
+        const groupToggle = within(view.container).getByRole('button', { name: /inspect a\.ts/i })
 
         fireEvent.click(groupToggle)
 
@@ -272,7 +319,7 @@ describe('ToolGroupCard', () => {
         }
 
         const view = render(<Harness />)
-        const groupToggle = within(view.container).getByRole('button', { name: /inspect project files/i })
+        const groupToggle = within(view.container).getByRole('button', { name: /inspect a\.ts/i })
 
         fireEvent.click(groupToggle)
 
@@ -327,7 +374,7 @@ describe('ToolGroupCard', () => {
         }
 
         const view = render(<Harness />)
-        const groupToggle = within(view.container).getByRole('button', { name: /inspect project files/i })
+        const groupToggle = within(view.container).getByRole('button', { name: /inspect a\.ts/i })
 
         fireEvent.click(groupToggle)
 

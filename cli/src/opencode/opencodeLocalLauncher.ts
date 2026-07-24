@@ -335,7 +335,8 @@ export async function opencodeLocalLauncher(
                     type: 'tool-call',
                     name: toolCall.name,
                     callId: toolCall.callId,
-                    input: toolCall.input
+                    input: toolCall.input,
+                    ...(toolCall.title ? { nativeTitle: toolCall.title } : {})
                 });
             }
 
@@ -349,7 +350,8 @@ export async function opencodeLocalLauncher(
                         type: 'tool-call',
                         name: toolCall.name,
                         callId: toolCall.callId,
-                        input: toolCall.input
+                        input: toolCall.input,
+                        ...(toolCall.title ? { nativeTitle: toolCall.title } : {})
                     });
                 }
                 sentToolResults.add(toolResult.callId);
@@ -418,7 +420,8 @@ export async function opencodeLocalLauncher(
                     type: 'tool-call',
                     name,
                     callId,
-                    input: toolInput
+                    input: toolInput,
+                    ...(getString(tool.title ?? record.title) ? { nativeTitle: getString(tool.title ?? record.title) } : {})
                 });
                 return;
             }
@@ -431,7 +434,8 @@ export async function opencodeLocalLauncher(
                         type: 'tool-call',
                         name,
                         callId,
-                        input: toolInput
+                        input: toolInput,
+                        ...(getString(tool.title ?? record.title) ? { nativeTitle: getString(tool.title ?? record.title) } : {})
                     });
                 }
                 sentToolResults.add(callId);

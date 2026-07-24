@@ -153,6 +153,9 @@ describe('getToolResultViewComponent registry', () => {
     it('uses a dedicated result view for Codex agent tools', () => {
         expect(getToolResultViewComponent('spawn_agent')).not.toBe(getToolResultViewComponent('SomeUnknownTool'))
         expect(getToolResultViewComponent('wait_agent')).toBe(getToolResultViewComponent('spawn_agent'))
+        expect(getToolResultViewComponent('followup_task')).toBe(getToolResultViewComponent('spawn_agent'))
+        expect(getToolResultViewComponent('interrupt_agent')).toBe(getToolResultViewComponent('spawn_agent'))
+        expect(getToolResultViewComponent('list_agents')).toBe(getToolResultViewComponent('spawn_agent'))
     })
 
     it('Agent falls back to GenericResultView (no dedicated view — view layer must not filter content)', () => {

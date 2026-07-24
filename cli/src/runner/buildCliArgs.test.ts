@@ -119,7 +119,7 @@ describe('buildCliArgs', () => {
 
 
 
-    it('does not pass Codex-only existing session id flag to non-Codex agents', () => {
+    it('does not pass existing session id flag to agents that do not reuse HAPI rows', () => {
         const args = buildCliArgs('claude', {
             directory: '/tmp',
             resumeSessionId: 'claude-session-1',
@@ -129,6 +129,18 @@ describe('buildCliArgs', () => {
         expect(args).toContain('claude-session-1')
         expect(args).not.toContain('--existing-session-id')
         expect(args).not.toContain('hapi-session-1')
+    })
+
+    it('passes --existing-session-id for cursor resume when sessionId is set (#991)', () => {
+        const args = buildCliArgs('cursor', {
+            directory: '/tmp',
+            resumeSessionId: 'cursor-csid-1',
+            sessionId: 'hapi-session-991',
+        })
+        expect(args).toContain('--existing-session-id')
+        expect(args).toContain('hapi-session-991')
+        expect(args).toContain('--resume')
+        expect(args).toContain('cursor-csid-1')
     })
 
     it('validates all known permission modes', () => {

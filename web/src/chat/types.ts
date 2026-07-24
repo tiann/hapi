@@ -45,6 +45,8 @@ export type ToolUse = {
     name: string
     input: unknown
     description: string | null
+    nativeTitle?: string | null
+    nativeKind?: string | null
     uuid: string
     parentUUID: string | null
 }
@@ -175,6 +177,8 @@ export type ChatToolCall = {
     execStartedAt: number | null
     execCompletedAt: number | null
     description: string | null
+    nativeTitle?: string | null
+    nativeKind?: string | null
     result?: unknown
     permission?: ToolPermission
 }

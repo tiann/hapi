@@ -2,7 +2,7 @@ import spawn from 'cross-spawn'
 import { withBunRuntimeEnv } from '@/utils/bunRuntime'
 import { resolveCodexCommand } from './codexExecutable'
 
-export const MIN_CODEX_HOOKS_VERSION = '0.124.0'
+export const MIN_CODEX_HOOKS_VERSION = '0.145.0'
 export const CODEX_VERSION_TIMEOUT_MS = 3_000
 
 const SEMVER_PATTERN = /\b(\d+)\.(\d+)\.(\d+)\b/

@@ -444,6 +444,7 @@ describe('AcpMessageHandler', () => {
         );
         expect(toolCall).toBeDefined();
         expect(toolCall!.input).toEqual({ command: 'df -hT' });
+        expect(toolCall).toMatchObject({ title: 'df -hT', kind: 'execute' });
     });
 
     it('strips "Shell: " prefix from title when deriving execute input (Kimi)', () => {

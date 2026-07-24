@@ -44,18 +44,37 @@ import type { MarkdownTextPrimitiveProps } from '@assistant-ui/react-markdown'
 // This matches GitHub-flavored markdown behavior. The option lives on the
 // shared TAIL so both MARKDOWN_PLUGINS (default) and MARKDOWN_PLUGINS_WITH_BREAKS
 // (user-prompt rendering with hard breaks) inherit the fix.
-const MARKDOWN_PLUGIN_TAIL = [
+const MARKDOWN_PLUGIN_TAIL_HEAD = [
     remarkNonHttpsAutolink,
     remarkStripCjkAutolink,
     [remarkMath, { singleDollarTextMath: false }],
     remarkDisableIndentedCode,
+] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>
+
+const MARKDOWN_PLUGIN_TAIL = [
+    ...MARKDOWN_PLUGIN_TAIL_HEAD,
     remarkFilePathLinks,        // upstream — file path → link conversion, runs last
+] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>
+
+// Standalone surfaces (file-preview) render without HappyChatContext, so the
+// FilePathAnchor cannot route hapi-file: hrefs — rewriting explicit markdown
+// links there would collapse them to plain text. Keep bare-path / inlineCode
+// autolinks (already inert on that surface) but disable explicit-link rewrite.
+const MARKDOWN_PLUGIN_TAIL_STANDALONE = [
+    ...MARKDOWN_PLUGIN_TAIL_HEAD,
+    [remarkFilePathLinks, { rewriteExplicitLinks: false }],
 ] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>
 
 export const MARKDOWN_PLUGINS = [
     remarkGfm,
     remarkRepairTables,
     ...MARKDOWN_PLUGIN_TAIL,
+] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>
+
+export const MARKDOWN_PLUGINS_STANDALONE = [
+    remarkGfm,
+    remarkRepairTables,
+    ...MARKDOWN_PLUGIN_TAIL_STANDALONE,
 ] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>
 
 // User-authored prompts should preserve Shift+Enter/newline intent without
@@ -65,6 +84,13 @@ export const MARKDOWN_PLUGINS_WITH_BREAKS = [
     remarkRepairTables,
     remarkBreaks,
     ...MARKDOWN_PLUGIN_TAIL,
+] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>
+
+export const MARKDOWN_PLUGINS_STANDALONE_WITH_BREAKS = [
+    remarkGfm,
+    remarkRepairTables,
+    remarkBreaks,
+    ...MARKDOWN_PLUGIN_TAIL_STANDALONE,
 ] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>
 
 export const MARKDOWN_REHYPE_PLUGINS = [rehypeKatex] satisfies NonNullable<MarkdownTextPrimitiveProps['rehypePlugins']>

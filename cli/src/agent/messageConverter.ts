@@ -24,6 +24,8 @@ export type CodexMessage =
         callId: string;
         input: unknown;
         status?: 'pending' | 'in_progress' | 'completed' | 'failed';
+        nativeTitle?: string;
+        nativeKind?: string;
     }
     | {
         type: 'tool-call-result';
@@ -64,7 +66,9 @@ export function convertAgentMessage(message: AgentMessage): CodexMessage | null 
                 name: message.name,
                 callId: message.id,
                 input: message.input,
-                status: message.status
+                status: message.status,
+                ...(message.title ? { nativeTitle: message.title } : {}),
+                ...(message.kind ? { nativeKind: message.kind } : {})
             };
         case 'tool_result':
             return {

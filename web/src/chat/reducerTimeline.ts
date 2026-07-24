@@ -880,6 +880,8 @@ export function reduceTimeline(
                         name: c.name,
                         input: c.input,
                         description: c.description,
+                        nativeTitle: c.nativeTitle,
+                        nativeKind: c.nativeKind,
                         permission,
                         agentTimestamp: msg.agentTimestamp
                     })

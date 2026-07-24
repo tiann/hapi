@@ -51,6 +51,92 @@ afterEach(() => {
 });
 
 describe('AcpSdkBackend', () => {
+    it('forwards ACP session_info_update titles without requiring an active prompt', () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const updates: Array<{ sessionId: string | null; title: string | null }> = [];
+        backend.setSessionInfoUpdateListener((update) => updates.push(update));
+
+        const backendInternal = backend as unknown as {
+            handleSessionUpdate: (params: unknown) => void;
+        };
+        backendInternal.handleSessionUpdate({
+            sessionId: 'session-1',
+            update: {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.sessionInfoUpdate,
+                title: 'Native session title'
+            }
+        });
+        backendInternal.handleSessionUpdate({
+            sessionId: 'session-1',
+            update: {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.sessionInfoUpdate,
+                updatedAt: '2026-07-12T00:00:00Z'
+            }
+        });
+
+        expect(updates).toEqual([{ sessionId: 'session-1', title: 'Native session title' }]);
+    });
+
+    it('refreshes native titles through ACP session/list', async () => {
+        const backend = new AcpSdkBackend({ command: 'opencode' });
+        const calls: Array<{ method: string; params: unknown; options: unknown }> = [];
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequest: (method: string, params: unknown, options?: unknown) => Promise<unknown>;
+            } | null;
+        };
+        backendInternal.transport = {
+            sendRequest: async (method, params, options) => {
+                calls.push({ method, params, options });
+                return {
+                    sessions: [
+                        { sessionId: 'other', title: 'Other title' },
+                        { sessionId: 'session-1', title: 'Native OpenCode title' }
+                    ]
+                };
+            }
+        };
+        const updates: Array<{ sessionId: string | null; title: string | null }> = [];
+        backend.setSessionInfoUpdateListener((update) => updates.push(update));
+
+        await backend.refreshSessionInfo('session-1', '/workspace');
+
+        expect(calls).toEqual([{
+            method: 'session/list',
+            params: { cwd: '/workspace' },
+            options: { timeoutMs: 5000 }
+        }]);
+        expect(updates).toEqual([{ sessionId: 'session-1', title: 'Native OpenCode title' }]);
+    });
+
+    it('retries session/list while an asynchronously generated title is still a placeholder', async () => {
+        vi.useFakeTimers();
+        try {
+            const backend = new AcpSdkBackend({ command: 'opencode' });
+            const titles = ['New session - 2026-07-12T00:00:00.000Z', 'Native OpenCode title'];
+            const backendInternal = backend as unknown as {
+                transport: { sendRequest: () => Promise<unknown> } | null;
+            };
+            backendInternal.transport = {
+                sendRequest: async () => ({
+                    sessions: [{ sessionId: 'session-1', title: titles.shift() }]
+                })
+            };
+            const updates: Array<{ sessionId: string | null; title: string | null }> = [];
+            backend.setSessionInfoUpdateListener((update) => updates.push(update));
+
+            await backend.refreshSessionInfo('session-1', '/workspace');
+            await vi.runAllTimersAsync();
+
+            expect(updates).toEqual([
+                { sessionId: 'session-1', title: 'New session - 2026-07-12T00:00:00.000Z' },
+                { sessionId: 'session-1', title: 'Native OpenCode title' }
+            ]);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it('hides the ACP stdio shell on Windows', () => {
         setPlatform('win32');
 
@@ -830,7 +916,7 @@ describe('AcpSdkBackend', () => {
 
     it('forwards title changes from session_info_update', () => {
         const backend = new AcpSdkBackend({ command: 'agent' });
-        const updates: Array<{ title?: string | null }> = [];
+        const updates: Array<{ sessionId: string | null; title: string | null }> = [];
         backend.setSessionInfoUpdateListener((update) => updates.push(update));
 
         const backendInternal = backend as unknown as {
@@ -869,8 +955,8 @@ describe('AcpSdkBackend', () => {
         });
 
         expect(updates).toEqual([
-            { title: 'Native ACP title' },
-            { title: null }
+            { sessionId: 'session-1', title: 'Native ACP title' },
+            { sessionId: 'session-1', title: null }
         ]);
     });
 

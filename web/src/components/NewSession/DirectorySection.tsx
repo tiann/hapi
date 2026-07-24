@@ -19,9 +19,10 @@ function CodexImportIcon(props: { className?: string }) {
             strokeLinejoin="round"
             className={props.className}
         >
-            {/* 中文注释：导入 Codex 历史依赖当前目录，放在 Browse 后面表达“选目录后导入”。 */}
-            <path d="M21 12a9 9 0 1 1-2.64-6.36" />
-            <path d="M21 3v6h-6" />
+            {/* 中文注释：导入 Codex 历史依赖当前目录，放在 Browse 后面表达“选目录后导入”；图标用“下载进托盘”样式，与刷新图标区分。 */}
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="7 10 12 15 17 10" />
+            <line x1="12" y1="15" x2="12" y2="3" />
         </svg>
     )
 }

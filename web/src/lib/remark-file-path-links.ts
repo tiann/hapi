@@ -3,11 +3,20 @@ const FILE_PATH_HREF_PREFIX = 'hapi-file:'
 const PATH_PATTERN = /(?:\.\/|[A-Za-z0-9_.-]+\/)[^\s`"\'<>]*?\.(?:[A-Za-z0-9]{1,12}|lock)(?::\d+(?::\d+)?)?|(?:[A-Za-z0-9_.-]+\.(?:[A-Za-z0-9]{1,12}|lock))(?::\d+(?::\d+)?)?/g
 
 const TRAILING_PUNCTUATION = new Set(['.', ',', ';', ':', '!', '?'])
+// Extensions that autolink to the session file viewer. Kept intentionally
+// allowlisted (not "any dotted word") to avoid turning prose like "Node.js" or
+// domains into dead file links. Additions target formats agents actually cite
+// when handing over work: diagram sources (mmd/puml), docs (rst/adoc/tex),
+// tabular data (csv/tsv), config/schema (ini/conf/env/proto/graphql/prisma),
+// and common languages not already covered. TLD-lookalikes (org/com/io/dev/co)
+// are deliberately excluded so URLs like "example.org" don't autolink.
 const COMMON_FILE_EXTENSIONS = new Set([
-    'avif', 'bmp', 'c', 'cjs', 'cpp', 'css', 'gif', 'go', 'h', 'hpp', 'html', 'ico', 'java',
-    'jpeg', 'jpg', 'js', 'json', 'jsx', 'kt', 'lock', 'md', 'mdx', 'mjs', 'png', 'py', 'rs',
-    'scss', 'sh', 'sql', 'svg', 'swift', 'toml', 'ts', 'tsx', 'txt', 'vue', 'webp', 'xml',
-    'yaml', 'yml', 'zsh'
+    'adoc', 'astro', 'avif', 'bat', 'bmp', 'c', 'cfg', 'cjs', 'conf', 'cpp', 'css', 'csv',
+    'env', 'gif', 'go', 'gql', 'gradle', 'graphql', 'h', 'hpp', 'html', 'ico', 'ini', 'java',
+    'jpeg', 'jpg', 'js', 'json', 'jsx', 'kt', 'lock', 'md', 'mdx', 'mjs', 'mmd', 'php', 'png',
+    'prisma', 'properties', 'proto', 'ps1', 'puml', 'py', 'rb', 'rs', 'rst', 'scss', 'sh',
+    'sql', 'svelte', 'svg', 'swift', 'tex', 'toml', 'ts', 'tsv', 'tsx', 'txt', 'vue', 'webp',
+    'xml', 'yaml', 'yml', 'zsh'
 ])
 
 type MarkdownNode = {
@@ -121,7 +130,71 @@ function linkTextNode(node: MarkdownNode): MarkdownNode[] {
     return parts
 }
 
-function visit(node: MarkdownNode, parentType: string | null = null): void {
+// Convert an `inlineCode` node whose ENTIRE value is a single linkable file
+// path into a link wrapping an inlineCode (preserving monospace styling).
+//
+// Intentionally conservative: only whole-value, whitespace-free values that the
+// path pattern matches end-to-end are linked. This keeps real code snippets
+// (`npm run build`, `str.split()`, `Math.PI`, `a.b.c`) untouched — they either
+// contain whitespace, non-path characters, or a non-allowlisted extension.
+function linkInlineCodeNode(node: MarkdownNode): MarkdownNode | null {
+    const raw = node.value ?? ''
+    const trimmed = raw.trim()
+    if (trimmed.length === 0) return null
+    if (/\s/.test(trimmed)) return null
+
+    PATH_PATTERN.lastIndex = 0
+    const match = PATH_PATTERN.exec(trimmed)
+    // Require the pattern to cover the whole value — rejects `a=b.js`, `x.md#y`, etc.
+    if (!match || match[0] !== trimmed) return null
+
+    const filePath = stripLineSuffix(trimmed)
+    if (!shouldLinkPath(filePath)) return null
+
+    return {
+        type: 'link',
+        url: createFileHref(filePath),
+        title: null,
+        children: [{ type: 'inlineCode', value: trimmed }]
+    }
+}
+
+// Rewrite an explicit markdown link `[label](relative/file.ext)` whose target is
+// a repo-relative allowlisted file path into a `hapi-file:` href so it opens the
+// session file viewer instead of dead-ending in the SPA router.
+//
+// Security: reuses shouldLinkPath (rejects abs / `~/` / `../` / Windows drive /
+// `scheme://`) and additionally rejects any residual colon after the line-suffix
+// strip, so scheme-bearing urls (mailto:, obsidian://, foo:bar.md) are left for
+// the deny-scheme layer. The visible label is preserved untouched.
+function rewriteFileLinkNode(node: MarkdownNode): void {
+    if (node.type !== 'link') return
+    const url = node.url
+    if (!url) return
+    if (url.startsWith(FILE_PATH_HREF_PREFIX)) return
+
+    const target = stripLineSuffix(url)
+    if (target.includes(':')) return
+    if (!shouldLinkPath(target)) return
+
+    node.url = createFileHref(target)
+}
+
+export type RemarkFilePathLinksOptions = {
+    // Rewrite explicit markdown links `[label](relative/file.ext)` → `hapi-file:`.
+    // Routing a `hapi-file:` href needs session context (FilePathAnchor); surfaces
+    // that render without HappyChatContext (standalone file-preview) must disable
+    // this or the anchor collapses to plain text (`A` returns props.children when
+    // `!chat`). Bare-path / inlineCode autolinks are unaffected — they were already
+    // plain text on those surfaces. Default: true (chat surface).
+    rewriteExplicitLinks?: boolean
+}
+
+function visit(
+    node: MarkdownNode,
+    parentType: string | null,
+    rewriteExplicitLinks: boolean
+): void {
     if (!node.children) return
     if (parentType === 'link' || parentType === 'linkReference') return
 
@@ -131,12 +204,22 @@ function visit(node: MarkdownNode, parentType: string | null = null): void {
             nextChildren.push(...linkTextNode(child))
             continue
         }
-        visit(child, child.type ?? null)
+        if (child.type === 'inlineCode') {
+            nextChildren.push(linkInlineCodeNode(child) ?? child)
+            continue
+        }
+        if (child.type === 'link') {
+            if (rewriteExplicitLinks) rewriteFileLinkNode(child)
+            nextChildren.push(child)
+            continue
+        }
+        visit(child, child.type ?? null, rewriteExplicitLinks)
         nextChildren.push(child)
     }
     node.children = nextChildren
 }
 
-export function remarkFilePathLinks() {
-    return (tree: MarkdownNode) => visit(tree)
+export function remarkFilePathLinks(options: RemarkFilePathLinksOptions = {}) {
+    const rewriteExplicitLinks = options.rewriteExplicitLinks !== false
+    return (tree: MarkdownNode) => visit(tree, null, rewriteExplicitLinks)
 }

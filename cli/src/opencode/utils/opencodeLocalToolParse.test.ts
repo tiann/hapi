@@ -28,6 +28,19 @@ function collectMessages(parts: unknown[]): Array<{ type: string; name?: string;
 }
 
 describe('OpenCode local tool part parsing', () => {
+    it('preserves the native state title', () => {
+        expect(parseToolCall({
+            type: 'tool',
+            tool: 'bash',
+            callID: 'call-title',
+            state: {
+                status: 'running',
+                input: { command: 'bun test' },
+                title: 'Run project tests'
+            }
+        })).toMatchObject({ title: 'Run project tests' });
+    });
+
     it('does not emit tool-call on pending with empty input; emits on running with real args', () => {
         const callId = 'call-6049b4cf-0272-4651-be9a-402c3a40c933-0';
         const messages = collectMessages([

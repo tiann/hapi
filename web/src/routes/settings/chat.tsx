@@ -11,6 +11,7 @@ import {
     type ChatSurfaceColorPreset,
 } from '@/hooks/useChatSurfaceColors'
 import { SettingsChoiceGroup, SettingsPageContent, SettingsSection } from '@/components/settings/SettingsPrimitives'
+import { ComposerToolbarLayoutControl } from '@/components/settings/ComposerToolbarLayoutControl'
 
 function ChatSurfaceColorControl(props: {
     label: string
@@ -57,6 +58,7 @@ export default function SettingsChatPage() {
                     options={getComposerEnterBehaviorOptions().map((option) => ({ value: option.value, label: t(option.labelKey) }))}
                     onChange={setComposerEnterBehavior}
                 />
+                <ComposerToolbarLayoutControl />
             </SettingsSection>
             <SettingsSection title={t('settings.chat.tools')}>
                 <SettingsChoiceGroup

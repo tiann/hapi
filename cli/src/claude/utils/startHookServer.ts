@@ -1,8 +1,7 @@
 /**
- * Dedicated HTTP server for receiving Claude session hooks.
+ * Dedicated loopback HTTP server for receiving agent lifecycle hooks.
  *
- * This server receives notifications from Claude when sessions change
- * (new session, resume, compact, fork, etc.) via the SessionStart hook.
+ * Claude uses it for SessionStart; Codex also forwards selected tool hooks.
  */
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
@@ -87,8 +86,6 @@ export async function startHookServer(options: HookServerOptions): Promise<HookS
                     }
 
                     const body = Buffer.concat(chunks).toString('utf-8');
-                    logger.debug('[hookServer] Received session hook:', body);
-
                     let data: SessionHookData = {};
                     try {
                         const parsed = JSON.parse(body);
@@ -104,6 +101,11 @@ export async function startHookServer(options: HookServerOptions): Promise<HookS
                         return;
                     }
 
+                    const hookEventName = typeof data.hook_event_name === 'string'
+                        ? data.hook_event_name
+                        : 'SessionStart';
+                    logger.debug(`[hookServer] Received ${hookEventName} hook`);
+
                     const sessionId = data.session_id || data.sessionId;
                     if (sessionId) {
                         logger.debug(`[hookServer] Session hook received session ID: ${sessionId}`);
@@ -113,16 +115,16 @@ export async function startHookServer(options: HookServerOptions): Promise<HookS
                         return;
                     }
 
+                    try {
+                        // Dispatch before acknowledging so Codex cannot append the matching
+                        // transcript output before HAPI records the nested tool lifecycle.
+                        onSessionHook(sessionId, data);
+                    } catch (error) {
+                        logger.debug('[hookServer] Error dispatching session hook:', error);
+                    }
                     if (!res.headersSent && !res.writableEnded) {
                         res.writeHead(200, { 'Content-Type': 'text/plain' }).end('ok');
                     }
-                    setImmediate(() => {
-                        try {
-                            onSessionHook(sessionId, data);
-                        } catch (error) {
-                            logger.debug('[hookServer] Error dispatching session hook:', error);
-                        }
-                    });
                 } catch (error) {
                     clearTimeout(timeout);
                     if (timedOut) {

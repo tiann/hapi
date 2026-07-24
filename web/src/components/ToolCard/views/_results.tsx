@@ -10,6 +10,7 @@ import {
     getCodexAgentActivity,
     getCodexAgentTargets,
     parseCodexCloseAgentResult,
+    parseCodexListAgentsResult,
     parseCodexSpawnAgentResult,
     parseCodexWaitAgentResult
 } from '@/components/ToolCard/codexAgents'
@@ -791,6 +792,7 @@ const CodexAgentResultView: ToolViewComponent = (props: ToolViewProps) => {
                 <div className="flex flex-wrap gap-2">
                     <ResultStatusPill text="Agent launched" />
                     {parsed.nickname ? <AgentIdPill label="Name" value={parsed.nickname} /> : null}
+                    {parsed.taskName ? <AgentIdPill label="Task" value={parsed.taskName} /> : null}
                     {parsed.agentId ? <AgentIdPill label="ID" value={parsed.agentId} /> : null}
                     {showDetails ? <RawJsonDevOnly value={result} surface={props.surface} /> : null}
                 </div>
@@ -802,7 +804,7 @@ const CodexAgentResultView: ToolViewComponent = (props: ToolViewProps) => {
         const parsed = parseCodexWaitAgentResult(result)
         if (parsed) {
             if (parsed.statuses.length === 0) {
-                return <ResultStatusPill text={parsed.timedOut ? 'Timed out' : 'No status'} />
+                return <ResultStatusPill text={parsed.timedOut ? 'Timed out' : parsed.message ?? 'No status'} />
             }
 
             return (
@@ -840,20 +842,53 @@ const CodexAgentResultView: ToolViewComponent = (props: ToolViewProps) => {
         }
     }
 
-    if (name === 'close_agent') {
+    if (name === 'close_agent' || name === 'interrupt_agent') {
         const parsed = parseCodexCloseAgentResult(result)
         if (parsed) {
             const targets = getCodexAgentTargets(input)
             return (
                 <div className="flex flex-col gap-2">
                     <div className="flex flex-wrap gap-2">
-                        <ResultStatusPill text="Agent closed" />
+                        <ResultStatusPill text={name === 'interrupt_agent' ? 'Agent interrupted' : 'Agent closed'} />
                         {targets[0] ? <AgentIdPill label="ID" value={targets[0]} /> : null}
                         <ResultStatusPill text={parsed.state} />
                     </div>
                     {showDetails && parsed.text ? (
                         <div className="text-sm text-[var(--app-fg)]">
                             {renderText(parsed.text, { mode: 'auto', collapseLongContent: props.surface === 'inline', surface: props.surface })}
+                        </div>
+                    ) : null}
+                    {showDetails ? <RawJsonDevOnly value={result} surface={props.surface} /> : null}
+                </div>
+            )
+        }
+    }
+
+    if (name === 'list_agents') {
+        const agents = parseCodexListAgentsResult(result)
+        if (agents) {
+            return (
+                <div className="flex flex-col gap-3">
+                    <div className="flex flex-wrap gap-2">
+                        <ResultStatusPill text={`${agents.length} live agent${agents.length === 1 ? '' : 's'}`} />
+                        {Object.entries(agents.reduce<Record<string, number>>((counts, agent) => {
+                            counts[agent.state] = (counts[agent.state] ?? 0) + 1
+                            return counts
+                        }, {})).map(([status, count]) => (
+                            <ResultStatusPill key={status} text={`${count} ${status}`} />
+                        ))}
+                    </div>
+                    {showDetails ? (
+                        <div className="flex flex-col gap-2">
+                            {agents.map((agent) => (
+                                <div key={agent.agentId} className="border-b border-[var(--app-border)] py-2 last:border-b-0">
+                                    <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--app-hint)]">
+                                        <ResultStatusPill text={agent.state} />
+                                        <span className="font-mono break-all">{agent.agentId}</span>
+                                    </div>
+                                    {agent.text ? <div className="mt-1 text-sm text-[var(--app-fg)]">{agent.text}</div> : null}
+                                </div>
+                            ))}
                         </div>
                     ) : null}
                     {showDetails ? <RawJsonDevOnly value={result} surface={props.surface} /> : null}
@@ -980,9 +1015,13 @@ export const toolResultViewRegistry: Record<string, ToolViewComponent> = {
     Skill: SkillResultView,
     spawn_agent: CodexAgentResultView,
     send_input: CodexAgentResultView,
+    send_message: CodexAgentResultView,
     resume_agent: CodexAgentResultView,
+    followup_task: CodexAgentResultView,
     wait_agent: CodexAgentResultView,
     close_agent: CodexAgentResultView,
+    interrupt_agent: CodexAgentResultView,
+    list_agents: CodexAgentResultView,
     AskUserQuestion: AskUserQuestionResultView,
     ExitPlanMode: MarkdownResultView,
     ask_user_question: AskUserQuestionResultView,

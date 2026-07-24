@@ -7,6 +7,8 @@ const harness = vi.hoisted(() => ({
     setConfigOptionArgs: [] as Array<{ sessionId: string; configId: string; value: string }>,
     promptCount: 0,
     promptContents: [] as unknown[],
+    refreshSessionInfoCalls: [] as Array<{ sessionId: string; cwd: string }>,
+    bridgeOptions: null as { enableChangeTitle?: boolean; skillLookup?: { workingDirectory: string; flavor: string } } | null,
     events: [] as string[],
     setModelImpl: null as null | ((sessionId: string, modelId: string) => Promise<void>),
     setConfigOptionImpl: null as null | ((sessionId: string, configId: string, value: string) => Promise<void>),
@@ -45,6 +47,10 @@ vi.mock('./utils/opencodeBackend', () => ({
         cancelPrompt: vi.fn(async () => {}),
         respondToPermission: vi.fn(async () => {}),
         onStderrError: vi.fn(),
+        setSessionInfoUpdateListener: vi.fn(),
+        refreshSessionInfo: vi.fn(async (sessionId: string, cwd: string) => {
+            harness.refreshSessionInfoCalls.push({ sessionId, cwd });
+        }),
         onPermissionRequest: vi.fn(),
         disconnect: vi.fn(async () => {}),
         getSessionModelsMetadata: vi.fn(() => undefined),
@@ -53,10 +59,13 @@ vi.mock('./utils/opencodeBackend', () => ({
 }));
 
 vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
-    buildHapiMcpBridge: async () => ({
-        server: { stop: () => {} },
-        mcpServers: {}
-    })
+    buildHapiMcpBridge: async (_client: unknown, options?: { enableChangeTitle?: boolean; skillLookup?: { workingDirectory: string; flavor: string } }) => {
+        harness.bridgeOptions = options ?? null;
+        return {
+            server: { stop: () => {} },
+            mcpServers: {}
+        };
+    }
 }));
 
 vi.mock('./utils/permissionHandler', () => ({
@@ -131,6 +140,7 @@ function createSessionStub(items: Array<{ message: string; mode: OpencodeMode }>
             }
         },
         sendAgentMessage(_message: unknown) {},
+        sendClaudeSessionMessage(_message: unknown) {},
         sendUserMessage(_text: string) {},
         sendSessionEvent(event: { type: string; [key: string]: unknown }) {
             sessionEvents.push(event);
@@ -172,6 +182,8 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         harness.setConfigOptionArgs = [];
         harness.promptCount = 0;
         harness.promptContents = [];
+        harness.refreshSessionInfoCalls = [];
+        harness.bridgeOptions = null;
         harness.events = [];
         harness.setModelImpl = null;
         harness.setConfigOptionImpl = null;
@@ -188,6 +200,8 @@ describe('opencodeRemoteLauncher inline model switch', () => {
 
         expect(JSON.stringify(harness.promptContents[0])).toContain('$name');
         expect(JSON.stringify(harness.promptContents[0])).toContain('skill_lookup');
+        expect(JSON.stringify(harness.promptContents[0])).toContain('hapi_display_image');
+        expect(JSON.stringify(harness.promptContents[0])).not.toContain('hapi_change_title');
         expect(JSON.stringify(harness.promptContents[1])).not.toContain('skill_lookup');
     });
 
@@ -198,6 +212,15 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         ]);
 
         await opencodeRemoteLauncher(session as never);
+
+        expect(harness.bridgeOptions).toEqual({
+            enableChangeTitle: false,
+            skillLookup: { workingDirectory: '/tmp/hapi-opencode-test', flavor: 'opencode' }
+        });
+        expect(harness.refreshSessionInfoCalls).toEqual([
+            { sessionId: 'acp-session-1', cwd: '/tmp/hapi-opencode-test' },
+            { sessionId: 'acp-session-1', cwd: '/tmp/hapi-opencode-test' }
+        ]);
 
         expect(harness.setModelArgs).toEqual([
             { sessionId: 'acp-session-1', modelId: 'mlx/qwen3:0.6b', flavor: 'opencode' }
@@ -409,6 +432,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         expect(content[0]?.text).toContain('You are in plan mode');
         expect(content[0]?.text).toContain('Do not execute tools');
         expect(content[0]?.text).toContain('design the fix');
+        expect(content[0]?.text).not.toContain('hapi_change_title');
     });
 
     it('registers a listOpencodeModels RPC handler that returns the backend cache', async () => {
@@ -428,6 +452,8 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             cancelPrompt: vi.fn(async () => {}),
             respondToPermission: vi.fn(async () => {}),
             onStderrError: vi.fn(),
+            setSessionInfoUpdateListener: vi.fn(),
+            refreshSessionInfo: vi.fn(async () => {}),
             onPermissionRequest: vi.fn(),
             disconnect: vi.fn(async () => {}),
             getSessionModelsMetadata: vi.fn((sessionId: string) => {

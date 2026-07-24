@@ -704,7 +704,9 @@ export class AcpMessageHandler {
             id: toolCallId,
             name,
             input,
-            status
+            status,
+            ...(asString(update.title) ? { title: asString(update.title)! } : {}),
+            ...(asString(update.kind) ? { kind: asString(update.kind)! } : {})
         });
     }
 
@@ -714,6 +716,10 @@ export class AcpMessageHandler {
 
         const status = normalizeStatus(update.status);
         const existing = this.toolCalls.get(toolCallId);
+        const presentation = {
+            ...(asString(update.title) ? { title: asString(update.title)! } : {}),
+            ...(asString(update.kind) ? { kind: asString(update.kind)! } : {})
+        };
 
         if (isUsableRawInput(update.rawInput)) {
             const derivedName = deriveToolNameFromUpdate(update);
@@ -725,7 +731,8 @@ export class AcpMessageHandler {
                 id: toolCallId,
                 name,
                 input,
-                status
+                status,
+                ...presentation
             });
         } else if (existing) {
             // Enrich existing.input from update's kind+title when initial tool_call
@@ -758,7 +765,8 @@ export class AcpMessageHandler {
                     id: toolCallId,
                     name,
                     input,
-                    status
+                    status,
+                    ...presentation
                 });
             }
         }
@@ -784,7 +792,8 @@ export class AcpMessageHandler {
                         id: toolCallId,
                         name: hoisted.name,
                         input: hoisted.input,
-                        status
+                        status,
+                        ...presentation
                     });
                 }
             }

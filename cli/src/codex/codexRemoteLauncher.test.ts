@@ -64,6 +64,7 @@ const harness = vi.hoisted(() => ({
     emitSecondParentSpawnStartWithoutEnd: false,
     emitParentSendInputFailure: false,
     emitParentResumeSuccess: false,
+    emitParentV2AgentTools: false,
     emitRunningChildTurnBeforeSuppressedParent: false,
     emitCompletedChildTurnBeforeSuppressedParent: false,
     emitTurnAbortedOnInterrupt: false,
@@ -424,6 +425,48 @@ vi.mock('./codexAppServerClient', () => {
                     const parentCompact = { thread: { id: threadId } };
                     harness.notifications.push({ method: 'thread/compacted', params: parentCompact });
                     this.notificationHandler?.('thread/compacted', parentCompact);
+                }
+
+                if (harness.emitParentV2AgentTools) {
+                    const v2Calls = [{
+                        callId: 'v2-spawn',
+                        name: 'spawn_agent',
+                        input: { task_name: 'review', message: 'Review this' },
+                        output: { task_name: '/root/review', nickname: 'Reviewer' }
+                    }, {
+                        callId: 'v2-wait',
+                        name: 'wait_agent',
+                        input: { timeout_ms: 10_000 },
+                        output: { message: 'Wait timed out.', timed_out: true }
+                    }];
+
+                    for (const call of v2Calls) {
+                        const started = {
+                            threadId,
+                            turnId,
+                            item: {
+                                type: 'function_call',
+                                namespace: 'collaboration',
+                                name: call.name,
+                                arguments: JSON.stringify(call.input),
+                                call_id: call.callId
+                            }
+                        };
+                        harness.notifications.push({ method: 'rawResponseItem/completed', params: started });
+                        this.notificationHandler?.('rawResponseItem/completed', started);
+
+                        const completed = {
+                            threadId,
+                            turnId,
+                            item: {
+                                type: 'function_call_output',
+                                call_id: call.callId,
+                                output: JSON.stringify(call.output)
+                            }
+                        };
+                        harness.notifications.push({ method: 'rawResponseItem/completed', params: completed });
+                        this.notificationHandler?.('rawResponseItem/completed', completed);
+                    }
                 }
 
                 if (harness.emitParentSpawnFailureWithoutAgentId || harness.emitParentSpawnStartWithoutEnd) {
@@ -1105,6 +1148,7 @@ describe('codexRemoteLauncher', () => {
         harness.emitSecondParentSpawnStartWithoutEnd = false;
         harness.emitParentSendInputFailure = false;
         harness.emitParentResumeSuccess = false;
+        harness.emitParentV2AgentTools = false;
         harness.emitRunningChildTurnBeforeSuppressedParent = false;
         harness.emitCompletedChildTurnBeforeSuppressedParent = false;
         harness.emitTurnAbortedOnInterrupt = false;
@@ -2474,6 +2518,44 @@ describe('codexRemoteLauncher', () => {
                 status: 'failed',
                 error: 'invalid spawn arguments'
             })
+        }));
+    });
+
+    it('forwards shared MultiAgent V2 tools as direct tool cards', async () => {
+        harness.emitParentV2AgentTools = true;
+        const { session, codexMessages } = createSessionStub();
+
+        await codexRemoteLauncher(session as never);
+
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call',
+            name: 'spawn_agent',
+            callId: 'v2-spawn',
+            input: { task_name: 'review', message: 'Review this' }
+        }));
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: 'v2-spawn',
+            output: '{"task_name":"/root/review","nickname":"Reviewer"}'
+        }));
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call',
+            name: 'wait_agent',
+            callId: 'v2-wait',
+            input: { timeout_ms: 10_000 }
+        }));
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: 'v2-wait',
+            output: '{"message":"Wait timed out.","timed_out":true}'
+        }));
+        expect(codexMessages).not.toContainEqual(expect.objectContaining({
+            type: 'agent-run-start',
+            cardId: 'v2-spawn'
+        }));
+        expect(codexMessages).not.toContainEqual(expect.objectContaining({
+            type: 'agent-run-update',
+            agentId: 'spawn-error:v2-spawn'
         }));
     });
 

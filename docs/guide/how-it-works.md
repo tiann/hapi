@@ -47,7 +47,7 @@ HAPI consists of three interconnected components that work together to provide r
 
 ### HAPI CLI
 
-The CLI is a wrapper around AI coding agents (Claude Code, Codex, Cursor Agent, Gemini, OpenCode). It:
+The CLI is a wrapper around AI coding agents (Claude Code, Codex, Cursor Agent, Grok Build, OpenCode). It:
 
 - Starts and manages coding sessions
 - Registers sessions with the HAPI hub
@@ -59,7 +59,7 @@ The CLI is a wrapper around AI coding agents (Claude Code, Codex, Cursor Agent, 
 hapi              # Start Claude Code session
 hapi codex       # Start OpenAI Codex session
 hapi cursor      # Start Cursor Agent session
-hapi gemini      # Start Google Gemini session
+hapi grok        # Start Grok Build session
 hapi opencode    # Start OpenCode session
 hapi runner start # Run background service for remote session spawning
 ```
