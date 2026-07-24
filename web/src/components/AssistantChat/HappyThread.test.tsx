@@ -46,7 +46,6 @@ function renderPanel(props: Partial<ComponentProps<typeof ConversationOutlinePan
     return render(
         <I18nProvider>
             <ConversationOutlinePanel
-                title="project"
                 items={outlineItems}
                 hasMoreMessages={false}
                 isLoadingMoreMessages={false}
@@ -86,6 +85,41 @@ describe('ConversationOutlinePanel', () => {
         fireEvent.click(screen.getByRole('button', { name: /Load earlier/ }))
 
         expect(onLoadMore).toHaveBeenCalledTimes(1)
+    })
+
+    it('filters loaded outline items without hiding load earlier', () => {
+        const onLoadMore = vi.fn()
+        renderPanel({ hasMoreMessages: true, onLoadMore })
+
+        fireEvent.change(screen.getByRole('searchbox', { name: 'Search outline items' }), {
+            target: { value: 'SECOND' }
+        })
+
+        expect(screen.queryByText('Implement the panel')).not.toBeInTheDocument()
+        expect(screen.getByText('Second user prompt')).toBeInTheDocument()
+        expect(screen.getByText('1 of 2 items')).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: /Load earlier/ }))
+        expect(onLoadMore).toHaveBeenCalledTimes(1)
+    })
+
+    it('shows a search-specific empty state', () => {
+        renderPanel()
+
+        fireEvent.change(screen.getByRole('searchbox', { name: 'Search outline items' }), {
+            target: { value: 'missing' }
+        })
+
+        expect(screen.getByText('No matching outline items')).toBeInTheDocument()
+        expect(screen.queryByText('No outline items in loaded messages')).not.toBeInTheDocument()
+    })
+
+    it('keeps an in-panel close action available', () => {
+        const onClose = vi.fn()
+        renderPanel({ onClose })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+
+        expect(onClose).toHaveBeenCalledTimes(1)
     })
 
     it('renders an empty state', () => {

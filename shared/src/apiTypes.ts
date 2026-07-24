@@ -163,7 +163,7 @@ export const ListCodexSessionsRpcRequestSchema = z.object({
 })
 
 export const ListCodexSessionsRpcResponseSchema = z.union([
-    z.object({ success: z.literal(true), sessions: z.array(z.union([CodexLocalSessionSummarySchema, CodexLocalSessionWithMessagesSchema])) }),
+    z.object({ success: z.literal(true), sessions: z.array(z.union([CodexLocalSessionWithMessagesSchema, CodexLocalSessionSummarySchema])) }),
     z.object({ success: z.literal(false), error: z.string() })
 ])
 
@@ -399,6 +399,18 @@ export type ListDirectoryResponse = {
 }
 
 export type RpcListDirectoryResponse = ListDirectoryResponse
+
+export type FileMetadataEntry = {
+    path: string
+    size?: number
+    modified?: number
+}
+
+export type StatFilesResponse = {
+    success: boolean
+    entries?: FileMetadataEntry[]
+    error?: string
+}
 
 export type MachineDirectoryEntry = DirectoryEntry & {
     isGitRepo?: boolean

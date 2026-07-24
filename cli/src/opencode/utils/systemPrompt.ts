@@ -18,6 +18,15 @@ export const TITLE_INSTRUCTION = trimIdent(`
 `);
 
 /**
+ * Tool instructions for native ACP sessions. Title updates come from ACP, so
+ * advertise only the MCP tools that remain available to the model.
+ */
+export const OPENCODE_NATIVE_TOOL_INSTRUCTION = trimIdent(`
+    When you create or find a local image file that the user should see, call the tool "hapi_display_image" with the image path so HAPI can show it inline.
+    ${SKILL_LOOKUP_INSTRUCTION}
+`);
+
+/**
  * The system prompt to inject for OpenCode sessions.
  */
 export const opencodeSystemPrompt = TITLE_INSTRUCTION;

@@ -46,6 +46,18 @@ export class PiSession {
     // RPC resolver — initialized by wireTransportEvents, session-scoped
     rpcResolver: PiRpcResolver | null = null;
 
+    // Startup ready gate (issue #1143). Pi's socket goes `active` (spawn success)
+    // before `pi --mode rpc` finishes `new_session`/`get_state`, so a prompt sent
+    // in that window reaches Pi before its session is initialized and wedges
+    // (agent_start, then silence). Outbound sends that assume a live Pi session
+    // are queued via runWhenReady() and drained FIFO once markReady() fires (on
+    // the first get_state response).
+    private piReady = false;
+    // Buffered sends carry their localId so a cancel-queued-message that arrives
+    // while a prompt is still held (before drain) can drop it instead of firing
+    // a cancelled prompt on markReady (issue #1143 review — MAJOR).
+    private readyQueue: Array<{ localId?: string; fn: () => void }> = [];
+
     private keepAliveInterval: NodeJS.Timeout | null = null;
 
     constructor(opts: {
@@ -74,6 +86,51 @@ export class PiSession {
         this.currentModel = undefined;
         this.initialModel = opts.model?.trim() || null;
         this.currentThinkingLevel = undefined;
+    }
+
+    /** True once Pi RPC startup has completed and buffered sends have drained. */
+    get isReady(): boolean {
+        return this.piReady;
+    }
+
+    /**
+     * Run `fn` now if Pi startup is ready, else buffer it FIFO until markReady().
+     * Used to gate outbound prompt/steer sends so they never reach Pi before its
+     * session is initialized (issue #1143). Pass the message `localId` so a
+     * cancel-queued-message can drop it while still buffered.
+     */
+    runWhenReady(fn: () => void, localId?: string): void {
+        if (this.piReady) {
+            fn();
+            return;
+        }
+        this.readyQueue.push({ localId, fn });
+    }
+
+    /**
+     * Drop a still-buffered send by localId (cancel-queued-message contract).
+     * Returns true if it was buffered and removed (so the hub un-queues the row),
+     * false if it was already drained/sent to Pi or never buffered (best-effort,
+     * mirrors the other agents' queue.cancelByLocalId semantics).
+     */
+    cancelBufferedMessage(localId: string): boolean {
+        const idx = this.readyQueue.findIndex((item) => item.localId === localId);
+        if (idx === -1) return false;
+        this.readyQueue.splice(idx, 1);
+        return true;
+    }
+
+    /**
+     * Signal that Pi RPC startup is complete (first get_state response).
+     * Drains buffered sends in enqueue order. Idempotent — later get_state
+     * responses (or the startup fallback timer) are no-ops.
+     */
+    markReady(): void {
+        if (this.piReady) return;
+        this.piReady = true;
+        const queued = this.readyQueue;
+        this.readyQueue = [];
+        for (const { fn } of queued) fn();
     }
 
     startKeepAlive(): void {

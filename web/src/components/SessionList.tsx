@@ -573,6 +573,7 @@ function formatDateValue(date: Date): string {
 function SessionDateRangePicker(props: {
     start: string
     end: string
+    sessionActivityDates: ReadonlySet<string>
     onChange: (start: string, end: string) => void
     onClose: () => void
 }) {
@@ -627,17 +628,24 @@ function SessionDateRangePicker(props: {
                     const value = formatDateValue(date)
                     const isEndpoint = value === props.start || value === props.end
                     const isInRange = Boolean(props.start && props.end && value > props.start && value < props.end)
+                    const hasSessionActivity = props.sessionActivityDates.has(value)
+                    const dateLabel = date.toLocaleDateString()
+                    const activityLabel = hasSessionActivity
+                        ? t('sessions.timeFilter.dayWithActivity', { date: dateLabel })
+                        : dateLabel
                     return (
                         <button
                             key={value}
                             type="button"
                             onClick={() => selectDate(value)}
-                            aria-label={date.toLocaleDateString()}
+                            aria-label={activityLabel}
+                            title={hasSessionActivity ? activityLabel : undefined}
                             className={cn(
                                 'h-8 rounded-lg text-xs transition-colors',
                                 isEndpoint && 'bg-[var(--app-link)] text-white',
                                 isInRange && 'bg-[var(--app-link)]/15 text-[var(--app-link)]',
-                                !isEndpoint && !isInRange && 'hover:bg-[var(--app-subtle-bg)]'
+                                !isEndpoint && !isInRange && hasSessionActivity && 'text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)]',
+                                !isEndpoint && !isInRange && !hasSessionActivity && 'text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)]'
                             )}
                         >
                             {index + 1}
@@ -668,42 +676,41 @@ function SessionListSearch(props: {
     onChange: (value: string) => void
     customStart: string
     customEnd: string
+    sessionActivityDates: ReadonlySet<string>
     onDateRangeChange: (start: string, end: string) => void
 }) {
     const { t } = useTranslation()
     const [datePickerOpen, setDatePickerOpen] = useState(false)
     const hasDateRange = Boolean(props.customStart && props.customEnd)
     return (
-        <div className="px-3 pb-2">
-            <div className="flex items-center gap-2">
-                <div className="relative min-w-0 flex-1">
-                    <div className="pointer-events-none absolute inset-y-0 left-2 flex items-center text-[var(--app-hint)]">
-                        <SearchIcon className="h-3.5 w-3.5" />
-                    </div>
-                    <input
-                        type="search"
-                        value={props.value}
-                        onChange={(event) => props.onChange(event.target.value)}
-                        placeholder={t('sessions.search.placeholder')}
-                        className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] py-1.5 pl-8 pr-8 text-sm text-[var(--app-fg)] outline-none transition-colors placeholder:text-[var(--app-hint)] focus:border-[var(--app-link)] [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-decoration]:hidden"
-                    />
-                    {props.value ? (
-                        <button
-                            type="button"
-                            onClick={() => props.onChange('')}
-                            className="absolute inset-y-0 right-2 flex items-center rounded p-0.5 text-[var(--app-hint)] hover:text-[var(--app-fg)]"
-                            title={t('sessions.search.clear')}
-                        >
-                            <XIcon className="h-3.5 w-3.5" />
-                        </button>
-                    ) : null}
+        <div className="px-2 pb-2">
+            <div className="relative min-w-0">
+                <div className="pointer-events-none absolute inset-y-0 left-2 flex items-center text-[var(--app-hint)]">
+                    <SearchIcon className="h-3.5 w-3.5" />
                 </div>
-                <div className="relative shrink-0">
+                <input
+                    type="search"
+                    value={props.value}
+                    onChange={(event) => props.onChange(event.target.value)}
+                    placeholder={t('sessions.search.placeholder')}
+                    className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] py-1.5 pl-8 pr-16 text-sm text-[var(--app-fg)] outline-none transition-colors placeholder:text-[var(--app-hint)] focus:border-[var(--app-link)] [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-decoration]:hidden"
+                />
+                {props.value ? (
+                    <button
+                        type="button"
+                        onClick={() => props.onChange('')}
+                        className="absolute inset-y-0 right-9 flex items-center rounded p-0.5 text-[var(--app-hint)] hover:text-[var(--app-fg)]"
+                        title={t('sessions.search.clear')}
+                    >
+                        <XIcon className="h-3.5 w-3.5" />
+                    </button>
+                ) : null}
+                <div className="absolute inset-y-0 right-0 flex items-stretch">
                     <button
                         type="button"
                         onClick={() => setDatePickerOpen(open => !open)}
                         className={cn(
-                            'relative rounded-lg p-2 transition-colors hover:bg-[var(--app-subtle-bg)]',
+                            'relative flex items-center rounded-r-lg rounded-l-md px-2 transition-colors hover:bg-[var(--app-subtle-bg)]',
                             hasDateRange ? 'text-[var(--app-link)]' : 'text-[var(--app-hint)]'
                         )}
                         title={hasDateRange ? `${props.customStart} – ${props.customEnd}` : t('sessions.timeFilter.label')}
@@ -719,6 +726,7 @@ function SessionListSearch(props: {
                             <SessionDateRangePicker
                                 start={props.customStart}
                                 end={props.customEnd}
+                                sessionActivityDates={props.sessionActivityDates}
                                 onChange={props.onDateRangeChange}
                                 onClose={() => setDatePickerOpen(false)}
                             />
@@ -730,7 +738,10 @@ function SessionListSearch(props: {
     )
 }
 
-function formatCodexImportedRelativeTime(value: number, t: (key: string, params?: Record<string, string | number>) => string): string | null {
+function formatCodexImportedRelativeTime(
+    value: number,
+    t: (key: string, params?: Record<string, string | number>) => string
+): string | null {
     const ms = value < 1_000_000_000_000 ? value * 1000 : value
     if (!Number.isFinite(ms)) return null
     const delta = Date.now() - ms
@@ -741,10 +752,13 @@ function formatCodexImportedRelativeTime(value: number, t: (key: string, params?
     if (hours < 24) return t('session.time.importedFromCodex.hoursAgo', { n: hours })
     const days = Math.floor(hours / 24)
     if (days < 7) return t('session.time.importedFromCodex.daysAgo', { n: days })
-    return new Date(ms).toLocaleDateString()
+    return formatRelativeTime(value, t)
 }
 
-function getSessionTimeLabel(session: SessionSummary, t: (key: string, params?: Record<string, string | number>) => string): string | null {
+function getSessionTimeLabel(
+    session: SessionSummary,
+    t: (key: string, params?: Record<string, string | number>) => string
+): string | null {
     const codexSessionId = session.metadata?.agentSessionId
     const importedAt = session.metadata?.flavor === 'codex'
         ? getCodexImportedAt(codexSessionId)
@@ -904,7 +918,7 @@ function SessionItem(props: {
                                 {t('session.item.pending')} {s.pendingRequestsCount}
                             </span>
                         ) : null}
-                        <span className="text-[var(--app-hint)]">
+                        <span className="tabular-nums text-[var(--app-hint)]">
                             {getSessionTimeLabel(s, t)}
                         </span>
                     </div>
@@ -924,6 +938,8 @@ function SessionItem(props: {
             <SessionActionMenu
                 isOpen={menuOpen}
                 onClose={() => setMenuOpen(false)}
+                sessionId={s.id}
+                sessionTitle={sessionName}
                 sessionActive={s.active}
                 onRename={() => setRenameOpen(true)}
                 onExport={() => setExportOpen(true)}
@@ -1042,6 +1058,10 @@ export function SessionList(props: {
             return showActiveSessionsOnly ? filterActiveSessionsOnly(prepared, selectedSessionId) : prepared
         },
         [props.sessions, selectedSessionId, showActiveSessionsOnly]
+    )
+    const sessionActivityDates = useMemo(
+        () => new Set(allSessions.map(session => formatDateValue(new Date(session.updatedAt)))),
+        [allSessions]
     )
     const visibleSessions = useMemo(
         () => isFiltering
@@ -1238,6 +1258,7 @@ export function SessionList(props: {
                     onChange={setSearchQuery}
                     customStart={customStart}
                     customEnd={customEnd}
+                    sessionActivityDates={sessionActivityDates}
                     onDateRangeChange={(start, end) => {
                         setCustomStart(start)
                         setCustomEnd(end)
@@ -1325,7 +1346,7 @@ export function SessionList(props: {
                                                 {/* Level 3: Sessions */}
                                                 <div className="collapsible-panel" data-open={!isCollapsed || undefined}>
                                                     <div className="collapsible-inner">
-                                                    <div className="flex flex-col gap-0.5 ml-3 pl-1 pr-1 py-1">
+                                                    <div className="flex flex-col gap-0.5 ml-3 pl-1 py-1">
                                                         {visibleGroupSessions.map((s) => (
                                                             <SessionItem
                                                                 key={s.id}
@@ -1344,7 +1365,7 @@ export function SessionList(props: {
                                                                     ? showMoreSessions(group)
                                                                     : collapseSessionGroup(group)}
                                                                 className={cn(
-                                                                    'mx-2 my-1 rounded-md px-2 py-1 text-left text-xs text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]',
+                                                                    'mx-2 my-1 rounded-md px-2 py-1 text-center text-xs text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]',
                                                                     hiddenSessionCount > 0 && 'border border-dashed border-[var(--app-border)]'
                                                                 )}
                                                             >

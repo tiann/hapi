@@ -12,7 +12,10 @@ import { logger } from '@/ui/logger'
 import { runtimePath } from '@/projectPath'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { readWorktreeEnv } from '@/utils/worktreeEnv'
+import { exportHapiSessionEnv } from '@/agent/hapiSessionEnv'
 import packageJson from '../../package.json'
+
+export { HAPI_SESSION_ID_ENV, exportHapiSessionEnv } from '@/agent/hapiSessionEnv'
 
 export type SessionStartedBy = 'runner' | 'terminal'
 
@@ -174,6 +177,8 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
 
     const session = api.sessionSyncClient(sessionInfo)
 
+    exportHapiSessionEnv(sessionInfo.id)
+
     await reportSessionStarted(sessionInfo.id, metadata)
 
     return {
@@ -254,6 +259,10 @@ export async function bootstrapLazySession(options: SessionBootstrapOptions): Pr
             return materialized
         },
         onMaterialized: (materialized, snapshot) => {
+            // Export only after the hub row exists. Exporting the provisional id at
+            // bootstrap lets agents inherit HAPI_SESSION_ID before GET /api/sessions/:id
+            // can resolve (and before hapiMcpUrl is persisted) — #1119 / PR #1121 Major.
+            exportHapiSessionEnv(materialized.id)
             void reportSessionStarted(materialized.id, snapshot.metadata ?? metadata)
         }
     })
@@ -306,6 +315,9 @@ export async function bootstrapExistingSession(options: {
 
     const session = api.sessionSyncClient(sessionInfo)
     session.updateMetadata(buildUpdatedMetadata)
+
+    exportHapiSessionEnv(sessionInfo.id)
+
     await reportSessionStarted(sessionInfo.id, metadata)
 
     return {

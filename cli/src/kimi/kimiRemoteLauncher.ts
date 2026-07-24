@@ -1,4 +1,5 @@
 import React from 'react';
+import { registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
 import { logger } from '@/ui/logger';
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
 import { convertAgentMessage } from '@/agent/messageConverter';
@@ -44,6 +45,7 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
         const messageBuffer = this.messageBuffer;
 
         const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client, {
+            enableChangeTitle: false,
             skillLookup: { workingDirectory: session.path, flavor: 'kimi' }
         });
         this.happyServer = happyServer;
@@ -52,6 +54,7 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
 
         const backend = createKimiBackend();
         this.backend = backend;
+        registerAcpSessionTitleSync(backend, session.client);
 
         backend.onStderrError((error) => {
             logger.debug('[kimi-remote] stderr error', error);
@@ -180,6 +183,7 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
                 await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
                     this.handleAgentMessage(message);
                 });
+                void backend.refreshSessionInfo(acpSessionId, session.path);
             } catch (error) {
                 const errorMessage = error instanceof Error ? error.message : String(error);
                 logger.warn('[kimi-remote] prompt failed', { message: errorMessage });

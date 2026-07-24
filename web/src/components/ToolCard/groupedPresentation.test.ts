@@ -114,6 +114,87 @@ describe('formatGroupedRowLabel', () => {
 })
 
 describe('formatGroupedHeaderTitle', () => {
+    it('uses an immediately preceding Codex activity heading', () => {
+        const group = makeGroup([
+            makeTool('read-activity-1', 'Read', { file_path: 'auth.ts' }),
+            makeTool('read-activity-2', 'Read', { file_path: 'session.ts' }),
+        ])
+        group.activityTitle = 'Inspecting the authentication flow'
+
+        expect(formatGroupedHeaderTitle(group, tEn)).toBe('Inspecting the authentication flow')
+    })
+
+    it('uses a specific file target instead of the generic inspection label', () => {
+        const group = makeGroup([
+            makeTool('read-1', 'Read', { file_path: '/repo/src/auth.ts' }),
+            makeTool('read-2', 'Read', { file_path: '/repo/src/session.ts' }),
+        ])
+
+        expect(formatGroupedHeaderTitle(group, tEn)).toBe('Inspect auth.ts')
+    })
+
+    it('uses a specific search pattern', () => {
+        const group = makeGroup([
+            makeTool('grep-1', 'Grep', { pattern: 'authToken' }),
+            makeTool('grep-2', 'Grep', { pattern: 'authToken' }),
+        ])
+
+        expect(formatGroupedHeaderTitle(group, tEn)).toBe('Search “authToken”')
+    })
+
+    it('extracts safe targets from Codex inspection and search commands', () => {
+        const inspect = makeGroup([
+            makeTool('inspect-command-1', 'shell_command', { command: "sed -n '1,120p' web/src/auth.ts" }),
+            makeTool('inspect-command-2', 'shell_command', { command: 'cat web/src/session.ts' }),
+        ])
+        const search = makeGroup([
+            makeTool('search-command-1', 'shell_command', { command: "rg 'authToken' web/src" }),
+            makeTool('search-command-2', 'shell_command', { command: "grep 'authToken' cli/src/index.ts" }),
+        ])
+
+        expect(formatGroupedHeaderTitle(inspect, tEn)).toBe('Inspect auth.ts')
+        expect(formatGroupedHeaderTitle(search, tEn)).toBe('Search “authToken”')
+    })
+
+    it('skips search option values and redacts common token prefixes', () => {
+        const optioned = makeGroup([
+            makeTool('search-option-1', 'shell_command', { command: "rg -g '*.ts' authToken web/src" }),
+            makeTool('search-option-2', 'shell_command', { command: "grep -m 2 authToken cli/src" }),
+        ])
+        const credential = makeGroup([
+            makeTool('search-secret-1', 'Grep', { pattern: 'ghp_1234567890abcdefghijklmnop' }),
+            makeTool('search-secret-2', 'Grep', { pattern: 'ghp_1234567890abcdefghijklmnop' }),
+        ])
+
+        expect(formatGroupedHeaderTitle(optioned, tEn)).toBe('Search “authToken”')
+        expect(formatGroupedHeaderTitle(credential, tEn)).toBe('Search project content')
+        expect(formatGroupedHeaderTitle(credential, tEn)).not.toContain('ghp_')
+    })
+
+    it('uses a safe project command but hides arbitrary command text', () => {
+        const safe = makeGroup([
+            makeTool('cmd-1', 'Bash', { command: 'bun test' }),
+            makeTool('cmd-2', 'Bash', { command: 'bun test' }),
+        ])
+        const sensitive = makeGroup([
+            makeTool('cmd-3', 'Bash', { command: 'curl -H "Authorization: Bearer abc" example.com' }),
+            makeTool('cmd-4', 'Bash', { command: 'curl example.com' }),
+        ])
+
+        expect(formatGroupedHeaderTitle(safe, tEn)).toBe('Run bun test')
+        expect(formatGroupedHeaderTitle(sensitive, tEn)).toBe('Run project commands')
+        expect(formatGroupedHeaderTitle(sensitive, tEn)).not.toContain('Bearer')
+    })
+
+    it('prefers a Claude call description and truncates long labels', () => {
+        const first = makeTool('cmd-description-1', 'Bash', { command: 'node script.js' })
+        first.tool.description = 'Check the authentication migration behavior before applying changes'
+        const second = makeTool('cmd-description-2', 'Bash', { command: 'node other.js' })
+        const group = makeGroup([first, second])
+
+        expect(formatGroupedHeaderTitle(group, tEn)).toBe('Check the authentication migration behavior before applying changes')
+    })
+
     it('uses the primary activity without an inline +n suffix', () => {
         const group = makeGroup([
             makeTool('shell-1', 'shell_command', { command: 'Get-ChildItem src -Recurse' }),
@@ -123,7 +204,7 @@ describe('formatGroupedHeaderTitle', () => {
             makeTool('shell-5', 'shell_command', { command: 'cat README.md' }),
         ])
 
-        expect(formatGroupedHeaderTitle(group, tZh)).toBe('检查项目文件')
+        expect(formatGroupedHeaderTitle(group, tZh)).toBe('检查 src')
     })
 
     it('uses a neutral title for all-generic tool groups', () => {

@@ -684,6 +684,20 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 || toolName === 'close_agent';
         };
 
+        const isLegacyCodexAgentToolCall = (toolName: string | null, input: unknown): boolean => {
+            if (!isCodexAgentToolName(toolName)) return false;
+
+            const inputRecord = asRecord(input);
+            if (toolName === 'spawn_agent') {
+                return !asString(inputRecord?.task_name ?? inputRecord?.taskName);
+            }
+            if (toolName === 'wait_agent') {
+                return Array.isArray(inputRecord?.targets);
+            }
+
+            return true;
+        };
+
         const isTerminalAgentRunStatus = (status: string | null | undefined): boolean => {
             return status === 'completed'
                 || status === 'failed'
@@ -1707,7 +1721,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 const callId = asString(msg.call_id ?? msg.callId);
                 const name = asString(msg.name);
                 if (callId && name) {
-                    if (isCodexAgentToolName(name)) {
+                    if (isLegacyCodexAgentToolCall(name, msg.input)) {
                         const error = 'Nested agent calls are disabled for child agents.';
                         runtime.blockedNestedAgent = true;
                         emitAgentRunTraceMessage(agentId, {
@@ -2988,20 +3002,20 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 const callId = asString(msg.call_id ?? msg.callId);
                 const name = asString(msg.name);
                 if (callId && name) {
-                    if (isCodexAgentToolName(name)) {
-                            const input = msg.input ?? {};
-                            pendingAgentToolInputByCallId.set(callId, { name, input });
-                            if (name === 'spawn_agent') {
-                                emitAgentRunStart(callId, input);
-                            } else {
-                                for (const agentId of extractAgentTargets(input)) {
-                                    if (!agentCardByAgentId.has(agentId)) {
-                                        continue;
-                                    }
-                                    const activity = name === 'wait_agent'
-                                        ? 'Waiting for agent'
-                                        : name === 'send_input'
-                                            ? 'Sending input'
+                    if (isLegacyCodexAgentToolCall(name, msg.input)) {
+                        const input = msg.input ?? {};
+                        pendingAgentToolInputByCallId.set(callId, { name, input });
+                        if (name === 'spawn_agent') {
+                            emitAgentRunStart(callId, input);
+                        } else {
+                            for (const agentId of extractAgentTargets(input)) {
+                                if (!agentCardByAgentId.has(agentId)) {
+                                    continue;
+                                }
+                                const activity = name === 'wait_agent'
+                                    ? 'Waiting for agent'
+                                    : name === 'send_input'
+                                        ? 'Sending input'
                                         : name === 'resume_agent'
                                             ? 'Resuming agent'
                                             : name === 'close_agent'
@@ -3030,7 +3044,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 const callId = asString(msg.call_id ?? msg.callId);
                 const name = asString(msg.name) ?? pendingAgentToolInputByCallId.get(callId ?? '')?.name ?? null;
                 if (callId) {
-                    if (name && isCodexAgentToolName(name)) {
+                    if (name && pendingAgentToolInputByCallId.has(callId)) {
                         handleAgentToolEnd(callId, name, msg.output, Boolean(msg.is_error ?? msg.isError));
                         return;
                     }

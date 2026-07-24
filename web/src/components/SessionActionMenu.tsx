@@ -9,10 +9,16 @@ import {
 } from 'react'
 import { useTranslation } from '@/lib/use-translation'
 import { HoverTooltip } from '@/components/HoverTooltip'
+import { safeCopyToClipboard } from '@/lib/clipboard'
+import { buildSessionReferenceText } from '@/lib/sessionReference'
+import { usePlatform } from '@/hooks/usePlatform'
+import { CopyIcon } from '@/components/icons'
 
 type SessionActionMenuProps = {
     isOpen: boolean
     onClose: () => void
+    sessionId: string
+    sessionTitle: string
     sessionActive: boolean
     onRename: () => void
     onExport?: () => void
@@ -160,9 +166,12 @@ type MenuPosition = {
 
 export function SessionActionMenu(props: SessionActionMenuProps) {
     const { t } = useTranslation()
+    const { haptic } = usePlatform()
     const {
         isOpen,
         onClose,
+        sessionId,
+        sessionTitle,
         sessionActive,
         onRename,
         onExport,
@@ -183,6 +192,16 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
     const handleRename = () => {
         onClose()
         onRename()
+    }
+
+    const handleCopyReference = async () => {
+        onClose()
+        try {
+            await safeCopyToClipboard(buildSessionReferenceText(sessionTitle, sessionId))
+            haptic.notification('success')
+        } catch {
+            haptic.notification('error')
+        }
     }
 
     const handleArchive = () => {
@@ -289,7 +308,7 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
 
     const menuStyle: CSSProperties | undefined = menuPosition
         ? {
-            top: menuPosition.top,
+            top: `max(${menuPosition.top}px, calc(env(safe-area-inset-top) + 8px))`,
             left: menuPosition.left,
             transformOrigin: menuPosition.transformOrigin
         }
@@ -324,6 +343,16 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                 >
                     <EditIcon className="text-[var(--app-hint)]" />
                     {t('session.action.rename')}
+                </button>
+
+                <button
+                    type="button"
+                    role="menuitem"
+                    className={`${baseItemClassName} hover:bg-[var(--app-subtle-bg)]`}
+                    onClick={() => void handleCopyReference()}
+                >
+                    <CopyIcon className="h-[18px] w-[18px] text-[var(--app-hint)]" />
+                    {t('session.action.copyReference')}
                 </button>
 
                 {onExport ? (

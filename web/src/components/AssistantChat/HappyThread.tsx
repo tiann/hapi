@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ThreadPrimitive } from '@assistant-ui/react'
 import type { ApiClient } from '@/api/client'
 import type { SessionMetadataSummary } from '@/types/api'
@@ -150,7 +150,6 @@ const THREAD_MESSAGE_COMPONENTS = {
 } as const
 
 export function ConversationOutlinePanel(props: {
-    title: string
     items: readonly ConversationOutlineItem[]
     hasMoreMessages: boolean
     isLoadingMoreMessages: boolean
@@ -159,61 +158,99 @@ export function ConversationOutlinePanel(props: {
     onClose: () => void
 }) {
     const { t, locale } = useTranslation()
+    const [searchQuery, setSearchQuery] = useState('')
+    const normalizedSearchQuery = searchQuery.trim().toLocaleLowerCase()
+    const filteredItems = useMemo(() => {
+        if (normalizedSearchQuery.length === 0) {
+            return props.items
+        }
+        return props.items.filter((item) => (
+            item.label.toLocaleLowerCase().includes(normalizedSearchQuery)
+        ))
+    }, [normalizedSearchQuery, props.items])
 
     return (
         <aside
             className="absolute inset-y-0 right-0 z-30 flex w-full max-w-[24rem] flex-col border-l border-[var(--app-border)] bg-[var(--app-bg)] shadow-2xl sm:w-[24rem]"
             aria-label={t('session.outline.title')}
         >
-            <div className="flex items-start gap-3 border-b border-[var(--app-border)] p-3">
-                <div className="min-w-0 flex-1">
-                    <div className="text-sm font-semibold">{t('session.outline.title')}</div>
-                    <div className="mt-0.5 truncate text-xs text-[var(--app-hint)]">{props.title}</div>
-                </div>
-                <button
-                    type="button"
-                    onClick={props.onClose}
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)]"
-                    aria-label={t('button.close')}
-                    title={t('button.close')}
-                >
-                    <CloseIcon className="h-4 w-4" />
-                </button>
-            </div>
-
-            {props.hasMoreMessages ? (
-                <div className="border-b border-[var(--app-border)] p-3">
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={props.onLoadMore}
-                        disabled={props.isLoadingMoreMessages}
-                        aria-busy={props.isLoadingMoreMessages}
-                        className="w-full gap-1.5 text-xs"
-                    >
-                        {props.isLoadingMoreMessages ? (
-                            <>
+            <div className="border-b border-[var(--app-border)] p-3">
+                <div className="flex items-center gap-2">
+                    <div className="relative min-w-0 flex-1">
+                        <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            width="16"
+                            height="16"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--app-hint)]"
+                            aria-hidden="true"
+                        >
+                            <circle cx="11" cy="11" r="8" />
+                            <path d="m21 21-4.3-4.3" />
+                        </svg>
+                        <input
+                            type="search"
+                            value={searchQuery}
+                            onChange={(event) => setSearchQuery(event.target.value)}
+                            placeholder={t('session.outline.searchPlaceholder')}
+                            aria-label={t('session.outline.searchLabel')}
+                            className="h-9 w-full rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] py-2 pl-9 pr-3 text-sm text-[var(--app-fg)] outline-none placeholder:text-[var(--app-hint)] focus:border-[var(--app-link)] focus:ring-1 focus:ring-[var(--app-link)]"
+                        />
+                    </div>
+                    {props.hasMoreMessages ? (
+                        <Button
+                            variant="outline"
+                            onClick={props.onLoadMore}
+                            disabled={props.isLoadingMoreMessages}
+                            aria-busy={props.isLoadingMoreMessages}
+                            aria-label={props.isLoadingMoreMessages ? t('misc.loading') : t('session.outline.loadOlder')}
+                            title={props.isLoadingMoreMessages ? t('misc.loading') : t('session.outline.loadOlder')}
+                            className="h-9 w-9 shrink-0 px-0"
+                        >
+                            {props.isLoadingMoreMessages ? (
                                 <Spinner size="sm" label={null} className="text-current" />
-                                {t('misc.loading')}
-                            </>
-                        ) : (
-                            <>
-                                <span aria-hidden="true">↑</span>
-                                {t('session.outline.loadOlder')}
-                            </>
-                        )}
-                    </Button>
+                            ) : (
+                                <span className="text-base leading-none" aria-hidden="true">↑</span>
+                            )}
+                        </Button>
+                    ) : null}
+                    <button
+                        type="button"
+                        onClick={props.onClose}
+                        aria-label={t('button.close')}
+                        title={t('button.close')}
+                        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                    >
+                        <CloseIcon className="h-4 w-4" />
+                    </button>
                 </div>
-            ) : null}
+                {normalizedSearchQuery.length > 0 ? (
+                    <div className="mt-1.5 text-right text-xs text-[var(--app-hint)]" aria-live="polite">
+                        {t('session.outline.searchResults', {
+                            matched: filteredItems.length,
+                            total: props.items.length
+                        })}
+                    </div>
+                ) : null}
+            </div>
 
             <div className="app-scroll-y min-h-0 flex-1 p-2">
                 {props.items.length === 0 ? (
                     <div className="px-2 py-8 text-center text-sm text-[var(--app-hint)]">
                         {t('session.outline.empty')}
                     </div>
+                ) : filteredItems.length === 0 ? (
+                    <div className="px-2 py-8 text-center text-sm text-[var(--app-hint)]">
+                        {t('session.outline.noSearchResults')}
+                    </div>
                 ) : (
                     <div className="space-y-1">
-                        {props.items.map((item) => {
+                        {filteredItems.map((item) => {
                             const createdAt = new Date(item.createdAt)
                             return (
                                 <button
@@ -265,7 +302,6 @@ export function HappyThread(props: {
     messagesVersion: number
     forceScrollToken: number
     outlineOpen: boolean
-    outlineTitle: string
     outlineItems: readonly ConversationOutlineItem[]
     onOutlineOpenChange: (open: boolean) => void
     onOutlineItemClick?: (item: ConversationOutlineItem) => void
@@ -565,12 +601,20 @@ export function HappyThread(props: {
         return loadPromise
     }, [isInitialScrollSettling, settlePendingLoad])
 
+    const loadOlderFromUserAction = useCallback((): Promise<boolean> => {
+        // Initial settling protects the automatic top sentinel from racing the
+        // first scroll-to-bottom pass. It must not swallow an explicit click.
+        initialScrollDeadlineRef.current = 0
+        clearInitialScrollTimers()
+        return loadOlderPreservingScroll()
+    }, [clearInitialScrollTimers, loadOlderPreservingScroll])
+
     const handleOutlineSelect = useCallback(async (item: ConversationOutlineItem) => {
         const target = await locateOutlineTargetMessage({
             targetMessageId: item.targetMessageId,
             findTarget: (anchorId) => document.getElementById(anchorId),
             hasMoreMessages: () => hasMoreMessagesRef.current,
-            loadOlderPreservingScroll
+            loadOlderPreservingScroll: loadOlderFromUserAction
         })
         if (target) {
             target.scrollIntoView({ block: 'start', behavior: 'smooth' })
@@ -578,7 +622,7 @@ export function HappyThread(props: {
         }
         props.onOutlineItemClick?.(item)
         props.onOutlineOpenChange(false)
-    }, [loadOlderPreservingScroll, props.onOutlineItemClick, props.onOutlineOpenChange])
+    }, [loadOlderFromUserAction, props.onOutlineItemClick, props.onOutlineOpenChange])
 
     useEffect(() => {
         handleLoadMoreRef.current = () => {
@@ -690,7 +734,7 @@ export function HappyThread(props: {
             onRetryMessage: props.onRetryMessage,
             hasMoreMessages: props.hasMoreMessages,
             isLoadingMoreMessages: props.isLoadingMoreMessages,
-            loadOlderMessagesPreservingScroll: loadOlderPreservingScroll
+            loadOlderMessagesPreservingScroll: loadOlderFromUserAction
         }}>
             <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col relative">
                 <ThreadPrimitive.Viewport
@@ -720,7 +764,7 @@ export function HappyThread(props: {
                                                     variant="outline"
                                                     size="sm"
                                                     onClick={() => {
-                                                        void loadOlderPreservingScroll()
+                                                        void loadOlderFromUserAction()
                                                     }}
                                                     disabled={props.isLoadingMoreMessages || props.isLoadingMessages}
                                                     aria-busy={props.isLoadingMoreMessages}
@@ -765,12 +809,11 @@ export function HappyThread(props: {
                             onClick={() => props.onOutlineOpenChange(false)}
                         />
                         <ConversationOutlinePanel
-                            title={props.outlineTitle}
                             items={props.outlineItems}
                             hasMoreMessages={props.hasMoreMessages}
                             isLoadingMoreMessages={props.isLoadingMoreMessages}
                             onLoadMore={() => {
-                                void loadOlderPreservingScroll()
+                                void loadOlderFromUserAction()
                             }}
                             onSelect={handleOutlineSelect}
                             onClose={() => props.onOutlineOpenChange(false)}

@@ -63,4 +63,32 @@ describe('directory RPC handlers', () => {
         expect(link?.type).toBe('other')
         expect(link?.size).toBeUndefined()
     })
+
+    it('returns metadata for a batch of searched files', async () => {
+        const response = await rpc.handleRequest({
+            method: 'session-test:statFiles',
+            params: JSON.stringify({ paths: ['README.md', 'src/index.ts', 'missing.txt'] })
+        })
+        const parsed = JSON.parse(response) as {
+            success: boolean
+            entries?: Array<{ path: string; size?: number; modified?: number }>
+        }
+
+        expect(parsed.success).toBe(true)
+        expect(parsed.entries).toHaveLength(3)
+        expect(parsed.entries?.[0]).toMatchObject({ path: 'README.md', size: 6 })
+        expect(parsed.entries?.[0]?.modified).toBeTypeOf('number')
+        expect(parsed.entries?.[2]).toEqual({ path: 'missing.txt' })
+    })
+
+    it('rejects stat paths outside the session working directory', async () => {
+        const response = await rpc.handleRequest({
+            method: 'session-test:statFiles',
+            params: JSON.stringify({ paths: ['../outside.txt'] })
+        })
+        const parsed = JSON.parse(response) as { success: boolean; error?: string }
+
+        expect(parsed.success).toBe(false)
+        expect(parsed.error).toContain('outside the working directory')
+    })
 })

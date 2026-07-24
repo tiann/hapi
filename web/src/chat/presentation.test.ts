@@ -206,8 +206,13 @@ describe('formatResetTime', () => {
 describe('formatMessageTimestamp', () => {
     it('formats today without requiring a date prefix', () => {
         const now = new Date(2026, 4, 22, 14, 30)
-        const result = formatMessageTimestamp(new Date(2026, 4, 22, 9, 5), now)
-        expect(result).toBeTruthy()
+        const date = new Date(2026, 4, 22, 9, 5)
+        const result = formatMessageTimestamp(date, now)
+        expect(result).toBe(date.toLocaleTimeString(undefined, {
+            hour: '2-digit',
+            minute: '2-digit',
+            hourCycle: 'h23'
+        }))
         expect(result).not.toContain('2026')
     })
 

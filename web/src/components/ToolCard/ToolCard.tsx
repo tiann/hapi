@@ -319,13 +319,14 @@ function ToolCardInner(props: ToolCardProps) {
         input: props.block.tool.input,
         result: props.block.tool.result,
         childrenCount: props.block.children.length,
-        description: props.block.tool.description,
+        description: props.block.tool.nativeTitle ?? props.block.tool.description,
         metadata: props.metadata
     }, t), [
         props.block.tool.name,
         props.block.tool.input,
         props.block.tool.result,
         props.block.children.length,
+        props.block.tool.nativeTitle,
         props.block.tool.description,
         props.metadata,
         t

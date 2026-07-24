@@ -14,6 +14,11 @@ import type { SlashCommandsResponse } from '@hapi/protocol/apiTypes';
 import type { ListPiModelsResponse } from '@hapi/protocol/apiTypes';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 
+// Grace period before force-draining prompts buffered during Pi startup when no
+// get_state response arrives. Comfortably above the 10s Pi RPC timeout so a slow
+// but healthy startup still flips ready via get_state first (issue #1143).
+const PI_READY_FALLBACK_MS = 30_000;
+
 export async function runPi(opts: {
     startedBy?: 'runner' | 'terminal';
     startingMode?: 'local' | 'remote';
@@ -312,17 +317,36 @@ export async function runPi(opts: {
     // --- User message handler ---
     apiSession.onUserMessage((message, localId) => {
         const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
-        if (piSession.piIsStreaming) {
-            // Steer does not start a new turn, so the localId would never be
-            // drained by turn_start. Mark it consumed immediately so it does
-            // not poison the FIFO for the next real prompt.
-            transport.send({ type: 'steer', message: formattedText });
-            if (localId) piSession.emitMessagesConsumed([localId]);
-        } else {
-            if (localId) pendingLocalIds.push(localId);
-            transport.send({ type: 'prompt', message: formattedText });
-        }
+        // Gate the send behind Pi startup readiness. A prompt POSTed immediately
+        // after spawn (supported handoff pattern — hapi-ping-peer, intake
+        // scripts) would otherwise reach Pi before new_session/get_state finish
+        // and wedge the turn. runWhenReady delivers now if ready, else buffers
+        // FIFO until the first get_state response drains it (issue #1143).
+        // piIsStreaming is evaluated at delivery time so a message buffered
+        // before startup still takes the prompt path.
+        piSession.runWhenReady(() => {
+            if (piSession.piIsStreaming) {
+                // Steer does not start a new turn, so the localId would never be
+                // drained by turn_start. Mark it consumed immediately so it does
+                // not poison the FIFO for the next real prompt.
+                transport.send({ type: 'steer', message: formattedText });
+                if (localId) piSession.emitMessagesConsumed([localId]);
+            } else {
+                if (localId) pendingLocalIds.push(localId);
+                transport.send({ type: 'prompt', message: formattedText });
+            }
+        }, localId);
     });
+
+    // --- Cancel-queued-message handler ---
+    // A prompt buffered during the startup window (runWhenReady) can be cancelled
+    // by the hub before it drains. Without this, ApiSessionClient acks
+    // removed:false, the hub marks the row invoked, yet the closure would still
+    // fire the cancelled prompt on get_state. Dropping it from the buffer keeps
+    // the queued-message cancel contract intact (issue #1143 review — MAJOR).
+    // Once sent to Pi it cannot be recalled — return false (best-effort), which
+    // matches the other agents' queue.cancelByLocalId semantics.
+    apiSession.onCancelQueuedMessage((localId) => piSession.cancelBufferedMessage(localId));
 
     // --- Abort handler ---
     // Only cancel the current turn, keep session alive for next prompt.
@@ -351,6 +375,17 @@ export async function runPi(opts: {
 
     // --- Run ---
     let crashed = false;
+    // Fallback: if Pi never returns get_state (never flips ready), force-drain
+    // buffered prompts after a grace period rather than swallowing them forever.
+    // This degrades to pre-fix behaviour (send anyway) instead of something
+    // worse. markReady is idempotent, so a real get_state that lands first wins.
+    const readyFallback = setTimeout(() => {
+        if (!piSession.isReady) {
+            logger.debug('[pi] get_state ready signal not seen within grace — draining buffered messages');
+            piSession.markReady();
+        }
+    }, PI_READY_FALLBACK_MS);
+    readyFallback.unref?.();
     try {
         transport.start();
         transport.send({ type: 'new_session' });
@@ -395,6 +430,7 @@ export async function runPi(opts: {
         lifecycle.setSessionEndReason('error');
         logger.debug('[pi] Loop error:', error);
     } finally {
+        clearTimeout(readyFallback);
         if (!crashed && !lifecycle.hasExplicitSessionEndReason()) {
             lifecycle.setSessionEndReason('completed');
         }

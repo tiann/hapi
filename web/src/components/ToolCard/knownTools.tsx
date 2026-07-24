@@ -355,9 +355,27 @@ export const knownTools: Record<string, {
         },
         minimal: true
     },
+    send_message: {
+        icon: () => <MessageSquareIcon className={DEFAULT_ICON_CLASS} />,
+        title: () => 'Message agent',
+        subtitle: (opts) => {
+            const targets = getCodexAgentTargets(opts.input)
+            return targets.length > 0 ? targets.join(', ') : 'Queued message'
+        },
+        minimal: true
+    },
     resume_agent: {
         icon: () => <RocketIcon className={DEFAULT_ICON_CLASS} />,
         title: () => 'Resume agent',
+        subtitle: (opts) => {
+            const targets = getCodexAgentTargets(opts.input)
+            return targets.length > 0 ? targets.join(', ') : null
+        },
+        minimal: true
+    },
+    followup_task: {
+        icon: () => <MessageSquareIcon className={DEFAULT_ICON_CLASS} />,
+        title: () => 'Follow up agent',
         subtitle: (opts) => {
             const targets = getCodexAgentTargets(opts.input)
             return targets.length > 0 ? targets.join(', ') : null
@@ -387,6 +405,24 @@ export const knownTools: Record<string, {
             const targets = getCodexAgentTargets(opts.input)
             return targets.length > 0 ? targets.join(', ') : null
         },
+        minimal: true
+    },
+    interrupt_agent: {
+        icon: () => <RocketIcon className={DEFAULT_ICON_CLASS} />,
+        title: () => 'Interrupt agent',
+        subtitle: (opts) => {
+            const summary = summarizeCodexAgentResult(opts.toolName, opts.result)
+            if (summary) return summary
+            const targets = getCodexAgentTargets(opts.input)
+            return targets.length > 0 ? targets.join(', ') : null
+        },
+        minimal: true
+    },
+    list_agents: {
+        icon: () => <UsersIcon className={DEFAULT_ICON_CLASS} />,
+        title: () => 'List agents',
+        subtitle: (opts) => summarizeCodexAgentResult(opts.toolName, opts.result)
+            ?? getInputStringAny(opts.input, ['path_prefix']),
         minimal: true
     },
     CodexReasoning: {
@@ -574,7 +610,7 @@ export function getToolPresentation(
     // become the subtitle, so the card reads like a sentence instead of
     // showing the same string twice. Labels are translated when a Translator
     // is supplied; tests and call sites without i18n fall back to English.
-    let title = opts.toolName
+    let title = opts.description ?? opts.toolName
     if (subtitle && subtitle === title) {
         if (filePath) title = t ? t('tool.semanticTitle.readFile') : 'Read file'
         else if (command) title = t ? t('tool.semanticTitle.runShell') : 'Run shell'

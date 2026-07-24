@@ -6,7 +6,25 @@ import { ScheduleTimePicker } from './ScheduleTimePicker'
 import type { PendingSchedule } from './ScheduleTimePicker'
 import { useFue } from '@/lib/use-fue'
 import { FueCallout, FueDot } from '@/components/Fue'
-import { useRef, useState } from 'react'
+import { Children, isValidElement, useRef, useState, type ReactElement, type ReactNode } from 'react'
+import { useComposerToolbarLayout, type ComposerToolbarItemId, type ComposerToolbarLayout } from '@/hooks/useComposerToolbarLayout'
+
+function ToolbarItemSlot(props: { item: ComposerToolbarItemId; children: ReactNode }) {
+    return <>{props.children}</>
+}
+
+function OrderedToolbarItems(props: { layout: ComposerToolbarLayout; children: ReactNode }) {
+    const slots = Children.toArray(props.children).filter(
+        (child): child is ReactElement<{ item: ComposerToolbarItemId; children: ReactNode }> => isValidElement(child),
+    )
+    const slotsByItem = new Map(slots.map((slot) => [slot.props.item, slot]))
+    const renderItems = (items: ComposerToolbarItemId[]) => items.map((item) => slotsByItem.get(item) ?? null)
+
+    if (props.layout.mode === 'split') {
+        return <>{renderItems(props.layout.left)}<span className="flex-1" aria-hidden="true" />{renderItems(props.layout.right)}</>
+    }
+    return <>{renderItems([...props.layout.left, ...props.layout.right])}</>
+}
 
 function ChevronIcon() {
     return <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M2.5 3.75L5 6.25L7.5 3.75" /></svg>
@@ -223,6 +241,37 @@ function ScratchlistToggleIcon() {
     )
 }
 
+export function ComposerToolbarItemPreview(props: { item: ComposerToolbarItemId; label: string }) {
+    const icon = (() => {
+        switch (props.item) {
+            case 'attachment': return <AttachmentIcon />
+            case 'settings': return <SettingsIcon />
+            case 'terminal': return <TerminalIcon />
+            case 'abort': return <AbortIcon spinning={false} />
+            case 'switch': return <SwitchToRemoteIcon />
+            case 'voiceMic': return <SpeakerIcon />
+            case 'scratchlist': return <ScratchlistToggleIcon />
+            case 'schedule': return <ScheduleIcon className="h-[18px] w-[18px]" />
+            case 'piModel':
+            case 'piThinking':
+                return <><span className="max-w-24 truncate text-xs font-medium">{props.label}</span><ChevronIcon /></>
+        }
+    })()
+    const isTextControl = props.item === 'piModel' || props.item === 'piThinking'
+    return (
+        <span
+            className={`flex h-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 ${isTextControl ? 'gap-1 px-3' : 'w-8'}`}
+            aria-hidden="true"
+        >
+            {icon}
+        </span>
+    )
+}
+
+export function ComposerSendButtonPreview() {
+    return <span className="flex h-10 w-10 items-center justify-center rounded-full bg-black text-white dark:bg-white dark:text-black" aria-hidden="true"><SendIcon /></span>
+}
+
 /**
  * ScratchlistToggleButton — composer affordance for toggling scratchlist mode,
  * wrapped in the generic FUE (First-User Experience) primitive so a new
@@ -423,7 +472,7 @@ export function UnifiedButton(props: {
             disabled={isDisabled}
             aria-label={ariaLabel}
             title={ariaLabel}
-            className={`flex h-8 w-8 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
+            className={`ml-1 flex h-8 w-8 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
         >
             {icon}
         </button>
@@ -479,16 +528,24 @@ export function ComposerButtons(props: {
     onScratchlistToggle?: () => void
 }) {
     const { t } = useTranslation()
+    const { layout } = useComposerToolbarLayout()
     const isVoiceConnected = props.voiceStatus === 'connected'
     const [showSchedulePicker, setShowSchedulePicker] = useState(false)
     const scheduleButtonRef = useRef<HTMLButtonElement>(null)
 
     const hasSchedule = props.pendingSchedule != null
     const hasAttachments = props.hasAttachments ?? false
+    const toolbarAlignmentClass = layout.mode === 'center'
+        ? 'justify-center'
+        : layout.mode === 'right'
+            ? 'justify-end'
+            : 'justify-start'
 
     return (
-        <div className="flex items-center justify-between px-2 pb-2">
-            <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 px-2 pb-2">
+            <div className={`flex min-w-0 flex-1 items-center gap-1 ${toolbarAlignmentClass}`}>
+                <OrderedToolbarItems layout={layout}>
+                <ToolbarItemSlot item="attachment">
                 <ComposerPrimitive.AddAttachment
                     aria-label={t('composer.attach')}
                     title={t('composer.attach')}
@@ -497,7 +554,9 @@ export function ComposerButtons(props: {
                 >
                     <AttachmentIcon />
                 </ComposerPrimitive.AddAttachment>
+                </ToolbarItemSlot>
 
+                <ToolbarItemSlot item="settings">
                 {props.showSettingsButton ? (
                     <button
                         type="button"
@@ -510,7 +569,9 @@ export function ComposerButtons(props: {
                         <SettingsIcon />
                     </button>
                 ) : null}
+                </ToolbarItemSlot>
 
+                <ToolbarItemSlot item="piModel">
                 {props.piModelLabel ? (
                     <button
                         type="button"
@@ -528,7 +589,9 @@ export function ComposerButtons(props: {
                         <ChevronIcon />
                     </button>
                 ) : null}
+                </ToolbarItemSlot>
 
+                <ToolbarItemSlot item="piThinking">
                 {props.piThinkingLabel ? (
                     <button
                         type="button"
@@ -546,7 +609,9 @@ export function ComposerButtons(props: {
                         <ChevronIcon />
                     </button>
                 ) : null}
+                </ToolbarItemSlot>
 
+                <ToolbarItemSlot item="terminal">
                 {props.showTerminalButton ? (
                     <button
                         type="button"
@@ -559,7 +624,9 @@ export function ComposerButtons(props: {
                         <TerminalIcon />
                     </button>
                 ) : null}
+                </ToolbarItemSlot>
 
+                <ToolbarItemSlot item="abort">
                 {props.showAbortButton ? (
                     <button
                         type="button"
@@ -572,7 +639,9 @@ export function ComposerButtons(props: {
                         <AbortIcon spinning={props.isAborting} />
                     </button>
                 ) : null}
+                </ToolbarItemSlot>
 
+                <ToolbarItemSlot item="switch">
                 {props.showSwitchButton ? (
                     <button
                         type="button"
@@ -585,7 +654,9 @@ export function ComposerButtons(props: {
                         <SwitchToRemoteIcon />
                     </button>
                 ) : null}
+                </ToolbarItemSlot>
 
+                <ToolbarItemSlot item="voiceMic">
                 {isVoiceConnected && props.onVoiceMicToggle ? (
                     <button
                         type="button"
@@ -601,6 +672,7 @@ export function ComposerButtons(props: {
                         <SpeakerIcon muted={props.voiceMicMuted} />
                     </button>
                 ) : null}
+                </ToolbarItemSlot>
 
                 {/*
                  * Scratchlist toggle - prototype of the composer-controlled
@@ -613,18 +685,23 @@ export function ComposerButtons(props: {
                  * submission to addScratchlistEntry() instead of the chat.
                  * Mode is sticky - operator clicks the icon again to exit.
                  */}
+                <ToolbarItemSlot item="scratchlist">
                 {props.onScratchlistToggle ? (
-                    <ScratchlistToggleButton
-                        scratchlistMode={props.scratchlistMode ?? false}
-                        scratchlistCount={props.scratchlistCount ?? 0}
-                        onScratchlistToggle={props.onScratchlistToggle}
-                        controlsDisabled={props.controlsDisabled}
-                    />
+                    <div>
+                        <ScratchlistToggleButton
+                            scratchlistMode={props.scratchlistMode ?? false}
+                            scratchlistCount={props.scratchlistCount ?? 0}
+                            onScratchlistToggle={props.onScratchlistToggle}
+                            controlsDisabled={props.controlsDisabled}
+                        />
+                    </div>
                 ) : null}
+                </ToolbarItemSlot>
 
                 {/* Schedule button — only shown when onSchedule handler is provided */}
+                <ToolbarItemSlot item="schedule">
                 {props.onSchedule ? (
-                    <>
+                    <div>
                         <button
                             ref={scheduleButtonRef}
                             type="button"
@@ -657,8 +734,10 @@ export function ComposerButtons(props: {
                                 pendingSchedule={props.pendingSchedule}
                             />
                         )}
-                    </>
+                    </div>
                 ) : null}
+                </ToolbarItemSlot>
+                </OrderedToolbarItems>
             </div>
 
             <UnifiedButton

@@ -1,7 +1,7 @@
 import { logger } from '@/ui/logger'
 import { readdir, stat } from 'fs/promises'
 import { basename, join, resolve } from 'path'
-import type { DirectoryEntry, ListDirectoryResponse } from '@hapi/protocol/apiTypes'
+import type { DirectoryEntry, ListDirectoryResponse, StatFilesResponse } from '@hapi/protocol/apiTypes'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import type { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager'
 import { validatePath } from '../pathSecurity'
@@ -14,6 +14,10 @@ interface ListDirectoryRequest {
 interface GetDirectoryTreeRequest {
     path: string
     maxDepth: number
+}
+
+interface StatFilesRequest {
+    paths: string[]
 }
 
 interface TreeNode {
@@ -91,6 +95,35 @@ export function registerDirectoryHandlers(rpcHandlerManager: RpcHandlerManager, 
             logger.debug('Failed to list directory:', error)
             return rpcError(getErrorMessage(error, 'Failed to list directory'))
         }
+    })
+
+    rpcHandlerManager.registerHandler<StatFilesRequest, StatFilesResponse>(RPC_METHODS.StatFiles, async (data) => {
+        if (!Array.isArray(data.paths) || data.paths.length > 500) {
+            return rpcError('Invalid file paths')
+        }
+
+        for (const path of data.paths) {
+            const validation = validatePath(path, workingDirectory)
+            if (!validation.valid) {
+                return rpcError(validation.error ?? 'Invalid file path')
+            }
+        }
+
+        const entries = await Promise.all(data.paths.map(async (path) => {
+            try {
+                const stats = await stat(resolve(workingDirectory, path))
+                return {
+                    path,
+                    size: stats.size,
+                    modified: stats.mtime.getTime()
+                }
+            } catch (error) {
+                logger.debug(`Failed to stat ${path}:`, error)
+                return { path }
+            }
+        }))
+
+        return { success: true, entries }
     })
 
     rpcHandlerManager.registerHandler<GetDirectoryTreeRequest, GetDirectoryTreeResponse>(RPC_METHODS.GetDirectoryTree, async (data) => {

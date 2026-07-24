@@ -37,6 +37,11 @@ export interface PiUsage {
     totalTokens: number;
 }
 
+export interface PiContextUsage {
+    tokens: number;
+    contextWindow?: number;
+}
+
 // Individual event types for proper type narrowing
 export interface PiAgentStartEvent { type: 'agent_start' }
 export interface PiAgentEndEvent { type: 'agent_end'; messages: unknown[] }
@@ -104,7 +109,8 @@ export type PiRpcCommand =
     | { type: 'set_model'; provider: string; modelId: string }
     | { type: 'get_available_models' }
     | { type: 'set_thinking_level'; level: PiThinkingLevel }
-    | { type: 'get_commands' };
+    | { type: 'get_commands' }
+    | { type: 'get_session_stats' };
 
 // ============================================================================
 // Pi RPC Responses (stdout)

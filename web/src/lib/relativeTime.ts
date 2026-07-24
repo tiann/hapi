@@ -1,3 +1,10 @@
+export function formatSessionListDate(date: Date): string {
+    const year = String(date.getFullYear())
+    const month = String(date.getMonth() + 1).padStart(2, '0')
+    const day = String(date.getDate()).padStart(2, '0')
+    return `${year}/${month}/${day}`
+}
+
 /**
  * Formats an epoch ms / s value as a localised "Nm ago" / "Nh ago" / date label.
  * Accepts both ms and seconds; values smaller than 1e12 are treated as seconds.
@@ -18,5 +25,5 @@ export function formatRelativeTime(
     if (hours < 24) return t('session.time.hoursAgo', { n: hours })
     const days = Math.floor(hours / 24)
     if (days < 7) return t('session.time.daysAgo', { n: days })
-    return new Date(ms).toLocaleDateString()
+    return formatSessionListDate(new Date(ms))
 }

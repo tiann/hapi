@@ -4,6 +4,7 @@ export type ParsedToolCall = {
     callId: string;
     name: string;
     input: unknown;
+    title?: string;
 };
 
 export type ParsedToolResult = {
@@ -77,10 +78,12 @@ export function parseToolCall(part: unknown): ParsedToolCall | null {
             return null;
         }
         const input = parseMaybeJson(state.input ?? state.raw ?? record.input ?? record.args ?? record.arguments);
-        return { callId, name, input };
+        const title = getString(state.title);
+        return { callId, name, input, ...(title ? { title } : {}) };
     }
     const input = parseMaybeJson(record.input ?? record.args ?? record.arguments ?? record.raw);
-    return { callId, name, input };
+    const title = getString(record.title);
+    return { callId, name, input, ...(title ? { title } : {}) };
 }
 
 export function parseToolResult(part: unknown): ParsedToolResult | null {

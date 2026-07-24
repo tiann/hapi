@@ -98,6 +98,8 @@ vi.mock('./utils/cursorAcpBackend', () => ({
             respondToPermission: vi.fn(async () => {}),
             onStderrError: vi.fn(),
             setUsageUpdateListener: vi.fn(),
+            setSessionInfoUpdateListener: vi.fn(),
+            refreshSessionInfo: vi.fn(async () => {}),
             onPermissionRequest: vi.fn(),
             registerExtensionRequestHandler: vi.fn(),
             disconnect: vi.fn(async () => {})

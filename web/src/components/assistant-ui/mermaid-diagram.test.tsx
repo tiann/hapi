@@ -145,6 +145,45 @@ describe('MermaidDiagram', () => {
         expect(document.querySelector('[data-mermaid-lightbox]')).toBeTruthy()
     })
 
+    it('surfaces the parse error reason (not just raw source) when a diagram is rejected', async () => {
+        // First call is the suppressed validation gate (returns falsy); the
+        // second is the diagnostic re-parse that throws the human-readable reason.
+        mermaidMocks.parseMock.mockReset()
+        mermaidMocks.parseMock.mockResolvedValueOnce(false)
+        mermaidMocks.parseMock.mockRejectedValueOnce(new Error('No diagram type detected in text'))
+
+        const code = 'grph TD\nA --> B'
+        renderDiagram({ code, language: 'mermaid', components: defaultComponents })
+
+        await waitFor(() => {
+            const reason = document.querySelector('.aui-mermaid-fallback-reason')
+            expect(reason?.textContent).toContain('No diagram type detected in text')
+        })
+
+        // Raw source is still preserved verbatim in the fallback <pre>.
+        expect(document.querySelector('.aui-mermaid-fallback')?.textContent).toBe(code)
+        // Machine-readable hook for automation / e2e.
+        const wrapper = document.querySelector('[data-mermaid-diagram][data-rendered="false"]')
+        expect(wrapper?.getAttribute('data-mermaid-error')).toContain('No diagram type detected in text')
+        // #785/#813 guarantee stays intact.
+        expect(mermaidMocks.renderMock).not.toHaveBeenCalled()
+    })
+
+    it('surfaces the render error reason when render() throws', async () => {
+        mermaidMocks.renderMock.mockRejectedValueOnce(new Error('Cannot read properties of undefined'))
+        const code = 'flowchart LR\nA --> B'
+
+        renderDiagram({ code, language: 'mermaid', components: defaultComponents })
+
+        await waitFor(() => {
+            const reason = document.querySelector('.aui-mermaid-fallback-reason')
+            expect(reason?.textContent).toContain('Cannot read properties of undefined')
+        })
+
+        expect(document.querySelector('.aui-mermaid-fallback')?.textContent).toBe(code)
+        expect(mermaidMocks.renderMock).toHaveBeenCalled()
+    })
+
     it('does not expose a lightbox trigger when rendering fails', async () => {
         mermaidMocks.renderMock.mockRejectedValue(new Error('syntax'))
 

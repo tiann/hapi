@@ -132,27 +132,49 @@ describe('AppServerEventConverter', () => {
 
     it('maps command execution items and output deltas', () => {
         const converter = new AppServerEventConverter();
+        const commandActions = [{
+            type: 'listFiles',
+            command: 'ls',
+            path: '.'
+        }];
 
         const started = converter.handleNotification('item/started', {
-            item: { id: 'cmd-1', type: 'commandExecution', command: 'ls' }
+            item: {
+                id: 'cmd-1',
+                type: 'commandExecution',
+                command: 'ls',
+                source: 'agent',
+                commandActions
+            }
         });
         expect(started).toEqual([{
             type: 'exec_command_begin',
             call_id: 'cmd-1',
-            command: 'ls'
+            command: 'ls',
+            command_actions: commandActions,
+            command_source: 'agent'
         }]);
 
         converter.handleNotification('item/commandExecution/outputDelta', { itemId: 'cmd-1', delta: 'ok' });
         const completed = converter.handleNotification('item/completed', {
-            item: { id: 'cmd-1', type: 'commandExecution', exitCode: 0 }
+            item: {
+                id: 'cmd-1',
+                type: 'commandExecution',
+                aggregatedOutput: 'final output',
+                exitCode: 0,
+                durationMs: 42
+            }
         });
 
         expect(completed).toEqual([{
             type: 'exec_command_end',
             call_id: 'cmd-1',
             command: 'ls',
-            output: 'ok',
-            exit_code: 0
+            command_actions: commandActions,
+            command_source: 'agent',
+            output: 'final output',
+            exit_code: 0,
+            duration_ms: 42
         }]);
     });
 
@@ -357,6 +379,145 @@ describe('AppServerEventConverter', () => {
             },
             is_error: false
         }]);
+    });
+
+    it('maps raw MultiAgent V2 calls without inventing collab tool variants', () => {
+        const converter = new AppServerEventConverter();
+
+        expect(converter.handleNotification('rawResponseItem/completed', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: {
+                type: 'function_call',
+                namespace: 'collaboration',
+                name: 'followup_task',
+                arguments: JSON.stringify({ target: '/root/review', message: 'Continue with tests' }),
+                call_id: 'call-followup'
+            }
+        })).toEqual([{
+            thread_id: 'thread-1',
+            turn_id: 'turn-1',
+            type: 'codex_tool_call_begin',
+            call_id: 'call-followup',
+            name: 'followup_task',
+            input: {
+                message: 'Continue with tests',
+                target: '/root/review'
+            }
+        }]);
+
+        expect(converter.handleNotification('rawResponseItem/completed', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: {
+                type: 'function_call_output',
+                call_id: 'call-followup',
+                output: ''
+            }
+        })).toEqual([{
+            thread_id: 'thread-1',
+            turn_id: 'turn-1',
+            type: 'codex_tool_call_end',
+            call_id: 'call-followup',
+            name: 'followup_task',
+            output: '',
+            is_error: false
+        }]);
+
+        expect(converter.handleNotification('item/started', {
+            item: {
+                id: 'call-followup',
+                type: 'collabAgentToolCall',
+                tool: 'followupTask'
+            }
+        })).toEqual([]);
+    });
+
+    it('keeps MultiAgent V1 calls on the collab item stream', () => {
+        const converter = new AppServerEventConverter();
+
+        expect(converter.handleNotification('rawResponseItem/completed', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: {
+                type: 'function_call',
+                namespace: 'multi_agent_v1',
+                name: 'spawn_agent',
+                arguments: JSON.stringify({ message: 'Do side work' }),
+                call_id: 'call-v1-spawn'
+            }
+        })).toEqual([]);
+
+        expect(converter.handleNotification('rawResponseItem/completed', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: {
+                type: 'function_call_output',
+                call_id: 'call-v1-spawn',
+                output: '{"agent_id":"agent-1","nickname":null}'
+            }
+        })).toEqual([]);
+
+        expect(converter.handleNotification('item/started', {
+            item: {
+                id: 'call-v1-spawn',
+                type: 'collabAgentToolCall',
+                tool: 'spawnAgent',
+                prompt: 'Do side work'
+            }
+        })).toEqual([expect.objectContaining({
+            type: 'codex_tool_call_begin',
+            call_id: 'call-v1-spawn',
+            name: 'spawn_agent'
+        })]);
+    });
+
+    it('maps shared MultiAgent V2 names only when their V2 argument shape is present', () => {
+        const converter = new AppServerEventConverter();
+
+        expect(converter.handleNotification('rawResponseItem/completed', {
+            item: {
+                type: 'function_call',
+                namespace: 'collaboration',
+                name: 'spawn_agent',
+                arguments: JSON.stringify({ task_name: 'review', message: 'Review this' }),
+                call_id: 'call-v2-spawn'
+            }
+        })).toEqual([expect.objectContaining({
+            type: 'codex_tool_call_begin',
+            call_id: 'call-v2-spawn',
+            name: 'spawn_agent',
+            input: { task_name: 'review', message: 'Review this' }
+        })]);
+
+        expect(converter.handleNotification('rawResponseItem/completed', {
+            item: {
+                type: 'function_call',
+                namespace: 'collaboration',
+                name: 'wait_agent',
+                arguments: JSON.stringify({ timeout_ms: 10_000 }),
+                call_id: 'call-v2-wait'
+            }
+        })).toEqual([expect.objectContaining({
+            type: 'codex_tool_call_begin',
+            call_id: 'call-v2-wait',
+            name: 'wait_agent',
+            input: { timeout_ms: 10_000 }
+        })]);
+
+        expect(converter.handleNotification('rawResponseItem/completed', {
+            item: {
+                type: 'function_call',
+                namespace: 'agents',
+                name: 'list_agents',
+                arguments: '{}',
+                call_id: 'call-v2-custom-namespace'
+            }
+        })).toEqual([expect.objectContaining({
+            type: 'codex_tool_call_begin',
+            call_id: 'call-v2-custom-namespace',
+            name: 'list_agents'
+        })]);
     });
 
     it('maps reasoning deltas', () => {

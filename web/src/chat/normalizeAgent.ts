@@ -738,7 +738,9 @@ export function normalizeAgentRecord(
                     id: data.callId,
                     name: asString(data.name) ?? 'unknown',
                     input: data.input,
-                    description: null,
+                    description: asString(data.description),
+                    nativeTitle: asString(data.nativeTitle ?? data.title),
+                    nativeKind: asString(data.nativeKind ?? data.kind),
                     uuid,
                     parentUUID: null
                 }],

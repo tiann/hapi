@@ -17,6 +17,7 @@ import { resolveSkill } from "@/modules/common/skills";
 
 type StartHappyServerOptions = {
     emitTitleSummary?: boolean;
+    enableChangeTitle?: boolean;
     skillLookup?: {
         workingDirectory: string;
         flavor: string;
@@ -26,6 +27,7 @@ type StartHappyServerOptions = {
 function createHapiMcpServer(
     client: ApiSessionClient,
     emitTitleSummary: boolean,
+    enableChangeTitle: boolean,
     skillLookup: StartHappyServerOptions['skillLookup']
 ): McpServer {
     const handler = async (title: string) => {
@@ -63,36 +65,38 @@ function createHapiMcpServer(
         name: z.string().trim().min(1).max(128).describe('Exact skill name shown by HAPI skill autocomplete'),
     });
 
-    mcp.registerTool<any, any>('change_title', {
-        description: 'Change the title of the current chat session',
-        title: 'Change Chat Title',
-        inputSchema: changeTitleInputSchema,
-    }, async (args: { title: string }) => {
-        const response = await handler(args.title);
-        logger.debug('[hapiMCP] Response:', response);
+    if (enableChangeTitle) {
+        mcp.registerTool<any, any>('change_title', {
+            description: 'Change the title of the current chat session',
+            title: 'Change Chat Title',
+            inputSchema: changeTitleInputSchema,
+        }, async (args: { title: string }) => {
+            const response = await handler(args.title);
+            logger.debug('[hapiMCP] Response:', response);
 
-        if (response.success) {
+            if (response.success) {
+                return {
+                    content: [
+                        {
+                            type: 'text' as const,
+                            text: `Successfully changed chat title to: "${args.title}"`,
+                        },
+                    ],
+                    isError: false,
+                };
+            }
+
             return {
                 content: [
                     {
                         type: 'text' as const,
-                        text: `Successfully changed chat title to: "${args.title}"`,
+                        text: `Failed to change chat title: ${response.error || 'Unknown error'}`,
                     },
                 ],
-                isError: false,
+                isError: true,
             };
-        }
-
-        return {
-            content: [
-                {
-                    type: 'text' as const,
-                    text: `Failed to change chat title: ${response.error || 'Unknown error'}`,
-                },
-            ],
-            isError: true,
-        };
-    });
+        });
+    }
 
     mcp.registerTool<any, any>('display_image', {
         description: 'Display a local image file inline in the current HAPI chat session',
@@ -218,11 +222,12 @@ function readMcpSessionId(req: IncomingMessage): string | undefined {
 
 export async function startHappyServer(client: ApiSessionClient, options: StartHappyServerOptions = {}) {
     const emitTitleSummary = options.emitTitleSummary ?? true;
+    const enableChangeTitle = options.enableChangeTitle ?? true;
     const transports = new Map<string, StreamableHTTPServerTransport>();
     const mcps = new Map<string, McpServer>();
 
     const createMcpTransport = () => {
-        const mcp = createHapiMcpServer(client, emitTitleSummary, options.skillLookup);
+        const mcp = createHapiMcpServer(client, emitTitleSummary, enableChangeTitle, options.skillLookup);
         const transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),
             onsessioninitialized: (sessionId) => {
@@ -276,7 +281,7 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
         hapiMcpUrl: mcpUrl,
     }));
 
-    const toolNames = ['change_title', 'display_image'];
+    const toolNames = enableChangeTitle ? ['change_title', 'display_image'] : ['display_image'];
     if (options.skillLookup) {
         toolNames.push('skill_lookup');
     }

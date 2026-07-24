@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path';
 import { open, readdir, stat } from 'node:fs/promises';
 import { logger } from '@/ui/logger';
 import { convertCodexEvent, type CodexSessionEvent } from './codexEventConverter';
+import { isCodexSubagentSource } from './codexSessionMetadata';
 
 export type LocatedCodexTranscript = {
     sessionId: string;
@@ -21,6 +22,7 @@ type TranscriptState = {
     ino: number;
     sessionId: string | null;
     cwd: string | null;
+    isSubagent: boolean;
 };
 
 type CodexTranscriptLocatorOptions = {
@@ -170,7 +172,8 @@ class CodexTranscriptLocatorImpl {
             mtimeMs: 0,
             ino: fileStats.ino,
             sessionId: null,
-            cwd: null
+            cwd: null,
+            isSubagent: false
         };
 
         const replaced = previous && previous.ino !== fileStats.ino;
@@ -186,7 +189,8 @@ class CodexTranscriptLocatorImpl {
                 mtimeMs: 0,
                 ino: fileStats.ino,
                 sessionId: null,
-                cwd: null
+                cwd: null,
+                isSubagent: false
             };
         } else if (previous
             && fileStats.size === previous.size
@@ -238,6 +242,9 @@ class CodexTranscriptLocatorImpl {
                 state.sessionId = asString(metadata?.id) ?? state.sessionId;
                 const eventCwd = asString(metadata?.cwd);
                 state.cwd = eventCwd ? normalizePath(eventCwd) : state.cwd;
+                if (metadata && Object.prototype.hasOwnProperty.call(metadata, 'source')) {
+                    state.isSubagent = isCodexSubagentSource(metadata.source);
+                }
             }
 
             if (convertCodexEvent(event)?.userActivity) {
@@ -263,8 +270,10 @@ class CodexTranscriptLocatorImpl {
             if (state.sessionId !== this.resumeSessionId) {
                 return null;
             }
-        } else if (state.cwd !== this.targetCwd) {
-            return null;
+        } else {
+            if (state.isSubagent || state.cwd !== this.targetCwd) {
+                return null;
+            }
         }
 
         return { sessionId: state.sessionId, transcriptPath };

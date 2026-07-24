@@ -352,8 +352,11 @@ body {
     }
 }
 
-/* Desktop sidebar: use custom width from CSS variable */
-@media (min-width: 1024px) {
+/* Desktop sidebar: use custom width from CSS variable.
+   Kept in sync with the Tailwind `split` breakpoint (see tailwind.config.ts)
+   so the sidebar width/resize applies as soon as the split view appears on
+   compact tablets. */
+@media (min-width: 920px) {
     .desktop-scrollbar-left {
         direction: rtl;
     }
@@ -362,9 +365,14 @@ body {
         direction: ltr;
     }
 
-    /* Apply resizable width to sidebar */
+    /* Apply resizable width to sidebar.
+       Cap it against the viewport so a wide persisted width (up to 600px, from
+       resizing on desktop) can't crush the detail pane on a compact split.
+       424px = 420px min detail pane + 4px resize handle, which preserves the
+       previous 1024px worst case (1024 - 600 - 4 = 420) down to 920px. The cap
+       is a no-op on desktop where 100vw - 424px exceeds the stored width. */
     div[style*="--sidebar-w"] {
-        width: var(--sidebar-w) !important;
+        width: min(var(--sidebar-w), calc(100vw - 424px)) !important;
     }
 }
 
