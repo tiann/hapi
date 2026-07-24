@@ -66,36 +66,25 @@ describe('formatModelErrorBody', () => {
         expect(body).not.toContain('transient')
     })
 
-    it('truncates raw excerpt when oversized', () => {
-        const longRaw = 'A'.repeat(500)
+    it('omits rawSnippet from external notification bodies', () => {
+        const secretish = 'Error: T: [auth_failed] Bearer sk-live-DO-NOT-LEAK path=/home/op/.secrets'
         const body = formatModelErrorBody(
-            baseNotification({ rawSnippet: longRaw }),
+            baseNotification({ rawSnippet: secretish }),
             ctx
         )
-        const lines = body.split('\n')
-        const excerptLine = lines.find((l) => l.startsWith('A'))
-        expect(excerptLine).toBeDefined()
-        expect(excerptLine?.endsWith('...')).toBe(true)
-        expect(excerptLine?.length).toBeLessThanOrEqual(140)
-    })
-
-    it('collapses internal whitespace in the excerpt', () => {
-        const body = formatModelErrorBody(
-            baseNotification({ rawSnippet: 'line 1\n\n  line 2\n\tline 3' }),
-            ctx
-        )
-        expect(body).toContain('line 1 line 2 line 3')
-    })
-
-    it('omits the excerpt line when raw is empty/whitespace-only', () => {
-        const body = formatModelErrorBody(
-            baseNotification({ rawSnippet: '   \n\n   ' }),
-            ctx
-        )
+        expect(body).not.toContain(secretish)
+        expect(body).not.toContain('sk-live')
+        expect(body).not.toContain('resource_exhausted')
         expect(body).toContain('Cursor - feature-x')
-        const lines = body.split('\n')
-        // Lines: agent/session line; no whitespace-only line; no transient
-        // (false). Should be exactly one line in this case.
-        expect(lines).toHaveLength(1)
+    })
+
+    it('still omits raw even when it is long or multiline', () => {
+        const body = formatModelErrorBody(
+            baseNotification({ rawSnippet: `line 1\n\n  ${'A'.repeat(500)}` }),
+            ctx
+        )
+        expect(body).not.toContain('AAAA')
+        expect(body).not.toContain('line 1')
+        expect(body.split('\n')).toEqual(['Cursor - feature-x'])
     })
 })
