@@ -2445,7 +2445,21 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 return;
             }
 
-            if (isTerminalEvent && eventTurnId && eventTurnId === lastFinalizedTurnId) {
+            const isStaleSameThreadRecoveryTerminal = isTerminalEvent
+                && turnInFlight
+                && (sameThreadRetryAttempt > 0 || sameThreadCompactAttempt > 0)
+                && Boolean(eventTurnId)
+                && Boolean(this.currentTurnId)
+                && eventTurnId !== this.currentTurnId
+                && Boolean(eventThreadId)
+                && eventThreadId === this.currentThreadId;
+
+            if (
+                isTerminalEvent
+                && eventTurnId
+                && eventTurnId === lastFinalizedTurnId
+                && !isStaleSameThreadRecoveryTerminal
+            ) {
                 logger.debug(`[Codex] Ignoring duplicate terminal event for turn ${eventTurnId}`);
                 return;
             }
@@ -2618,6 +2632,10 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 && Boolean(activeMessage)
                 && Boolean(this.currentThreadId)
                 && sameThreadRetryAttempt < SAME_THREAD_MAX_RETRIES;
+            const allowStaleSameThreadTerminalRecovery = msgType === 'task_complete'
+                && (sameThreadRetryAttempt > 0 || sameThreadCompactAttempt > 0);
+            const allowSameThreadTerminalRecovery = msg.terminal_source === 'thread_status'
+                || allowStaleSameThreadTerminalRecovery;
 
             const suppressReadyForThisTerminalEvent = isTerminalEvent
                 ? consumeInterruptedTurnReadySuppression(eventTurnId)
@@ -2631,7 +2649,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     allowAnonymousTerminalEvent,
                     eventThreadId,
                     currentThreadId: this.currentThreadId,
-                    allowMatchingThreadIdTerminalEvent: msg.terminal_source === 'thread_status'
+                    allowMatchingThreadIdTerminalEvent: allowSameThreadTerminalRecovery
                 })) {
                     logger.debug(
                         `[Codex] Ignoring terminal event ${msgType} without matching turn context; ` +

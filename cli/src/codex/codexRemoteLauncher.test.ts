@@ -43,6 +43,7 @@ const harness = vi.hoisted(() => ({
     failNextCompact: false,
     deferCompactCompletion: false,
     deferThreadStatusNotifications: false,
+    emitStaleTaskCompleteAfterRetry: false,
     emitChildThreadEvents: false,
     emitChildUsageEvents: false,
     emitChildGoalEvent: false,
@@ -888,6 +889,45 @@ vi.mock('./codexAppServerClient', () => {
                 }
             }
 
+            if (harness.emitStaleTaskCompleteAfterRetry && harness.startTurnThreadIds.length === 2) {
+                const assistantMessage = {
+                    item: {
+                        id: 'stale-retry-message',
+                        type: 'agentMessage',
+                        content: [{ type: 'text', text: 'done after retry' }]
+                    },
+                    threadId,
+                    turnId: 'turn-1'
+                };
+                harness.notifications.push({ method: 'item/completed', params: assistantMessage });
+                this.notificationHandler?.('item/completed', assistantMessage);
+
+                const usage = {
+                    tokenUsage: {
+                        thread_id: threadId,
+                        turn_id: 'turn-1',
+                        last_token_usage: {
+                            input_tokens: 10,
+                            output_tokens: 2
+                        },
+                        model_context_window: 200_000
+                    }
+                };
+                harness.notifications.push({ method: 'thread/tokenUsage/updated', params: usage });
+                this.notificationHandler?.('thread/tokenUsage/updated', usage);
+
+                const staleCompleted = {
+                    msg: {
+                        type: 'task_complete',
+                        thread_id: threadId,
+                        turn_id: 'turn-1'
+                    }
+                };
+                harness.notifications.push({ method: 'codex/event/task_complete', params: staleCompleted });
+                this.notificationHandler?.('codex/event/task_complete', staleCompleted);
+                return { turn: { id: turnId } };
+            }
+
             const completed = { status: 'Completed', turn: { id: turnId } };
             harness.notifications.push({ method: 'turn/completed', params: completed });
             this.notificationHandler?.('turn/completed', completed);
@@ -1127,6 +1167,7 @@ describe('codexRemoteLauncher', () => {
         harness.failNextCompact = false;
         harness.deferCompactCompletion = false;
         harness.deferThreadStatusNotifications = false;
+        harness.emitStaleTaskCompleteAfterRetry = false;
         harness.emitChildThreadEvents = false;
         harness.emitChildUsageEvents = false;
         harness.emitChildGoalEvent = false;
@@ -1546,6 +1587,38 @@ describe('codexRemoteLauncher', () => {
             type: 'message',
             message: 'Task failed: Codex thread entered systemError'
         });
+        expect(session.thinking).toBe(false);
+    });
+
+    it('emits ready when same-thread retry completes with a stale terminal turn id', async () => {
+        harness.remainingThreadSystemErrors = 1;
+        harness.emitStaleTaskCompleteAfterRetry = true;
+        const {
+            session,
+            sessionEvents,
+            codexMessages,
+            rpcHandlers
+        } = createSessionStub(['first message']);
+
+        const running = codexRemoteLauncher(session as never);
+        const timeout = new Promise<'timeout'>((resolve) => {
+            setTimeout(() => resolve('timeout'), 500);
+        });
+        const result = await Promise.race([running, timeout]);
+        if (result === 'timeout') {
+            await rpcHandlers.get('switch')?.({});
+            await running;
+        }
+
+        expect(result).toBe('exit');
+        expect(harness.startThreadIds).toEqual(['thread-1']);
+        expect(harness.startTurnThreadIds).toEqual(['thread-1', 'thread-1']);
+        expect(harness.startTurnMessages).toEqual(['first message', 'first message']);
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'message',
+            message: 'done after retry'
+        }));
+        expect(sessionEvents.filter((event) => event.type === 'ready').length).toBeGreaterThanOrEqual(1);
         expect(session.thinking).toBe(false);
     });
 

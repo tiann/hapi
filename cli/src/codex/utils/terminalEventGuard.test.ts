@@ -80,6 +80,32 @@ describe('shouldIgnoreTerminalEvent', () => {
         expect(ignored).toBe(true);
     });
 
+    it('accepts stale-turn terminal events for the current thread when explicitly allowed', () => {
+        const ignored = shouldIgnoreTerminalEvent({
+            eventTurnId: 'turn-old',
+            currentTurnId: 'turn-current',
+            turnInFlight: true,
+            eventThreadId: 'thread-1',
+            currentThreadId: 'thread-1',
+            allowMatchingThreadIdTerminalEvent: true
+        });
+
+        expect(ignored).toBe(false);
+    });
+
+    it('still ignores stale-turn terminal events for a different thread when thread matching is allowed', () => {
+        const ignored = shouldIgnoreTerminalEvent({
+            eventTurnId: 'turn-old',
+            currentTurnId: 'turn-current',
+            turnInFlight: true,
+            eventThreadId: 'thread-old',
+            currentThreadId: 'thread-1',
+            allowMatchingThreadIdTerminalEvent: true
+        });
+
+        expect(ignored).toBe(true);
+    });
+
     it('accepts terminal events that match the current turn id', () => {
         const ignored = shouldIgnoreTerminalEvent({
             eventTurnId: 'turn-current',
