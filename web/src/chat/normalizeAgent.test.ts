@@ -2,6 +2,29 @@ import { describe, expect, it } from 'vitest'
 import { normalizeAgentRecord } from '@/chat/normalizeAgent'
 
 describe('normalizeAgentRecord — agentTimestamp exposure', () => {
+    it('preserves normalized native tool presentation metadata', () => {
+        const normalized = normalizeAgentRecord('msg-native', null, 1, {
+            type: 'codex',
+            data: {
+                type: 'tool-call',
+                callId: 'call-native',
+                name: 'Bash',
+                input: { command: 'bun test' },
+                nativeTitle: 'Run project tests',
+                nativeKind: 'execute'
+            }
+        })
+
+        expect(normalized).toMatchObject({
+            role: 'agent',
+            content: [{
+                type: 'tool-call',
+                nativeTitle: 'Run project tests',
+                nativeKind: 'execute'
+            }]
+        })
+    })
+
     it('parses data.timestamp into agentTimestamp for an assistant tool_use record', () => {
         const normalized = normalizeAgentRecord('msg-1', null, 1_783_953_478_235, {
             type: 'output',

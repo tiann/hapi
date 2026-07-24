@@ -7,6 +7,7 @@ import type {
     CodexDesktopScriptResponse,
     CodexDesktopSyncRequest,
     CodexDesktopStatusResponse,
+    CodexArchiveSessionResponse,
     CodexCollaborationMode,
     FileSearchResponse,
     MachinesResponse,
@@ -39,6 +40,7 @@ import type {
     MachinePathsExistsResponse,
     OpencodeModelsResponse,
     OpencodeReasoningEffortResponse,
+    QueuedStateResponse,
     ReopenSessionResponse,
     UploadFileResponse
 } from '@hapi/protocol/apiTypes'
@@ -210,8 +212,19 @@ export class ApiClient {
         })
     }
 
-    async getCodexSessions(): Promise<CodexLocalSessionsResponse> {
-        return await this.request<CodexLocalSessionsResponse>('/api/codex/sessions')
+    async getCodexSessions(cwd?: string | null, machineId?: string | null): Promise<CodexLocalSessionsResponse> {
+        const params = new URLSearchParams()
+        if (cwd?.trim()) params.set('cwd', cwd.trim())
+        if (machineId?.trim()) params.set('machineId', machineId.trim())
+        const query = params.size ? `?${params.toString()}` : ''
+        return await this.request<CodexLocalSessionsResponse>(`/api/codex/sessions${query}`)
+    }
+
+    async archiveCodexSession(sessionId: string, machineId?: string | null): Promise<CodexArchiveSessionResponse> {
+        return await this.request<CodexArchiveSessionResponse>('/api/codex/archive-session', {
+            method: 'POST',
+            body: JSON.stringify({ sessionId, machineId: machineId ?? undefined })
+        })
     }
 
     async getCodexDesktopStatus(): Promise<CodexDesktopStatusResponse> {
@@ -406,6 +419,16 @@ export class ApiClient {
                 scheduledAt: scheduledAt ?? undefined
             })
         })
+    }
+
+    async getQueuedState(sessionId: string, localIds: string[]): Promise<QueuedStateResponse> {
+        return await this.request<QueuedStateResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/messages/queued-state`,
+            {
+                method: 'POST',
+                body: JSON.stringify({ localIds })
+            }
+        )
     }
 
     async cancelMessage(sessionId: string, messageId: string): Promise<CancelMessageResponse> {

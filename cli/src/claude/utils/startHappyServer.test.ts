@@ -110,4 +110,23 @@ describe('startHappyServer skill_lookup', () => {
             'display_image'
         ])
     })
+
+    it('does not expose change_title when native ACP titles are enabled', async () => {
+        const sessionClient = {
+            updateMetadata: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            sendClaudeSessionMessage: vi.fn()
+        } as unknown as ApiSessionClient
+        const server = await startHappyServer(sessionClient, { enableChangeTitle: false })
+        stopServer = server.stop
+        const mcp = new Client({ name: 'hapi-test', version: '1.0.0' })
+        client = mcp
+
+        await mcp.connect(new StreamableHTTPClientTransport(new URL(server.url)))
+        const tools = await mcp.listTools()
+
+        expect(server.toolNames).toEqual(['display_image'])
+        expect(tools.tools.map((tool) => tool.name)).toEqual(['display_image'])
+    })
+
 })

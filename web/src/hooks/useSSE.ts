@@ -346,6 +346,9 @@ export function useSSE(options: {
                         ? patch.backgroundTaskCount ?? 0
                         : current.backgroundTaskCount,
                     model: Object.prototype.hasOwnProperty.call(patch, 'model') ? patch.model ?? null : current.model,
+                    modelReasoningEffort: Object.prototype.hasOwnProperty.call(patch, 'modelReasoningEffort')
+                        ? patch.modelReasoningEffort ?? null
+                        : current.modelReasoningEffort,
                     effort: Object.prototype.hasOwnProperty.call(patch, 'effort') ? patch.effort ?? null : current.effort
                 }
 

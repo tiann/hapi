@@ -67,6 +67,12 @@ export const RawJSONLinesSchema = z.discriminatedUnion("type", [
     leafUuid: z.string(),
   }),
 
+  // Claude Code's native interactive CLI title event.
+  RawJSONLinesBaseSchema.extend({
+    type: z.literal("ai-title"),
+    aiTitle: z.string(),
+  }),
+
   // System message - validates uuid and subtype data used by the UI.
   // `passthrough` preserves fields like `messageId` on `turn_duration` and any
   // future system subtype data the hub forwards to the web reducer.

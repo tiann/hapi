@@ -85,6 +85,15 @@ describe('codexCommand', () => {
         })
     })
 
+    it('passes native resume selectors through for Codex to resolve', async () => {
+        await codexCommand.run(createCommandContext(['resume', '--last', 'continue here']))
+
+        expect(assertCodexLocalSupportedMock).toHaveBeenCalledOnce()
+        expect(runCodexMock).toHaveBeenCalledWith({
+            codexArgs: ['resume', '--last', 'continue here']
+        })
+    })
+
     it('skips the local version check for runner-started sessions', async () => {
         await codexCommand.run(createCommandContext(['--started-by', 'runner']))
 

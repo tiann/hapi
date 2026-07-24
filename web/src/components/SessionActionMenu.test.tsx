@@ -3,12 +3,20 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { I18nProvider } from '@/lib/i18n-context'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 
+vi.mock('@/hooks/usePlatform', () => ({
+    usePlatform: () => ({
+        haptic: { notification: vi.fn(), impact: vi.fn() },
+    }),
+}))
+
 afterEach(() => cleanup())
 
 function renderMenu(overrides: Partial<React.ComponentProps<typeof SessionActionMenu>> = {}) {
     const defaults: React.ComponentProps<typeof SessionActionMenu> = {
         isOpen: true,
         onClose: vi.fn(),
+        sessionId: 'sess-123',
+        sessionTitle: 'Test session',
         sessionActive: false,
         onRename: vi.fn(),
         onArchive: vi.fn(),
@@ -87,5 +95,77 @@ describe('SessionActionMenu - Reopen action', () => {
         expect(screen.getByRole('menuitem', { name: /Delete/ })).toBeInTheDocument()
         // Archive should not show up for inactive sessions (it is the active-session destructive).
         expect(screen.queryByRole('menuitem', { name: /Archive/ })).toBeNull()
+    })
+})
+
+describe('SessionActionMenu - Codex sync action', () => {
+    it('renders Sync from Codex only when a handler is provided', () => {
+        const { rerender } = renderMenu({ onSyncCodex: undefined })
+
+        expect(screen.queryByRole('menuitem', { name: /Sync from Codex/ })).toBeNull()
+
+        rerender(
+            <I18nProvider>
+                <SessionActionMenu
+                    isOpen={true}
+                    onClose={vi.fn()}
+                    sessionId="sess-123"
+                    sessionTitle="Test session"
+                    sessionActive={false}
+                    onRename={vi.fn()}
+                    onExport={vi.fn()}
+                    onSyncCodex={vi.fn()}
+                    onArchive={vi.fn()}
+                    onReopen={vi.fn()}
+                    onDelete={vi.fn()}
+                    anchorPoint={{ x: 0, y: 0 }}
+                />
+            </I18nProvider>
+        )
+
+        expect(screen.getByRole('menuitem', { name: /Sync from Codex/ })).toBeInTheDocument()
+    })
+
+    it('fires onSyncCodex and closes the menu when clicked', () => {
+        const onSyncCodex = vi.fn()
+        const onClose = vi.fn()
+        renderMenu({ onSyncCodex, onClose })
+
+        fireEvent.click(screen.getByRole('menuitem', { name: /Sync from Codex/ }))
+
+        expect(onSyncCodex).toHaveBeenCalledTimes(1)
+        expect(onClose).toHaveBeenCalledTimes(1)
+    })
+})
+
+describe('SessionActionMenu - Copy reference action', () => {
+    it('renders the Copy reference item', () => {
+        renderMenu()
+
+        expect(screen.getByRole('menuitem', { name: /Copy reference/ })).toBeInTheDocument()
+    })
+
+    it('copies a session citation and closes the menu when Copy reference is clicked', async () => {
+        const writeText = vi.fn().mockResolvedValue(undefined)
+        Object.defineProperty(navigator, 'clipboard', {
+            value: { writeText },
+            configurable: true,
+        })
+
+        const onClose = vi.fn()
+        renderMenu({
+            sessionId: 'abc-def',
+            sessionTitle: 'upstream issue/pr discovery',
+            onClose,
+        })
+
+        fireEvent.click(screen.getByRole('menuitem', { name: /Copy reference/ }))
+
+        expect(onClose).toHaveBeenCalledTimes(1)
+        await vi.waitFor(() => {
+            expect(writeText).toHaveBeenCalledWith(
+                'See session "upstream issue/pr discovery" (/sessions/abc-def) for context'
+            )
+        })
     })
 })

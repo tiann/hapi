@@ -25,6 +25,8 @@ export type AgentEvent =
     | { type: 'turn-duration'; durationMs: number; targetMessageId?: string }
     | { type: 'microcompact'; trigger: string; preTokens: number; tokensSaved: number }
     | { type: 'compact'; trigger: string; preTokens: number }
+    // Claude Code's automatic away-summary recap (TUI window blur 5min+, then focus).
+    | { type: 'recap'; text: string }
     | { type: 'thread-goal-updated'; goal: ThreadGoal; threadId?: string; turnId?: string }
     | { type: 'thread-goal-cleared'; threadId?: string }
     | ({ type: string } & Record<string, unknown>)
@@ -43,6 +45,8 @@ export type ToolUse = {
     name: string
     input: unknown
     description: string | null
+    nativeTitle?: string | null
+    nativeKind?: string | null
     uuid: string
     parentUUID: string | null
 }
@@ -173,6 +177,8 @@ export type ChatToolCall = {
     execStartedAt: number | null
     execCompletedAt: number | null
     description: string | null
+    nativeTitle?: string | null
+    nativeKind?: string | null
     result?: unknown
     permission?: ToolPermission
 }

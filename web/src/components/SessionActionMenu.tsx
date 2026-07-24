@@ -9,13 +9,20 @@ import {
 } from 'react'
 import { useTranslation } from '@/lib/use-translation'
 import { HoverTooltip } from '@/components/HoverTooltip'
+import { safeCopyToClipboard } from '@/lib/clipboard'
+import { buildSessionReferenceText } from '@/lib/sessionReference'
+import { usePlatform } from '@/hooks/usePlatform'
+import { CopyIcon } from '@/components/icons'
 
 type SessionActionMenuProps = {
     isOpen: boolean
     onClose: () => void
+    sessionId: string
+    sessionTitle: string
     sessionActive: boolean
     onRename: () => void
     onExport?: () => void
+    onSyncCodex?: () => void
     onArchive: () => void
     onReopen?: () => void
     reopenDisabledReason?: string
@@ -106,6 +113,28 @@ function ReopenIcon(props: { className?: string }) {
     )
 }
 
+function SyncIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <path d="M3 12a9 9 0 0 1 15.5-6.2" />
+            <path d="M18 3v6h-6" />
+            <path d="M21 12a9 9 0 0 1-15.5 6.2" />
+            <path d="M6 21v-6h6" />
+        </svg>
+    )
+}
+
 function TrashIcon(props: { className?: string }) {
     return (
         <svg
@@ -137,12 +166,16 @@ type MenuPosition = {
 
 export function SessionActionMenu(props: SessionActionMenuProps) {
     const { t } = useTranslation()
+    const { haptic } = usePlatform()
     const {
         isOpen,
         onClose,
+        sessionId,
+        sessionTitle,
         sessionActive,
         onRename,
         onExport,
+        onSyncCodex,
         onArchive,
         onReopen,
         reopenDisabledReason,
@@ -161,6 +194,16 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
         onRename()
     }
 
+    const handleCopyReference = async () => {
+        onClose()
+        try {
+            await safeCopyToClipboard(buildSessionReferenceText(sessionTitle, sessionId))
+            haptic.notification('success')
+        } catch {
+            haptic.notification('error')
+        }
+    }
+
     const handleArchive = () => {
         onClose()
         onArchive()
@@ -174,6 +217,11 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
     const handleExport = () => {
         onClose()
         onExport?.()
+    }
+
+    const handleSyncCodex = () => {
+        onClose()
+        onSyncCodex?.()
     }
 
     const handleDelete = () => {
@@ -260,7 +308,7 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
 
     const menuStyle: CSSProperties | undefined = menuPosition
         ? {
-            top: menuPosition.top,
+            top: `max(${menuPosition.top}px, calc(env(safe-area-inset-top) + 8px))`,
             left: menuPosition.left,
             transformOrigin: menuPosition.transformOrigin
         }
@@ -297,6 +345,16 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                     {t('session.action.rename')}
                 </button>
 
+                <button
+                    type="button"
+                    role="menuitem"
+                    className={`${baseItemClassName} hover:bg-[var(--app-subtle-bg)]`}
+                    onClick={() => void handleCopyReference()}
+                >
+                    <CopyIcon className="h-[18px] w-[18px] text-[var(--app-hint)]" />
+                    {t('session.action.copyReference')}
+                </button>
+
                 {onExport ? (
                     <button
                         type="button"
@@ -306,6 +364,18 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                     >
                         <DownloadIcon className="text-[var(--app-hint)]" />
                         {t('session.action.export')}
+                    </button>
+                ) : null}
+
+                {onSyncCodex ? (
+                    <button
+                        type="button"
+                        role="menuitem"
+                        className={`${baseItemClassName} hover:bg-[var(--app-subtle-bg)]`}
+                        onClick={handleSyncCodex}
+                    >
+                        <SyncIcon className="text-[var(--app-hint)]" />
+                        {t('session.action.syncCodex')}
                     </button>
                 ) : null}
 

@@ -9,6 +9,7 @@ import {
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { useTranslation } from '@/lib/use-translation'
+import { readCodexImportedSessions, subscribeCodexImportedSessions } from '@/lib/codexImportedSessions'
 
 const ALL_WORKDIR_FILTER = '__all__'
 
@@ -31,13 +32,25 @@ function getCodexSessionCwd(session: CodexLocalSessionSummary): string | null {
     return cwd ? cwd : null
 }
 
+function isOriginalCodexSession(session: CodexLocalSessionSummary): boolean {
+    return session.threadSource === 'user' || !session.forkedFromId
+}
+
+function isForkedCodexSession(session: CodexLocalSessionSummary): boolean {
+    return typeof session.forkedFromId === 'string' && session.forkedFromId.trim().length > 0
+}
+
 export function CodexSessionSyncDialog(props: {
     isOpen: boolean
     onClose: () => void
     sessions: CodexLocalSessionSummary[]
     currentCodexSessionId: string | null
+    currentWorkDirectory?: string | null
     onConfirm: (sessionIds: string[]) => Promise<void>
+    onSelectOnly?: (session: CodexLocalSessionSummary) => void
+    selectionMode?: 'single' | 'multiple'
     onRestartCodexDesktop: () => Promise<void>
+    onArchiveSession?: (session: CodexLocalSessionSummary) => Promise<void>
     isPending: boolean
     isRestartingCodexDesktop: boolean
     isLoading: boolean
@@ -47,8 +60,12 @@ export function CodexSessionSyncDialog(props: {
         isOpen,
         sessions,
         currentCodexSessionId,
+        currentWorkDirectory,
         onConfirm,
+        onSelectOnly,
+        selectionMode = 'multiple',
         onRestartCodexDesktop,
+        onArchiveSession,
         isPending,
         isRestartingCodexDesktop,
         isLoading,
@@ -56,8 +73,16 @@ export function CodexSessionSyncDialog(props: {
     } = props
     const [selectedSessionIds, setSelectedSessionIds] = useState<string[]>([])
     const [hasInitializedSelection, setHasInitializedSelection] = useState(false)
+    const [hasInitializedWorkdirFilter, setHasInitializedWorkdirFilter] = useState(false)
     const [workdirFilter, setWorkdirFilter] = useState(ALL_WORKDIR_FILTER)
+    const [searchQuery, setSearchQuery] = useState('')
+    const [archiveError, setArchiveError] = useState<string | null>(null)
     const wasOpenRef = useRef(false)
+    const [importedSessions, setImportedSessions] = useState(() => readCodexImportedSessions())
+    const [archiveMenuSessionId, setArchiveMenuSessionId] = useState<string | null>(null)
+    const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+    useEffect(() => subscribeCodexImportedSessions(() => setImportedSessions(readCodexImportedSessions())), [])
 
     const sessionIdSet = useMemo(
         () => new Set(sessions.map((session) => session.id)),
@@ -75,17 +100,32 @@ export function CodexSessionSyncDialog(props: {
         }
         return Array.from(directories).sort((a, b) => a.localeCompare(b))
     }, [sessions])
+    const defaultWorkdirFilter = useMemo(() => {
+        const directory = currentWorkDirectory?.trim()
+        if (!directory || !workdirOptions.includes(directory)) return ALL_WORKDIR_FILTER
+        return directory
+    }, [currentWorkDirectory, workdirOptions])
     const filteredSessions = useMemo(() => {
-        if (workdirFilter === ALL_WORKDIR_FILTER) return sessions
-        return sessions.filter((session) => getCodexSessionCwd(session) === workdirFilter)
-    }, [sessions, workdirFilter])
+        const query = searchQuery.trim().toLowerCase()
+        return sessions.filter((session) => {
+            if (workdirFilter !== ALL_WORKDIR_FILTER && getCodexSessionCwd(session) !== workdirFilter) return false
+            if (!query) return true
+            return [session.title, session.lastUserMessage, session.cwd, session.originator, session.cliVersion, session.id]
+                .filter((value): value is string => typeof value === 'string' && value.length > 0)
+                .some((value) => value.toLowerCase().includes(query))
+        })
+    }, [searchQuery, sessions, workdirFilter])
 
     useEffect(() => {
         if (isOpen && !wasOpenRef.current) {
             wasOpenRef.current = true
             setSelectedSessionIds([])
             setHasInitializedSelection(false)
+            setHasInitializedWorkdirFilter(false)
             setWorkdirFilter(ALL_WORKDIR_FILTER)
+            setSearchQuery('')
+            setArchiveError(null)
+            closeArchiveMenu()
             return
         }
 
@@ -93,29 +133,72 @@ export function CodexSessionSyncDialog(props: {
             wasOpenRef.current = false
             setSelectedSessionIds([])
             setHasInitializedSelection(false)
+            setHasInitializedWorkdirFilter(false)
             setWorkdirFilter(ALL_WORKDIR_FILTER)
+            setSearchQuery('')
+            setArchiveError(null)
+            closeArchiveMenu()
         }
-    }, [isOpen])
+    }, [defaultWorkdirFilter, isOpen])
+
+    useEffect(() => {
+        if (!isOpen || isLoading || hasInitializedWorkdirFilter || sessions.length === 0) return
+        // 中文注释：必须等本地 transcript 列表加载完成后再按当前目录初始化，否则从目录树 + 进入时会因选项未加载而落到“全部目录”。
+        setWorkdirFilter(defaultWorkdirFilter)
+        setHasInitializedWorkdirFilter(true)
+    }, [defaultWorkdirFilter, hasInitializedWorkdirFilter, isLoading, isOpen, sessions.length])
 
     useEffect(() => {
         if (workdirFilter === ALL_WORKDIR_FILTER) return
         if (workdirOptions.includes(workdirFilter)) return
-        setWorkdirFilter(ALL_WORKDIR_FILTER)
-    }, [workdirFilter, workdirOptions])
+        setWorkdirFilter(defaultWorkdirFilter)
+    }, [defaultWorkdirFilter, workdirFilter, workdirOptions])
 
     useEffect(() => {
         if (!isOpen || isLoading || hasInitializedSelection) return
 
         // 中文注释：弹窗打开后等本地 Codex 会话列表加载完成，再尝试默认勾选当前 Hapi 会话关联的 Codex thread，避免异步加载时默认值丢失。
-        const defaultSelected = currentCodexSessionId && sessionIdSet.has(currentCodexSessionId)
+        const defaultSelected = currentCodexSessionId && sessionIdSet.has(currentCodexSessionId) && !importedSessions[currentCodexSessionId]
             ? [currentCodexSessionId]
             : []
         setSelectedSessionIds(defaultSelected)
         setHasInitializedSelection(true)
-    }, [currentCodexSessionId, hasInitializedSelection, isLoading, isOpen, sessionIdSet])
+    }, [currentCodexSessionId, hasInitializedSelection, importedSessions, isLoading, isOpen, sessionIdSet])
+
+
+    const clearLongPressTimer = () => {
+        if (longPressTimerRef.current) {
+            clearTimeout(longPressTimerRef.current)
+            longPressTimerRef.current = null
+        }
+    }
+
+    const openArchiveMenu = (sessionId: string) => {
+        setArchiveMenuSessionId(sessionId)
+    }
+
+    const closeArchiveMenu = () => {
+        setArchiveMenuSessionId(null)
+    }
+
+    const handleArchive = async (session: CodexLocalSessionSummary) => {
+        if (!onArchiveSession || isPending || isLoading) return
+        closeArchiveMenu()
+        setArchiveError(null)
+        try {
+            await onArchiveSession(session)
+        } catch (error) {
+            setArchiveError(error instanceof Error ? error.message : t('codexSync.failed.body'))
+        }
+    }
 
     const toggleSession = (sessionId: string) => {
         if (isPending || isLoading) return
+
+        if (selectionMode === 'single') {
+            setSelectedSessionIds([sessionId])
+            return
+        }
 
         // 中文注释：列表项支持多选导入；再次点击同一行则取消勾选，便于快速调整导入批次。
         setSelectedSessionIds((current) => current.includes(sessionId)
@@ -134,6 +217,12 @@ export function CodexSessionSyncDialog(props: {
 
     const handleConfirm = async () => {
         if (selectedSessionIds.length === 0 || isPending || isLoading) return
+
+        if (selectionMode === 'single' && onSelectOnly) {
+            const selected = sessions.find((session) => session.id === selectedSessionIds[0])
+            if (selected) onSelectOnly(selected)
+            return
+        }
 
         // 中文注释：确认按钮只提交用户在弹窗中勾选的 Codex thread，实际导入逻辑由父组件统一处理并给出 toast 提示。
         await onConfirm(selectedSessionIds)
@@ -165,6 +254,11 @@ export function CodexSessionSyncDialog(props: {
                 </div>
 
                 <div className="mt-4 space-y-3">
+                    {archiveError ? (
+                        <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-600">
+                            {archiveError}
+                        </div>
+                    ) : null}
                     <div className="flex items-center justify-between gap-2">
                         <div className="text-xs text-[var(--app-hint)]">
                             {t('codexSync.confirm.selectedCount', { n: selectedSessionIds.length })}
@@ -179,15 +273,17 @@ export function CodexSessionSyncDialog(props: {
                             >
                                 {t('codexSync.confirm.clearAll')}
                             </Button>
-                            <Button
-                                type="button"
-                                variant="secondary"
-                                size="sm"
-                                onClick={selectAll}
-                                disabled={isPending || isLoading || filteredSessions.length === 0}
-                            >
-                                {t('codexSync.confirm.selectAll')}
-                            </Button>
+                            {selectionMode === 'multiple' ? (
+                                <Button
+                                    type="button"
+                                    variant="secondary"
+                                    size="sm"
+                                    onClick={selectAll}
+                                    disabled={isPending || isLoading || filteredSessions.length === 0}
+                                >
+                                    {t('codexSync.confirm.selectAll')}
+                                </Button>
+                            ) : null}
                         </div>
                     </div>
 
@@ -212,6 +308,20 @@ export function CodexSessionSyncDialog(props: {
                         </label>
                     ) : null}
 
+                    {sessions.length > 0 ? (
+                        <label className="block min-w-0 text-xs text-[var(--app-hint)]">
+                            <span className="mb-1 block">{t('codexSync.confirm.search')}</span>
+                            <input
+                                type="search"
+                                className="h-8 w-full rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2 text-xs text-[var(--app-fg)] outline-none focus:ring-2 focus:ring-[var(--app-link)]"
+                                value={searchQuery}
+                                disabled={isPending || isLoading}
+                                placeholder={t('codexSync.confirm.searchPlaceholder')}
+                                onChange={(event) => setSearchQuery(event.target.value)}
+                            />
+                        </label>
+                    ) : null}
+
                     <div className="max-h-[50vh] overflow-y-auto rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)]">
                         {isLoading ? (
                             <div className="px-4 py-8 text-center text-sm text-[var(--app-hint)]">
@@ -229,16 +339,34 @@ export function CodexSessionSyncDialog(props: {
                             <div className="divide-y divide-[var(--app-border)]">
                                 {filteredSessions.map((session) => {
                                     const checked = selectedSessionIdSet.has(session.id)
+                                    const isImported = Boolean(importedSessions[session.id])
                                     const time = formatCodexSessionTime(session.modifiedAt)
                                     const preview = getCodexSessionPreview(session)
                                     const cwd = getCodexSessionCwd(session)
+                                    const isOriginal = isOriginalCodexSession(session)
+                                    const isForked = isForkedCodexSession(session)
                                     return (
-                                        <label
+                                        <div
                                             key={session.id}
-                                            className="flex cursor-pointer items-start gap-3 px-3 py-2 transition-colors hover:bg-[var(--app-subtle-bg)]"
+                                            className="relative flex cursor-pointer items-start gap-3 px-3 py-2 transition-colors hover:bg-[var(--app-subtle-bg)]"
+                                            onContextMenu={(event) => {
+                                                if (!onArchiveSession) return
+                                                event.preventDefault()
+                                                openArchiveMenu(session.id)
+                                            }}
+                                            onPointerDown={() => {
+                                                if (!onArchiveSession) return
+                                                clearLongPressTimer()
+                                                longPressTimerRef.current = setTimeout(() => {
+                                                    openArchiveMenu(session.id)
+                                                }, 500)
+                                            }}
+                                            onPointerUp={clearLongPressTimer}
+                                            onPointerLeave={clearLongPressTimer}
+                                            onPointerCancel={clearLongPressTimer}
                                         >
                                             <input
-                                                type="checkbox"
+                                                type={selectionMode === 'single' ? 'radio' : 'checkbox'}
                                                 className="mt-1 h-4 w-4 accent-[var(--app-link)]"
                                                 checked={checked}
                                                 disabled={isPending || isLoading}
@@ -249,9 +377,24 @@ export function CodexSessionSyncDialog(props: {
                                                     <div className="truncate text-sm font-medium text-[var(--app-fg)]">
                                                         {session.title}
                                                     </div>
+                                                    {isOriginal ? (
+                                                        <span className="shrink-0 rounded-full bg-[var(--app-secondary-bg)] px-2 py-0.5 text-[10px] text-[var(--app-hint)]">
+                                                            {t('codexSync.confirm.original')}
+                                                        </span>
+                                                    ) : null}
+                                                    {isForked ? (
+                                                        <span className="shrink-0 rounded-full bg-[var(--app-secondary-bg)] px-2 py-0.5 text-[10px] text-[var(--app-hint)]">
+                                                            {t('codexSync.confirm.fork')}
+                                                        </span>
+                                                    ) : null}
                                                     {session.id === currentCodexSessionId ? (
                                                         <span className="shrink-0 rounded-full bg-[var(--app-secondary-bg)] px-2 py-0.5 text-[10px] text-[var(--app-hint)]">
                                                             {t('codexSync.confirm.current')}
+                                                        </span>
+                                                    ) : null}
+                                                    {isImported ? (
+                                                        <span className="shrink-0 rounded-full bg-[var(--app-secondary-bg)] px-2 py-0.5 text-[10px] text-[var(--app-hint)]">
+                                                            {t('codexSync.confirm.imported')}
                                                         </span>
                                                     ) : null}
                                                 </div>
@@ -272,7 +415,25 @@ export function CodexSessionSyncDialog(props: {
                                                     </div>
                                                 ) : null}
                                             </div>
-                                        </label>
+                                            {archiveMenuSessionId === session.id && onArchiveSession ? (
+                                                <div className="absolute right-3 top-3 z-10 min-w-36 rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] p-1 shadow-lg">
+                                                    <button
+                                                        type="button"
+                                                        className="block w-full rounded px-3 py-2 text-left text-sm text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)]"
+                                                        onClick={() => { void handleArchive(session) }}
+                                                    >
+                                                        {t('codexSync.confirm.archiveAction')}
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        className="block w-full rounded px-3 py-2 text-left text-sm text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)]"
+                                                        onClick={closeArchiveMenu}
+                                                    >
+                                                        {t('button.cancel')}
+                                                    </button>
+                                                </div>
+                                            ) : null}
+                                        </div>
                                     )
                                 })}
                             </div>
@@ -295,7 +456,7 @@ export function CodexSessionSyncDialog(props: {
                         onClick={() => void handleConfirm()}
                         disabled={isPending || isLoading || selectedSessionIds.length === 0}
                     >
-                        {isPending ? t('codexSync.confirm.confirming') : t('codexSync.confirm.confirm')}
+                        {selectionMode === 'single' ? t('codexSync.confirm.useSelected') : (isPending ? t('codexSync.confirm.confirming') : t('codexSync.confirm.confirm'))}
                     </Button>
                 </div>
             </DialogContent>

@@ -35,6 +35,14 @@ function createMockApi(sendMessage: (...args: unknown[]) => Promise<void> = asyn
     return { sendMessage } as unknown as ApiClient
 }
 
+function deferred<T>() {
+    let resolve!: (value: T | PromiseLike<T>) => void
+    const promise = new Promise<T>((res) => {
+        resolve = res
+    })
+    return { promise, resolve }
+}
+
 describe('useSendMessage', () => {
     beforeEach(() => {
         vi.clearAllMocks()
@@ -55,6 +63,43 @@ describe('useSendMessage', () => {
 
         await waitFor(() => {
             expect(onSuccess).toHaveBeenCalledWith('session-A')
+        })
+    })
+
+    it('keeps a thinking-session send in flight until the POST confirms it is queued', async () => {
+        const request = deferred<void>()
+        const api = createMockApi(() => request.promise)
+        const { appendOptimisticMessage, updateMessageStatus } = await import('@/lib/message-window-store')
+        const appendMock = vi.mocked(appendOptimisticMessage)
+        const updateMock = vi.mocked(updateMessageStatus)
+
+        const { result } = renderHook(
+            () => useSendMessage(api, 'session-A', { isSessionThinking: true }),
+            { wrapper: createWrapper() },
+        )
+
+        act(() => {
+            void result.current.sendMessage('queue this')
+        })
+
+        await waitFor(() => {
+            expect(appendMock).toHaveBeenCalledWith(
+                'session-A',
+                expect.objectContaining({
+                    localId: 'local-id-1',
+                    status: 'sending',
+                }),
+            )
+        })
+        expect(updateMock).not.toHaveBeenCalledWith('session-A', 'local-id-1', 'queued')
+
+        await act(async () => {
+            request.resolve()
+            await request.promise
+        })
+
+        await waitFor(() => {
+            expect(updateMock).toHaveBeenCalledWith('session-A', 'local-id-1', 'queued')
         })
     })
 

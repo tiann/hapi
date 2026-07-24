@@ -85,12 +85,16 @@ jobs:
         env:
           HAPI_BOT_LOGINS: ${{ vars.HAPI_BOT_LOGINS }}
 
+      # Codex reviews the PR merge ref under pull_request_target (needs base-repo
+      # secrets). GitHub's 2026-07-20 checkout backport refuses fork PR checkouts
+      # here unless explicitly opted in: https://github.blog/changelog/2026-06-18-safer-pull_request_target-defaults-for-github-actions-checkout/
       - name: Checkout repository
         if: steps.check_bot.outputs.has_review_for_current_head != 'true'
         uses: actions/checkout@v4
         with:
           ref: refs/pull/${{ github.event.pull_request.number }}/merge
           fetch-depth: 0
+          allow-unsafe-pr-checkout: true
 
       - name: Pre-fetch base and head refs
         if: steps.check_bot.outputs.has_review_for_current_head != 'true'

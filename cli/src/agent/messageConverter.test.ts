@@ -20,6 +20,23 @@ describe('convertAgentMessage', () => {
         });
     });
 
+    it('preserves ACP native presentation metadata', () => {
+        const converted = convertAgentMessage({
+            type: 'tool_call',
+            id: 'call-native',
+            name: 'Bash',
+            input: { command: 'free -h' },
+            status: 'in_progress',
+            title: 'Shell: free -h',
+            kind: 'execute'
+        });
+
+        expect(converted).toMatchObject({
+            nativeTitle: 'Shell: free -h',
+            nativeKind: 'execute'
+        });
+    });
+
     it('marks failed tool results as error', () => {
         const converted = convertAgentMessage({
             type: 'tool_result',

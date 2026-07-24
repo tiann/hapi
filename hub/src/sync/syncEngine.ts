@@ -8,7 +8,7 @@
  */
 
 import { isKnownFlavor, type LocalResumeTarget, type ResumableSession } from '@hapi/protocol'
-import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
+import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, QueuedStateResponse, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, CodexCollaborationMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { Server } from 'socket.io'
@@ -29,7 +29,9 @@ import {
     type RpcDeleteUploadResponse,
     type RpcGeneratedImageResponse,
     type RpcListDirectoryResponse,
+    type RpcStatFilesResponse,
     type RpcListCodexModelsResponse,
+    type RpcArchiveCodexSessionResponse,
     type RpcListCursorModelsResponse,
     type RpcListOpencodeModelsResponse,
     type RpcListGrokModelsResponse,
@@ -53,6 +55,7 @@ export type {
     RpcDeleteUploadResponse,
     RpcGeneratedImageResponse,
     RpcListDirectoryResponse,
+    RpcStatFilesResponse,
     RpcListCodexModelsResponse,
     RpcListCursorModelsResponse,
     RpcListOpencodeModelsResponse,
@@ -331,6 +334,10 @@ export class SyncEngine {
         }
     } {
         return this.messageService.getMessagesPage(sessionId, options)
+    }
+
+    getQueuedState(sessionId: string, localIds: string[]): QueuedStateResponse {
+        return this.messageService.getQueuedState(sessionId, localIds)
     }
 
     getSessionExport(sessionId: string, session: Session): HapiSessionExportResult {
@@ -803,7 +810,8 @@ export class SyncEngine {
         resumeSessionId?: string,
         effort?: string,
         permissionMode?: PermissionMode,
-        serviceTier?: string
+        serviceTier?: string,
+        existingSessionId?: string
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
         return await this.rpcGateway.spawnSession(
             machineId,
@@ -817,7 +825,8 @@ export class SyncEngine {
             resumeSessionId,
             effort,
             permissionMode,
-            serviceTier
+            serviceTier,
+            existingSessionId
         )
     }
 
@@ -1270,9 +1279,12 @@ export class SyncEngine {
             }
         }
 
-        const preferredPermissionMode = opts?.permissionMode
-            ?? session.permissionMode
-            ?? session.metadata?.preferredPermissionMode
+        const metadataPermissionMode = session.metadata?.preferredPermissionMode
+        const preferredPermissionMode = metadataPermissionMode === 'yolo' && opts?.permissionMode === 'default'
+            ? metadataPermissionMode
+            : opts?.permissionMode
+                ?? session.permissionMode
+                ?? metadataPermissionMode
         const spawnResult = await this.rpcGateway.spawnSession(
             targetMachine.id,
             directory,
@@ -1285,7 +1297,8 @@ export class SyncEngine {
             resumeToken,
             session.effort ?? undefined,
             preferredPermissionMode,
-            session.serviceTier ?? undefined
+            session.serviceTier ?? undefined,
+            access.sessionId
         )
 
         if (spawnResult.type !== 'success') {
@@ -1328,6 +1341,7 @@ export class SyncEngine {
             }
         }
 
+        this.sessionCache.markSessionActive(spawnResult.sessionId)
         return { type: 'success', sessionId: spawnResult.sessionId }
     }
 
@@ -1654,6 +1668,10 @@ export class SyncEngine {
         return await this.rpcGateway.listDirectory(sessionId, path)
     }
 
+    async statFiles(sessionId: string, paths: string[]): Promise<RpcStatFilesResponse> {
+        return await this.rpcGateway.statFiles(sessionId, paths)
+    }
+
     async uploadFile(sessionId: string, filename: string, content: string, mimeType: string): Promise<RpcUploadFileResponse> {
         return await this.rpcGateway.uploadFile(sessionId, filename, content, mimeType)
     }
@@ -1684,6 +1702,14 @@ export class SyncEngine {
 
     async listCodexModelsForMachine(machineId: string): Promise<RpcListCodexModelsResponse> {
         return await this.rpcGateway.listCodexModelsForMachine(machineId)
+    }
+
+    async listCodexSessionsForMachine(machineId: string, cwd?: string | null, sessionIds?: string[]) {
+        return await this.rpcGateway.listCodexSessionsForMachine(machineId, cwd, sessionIds)
+    }
+
+    async archiveCodexSessionForMachine(machineId: string, sessionId: string): Promise<RpcArchiveCodexSessionResponse> {
+        return await this.rpcGateway.archiveCodexSessionForMachine(machineId, sessionId)
     }
 
     async listCursorModelsForSession(sessionId: string): Promise<RpcListCursorModelsResponse> {

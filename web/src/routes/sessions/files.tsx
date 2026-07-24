@@ -18,8 +18,18 @@ import {
 } from '@/lib/files-i18n'
 import { encodeBase64 } from '@/lib/utils'
 import { queryKeys } from '@/lib/query-keys'
+import { formatFileMetadata } from '@/lib/file-metadata'
 import { useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from '@/lib/use-translation'
+import * as Popover from '@radix-ui/react-popover'
+import { CheckIcon, CloseIcon } from '@/components/icons'
+import {
+    DEFAULT_DIRECTORY_SORT,
+    type DirectorySort,
+    type DirectorySortDirection,
+    type DirectorySortField,
+    sortFileSearchItems,
+} from '@/lib/directory-sort'
 
 function RefreshIcon(props: { className?: string }) {
     return (
@@ -38,6 +48,79 @@ function RefreshIcon(props: { className?: string }) {
             <path d="M21 12a9 9 0 1 1-3-6.7" />
             <polyline points="21 3 21 9 15 9" />
         </svg>
+    )
+}
+
+function SortIcon() {
+    return (
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 6h13" /><path d="M3 12h9" /><path d="M3 18h5" />
+            <path d="m17 15 3 3 3-3" /><path d="M20 18V6" />
+        </svg>
+    )
+}
+
+const DIRECTORY_SORT_STORAGE_KEY = 'hapi-directory-sort'
+
+function readDirectorySort(): DirectorySort {
+    try {
+        const value = JSON.parse(localStorage.getItem(DIRECTORY_SORT_STORAGE_KEY) ?? '') as Partial<DirectorySort>
+        if (['name', 'modified', 'size'].includes(value.field ?? '') && ['asc', 'desc'].includes(value.direction ?? '')) {
+            return value as DirectorySort
+        }
+    } catch {
+        // Use the default when storage is unavailable or invalid.
+    }
+    return DEFAULT_DIRECTORY_SORT
+}
+
+function DirectorySortMenu(props: { sort: DirectorySort; onChange: (sort: DirectorySort) => void; embedded?: boolean }) {
+    const { t } = useTranslation()
+    const fields: Array<{ value: DirectorySortField; label: string }> = [
+        { value: 'name', label: t('files.sort.name') },
+        { value: 'modified', label: t('files.sort.modified') },
+        { value: 'size', label: t('files.sort.size') },
+    ]
+    const directions: Array<{ value: DirectorySortDirection; label: string }> = props.sort.field === 'name'
+        ? [{ value: 'asc', label: t('files.sort.nameAsc') }, { value: 'desc', label: t('files.sort.nameDesc') }]
+        : props.sort.field === 'modified'
+            ? [{ value: 'asc', label: t('files.sort.oldest') }, { value: 'desc', label: t('files.sort.newest') }]
+            : [{ value: 'asc', label: t('files.sort.smallest') }, { value: 'desc', label: t('files.sort.largest') }]
+    const optionClass = 'flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-[var(--app-subtle-bg)]'
+
+    return (
+        <Popover.Root>
+            <Popover.Trigger asChild>
+                <button
+                    type="button"
+                    className={props.embedded
+                        ? 'flex w-10 shrink-0 self-stretch items-center justify-center rounded-r-md rounded-l-sm text-[var(--app-hint)] transition-colors hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)]'
+                        : 'flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]'}
+                    title={t('files.sort.title')}
+                    aria-label={t('files.sort.title')}
+                >
+                    <SortIcon />
+                </button>
+            </Popover.Trigger>
+            <Popover.Portal>
+                <Popover.Content side="bottom" align="end" sideOffset={6} collisionPadding={8} className="z-50 w-48 rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] p-2 shadow-lg">
+                    <div className="px-2 pb-1 text-xs font-semibold text-[var(--app-hint)]">{t('files.sort.by')}</div>
+                    {fields.map((field) => (
+                        <button key={field.value} type="button" className={optionClass} onClick={() => props.onChange({ field: field.value, direction: props.sort.direction })}>
+                            <span className="flex h-4 w-4 items-center justify-center">{props.sort.field === field.value ? <CheckIcon className="h-3.5 w-3.5" /> : null}</span>
+                            {field.label}
+                        </button>
+                    ))}
+                    <div className="my-1 border-t border-[var(--app-divider)]" />
+                    {directions.map((direction) => (
+                        <button key={direction.value} type="button" className={optionClass} onClick={() => props.onChange({ ...props.sort, direction: direction.value })}>
+                            <span className="flex h-4 w-4 items-center justify-center">{props.sort.direction === direction.value ? <CheckIcon className="h-3.5 w-3.5" /> : null}</span>
+                            {direction.label}
+                        </button>
+                    ))}
+                </Popover.Content>
+            </Popover.Portal>
+        </Popover.Root>
     )
 }
 
@@ -177,8 +260,9 @@ function SearchResultRow(props: {
     onOpen: () => void
     showDivider: boolean
 }) {
-    const { t } = useTranslation()
+    const { t, locale } = useTranslation()
     const subtitle = getProjectRootLabel(props.file.filePath, t)
+    const metadata = formatFileMetadata(props.file.size, props.file.modified, locale)
     const icon = props.file.fileType === 'file'
         ? <FileIcon fileName={props.file.fileName} size={22} />
         : <FolderIcon className="text-[var(--app-link)]" />
@@ -192,7 +276,10 @@ function SearchResultRow(props: {
             {icon}
             <div className="min-w-0 flex-1">
                 <div className="truncate font-medium">{props.file.fileName}</div>
-                <div className="truncate text-xs text-[var(--app-hint)]">{subtitle}</div>
+                <div className="flex min-w-0 items-center gap-2 text-xs text-[var(--app-hint)]">
+                    <span className="truncate">{subtitle}</span>
+                    {metadata ? <span className="shrink-0">{metadata}</span> : null}
+                </div>
             </div>
         </button>
     )
@@ -223,7 +310,7 @@ const SCROLL_KEY_PREFIX = 'hapi-dir-scroll-'
 
 export default function FilesPage() {
     const { api } = useAppContext()
-    const { t } = useTranslation()
+    const { t, locale } = useTranslation()
     const navigate = useNavigate()
     const queryClient = useQueryClient()
     const goBack = useAppGoBack()
@@ -235,6 +322,15 @@ export default function FilesPage() {
 
     const initialTab = search.tab === 'directories' ? 'directories' : 'changes'
     const [activeTab, setActiveTab] = useState<'changes' | 'directories'>(initialTab)
+    const [directorySort, setDirectorySort] = useState<DirectorySort>(readDirectorySort)
+
+    useEffect(() => {
+        try {
+            localStorage.setItem(DIRECTORY_SORT_STORAGE_KEY, JSON.stringify(directorySort))
+        } catch {
+            // Sorting still works when storage is unavailable.
+        }
+    }, [directorySort])
 
     useEffect(() => {
         const el = scrollRef.current
@@ -268,6 +364,10 @@ export default function FilesPage() {
     const searchResults = useSessionFileSearch(api, sessionId, searchQuery, {
         enabled: shouldSearch
     })
+    const sortedSearchResults = useMemo(
+        () => sortFileSearchItems(searchResults.files, directorySort, locale),
+        [directorySort, locale, searchResults.files]
+    )
 
     const handleOpenFile = useCallback((path: string, staged?: boolean) => {
         const fileSearch = staged === undefined
@@ -373,16 +473,32 @@ export default function FilesPage() {
 
             <div className="bg-[var(--app-bg)]">
                 <div className="mx-auto flex w-full max-w-content items-center gap-2 border-b border-[var(--app-border)] p-3">
-                    <div className="flex min-w-0 flex-1 items-center gap-2 rounded-md bg-[var(--app-subtle-bg)] px-3 py-2">
-                        <SearchIcon className="shrink-0 text-[var(--app-hint)]" />
+                    <div className="relative min-w-0 flex-1 rounded-md bg-[var(--app-subtle-bg)]">
+                        <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--app-hint)]" />
                         <input
                             value={searchQuery}
                             onChange={(event) => setSearchQuery(event.target.value)}
                             placeholder={t('files.page.searchPlaceholder')}
-                            className="min-w-0 flex-1 bg-transparent text-sm text-[var(--app-fg)] placeholder:text-[var(--app-hint)] focus:outline-none"
+                            className="w-full bg-transparent py-2 pl-10 pr-20 text-sm text-[var(--app-fg)] placeholder:text-[var(--app-hint)] focus:outline-none"
                             autoCapitalize="none"
                             autoCorrect="off"
                         />
+                        {searchQuery ? (
+                            <button
+                                type="button"
+                                onClick={() => setSearchQuery('')}
+                                className="absolute inset-y-0 right-10 flex items-center rounded p-0.5 text-[var(--app-hint)] hover:text-[var(--app-fg)]"
+                                title={t('sessions.search.clear')}
+                                aria-label={t('sessions.search.clear')}
+                            >
+                                <CloseIcon className="h-3.5 w-3.5" />
+                            </button>
+                        ) : null}
+                        {activeTab === 'directories' || searchQuery ? (
+                            <div className="absolute inset-y-0 right-0 flex items-stretch">
+                                <DirectorySortMenu sort={directorySort} onChange={setDirectorySort} embedded />
+                            </div>
+                        ) : null}
                     </div>
                     <button
                         type="button"
@@ -460,12 +576,12 @@ export default function FilesPage() {
                             </div>
                         ) : (
                             <div className="border-t border-[var(--app-divider)]">
-                                {searchResults.files.map((file, index) => (
+                                {sortedSearchResults.map((file, index) => (
                                     <SearchResultRow
-                                        key={`${file.fullPath}-${index}`}
+                                        key={file.fullPath}
                                         file={file}
                                         onOpen={() => handleOpenFile(file.fullPath)}
-                                        showDivider={index < searchResults.files.length - 1}
+                                        showDivider={index < sortedSearchResults.length - 1}
                                     />
                                 ))}
                             </div>
@@ -477,6 +593,7 @@ export default function FilesPage() {
                             sessionId={sessionId}
                             rootLabel={rootLabel}
                             onOpenFile={(path) => handleOpenFile(path)}
+                            sort={directorySort}
                         />
                     ) : gitLoading ? (
                         <FileListSkeleton label={t('loading.git')} />

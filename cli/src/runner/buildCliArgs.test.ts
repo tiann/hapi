@@ -92,6 +92,57 @@ describe('buildCliArgs', () => {
         expect(args).not.toContain('--service-tier')
     })
 
+    it('passes existing Hapi session id separately from Codex resume thread', () => {
+        const args = buildCliArgs('codex', {
+            directory: '/tmp',
+            resumeSessionId: 'codex-thread-1',
+            existingSessionId: 'hapi-session-1',
+            model: 'gpt-5.5',
+            modelReasoningEffort: 'low',
+        })
+        expect(args).toEqual([
+            'codex',
+            'resume',
+            'codex-thread-1',
+            '--hapi-starting-mode',
+            'remote',
+            '--started-by',
+            'runner',
+            '--existing-session-id',
+            'hapi-session-1',
+            '--model',
+            'gpt-5.5',
+            '--model-reasoning-effort',
+            'low',
+        ])
+    })
+
+
+
+    it('does not pass existing session id flag to agents that do not reuse HAPI rows', () => {
+        const args = buildCliArgs('claude', {
+            directory: '/tmp',
+            resumeSessionId: 'claude-session-1',
+            existingSessionId: 'hapi-session-1',
+        })
+        expect(args).toContain('--resume')
+        expect(args).toContain('claude-session-1')
+        expect(args).not.toContain('--existing-session-id')
+        expect(args).not.toContain('hapi-session-1')
+    })
+
+    it('passes --existing-session-id for cursor resume when sessionId is set (#991)', () => {
+        const args = buildCliArgs('cursor', {
+            directory: '/tmp',
+            resumeSessionId: 'cursor-csid-1',
+            sessionId: 'hapi-session-991',
+        })
+        expect(args).toContain('--existing-session-id')
+        expect(args).toContain('hapi-session-991')
+        expect(args).toContain('--resume')
+        expect(args).toContain('cursor-csid-1')
+    })
+
     it('validates all known permission modes', () => {
         for (const mode of ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan', 'ask', 'debug', 'autoReview', 'read-only', 'safe-yolo', 'yolo']) {
             const args = buildCliArgs('claude', {

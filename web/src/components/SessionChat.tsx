@@ -362,19 +362,6 @@ export function buildGoalStateMessages(
         : eligibleMessages
 }
 
-function getOutlineTitle(session: Session): string {
-    if (session.metadata?.name) {
-        return session.metadata.name
-    }
-    if (session.metadata?.summary?.text) {
-        return session.metadata.summary.text
-    }
-    if (session.metadata?.path) {
-        return session.metadata.path
-    }
-    return session.id.slice(0, 8)
-}
-
 function hasAbortableAgentRun(blocks: readonly ChatBlock[]): boolean {
     for (const block of blocks) {
         if (block.kind === 'tool-call') {
@@ -970,11 +957,6 @@ function SessionChatInner(props: SessionChatProps) {
         [reconciled.blocks]
     )
 
-    const outlineTitle = useMemo(
-        () => getOutlineTitle(props.session),
-        [props.session]
-    )
-
     // Permission mode change handler
     const handlePermissionModeChange = useCallback(async (mode: PermissionMode) => {
         try {
@@ -1280,47 +1262,47 @@ function SessionChatInner(props: SessionChatProps) {
                         messagesVersion={props.messagesVersion}
                         forceScrollToken={forceScrollToken}
                         outlineOpen={outlineOpen}
-                        outlineTitle={outlineTitle}
                         outlineItems={outlineItems}
                         onOutlineOpenChange={setOutlineOpen}
                     />
 
-                    {codexCollaborationModeSupported && codexModelsState.error ? (
-                        <div className="px-3 pb-2">
-                            <div className="mx-auto w-full max-w-content rounded-md bg-[var(--app-subtle-bg)] p-3 text-sm text-red-600">
-                                {t('session.codexModelsLoadFailed')}: {codexModelsState.error}
+                    <div className={outlineOpen ? 'max-sm:hidden' : undefined}>
+                        {codexCollaborationModeSupported && codexModelsState.error ? (
+                            <div className="px-3 pb-2">
+                                <div className="mx-auto w-full max-w-content rounded-md bg-[var(--app-subtle-bg)] p-3 text-sm text-red-600">
+                                    {t('session.codexModelsLoadFailed')}: {codexModelsState.error}
+                                </div>
                             </div>
-                        </div>
-                    ) : null}
-
-                    <div className="px-3">
-                        {/*
-                         * Scratchlist drawer - composer-controlled. Only
-                         * mounted when the operator clicks the notepad icon
-                         * in the composer toolbar. State lives in the
-                         * useScratchlist hook above (so the toolbar counter
-                         * and the drawer share one source of truth).
-                         */}
-                        {scratchlistMode ? (
-                            <ScratchlistDrawerHost
-                                entries={scratchlist.entries}
-                                onMove={scratchlist.move}
-                                onDelete={scratchlist.remove}
-                                onSend={props.onSend}
-                                onExitScratchlistMode={() => setScratchlistMode(false)}
-                            />
                         ) : null}
-                        <QueuedMessagesBar
-                            sessionId={props.session.id}
-                            api={props.api}
-                            onEdit={({ pendingSchedule: restored }) => {
-                                // Restore the schedule so the clock button re-activates
-                                setPendingSchedule(restored)
-                            }}
-                        />
-                    </div>
 
-                    <HappyComposer
+                        <div className="px-3">
+                            {/*
+                             * Scratchlist drawer - composer-controlled. Only
+                             * mounted when the operator clicks the notepad icon
+                             * in the composer toolbar. State lives in the
+                             * useScratchlist hook above (so the toolbar counter
+                             * and the drawer share one source of truth).
+                             */}
+                            {scratchlistMode ? (
+                                <ScratchlistDrawerHost
+                                    entries={scratchlist.entries}
+                                    onMove={scratchlist.move}
+                                    onDelete={scratchlist.remove}
+                                    onSend={props.onSend}
+                                    onExitScratchlistMode={() => setScratchlistMode(false)}
+                                />
+                            ) : null}
+                            <QueuedMessagesBar
+                                sessionId={props.session.id}
+                                api={props.api}
+                                onEdit={({ pendingSchedule: restored }) => {
+                                    // Restore the schedule so the clock button re-activates
+                                    setPendingSchedule(restored)
+                                }}
+                            />
+                        </div>
+
+                        <HappyComposer
                         key={`composer-${props.session.id}`}
                         sessionId={props.session.id}
                         disabled={props.isSending}
@@ -1472,7 +1454,8 @@ function SessionChatInner(props: SessionChatProps) {
                         onScratchlistToggle={handleScratchlistToggle}
                         sendError={props.sendError ?? null}
                         onClearSendError={props.onClearSendError}
-                    />
+                        />
+                    </div>
                 </DragDropZone>
             </AssistantRuntimeProvider>
 

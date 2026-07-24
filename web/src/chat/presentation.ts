@@ -32,15 +32,15 @@ export function formatMessageTimestamp(date: Date, now: Date = new Date()): stri
         && date.getDate() === now.getDate()
 
     if (sameDay) {
-        return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+        return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
     }
 
     const sameYear = date.getFullYear() === now.getFullYear()
     if (sameYear) {
-        return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+        return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
     }
 
-    return date.toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+    return date.toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
 }
 
 export function formatMessageTimestampTitle(date: Date): string {
@@ -199,6 +199,11 @@ export function getEventPresentation(event: AgentEvent): EventPresentation {
     }
     if (event.type === 'compact') {
         return { icon: '📦', text: 'Conversation compacted' }
+    }
+    if (event.type === 'recap') {
+        // Lowercase `recap:` intentionally mirrors Claude Code's own TUI recap label.
+        const text = typeof event.text === 'string' ? event.text : ''
+        return { icon: '💭', text: `recap: ${text}` }
     }
     if (event.type === 'thread-goal-updated') {
         return formatThreadGoalEvent(event)

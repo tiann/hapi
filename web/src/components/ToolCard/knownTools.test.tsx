@@ -214,6 +214,104 @@ describe('getToolPresentation — Codex agent tools', () => {
         expect(presentation.subtitle).not.toContain('hidden child output')
         expect(presentation.minimal).toBe(true)
     })
+
+    it('presents MultiAgent V2 messaging tools by intent', () => {
+        const message = getToolPresentation({
+            toolName: 'send_message',
+            input: { target: '/root/review', message: 'Status?' },
+            result: '',
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+        const followup = getToolPresentation({
+            toolName: 'followup_task',
+            input: { target: '/root/review', message: 'Run tests' },
+            result: '',
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+
+        expect(message).toMatchObject({ title: 'Message agent', subtitle: '/root/review', minimal: true })
+        expect(followup).toMatchObject({ title: 'Follow up agent', subtitle: '/root/review', minimal: true })
+    })
+
+    it('summarizes list_agents and interrupt_agent results', () => {
+        const list = getToolPresentation({
+            toolName: 'list_agents',
+            input: {},
+            result: JSON.stringify({
+                agents: [
+                    { agent_name: '/root/a', agent_status: 'running' },
+                    { agent_name: '/root/b', agent_status: { completed: 'done' } }
+                ]
+            }),
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+        const interrupt = getToolPresentation({
+            toolName: 'interrupt_agent',
+            input: { target: '/root/a' },
+            result: '{"previous_status":"running"}',
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+
+        expect(list).toMatchObject({ title: 'List agents', subtitle: '2 live, 1 running' })
+        expect(interrupt).toMatchObject({ title: 'Interrupt agent', subtitle: 'Interrupted (running)' })
+    })
+
+    it('uses MultiAgent V2 result fields and status variants', () => {
+        const spawn = getToolPresentation({
+            toolName: 'spawn_agent',
+            input: { task_name: 'review' },
+            result: JSON.stringify({ task_name: '/root/review', nickname: 'Reviewer' }),
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+        const wait = getToolPresentation({
+            toolName: 'wait_agent',
+            input: { timeout_ms: 1000 },
+            result: JSON.stringify({ message: 'Wait completed.', timed_out: false }),
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+        const list = getToolPresentation({
+            toolName: 'list_agents',
+            input: {},
+            result: JSON.stringify({
+                agents: [{ agent_name: '/root/review', agent_status: { errored: 'test failed' } }]
+            }),
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+
+        expect(spawn.subtitle).toBe('Launched Reviewer (/root/review)')
+        expect(wait.subtitle).toBe('Wait completed.')
+        expect(list.subtitle).toBe('1 live agent')
+    })
+})
+
+describe('getToolPresentation — native titles', () => {
+    it('uses a preserved native title for unknown lowercase tools', () => {
+        const presentation = getToolPresentation({
+            toolName: 'bash',
+            input: { command: 'bun test' },
+            result: null,
+            childrenCount: 0,
+            description: 'Run project tests',
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('Run project tests')
+        expect(presentation.subtitle).toBe('bun test')
+    })
 })
 
 describe('getToolPresentation — request_user_input', () => {

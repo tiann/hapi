@@ -134,6 +134,18 @@ describe('getEventPresentation — thread goals', () => {
     })
 })
 
+describe('getEventPresentation — recap (away_summary)', () => {
+    it('formats the recap with a recap: prefix', () => {
+        const result = getEventPresentation({
+            type: 'recap',
+            text: 'Building the login flow, next: wire up the submit handler.'
+        })
+
+        expect(result.icon).toBe('💭')
+        expect(result.text).toBe('recap: Building the login flow, next: wire up the submit handler.')
+    })
+})
+
 describe('formatResetTime', () => {
     it('formats a unix timestamp to a non-empty string', () => {
         const result = formatResetTime(1774278000)
@@ -155,8 +167,13 @@ describe('formatResetTime', () => {
 describe('formatMessageTimestamp', () => {
     it('formats today without requiring a date prefix', () => {
         const now = new Date(2026, 4, 22, 14, 30)
-        const result = formatMessageTimestamp(new Date(2026, 4, 22, 9, 5), now)
-        expect(result).toBeTruthy()
+        const date = new Date(2026, 4, 22, 9, 5)
+        const result = formatMessageTimestamp(date, now)
+        expect(result).toBe(date.toLocaleTimeString(undefined, {
+            hour: '2-digit',
+            minute: '2-digit',
+            hourCycle: 'h23'
+        }))
         expect(result).not.toContain('2026')
     })
 

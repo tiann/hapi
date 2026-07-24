@@ -20,6 +20,7 @@ import { buildThreadStartParams, buildTurnStartParams } from './utils/appServerC
 import type { ThreadGoal, ThreadGoalStatus } from './appServerTypes';
 import { shouldIgnoreTerminalEvent } from './utils/terminalEventGuard';
 import { parseCodexSpecialCommand } from './codexSpecialCommands';
+import { extractErrorInfo } from '@/utils/errorUtils';
 import {
     RemoteLauncherBase,
     type RemoteLauncherDisplayContext,
@@ -79,6 +80,17 @@ const THROTTLED_AGENT_RUN_ACTIVITY_KINDS = new Set(['thinking']);
 const CODEX_SPAWN_AGENT_FULL_HISTORY_ARGUMENT_ERROR =
     'Full-history forked agents inherit the parent agent type, model, and reasoning effort; ' +
     'omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.';
+
+function formatCodexResumeError(error: unknown): string {
+    const info = extractErrorInfo(error);
+    const message = info.message && info.message !== 'Unknown error' ? info.message : '';
+    const record = error && typeof error === 'object' ? error as Record<string, unknown> : null;
+    const name = error instanceof Error && error.name && error.name !== 'Error' ? error.name : '';
+    const cause = record?.cause instanceof Error ? record.cause.message : typeof record?.cause === 'string' ? record.cause : '';
+    const code = typeof record?.code === 'string' ? record.code : '';
+    const parts = [name, code, message, cause].filter((part) => part.trim().length > 0);
+    return parts.length > 0 ? Array.from(new Set(parts)).join(': ') : 'unknown resume error';
+}
 
 const SAME_THREAD_RETRYABLE_ERROR_PATTERNS = [
     'selected model is at capacity',
@@ -670,6 +682,20 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 || toolName === 'resume_agent'
                 || toolName === 'wait_agent'
                 || toolName === 'close_agent';
+        };
+
+        const isLegacyCodexAgentToolCall = (toolName: string | null, input: unknown): boolean => {
+            if (!isCodexAgentToolName(toolName)) return false;
+
+            const inputRecord = asRecord(input);
+            if (toolName === 'spawn_agent') {
+                return !asString(inputRecord?.task_name ?? inputRecord?.taskName);
+            }
+            if (toolName === 'wait_agent') {
+                return Array.isArray(inputRecord?.targets);
+            }
+
+            return true;
         };
 
         const isTerminalAgentRunStatus = (status: string | null | undefined): boolean => {
@@ -1695,7 +1721,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 const callId = asString(msg.call_id ?? msg.callId);
                 const name = asString(msg.name);
                 if (callId && name) {
-                    if (isCodexAgentToolName(name)) {
+                    if (isLegacyCodexAgentToolCall(name, msg.input)) {
                         const error = 'Nested agent calls are disabled for child agents.';
                         runtime.blockedNestedAgent = true;
                         emitAgentRunTraceMessage(agentId, {
@@ -2976,20 +3002,20 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 const callId = asString(msg.call_id ?? msg.callId);
                 const name = asString(msg.name);
                 if (callId && name) {
-                    if (isCodexAgentToolName(name)) {
-                            const input = msg.input ?? {};
-                            pendingAgentToolInputByCallId.set(callId, { name, input });
-                            if (name === 'spawn_agent') {
-                                emitAgentRunStart(callId, input);
-                            } else {
-                                for (const agentId of extractAgentTargets(input)) {
-                                    if (!agentCardByAgentId.has(agentId)) {
-                                        continue;
-                                    }
-                                    const activity = name === 'wait_agent'
-                                        ? 'Waiting for agent'
-                                        : name === 'send_input'
-                                            ? 'Sending input'
+                    if (isLegacyCodexAgentToolCall(name, msg.input)) {
+                        const input = msg.input ?? {};
+                        pendingAgentToolInputByCallId.set(callId, { name, input });
+                        if (name === 'spawn_agent') {
+                            emitAgentRunStart(callId, input);
+                        } else {
+                            for (const agentId of extractAgentTargets(input)) {
+                                if (!agentCardByAgentId.has(agentId)) {
+                                    continue;
+                                }
+                                const activity = name === 'wait_agent'
+                                    ? 'Waiting for agent'
+                                    : name === 'send_input'
+                                        ? 'Sending input'
                                         : name === 'resume_agent'
                                             ? 'Resuming agent'
                                             : name === 'close_agent'
@@ -3018,7 +3044,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 const callId = asString(msg.call_id ?? msg.callId);
                 const name = asString(msg.name) ?? pendingAgentToolInputByCallId.get(callId ?? '')?.name ?? null;
                 if (callId) {
-                    if (name && isCodexAgentToolName(name)) {
+                    if (name && pendingAgentToolInputByCallId.has(callId)) {
                         handleAgentToolEnd(callId, name, msg.output, Boolean(msg.is_error ?? msg.isError));
                         return;
                     }
@@ -3513,10 +3539,19 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
         while (!this.shouldExit) {
             logActiveHandles('loop-top');
-            if (!pending && (recoveryInFlight || (turnInFlight && session.queue.size() === 0))) {
+            if (!pending && recoveryInFlight) {
                 await waitForTurnOrRecovery(this.abortController.signal);
                 if (this.abortController.signal.aborted && !this.shouldExit) {
-                    logger.debug('[codex]: Internal wait aborted while turn/recovery was active; continuing');
+                    logger.debug('[codex]: Internal wait aborted while recovery was active; continuing');
+                    continue;
+                }
+                continue;
+            }
+
+            if (!pending && turnInFlight && session.queue.size() === 0) {
+                await waitForTurnOrRecovery(this.abortController.signal);
+                if (this.abortController.signal.aborted && !this.shouldExit) {
+                    logger.debug('[codex]: Internal wait aborted while turn was active; continuing');
                     continue;
                 }
                 continue;
@@ -3579,20 +3614,34 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
                     if (resumeCandidate) {
                         try {
-                            const resumeResponse = await appServerClient.resumeThread({
-                                threadId: resumeCandidate,
-                                ...threadParams
-                            }, {
-                                signal: this.abortController.signal
-                            });
-                            const resumeRecord = asRecord(resumeResponse);
-                            const resumeThread = resumeRecord ? asRecord(resumeRecord.thread) : null;
-                            threadId = asString(resumeThread?.id) ?? resumeCandidate;
-                            applyResolvedModel(resumeRecord?.model);
-                            logger.debug(`[Codex] Resumed app-server thread ${threadId}`);
+                            const shouldForkImportedSource = Boolean(
+                                session.sourceSessionId
+                                && resumeCandidate === session.sourceSessionId
+                            );
+                            const response = shouldForkImportedSource
+                                ? await appServerClient.forkThread({
+                                    threadId: resumeCandidate,
+                                    ...threadParams
+                                }, {
+                                    signal: this.abortController.signal
+                                })
+                                : await appServerClient.resumeThread({
+                                    threadId: resumeCandidate,
+                                    ...threadParams
+                                }, {
+                                    signal: this.abortController.signal
+                                });
+                            const responseRecord = asRecord(response);
+                            const responseThread = responseRecord ? asRecord(responseRecord.thread) : null;
+                            threadId = asString(responseThread?.id) ?? resumeCandidate;
+                            applyResolvedModel(responseRecord?.model);
+                            logger.debug(shouldForkImportedSource
+                                ? `[Codex] Forked imported app-server thread ${resumeCandidate} -> ${threadId}`
+                                : `[Codex] Resumed app-server thread ${threadId}`);
                         } catch (error) {
-                            logger.warn(`[Codex] Failed to resume app-server thread ${resumeCandidate}; preserving old conversation boundary`, error);
-                            const failureMessage = `Task failed: Codex conversation ${resumeCandidate} could not be resumed; no new conversation was created`;
+                            const resumeError = formatCodexResumeError(error);
+                            logger.warn(`[Codex] Failed to resume app-server thread ${resumeCandidate}; preserving old conversation boundary: ${resumeError}`, error);
+                            const failureMessage = `Task failed: Codex conversation ${resumeCandidate} could not be resumed; no new conversation was created. Reason: ${resumeError}`;
                             messageBuffer.addMessage(failureMessage, 'status');
                             session.sendSessionEvent({ type: 'message', message: failureMessage });
                             pending = null;
