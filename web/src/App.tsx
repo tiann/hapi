@@ -29,6 +29,7 @@ import { PwaUpdateBanner, PwaUpdateBannerWithStatusOffset } from '@/components/P
 import { SyncingBanner } from '@/components/SyncingBanner'
 import { ReconnectingBanner } from '@/components/ReconnectingBanner'
 import { VoiceErrorBanner } from '@/components/VoiceErrorBanner'
+import { RunnerVersionSkewBanner } from '@/components/RunnerVersionSkewBanner'
 import { LoadingState } from '@/components/LoadingState'
 import { ToastContainer } from '@/components/ToastContainer'
 import { PwaUpdateProvider } from '@/lib/pwa-update-context'
@@ -458,6 +459,7 @@ function AppInner() {
                 />
                 <VoiceErrorBanner />
                 <OfflineBanner />
+                <RunnerVersionSkewBanner />
                 <div className="h-full min-h-0 flex flex-col">
                     <Outlet />
                 </div>

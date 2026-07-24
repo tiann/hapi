@@ -4,6 +4,7 @@ export interface HubInstance {
 
 export interface StartHubOptions {
     args?: string[]
+    cliVersion?: string
 }
 
 export function startHub(options?: StartHubOptions): Promise<HubInstance>

@@ -21,6 +21,7 @@ import {
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import type { RunnerState, Machine, MachineMetadata } from './types'
 import { RunnerStateSchema, MachineMetadataSchema } from './types'
+import { getInstalledCliMtimeMs } from '@/runner/controlClient'
 import { backoff } from '@/utils/time'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { RpcHandlerManager } from './rpc/RpcHandlerManager'
@@ -43,6 +44,12 @@ import { collectMachineHealth } from '@/utils/machineHealth'
 import { inspectCursorChatStore } from '@/cursor/cursorChatStoreStatus'
 import { homedir } from 'node:os'
 import type { CursorChatStoreStatus } from '@hapi/protocol/apiTypes'
+import type { HubUpgradeOffer, RunnerSelfUpgradeResponse } from '@hapi/protocol/upgradeChannel'
+import { applyRunnerSelfUpgrade } from '@/upgrade/selfUpgrade'
+import { buildMachineMetadata } from '@/agent/sessionFactory'
+import {
+    machineRegistrationNeedsRefresh,
+} from '@hapi/protocol/machineRegistration'
 
 type MachineRpcHandlers = {
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>
@@ -415,6 +422,24 @@ export class ApiMachineClient {
             setTimeout(() => requestShutdown(), 100)
             return { message: 'Runner stop request acknowledged' }
         })
+
+        this.rpcHandlerManager.registerHandler<
+            { offer: HubUpgradeOffer },
+            RunnerSelfUpgradeResponse
+        >(RPC_METHODS.RunnerSelfUpgrade, async (params) => {
+            const offer = params?.offer
+            if (!offer || typeof offer !== 'object') {
+                throw new Error('offer is required')
+            }
+            return await applyRunnerSelfUpgrade({
+                offer,
+                downloadBaseUrl: configuration.apiUrl,
+                authToken: configuration.cliApiToken,
+                requestShutdown: () => {
+                    setTimeout(() => requestShutdown(), 500)
+                },
+            })
+        })
     }
 
     async updateMachineMetadata(handler: (metadata: MachineMetadata | null) => MachineMetadata): Promise<void> {
@@ -513,26 +538,41 @@ export class ApiMachineClient {
 
             const hubWorkspaceRoots = this.machine.metadata?.workspaceRoots
             const desiredWorkspaceRoots = this.workspaceRoots
-            if (!workspaceRootsEqual(desiredWorkspaceRoots, hubWorkspaceRoots)) {
-                if (desiredWorkspaceRoots?.length) {
-                    console.log(`[HAPI] Syncing workspace roots to hub: ${formatWorkspaceRoots(desiredWorkspaceRoots)} (current hub value: ${formatWorkspaceRoots(hubWorkspaceRoots)})`)
-                } else {
-                    console.log(`[HAPI] Clearing workspace roots on hub (was: ${formatWorkspaceRoots(hubWorkspaceRoots)})`)
+            const identity = buildMachineMetadata({
+                workspaceRoots: desiredWorkspaceRoots?.length ? desiredWorkspaceRoots : undefined,
+                startedCliMtimeMs: this.machine.metadata?.startedCliMtimeMs,
+            })
+            const needsRoots = !workspaceRootsEqual(desiredWorkspaceRoots, hubWorkspaceRoots)
+            const needsIdentity = machineRegistrationNeedsRefresh(this.machine.metadata, identity)
+
+            if (needsRoots || needsIdentity) {
+                if (needsRoots) {
+                    if (desiredWorkspaceRoots?.length) {
+                        console.log(`[HAPI] Syncing workspace roots to hub: ${formatWorkspaceRoots(desiredWorkspaceRoots)} (current hub value: ${formatWorkspaceRoots(hubWorkspaceRoots)})`)
+                    } else {
+                        console.log(`[HAPI] Clearing workspace roots on hub (was: ${formatWorkspaceRoots(hubWorkspaceRoots)})`)
+                    }
+                }
+                if (needsIdentity) {
+                    console.log(`[HAPI] Refreshing machine identity on hub (version=${identity.happyCliVersion}, capabilities=${(identity.capabilities ?? []).join(',') || '(none)'})`)
                 }
                 this.updateMachineMetadata((current) => {
-                    const base = current ?? this.machine.metadata
-                    if (!base) {
-                        return { workspaceRoots: desiredWorkspaceRoots } as MachineMetadata
+                    const merged = {
+                        ...identity,
+                        displayName: current?.displayName,
+                        startedCliMtimeMs: current?.startedCliMtimeMs ?? identity.startedCliMtimeMs,
                     }
                     if (desiredWorkspaceRoots?.length) {
-                        return { ...base, workspaceRoots: desiredWorkspaceRoots }
+                        return { ...merged, workspaceRoots: desiredWorkspaceRoots }
                     }
-                    const { workspaceRoots: _workspaceRoots, ...rest } = base
+                    const { workspaceRoots: _workspaceRoots, ...rest } = merged
                     return rest as MachineMetadata
                 }).then(() => {
-                    console.log(`[HAPI] Workspace roots synced: ${formatWorkspaceRoots(this.machine.metadata?.workspaceRoots)}`)
+                    if (needsRoots) {
+                        console.log(`[HAPI] Workspace roots synced: ${formatWorkspaceRoots(this.machine.metadata?.workspaceRoots)}`)
+                    }
                 }).catch((error) => {
-                    console.error('[HAPI] Failed to sync workspace roots:', error instanceof Error ? error.message : error)
+                    console.error('[HAPI] Failed to sync machine metadata:', error instanceof Error ? error.message : error)
                 })
             } else if (desiredWorkspaceRoots?.length) {
                 console.log(`[HAPI] Workspace roots already up to date on hub: ${formatWorkspaceRoots(desiredWorkspaceRoots)}`)
@@ -603,6 +643,41 @@ export class ApiMachineClient {
                 machineId: this.machine.id,
                 time: Date.now(),
                 health: collectMachineHealth()
+            })
+            const installedCliMtimeMs = getInstalledCliMtimeMs()
+            if (!this.machine.metadata) {
+                return
+            }
+            // Keepalive must refresh capabilities/version too — `/cli/machines`
+            // historically returned stale rows for existing machines, and a
+            // long-lived socket may never reconnect after a binary upgrade.
+            const identity = buildMachineMetadata({
+                workspaceRoots: this.workspaceRoots?.length ? this.workspaceRoots : undefined,
+                startedCliMtimeMs: this.machine.metadata.startedCliMtimeMs,
+            })
+            const needsIdentity = machineRegistrationNeedsRefresh(this.machine.metadata, identity)
+            const needsInstalledMtime = typeof installedCliMtimeMs === 'number'
+                && this.machine.metadata.installedCliMtimeMs !== installedCliMtimeMs
+            if (!needsIdentity && !needsInstalledMtime) {
+                return
+            }
+            void this.updateMachineMetadata((current) => {
+                const base: MachineMetadata = {
+                    ...identity,
+                    displayName: current?.displayName,
+                    startedCliMtimeMs: current?.startedCliMtimeMs ?? identity.startedCliMtimeMs,
+                    ...(typeof installedCliMtimeMs === 'number' ? { installedCliMtimeMs } : {}),
+                }
+                if (this.workspaceRoots?.length) {
+                    return { ...base, workspaceRoots: this.workspaceRoots }
+                }
+                // Keepalive must not clear workspace roots; connect owns that sync.
+                if (current?.workspaceRoots?.length) {
+                    return { ...base, workspaceRoots: current.workspaceRoots }
+                }
+                return base
+            }).catch((error) => {
+                logger.debug('[API MACHINE] Failed to refresh machine identity on keepalive', error)
             })
         }
         // Prime CPU sampling so the first heartbeat already includes CPU %.

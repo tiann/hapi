@@ -238,6 +238,15 @@ export class RpcGateway {
         return CursorChatStoreStatusSchema.parse(result)
     }
 
+    async stopRunner(machineId: string): Promise<void> {
+        await this.machineRpc(machineId, RPC_METHODS.StopRunner, {})
+    }
+
+    async runnerSelfUpgrade(machineId: string, offer: unknown): Promise<unknown> {
+        // Upgrades can take minutes (npm install / artifact download).
+        return await this.machineRpc(machineId, RPC_METHODS.RunnerSelfUpgrade, { offer }, 10 * 60_000)
+    }
+
     async getGitStatus(sessionId: string, cwd?: string): Promise<RpcCommandResponse> {
         return await this.sessionRpc(sessionId, RPC_METHODS.GitStatus, { cwd }) as RpcCommandResponse
     }

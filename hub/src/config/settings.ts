@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import type { FleetUpgradePolicy } from '@hapi/protocol/upgradeChannel'
 
 export interface Settings {
     machineId?: string
@@ -20,6 +21,8 @@ export interface Settings {
     listenPort?: number
     publicUrl?: string
     corsOrigins?: string[]
+    // Operator fleet-upgrade policy (no alert / alert / auto-upgrade)
+    fleetUpgradePolicy?: FleetUpgradePolicy
 }
 
 export function getSettingsFile(dataDir: string): string {
