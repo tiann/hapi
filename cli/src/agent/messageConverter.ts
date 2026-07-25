@@ -87,8 +87,15 @@ export function convertAgentMessage(message: AgentMessage): CodexMessage | null 
         case 'turn_complete':
             return null;
         default: {
+            // Unreachable while every AgentMessage variant is handled above —
+            // the `never` binding is what enforces that at compile time. The
+            // runtime return is deliberately `null` rather than the message
+            // itself: callers forward a non-null result straight into the chat
+            // stream, so echoing an unrecognized shape here would put a raw
+            // object on screen instead of failing closed.
             const _exhaustive: never = message;
-            return _exhaustive;
+            void _exhaustive;
+            return null;
         }
     }
 }
