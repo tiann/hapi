@@ -1067,6 +1067,84 @@ describe('AcpMessageHandler', () => {
         expect((messages[0] as { text: string }).text).toMatch(/^Claude AI usage limit warning\|/);
     });
 
+    it('drops a metadata envelope split across delta chunks', () => {
+        // In delta mode every chunk is a fragment, so no individual chunk ever
+        // parses as JSON and the per-chunk filter never fires. Only the flush
+        // boundary sees the reassembled envelope.
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler(
+            (message) => messages.push(message),
+            { textChunkMode: 'delta' }
+        );
+
+        const metadataJson = JSON.stringify({
+            type: 'output',
+            data: {
+                parentUuid: null,
+                isSidechain: true,
+                userType: 'external',
+                sessionId: '5605239b-3ca8-4cf4-bf06-a234f7984f2f',
+                type: 'tool_progress',
+                tool_name: 'Bash',
+                elapsed_time_seconds: 30,
+                heartbeat: true,
+            },
+        });
+
+        for (let i = 0; i < metadataJson.length; i += 17) {
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+                content: { type: 'text', text: metadataJson.slice(i, i + 17) }
+            });
+        }
+
+        handler.flushText();
+
+        expect(messages).toEqual([]);
+    });
+
+    it('drops a metadata envelope that arrives with leading whitespace', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        const metadataJson = JSON.stringify({
+            type: 'output',
+            data: {
+                parentUuid: null,
+                sessionId: 'session-789',
+                userType: 'external',
+            },
+        });
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+            content: { type: 'text', text: `\n  ${metadataJson}` }
+        });
+
+        handler.flushText();
+
+        expect(messages).toEqual([]);
+    });
+
+    it('still emits genuine assistant text that happens to be JSON', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler(
+            (message) => messages.push(message),
+            { textChunkMode: 'delta' }
+        );
+
+        const answer = '{"name":"hapi","version":"0.23.4"}';
+        for (const chunk of [answer.slice(0, 10), answer.slice(10)]) {
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+                content: { type: 'text', text: chunk }
+            });
+        }
+
+        handler.flushText();
+
+        expect(messages).toEqual([{ type: 'text', text: answer }]);
+    });
+
     it('forwards agent_thought_chunk as a reasoning message after flush', () => {
         const messages: AgentMessage[] = [];
         const handler = new AcpMessageHandler((message) => messages.push(message));

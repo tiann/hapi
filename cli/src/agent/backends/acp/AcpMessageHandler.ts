@@ -419,6 +419,14 @@ export class AcpMessageHandler {
      * buffer. Callers must treat this as a text-segment boundary: it is
      * invoked internally before tool_call / plan events and externally at
      * turn boundaries by AcpSdkBackend.
+     *
+     * The internal-event check in `handleUpdate` only sees one chunk at a
+     * time, so it cannot recognise an envelope that arrived in pieces — in
+     * `delta` mode (OpenCode) every chunk is a fragment and none of them
+     * parses as JSON on its own. This flush boundary is the first place the
+     * reassembled text exists, so it is the only place a split envelope can
+     * be caught. Re-checking here is what makes the filter complete rather
+     * than merely likely to fire.
      */
     flushText(): void {
         if (!this.bufferedText) {
@@ -426,6 +434,9 @@ export class AcpMessageHandler {
         }
         const text = this.bufferedText;
         this.bufferedText = '';
+        if (isInternalEventJson(text)) {
+            return;
+        }
         this.onMessage({ type: 'text', text });
     }
 

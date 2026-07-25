@@ -8,15 +8,17 @@
  * We match on the specific structure rather than a broad type allowlist to
  * avoid accidentally suppressing legitimate assistant JSON.
  *
- * Only called for text that starts with '{', so the fast-path for normal
- * prose has zero overhead.
+ * Surrounding whitespace is tolerated: the envelope is also checked at the
+ * text-flush boundary, where it may have been reassembled from chunks that
+ * carried a leading newline or indentation.
  */
 export function isInternalEventJson(text: string): boolean {
-    if (text[0] !== '{') return false;
+    const trimmed = text.trim();
+    if (trimmed[0] !== '{') return false;
 
     let parsed: unknown;
     try {
-        parsed = JSON.parse(text);
+        parsed = JSON.parse(trimmed);
     } catch {
         return false;
     }
