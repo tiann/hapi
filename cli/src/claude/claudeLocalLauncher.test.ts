@@ -45,6 +45,7 @@ function createSessionStub() {
             startingMode: 'local' as const,
             claudeEnvVars: {},
             claudeArgs: [],
+            getModel: () => 'claude-opus-4-1',
             mcpServers: [],
             allowedTools: [],
             hookSettingsPath: null,
@@ -81,6 +82,14 @@ describe('claudeLocalLauncher message filtering', () => {
 
         expect(sentMessages).toHaveLength(0)
         expect(getMetadata().summary?.text).toBe('Native title')
+    })
+
+    it('passes the current session model to the local Claude process', async () => {
+        const { session } = createSessionStub()
+
+        await claudeLocalLauncher(session as never)
+
+        expect(harness.launches[0]).toMatchObject({ model: 'claude-opus-4-1' })
     })
 
     it('converts Claude Code ai-title metadata into a HAPI title', async () => {
