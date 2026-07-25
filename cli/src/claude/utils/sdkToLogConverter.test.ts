@@ -944,6 +944,20 @@ describe('SDKToLogConverter', () => {
             }
         })
 
+        it('should drop command_lifecycle events', () => {
+            // Second unknown type observed leaking in the wild, after
+            // tool_progress. It needed no code change to cover — which is the
+            // point of gating on an allowlist rather than naming each offender.
+            const logMessage = converter.convert({
+                type: 'command_lifecycle',
+                command_uuid: 'a0c15039-fb30-4ba3-bf1b-6afc3196cbeb',
+                state: 'started',
+                session_id: context.sessionId
+            } as unknown as SDKMessage)
+
+            expect(logMessage).toBeNull()
+        })
+
         it('should not break parent chain when an unknown type is dropped', () => {
             const user = converter.convert({
                 type: 'user',
