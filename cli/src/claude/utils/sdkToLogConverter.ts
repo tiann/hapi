@@ -14,6 +14,30 @@ import type {
 } from '@/claude/sdk'
 import type { RawJSONLines } from '@/claude/types'
 import type { ClaudePermissionMode } from '@hapi/protocol/types'
+import { logger } from '@/lib'
+
+/**
+ * SDK message types this converter knows how to turn into a transcript line.
+ *
+ * Anything outside this set is dropped. Claude Code keeps adding out-of-band
+ * SDK events (`tool_progress` heartbeats, stream events, control responses),
+ * and they are not conversation content — passing them through would stamp
+ * them with transcript base fields (parentUuid/sessionId/userType), which
+ * makes them indistinguishable from a real log line downstream. The web
+ * normalizer can't match them to any known shape and falls back to rendering
+ * the raw envelope as message text, leaking JSON into the chat.
+ *
+ * The local launcher already enforces the same allowlist via
+ * `RawJSONLinesSchema.safeParse` in sessionScanner; this keeps the remote
+ * (SDK) path at parity instead of leaving it open by default.
+ */
+const CONVERTIBLE_SDK_MESSAGE_TYPES = new Set([
+    'user',
+    'assistant',
+    'system',
+    'result',
+    'tool_result'
+])
 
 /**
  * Context for converting SDK messages to log format
@@ -198,6 +222,13 @@ export class SDKToLogConverter {
     convert(sdkMessage: SDKMessage): RawJSONLines | null {
         if (sdkMessage.type === 'rate_limit_event') {
             return this.convertRateLimitEvent(sdkMessage)
+        }
+
+        // Bail before allocating a uuid or touching sidechain/parent tracking —
+        // an unknown event must not advance the transcript chain it never joins.
+        if (!CONVERTIBLE_SDK_MESSAGE_TYPES.has(sdkMessage.type)) {
+            logger.debug(`[sdkToLogConverter] dropping unsupported SDK message type: ${sdkMessage.type}`)
+            return null
         }
 
         const uuid = randomUUID()
@@ -398,12 +429,12 @@ export class SDKToLogConverter {
             }
 
             default:
-                // Unknown message type - pass through with all fields
-                logMessage = {
-                    ...baseFields,
-                    ...sdkMessage,
-                    type: (sdkMessage as any).type // Override type last to ensure it's set
-                } as any
+                // Unreachable: CONVERTIBLE_SDK_MESSAGE_TYPES gates this switch.
+                // Kept as a fail-closed guard so that adding a type to the set
+                // without a matching case here drops the message instead of
+                // passing an unshaped envelope through to the chat.
+                logger.debug(`[sdkToLogConverter] no case for allowlisted type: ${(sdkMessage as any).type}`)
+                break
         }
 
         // Update last UUID for parent tracking

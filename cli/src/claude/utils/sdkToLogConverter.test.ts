@@ -923,6 +923,110 @@ describe('SDKToLogConverter', () => {
         })
     })
 
+    describe('Unknown message types', () => {
+        it('should drop tool_progress heartbeat events instead of passing them through', () => {
+            const logMessage = converter.convert({
+                type: 'tool_progress',
+                tool_use_id: 'toolu_011qMV3YCgDP89zcjHbC4rd2-heartbeat-0',
+                tool_name: 'Bash',
+                parent_tool_use_id: 'toolu_011qMV3YCgDP89zcjHbC4rd2',
+                elapsed_time_seconds: 30,
+                heartbeat: true,
+                session_id: context.sessionId
+            } as unknown as SDKMessage)
+
+            expect(logMessage).toBeNull()
+        })
+
+        it('should drop arbitrary unknown SDK message types', () => {
+            for (const type of ['stream_event', 'control_response', 'log', 'some_future_event']) {
+                expect(converter.convert({ type, payload: { foo: 'bar' } } as unknown as SDKMessage)).toBeNull()
+            }
+        })
+
+        it('should not break parent chain when an unknown type is dropped', () => {
+            const user = converter.convert({
+                type: 'user',
+                message: { role: 'user', content: 'hi' }
+            } as SDKUserMessage)
+
+            converter.convert({
+                type: 'tool_progress',
+                parent_tool_use_id: 'toolu_abc',
+                heartbeat: true
+            } as unknown as SDKMessage)
+
+            const assistant = converter.convert({
+                type: 'assistant',
+                message: { role: 'assistant', content: [{ type: 'text', text: 'hello' }] }
+            } as SDKAssistantMessage)
+
+            expect(assistant!.parentUuid).toBe(user!.uuid)
+        })
+
+        it('should not let repeated tool_progress heartbeats hijack sidechain parent tracking', () => {
+            // A long-running Bash inside a Task subagent emits a tool_progress
+            // heartbeat every 30s, all sharing the subagent's parent_tool_use_id.
+            // Converting them would overwrite sidechainLastUUID on every tick, so
+            // the subagent's next real message would be parented to a heartbeat
+            // rather than to its own previous message.
+            const parentToolUseId = 'toolu_011qMV3YCgDP89zcjHbC4rd2'
+
+            const firstSidechainMessage = converter.convert({
+                type: 'assistant',
+                parent_tool_use_id: parentToolUseId,
+                message: { role: 'assistant', content: [{ type: 'text', text: 'working' }] }
+            } as unknown as SDKAssistantMessage)
+
+            for (let tick = 0; tick < 3; tick++) {
+                const heartbeat = converter.convert({
+                    type: 'tool_progress',
+                    tool_use_id: `${parentToolUseId}-heartbeat-${tick}`,
+                    tool_name: 'Bash',
+                    parent_tool_use_id: parentToolUseId,
+                    elapsed_time_seconds: (tick + 1) * 30,
+                    heartbeat: true,
+                    session_id: context.sessionId
+                } as unknown as SDKMessage)
+
+                expect(heartbeat).toBeNull()
+            }
+
+            const nextSidechainMessage = converter.convert({
+                type: 'assistant',
+                parent_tool_use_id: parentToolUseId,
+                message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] }
+            } as unknown as SDKAssistantMessage)
+
+            expect(nextSidechainMessage!.isSidechain).toBe(true)
+            expect(nextSidechainMessage!.parentUuid).toBe(firstSidechainMessage!.uuid)
+        })
+
+        it('should still convert every known type', () => {
+            expect(converter.convert({
+                type: 'user',
+                message: { role: 'user', content: 'hi' }
+            } as SDKUserMessage)).toBeTruthy()
+
+            expect(converter.convert({
+                type: 'assistant',
+                message: { role: 'assistant', content: [{ type: 'text', text: 'yo' }] }
+            } as SDKAssistantMessage)).toBeTruthy()
+
+            expect(converter.convert({
+                type: 'system',
+                subtype: 'init',
+                model: 'claude-opus-4-8'
+            } as SDKSystemMessage)).toBeTruthy()
+
+            expect(converter.convert({
+                type: 'tool_result',
+                tool_use_id: 'toolu_x',
+                content: 'done'
+            } as unknown as SDKMessage)).toBeTruthy()
+        })
+    })
+
     describe('Convenience function', () => {
         it('should convert single message without state', () => {
             const sdkMessage: SDKUserMessage = {
