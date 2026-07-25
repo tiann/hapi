@@ -22,8 +22,8 @@ function ChatSurfaceColorControl(props: {
     const { t } = useTranslation()
     const pickerValue = getChatSurfaceColorPickerValue(props.preference)
     return (
-        <fieldset className="px-3 py-3">
-            <legend className="mb-2 text-[var(--app-fg)]">{props.label}</legend>
+        <div className="px-3 py-3">
+            <div className="mb-2 text-[var(--app-fg)]">{props.label}</div>
             <div role="radiogroup" aria-label={props.label} className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 {getChatSurfaceColorPresetOptions().map((option) => {
                     const preference = toPresetChatSurfaceColorPreference(option.value)
@@ -40,7 +40,7 @@ function ChatSurfaceColorControl(props: {
                 {t('settings.chat.surfaceColor.custom')}
                 <input type="color" value={pickerValue} onChange={(event) => props.onCustomChange(event.target.value)} className="h-9 w-12 cursor-pointer border-0 bg-transparent p-0" />
             </label>
-        </fieldset>
+        </div>
     )
 }
 

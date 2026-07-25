@@ -74,8 +74,8 @@ export function SettingsChoiceGroup<T extends string | number>(props: {
 }) {
     const columns = props.columns === 5 ? 'grid-cols-5' : props.columns === 4 ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-2'
     return (
-        <fieldset className="px-3 py-3">
-            <legend className="mb-2 text-[var(--app-fg)]">{props.label}</legend>
+        <div className="px-3 py-3">
+            <div className="mb-2 text-[var(--app-fg)]">{props.label}</div>
             <div role="radiogroup" aria-label={props.label} className={`grid ${columns} gap-2`}>
                 {props.options.map((option) => {
                     const selected = props.value === option.value
@@ -96,7 +96,7 @@ export function SettingsChoiceGroup<T extends string | number>(props: {
                     )
                 })}
             </div>
-        </fieldset>
+        </div>
     )
 }
 

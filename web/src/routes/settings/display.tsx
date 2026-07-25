@@ -23,8 +23,8 @@ function ColorThemePicker() {
     const { colorTheme, setColorTheme } = useColorTheme()
 
     return (
-        <fieldset className="px-3 py-3">
-            <legend className="mb-2 text-[var(--app-fg)]">{t('settings.display.colorTheme')}</legend>
+        <div className="px-3 py-3">
+            <div className="mb-2 text-[var(--app-fg)]">{t('settings.display.colorTheme')}</div>
             <div role="radiogroup" aria-label={t('settings.display.colorTheme')} className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 {getColorThemeOptions().map((option) => (
                     <ColorThemeOption
@@ -36,7 +36,7 @@ function ColorThemePicker() {
                     />
                 ))}
             </div>
-        </fieldset>
+        </div>
     )
 }
 
