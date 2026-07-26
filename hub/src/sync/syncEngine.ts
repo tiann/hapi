@@ -1495,7 +1495,7 @@ export class SyncEngine {
             const found = this.extractClaudeSessionId(messages[i].content)
             if (!found) continue
 
-            this.persistRecoveredClaudeSessionId(sessionId, namespace, found)
+            this.persistRecoveredAgentSessionId(sessionId, namespace, 'claudeSessionId', found)
             return found
         }
         return null
@@ -1507,7 +1507,7 @@ export class SyncEngine {
         }
 
         const obj = value as Record<string, unknown>
-        const direct = this.normalizeClaudeSessionId(obj.session_id) ?? this.normalizeClaudeSessionId(obj.sessionId)
+        const direct = this.normalizeAgentSessionId(obj.session_id) ?? this.normalizeAgentSessionId(obj.sessionId)
         if (direct) {
             return direct
         }
@@ -1527,7 +1527,7 @@ export class SyncEngine {
         return null
     }
 
-    private normalizeClaudeSessionId(value: unknown): string | null {
+    private normalizeAgentSessionId(value: unknown): string | null {
         if (typeof value !== 'string') {
             return null
         }
@@ -1537,16 +1537,21 @@ export class SyncEngine {
             : null
     }
 
-    private persistRecoveredClaudeSessionId(sessionId: string, namespace: string, claudeSessionId: string): void {
+    private persistRecoveredAgentSessionId(
+        sessionId: string,
+        namespace: string,
+        field: 'claudeSessionId' | 'codexSessionId',
+        agentSessionId: string
+    ): void {
         for (let attempt = 0; attempt < 2; attempt += 1) {
             const latest = this.sessionCache.getSessionByNamespace(sessionId, namespace)
                 ?? this.sessionCache.refreshSession(sessionId)
             if (!latest?.metadata) return
-            if (latest.metadata.claudeSessionId === claudeSessionId) return
+            if (latest.metadata[field] === agentSessionId) return
 
             const result = this.store.sessions.updateSessionMetadata(
                 sessionId,
-                { ...latest.metadata, claudeSessionId },
+                { ...latest.metadata, [field]: agentSessionId },
                 latest.metadataVersion,
                 namespace,
                 { touchUpdatedAt: false }
