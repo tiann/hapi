@@ -1,5 +1,6 @@
 import { AcpSdkBackend } from '@/agent/backends/acp'
 import { assertSafeWindowsShellArg } from './windowsShellArgs'
+import { resolveManagedProviderWireModel } from '@/host/providerModel'
 
 const ANSI_SGR_PATTERN = /\u001b\[[0-9;]*m/g
 
@@ -19,15 +20,16 @@ function filterEnv(env: NodeJS.ProcessEnv): Record<string, string> {
 
 export function buildGrokAgentArgs(opts: { cwd: string; model?: string; effort?: string }): string[] {
     assertSafeWindowsShellArg(opts.cwd, 'cwd')
-    if (opts.model) assertSafeWindowsShellArg(opts.model, 'model')
+    const wireModel = resolveManagedProviderWireModel(opts.model)
+    if (wireModel) assertSafeWindowsShellArg(wireModel, 'model')
     if (opts.effort) assertSafeWindowsShellArg(opts.effort, 'effort')
 
     // --cwd is a top-level Grok flag and must precede the `agent` subcommand.
     // session/new also carries cwd, but setting it at process start ensures
     // Grok discovers the correct project rules/plugins before initialization.
     const args = ['--cwd', opts.cwd, 'agent']
-    if (opts.model) {
-        args.push('--model', opts.model)
+    if (wireModel) {
+        args.push('--model', wireModel)
     }
     if (opts.effort) {
         args.push('--reasoning-effort', opts.effort)

@@ -241,6 +241,9 @@ export function SessionHeader(props: {
                                 <AgentFlavorIcon flavor={session.metadata?.flavor} className="h-3.5 w-3.5 shrink-0 -translate-y-px" />
                                 {session.metadata?.flavor?.trim() || 'unknown'}
                             </span>
+                            {session.metadata?.providerProfileName ? (
+                                <span>{t('session.provider')}: {session.metadata.providerProfileName}</span>
+                            ) : null}
                             {modelLabel ? (
                                 <span>
                                     {t(modelLabel.key)}: {modelLabel.value}

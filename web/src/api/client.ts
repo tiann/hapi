@@ -44,7 +44,15 @@ import type {
     ReopenSessionResponse,
     UploadFileResponse
 } from '@hapi/protocol/apiTypes'
-import type { AgentFlavor } from '@hapi/protocol'
+import type {
+    AgentFlavor,
+    AgentProvider,
+    ProviderListResponse,
+    ProviderHealthCheckResponse,
+    ProviderMutationResponse,
+    ProviderProfileInput,
+    ProviderProfileUpdate
+} from '@hapi/protocol'
 import type { CancelMessageResponse } from '@hapi/protocol/schemas'
 
 type ApiClientOptions = {
@@ -606,6 +614,39 @@ export class ApiClient {
         )
     }
 
+    async listProviderProfiles(machineId: string, agent?: AgentProvider): Promise<ProviderListResponse> {
+        const query = agent ? `?agent=${encodeURIComponent(agent)}` : ''
+        return await this.request(`/api/machines/${encodeURIComponent(machineId)}/providers${query}`)
+    }
+
+    async createProviderProfile(machineId: string, input: ProviderProfileInput): Promise<ProviderMutationResponse> {
+        return await this.request(`/api/machines/${encodeURIComponent(machineId)}/providers`, {
+            method: 'POST',
+            body: JSON.stringify(input)
+        })
+    }
+
+    async updateProviderProfile(machineId: string, id: string, patch: ProviderProfileUpdate): Promise<ProviderMutationResponse> {
+        return await this.request(`/api/machines/${encodeURIComponent(machineId)}/providers/${encodeURIComponent(id)}`, {
+            method: 'PATCH',
+            body: JSON.stringify(patch)
+        })
+    }
+
+    async setDefaultProvider(machineId: string, agent: AgentProvider, id: string | null): Promise<ProviderMutationResponse> {
+        return await this.request(`/api/machines/${encodeURIComponent(machineId)}/providers/default`, {
+            method: 'POST',
+            body: JSON.stringify({ agent, id })
+        })
+    }
+
+    async checkProviderHealth(machineId: string, id: string, refreshModels = true): Promise<ProviderHealthCheckResponse> {
+        return await this.request(`/api/machines/${encodeURIComponent(machineId)}/providers/${encodeURIComponent(id)}/health`, {
+            method: 'POST',
+            body: JSON.stringify({ refreshModels })
+        })
+    }
+
     async checkMachinePathsExists(
         machineId: string,
         paths: string[]
@@ -629,7 +670,8 @@ export class ApiClient {
         sessionType?: 'simple' | 'worktree',
         worktreeName?: string,
         effort?: string,
-        permissionMode?: PermissionMode
+        permissionMode?: PermissionMode,
+        providerProfileId?: string | null
     ): Promise<SpawnResponse> {
         return await this.request<SpawnResponse>(`/api/machines/${encodeURIComponent(machineId)}/spawn`, {
             method: 'POST',
@@ -642,7 +684,8 @@ export class ApiClient {
                 sessionType,
                 worktreeName,
                 effort,
-                permissionMode
+                permissionMode,
+                providerProfileId
             })
         })
     }

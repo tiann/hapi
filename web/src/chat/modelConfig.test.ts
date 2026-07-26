@@ -18,6 +18,10 @@ describe('getContextBudgetTokens', () => {
         expect(getContextBudgetTokens('gpt-5.4', 'codex')).toBe(248_400)
     })
 
+    it('honors an explicit managed-provider 1M variant for Codex', () => {
+        expect(getContextBudgetTokens('glm-5.2[1M]', 'codex')).toBe(990_000)
+    })
+
     it('parses context budget from Cursor wire ids', () => {
         expect(getContextBudgetTokens('composer-2.5-fast[context=300k]', 'cursor')).toBe(290_000)
     })

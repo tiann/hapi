@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import React from 'react'
 import { logger } from '@/ui/logger'
+import { resolveManagedProviderWireModel } from '@/host/providerModel'
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge'
 import { convertAgentMessage } from '@/agent/messageConverter'
 import type { AgentMessage, McpServerStdio, PromptContent } from '@/agent/types'
@@ -191,7 +192,7 @@ class GrokRemoteLauncher extends RemoteLauncherBase {
                 : batch.mode.model
             if (requestedModel && requestedModel !== this.currentBackendModel) {
                 try {
-                    await backend.setModel(acpSessionId, requestedModel, { flavor: 'grok' })
+                    await backend.setModel(acpSessionId, resolveManagedProviderWireModel(requestedModel)!, { flavor: 'grok' })
                     this.currentBackendModel = requestedModel
                     batch.mode.model = requestedModel
                 } catch (error) {

@@ -10,6 +10,8 @@ import { codexSystemPrompt } from './utils/systemPrompt';
 import type { ReasoningEffort } from './appServerTypes';
 import { resolveCodexCommand } from './utils/codexExecutable';
 import type { McpServersConfig } from './utils/buildHapiMcpBridge';
+import { readCodexProviderConfigArgs } from './utils/providerConfigArgs';
+import { resolveManagedProviderWireModel } from '@/host/providerModel';
 
 const CODEX_OPTIONS_WITH_VALUE = new Set([
     '-a',
@@ -131,8 +133,9 @@ export async function codexLocal(opts: {
         opts.onSessionFound(opts.sessionId);
     }
 
-    if (opts.model) {
-        args.push('--model', opts.model);
+    const wireModel = resolveManagedProviderWireModel(opts.model);
+    if (wireModel) {
+        args.push('--model', wireModel);
     }
 
     if (opts.modelReasoningEffort) {
@@ -173,10 +176,11 @@ export async function codexLocal(opts: {
     }
 
     const codexCommand = resolveCodexCommand();
+    const providerConfigArgs = readCodexProviderConfigArgs();
 
     await spawnWithTerminalGuard({
         command: codexCommand.command,
-        args: [...codexCommand.args, ...args],
+        args: [...codexCommand.args, ...providerConfigArgs, ...args],
         cwd: opts.path,
         env: process.env,
         signal: opts.abort,

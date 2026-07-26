@@ -68,6 +68,9 @@ export const MetadataSchema = z.object({
     archiveReason: z.string().optional(),
     preferredPermissionMode: PermissionModeSchema.optional(),
     flavor: z.string().nullish(),
+    providerProfileId: z.string().uuid().nullable().optional(),
+    providerProfileName: z.string().optional(),
+    providerProfileRevision: z.number().int().positive().optional(),
     capabilities: SessionCapabilitiesSchema.optional(),
     worktree: WorktreeMetadataSchema.optional(),
     // Cached Pi model list — written by CLI, read by web (inactive session fallback).

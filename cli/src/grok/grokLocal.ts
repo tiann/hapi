@@ -2,6 +2,7 @@ import { logger } from '@/ui/logger'
 import { spawnWithTerminalGuard } from '@/utils/spawnWithTerminalGuard'
 import type { PermissionMode } from './types'
 import { assertSafeWindowsShellArg } from './utils/windowsShellArgs'
+import { resolveManagedProviderWireModel } from '@/host/providerModel'
 
 type GrokLocalOptions = {
     sessionId: string
@@ -13,7 +14,8 @@ type GrokLocalOptions = {
 
 export function buildGrokLocalArgs(opts: GrokLocalOptions): string[] {
     assertSafeWindowsShellArg(opts.sessionId, 'sessionId')
-    if (opts.model) assertSafeWindowsShellArg(opts.model, 'model')
+    const wireModel = resolveManagedProviderWireModel(opts.model)
+    if (wireModel) assertSafeWindowsShellArg(wireModel, 'model')
     if (opts.effort) assertSafeWindowsShellArg(opts.effort, 'effort')
 
     const args: string[] = []
@@ -23,8 +25,8 @@ export function buildGrokLocalArgs(opts: GrokLocalOptions): string[] {
     } else {
         args.push('--session-id', opts.sessionId)
     }
-    if (opts.model) {
-        args.push('--model', opts.model)
+    if (wireModel) {
+        args.push('--model', wireModel)
     }
     if (opts.effort) {
         args.push('--reasoning-effort', opts.effort)
