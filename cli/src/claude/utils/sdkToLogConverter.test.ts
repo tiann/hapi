@@ -1041,6 +1041,63 @@ describe('SDKToLogConverter', () => {
         })
     })
 
+    describe('Sidechain parentToolUseId preservation (subagent trace grouping fix)', () => {
+        it('preserves parent_tool_use_id as parentToolUseId on sidechain user messages', () => {
+            const sdkMessage = {
+                type: 'user',
+                parent_tool_use_id: 'toolu_abc123',
+                message: { role: 'user', content: 'sidechain prompt' }
+            } as unknown as SDKUserMessage
+
+            const logMessage = converter.convert(sdkMessage) as any
+
+            expect(logMessage?.isSidechain).toBe(true)
+            expect(logMessage?.parentToolUseId).toBe('toolu_abc123')
+        })
+
+        it('preserves parent_tool_use_id on sidechain assistant messages (subagent turns)', () => {
+            const sdkMessage = {
+                type: 'assistant',
+                parent_tool_use_id: 'toolu_abc123',
+                message: {
+                    role: 'assistant',
+                    content: [{ type: 'text', text: 'subagent reply' }]
+                }
+            } as unknown as SDKAssistantMessage
+
+            const logMessage = converter.convert(sdkMessage) as any
+
+            expect(logMessage?.isSidechain).toBe(true)
+            expect(logMessage?.parentToolUseId).toBe('toolu_abc123')
+        })
+
+        it('does not set parentToolUseId on non-sidechain (top-level) messages', () => {
+            const sdkMessage: SDKUserMessage = {
+                type: 'user',
+                message: { role: 'user', content: 'top-level message' }
+            }
+
+            const logMessage = converter.convert(sdkMessage) as any
+
+            expect(logMessage?.isSidechain).toBe(false)
+            expect(logMessage?.parentToolUseId).toBeUndefined()
+        })
+
+        it('preserves parentToolUseId on interrupted sidechain tool results', () => {
+            const logMessage = converter.generateInterruptedToolResult('toolu_child', 'toolu_parent') as any
+
+            expect(logMessage?.isSidechain).toBe(true)
+            expect(logMessage?.parentToolUseId).toBe('toolu_parent')
+        })
+
+        it('does not set parentToolUseId on interrupted top-level tool results', () => {
+            const logMessage = converter.generateInterruptedToolResult('toolu_child') as any
+
+            expect(logMessage?.isSidechain).toBe(false)
+            expect(logMessage?.parentToolUseId).toBeUndefined()
+        })
+    })
+
     describe('Convenience function', () => {
         it('should convert single message without state', () => {
             const sdkMessage: SDKUserMessage = {

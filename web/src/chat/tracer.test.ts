@@ -129,3 +129,95 @@ describe('traceMessages — Agent tool name (regression fix)', () => {
         expect(scAgentResult!.sidechainId).toBe('msg-agent')
     })
 })
+
+// ---------------------------------------------------------------------------
+// parentToolUseId direct grouping — fixes the "prompt-root never arrives"
+// regression (SDK drops the sidechain root as system/task_started or as a
+// top-level parent_tool_use_id:null user message for some subagents; the
+// child sidechain messages still all carry parentToolUseId directly).
+// ---------------------------------------------------------------------------
+
+function makeSidechainChildMsg(
+    id: string,
+    parentToolUseId: string,
+    parentUUID: string | null = null,
+): NormalizedMessage {
+    return {
+        id,
+        localId: null,
+        createdAt: 1_700_000_002_000,
+        role: 'agent',
+        isSidechain: true,
+        parentToolUseId,
+        content: [
+            { type: 'text', text: `child of ${parentToolUseId}`, uuid: `uuid-${id}`, parentUUID },
+        ],
+    } as NormalizedMessage
+}
+
+describe('traceMessages — parentToolUseId direct grouping (broken subagent case)', () => {
+    it('groups an orphaned sidechain child directly via parentToolUseId when no prompt-root sidechain message exists', () => {
+        const agentMsg = makeToolCallMsg('msg-agent', 'Agent', 'investigate background task')
+        // No sidechain root carrying the prompt — SDK dropped it as system/task_started
+        // (filtered) or as a top-level parent_tool_use_id:null user message. The child
+        // still carries parentToolUseId pointing at the Agent tool_use's id (tc-msg-agent).
+        const orphanChild = makeSidechainChildMsg('sc-child', 'tc-msg-agent')
+
+        const result = traceMessages([agentMsg, orphanChild])
+        const grouped = result.find(m => m.id === 'sc-child')
+        expect(grouped).toBeDefined()
+        expect(grouped!.sidechainId).toBe('msg-agent')
+    })
+
+    it('groups every descendant independently by parentToolUseId, even when their own parentUuid chain is broken', () => {
+        const agentMsg = makeToolCallMsg('msg-agent', 'Agent', 'investigate background task')
+        // First descendant has no resolvable parentUuid (chain seed was lost on resume).
+        const child1 = makeSidechainChildMsg('sc-child-1', 'tc-msg-agent', null)
+        // Second descendant chains to the first via parentUuid *and* still carries
+        // parentToolUseId directly, per real SDK behaviour (every sidechain message
+        // repeats parent_tool_use_id, not just the root).
+        const child2 = makeSidechainChildMsg('sc-child-2', 'tc-msg-agent', 'uuid-sc-child-1')
+
+        const result = traceMessages([agentMsg, child1, child2])
+        expect(result.find(m => m.id === 'sc-child-1')!.sidechainId).toBe('msg-agent')
+        expect(result.find(m => m.id === 'sc-child-2')!.sidechainId).toBe('msg-agent')
+    })
+
+    it('still falls back to prompt-root matching when parentToolUseId is absent (old stored messages)', () => {
+        const prompt = 'legacy prompt without parentToolUseId'
+        const agentMsg = makeToolCallMsg('msg-agent', 'Agent', prompt)
+        const sidechainRoot = makeSidechainRootMsg('sc-root', prompt)
+
+        const result = traceMessages([agentMsg, sidechainRoot])
+        expect(result.find(m => m.id === 'sc-root')!.sidechainId).toBe('msg-agent')
+    })
+
+    it('groups nested subagents: a grandchild resolves to its mid-level (sidechain) Agent tool_use', () => {
+        // Top-level Agent spawns a mid-level subagent; the mid-level subagent is
+        // itself a sidechain message that carries its own Agent tool_use spawning a
+        // grandchild. The indexing pass covers tool-calls inside sidechains, so each
+        // level groups under the correct parent.
+        const topAgent = makeToolCallMsg('msg-top', 'Agent', 'top-level task')
+        const midAgent = makeAgentMsg({
+            id: 'msg-mid',
+            isSidechain: true,
+            parentToolUseId: 'tc-msg-top',
+            content: [
+                {
+                    type: 'tool-call',
+                    id: 'tc-msg-mid',
+                    name: 'Agent',
+                    input: { prompt: 'nested task', subagent_type: 'general-purpose' },
+                    description: null,
+                    uuid: 'uuid-msg-mid',
+                    parentUUID: null,
+                },
+            ],
+        })
+        const grandchild = makeSidechainChildMsg('sc-grandchild', 'tc-msg-mid')
+
+        const result = traceMessages([topAgent, midAgent, grandchild])
+        expect(result.find(m => m.id === 'msg-mid')!.sidechainId).toBe('msg-top')
+        expect(result.find(m => m.id === 'sc-grandchild')!.sidechainId).toBe('msg-mid')
+    })
+})
