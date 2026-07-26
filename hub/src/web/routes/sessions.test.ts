@@ -1167,6 +1167,28 @@ describe('sessions routes', () => {
             expect(calls).toEqual(['session-1'])
         })
 
+        it('archives an active session with stale archived lifecycle metadata', async () => {
+            const calls: string[] = []
+            const session = createSession({
+                active: true,
+                metadata: {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    flavor: 'codex',
+                    lifecycleState: 'archived'
+                }
+            })
+            const { app } = createApp(session, {
+                archiveSession: async (sessionId: string) => { calls.push(sessionId) }
+            })
+
+            const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
+
+            expect(response.status).toBe(200)
+            expect(calls).toEqual(['session-1'])
+            expect(await response.json()).toEqual({ ok: true })
+        })
+
         it('returns 2xx and skips archiveSession when the row is already archived (idempotent)', async () => {
             let called = false
             const session = createSession({

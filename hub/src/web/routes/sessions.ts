@@ -339,7 +339,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const lifecycleState = sessionResult.session.metadata?.lifecycleState
-        if (lifecycleState === 'archived') {
+        if (!sessionResult.session.active && lifecycleState === 'archived') {
             return c.json({ ok: true, alreadyArchived: true })
         }
 
