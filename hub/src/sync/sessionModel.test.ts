@@ -16,6 +16,131 @@ function createPublisher(events: SyncEvent[]): EventPublisher {
     } as unknown as EventPublisher
 }
 
+function productionCodexMessage(event: Record<string, unknown>): Record<string, unknown> {
+    return {
+        role: 'agent',
+        content: {
+            type: 'codex',
+            data: event
+        }
+    }
+}
+
+function productionCodexContextResetMessage(): Record<string, unknown> {
+    return {
+        role: 'agent',
+        content: {
+            id: 'context-reset-event',
+            type: 'event',
+            data: {
+                type: 'message',
+                message: 'Context was reset'
+            }
+        }
+    }
+}
+
+function productionCodexScope(
+    role: 'parent' | 'child',
+    threadId: string,
+    parentThreadId?: string
+): Record<string, unknown> {
+    const parent = parentThreadId
+        ? { parent_thread_id: parentThreadId, parentThreadId }
+        : {}
+    return {
+        thread_id: threadId,
+        threadId,
+        ...parent,
+        scope_role: role,
+        scopeRole: role,
+        scope: { role, thread_id: threadId, threadId, ...parent }
+    }
+}
+
+async function runCodexResumeScenario(
+    messages: Record<string, unknown>[],
+    codexSessionId?: string,
+    options?: {
+        archived?: boolean
+        concurrentMetadata?: Record<string, unknown>
+    }
+) {
+    const store = new Store(':memory:')
+    const engine = new SyncEngine(
+        store,
+        {} as never,
+        new RpcRegistry(),
+        { broadcast() {} } as never
+    )
+    const session = engine.getOrCreateSession(
+        'session-codex-resume-from-messages',
+        {
+            path: '/tmp/project',
+            host: 'localhost',
+            machineId: 'machine-1',
+            flavor: 'codex',
+            ...(codexSessionId ? { codexSessionId } : {}),
+            ...(options?.archived
+                ? {
+                    lifecycleState: 'archived',
+                    archivedBy: 'cli',
+                    archiveReason: 'Context reset before exit'
+                }
+                : {})
+        },
+        null,
+        'default',
+        'gpt-5'
+    )
+    engine.getOrCreateMachine(
+        'machine-1',
+        { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+        null,
+        'default'
+    )
+    engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+
+    for (const message of messages) {
+        store.messages.addMessage(session.id, message)
+    }
+    if (options?.concurrentMetadata) {
+        const current = store.sessions.getSessionByNamespace(session.id, 'default')!
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            { ...current.metadata!, ...options.concurrentMetadata },
+            current.metadataVersion,
+            'default',
+            { touchUpdatedAt: false }
+        )
+        if (result.result !== 'success') throw new Error('Failed to prepare stale metadata fixture')
+    }
+    const before = store.sessions.getSession(session.id)!
+    const capturedResumeSessionIds: Array<string | undefined> = []
+    ;(engine as any).rpcGateway.spawnSession = async (...args: Parameters<SyncEngine['spawnSession']>) => {
+        capturedResumeSessionIds.push(args[8])
+        return { type: 'success', sessionId: session.id }
+    }
+    ;(engine as any).waitForSessionActive = async () => true
+
+    try {
+        const result = options?.archived
+            ? await engine.reopenSession(session.id, 'default')
+            : await engine.resumeSession(session.id, 'default')
+        const after = store.sessions.getSession(session.id)!
+        return {
+            result,
+            capturedResumeSessionIds,
+            before,
+            after,
+            persistedCodexSessionId: (after.metadata as { codexSessionId?: string } | null)?.codexSessionId,
+            cachedCodexSessionId: engine.getSession(session.id)?.metadata?.codexSessionId
+        }
+    } finally {
+        engine.stop()
+    }
+}
+
 describe('session model', () => {
     it('includes explicit model in session summaries', () => {
         const store = new Store(':memory:')
@@ -1015,6 +1140,191 @@ describe('session model', () => {
         } finally {
             engine.stop()
         }
+    })
+
+    it('recovers the explicit Codex parent thread when a newer child event exists', async () => {
+        const rootThreadId = '33333333-3333-4333-8333-333333333333'
+        const childThreadId = '44444444-4444-4444-8444-444444444444'
+        const outcome = await runCodexResumeScenario([
+            productionCodexMessage({
+                type: 'token_count',
+                ...productionCodexScope('parent', rootThreadId)
+            }),
+            productionCodexMessage({
+                type: 'agent-run-trace',
+                ...productionCodexScope('child', childThreadId, rootThreadId)
+            })
+        ])
+
+        expect(outcome.result).toEqual({ type: 'success', sessionId: outcome.after.id })
+        expect(outcome.capturedResumeSessionIds).toEqual([rootThreadId])
+        expect([
+            outcome.persistedCodexSessionId,
+            outcome.cachedCodexSessionId,
+            outcome.after.metadataVersion,
+            outcome.after.updatedAt
+        ]).toEqual([
+            rootThreadId,
+            rootThreadId,
+            outcome.before.metadataVersion + 1,
+            outcome.before.updatedAt
+        ])
+    })
+
+    it('prefers the Codex resume ID already stored in metadata', async () => {
+        const metadataThreadId = 'metadata-codex-thread'
+        const messageThreadId = '55555555-5555-4555-8555-555555555555'
+        const outcome = await runCodexResumeScenario(
+            [productionCodexMessage(productionCodexScope('parent', messageThreadId))],
+            metadataThreadId
+        )
+
+        expect(outcome.result).toEqual({ type: 'success', sessionId: outcome.after.id })
+        expect(outcome.capturedResumeSessionIds).toEqual([metadataThreadId])
+        expect(outcome.after).toMatchObject({
+            metadata: { codexSessionId: metadataThreadId },
+            metadataVersion: outcome.before.metadataVersion,
+            updatedAt: outcome.before.updatedAt
+        })
+    })
+
+    it('does not recover a Codex thread from before an explicit context reset', async () => {
+        const oldThreadId = '88888888-8888-4888-8888-888888888888'
+        const outcome = await runCodexResumeScenario([
+            productionCodexMessage(productionCodexScope('parent', oldThreadId)),
+            productionCodexContextResetMessage()
+        ], undefined, { archived: true })
+
+        expect(outcome.result).toMatchObject({ type: 'error', code: 'resume_unavailable' })
+        expect(outcome.capturedResumeSessionIds).toEqual([])
+        expect(outcome.persistedCodexSessionId).toBeUndefined()
+        expect(outcome.after.metadata).toMatchObject({
+            lifecycleState: 'archived',
+            archivedBy: 'cli',
+            archiveReason: 'Context reset before exit'
+        })
+    })
+
+    it('recovers a new Codex parent thread created after a context reset', async () => {
+        const oldThreadId = '88888888-8888-4888-8888-888888888888'
+        const newThreadId = '99999999-9999-4999-8999-999999999999'
+        const outcome = await runCodexResumeScenario([
+            productionCodexMessage(productionCodexScope('parent', oldThreadId)),
+            productionCodexContextResetMessage(),
+            productionCodexMessage(productionCodexScope('parent', newThreadId))
+        ])
+
+        expect(outcome.result).toEqual({ type: 'success', sessionId: outcome.after.id })
+        expect(outcome.capturedResumeSessionIds).toEqual([newThreadId])
+        expect(outcome.persistedCodexSessionId).toBe(newThreadId)
+    })
+
+    it('does not treat raw user /clear text as a Codex context reset boundary', async () => {
+        const threadId = '88888888-8888-4888-8888-888888888888'
+        const outcome = await runCodexResumeScenario([
+            productionCodexMessage(productionCodexScope('parent', threadId)),
+            { role: 'user', content: { type: 'text', text: '/clear' } }
+        ])
+
+        expect(outcome.result).toEqual({ type: 'success', sessionId: outcome.after.id })
+        expect(outcome.capturedResumeSessionIds).toEqual([threadId])
+        expect(outcome.persistedCodexSessionId).toBe(threadId)
+    })
+
+    it('prefers a Codex resume ID written concurrently during recovery persistence', async () => {
+        const messageThreadId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+        const concurrentThreadId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+        const outcome = await runCodexResumeScenario(
+            [productionCodexMessage(productionCodexScope('parent', messageThreadId))],
+            undefined,
+            {
+                concurrentMetadata: { codexSessionId: concurrentThreadId }
+            }
+        )
+
+        expect(outcome.result).toEqual({ type: 'success', sessionId: outcome.after.id })
+        expect(outcome.capturedResumeSessionIds).toEqual([concurrentThreadId])
+        expect([
+            outcome.persistedCodexSessionId,
+            outcome.cachedCodexSessionId,
+            outcome.after.metadataVersion,
+            outcome.after.updatedAt
+        ]).toEqual([
+            concurrentThreadId,
+            concurrentThreadId,
+            outcome.before.metadataVersion,
+            outcome.before.updatedAt
+        ])
+    })
+
+    it('retries Codex recovery persistence after an unrelated concurrent metadata write', async () => {
+        const messageThreadId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+        const outcome = await runCodexResumeScenario(
+            [productionCodexMessage(productionCodexScope('parent', messageThreadId))],
+            undefined,
+            {
+                concurrentMetadata: { name: 'Concurrent rename' }
+            }
+        )
+
+        expect(outcome.result).toEqual({ type: 'success', sessionId: outcome.after.id })
+        expect(outcome.capturedResumeSessionIds).toEqual([messageThreadId])
+        expect(outcome.after.metadata).toMatchObject({
+            codexSessionId: messageThreadId,
+            name: 'Concurrent rename'
+        })
+        expect([
+            outcome.cachedCodexSessionId,
+            outcome.after.metadataVersion,
+            outcome.after.updatedAt
+        ]).toEqual([
+            messageThreadId,
+            outcome.before.metadataVersion + 1,
+            outcome.before.updatedAt
+        ])
+    })
+
+    const safeParentThreadId = '66666666-6666-4666-8666-666666666666'
+    const otherThreadId = '77777777-7777-4777-8777-777777777777'
+    const explicitParentEvent = productionCodexScope('parent', safeParentThreadId)
+    const rejectedCodexRecoveryCases: Array<[string, Record<string, unknown>[]]> = [
+        ['child-only event, including parent_thread_id', [
+            productionCodexMessage(productionCodexScope('child', otherThreadId, safeParentThreadId))
+        ]],
+        ['roleless event', [productionCodexMessage({
+            thread_id: safeParentThreadId,
+            scope: { threadId: safeParentThreadId }
+        })]],
+        ['malformed UUID', [productionCodexMessage(productionCodexScope('parent', 'not-a-uuid'))]],
+        ['conflicting role aliases', [productionCodexMessage({
+            ...explicitParentEvent,
+            scopeRole: 'child'
+        })]],
+        ['conflicting thread IDs', [productionCodexMessage({
+            ...explicitParentEvent,
+            scope: { role: 'parent', thread_id: otherThreadId, threadId: otherThreadId }
+        })]],
+        ['valid and malformed thread aliases', [productionCodexMessage({
+            ...explicitParentEvent,
+            threadId: 'not-a-uuid'
+        })]],
+        ['unrelated nested payload', [productionCodexMessage({ payload: explicitParentEvent })]],
+        ['non-production outer envelopes', [
+            { role: 'user', content: { type: 'codex', data: explicitParentEvent } },
+            { role: 'agent', content: { type: 'output', data: explicitParentEvent } }
+        ]]
+    ]
+
+    it.each(rejectedCodexRecoveryCases)('does not recover a Codex resume ID from %s', async (name, messages) => {
+        const outcome = await runCodexResumeScenario(messages)
+
+        expect(outcome.result).toMatchObject({ type: 'error', code: 'resume_unavailable' })
+        expect([
+            outcome.capturedResumeSessionIds,
+            outcome.persistedCodexSessionId,
+            outcome.after.metadataVersion,
+            outcome.after.updatedAt
+        ]).toEqual([[], undefined, outcome.before.metadataVersion, outcome.before.updatedAt])
     })
 
     it('does not let stale default resume option override persisted Codex yolo', async () => {
