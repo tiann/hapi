@@ -365,17 +365,35 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
     onProgress?.(`resolved ${matched.id}  active=${matched.active}  name="${name}"`)
 
     let resumed = false
-    if (!matched.active) {
-        onProgress?.('requesting resume...')
+    const ensureActive = async (progressMessage: string): Promise<PingPeerSessionSummary> => {
+        const session = await getSession(apiUrl, jwt, matched.id, http)
+        if (session.active) {
+            return session
+        }
+        onProgress?.(progressMessage)
         await resumeSession(apiUrl, jwt, matched.id, http)
         resumed = true
         await waitUntilActive(apiUrl, jwt, matched.id, waitActiveSecs, http, sleep, now, onProgress)
         onProgress?.('session active')
+        return getSession(apiUrl, jwt, matched.id, http)
     }
 
-    const live = await getSession(apiUrl, jwt, matched.id, http)
+    // Prefer the list snapshot for the first resume decision, then re-check before
+    // send so a flip to inactive between list and POST cannot 409 (#1195).
+    if (!matched.active) {
+        await ensureActive('requesting resume...')
+    }
+
+    let live = await ensureActive('session went inactive before send; requesting resume...')
     if (live.metadata?.flavor === 'pi') {
         await waitForPiReady(apiUrl, jwt, matched.id, waitActiveSecs, http, sleep, now, onProgress)
+        const beforePiResume = resumed
+        live = await ensureActive('session went inactive before send; requesting resume...')
+        if (resumed && !beforePiResume && live.metadata?.flavor === 'pi') {
+            // Fresh agent after mid-wait resume: wait for piSessionId again (#1143).
+            await waitForPiReady(apiUrl, jwt, matched.id, waitActiveSecs, http, sleep, now, onProgress)
+            live = await ensureActive('session went inactive before send; requesting resume...')
+        }
     }
 
     onProgress?.(`sending message (${message.length} chars)...`)

@@ -164,7 +164,7 @@ describe('pingPeer', () => {
                 }
                 if (url.endsWith(`/api/sessions/${sessionId}`)) {
                     polls += 1
-                    if (polls >= 2) {
+                    if (polls >= 3) {
                         active = true
                     }
                     return {
@@ -199,6 +199,79 @@ describe('pingPeer', () => {
         expect(result.resumed).toBe(true)
         expect(result.sessionId).toBe(sessionId)
         expect(sleepCalls.length).toBeGreaterThan(0)
+    })
+
+    it('re-checks active before send when the list snapshot was stale', async () => {
+        const sessionId = 'bbbbbbbb-1111-1111-1111-111111111111'
+        let active = false
+        let resumeCalls = 0
+
+        const http = createHttpMock({
+            post: (url) => {
+                if (url.endsWith('/api/auth')) {
+                    return { status: 200, data: { token: 'jwt' } }
+                }
+                if (url.endsWith(`/api/sessions/${sessionId}/resume`)) {
+                    resumeCalls += 1
+                    return { status: 200, data: { type: 'success', sessionId, resumed: true } }
+                }
+                if (url.endsWith(`/api/sessions/${sessionId}/messages`)) {
+                    expect(active).toBe(true)
+                    expect(resumeCalls).toBe(1)
+                    return { status: 200, data: { ok: true } }
+                }
+                throw new Error(`unexpected POST ${url}`)
+            },
+            get: (url) => {
+                if (url.endsWith('/api/sessions') && !url.includes(sessionId)) {
+                    return {
+                        status: 200,
+                        data: {
+                            sessions: [{
+                                id: sessionId,
+                                // Stale snapshot: list claims active, live GET disagrees.
+                                active: true,
+                                metadata: { name: 'Stale', flavor: 'claude' }
+                            }]
+                        }
+                    }
+                }
+                if (url.endsWith(`/api/sessions/${sessionId}`)) {
+                    return {
+                        status: 200,
+                        data: {
+                            session: {
+                                id: sessionId,
+                                active,
+                                metadata: { name: 'Stale', flavor: 'claude' }
+                            }
+                        }
+                    }
+                }
+                throw new Error(`unexpected GET ${url}`)
+            }
+        })
+
+        const result = await pingPeer({
+            sessionIdPrefix: 'bbbbbbbb',
+            message: 'still here?',
+            accessToken: 'tok',
+            apiUrl: 'http://hub.test',
+            waitActiveSecs: 10,
+            http: http as never,
+            now: () => nowMs,
+            sleep: async (ms) => {
+                sleepCalls.push(ms)
+                nowMs += ms
+                // Become active only after resume has been requested.
+                if (resumeCalls > 0) {
+                    active = true
+                }
+            }
+        })
+
+        expect(result.resumed).toBe(true)
+        expect(resumeCalls).toBe(1)
     })
 
     it('waits for piSessionId before sending to a pi session', async () => {
@@ -279,16 +352,33 @@ describe('pingPeer', () => {
                 }
                 throw new Error(`unexpected POST ${url}`)
             },
-            get: () => ({
-                status: 200,
-                data: {
-                    sessions: [{
-                        id: sessionId,
-                        active: false,
-                        metadata: { name: 'Dead' }
-                    }]
+            get: (url) => {
+                if (url.endsWith('/api/sessions') && !url.includes(sessionId)) {
+                    return {
+                        status: 200,
+                        data: {
+                            sessions: [{
+                                id: sessionId,
+                                active: false,
+                                metadata: { name: 'Dead' }
+                            }]
+                        }
+                    }
                 }
-            })
+                if (url.endsWith(`/api/sessions/${sessionId}`)) {
+                    return {
+                        status: 200,
+                        data: {
+                            session: {
+                                id: sessionId,
+                                active: false,
+                                metadata: { name: 'Dead' }
+                            }
+                        }
+                    }
+                }
+                throw new Error(`unexpected GET ${url}`)
+            }
         })
 
         await expect(pingPeer({
