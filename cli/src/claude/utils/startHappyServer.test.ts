@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ApiSessionClient } from '@/api/apiSession'
-import { startHappyServer } from './startHappyServer'
+import { startHappyServer, toClaudeAllowedHapiMcpTools } from './startHappyServer'
 
 type ToolResult = {
     content?: Array<{ type: string; text?: string }>
@@ -130,4 +130,19 @@ describe('startHappyServer skill_lookup', () => {
         expect(tools.tools.map((tool) => tool.name)).toEqual(['display_image', 'ping_peer'])
     })
 
+})
+
+describe('toClaudeAllowedHapiMcpTools', () => {
+    it('keeps ping_peer registered but out of Claude --allowedTools', () => {
+        expect(toClaudeAllowedHapiMcpTools([
+            'change_title',
+            'display_image',
+            'ping_peer',
+            'skill_lookup'
+        ])).toEqual([
+            'mcp__hapi__change_title',
+            'mcp__hapi__display_image',
+            'mcp__hapi__skill_lookup'
+        ])
+    })
 })

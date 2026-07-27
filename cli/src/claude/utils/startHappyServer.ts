@@ -25,6 +25,19 @@ type StartHappyServerOptions = {
     };
 };
 
+/** Registered on the MCP server, but never pre-approved via Claude --allowedTools. */
+const CLAUDE_MANUAL_APPROVAL_HAPI_TOOLS = new Set(['ping_peer']);
+
+/**
+ * Map HAPI MCP tool names to Claude `--allowedTools` entries.
+ * Keeps `ping_peer` off the auto-allow list so resume+inject still prompts.
+ */
+export function toClaudeAllowedHapiMcpTools(toolNames: string[]): string[] {
+    return toolNames
+        .filter((toolName) => !CLAUDE_MANUAL_APPROVAL_HAPI_TOOLS.has(toolName))
+        .map((toolName) => `mcp__hapi__${toolName}`);
+}
+
 function createHapiMcpServer(
     client: ApiSessionClient,
     emitTitleSummary: boolean,
