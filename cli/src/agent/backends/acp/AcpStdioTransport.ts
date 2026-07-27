@@ -60,6 +60,7 @@ export class AcpStdioTransport {
     private notificationHandler: ((method: string, params: unknown) => void) | null = null;
     private stderrErrorHandler: ((error: AcpStderrError) => void) | null = null;
     private buffer = '';
+    private recentStderr = '';
     private nextId = 1;
     private protocolError: Error | null = null;
     private guardReleased = false;
@@ -88,15 +89,29 @@ export class AcpStdioTransport {
         this.process.stderr.setEncoding('utf8');
         this.process.stderr.on('data', (chunk) => {
             const text = chunk.toString().trim();
+            if (text) {
+                // Keep the newest stderr chunk for close-time classification. Cap from
+                // the front so "Cannot use this model: <id>" survives long Available lists.
+                this.recentStderr = text.length > 4_000 ? text.slice(0, 4_000) : text;
+            }
             logger.debug(`[ACP][stderr] ${text}`);
             this.parseStderrError(text);
         });
 
-        this.process.on('exit', (code, signal) => {
+        // Use 'close' (not 'exit') so final stderr chunks are drained before we classify
+        // the failure — Node may fire 'exit' before the last stderr 'data' event.
+        this.process.on('close', (code, signal) => {
             this.releaseAgentCliGuard();
-            const message = `ACP process exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`;
+            let message = `ACP process exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`;
+            if (this.recentStderr) {
+                message = `${message}. stderr: ${this.recentStderr}`;
+            }
             logger.debug(message);
-            this.markClosed(new Error(message));
+            const error = new Error(message);
+            if (this.recentStderr) {
+                (error as Error & { stderr?: string }).stderr = this.recentStderr;
+            }
+            this.markClosed(error);
         });
 
         this.process.on('error', (error) => {
@@ -348,6 +363,18 @@ export class AcpStdioTransport {
         }
 
         const lowerText = text.toLowerCase();
+
+        // Cursor rejects `--model` / config ids with this exact stderr shape.
+        // Pass the agent text through (including any Available models hint); do not
+        // invent a Gemini-style catalog here.
+        if (lowerText.includes('cannot use this model')) {
+            this.stderrErrorHandler({
+                type: 'model_not_found',
+                message: text,
+                raw: text
+            });
+            return;
+        }
 
         // Rate limit errors (429)
         if (lowerText.includes('status 429') || lowerText.includes('ratelimitexceeded') || lowerText.includes('rate limit')) {

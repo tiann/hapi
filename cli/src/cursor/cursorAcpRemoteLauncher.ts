@@ -91,8 +91,10 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
         backend.setUsageUpdateListener((message) => this.handleAgentMessage(message));
 
+        let recentStderrHint: string | null = null;
         backend.onStderrError((error) => {
             logger.debug('[cursor-acp] stderr error', error);
+            recentStderrHint = error.raw || error.message;
             const converted = convertAgentMessage({ type: 'error', message: error.message });
             if (converted) {
                 session.sendAgentMessage(converted);
@@ -104,6 +106,20 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             await backend.initialize();
         } catch (error) {
             const errMsg = error instanceof Error ? error.message : String(error);
+            const modelRejection = extractCannotUseThisModelMessage(errMsg)
+                ?? extractCannotUseThisModelMessage(recentStderrHint);
+            if (modelRejection) {
+                const fullMsg = classifyCursorAcpLoadError(error, {
+                    recentStderr: recentStderrHint,
+                    action: 'start'
+                });
+                const converted = convertAgentMessage({ type: 'error', message: fullMsg });
+                if (converted) {
+                    session.sendAgentMessage(converted);
+                }
+                messageBuffer.addMessage(fullMsg, 'status');
+                throw new Error(fullMsg);
+            }
             const fullMsg = `${CURSOR_ACP_REQUIRED_MESSAGE} (${errMsg})`;
             const converted = convertAgentMessage({ type: 'error', message: fullMsg });
             if (converted) {
@@ -145,9 +161,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 });
             } catch (error) {
                 logger.warn('[cursor-acp] session/load failed', formatAcpLoadError(error));
-                throw new Error(
-                    'Failed to resume Cursor ACP session. Legacy stream-json sessions cannot be loaded via ACP.'
-                );
+                throw new Error(classifyCursorAcpLoadError(error, { recentStderr: recentStderrHint }));
             }
         } else if (resumeSessionId) {
             throw new Error(
@@ -578,6 +592,60 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     }
 }
 
+const CANNOT_USE_THIS_MODEL_RE = /Cannot use this model:\s*.+/i;
+
+/**
+ * Operator-facing ACP failure text. Prefer Cursor's model-rejection stderr;
+ * never invent a legacy stream-json diagnosis for unrelated failures.
+ */
+export function classifyCursorAcpLoadError(
+    error: unknown,
+    options?: { recentStderr?: string | null; action?: 'resume' | 'start' }
+): string {
+    const action = options?.action ?? 'resume';
+    const prefix = action === 'start'
+        ? 'Failed to start Cursor ACP session'
+        : 'Failed to resume Cursor ACP session';
+
+    const detailSources = [
+        options?.recentStderr,
+        error instanceof Error ? error.message : null,
+        error instanceof Error && error.cause instanceof Error ? error.cause.message : null,
+        error instanceof Error ? String((error as Error & { stderr?: unknown }).stderr ?? '') : null,
+        typeof error === 'string' ? error : null
+    ].filter((value): value is string => Boolean(value && value.trim()));
+
+    for (const source of detailSources) {
+        const modelRejection = extractCannotUseThisModelMessage(source);
+        if (modelRejection) {
+            return `${prefix}: ${modelRejection}`;
+        }
+    }
+
+    const detail = error instanceof Error
+        ? error.message
+        : typeof error === 'string'
+            ? error
+            : String(error);
+    const trimmed = detail.trim() || 'unknown error';
+    if (new RegExp(`^${prefix}:`, 'i').test(trimmed)) {
+        return trimmed;
+    }
+    return `${prefix}: ${trimmed}`;
+}
+
+function extractCannotUseThisModelMessage(text: string | null | undefined): string | null {
+    if (!text) {
+        return null;
+    }
+    const match = text.match(CANNOT_USE_THIS_MODEL_RE);
+    if (!match) {
+        return null;
+    }
+    // Keep Cursor's Available models hint when present; do not invent a catalog.
+    return match[0].trim().replace(/\s+/g, ' ');
+}
+
 function formatAcpLoadError(error: unknown): Record<string, unknown> {
     if (error instanceof Error) {
         const record: Record<string, unknown> = {
@@ -591,6 +659,10 @@ function formatAcpLoadError(error: unknown): Record<string, unknown> {
         const data = (error as Error & { data?: unknown }).data;
         if (data !== undefined) {
             record.data = data;
+        }
+        const stderr = (error as Error & { stderr?: unknown }).stderr;
+        if (stderr !== undefined) {
+            record.stderr = stderr;
         }
         const cause = error.cause;
         if (cause !== undefined) {
