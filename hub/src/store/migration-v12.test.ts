@@ -185,13 +185,13 @@ describe('ScratchlistStore: CRUD through the typed-table wrapper', () => {
         })
         if (created.outcome !== 'created') throw new Error('Expected created')
 
-        const updated = store.scratchlist.update(sessionId, 'u1', 'after')
+        const updated = store.scratchlist.update(sessionId, 'u1', { text: 'after' })
         expect(updated).not.toBeNull()
         expect(updated!.text).toBe('after')
         expect(updated!.createdAt).toBe(1000)
         expect(updated!.updatedAt).toBeGreaterThan(1000)
 
-        const missing = store.scratchlist.update(sessionId, 'does-not-exist', 'noop')
+        const missing = store.scratchlist.update(sessionId, 'does-not-exist', { text: 'noop' })
         expect(missing).toBeNull()
     })
 
