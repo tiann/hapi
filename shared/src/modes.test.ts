@@ -48,6 +48,10 @@ describe('getPermissionModesForFlavor', () => {
         expect(getPermissionModesForFlavor('pi')).not.toEqual(getPermissionModesForFlavor(null))
     })
 
+    test("returns only yolo for omp's spawn-time approval mode", () => {
+        expect(getPermissionModesForFlavor('omp')).toEqual(['yolo'])
+    })
+
     test("unknown flavors fall back to Claude modes, not Pi's empty list", () => {
         expect(getPermissionModesForFlavor(null)).not.toEqual([])
         expect(getPermissionModesForFlavor(undefined)).not.toEqual([])
@@ -59,6 +63,14 @@ describe('getPermissionModesForFlavor', () => {
 describe('getPermissionModeOptionsForFlavor', () => {
     test("returns [] for pi (no permission options offered)", () => {
         expect(getPermissionModeOptionsForFlavor('pi')).toEqual([])
+    })
+
+    test("returns the yolo option for omp", () => {
+        expect(getPermissionModeOptionsForFlavor('omp')).toEqual([{
+            mode: 'yolo',
+            label: 'Yolo',
+            tone: 'danger'
+        }])
     })
 })
 
@@ -82,6 +94,13 @@ describe('isPermissionModeAllowedForFlavor', () => {
         expect(isPermissionModeAllowedForFlavor('read-only', 'pi')).toBe(false)
         expect(isPermissionModeAllowedForFlavor('safe-yolo', 'pi')).toBe(false)
         expect(isPermissionModeAllowedForFlavor('ask', 'pi')).toBe(false)
+    })
+
+    test("only yolo is allowed for omp", () => {
+        expect(isPermissionModeAllowedForFlavor('yolo', 'omp')).toBe(true)
+        expect(isPermissionModeAllowedForFlavor('default', 'omp')).toBe(false)
+        expect(isPermissionModeAllowedForFlavor('plan', 'omp')).toBe(false)
+        expect(isPermissionModeAllowedForFlavor('bypassPermissions', 'omp')).toBe(false)
     })
 
     test("cursor includes autoReview", () => {
@@ -122,6 +141,7 @@ describe('claude auto permission mode', () => {
         expect(isPermissionModeAllowedForFlavor('auto', 'opencode')).toBe(false)
         expect(isPermissionModeAllowedForFlavor('auto', 'kimi')).toBe(false)
         expect(isPermissionModeAllowedForFlavor('auto', 'pi')).toBe(false)
+        expect(isPermissionModeAllowedForFlavor('auto', 'omp')).toBe(false)
     })
 
     it('has a label and tone', () => {

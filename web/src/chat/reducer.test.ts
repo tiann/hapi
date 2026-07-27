@@ -125,6 +125,53 @@ describe('reduceChatBlocks', () => {
         }))
     })
 
+    it('coalesces repeated OMP Subagent progress calls by callId', () => {
+        const messages = [
+            {
+                id: 'subagent-start',
+                localId: null,
+                createdAt: 1,
+                role: 'agent',
+                content: [{
+                    type: 'tool-call',
+                    id: 'omp-subagent:child-1',
+                    name: 'Agent',
+                    input: { activity: 'Starting', tokens: 0 },
+                    description: null,
+                    uuid: 'subagent-start',
+                    parentUUID: null
+                }],
+                isSidechain: false
+            },
+            {
+                id: 'subagent-progress',
+                localId: null,
+                createdAt: 2,
+                role: 'agent',
+                content: [{
+                    type: 'tool-call',
+                    id: 'omp-subagent:child-1',
+                    name: 'Agent',
+                    input: { activity: 'Reading loop.ts', tokens: 1200 },
+                    description: null,
+                    uuid: 'subagent-progress',
+                    parentUUID: null
+                }],
+                isSidechain: false
+            }
+        ] as NormalizedMessage[]
+
+        const reduced = reduceChatBlocks(messages, null)
+        const cards = reduced.blocks.filter(block => block.kind === 'tool-call' && block.id === 'omp-subagent:child-1')
+
+        expect(cards).toHaveLength(1)
+        expect(cards[0]).toMatchObject({
+            tool: {
+                input: { activity: 'Reading loop.ts', tokens: 1200 }
+            }
+        })
+    })
+
     it('ignores child agent usage when calculating parent latest usage', () => {
         const messages: NormalizedMessage[] = [
             {

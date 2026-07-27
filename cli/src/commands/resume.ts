@@ -167,6 +167,22 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
         return
     }
 
+    if (target.flavor === 'omp') {
+        const { runOmp } = await import('@/omp/runOmp')
+        await runOmp({
+            existingSessionId: base.existingSessionId,
+            workingDirectory: base.workingDirectory,
+            resumeSessionId: base.resumeSessionId,
+            startedBy: base.startedBy,
+            // OMP runs as `omp --mode rpc` with piped stdio and no local TUI
+            // input path (same rationale as Pi).
+            startingMode: 'remote',
+            model: target.model ?? undefined,
+            effort: target.effort ?? undefined,
+        })
+        return
+    }
+
     const { runCursor } = await import('@/cursor/runCursor')
     await runCursor({
         existingSessionId: base.existingSessionId,

@@ -43,6 +43,11 @@ describe('hasCapability', () => {
         expect(hasCapability('pi', Capabilities.Effort)).toBe(true)
     })
 
+    test('omp supports model-change and effort', () => {
+        expect(hasCapability('omp', Capabilities.ModelChange)).toBe(true)
+        expect(hasCapability('omp', Capabilities.Effort)).toBe(true)
+    })
+
     test('kimi supports model-change but not effort', () => {
         expect(hasCapability('kimi', Capabilities.ModelChange)).toBe(true)
         expect(hasCapability('kimi', Capabilities.Effort)).toBe(false)
@@ -71,6 +76,7 @@ describe('getFlavorLabel', () => {
         expect(getFlavorLabel('cursor')).toBe('Cursor')
         expect(getFlavorLabel('opencode')).toBe('OpenCode')
         expect(getFlavorLabel('pi')).toBe('Pi')
+        expect(getFlavorLabel('omp')).toBe('OMP')
         expect(getFlavorLabel('kimi')).toBe('Kimi')
         expect(getFlavorLabel('grok')).toBe('Grok Build')
     })
@@ -93,6 +99,7 @@ describe('isKnownFlavor', () => {
         expect(isKnownFlavor('cursor')).toBe(true)
         expect(isKnownFlavor('opencode')).toBe(true)
         expect(isKnownFlavor('pi')).toBe(true)
+        expect(isKnownFlavor('omp')).toBe(true)
         expect(isKnownFlavor('kimi')).toBe(true)
         expect(isKnownFlavor('grok')).toBe(true)
     })

@@ -1126,7 +1126,7 @@ export class SessionCache {
 
     private extractAgentSessionId(
         metadata: NonNullable<Session['metadata']>
-    ): { field: 'codexSessionId' | 'claudeSessionId' | 'geminiSessionId' | 'opencodeSessionId' | 'grokSessionId' | 'cursorSessionId' | 'piSessionId'; value: string } | null {
+    ): { field: 'codexSessionId' | 'claudeSessionId' | 'geminiSessionId' | 'opencodeSessionId' | 'grokSessionId' | 'cursorSessionId' | 'piSessionId' | 'ompSessionId'; value: string } | null {
         if (metadata.codexSessionId) return { field: 'codexSessionId', value: metadata.codexSessionId }
         if (metadata.claudeSessionId) return { field: 'claudeSessionId', value: metadata.claudeSessionId }
         if (metadata.geminiSessionId) return { field: 'geminiSessionId', value: metadata.geminiSessionId }
@@ -1134,6 +1134,7 @@ export class SessionCache {
         if (metadata.grokSessionId) return { field: 'grokSessionId', value: metadata.grokSessionId }
         if (metadata.cursorSessionId) return { field: 'cursorSessionId', value: metadata.cursorSessionId }
         if (metadata.piSessionId) return { field: 'piSessionId', value: metadata.piSessionId }
+        if (metadata.ompSessionId) return { field: 'ompSessionId', value: metadata.ompSessionId }
         return null
     }
 
