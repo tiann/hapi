@@ -179,9 +179,9 @@ async function preparePlatform(
     const destBin = join(binDir, platform.binName);
 
     if (!existsSync(srcBin)) {
-        console.warn(`Warning: Binary not found: ${srcBin}`);
-        console.warn(`  Run 'bun run build:exe:all' first to build binaries.`);
-        return;
+        console.error(`Error: Binary not found: ${srcBin}`);
+        console.error(`  Run 'bun run build:exe:all' first to build binaries.`);
+        process.exit(1);
     }
 
     copyFileSync(srcBin, destBin);
