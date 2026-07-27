@@ -1696,10 +1696,6 @@ export class SyncEngine {
         return await this.rpcGateway.listSkills(sessionId, flavor)
     }
 
-    async listCodexModelsForSession(sessionId: string): Promise<RpcListCodexModelsResponse> {
-        return await this.rpcGateway.listCodexModelsForSession(sessionId)
-    }
-
     async listCodexModelsForMachine(machineId: string): Promise<RpcListCodexModelsResponse> {
         return await this.rpcGateway.listCodexModelsForMachine(machineId)
     }

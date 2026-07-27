@@ -294,10 +294,6 @@ export class RpcGateway {
         }
     }
 
-    async listCodexModelsForSession(sessionId: string): Promise<RpcListCodexModelsResponse> {
-        return await this.sessionRpc(sessionId, RPC_METHODS.ListCodexModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListCodexModelsResponse
-    }
-
     async listCodexModelsForMachine(machineId: string): Promise<RpcListCodexModelsResponse> {
         return await this.machineRpc(machineId, RPC_METHODS.ListCodexModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListCodexModelsResponse
     }

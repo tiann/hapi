@@ -69,12 +69,6 @@ function createApp(session: Session, opts?: {
     const applySessionConfig = async (sessionId: string, config: Record<string, unknown>) => {
         applySessionConfigCalls.push([sessionId, config])
     }
-    const listCodexModelsForSession = async () => ({
-        success: true,
-        models: [
-            { id: 'gpt-5.5', displayName: 'GPT-5.5', isDefault: true }
-        ]
-    })
     const listOpencodeModelsForSession = async () => ({
         success: true,
         availableModels: [
@@ -128,7 +122,6 @@ function createApp(session: Session, opts?: {
             ? { ok: true, sessionId: session.id, session }
             : { ok: false, reason: 'not-found' },
         applySessionConfig,
-        listCodexModelsForSession,
         listCursorModelsForSession,
         listOpencodeModelsForSession,
         listOpencodeReasoningEffortOptionsForSession,
@@ -715,20 +708,6 @@ describe('sessions routes', () => {
         })
         expect(localResponse.status).toBe(409)
         expect(localApp.applySessionConfigCalls).toEqual([])
-    })
-
-    it('returns Codex models for active Codex sessions', async () => {
-        const { app } = createApp(createSession())
-
-        const response = await app.request('/api/sessions/session-1/codex-models')
-
-        expect(response.status).toBe(200)
-        expect(await response.json()).toEqual({
-            success: true,
-            models: [
-                { id: 'gpt-5.5', displayName: 'GPT-5.5', isDefault: true }
-            ]
-        })
     })
 
     it('returns OpenCode reasoning effort options for active OpenCode sessions', async () => {
