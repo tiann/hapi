@@ -1150,7 +1150,6 @@ export function SessionList(props: {
         return getVisibleSessionPreview(
             group.sessions,
             {
-                expanded: isFiltering,
                 selectedSessionId,
                 limit: getGroupVisibleCount(group)
             }
@@ -1341,7 +1340,7 @@ export function SessionList(props: {
                                             showDetailedStatus={showDetailedStatus}
                                         />
                                     ))}
-                                    {!isFiltering && group.sessions.length > sessionPreviewLimit && (hiddenSessionCount > 0 || canCollapseSessions) ? (
+                                    {group.sessions.length > sessionPreviewLimit && (hiddenSessionCount > 0 || canCollapseSessions) ? (
                                         <button
                                             type="button"
                                             onClick={() => hiddenSessionCount > 0

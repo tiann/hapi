@@ -7,7 +7,10 @@ import { I18nProvider } from '@/lib/i18n-context'
 import { ToastProvider } from '@/lib/toast-context'
 import { SessionList } from './SessionList'
 
-afterEach(() => cleanup())
+afterEach(() => {
+    cleanup()
+    localStorage.removeItem('hapi-session-preview-limit')
+})
 
 function makeSession(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
     return {
@@ -225,7 +228,7 @@ describe('SessionList action menu parity', () => {
 })
 
 describe('SessionList collapse behavior', () => {
-    function renderSessionList(sessions: SessionSummary[], selectedSessionId = 'session-running') {
+    function renderSessionList(sessions: SessionSummary[], selectedSessionId: string | null = 'session-running') {
         return (
             <QueryClientProvider client={new QueryClient({
                 defaultOptions: {
@@ -345,5 +348,33 @@ describe('SessionList collapse behavior', () => {
         await waitFor(() => {
             expect(firstPanel?.getAttribute('data-open')).toBe('true')
         })
+    })
+
+    it('keeps the configured session preview fold while searching', () => {
+        localStorage.setItem('hapi-session-preview-limit', '2')
+        const sessions = Array.from({ length: 4 }, (_, index) => makeSession({
+            id: `matching-${index + 1}`,
+            updatedAt: 100 - index,
+            metadata: {
+                path: '/work/hapi',
+                name: `Matching task ${index + 1}`,
+                flavor: 'codex',
+            },
+        }))
+
+        render(renderSessionList(sessions, null))
+        fireEvent.change(screen.getByPlaceholderText('Search sessions…'), {
+            target: { value: 'Matching task' },
+        })
+
+        expect(screen.getByRole('button', { name: /Matching task 1/ })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /Matching task 2/ })).toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: /Matching task 3/ })).toBeNull()
+        expect(screen.queryByRole('button', { name: /Matching task 4/ })).toBeNull()
+
+        fireEvent.click(screen.getByRole('button', { name: 'Show 2 more' }))
+
+        expect(screen.getByRole('button', { name: /Matching task 3/ })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /Matching task 4/ })).toBeInTheDocument()
     })
 })
