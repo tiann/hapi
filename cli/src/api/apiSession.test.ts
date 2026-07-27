@@ -8,31 +8,40 @@ const socketHarness = vi.hoisted(() => ({
         connectImmediately: boolean
         emitted: Array<{ event: string; args: unknown[] }>
         listeners: Map<string, Array<(...args: any[]) => void>>
+        trigger: (event: string, ...args: any[]) => void
         triggerConnect: () => void
         triggerConnectError: () => void
     }>
 }))
 
+const axiosHarness = vi.hoisted(() => ({
+    get: vi.fn()
+}))
+
 vi.mock('socket.io-client', () => ({
     io: () => {
-        const state = {
+        const state: (typeof socketHarness.sockets)[number] = {
             connected: false,
             connectCalls: 0,
             connectImmediately: true,
             emitted: [] as Array<{ event: string; args: unknown[] }>,
             listeners: new Map<string, Array<(...args: any[]) => void>>(),
+            trigger: () => {},
             triggerConnect: () => {},
             triggerConnectError: () => {}
         }
+        state.trigger = (event: string, ...args: any[]) => {
+            for (const listener of state.listeners.get(event) ?? []) {
+                listener(...args)
+            }
+        }
         const triggerConnect = () => {
             state.connected = true
-            for (const listener of state.listeners.get('connect') ?? []) listener()
+            state.trigger('connect')
         }
         state.triggerConnect = triggerConnect
         state.triggerConnectError = () => {
-            for (const listener of state.listeners.get('connect_error') ?? []) {
-                listener(new Error('connect failed'))
-            }
+            state.trigger('connect_error', new Error('connect failed'))
         }
         const socket = {
             get connected() {
@@ -73,6 +82,18 @@ vi.mock('socket.io-client', () => ({
     }
 }))
 
+vi.mock('axios', () => ({
+    default: {
+        get: axiosHarness.get,
+        isAxiosError: (error: unknown) => (
+            typeof error === 'object'
+            && error !== null
+            && 'isAxiosError' in error
+            && error.isAxiosError === true
+        )
+    }
+}))
+
 import { ApiSessionClient, isExternalUserMessage, IncomingMessageFilter } from './apiSession'
 
 function createSession(overrides: Partial<Session> = {}): Session {
@@ -109,6 +130,37 @@ function deferred<T>() {
         reject = promiseReject
     })
     return { promise, resolve, reject }
+}
+
+function triggerIncomingUserMessage(
+    socket: (typeof socketHarness.sockets)[number],
+    message: {
+        id?: string
+        seq: number
+        text: string
+        sentFrom: 'cli' | 'webapp' | 'telegram-bot'
+    }
+): void {
+    socket.trigger('update', {
+        body: {
+            t: 'new-message',
+            message: {
+                id: message.id,
+                seq: message.seq,
+                localId: null,
+                content: {
+                    role: 'user',
+                    content: {
+                        type: 'text',
+                        text: message.text
+                    },
+                    meta: {
+                        sentFrom: message.sentFrom
+                    }
+                }
+            }
+        }
+    })
 }
 
 describe('ApiSessionClient lazy materialization', () => {
@@ -320,6 +372,135 @@ describe('ApiSessionClient lazy materialization', () => {
         expect(socket.emitted.some((entry) => entry.event === 'session-end')).toBe(true)
         client.close()
     })
+})
+
+describe('ApiSessionClient incoming user messages', () => {
+    it('ignores CLI-originated transcript messages while advancing the incoming cursor', () => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+        const onUserMessage = vi.fn()
+        client.onUserMessage(onUserMessage)
+
+        triggerIncomingUserMessage(socket, {
+            id: 'historical-cli-message',
+            seq: 10,
+            text: 'historical prompt from the local transcript',
+            sentFrom: 'cli'
+        })
+        triggerIncomingUserMessage(socket, {
+            seq: 10,
+            text: 'legacy duplicate at the filtered cursor',
+            sentFrom: 'webapp'
+        })
+        triggerIncomingUserMessage(socket, {
+            id: 'live-web-message',
+            seq: 11,
+            text: 'new prompt from the phone',
+            sentFrom: 'webapp'
+        })
+
+        expect(onUserMessage).toHaveBeenCalledTimes(1)
+        expect(onUserMessage).toHaveBeenCalledWith(
+            expect.objectContaining({
+                content: expect.objectContaining({ text: 'new prompt from the phone' })
+            }),
+            undefined
+        )
+        client.close()
+    })
+
+    it('delivers only remote prompts from a mixed reconnect backfill', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockReset()
+        axiosHarness.get.mockResolvedValue({
+            data: {
+                messages: [
+                    {
+                        id: 'backfilled-cli-message',
+                        seq: 2,
+                        createdAt: 2,
+                        localId: null,
+                        content: {
+                            role: 'user',
+                            content: { type: 'text', text: 'historical local prompt' },
+                            meta: { sentFrom: 'cli' }
+                        }
+                    },
+                    {
+                        id: 'backfilled-web-message',
+                        seq: 3,
+                        createdAt: 3,
+                        localId: null,
+                        content: {
+                            role: 'user',
+                            content: { type: 'text', text: 'remote prompt after reconnect' },
+                            meta: { sentFrom: 'webapp' }
+                        }
+                    }
+                ]
+            }
+        })
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+        const receivedTexts: string[] = []
+        client.onUserMessage((message) => {
+            receivedTexts.push(message.content.text)
+        })
+        triggerIncomingUserMessage(socket, {
+            id: 'initial-web-message',
+            seq: 1,
+            text: 'initial remote prompt',
+            sentFrom: 'webapp'
+        })
+
+        socket.connected = false
+        socket.trigger('disconnect', 'transport close')
+        socket.triggerConnect()
+
+        await vi.waitFor(() => expect(axiosHarness.get).toHaveBeenCalledOnce())
+        await vi.waitFor(() => expect(receivedTexts).toEqual([
+            'initial remote prompt',
+            'remote prompt after reconnect'
+        ]))
+        expect(axiosHarness.get).toHaveBeenCalledWith(
+            expect.stringContaining('/cli/sessions/'),
+            expect.objectContaining({
+                params: { afterSeq: 1, limit: 200 }
+            })
+        )
+        client.close()
+    })
+
+    it.each(['webapp', 'telegram-bot'] as const)(
+        'delivers %s-originated user messages',
+        (sentFrom) => {
+            socketHarness.sockets.length = 0
+            const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+            const socket = socketHarness.sockets[0]
+            if (!socket) throw new Error('expected socket')
+            const onUserMessage = vi.fn()
+            client.onUserMessage(onUserMessage)
+
+            triggerIncomingUserMessage(socket, {
+                id: `${sentFrom}-message`,
+                seq: 1,
+                text: `prompt from ${sentFrom}`,
+                sentFrom
+            })
+
+            expect(onUserMessage).toHaveBeenCalledOnce()
+            expect(onUserMessage).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    meta: { sentFrom }
+                }),
+                undefined
+            )
+            client.close()
+        }
+    )
 })
 
 describe('isExternalUserMessage', () => {

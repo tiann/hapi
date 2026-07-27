@@ -627,6 +627,12 @@ export class ApiSessionClient extends EventEmitter {
 
         const userResult = UserMessageSchema.safeParse(message.content)
         if (userResult.success) {
+            // User messages mirrored from a local agent transcript are history,
+            // not new remote input. Keep them in the incoming filter above so
+            // reconnect backfill still advances and deduplicates correctly.
+            if (userResult.data.meta?.sentFrom === 'cli') {
+                return
+            }
             this.enqueueUserMessage(userResult.data, message.localId ?? undefined)
             return
         }
