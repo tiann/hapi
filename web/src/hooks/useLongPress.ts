@@ -8,6 +8,11 @@ type UseLongPressOptions = {
     disabled?: boolean
 }
 
+// How long after a touch interaction to keep ignoring synthesized mouse
+// events. Android's compatibility mouse events fire ~300ms after touchend;
+// 700ms covers that with margin without affecting genuine later mouse input.
+const GHOST_MOUSE_WINDOW_MS = 700
+
 type UseLongPressHandlers = {
     onMouseDown: React.MouseEventHandler
     onMouseUp: React.MouseEventHandler
@@ -26,6 +31,13 @@ export function useLongPress(options: UseLongPressOptions): UseLongPressHandlers
     const isLongPressRef = useRef(false)
     const touchMoved = useRef(false)
     const pressPointRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 })
+    // Timestamp of the most recent touch interaction. Touch browsers emit
+    // compatibility mouse events (mousedown/mouseup/click) after a tap for any
+    // touch the page did not preventDefault. Since we bind BOTH touch and
+    // mouse handlers, those "ghost" mouse events would fire onClick a second
+    // time — on a persistent list (tablet sidebar) the second click lands on
+    // whatever row slid under the finger, navigating to the wrong session.
+    const lastTouchAtRef = useRef(0)
 
     const clearTimer = useCallback(() => {
         if (timerRef.current) {
@@ -59,28 +71,40 @@ export function useLongPress(options: UseLongPressOptions): UseLongPressHandlers
         touchMoved.current = false
     }, [clearTimer, onClick])
 
+    // True when a mouse event is actually a touch-synthesized compatibility
+    // event firing right after a tap; such events must not re-trigger onClick.
+    const isGhostMouseEvent = useCallback(
+        () => Date.now() - lastTouchAtRef.current < GHOST_MOUSE_WINDOW_MS,
+        []
+    )
+
     const onMouseDown = useCallback<React.MouseEventHandler>((e) => {
         if (e.button !== 0) return
+        if (isGhostMouseEvent()) return
         startTimer(e.clientX, e.clientY)
-    }, [startTimer])
+    }, [startTimer, isGhostMouseEvent])
 
     const onMouseUp = useCallback<React.MouseEventHandler>(() => {
+        if (isGhostMouseEvent()) return
         handleEnd(!isLongPressRef.current)
-    }, [handleEnd])
+    }, [handleEnd, isGhostMouseEvent])
 
     const onMouseLeave = useCallback<React.MouseEventHandler>(() => {
+        if (isGhostMouseEvent()) return
         handleEnd(false)
-    }, [handleEnd])
+    }, [handleEnd, isGhostMouseEvent])
 
     const onTouchStart = useCallback<React.TouchEventHandler>((e) => {
+        lastTouchAtRef.current = Date.now()
         const touch = e.touches[0]
         startTimer(touch.clientX, touch.clientY)
     }, [startTimer])
 
     const onTouchEnd = useCallback<React.TouchEventHandler>((e) => {
-        if (isLongPressRef.current) {
-            e.preventDefault()
-        }
+        lastTouchAtRef.current = Date.now()
+        // Prevent the browser's compatibility mouse/click sequence from firing
+        // on the row that ends up under the finger after navigation/reordering.
+        e.preventDefault()
         handleEnd(!isLongPressRef.current)
     }, [handleEnd])
 
