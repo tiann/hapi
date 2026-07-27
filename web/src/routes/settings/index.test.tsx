@@ -188,6 +188,8 @@ describe('responsive settings pages', () => {
 
     it('changes the application language inline', () => {
         renderPage(<SettingsGeneralPage />)
+        expect(screen.getByText('Companion')).toBeInTheDocument()
+        expect(screen.getByText('Companion pairing')).toBeInTheDocument()
         fireEvent.click(screen.getByRole('radio', { name: '简体中文' }))
         expect(localStorage.getItem('hapi-lang')).toBe('zh-CN')
     })
@@ -211,8 +213,7 @@ describe('responsive settings pages', () => {
 
     it('renders About metadata on its own route page', () => {
         renderPage(<SettingsAboutPage />)
-        expect(screen.getByText('Companion')).toBeInTheDocument()
-        expect(screen.getByText('Companion pairing')).toBeInTheDocument()
+        expect(screen.queryByText('Companion')).not.toBeInTheDocument()
         expect(screen.getByText('App Version')).toBeInTheDocument()
         expect(screen.getByText(String(__APP_VERSION__))).toBeInTheDocument()
         expect(screen.getByText('Protocol Version')).toBeInTheDocument()

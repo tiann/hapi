@@ -602,7 +602,7 @@ export default {
   'settings.hub.description': '选择一个分类，按你的工作方式调整 HAPI。',
   'settings.hub.voice.summary': '声音、语言和行为',
   'settings.general.title': '通用',
-  'settings.general.description': '语言和通用应用偏好。',
+  'settings.general.description': '语言、伴侣应用配对和通用应用偏好。',
   'settings.language.title': '语言',
   'settings.language.label': '语言',
   'settings.display.title': '显示',

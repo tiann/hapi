@@ -598,7 +598,7 @@ export default {
   'settings.hub.description': 'Choose a category to adjust HAPI to your workflow.',
   'settings.hub.voice.summary': 'Voice, language, and behavior',
   'settings.general.title': 'General',
-  'settings.general.description': 'Language and general application preferences.',
+  'settings.general.description': 'Language, companion pairing, and general application preferences.',
   'settings.language.title': 'Language',
   'settings.language.label': 'Language',
   'settings.display.title': 'Display',
