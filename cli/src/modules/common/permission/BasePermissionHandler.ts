@@ -21,12 +21,6 @@ const AUTO_APPROVE_TOOL_NAME_HINTS = [
     'change_title',
     'happy__change_title',
     'hapi_change_title',  // OpenCode MCP tool pattern
-    'ping_peer',
-    'happy__ping_peer',
-    'hapi_ping_peer',
-    'hapi__ping_peer',
-    'mcp__hapi__ping_peer',
-    'mcp__happy__ping_peer',
     'geminireasoning',
     'codexreasoning',
     'think',
@@ -36,15 +30,11 @@ const AUTO_APPROVE_EXACT_TOOL_NAMES = new Set([
     'skill_lookup',
     'hapi_skill_lookup',
     'happy__skill_lookup',
-    'mcp__hapi__skill_lookup',
-    'ping_peer',
-    'hapi_ping_peer',
-    'happy__ping_peer',
-    'hapi__ping_peer',
-    'mcp__hapi__ping_peer',
-    'mcp__happy__ping_peer'
+    'mcp__hapi__skill_lookup'
 ]);
-const AUTO_APPROVE_TOOL_ID_HINTS = ['change_title', 'ping_peer', 'save_memory'];
+// ping_peer intentionally omitted: it can resume another session and inject a
+// prompt into a peer, so permission modes must still gate it (Codex PR #1195).
+const AUTO_APPROVE_TOOL_ID_HINTS = ['change_title', 'save_memory'];
 const AUTO_APPROVE_WRITE_TOOL_HINTS = ['write', 'edit', 'create', 'delete', 'patch', 'fs-edit'];
 
 export function resolveToolAutoApprovalDecision(
