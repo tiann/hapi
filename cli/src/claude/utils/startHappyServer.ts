@@ -14,6 +14,7 @@ import { ApiSessionClient } from "@/api/apiSession";
 import { randomUUID } from "node:crypto";
 import { detectImageMimeType, registerGeneratedImage } from "@/modules/common/generatedImages";
 import { resolveSkill } from "@/modules/common/skills";
+import { PingPeerError, pingPeer } from "@/modules/pingPeer/pingPeer";
 
 type StartHappyServerOptions = {
     emitTitleSummary?: boolean;
@@ -59,6 +60,13 @@ function createHapiMcpServer(
     const displayImageInputSchema: z.ZodTypeAny = z.object({
         path: z.string().describe('Local filesystem path of the image to display to the user'),
         title: z.string().optional().describe('Optional display title or filename for the image'),
+    });
+
+    const pingPeerInputSchema: z.ZodTypeAny = z.object({
+        sessionIdPrefix: z.string().trim().min(1).describe(
+            'Target HAPI session id or unique id prefix (another session - not this chat)'
+        ),
+        message: z.string().min(1).describe('Message text to deliver to the target session'),
     });
 
     const skillLookupInputSchema: z.ZodTypeAny = z.object({
@@ -155,6 +163,45 @@ function createHapiMcpServer(
                     {
                         type: 'text' as const,
                         text: `Failed to display image: ${message}`,
+                    },
+                ],
+                isError: true,
+            };
+        }
+    });
+
+    mcp.registerTool<any, any>('ping_peer', {
+        description: 'Send a message to another HAPI session (peer handoff / nudge). Resolves by session id prefix, resumes if inactive, then POSTs the message on the same hub/namespace. Prefer this (or `hapi ping-peer`) over reinventing JWT+curl. Targets another session - not the current chat.',
+        title: 'Ping Peer Session',
+        inputSchema: pingPeerInputSchema,
+    }, async (args: { sessionIdPrefix: string; message: string }) => {
+        logger.debug('[hapiMCP] ping_peer:', args.sessionIdPrefix);
+        try {
+            const result = await pingPeer({
+                sessionIdPrefix: args.sessionIdPrefix,
+                message: args.message,
+            });
+            return {
+                content: [
+                    {
+                        type: 'text' as const,
+                        text: `Delivered to ${result.sessionId}${result.resumed ? ' (resumed)' : ''} (${result.name})`,
+                    },
+                ],
+                isError: false,
+            };
+        } catch (error) {
+            const message = error instanceof PingPeerError
+                ? error.message
+                : error instanceof Error
+                    ? error.message
+                    : String(error);
+            logger.debug('[hapiMCP] ping_peer failed:', message);
+            return {
+                content: [
+                    {
+                        type: 'text' as const,
+                        text: `Failed to ping peer: ${message}`,
                     },
                 ],
                 isError: true,
@@ -281,7 +328,9 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
         hapiMcpUrl: mcpUrl,
     }));
 
-    const toolNames = enableChangeTitle ? ['change_title', 'display_image'] : ['display_image'];
+    const toolNames = enableChangeTitle
+        ? ['change_title', 'display_image', 'ping_peer']
+        : ['display_image', 'ping_peer'];
     if (options.skillLookup) {
         toolNames.push('skill_lookup');
     }

@@ -95,6 +95,9 @@ export async function buildHapiMcpBridge(
             approval_mode: 'approve'
         };
     }
+    tools.ping_peer = {
+        approval_mode: 'approve'
+    };
     if (options.skillLookup) {
         tools.skill_lookup = {
             approval_mode: 'approve'
