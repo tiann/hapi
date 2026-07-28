@@ -1335,6 +1335,8 @@ function SessionChatInner(props: SessionChatProps) {
                         outlineOpen={outlineOpen}
                         outlineItems={outlineItems}
                         onOutlineOpenChange={setOutlineOpen}
+                        quotes={composerQuotes.quotes}
+                        onQuoteAdd={handleQuoteAdd}
                     />
 
                     <div className={outlineOpen ? 'max-sm:hidden' : undefined}>
