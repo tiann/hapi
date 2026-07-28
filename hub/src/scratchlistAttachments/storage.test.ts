@@ -85,6 +85,29 @@ describe('scratchlistAttachments storage security', () => {
                 [{ ...otherAgain, id: partialId, path: otherAgain.path }]
             )
             expect(aliased.ok).toBe(false)
+
+            const toxic = await writeScratchlistAttachmentFile(
+                hapiHome,
+                'default',
+                'session-a',
+                'ok.png',
+                'image/png',
+                Buffer.from('dd')
+            )
+            const resolvedToxic = await resolveScratchlistAttachmentsForSession(
+                hapiHome,
+                'default',
+                'session-a',
+                [{
+                    ...toxic,
+                    filename: 'evil\r\nContent-Type: text/html".png',
+                }]
+            )
+            expect(resolvedToxic.ok).toBe(true)
+            if (resolvedToxic.ok) {
+                expect(resolvedToxic.attachments[0]?.filename).toBe('ok.png')
+                expect(resolvedToxic.attachments[0]?.filename).not.toMatch(/[\r\n"]/)
+            }
         } finally {
             rmSync(hapiHome, { recursive: true, force: true })
         }
