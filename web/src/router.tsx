@@ -57,6 +57,7 @@ import SettingsChatPage from '@/routes/settings/chat'
 import SettingsVoicePage from '@/routes/settings/voice'
 import SettingsVoiceVoicesPage from '@/routes/settings/voice-voices'
 import SettingsVoiceAdvancedPage from '@/routes/settings/voice-advanced'
+import SettingsMachinesPage from '@/routes/settings/machines'
 import SettingsAboutPage from '@/routes/settings/about'
 import SharePage from '@/routes/share'
 import { setSharePendingTransfer } from '@/lib/sharePendingState'
@@ -1386,6 +1387,12 @@ const settingsVoiceAdvancedRoute = createRoute({
     component: SettingsVoiceAdvancedPage,
 })
 
+const settingsMachinesRoute = createRoute({
+    getParentRoute: () => settingsRoute,
+    path: 'machines',
+    component: SettingsMachinesPage,
+})
+
 const settingsAboutRoute = createRoute({
     getParentRoute: () => settingsRoute,
     path: 'about',
@@ -1431,6 +1438,7 @@ export const routeTree = rootRoute.addChildren([
         settingsVoiceRoute,
         settingsVoiceVoicesRoute,
         settingsVoiceAdvancedRoute,
+        settingsMachinesRoute,
         settingsAboutRoute,
     ]),
     shareRoute,

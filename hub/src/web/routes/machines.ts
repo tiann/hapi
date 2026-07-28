@@ -1,6 +1,8 @@
 import {
+    MACHINE_DISPLAY_NAME_MAX_LENGTH,
     MachineListDirectoryRequestSchema,
     MachinePathsExistsRequestSchema,
+    RenameMachineRequestSchema,
     SpawnSessionRequestSchema
 } from '@hapi/protocol'
 import { Hono } from 'hono'
@@ -20,6 +22,44 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const namespace = c.get('namespace')
         const machines = engine.getOnlineMachinesByNamespace(namespace)
         return c.json({ machines })
+    })
+
+    app.patch('/machines/:id', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ error: 'Not connected' }, 503)
+        }
+
+        const machineId = c.req.param('id')
+        const machine = requireMachine(c, engine, machineId)
+        if (machine instanceof Response) {
+            return machine
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = RenameMachineRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body: displayName is required' }, 400)
+        }
+
+        // Trim first: a name is stored trimmed, so the ceiling applies to what
+        // actually gets stored. An empty result clears the custom name.
+        const displayName = parsed.data.displayName.trim()
+        if (displayName.length > MACHINE_DISPLAY_NAME_MAX_LENGTH) {
+            return c.json({ error: `displayName must be at most ${MACHINE_DISPLAY_NAME_MAX_LENGTH} characters` }, 400)
+        }
+
+        try {
+            await engine.renameMachine(machineId, displayName)
+            return c.json({ ok: true })
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to rename machine'
+            // Match the session rename contract: contention maps to 409.
+            if (message.includes('concurrently') || message.includes('version')) {
+                return c.json({ error: message }, 409)
+            }
+            return c.json({ error: message }, 500)
+        }
     })
 
     app.post('/machines/:id/spawn', async (c) => {

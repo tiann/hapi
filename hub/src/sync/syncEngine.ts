@@ -321,6 +321,10 @@ export class SyncEngine {
         return this.machineCache.getOnlineMachinesByNamespace(namespace)
     }
 
+    async renameMachine(machineId: string, displayName: string): Promise<void> {
+        return this.machineCache.renameMachine(machineId, displayName)
+    }
+
     getMessagesPage(
         sessionId: string,
         options: {

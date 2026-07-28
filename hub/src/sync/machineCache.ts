@@ -10,6 +10,12 @@ type MachineAlivePayload = {
     health?: unknown
 }
 
+const METADATA_RETRY_ATTEMPTS = 5
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
 function parseMachineHealth(value: unknown): Machine['health'] {
     const parsed = MachineHealthSchema.safeParse(value)
     return parsed.success ? parsed.data : null
@@ -74,6 +80,57 @@ export class MachineCache {
     getOrCreateMachine(id: string, metadata: unknown, runnerState: unknown, namespace: string): Machine {
         const stored = this.store.machines.getOrCreateMachine(id, metadata, runnerState, namespace)
         return this.refreshMachine(stored.id) ?? (() => { throw new Error('Failed to load machine') })()
+    }
+
+    /**
+     * Set or clear a machine's user-facing name.
+     *
+     * An empty `displayName` removes the key so the label falls back to the
+     * hostname; the empty string is never stored. Only that one key is touched,
+     * leaving everything the CLI reported intact.
+     *
+     * Reads the raw stored metadata rather than `this.machines`, because the
+     * cached view is narrowed by `MachineMetadataSchema`: it strips unknown keys
+     * and collapses to `null` when a row fails validation (which is reachable —
+     * the CLI's `machine-update-metadata` handler accepts `z.unknown()`). Merging
+     * against that view would write those fields out of existence.
+     *
+     * Retries on version-mismatch. Reading the version straight from the store
+     * makes contention with this process impossible (both calls are synchronous
+     * SQLite), so the retry only matters when another process writes the same
+     * database between the read and the write. `refreshMachine` publishes the
+     * `machine-updated` event that makes web clients refetch.
+     */
+    async renameMachine(machineId: string, displayName: string): Promise<void> {
+        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
+            const stored = this.store.machines.getMachine(machineId)
+            if (!stored) {
+                throw new Error('Machine not found')
+            }
+
+            const current = isPlainObject(stored.metadata) ? stored.metadata : {}
+            const { displayName: _previous, ...rest } = current
+            const newMetadata = displayName.length > 0 ? { ...rest, displayName } : rest
+
+            const result = this.store.machines.updateMachineMetadata(
+                machineId,
+                newMetadata,
+                stored.metadataVersion,
+                stored.namespace
+            )
+
+            if (result.result === 'error') {
+                throw new Error('Failed to update machine metadata')
+            }
+
+            this.refreshMachine(machineId)
+
+            if (result.result === 'success') {
+                return
+            }
+        }
+
+        throw new Error('Machine was modified concurrently. Please try again.')
     }
 
     refreshMachine(machineId: string): Machine | null {

@@ -613,6 +613,14 @@ export class ApiClient {
         return await this.request<MachinesResponse>('/api/machines')
     }
 
+    /** Pass an empty string to clear the custom name and fall back to the hostname. */
+    async renameMachine(machineId: string, displayName: string): Promise<void> {
+        await this.request(`/api/machines/${encodeURIComponent(machineId)}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ displayName })
+        })
+    }
+
     async listMachineDirectory(
         machineId: string,
         path: string

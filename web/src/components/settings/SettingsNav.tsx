@@ -18,6 +18,7 @@ export function SettingsNav(props: { activeId?: string; mobile?: boolean }) {
         display: `${t(`settings.display.appearance.${appearance}`)} · ${Math.round(fontScale * 100)}%`,
         chat: t(`settings.chat.enterBehavior.${composerEnterBehavior}`),
         voice: t('settings.hub.voice.summary'),
+        machines: t('settings.hub.machines.summary'),
         about: `v${__APP_VERSION__}`,
     }
 

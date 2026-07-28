@@ -232,6 +232,20 @@ export const RenameSessionRequestSchema = z.object({
 export type RenameSessionRequest = z.infer<typeof RenameSessionRequestSchema>
 
 /**
+ * An empty string clears the custom name, so unlike session rename there is no
+ * `min(1)`: the machine falls back to its hostname. The length ceiling is
+ * enforced after trimming, so it is not expressed here.
+ */
+export const RenameMachineRequestSchema = z.object({
+    displayName: z.string()
+})
+
+export type RenameMachineRequest = z.infer<typeof RenameMachineRequestSchema>
+
+export const MACHINE_DISPLAY_NAME_MAX_LENGTH = 64
+
+
+/**
  * Scratchlist v2 (tiann/hapi#893) per-entry caps.
  *
  * `MAX_ENTRIES` (200) is a per-session ceiling: refuses to create entry
