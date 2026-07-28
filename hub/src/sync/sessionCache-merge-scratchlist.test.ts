@@ -74,6 +74,56 @@ describe('mergeSessions (deleteOldSession=true) - scratchlist transfer', () => {
         expect(store.scratchlist.list(oldSession.id)).toEqual([])
     })
 
+    it('re-keys hub attachment paths when rows move to the new session id', async () => {
+        const { mkdtempSync, rmSync } = await import('node:fs')
+        const { join } = await import('node:path')
+        const { tmpdir } = await import('node:os')
+        const hapiHome = mkdtempSync(join(tmpdir(), 'hapi-merge-att-'))
+        const prevHome = process.env.HAPI_HOME
+        process.env.HAPI_HOME = hapiHome
+        try {
+            const { store, cache } = setup()
+            const { oldSession, newSession } = makeSessions(cache)
+            const { writeScratchlistAttachmentFile } = await import('../scratchlistAttachments/storage')
+            const att = await writeScratchlistAttachmentFile(
+                hapiHome,
+                'default',
+                oldSession.id,
+                'note.png',
+                'image/png',
+                Buffer.from('img')
+            )
+            store.scratchlist.create(oldSession.id, 'with pic', {
+                entryId: 'e-att',
+                createdAt: 100,
+                attachments: [att],
+            })
+
+            await cache.mergeSessions(oldSession.id, newSession.id, 'default')
+
+            const onNew = store.scratchlist.list(newSession.id)
+            expect(onNew).toHaveLength(1)
+            expect(onNew[0]!.attachments[0]!.path).toContain(`/${newSession.id}/`)
+            expect(onNew[0]!.attachments[0]!.path).not.toContain(`/${oldSession.id}/`)
+
+            const { sumScratchlistAttachmentBytesOnDisk, resolveScratchlistAttachmentsForSession } =
+                await import('../scratchlistAttachments/storage')
+            expect(await sumScratchlistAttachmentBytesOnDisk(hapiHome, 'default', newSession.id)).toBe(3)
+            expect(await sumScratchlistAttachmentBytesOnDisk(hapiHome, 'default', oldSession.id)).toBe(0)
+            const resolved = await resolveScratchlistAttachmentsForSession(
+                hapiHome,
+                'default',
+                newSession.id,
+                onNew[0]!.attachments
+            )
+            expect(resolved.ok).toBe(true)
+        } finally {
+            if (prevHome === undefined) delete process.env.HAPI_HOME
+            else process.env.HAPI_HOME = prevHome
+            rmSync(hapiHome, { recursive: true, force: true })
+        }
+    })
+
     it('handles entryId PK collision by keeping the dedup target row (operator-visible session wins)', async () => {
         const { store, cache } = setup()
         const { oldSession, newSession } = makeSessions(cache)

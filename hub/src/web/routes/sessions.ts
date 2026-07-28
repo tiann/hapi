@@ -932,6 +932,12 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             }
             nextAttachments = checked.attachments
         }
+        if (nextText.trim().length === 0 && nextAttachments.length === 0) {
+            return c.json({
+                error: 'Scratchlist entry requires text or attachments',
+                code: 'scratchlist_entry_empty',
+            }, 400)
+        }
         const limits = loadScratchlistAttachmentLimitsFromEnv()
         const diskBytes = await engine.sumScratchlistAttachmentBytesOnDisk(sessionResult.sessionId, namespace)
         const removedAttachments = existing.attachments.filter(

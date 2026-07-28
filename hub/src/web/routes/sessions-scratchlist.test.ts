@@ -398,6 +398,33 @@ describe('PUT /api/sessions/:id/scratchlist/:entryId', () => {
         expect(res.status).toBe(400)
     })
 
+    it('rejects clearing attachments on a textless entry (would leave an empty row)', async () => {
+        const session = createSession()
+        const app = createApp(session, {
+            getScratchlistEntry: () => ({
+                entryId: 'entry-1',
+                text: '',
+                createdAt: 1000,
+                updatedAt: 1000,
+                attachments: [{
+                    id: '11111111-1111-4111-8111-111111111111',
+                    filename: 'a.png',
+                    mimeType: 'image/png',
+                    size: 3,
+                    path: 'hapi-hub:scratchlist/default/session-1/11111111-1111-4111-8111-111111111111-a.png',
+                }],
+            }),
+        })
+        const res = await app.request('/api/sessions/session-1/scratchlist/entry-1', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ attachments: [] })
+        })
+        expect(res.status).toBe(400)
+        const body = await res.json() as { code?: string }
+        expect(body.code).toBe('scratchlist_entry_empty')
+    })
+
     it('returns 403 when the session is in another namespace', async () => {
         const session = createSession({ namespace: 'other' })
         const app = createApp(session, { sessionAccess: 'wrong-namespace' })

@@ -5,6 +5,7 @@ import { join } from 'node:path'
 
 import {
     deleteScratchlistAttachmentById,
+    moveScratchlistAttachmentFilesForSession,
     resolveScratchlistAttachmentsForSession,
     sumScratchlistAttachmentBytesOnDisk,
     writeScratchlistAttachmentFile,
@@ -108,6 +109,41 @@ describe('scratchlistAttachments storage security', () => {
                 expect(resolvedToxic.attachments[0]?.filename).toBe('ok.png')
                 expect(resolvedToxic.attachments[0]?.filename).not.toMatch(/[\r\n"]/)
             }
+        } finally {
+            rmSync(hapiHome, { recursive: true, force: true })
+        }
+    })
+
+    it('re-keys attachment files when a session id is transferred', async () => {
+        const hapiHome = mkdtempSync(join(tmpdir(), 'hapi-scratchlist-move-'))
+        try {
+            const written = await writeScratchlistAttachmentFile(
+                hapiHome,
+                'default',
+                'session-old',
+                'pic.png',
+                'image/png',
+                Buffer.from('payload')
+            )
+            const moved = await moveScratchlistAttachmentFilesForSession(
+                hapiHome,
+                'default',
+                'session-old',
+                'session-new',
+                [written]
+            )
+            expect(moved[0]?.path).toContain('/session-new/')
+            expect(moved[0]?.path).not.toContain('/session-old/')
+            expect(await sumScratchlistAttachmentBytesOnDisk(hapiHome, 'default', 'session-old')).toBe(0)
+            expect(await sumScratchlistAttachmentBytesOnDisk(hapiHome, 'default', 'session-new')).toBe(7)
+
+            const resolved = await resolveScratchlistAttachmentsForSession(
+                hapiHome,
+                'default',
+                'session-new',
+                moved
+            )
+            expect(resolved.ok).toBe(true)
         } finally {
             rmSync(hapiHome, { recursive: true, force: true })
         }

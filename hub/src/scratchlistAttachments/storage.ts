@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -109,6 +109,62 @@ export async function deleteScratchlistAttachmentFiles(
     attachments: ScratchlistAttachmentMetadata[]
 ): Promise<void> {
     await Promise.all(attachments.map((att) => deleteScratchlistAttachmentFile(hapiHome, att.path)))
+}
+
+/**
+ * Re-key hub attachment files when a scratchlist row is transferred to a new
+ * session id (merge/dedup). Paths embed the session id; without this step
+ * quota sums miss the bytes and resolve rejects the path as out-of-session.
+ * If the destination file already exists, keep it and delete the source
+ * (same "target wins" rule as SQL transfer collisions).
+ */
+export async function moveScratchlistAttachmentFilesForSession(
+    hapiHome: string,
+    namespace: string,
+    oldSessionId: string,
+    newSessionId: string,
+    attachments: ScratchlistAttachmentMetadata[]
+): Promise<ScratchlistAttachmentMetadata[]> {
+    if (oldSessionId === newSessionId || attachments.length === 0) {
+        return attachments
+    }
+    const oldPrefix = sessionStoragePrefix(namespace, oldSessionId)
+    const newPrefix = sessionStoragePrefix(namespace, newSessionId)
+    const moved: ScratchlistAttachmentMetadata[] = []
+    for (const att of attachments) {
+        const storageKey = parseHubScratchlistAttachmentPath(att.path)
+        if (!storageKey || !storageKey.startsWith(oldPrefix)) {
+            moved.push(att)
+            continue
+        }
+        const fileName = storageKey.slice(oldPrefix.length)
+        const newKey = `${newPrefix}${fileName}`
+        let oldPath: string
+        let newPath: string
+        try {
+            oldPath = resolveScratchlistStoragePath(hapiHome, storageKey)
+            newPath = resolveScratchlistStoragePath(hapiHome, newKey)
+        } catch {
+            moved.push(att)
+            continue
+        }
+        await mkdir(join(newPath, '..'), { recursive: true })
+        try {
+            const destExists = await stat(newPath).then((info) => info.isFile()).catch(() => false)
+            if (destExists) {
+                await rm(oldPath, { force: true })
+            } else {
+                await rename(oldPath, newPath)
+            }
+        } catch {
+            // best effort — still rewrite metadata so quota/resolve use the new id
+        }
+        moved.push({
+            ...att,
+            path: toHubScratchlistAttachmentPath(newKey),
+        })
+    }
+    return moved
 }
 
 export async function deleteScratchlistSessionAttachmentDir(
