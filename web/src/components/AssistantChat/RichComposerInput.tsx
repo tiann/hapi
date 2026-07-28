@@ -60,6 +60,12 @@ function createMentionSpan(id: string, title: string): HTMLSpanElement {
 }
 
 const BLOCK_TAGS = new Set(['DIV', 'P', 'LI', 'TR', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'PRE'])
+/** Zero-width pad so a trailing linebreak keeps a caret line-box (pre-wrap / br). */
+const CARET_PAD = '\u200B'
+
+function stripCaretPad(text: string): string {
+    return text.replaceAll(CARET_PAD, '')
+}
 
 /** Exported for unit tests — maps contenteditable DOM → composer segments. */
 export function segmentsFromEditor(root: HTMLElement): ComposerSegment[] {
@@ -67,8 +73,9 @@ export function segmentsFromEditor(root: HTMLElement): ComposerSegment[] {
     let pendingBlockBreak = false
 
     const pushText = (text: string) => {
-        if (!text) return
-        segments.push({ type: 'text', text })
+        const cleaned = stripCaretPad(text)
+        if (!cleaned) return
+        segments.push({ type: 'text', text: cleaned })
     }
 
     const pushNewlineIfNeeded = () => {
@@ -125,17 +132,30 @@ export function segmentsFromEditor(root: HTMLElement): ComposerSegment[] {
     return coalesceComposerSegments(segments)
 }
 
-function insertLineBreakAtCaret(): void {
+function insertLineBreakAtCaret(root: HTMLElement): void {
     const sel = window.getSelection()
     if (!sel || sel.rangeCount === 0) return
+
+    // Chromium's insertLineBreak handles the trailing "bogus BR" / line-box case
+    // that a manual <br> + empty text node does not (Shift+Enter looked like a no-op).
+    root.focus()
+    if (root.ownerDocument.execCommand('insertLineBreak')) {
+        return
+    }
+
+    // Fallback: literal newline (editor is whitespace-pre-wrap) + caret pad at EOL.
     const range = sel.getRangeAt(0)
     range.deleteContents()
-    const br = document.createElement('br')
-    range.insertNode(br)
-    // Caret after the break; trailing br alone often needs a text node to land in.
-    const after = document.createTextNode('')
-    br.parentNode?.insertBefore(after, br.nextSibling)
-    range.setStart(after, 0)
+    const nl = document.createTextNode('\n')
+    range.insertNode(nl)
+    const atEnd = !nl.nextSibling
+    if (atEnd) {
+        const pad = document.createTextNode(CARET_PAD)
+        nl.parentNode?.insertBefore(pad, nl.nextSibling)
+        range.setStart(pad, pad.length)
+    } else {
+        range.setStart(nl, nl.length)
+    }
     range.collapse(true)
     sel.removeAllRanges()
     sel.addRange(range)
@@ -150,6 +170,10 @@ function renderSegmentsToEditor(root: HTMLElement, segments: readonly ComposerSe
                 if (part) root.appendChild(document.createTextNode(part))
                 if (index < parts.length - 1) root.appendChild(document.createElement('br'))
             })
+            // Trailing newline needs a caret target or the new line is invisible.
+            if (segment.text.endsWith('\n')) {
+                root.appendChild(document.createTextNode(CARET_PAD))
+            }
             continue
         }
         root.appendChild(createMentionSpan(segment.id, segment.title))
@@ -164,11 +188,12 @@ function mirrorOffsetFromPoint(root: HTMLElement, endContainer: Node, endOffset:
 
     const visit = (n: Node): boolean => {
         if (n === endContainer && n.nodeType === Node.TEXT_NODE) {
-            count += endOffset
+            const raw = n.textContent ?? ''
+            count += stripCaretPad(raw.slice(0, endOffset)).length
             return true
         }
         if (n.nodeType === Node.TEXT_NODE) {
-            count += n.textContent?.length ?? 0
+            count += stripCaretPad(n.textContent ?? '').length
             return false
         }
         if (n.nodeType !== Node.ELEMENT_NODE) return false
@@ -237,12 +262,28 @@ function setMirrorSelection(root: HTMLElement, selection: ComposerSelection) {
 
     const walk = (n: Node): boolean => {
         if (n.nodeType === Node.TEXT_NODE) {
-            const len = n.textContent?.length ?? 0
-            if (remaining <= len) {
-                place(n, remaining)
+            const raw = n.textContent ?? ''
+            // Caret-pad ZWSP is not part of the mirror; still a valid caret target.
+            if (raw === CARET_PAD) {
+                if (remaining === 0) {
+                    place(n, raw.length)
+                    return true
+                }
+                return false
+            }
+            const cleaned = stripCaretPad(raw)
+            if (remaining <= cleaned.length) {
+                // Map cleaned offset back into raw (pads have mirror width 0).
+                let cleanedSeen = 0
+                let rawOffset = 0
+                while (rawOffset < raw.length && cleanedSeen < remaining) {
+                    if (raw[rawOffset] !== CARET_PAD) cleanedSeen += 1
+                    rawOffset += 1
+                }
+                place(n, rawOffset)
                 return true
             }
-            remaining -= len
+            remaining -= cleaned.length
             return false
         }
         if (n.nodeType !== Node.ELEMENT_NODE) return false
@@ -437,8 +478,10 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
             && !e.metaKey
             && !e.altKey
         ) {
+            const root = rootRef.current
+            if (!root) return
             e.preventDefault()
-            insertLineBreakAtCaret()
+            insertLineBreakAtCaret(root)
             onEdit?.()
             emitFromDom()
         }

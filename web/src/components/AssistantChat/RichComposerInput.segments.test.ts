@@ -15,6 +15,14 @@ describe('segmentsFromEditor', () => {
         expect(serializeComposerSegments(segmentsFromEditor(root))).toBe('a\nb')
     })
 
+    it('strips caret-pad ZWSP used for trailing linebreak line-boxes', () => {
+        const root = document.createElement('div')
+        root.appendChild(document.createTextNode('a'))
+        root.appendChild(document.createElement('br'))
+        root.appendChild(document.createTextNode('\u200B'))
+        expect(serializeComposerSegments(segmentsFromEditor(root))).toBe('a\n')
+    })
+
     it('keeps session atoms across block breaks', () => {
         const root = document.createElement('div')
         root.innerHTML =

@@ -99,18 +99,32 @@ test.describe('rich composer session @ mentions — peer stack (#1215)', () => {
             await expect(rich).toContainText('/help')
         }
 
-        // 5) Shift+Enter newline (composer still multi-line)
+        // 5) Shift+Enter must create a real newline (not same-line wrap).
+        // toContainText collapses whitespace — assert innerText instead.
         await page.keyboard.press('Shift+Enter')
+        await page.waitForTimeout(350)
         await page.keyboard.type('line two still editable', { delay: 15 })
-        await expect(rich).toContainText('line two still editable')
+        await expect.poll(async () => rich.innerText()).toMatch(
+            /line two still editable/
+        )
+        await expect.poll(async () => rich.innerText()).toContain('\n')
 
-        // 6) Clear + type short message and send (Enter-to-send default)
+        // 6) Clear + multiline send (Shift+Enter then Enter-to-send)
         await page.keyboard.press('Control+A')
         await page.keyboard.press('Backspace')
-        await page.keyboard.type('rich composer send smoke', { delay: 15 })
+        await page.keyboard.type('rich composer line one', { delay: 15 })
+        await page.keyboard.press('Shift+Enter')
+        await page.waitForTimeout(250)
+        await page.keyboard.type('rich composer line two', { delay: 15 })
+        await expect.poll(async () => rich.innerText()).toBe(
+            'rich composer line one\nrich composer line two'
+        )
         await page.keyboard.press('Enter')
-        await expect(page.getByText('rich composer send smoke').first()).toBeVisible({
+        await expect(page.getByText(/rich composer line one/).first()).toBeVisible({
             timeout: 20_000,
+        })
+        await expect(page.getByText(/rich composer line two/).first()).toBeVisible({
+            timeout: 10_000,
         })
 
         await stopAnnotatedScreencast(page)
