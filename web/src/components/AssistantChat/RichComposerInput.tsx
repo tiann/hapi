@@ -59,17 +59,38 @@ function createMentionSpan(id: string, title: string): HTMLSpanElement {
     return span
 }
 
-function segmentsFromEditor(root: HTMLElement): ComposerSegment[] {
+const BLOCK_TAGS = new Set(['DIV', 'P', 'LI', 'TR', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'PRE'])
+
+/** Exported for unit tests — maps contenteditable DOM → composer segments. */
+export function segmentsFromEditor(root: HTMLElement): ComposerSegment[] {
     const segments: ComposerSegment[] = []
-    const walk = (node: Node) => {
+    let pendingBlockBreak = false
+
+    const pushText = (text: string) => {
+        if (!text) return
+        segments.push({ type: 'text', text })
+    }
+
+    const pushNewlineIfNeeded = () => {
+        if (!pendingBlockBreak) return
+        if (segments.length === 0) {
+            pendingBlockBreak = false
+            return
+        }
+        pushText('\n')
+        pendingBlockBreak = false
+    }
+
+    const walk = (node: Node, insideRootChild = false) => {
         if (node.nodeType === Node.TEXT_NODE) {
-            const text = node.textContent ?? ''
-            if (text) segments.push({ type: 'text', text })
+            pushNewlineIfNeeded()
+            pushText(node.textContent ?? '')
             return
         }
         if (node.nodeType !== Node.ELEMENT_NODE) return
         const el = node as HTMLElement
         if (el.dataset.composerMention === 'session' && el.dataset.sessionId) {
+            pushNewlineIfNeeded()
             segments.push({
                 type: 'session',
                 id: el.dataset.sessionId,
@@ -78,17 +99,46 @@ function segmentsFromEditor(root: HTMLElement): ComposerSegment[] {
             return
         }
         if (el.tagName === 'BR') {
-            segments.push({ type: 'text', text: '\n' })
+            pushNewlineIfNeeded()
+            pushText('\n')
             return
         }
+        const isBlock = BLOCK_TAGS.has(el.tagName)
+        // Sibling block children of the editor (Chrome Enter) → newline between them.
+        if (isBlock && insideRootChild) {
+            pendingBlockBreak = segments.length > 0
+        }
         for (const child of Array.from(el.childNodes)) {
-            walk(child)
+            walk(child, false)
+        }
+        if (isBlock && insideRootChild) {
+            pendingBlockBreak = true
         }
     }
     for (const child of Array.from(root.childNodes)) {
-        walk(child)
+        if (child.nodeType === Node.ELEMENT_NODE && BLOCK_TAGS.has((child as HTMLElement).tagName)) {
+            walk(child, true)
+        } else {
+            walk(child, false)
+        }
     }
     return coalesceComposerSegments(segments)
+}
+
+function insertLineBreakAtCaret(): void {
+    const sel = window.getSelection()
+    if (!sel || sel.rangeCount === 0) return
+    const range = sel.getRangeAt(0)
+    range.deleteContents()
+    const br = document.createElement('br')
+    range.insertNode(br)
+    // Caret after the break; trailing br alone often needs a text node to land in.
+    const after = document.createTextNode('')
+    br.parentNode?.insertBefore(after, br.nextSibling)
+    range.setStart(after, 0)
+    range.collapse(true)
+    sel.removeAllRanges()
+    sel.addRange(range)
 }
 
 function renderSegmentsToEditor(root: HTMLElement, segments: readonly ComposerSegment[]) {
@@ -376,7 +426,23 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
             }
         }
         onKeyDown?.(e)
-    }, [onEdit, onKeyDown, onMirrorChange, onValueChange])
+        // Parent handles suggestion-select / send with preventDefault. If Enter
+        // was left alone (Shift+Enter, or Enter-inserts-newline mode), insert a
+        // <br> instead of letting Chromium split the editor into block <div>s
+        // that would collapse to "line1line2" on serialize.
+        if (
+            !e.defaultPrevented
+            && e.key === 'Enter'
+            && !e.ctrlKey
+            && !e.metaKey
+            && !e.altKey
+        ) {
+            e.preventDefault()
+            insertLineBreakAtCaret()
+            onEdit?.()
+            emitFromDom()
+        }
+    }, [emitFromDom, onEdit, onKeyDown, onMirrorChange, onValueChange])
 
     return (
         <div className="relative min-w-0 flex-1">
