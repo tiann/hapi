@@ -541,7 +541,6 @@ function SessionChatInner(props: SessionChatProps) {
             // those through the normal CLI upload dir before chat send.
             const list = attachments ?? []
             const hubItems = list.filter((att) => isHubScratchlistAttachmentPath(att.path))
-            let chatAttachments = attachments
             if (hubItems.length > 0) {
                 const normalItems = list.filter((att) => !isHubScratchlistAttachmentPath(att.path))
                 const staged = await stageScratchlistAttachmentsForComposeSend(
@@ -549,9 +548,17 @@ function SessionChatInner(props: SessionChatProps) {
                     props.session.id,
                     hubItems,
                 )
-                chatAttachments = [...normalItems, ...staged]
+                const accepted = await props.onSend(text, [...normalItems, ...staged], scheduledAt)
+                if (accepted) {
+                    // Hub blobs were copied into the normal upload dir; drop the
+                    // scratchlist copies so they stop counting against the session cap.
+                    await Promise.allSettled(
+                        hubItems.map((att) => props.api.deleteScratchlistAttachment(props.session.id, att.id))
+                    )
+                }
+                return accepted
             }
-            return props.onSend(text, chatAttachments, scheduledAt)
+            return props.onSend(text, attachments, scheduledAt)
         },
         [props.onSend, props.api, props.session.id, scratchlist, scratchlistMode],
     )

@@ -149,6 +149,8 @@ export class SyncEngine {
     private inactivityTimer: NodeJS.Timeout | null = null
     /** Sessions that emitted `session-ready` (Cursor ACP load/newSession complete). */
     private readonly sessionReadyIds = new Set<string>()
+    /** Serialize scratchlist uploads per session so disk-byte caps cannot race. */
+    private readonly scratchlistUploadTails = new Map<string, Promise<unknown>>()
 
     constructor(
         private readonly store: Store,
@@ -587,6 +589,30 @@ export class SyncEngine {
         return removed
     }
 
+    private async withScratchlistUploadLock<T>(
+        namespace: string,
+        sessionId: string,
+        fn: () => Promise<T>
+    ): Promise<T> {
+        const key = `${namespace}:${sessionId}`
+        const previous = this.scratchlistUploadTails.get(key) ?? Promise.resolve()
+        let release!: () => void
+        const gate = new Promise<void>((resolve) => {
+            release = resolve
+        })
+        const tail = previous.catch(() => undefined).then(() => gate)
+        this.scratchlistUploadTails.set(key, tail)
+        await previous.catch(() => undefined)
+        try {
+            return await fn()
+        } finally {
+            release()
+            if (this.scratchlistUploadTails.get(key) === tail) {
+                this.scratchlistUploadTails.delete(key)
+            }
+        }
+    }
+
 async uploadScratchlistAttachment(
         sessionId: string,
         namespace: string,
@@ -614,28 +640,30 @@ async uploadScratchlistAttachment(
 
         const hapiHome = getHapiHomeDir()
         const buffer = Buffer.from(contentBase64, 'base64')
-        const sessionBytes = await sumScratchlistAttachmentBytesOnDisk(hapiHome, namespace, sessionId)
-        const provisional = {
-            id: 'pending',
-            filename,
-            mimeType,
-            size: buffer.length,
-            path: 'pending',
-        }
-        const validation = validateScratchlistAttachmentsForWrite([provisional], limits, sessionBytes)
-        if (!validation.ok) {
-            return { success: false, error: validation.error, code: validation.code }
-        }
+        return await this.withScratchlistUploadLock(namespace, sessionId, async () => {
+            const sessionBytes = await sumScratchlistAttachmentBytesOnDisk(hapiHome, namespace, sessionId)
+            const provisional = {
+                id: 'pending',
+                filename,
+                mimeType,
+                size: buffer.length,
+                path: 'pending',
+            }
+            const validation = validateScratchlistAttachmentsForWrite([provisional], limits, sessionBytes)
+            if (!validation.ok) {
+                return { success: false, error: validation.error, code: validation.code }
+            }
 
-        const attachment = await writeScratchlistAttachmentFile(
-            hapiHome,
-            namespace,
-            sessionId,
-            filename,
-            mimeType,
-            buffer
-        )
-        return { success: true, attachment }
+            const attachment = await writeScratchlistAttachmentFile(
+                hapiHome,
+                namespace,
+                sessionId,
+                filename,
+                mimeType,
+                buffer
+            )
+            return { success: true, attachment }
+        })
     }
 
     async resolveScratchlistAttachmentsForSession(
