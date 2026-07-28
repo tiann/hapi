@@ -167,6 +167,9 @@ export async function sumScratchlistAttachmentBytesOnDisk(
     return total
 }
 
+export const SCRATCHLIST_ATTACHMENT_ID_RE =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
 /**
  * Verify claimed metadata points at a hub file owned by this namespace/session,
  * then return server-authoritative metadata (size from disk).
@@ -180,6 +183,9 @@ export async function resolveScratchlistAttachmentForSession(
     | { ok: true; attachment: ScratchlistAttachmentMetadata }
     | { ok: false; error: string }
 > {
+    if (!SCRATCHLIST_ATTACHMENT_ID_RE.test(claimed.id)) {
+        return { ok: false, error: 'Invalid scratchlist attachment id' }
+    }
     const storageKey = parseHubScratchlistAttachmentPath(claimed.path)
     if (!storageKey) {
         return { ok: false, error: 'Invalid scratchlist attachment path' }
@@ -247,8 +253,6 @@ export async function deleteScratchlistAttachmentById(
 ): Promise<boolean> {
     // Require a full UUID so a partial first-segment like "a1b2c3d4" cannot
     // startsWith-match `${uuid}-${filename}` and delete a still-referenced file.
-    const SCRATCHLIST_ATTACHMENT_ID_RE =
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
     if (!SCRATCHLIST_ATTACHMENT_ID_RE.test(attachmentId)) {
         return false
     }

@@ -77,6 +77,14 @@ describe('scratchlistAttachments storage security', () => {
                 await deleteScratchlistAttachmentById(hapiHome, 'default', 'session-a', partialId)
             ).toBe(false)
             expect(await sumScratchlistAttachmentBytesOnDisk(hapiHome, 'default', 'session-a')).toBe(3)
+
+            const aliased = await resolveScratchlistAttachmentsForSession(
+                hapiHome,
+                'default',
+                'session-a',
+                [{ ...otherAgain, id: partialId, path: otherAgain.path }]
+            )
+            expect(aliased.ok).toBe(false)
         } finally {
             rmSync(hapiHome, { recursive: true, force: true })
         }

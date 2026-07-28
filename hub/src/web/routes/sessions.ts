@@ -918,17 +918,19 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const nextText = parsed.data.text !== undefined ? parsed.data.text.trim() : existing.text
-        const claimedAttachments = parsed.data.attachments ?? existing.attachments
         const namespace = c.get('namespace')
-        const checked = await engine.resolveScratchlistAttachmentsForSession(
-            sessionResult.sessionId,
-            namespace,
-            claimedAttachments
-        )
-        if (!checked.ok) {
-            return c.json({ error: checked.error, code: 'scratchlist_attachment_invalid' }, 400)
+        let nextAttachments = existing.attachments
+        if (parsed.data.attachments !== undefined) {
+            const checked = await engine.resolveScratchlistAttachmentsForSession(
+                sessionResult.sessionId,
+                namespace,
+                parsed.data.attachments
+            )
+            if (!checked.ok) {
+                return c.json({ error: checked.error, code: 'scratchlist_attachment_invalid' }, 400)
+            }
+            nextAttachments = checked.attachments
         }
-        const nextAttachments = checked.attachments
         const limits = loadScratchlistAttachmentLimitsFromEnv()
         const diskBytes = await engine.sumScratchlistAttachmentBytesOnDisk(sessionResult.sessionId, namespace)
         const entryBytes = nextAttachments.reduce((sum, att) => sum + att.size, 0)

@@ -855,6 +855,10 @@ export class SessionCache {
             throw new Error('Cannot delete active session')
         }
 
+        const scratchlistAttachments = this.store.scratchlist
+            .list(sessionId)
+            .flatMap((entry) => entry.attachments)
+
         const deleted = this.store.sessions.deleteSession(sessionId, session.namespace)
         if (!deleted) {
             throw new Error('Failed to delete session')
@@ -864,6 +868,16 @@ export class SessionCache {
         this.lastBroadcastAtBySessionId.delete(sessionId)
         this.todoBackfillAttemptedSessionIds.delete(sessionId)
         this.pendingThinkingUntilBySessionId.delete(sessionId)
+
+        void import('../scratchlistAttachments/storage').then(async ({
+            deleteScratchlistAttachmentFiles,
+            deleteScratchlistSessionAttachmentDir,
+            getHapiHomeDir,
+        }) => {
+            const hapiHome = getHapiHomeDir()
+            await deleteScratchlistAttachmentFiles(hapiHome, scratchlistAttachments)
+            await deleteScratchlistSessionAttachmentDir(hapiHome, session.namespace, sessionId)
+        })
 
         this.publisher.emit({ type: 'session-removed', sessionId, namespace: session.namespace })
     }
