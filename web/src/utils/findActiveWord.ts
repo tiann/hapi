@@ -6,14 +6,20 @@
  * @returns An object containing word info, or undefined if no prefixed word is found
  */
 
-// Characters that stop the active word search
+// Characters that stop the active word search (hard stops — do not cross).
 const STOP_CHARACTERS = ['\n', ',', '(', ')', '[', ']', '{', '}', '<', '>', ';', '!', '?', '.']
 
-/** Rich-composer mirror uses U+FFFC for session atoms — treat as a word boundary. */
-const WORD_BOUNDARY_CHARACTERS = new Set([' ', '\n', '\uFFFC'])
+/** Rich-composer mirror uses U+FFFC for session atoms — hard word boundary. */
+const MENTION_MIRROR_CHAR = '\uFFFC'
 
-function isWordBoundaryChar(char: string): boolean {
-    return WORD_BOUNDARY_CHARACTERS.has(char)
+function isHardStopChar(char: string): boolean {
+    return char === MENTION_MIRROR_CHAR || STOP_CHARACTERS.includes(char)
+}
+
+function isPrefixBoundaryBefore(content: string, index: number): boolean {
+    if (index === 0) return true
+    const prev = content.charAt(index - 1)
+    return prev === ' ' || prev === '\n' || prev === MENTION_MIRROR_CHAR
 }
 
 interface Selection {
@@ -43,46 +49,35 @@ function findActiveWordStart(
     while (startIndex >= 0) {
         const char = content.charAt(startIndex)
 
-        // Check if we hit a word boundary (space / newline / mention atom)
-        if (isWordBoundaryChar(char)) {
-            if (foundPrefix) {
-                // We found a prefix earlier, return its position
-                return prefixIndex
-            }
-            if (spaceIndex >= 0) {
-                // Multiple boundaries, stop here
-                return spaceIndex + 1
-            } else {
-                spaceIndex = startIndex
-                startIndex--
-            }
-        }
-        // Check if this is a prefix character at word boundary
-        else if (
-            prefixes.includes(char) &&
-            (startIndex === 0 || isWordBoundaryChar(content.charAt(startIndex - 1)))
-        ) {
-            // For @ prefix, continue searching backwards to include the entire file path
-            if (char === '@') {
-                foundPrefix = true
-                prefixIndex = startIndex
-                // Return immediately for @ at word boundary
-                return startIndex
-            } else {
-                return startIndex
-            }
-        }
-        // Check if we hit a stop character
-        else if (STOP_CHARACTERS.includes(char)) {
+        // Hard stops (newline / mention atom / punctuation) — never cross.
+        if (isHardStopChar(char)) {
             if (foundPrefix) {
                 return prefixIndex
             }
             return startIndex + 1
         }
-        // Continue searching backwards
-        else {
+        // Soft space boundary (same as historical textarea behavior).
+        if (char === ' ') {
+            if (foundPrefix) {
+                return prefixIndex
+            }
+            if (spaceIndex >= 0) {
+                return spaceIndex + 1
+            }
+            spaceIndex = startIndex
             startIndex--
+            continue
         }
+        // Prefix at a word boundary
+        if (prefixes.includes(char) && isPrefixBoundaryBefore(content, startIndex)) {
+            if (char === '@') {
+                foundPrefix = true
+                prefixIndex = startIndex
+                return startIndex
+            }
+            return startIndex
+        }
+        startIndex--
     }
 
     // Reached beginning of text
@@ -114,8 +109,7 @@ function findActiveWordEnd(
             continue
         }
 
-        // Stop at spaces, mention atoms, or stop characters
-        if (isWordBoundaryChar(char) || STOP_CHARACTERS.includes(char)) {
+        if (char === ' ' || isHardStopChar(char)) {
             break
         }
         endIndex++

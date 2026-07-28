@@ -21,12 +21,8 @@ const artifactRoot = process.env.HAPI_PEER_WORKTREE ?? process.cwd()
 const RUNS = resolve(artifactRoot, 'localdocs/playwright-runs')
 const { webm: WEBM_PATH, mp4: MP4_PATH } = annotatedVideoPaths(RUNS, '1215-rich-composer-dogfood')
 
-function requirePeerEnv(): void {
-    if (!hubUrl || !accessToken || !sessionId) {
-        throw new Error(
-            'Missing peer stack env (HAPI_PEER_WEB_URL, HAPI_PEER_CLI_TOKEN, HAPI_PEER_SESSION_ID).'
-        )
-    }
+function peerEnvReady(): boolean {
+    return Boolean(hubUrl && accessToken && sessionId)
 }
 
 async function injectAuth(page: Page): Promise<void> {
@@ -49,11 +45,11 @@ async function pickSessionMention(page: Page, query: string, label: string): Pro
 
 test.describe('rich composer session @ mentions — peer stack (#1215)', () => {
     test.beforeAll(() => {
-        requirePeerEnv()
         mkdirSync(RUNS, { recursive: true })
     })
 
     test('motion proof: chips + composer baseline still works', async ({ page }) => {
+        test.skip(!peerEnvReady(), 'peer stack env not set (HAPI_PEER_WEB_URL / token / session)')
         test.setTimeout(90_000)
         await injectAuth(page)
         await page.goto(`/sessions/${sessionId}`, {

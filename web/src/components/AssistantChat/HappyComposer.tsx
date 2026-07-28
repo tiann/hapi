@@ -314,8 +314,8 @@ export function HappyComposer(props: {
 
     const textareaRef = useRef<HTMLTextAreaElement>(null)
     const richInputRef = useRef<RichComposerInputHandle>(null)
-    // Cheap + intentional: re-read every render so ?richMentions=1 / localStorage
-    // takes effect after hard reload (no sticky false from mount-time memo).
+    // Cheap + intentional: re-read every render so kill-switch =0 / ?richMentions=0
+    // takes effect after hard reload (no sticky true from mount-time memo).
     const richMentionsEnabled = isRichComposerMentionsEnabled()
     const prevControlledByUser = useRef(controlledByUser)
 
@@ -590,13 +590,9 @@ export function HappyComposer(props: {
             return
         }
 
-        // Shift+Enter inserts a newline (standard behavior)
+        // Shift+Enter inserts a newline (textarea default; rich path inserts <br>).
         if (key === 'Enter' && e.shiftKey) {
-            if (richMentionsEnabled) {
-                // contenteditable: insert a hard break ourselves when needed
-                return
-            }
-            return // let default textarea behavior handle newline
+            return
         }
 
         // Enter with suggestions visible: select the suggestion

@@ -115,7 +115,7 @@ export function segmentsFromEditor(root: HTMLElement): ComposerSegment[] {
         pendingBlockBreak = false
     }
 
-    const walk = (node: Node, insideRootChild = false) => {
+    const walk = (node: Node) => {
         if (node.nodeType === Node.TEXT_NODE) {
             pushNewlineIfNeeded()
             pushText(node.textContent ?? '')
@@ -138,23 +138,20 @@ export function segmentsFromEditor(root: HTMLElement): ComposerSegment[] {
             return
         }
         const isBlock = BLOCK_TAGS.has(el.tagName)
-        // Sibling block children of the editor (Chrome Enter) → newline between them.
-        if (isBlock && insideRootChild) {
-            pendingBlockBreak = segments.length > 0
+        // Any block after existing content (Chrome Enter, pasted <p>/<li>, nested
+        // wrappers) → newline. Depth-agnostic so paste wrappers do not collapse.
+        if (isBlock && segments.length > 0) {
+            pendingBlockBreak = true
         }
         for (const child of Array.from(el.childNodes)) {
-            walk(child, false)
+            walk(child)
         }
-        if (isBlock && insideRootChild) {
+        if (isBlock) {
             pendingBlockBreak = true
         }
     }
     for (const child of Array.from(root.childNodes)) {
-        if (child.nodeType === Node.ELEMENT_NODE && BLOCK_TAGS.has((child as HTMLElement).tagName)) {
-            walk(child, true)
-        } else {
-            walk(child, false)
-        }
+        walk(child)
     }
     return coalesceComposerSegments(segments)
 }
@@ -166,8 +163,12 @@ function insertLineBreakAtCaret(root: HTMLElement): void {
     // Chromium's insertLineBreak handles the trailing "bogus BR" / line-box case
     // that a manual <br> + empty text node does not (Shift+Enter looked like a no-op).
     root.focus()
-    if (root.ownerDocument.execCommand('insertLineBreak')) {
-        return
+    try {
+        if (root.ownerDocument.execCommand('insertLineBreak')) {
+            return
+        }
+    } catch {
+        // Deprecated / unsupported — fall through to literal newline.
     }
 
     // Fallback: literal newline (editor is whitespace-pre-wrap) + caret pad at EOL.
@@ -214,7 +215,8 @@ function renderSegmentsToEditor(
     }
 }
 
-function mirrorOffsetFromPoint(root: HTMLElement, endContainer: Node, endOffset: number): number {
+/** Exported for unit tests — maps a DOM caret point into mirror-string offset. */
+export function mirrorOffsetFromPoint(root: HTMLElement, endContainer: Node, endOffset: number): number {
     let count = 0
 
     const visit = (n: Node): boolean => {
@@ -253,6 +255,16 @@ function mirrorOffsetFromPoint(root: HTMLElement, endContainer: Node, endOffset:
             if (visit(child)) return true
         }
         return false
+    }
+
+    // Root-anchored ranges (caret before a leading chip, select-all) report
+    // endContainer === root; visit only children of that offset.
+    if (endContainer === root) {
+        const children = Array.from(root.childNodes)
+        for (let i = 0; i < endOffset && i < children.length; i++) {
+            visit(children[i]!)
+        }
+        return count
     }
 
     for (const child of Array.from(root.childNodes)) {
@@ -375,7 +387,8 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
     ref
 ) {
     const rootRef = useRef<HTMLDivElement>(null)
-    const lastEmittedRef = useRef(value)
+    // null until first sync/emit so mount-time `value` always paints into the DOM.
+    const lastEmittedRef = useRef<string | null>(null)
     const composingRef = useRef(false)
     const tooltipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
     const hoveredChipRef = useRef<HTMLElement | null>(null)
@@ -545,6 +558,35 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         emitFromDom()
     }, [clearMentionTooltip, emitFromDom, onEdit])
 
+    const handlePaste = useCallback((e: ReactClipboardEvent<HTMLDivElement>) => {
+        const files = Array.from(e.clipboardData?.files ?? [])
+        const hasImage = files.some((file) => file.type.startsWith('image/'))
+        if (hasImage) {
+            onPaste?.(e)
+            return
+        }
+        // Contenteditable default paste inserts HTML; nested blocks collapse in
+        // segmentsFromEditor without depth-aware breaks. Force plain text.
+        e.preventDefault()
+        const text = e.clipboardData?.getData('text/plain') ?? ''
+        if (!text) return
+        const root = rootRef.current
+        if (!root) return
+        const segments = segmentsFromEditor(root)
+        const selection = getMirrorSelection(root)
+        const result = insertPlainTextInComposerSegments(segments, selection, text, [])
+        const serialized = serializeComposerSegments(result.segments)
+        renderSegmentsToEditor(root, result.segments, resolveSessionMentionTooltip)
+        lastEmittedRef.current = serialized
+        setMirrorSelection(root, result.selection)
+        onValueChange(serialized)
+        onMirrorChange({
+            text: mirrorComposerSegments(result.segments),
+            selection: result.selection,
+        })
+        onEdit?.()
+    }, [onEdit, onMirrorChange, onPaste, onValueChange, resolveSessionMentionTooltip])
+
     const handleKeyDown = useCallback((e: ReactKeyboardEvent<HTMLDivElement>) => {
         if (e.nativeEvent.isComposing) {
             onKeyDown?.(e)
@@ -619,15 +661,17 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
                 ref={rootRef}
                 role="textbox"
                 aria-multiline="true"
+                aria-label={placeholder}
+                aria-disabled={disabled || undefined}
                 contentEditable={!disabled}
                 suppressContentEditableWarning
                 data-testid="rich-composer-input"
-                className={className}
+                className={`${className ?? ''}${disabled ? ' cursor-not-allowed opacity-50' : ''}`}
                 onInput={handleInput}
                 onKeyDown={handleKeyDown}
                 onPointerOver={handlePointerOver}
                 onPointerLeave={handlePointerLeave}
-                onPaste={onPaste}
+                onPaste={handlePaste}
                 onCompositionStart={() => {
                     composingRef.current = true
                 }}
