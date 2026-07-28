@@ -138,6 +138,60 @@ describe('AcpStdioTransport closed stdin writes', () => {
         );
     });
 
+    test('accumulates split stderr chunks so Cannot use this model survives a catalog follow-up chunk', async () => {
+        const transport = new AcpStdioTransport({ command: 'agent', args: ['acp'] });
+        const proc = (transport as unknown as { process: {
+            stderr: { on: ReturnType<typeof vi.fn> };
+        } }).process;
+        const stderrHandlers = (proc.stderr.on as ReturnType<typeof vi.fn>).mock.calls
+            .filter((call) => call[0] === 'data')
+            .map((call) => call[1] as (chunk: string) => void);
+
+        for (const handler of stderrHandlers) {
+            handler('Cannot use this model: grok-4.5[fast=true]. Available models: auto, ');
+            handler('composer-2.5, cursor-grok-4.5-high-fast\n');
+        }
+
+        spawnState.exitCode = 1;
+        for (const handler of spawnState.closeHandlers) {
+            handler(1, null);
+        }
+
+        await expect(transport.sendRequest('session/load')).rejects.toThrow(
+            /Cannot use this model: grok-4\.5\[fast=true\][\s\S]*Available models:[\s\S]*composer-2\.5/
+        );
+    });
+
+    test('preserves Cannot use this model when the keyword itself is split across chunks', async () => {
+        const transport = new AcpStdioTransport({ command: 'agent', args: ['acp'] });
+        const proc = (transport as unknown as { process: {
+            stderr: { on: ReturnType<typeof vi.fn> };
+        } }).process;
+        const stderrHandlers = (proc.stderr.on as ReturnType<typeof vi.fn>).mock.calls
+            .filter((call) => call[0] === 'data')
+            .map((call) => call[1] as (chunk: string) => void);
+
+        const seen: Array<{ type: string; message: string }> = [];
+        transport.onStderrError((error) => {
+            seen.push({ type: error.type, message: error.message });
+        });
+
+        for (const handler of stderrHandlers) {
+            handler('Cannot use this mo');
+            handler('del: grok-4.5[fast=true]. Available models: auto\n');
+        }
+
+        spawnState.exitCode = 1;
+        for (const handler of spawnState.closeHandlers) {
+            handler(1, null);
+        }
+
+        await expect(transport.sendRequest('session/load')).rejects.toThrow(
+            /Cannot use this model: grok-4\.5\[fast=true\]/
+        );
+        expect(seen.some((entry) => /Cannot use this model: grok-4\.5\[fast=true\]/.test(entry.message))).toBe(true);
+    });
+
     test('keeps the head of long stderr so Cannot use this model survives Available models lists', async () => {
         const transport = new AcpStdioTransport({ command: 'agent', args: ['acp'] });
         const proc = (transport as unknown as { process: {

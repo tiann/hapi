@@ -361,6 +361,18 @@ describe('cursorAcpRemoteLauncher', () => {
             expect(message).not.toMatch(/Legacy stream-json/);
         });
 
+        it('prefers accumulated close stderr over a partial recentStderr hint', () => {
+            const message = classifyCursorAcpLoadError(
+                new Error(
+                    'ACP process exited (code=1, signal=null). stderr: Cannot use this model: full-id. Available models: auto, composer-2.5'
+                ),
+                { recentStderr: 'Cannot use this mo' }
+            );
+            expect(message).toContain('Cannot use this model: full-id');
+            expect(message).toContain('Available models: auto, composer-2.5');
+            expect(message).not.toContain('Cannot use this mo:');
+        });
+
         it('propagates generic load failures without inventing a legacy diagnosis', () => {
             const message = classifyCursorAcpLoadError(new Error('Session "abc" not found'));
             expect(message).toBe('Failed to resume Cursor ACP session: Session "abc" not found');

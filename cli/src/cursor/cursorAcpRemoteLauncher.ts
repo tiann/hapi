@@ -608,10 +608,12 @@ export function classifyCursorAcpLoadError(
         : 'Failed to resume Cursor ACP session';
 
     const detailSources = [
-        options?.recentStderr,
+        // Prefer the close Error (accumulated stderr) over live onStderrError hints,
+        // which may have seen only the first fragment of a split rejection line.
         error instanceof Error ? error.message : null,
-        error instanceof Error && error.cause instanceof Error ? error.cause.message : null,
         error instanceof Error ? String((error as Error & { stderr?: unknown }).stderr ?? '') : null,
+        error instanceof Error && error.cause instanceof Error ? error.cause.message : null,
+        options?.recentStderr,
         typeof error === 'string' ? error : null
     ].filter((value): value is string => Boolean(value && value.trim()));
 
