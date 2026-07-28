@@ -7,7 +7,6 @@ import {
     useRef,
     useState,
     type ClipboardEvent as ReactClipboardEvent,
-    type DragEvent as ReactDragEvent,
     type FormEvent as ReactFormEvent,
     type KeyboardEvent as ReactKeyboardEvent,
     type PointerEvent as ReactPointerEvent,
@@ -645,14 +644,8 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         insertPlainClipboardText(e.clipboardData?.getData('text/plain') ?? '')
     }, [insertPlainClipboardText, onPaste])
 
-    const handleDrop = useCallback((e: ReactDragEvent<HTMLDivElement>) => {
-        // Always take drops that aren't files (DragDropZone owns Files). Without
-        // preventDefault, html/uri-only transfers hit native CE and can inject markup.
-        if (e.dataTransfer?.types?.includes('Files')) return
-        e.preventDefault()
-        const text = e.dataTransfer?.getData('text/plain') ?? ''
-        if (text) insertPlainClipboardText(text)
-    }, [insertPlainClipboardText])
+    // No onDrop: intercepting without caretRangeFromPoint appends at EOF / no-ops
+    // in-editor moves. Native CE drop + plaintext-only / paste path is enough for #1215.
 
     const handleKeyDown = useCallback((e: ReactKeyboardEvent<HTMLDivElement>) => {
         if (e.nativeEvent.isComposing) {
@@ -739,7 +732,6 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
                 onPointerOver={handlePointerOver}
                 onPointerLeave={handlePointerLeave}
                 onPaste={handlePaste}
-                onDrop={handleDrop}
                 onCompositionStart={() => {
                     composingRef.current = true
                 }}
