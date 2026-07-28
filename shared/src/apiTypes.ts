@@ -291,8 +291,9 @@ export const ScratchlistEntryUpdateRequestSchema = z.object({
     { message: 'Update requires text and/or attachments', path: ['text'] }
 ).refine(
     (data) => {
+        // Attachments-only patch may clear the list (`[]`) while keeping text.
         if (data.text === undefined && data.attachments !== undefined) {
-            return data.attachments.length > 0
+            return true
         }
         if (data.text !== undefined && data.attachments === undefined) {
             return data.text.trim().length > 0

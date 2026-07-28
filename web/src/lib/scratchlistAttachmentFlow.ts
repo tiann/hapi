@@ -26,27 +26,34 @@ export async function stageScratchlistAttachmentsForComposeSend(
     attachments: ScratchlistAttachmentMetadata[]
 ): Promise<AttachmentMetadata[]> {
     const staged: AttachmentMetadata[] = []
-    for (const attachment of attachments) {
-        const blob = await api.fetchScratchlistAttachmentBlob(sessionId, attachment.id)
-        const content = await blobToBase64(blob)
-        const upload = await api.uploadFile(sessionId, attachment.filename, content, attachment.mimeType)
-        if (!upload.success || !upload.path) {
-            throw new Error(`Failed to stage attachment ${attachment.filename}`)
+    try {
+        for (const attachment of attachments) {
+            const blob = await api.fetchScratchlistAttachmentBlob(sessionId, attachment.id)
+            const content = await blobToBase64(blob)
+            const upload = await api.uploadFile(sessionId, attachment.filename, content, attachment.mimeType)
+            if (!upload.success || !upload.path) {
+                throw new Error(`Failed to stage attachment ${attachment.filename}`)
+            }
+            let previewUrl: string | undefined
+            if (isImageMimeType(attachment.mimeType) && attachment.size <= 5 * 1024 * 1024) {
+                previewUrl = `data:${attachment.mimeType};base64,${content}`
+            }
+            staged.push({
+                id: attachment.id,
+                filename: attachment.filename,
+                mimeType: attachment.mimeType,
+                size: attachment.size,
+                path: upload.path,
+                previewUrl
+            })
         }
-        let previewUrl: string | undefined
-        if (isImageMimeType(attachment.mimeType) && attachment.size <= 5 * 1024 * 1024) {
-            previewUrl = `data:${attachment.mimeType};base64,${content}`
-        }
-        staged.push({
-            id: attachment.id,
-            filename: attachment.filename,
-            mimeType: attachment.mimeType,
-            size: attachment.size,
-            path: upload.path,
-            previewUrl
-        })
+        return staged
+    } catch (error) {
+        await Promise.allSettled(
+            staged.map((att) => api.deleteUploadFile(sessionId, att.path))
+        )
+        throw error
     }
-    return staged
 }
 
 export async function rehydrateScratchlistAttachmentsToComposer(
