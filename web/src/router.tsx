@@ -992,6 +992,8 @@ function SessionPage() {
                     description: s.active
                         ? `Session · ${idPrefix} · active`
                         : `Session · ${idPrefix}`,
+                    // Rich composer atom; textarea path still inserts `text` prose.
+                    sessionMention: { id: s.id, title: title || idPrefix },
                 }
             })
 

@@ -7,6 +7,8 @@ export interface Suggestion {
     description?: string
     content?: string  // Expanded content for Codex user prompts
     source?: 'builtin' | 'user' | 'plugin' | 'project'
+    /** When set, rich composer inserts an inline session atom instead of `text`. */
+    sessionMention?: { id: string; title: string }
 }
 
 interface SuggestionOptions {

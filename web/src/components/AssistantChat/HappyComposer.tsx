@@ -12,6 +12,11 @@ import {
     useRef,
     useState
 } from 'react'
+import { isRichComposerMentionsEnabled } from '@/lib/composerSegments'
+import {
+    RichComposerInput,
+    type RichComposerInputHandle,
+} from '@/components/AssistantChat/RichComposerInput'
 import type { AgentState, CodexCollaborationMode, PermissionMode, PiModelSummary, ThreadGoal } from '@/types/api'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import type { ConversationStatus } from '@/realtime/types'
@@ -304,6 +309,8 @@ export function HappyComposer(props: {
     const setPendingSchedule = isControlled ? onScheduleProp : setPendingScheduleLocal
 
     const textareaRef = useRef<HTMLTextAreaElement>(null)
+    const richInputRef = useRef<RichComposerInputHandle>(null)
+    const richMentionsEnabled = useMemo(() => isRichComposerMentionsEnabled(), [])
     const prevControlledByUser = useRef(controlledByUser)
 
     const attachmentDrafts = attachments.flatMap((attachment) => {
@@ -360,6 +367,10 @@ export function HappyComposer(props: {
     }, [sendError, api, composerText, onScheduleProp])
 
     useEffect(() => {
+        if (richMentionsEnabled) {
+            // Rich input owns mirror text + selection via onMirrorChange.
+            return
+        }
         setInputState((prev) => {
             if (prev.text === composerText) return prev
             // When syncing from composerText, update selection to end of text
@@ -367,7 +378,7 @@ export function HappyComposer(props: {
             const newPos = composerText.length
             return { text: composerText, selection: { start: newPos, end: newPos } }
         })
-    }, [composerText])
+    }, [composerText, richMentionsEnabled])
 
     // Track one-time "continue" hint after switching from local to remote.
     useEffect(() => {
@@ -403,10 +414,32 @@ export function HappyComposer(props: {
 
     const handleSuggestionSelect = useCallback((index: number) => {
         const suggestion = suggestions[index]
-        if (!suggestion || !textareaRef.current) return
+        if (!suggestion) return
         if (suggestion.text.startsWith('$')) {
             markSkillUsed(suggestion.text.slice(1))
         }
+
+        if (richMentionsEnabled && richInputRef.current) {
+            // insert*/apply* emit mirror state via onMirrorChange (keep inputState in mirror space).
+            if (suggestion.sessionMention) {
+                richInputRef.current.insertSessionMention(
+                    suggestion.sessionMention,
+                    autocompletePrefixes
+                )
+            } else {
+                richInputRef.current.applyPlainSuggestion(
+                    suggestion.text,
+                    autocompletePrefixes
+                )
+            }
+            setTimeout(() => {
+                richInputRef.current?.focus()
+            }, 0)
+            haptic('light')
+            return
+        }
+
+        if (!textareaRef.current) return
 
         const result = applySuggestion(
             inputState.text,
@@ -434,7 +467,7 @@ export function HappyComposer(props: {
         }, 0)
 
         haptic('light')
-    }, [api, suggestions, inputState, autocompletePrefixes, haptic])
+    }, [api, suggestions, inputState, autocompletePrefixes, haptic, richMentionsEnabled])
 
     const abortDisabled = controlsDisabled || isAborting || !threadIsRunning
     const switchDisabled = controlsDisabled || isSwitching || !controlledByUser
@@ -543,7 +576,7 @@ export function HappyComposer(props: {
         [permissionModeOptions]
     )
 
-    const handleKeyDown = useCallback((e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    const handleKeyDown = useCallback((e: ReactKeyboardEvent<HTMLTextAreaElement | HTMLDivElement>) => {
         const key = e.key
 
         // Avoid intercepting IME composition keystrokes (Enter, arrows, etc.)
@@ -553,6 +586,10 @@ export function HappyComposer(props: {
 
         // Shift+Enter inserts a newline (standard behavior)
         if (key === 'Enter' && e.shiftKey) {
+            if (richMentionsEnabled) {
+                // contenteditable: insert a hard break ourselves when needed
+                return
+            }
             return // let default textarea behavior handle newline
         }
 
@@ -635,7 +672,8 @@ export function HappyComposer(props: {
         canSend,
         api,
         haptic,
-        composerEnterBehavior
+        composerEnterBehavior,
+        richMentionsEnabled,
     ])
 
     useEffect(() => {
@@ -678,7 +716,7 @@ export function HappyComposer(props: {
         }))
     }, [])
 
-    const handlePaste = useCallback(async (e: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    const handlePaste = useCallback(async (e: ReactClipboardEvent<HTMLTextAreaElement | HTMLDivElement>) => {
         const files = Array.from(e.clipboardData?.files || [])
         const imageFiles = files.filter(file => file.type.startsWith('image/'))
 
@@ -1326,20 +1364,38 @@ export function HappyComposer(props: {
                         ) : null}
 
                         <div className="flex items-center px-4 py-3">
-                            <ComposerPrimitive.Input
-                                ref={textareaRef}
-                                autoFocus={!controlsDisabled && !isTouch}
-                                placeholder={showContinueHint ? t('misc.typeMessage') : t('misc.typeAMessage')}
-                                disabled={controlsDisabled}
-                                maxRows={5}
-                                submitOnEnter={false}
-                                cancelOnEscape={false}
-                                onChange={handleChange}
-                                onSelect={handleSelect}
-                                onKeyDown={handleKeyDown}
-                                onPaste={handlePaste}
-                                className="flex-1 resize-none bg-transparent text-base leading-snug text-[var(--app-fg)] placeholder-[var(--app-hint)] focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
-                            />
+                            {richMentionsEnabled ? (
+                                <RichComposerInput
+                                    ref={richInputRef}
+                                    value={composerText}
+                                    autoFocus={!controlsDisabled && !isTouch}
+                                    placeholder={showContinueHint ? t('misc.typeMessage') : t('misc.typeAMessage')}
+                                    disabled={controlsDisabled}
+                                    onValueChange={(text) => api.composer().setText(text)}
+                                    onMirrorChange={(state) => setInputState(state)}
+                                    onKeyDown={handleKeyDown}
+                                    onPaste={handlePaste}
+                                    onEdit={() => {
+                                        if (sendError && onClearSendError) onClearSendError()
+                                    }}
+                                    className="max-h-[7.5rem] min-h-[1.5rem] flex-1 overflow-y-auto bg-transparent text-base leading-snug text-[var(--app-fg)] focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                                />
+                            ) : (
+                                <ComposerPrimitive.Input
+                                    ref={textareaRef}
+                                    autoFocus={!controlsDisabled && !isTouch}
+                                    placeholder={showContinueHint ? t('misc.typeMessage') : t('misc.typeAMessage')}
+                                    disabled={controlsDisabled}
+                                    maxRows={5}
+                                    submitOnEnter={false}
+                                    cancelOnEscape={false}
+                                    onChange={handleChange}
+                                    onSelect={handleSelect}
+                                    onKeyDown={handleKeyDown}
+                                    onPaste={handlePaste}
+                                    className="flex-1 resize-none bg-transparent text-base leading-snug text-[var(--app-fg)] placeholder-[var(--app-hint)] focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                                />
+                            )}
                         </div>
 
                         <ComposerButtons
