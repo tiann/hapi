@@ -9,6 +9,13 @@
 // Characters that stop the active word search
 const STOP_CHARACTERS = ['\n', ',', '(', ')', '[', ']', '{', '}', '<', '>', ';', '!', '?', '.']
 
+/** Rich-composer mirror uses U+FFFC for session atoms — treat as a word boundary. */
+const WORD_BOUNDARY_CHARACTERS = new Set([' ', '\n', '\uFFFC'])
+
+function isWordBoundaryChar(char: string): boolean {
+    return WORD_BOUNDARY_CHARACTERS.has(char)
+}
+
 interface Selection {
     start: number
     end: number
@@ -36,14 +43,14 @@ function findActiveWordStart(
     while (startIndex >= 0) {
         const char = content.charAt(startIndex)
 
-        // Check if we hit a space
-        if (char === ' ') {
+        // Check if we hit a word boundary (space / newline / mention atom)
+        if (isWordBoundaryChar(char)) {
             if (foundPrefix) {
                 // We found a prefix earlier, return its position
                 return prefixIndex
             }
             if (spaceIndex >= 0) {
-                // Multiple spaces, stop here
+                // Multiple boundaries, stop here
                 return spaceIndex + 1
             } else {
                 spaceIndex = startIndex
@@ -53,7 +60,7 @@ function findActiveWordStart(
         // Check if this is a prefix character at word boundary
         else if (
             prefixes.includes(char) &&
-            (startIndex === 0 || content.charAt(startIndex - 1) === ' ' || content.charAt(startIndex - 1) === '\n')
+            (startIndex === 0 || isWordBoundaryChar(content.charAt(startIndex - 1)))
         ) {
             // For @ prefix, continue searching backwards to include the entire file path
             if (char === '@') {
@@ -107,8 +114,8 @@ function findActiveWordEnd(
             continue
         }
 
-        // Stop at spaces or stop characters
-        if (char === ' ' || STOP_CHARACTERS.includes(char)) {
+        // Stop at spaces, mention atoms, or stop characters
+        if (isWordBoundaryChar(char) || STOP_CHARACTERS.includes(char)) {
             break
         }
         endIndex++

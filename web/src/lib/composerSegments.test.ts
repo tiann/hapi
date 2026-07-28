@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import { findActiveWord } from '@/utils/findActiveWord'
 import {
+    COMPOSER_MENTION_MIRROR_CHAR,
     deleteBackwardInComposerSegments,
+    insertPlainTextInComposerSegments,
     insertSessionMentionInComposerSegments,
     mirrorComposerSegments,
     parseComposerSegments,
@@ -79,6 +82,31 @@ describe('insertSessionMentionInComposerSegments', () => {
         expect(serializeComposerSegments(result.segments)).toBe(
             'A [Peer A](/sessions/aaa) then [Peer B](/sessions/bbb) '
         )
+    })
+})
+
+describe('insertPlainTextInComposerSegments', () => {
+    it('keeps existing session atoms when inserting a slash command', () => {
+        const segments = parseComposerSegments('ref [Peer A](/sessions/aaa) /hel')
+        const caret = mirrorComposerSegments(segments).length
+        const result = insertPlainTextInComposerSegments(
+            segments,
+            { start: caret, end: caret },
+            '/help',
+            ['@', '/', '$']
+        )
+        expect(serializeComposerSegments(result.segments)).toBe(
+            'ref [Peer A](/sessions/aaa) /help '
+        )
+    })
+})
+
+describe('findActiveWord with mention mirror atoms', () => {
+    it('treats U+FFFC as a word boundary so @ after a mention still triggers', () => {
+        const mirror = `${COMPOSER_MENTION_MIRROR_CHAR}@pee`
+        const active = findActiveWord(mirror, { start: mirror.length, end: mirror.length }, ['@'])
+        expect(active?.activeWord).toBe('@pee')
+        expect(active?.offset).toBe(1)
     })
 })
 
