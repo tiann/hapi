@@ -34,6 +34,8 @@ import { HappyThread } from '@/components/AssistantChat/HappyThread'
 import { QueuedMessagesBar } from '@/components/AssistantChat/QueuedMessagesBar'
 import { ScratchlistDrawer } from '@/components/AssistantChat/ScratchlistPanel'
 import { useHubScratchlist } from '@/lib/use-hub-scratchlist'
+import { useComposerQuotes } from '@/lib/use-composer-quotes'
+import type { Quote } from '@/lib/quotes'
 import { ScratchlistMigrationBanner } from '@/components/AssistantChat/ScratchlistMigrationBanner'
 import { useHappyRuntime } from '@/lib/assistant-runtime'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
@@ -475,6 +477,29 @@ function SessionChatInner(props: SessionChatProps) {
     const [cursorSelectedBase, setCursorSelectedBase] = useState('auto')
     const lastSyncedCursorModelRef = useRef<string | null | undefined>(undefined)
     const scratchlist = useHubScratchlist(props.session.id, props.api)
+
+    const composerQuotes = useComposerQuotes(props.session.id)
+    const quotesRef = useRef<readonly Quote[]>(composerQuotes.quotes)
+    // 在发送时读取（onNew 内），所以每次渲染同步即可，无需进依赖数组。
+    // 这与本文件已有的 pendingScheduleRef 是同一手法。
+    quotesRef.current = composerQuotes.quotes
+
+    const handleQuoteJump = useCallback((quote: Quote) => {
+        const target = document.getElementById(quote.messageId)
+        // 来源消息可能已被翻页卸载：静默不动，不报错
+        if (!target) return
+        target.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    }, [])
+
+    const handleQuoteAdd = useCallback((text: string, messageId: string) => {
+        composerQuotes.add(text, messageId)
+        // 引用的意图就是"就这段提问"，所以直接把光标送到输入框，省掉一次点击。
+        // 用 data 属性定位而不是跨组件传 ref：textarea 由 ComposerPrimitive
+        // 渲染，传 ref 会把 SessionChat 和 composer 的内部结构绑死。
+        const input = document.querySelector<HTMLTextAreaElement>('[data-quote-focus-target]')
+        input?.focus()
+        input?.setSelectionRange(input.value.length, input.value.length)
+    }, [composerQuotes.add])
     const [scratchlistMode, setScratchlistMode] = useState(false)
     // Mode resets across sessions implicitly: SessionChat is keyed by
     // session.id at the public-export boundary, so a session switch
@@ -1197,6 +1222,11 @@ function SessionChatInner(props: SessionChatProps) {
         const routedToScratchlist = shouldRouteToScratchlist(scratchlistMode, attachments, scheduledAt)
         const accepted = await onSendForComposer(text, attachments, scheduledAt)
         if (!accepted) return
+        // 引用在 onNew 里已被序列化进 text，两条路由（chat / scratchlist）
+        // 消费的都是同一份 composed 文本，所以清空不能跟着下面的
+        // routedToScratchlist 分支走——否则 scratchlist 送出后引用会残留，
+        // 被下一条消息重复携带。
+        composerQuotes.clear()
         if (!routedToScratchlist) {
             // Clear pendingSchedule only after the mutation is actually
             // accepted - covers both pre-mutation guards AND async
@@ -1208,7 +1238,7 @@ function SessionChatInner(props: SessionChatProps) {
             setPendingSchedule(null)
             setForceScrollToken((token) => token + 1)
         }
-    }, [onSendForComposer, scratchlistMode])
+    }, [onSendForComposer, scratchlistMode, composerQuotes.clear])
 
     const attachmentAdapter = useMemo(() => {
         if (!props.session.active) {
@@ -1230,7 +1260,8 @@ function SessionChatInner(props: SessionChatProps) {
         onAbort: handleAbort,
         attachmentAdapter,
         allowSendWhenInactive: true,
-        pendingScheduleRef
+        pendingScheduleRef,
+        quotesRef
     })
 
     return (
@@ -1507,6 +1538,9 @@ function SessionChatInner(props: SessionChatProps) {
                         scratchlistMode={scratchlistMode}
                         scratchlistCount={scratchlist.entries.length}
                         onScratchlistToggle={handleScratchlistToggle}
+                        quotes={composerQuotes.quotes}
+                        onQuoteRemove={composerQuotes.remove}
+                        onQuoteJump={handleQuoteJump}
                         sendError={props.sendError ?? null}
                         onClearSendError={props.onClearSendError}
                         />

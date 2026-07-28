@@ -6,6 +6,7 @@ import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePic
 import { resolvePendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { safeStringify } from '@hapi/protocol'
 import { renderEventLabel } from '@/chat/presentation'
+import { serializeQuotes, type Quote } from '@/lib/quotes'
 import type { ChatBlock, CliOutputBlock, CodexReview, UsageData } from '@/chat/types'
 import type { AgentEvent, ToolCallBlock } from '@/chat/types'
 import type { ToolGroupBlock, VisibleChatBlock } from '@/chat/toolGroups'
@@ -629,6 +630,11 @@ export function useHappyRuntime(props: {
     attachmentAdapter?: AttachmentAdapter
     allowSendWhenInactive?: boolean
     pendingScheduleRef?: React.RefObject<PendingSchedule | null>
+    /**
+     * 引用列表的 ref。与 pendingScheduleRef 同理，在发送时（onNew 内）读取
+     * 而非渲染时，所以不进 adapter 的依赖数组。
+     */
+    quotesRef?: React.RefObject<readonly Quote[]>
 }) {
     const isRunning = props.isRunning ?? props.session.thinking
 
@@ -695,14 +701,18 @@ export function useHappyRuntime(props: {
 
     const onNew = useCallback(async (message: AppendMessage) => {
         const { text, attachments } = extractMessageContent(message)
-        if (!text && attachments.length === 0) return
+        // 引用在发送时才序列化（而非引用时写入输入框），这样加入第 2 条引用
+        // 能让第 1 条追溯性地获得 [N] 编号。
+        const quotes = props.quotesRef?.current ?? []
+        const composed = serializeQuotes(quotes, text)
+        if (!composed && attachments.length === 0) return
         // Resolve pendingSchedule at send time (Date.now()) so preset-type schedules
         // ("5 minutes from now") are relative to the actual send action, not the
         // moment the user clicked the preset button.
         const sendNow = Date.now()
         const scheduledAt = resolvePendingSchedule(props.pendingScheduleRef?.current ?? null, sendNow)
-        props.onSendMessage(text, attachments.length > 0 ? attachments : undefined, scheduledAt)
-    }, [props.onSendMessage, props.pendingScheduleRef])
+        props.onSendMessage(composed, attachments.length > 0 ? attachments : undefined, scheduledAt)
+    }, [props.onSendMessage, props.pendingScheduleRef, props.quotesRef])
 
     const onCancel = useCallback(async () => {
         await props.onAbort()
