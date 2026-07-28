@@ -30,7 +30,14 @@ See `src/router.tsx` for route definitions.
 - `/sessions/$sessionId/files` - File browser with git status.
 - `/sessions/$sessionId/file` - File viewer with diff support.
 - `/sessions/$sessionId/terminal` - Terminal interface.
-- `/settings` - Application settings.
+- `/settings` - Settings category hub (mobile) and responsive master-detail shell.
+- `/settings/general` - Language preferences.
+- `/settings/display` - Appearance, typography, colors, and session list preferences.
+- `/settings/chat` - Message input, tool card, and conversation color preferences.
+- `/settings/voice` - Everyday voice assistant preferences.
+- `/settings/voice/voices` - Full-page voice picker.
+- `/settings/voice/advanced` - Voice persona, tuning, and diagnostics.
+- `/settings/about` - Application links and version information.
 
 ## Features
 

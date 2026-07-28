@@ -5,6 +5,9 @@ import {
     isPermissionModeAllowedForFlavor,
     RenameSessionRequestSchema,
     ResumeSessionRequestSchema,
+    SCRATCHLIST_MAX_ENTRIES,
+    ScratchlistEntryCreateRequestSchema,
+    ScratchlistEntryUpdateRequestSchema,
     SessionCollaborationModeRequestSchema,
     SessionEffortRequestSchema,
     SessionModelReasoningEffortRequestSchema,
@@ -132,6 +135,33 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         return c.json({ session: sessionResult.session })
+    })
+
+    app.get('/sessions/:id/cursor-chat-store', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const result = await engine.getCursorChatStoreStatus(
+            sessionResult.sessionId,
+            c.get('namespace')
+        )
+        if (result.type === 'error') {
+            const status = result.code === 'session_not_found' ? 404
+                : result.code === 'access_denied' ? 403
+                    : result.code === 'resume_unavailable' ? 409
+                        : result.code === 'no_machine_online' ? 503
+                            : 502
+            return c.json({ error: result.message, code: result.code }, status)
+        }
+
+        return c.json(result.status)
     })
 
     app.post('/sessions/:id/resume', async (c) => {
@@ -312,7 +342,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const lifecycleState = sessionResult.session.metadata?.lifecycleState
-        if (lifecycleState === 'archived') {
+        if (!sessionResult.session.active && lifecycleState === 'archived') {
             return c.json({ ok: true, alreadyArchived: true })
         }
 
@@ -490,6 +520,9 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             if (flavor === 'cursor') {
                 return c.json({ error: 'Model selection can only be changed for remote Cursor sessions' }, 409)
             }
+            if (flavor === 'grok') {
+                return c.json({ error: 'Model selection can only be changed for remote Grok sessions' }, 409)
+            }
         }
 
         try {
@@ -557,6 +590,9 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
         if (!supportsEffort(flavor)) {
             return c.json({ error: 'Effort selection is not supported for this session type' }, 400)
+        }
+        if (flavor === 'grok' && sessionResult.session.agentState?.controlledByUser === true) {
+            return c.json({ error: 'Effort can only be changed for remote Grok sessions' }, 409)
         }
 
         try {
@@ -662,6 +698,148 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
     })
 
+    /*
+     * Scratchlist v2 (tiann/hapi#893).
+     *
+     * Operator-private notes attached to a session. All four routes use
+     * the existing `requireSessionFromParam` guard so the same auth /
+     * namespace check applies as every other session-scoped route -
+     * scratchlist contents must NOT leak across namespaces, and a 403 /
+     * 404 is returned for sessions the caller cannot access.
+     *
+     * SSE: every successful mutation emits a `session-updated` patch
+     * carrying `scratchlistUpdatedAt` (handled in `SyncEngine`). The web
+     * client uses that as a cache-invalidation token to refetch GET.
+     */
+
+    app.get('/sessions/:id/scratchlist', (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        const entries = engine.listScratchlistEntries(sessionResult.sessionId)
+        return c.json({ entries })
+    })
+
+    app.post('/sessions/:id/scratchlist', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = ScratchlistEntryCreateRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body', issues: parsed.error.issues }, 400)
+        }
+
+        // Idempotent-retry short-circuit (HAPI Bot, PR #896 review):
+        // when the caller supplies an explicit entryId AND that id
+        // already exists, return the canonical row with 200 BEFORE the
+        // cap check fires. Otherwise a session sitting at the
+        // 200-entry cap would 409 a duplicate POST that should be a
+        // no-op - which is exactly the path the localStorage migration
+        // retry uses after a partial failure.
+        if (parsed.data.entryId) {
+            const existing = engine.getScratchlistEntry(
+                sessionResult.sessionId,
+                parsed.data.entryId
+            )
+            if (existing) {
+                return c.json({ entry: existing }, 200)
+            }
+        }
+
+        // Server-side cap enforcement. Mirrors the web-side cap so a
+        // malicious / runaway client can't drive the table without
+        // bound. Bypassing the optimistic add path on the web client
+        // (e.g. direct REST call) hits this guard. Bumped only with the
+        // shared SCRATCHLIST_MAX_ENTRIES constant.
+        const currentCount = engine.countScratchlistEntries(sessionResult.sessionId)
+        if (currentCount >= SCRATCHLIST_MAX_ENTRIES) {
+            return c.json({
+                error: `Scratchlist is at its ${SCRATCHLIST_MAX_ENTRIES}-entry cap`,
+                code: 'scratchlist_at_cap'
+            }, 409)
+        }
+
+        const result = engine.createScratchlistEntry(
+            sessionResult.sessionId,
+            parsed.data.text,
+            {
+                entryId: parsed.data.entryId,
+                createdAt: parsed.data.createdAt
+            }
+        )
+        if (result.outcome === 'session-not-found') {
+            return c.json({ error: 'Session not found' }, 404)
+        }
+        // `duplicate` (same entryId already exists) returns 200 with the
+        // canonical row so the migration path can retry idempotently.
+        // The web client treats 200-with-existing as success either way.
+        return c.json({ entry: result.entry }, result.outcome === 'created' ? 201 : 200)
+    })
+
+    app.put('/sessions/:id/scratchlist/:entryId', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const entryId = c.req.param('entryId')
+        if (!entryId) {
+            return c.json({ error: 'Missing entryId' }, 400)
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = ScratchlistEntryUpdateRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body', issues: parsed.error.issues }, 400)
+        }
+
+        const updated = engine.updateScratchlistEntry(
+            sessionResult.sessionId,
+            entryId,
+            parsed.data.text
+        )
+        if (!updated) {
+            return c.json({ error: 'Scratchlist entry not found' }, 404)
+        }
+        return c.json({ entry: updated })
+    })
+
+    app.delete('/sessions/:id/scratchlist/:entryId', (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        const entryId = c.req.param('entryId')
+        if (!entryId) {
+            return c.json({ error: 'Missing entryId' }, 400)
+        }
+        const removed = engine.deleteScratchlistEntry(sessionResult.sessionId, entryId)
+        if (!removed) {
+            return c.json({ error: 'Scratchlist entry not found' }, 404)
+        }
+        return c.json({ ok: true })
+    })
+
     app.get('/sessions/:id/slash-commands', async (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {
@@ -733,36 +911,6 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
     })
 
-    app.get('/sessions/:id/codex-models', async (c) => {
-        const engine = requireSyncEngine(c, getSyncEngine)
-        if (engine instanceof Response) {
-            return engine
-        }
-
-        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
-        if (sessionResult instanceof Response) {
-            return sessionResult
-        }
-
-        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'codex') {
-            return c.json({
-                success: false,
-                error: 'Codex models are only available for Codex sessions'
-            }, 400)
-        }
-
-        try {
-            const result = await engine.listCodexModelsForSession(sessionResult.sessionId)
-            return c.json(result)
-        } catch (error) {
-            return c.json({
-                success: false,
-                error: error instanceof Error ? error.message : 'Failed to list Codex models'
-            }, 500)
-        }
-    })
-
     app.get('/sessions/:id/opencode-models', async (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {
@@ -819,6 +967,42 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to list OpenCode reasoning effort options'
+            }, 500)
+        }
+    })
+
+    app.get('/sessions/:id/grok-models', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) return sessionResult
+        if (sessionResult.session.metadata?.flavor !== 'grok') {
+            return c.json({ success: false, error: 'Grok models are only available for Grok sessions' }, 400)
+        }
+        try {
+            return c.json(await engine.listGrokModelsForSession(sessionResult.sessionId))
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to list Grok models'
+            }, 500)
+        }
+    })
+
+    app.get('/sessions/:id/grok-reasoning-effort-options', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) return sessionResult
+        if (sessionResult.session.metadata?.flavor !== 'grok') {
+            return c.json({ success: false, error: 'Grok effort options are only available for Grok sessions' }, 400)
+        }
+        try {
+            return c.json(await engine.listGrokReasoningEffortOptionsForSession(sessionResult.sessionId))
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to list Grok effort options'
             }, 500)
         }
     })

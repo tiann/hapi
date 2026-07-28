@@ -3,8 +3,8 @@ import type { CodexPermissionMode } from '@hapi/protocol/types';
 import type { ReasoningEffort } from '../appServerTypes';
 import type { EnhancedMode } from '../loop';
 import type { SlashCommand } from '@/modules/common/slashCommands';
+import { parseReasoningEffortValue } from './reasoningEffort';
 
-const REASONING_EFFORTS = new Set<ReasoningEffort>(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
 export const MAX_CODEX_GOAL_OBJECTIVE_CHARS = 4_000;
 
 const UNSUPPORTED_CODEX_BUILTIN_COMMANDS = new Set([
@@ -33,6 +33,7 @@ export type CodexSlashResolution =
             model?: string | null;
             modelReasoningEffort?: ReasoningEffort | null;
             serviceTier?: string | null;
+            proactiveMultiAgent?: boolean;
         };
     }
     | {
@@ -45,6 +46,7 @@ export type CodexSlashResolution =
             model?: string | null;
             modelReasoningEffort?: ReasoningEffort | null;
             serviceTier?: string | null;
+            proactiveMultiAgent?: boolean;
         };
     }
     | {
@@ -63,6 +65,7 @@ export function resolveCodexSlashCommand(
         model?: string;
         modelReasoningEffort?: ReasoningEffort;
         serviceTier?: string | null;
+        proactiveMultiAgent?: boolean;
     }
 ): CodexSlashResolution {
     const match = /^\s*\/([a-z0-9:_-]+)(?:\s+([\s\S]*))?$/i.exec(text);
@@ -104,6 +107,30 @@ export function resolveCodexSlashCommand(
             kind: 'handled',
             message: 'Codex plan mode enabled',
             updates: { collaborationMode: 'plan' }
+        };
+    }
+
+    if (command === 'agent') {
+        const value = rest.toLowerCase();
+        if (value === 'status') {
+            return {
+                kind: 'handled',
+                message: `Codex proactive multi-agent mode: ${state.proactiveMultiAgent ? 'on' : 'off'}`
+            };
+        }
+        if (value && !['on', 'enable', 'enabled', 'off', 'disable', 'disabled'].includes(value)) {
+            return {
+                kind: 'handled',
+                message: 'Usage: /agent [on|off|status]'
+            };
+        }
+        const enabled = value
+            ? ['on', 'enable', 'enabled'].includes(value)
+            : !state.proactiveMultiAgent;
+        return {
+            kind: 'handled',
+            message: `Codex proactive multi-agent mode ${enabled ? 'enabled' : 'disabled'}`,
+            updates: { proactiveMultiAgent: enabled }
         };
     }
 
@@ -186,16 +213,11 @@ export function resolveCodexSlashCommand(
                 updates: { modelReasoningEffort: null }
             };
         }
-        if (!REASONING_EFFORTS.has(rest as ReasoningEffort)) {
-            return {
-                kind: 'handled',
-                message: `Unknown Codex reasoning effort: ${rest}`
-            };
-        }
+        const effort = parseReasoningEffortValue(rest);
         return {
             kind: 'handled',
-            message: `Codex reasoning effort set to ${rest}`,
-            updates: { modelReasoningEffort: rest as ReasoningEffort }
+            message: `Codex reasoning effort set to ${effort}`,
+            updates: { modelReasoningEffort: effort }
         };
     }
 
@@ -259,7 +281,7 @@ export function resolveCodexSlashCommand(
                 '- `/compact` — compact current Codex thread context',
                 '- `/status` — show current Codex session config',
                 '- `/model [name|auto]` — show or set model',
-                '- `/reasoning [low|medium|high|xhigh|default]` — show or set reasoning effort',
+                '- `/reasoning [level|default]` — show or set reasoning effort',
                 '- `/fast [on|off|status]` — toggle Fast mode (GPT-5.5 / GPT-5.4, ChatGPT login)',
                 '- `/permissions [default|read-only|safe-yolo|yolo]` — show or set permission mode',
                 '',

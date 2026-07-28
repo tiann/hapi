@@ -71,6 +71,65 @@ describe('normalizeDecryptedMessage', () => {
         })
     })
 
+    it('normalizes away_summary (auto recap) system output into a recap event', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'system',
+                    subtype: 'away_summary',
+                    uuid: 'sys-3',
+                    content: 'Building the login flow, next: wire up the submit handler.'
+                }
+            }
+        })
+
+        expect(normalizeDecryptedMessage(message)).toMatchObject({
+            id: 'msg-1',
+            role: 'event',
+            isSidechain: false,
+            content: {
+                type: 'recap',
+                text: 'Building the login flow, next: wire up the submit handler.'
+            }
+        })
+    })
+
+    it('skips away_summary with empty content instead of emitting a bare recap row', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'system',
+                    subtype: 'away_summary',
+                    uuid: 'sys-4',
+                    content: ''
+                }
+            }
+        })
+
+        expect(normalizeDecryptedMessage(message)).toBeNull()
+    })
+
+    it('skips away_summary with whitespace-only content instead of emitting a bare recap row', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'system',
+                    subtype: 'away_summary',
+                    uuid: 'sys-5',
+                    content: '   '
+                }
+            }
+        })
+
+        expect(normalizeDecryptedMessage(message)).toBeNull()
+    })
+
     it('keeps the stringify fallback for unknown non-system agent payloads', () => {
         const message = makeMessage({
             role: 'agent',
@@ -271,6 +330,57 @@ describe('normalizeDecryptedMessage', () => {
         expect(normalized.content[0]).toMatchObject({
             type: 'sidechain',
             prompt: 'This is an agent prompt in array form'
+        })
+    })
+
+    it('propagates parentToolUseId from a sidechain user output onto the normalized message (subagent trace grouping fix)', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'user',
+                    uuid: 'u-orphan-child',
+                    isSidechain: true,
+                    parentToolUseId: 'toolu_broken_agent',
+                    message: { content: 'orphaned subagent turn with no prompt-root' }
+                }
+            }
+        })
+
+        const normalized = normalizeDecryptedMessage(message)
+
+        expect(normalized).toMatchObject({
+            role: 'agent',
+            isSidechain: true,
+            parentToolUseId: 'toolu_broken_agent',
+        })
+    })
+
+    it('propagates parentToolUseId from a sidechain assistant output onto the normalized message (subagent trace grouping fix)', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'assistant',
+                    uuid: 'u-orphan-child-2',
+                    isSidechain: true,
+                    parentToolUseId: 'toolu_broken_agent',
+                    message: {
+                        role: 'assistant',
+                        content: [{ type: 'text', text: 'subagent thinking' }]
+                    }
+                }
+            }
+        })
+
+        const normalized = normalizeDecryptedMessage(message)
+
+        expect(normalized).toMatchObject({
+            role: 'agent',
+            isSidechain: true,
+            parentToolUseId: 'toolu_broken_agent',
         })
     })
 

@@ -3,6 +3,7 @@ import type { EnhancedMode } from '../loop';
 import {
     buildThreadStartParams,
     buildTurnStartParams,
+    buildUserInputFromMessage,
     codexCollaborationSpawnAgentInstructions,
     supportsReasoningSummary
 } from './appServerConfig';
@@ -87,10 +88,18 @@ describe('appServerConfig', () => {
         });
 
         expect(params.sandbox).toBe('danger-full-access');
-        expect(params.approvalPolicy).toBe('never');
+        expect(params.approvalPolicy).toEqual({
+            granular: {
+                sandbox_approval: false,
+                rules: false,
+                skill_approval: false,
+                request_permissions: false,
+                mcp_elicitations: true
+            }
+        });
     });
 
-    it('keeps on-failure approvals for safe-yolo threads', () => {
+    it('keeps supported escalation approvals for safe-yolo threads', () => {
         const params = buildThreadStartParams({
             cwd: '/workspace/project',
             mode: { permissionMode: 'safe-yolo', collaborationMode: 'default' },
@@ -98,7 +107,26 @@ describe('appServerConfig', () => {
         });
 
         expect(params.sandbox).toBe('workspace-write');
-        expect(params.approvalPolicy).toBe('on-failure');
+        expect(params.approvalPolicy).toBe('on-request');
+    });
+
+    it('allows MCP elicitation without enabling sandbox prompts for read-only threads', () => {
+        const params = buildThreadStartParams({
+            cwd: '/workspace/project',
+            mode: { permissionMode: 'read-only', collaborationMode: 'default' },
+            mcpServers
+        });
+
+        expect(params.sandbox).toBe('read-only');
+        expect(params.approvalPolicy).toEqual({
+            granular: {
+                sandbox_approval: false,
+                rules: false,
+                skill_approval: false,
+                request_permissions: false,
+                mcp_elicitations: true
+            }
+        });
     });
 
     it('concatenates custom developer instructions after base instructions', () => {
@@ -123,7 +151,7 @@ describe('appServerConfig', () => {
     it('passes model reasoning effort via thread config', () => {
         const params = buildThreadStartParams({
             cwd: '/workspace/project',
-            mode: { permissionMode: 'default', modelReasoningEffort: 'xhigh', collaborationMode: 'default' },
+            mode: { permissionMode: 'default', modelReasoningEffort: 'ultra', collaborationMode: 'default' },
             mcpServers
         });
 
@@ -133,7 +161,7 @@ describe('appServerConfig', () => {
                 args: ['mcp']
             },
             developer_instructions: codexSystemPrompt,
-            model_reasoning_effort: 'xhigh'
+            model_reasoning_effort: 'ultra'
         });
     });
 
@@ -229,7 +257,15 @@ describe('appServerConfig', () => {
         expect(params.threadId).toBe('thread-1');
         expect(params.cwd).toBe('/workspace/project');
         expect(params.input).toEqual([{ type: 'text', text: 'hello' }]);
-        expect(params.approvalPolicy).toBe('never');
+        expect(params.approvalPolicy).toEqual({
+            granular: {
+                sandbox_approval: false,
+                rules: false,
+                skill_approval: false,
+                request_permissions: false,
+                mcp_elicitations: true
+            }
+        });
         expect(params.sandboxPolicy).toEqual({ type: 'readOnly' });
         expect(params.effort).toBe('high');
         expect(params.summary).toBeUndefined();
@@ -365,10 +401,10 @@ describe('appServerConfig', () => {
             mode: 'plan',
             settings: {
                 model: 'o3',
-                reasoning_effort: null,
                 developer_instructions: withCollaborationInstructions(`${codexSystemPrompt}\n\nOnly respond in Chinese.`)
             }
         });
+        expect(params.collaborationMode?.settings).not.toHaveProperty('reasoning_effort');
     });
 
     it('injects spawn_agent argument rules into collaboration mode instructions', () => {
@@ -384,6 +420,23 @@ describe('appServerConfig', () => {
         expect(instructions).toContain('do not set agent_type, model, or reasoning_effort');
         expect(instructions).toContain('set fork_context: false');
         expect(instructions).toContain('Do not rely on parent turn reasoning settings for spawned agents');
+    });
+
+    it('injects proactive multi-agent instructions when /agent mode is enabled', () => {
+        const params = buildTurnStartParams({
+            threadId: 'thread-1',
+            message: 'work',
+            cwd: '/repo',
+            mode: {
+                permissionMode: 'default',
+                model: 'o3',
+                collaborationMode: 'default',
+                proactiveMultiAgent: true
+            }
+        });
+
+        expect(params.collaborationMode?.settings.developer_instructions)
+            .toContain('Proactive multi-agent delegation is active.');
     });
 
     it('rejects collaboration mode payloads without a resolved model', () => {
@@ -410,7 +463,6 @@ describe('appServerConfig', () => {
             mode: 'default',
             settings: {
                 model: 'o3',
-                reasoning_effort: null,
                 developer_instructions: withCollaborationInstructions(codexSystemPrompt)
             }
         });
@@ -425,13 +477,12 @@ describe('appServerConfig', () => {
             cliOverrides: { sandbox: 'read-only', approvalPolicy: 'never' }
         });
 
-        expect(params.approvalPolicy).toBe('on-failure');
+        expect(params.approvalPolicy).toBe('on-request');
         expect(params.sandboxPolicy).toEqual({ type: 'workspaceWrite' });
         expect(params.collaborationMode).toEqual({
             mode: 'default',
             settings: {
                 model: 'o3',
-                reasoning_effort: null,
                 developer_instructions: withCollaborationInstructions(codexSystemPrompt)
             }
         });
@@ -451,7 +502,6 @@ describe('appServerConfig', () => {
             mode: 'default',
             settings: {
                 model: 'gpt-5',
-                reasoning_effort: null,
                 developer_instructions: withCollaborationInstructions(codexSystemPrompt)
             }
         });
@@ -469,5 +519,35 @@ describe('appServerConfig', () => {
 
         expect(params.collaborationMode).toBeUndefined();
         expect(params.model).toBe('o3');
+    });
+
+    it('builds mention inputs from quoted @file tokens', () => {
+        expect(buildUserInputFromMessage('please inspect @"src/index.ts" now')).toEqual([
+            { type: 'text', text: 'please inspect ' },
+            { type: 'mention', name: 'index.ts', path: 'src/index.ts' },
+            { type: 'text', text: ' now' }
+        ]);
+    });
+
+    it('builds mention inputs from quoted @file tokens with spaces', () => {
+        expect(buildUserInputFromMessage('please inspect @"docs/My File.md" now')).toEqual([
+            { type: 'text', text: 'please inspect ' },
+            { type: 'mention', name: 'My File.md', path: 'docs/My File.md' },
+            { type: 'text', text: ' now' }
+        ]);
+    });
+
+    it('builds mention inputs from quoted root-level @file tokens', () => {
+        expect(buildUserInputFromMessage('please inspect @"package.json" now')).toEqual([
+            { type: 'text', text: 'please inspect ' },
+            { type: 'mention', name: 'package.json', path: 'package.json' },
+            { type: 'text', text: ' now' }
+        ]);
+    });
+
+    it('keeps literal at-mentions as text', () => {
+        expect(buildUserInputFromMessage('please ask @alice to upgrade @types/node.')).toEqual([
+            { type: 'text', text: 'please ask @alice to upgrade @types/node.' }
+        ]);
     });
 });

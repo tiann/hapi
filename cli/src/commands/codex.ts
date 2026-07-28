@@ -5,22 +5,10 @@ import { maybeAutoStartServer } from '@/utils/autoStartServer'
 import type { CommandDefinition } from './types'
 import { CODEX_PERMISSION_MODES } from '@hapi/protocol/modes'
 import type { CodexPermissionMode } from '@hapi/protocol/types'
+import { CodexCollaborationModeSchema } from '@hapi/protocol/schemas'
 import type { ReasoningEffort } from '@/codex/appServerTypes'
 import { assertCodexLocalSupported } from '@/codex/utils/codexVersion'
-
-function parseReasoningEffort(value: string): ReasoningEffort {
-    switch (value) {
-        case 'none':
-        case 'minimal':
-        case 'low':
-        case 'medium':
-        case 'high':
-        case 'xhigh':
-            return value
-        default:
-            throw new Error('Invalid --model-reasoning-effort value')
-    }
-}
+import { parseReasoningEffortValue } from '@/codex/utils/reasoningEffort'
 
 // Mirror the web /service-tier endpoint's enum so the internal resume spawn
 // path can never seed/persist an unsupported tier string.
@@ -30,6 +18,14 @@ function parseServiceTier(value: string): 'fast' | 'standard' {
         return normalized
     }
     throw new Error('Invalid --service-tier value')
+}
+
+function parseCollaborationMode(value: string): 'default' | 'plan' {
+    const parsed = CodexCollaborationModeSchema.safeParse(value.trim().toLowerCase())
+    if (!parsed.success) {
+        throw new Error('Invalid --collaboration-mode value')
+    }
+    return parsed.data
 }
 
 export const codexCommand: CommandDefinition = {
@@ -44,9 +40,11 @@ export const codexCommand: CommandDefinition = {
                 codexArgs?: string[]
                 permissionMode?: CodexPermissionMode
                 resumeSessionId?: string
+                existingSessionId?: string
                 model?: string
                 modelReasoningEffort?: ReasoningEffort
                 serviceTier?: string
+                collaborationMode?: 'default' | 'plan'
             } = {}
             const unknownArgs: string[] = []
             let hasExplicitPermissionMode = false
@@ -56,7 +54,8 @@ export const codexCommand: CommandDefinition = {
                 if (i === 0 && arg === 'resume') {
                     const candidate = commandArgs[i + 1]
                     if (!candidate || candidate.startsWith('-')) {
-                        throw new Error('resume requires a session id')
+                        unknownArgs.push(arg)
+                        continue
                     }
                     options.resumeSessionId = candidate
                     i += 1
@@ -64,6 +63,12 @@ export const codexCommand: CommandDefinition = {
                 }
                 if (arg === '--started-by') {
                     options.startedBy = commandArgs[++i] as 'runner' | 'terminal'
+                } else if (arg === '--existing-session-id') {
+                    const sessionId = commandArgs[++i]
+                    if (!sessionId) {
+                        throw new Error('Missing --existing-session-id value')
+                    }
+                    options.existingSessionId = sessionId
                 } else if (arg === '--permission-mode') {
                     const mode = commandArgs[++i]
                     if (!mode || !(CODEX_PERMISSION_MODES as readonly string[]).includes(mode)) {
@@ -86,13 +91,19 @@ export const codexCommand: CommandDefinition = {
                     if (!effort) {
                         throw new Error('Missing --model-reasoning-effort value')
                     }
-                    options.modelReasoningEffort = parseReasoningEffort(effort)
+                    options.modelReasoningEffort = parseReasoningEffortValue(effort)
                 } else if (arg === '--service-tier') {
                     const tier = commandArgs[++i]
                     if (!tier) {
                         throw new Error('Missing --service-tier value')
                     }
                     options.serviceTier = parseServiceTier(tier)
+                } else if (arg === '--collaboration-mode') {
+                    const mode = commandArgs[++i]
+                    if (!mode) {
+                        throw new Error('Missing --collaboration-mode value')
+                    }
+                    options.collaborationMode = parseCollaborationMode(mode)
                 } else {
                     unknownArgs.push(arg)
                 }
@@ -106,7 +117,11 @@ export const codexCommand: CommandDefinition = {
             }
 
             await initializeToken()
-            await maybeAutoStartServer()
+            if (options.startedBy === 'runner') {
+                await maybeAutoStartServer()
+            } else {
+                void maybeAutoStartServer({ waitForReady: false, quiet: true })
+            }
             await authAndSetupMachineIfNeeded()
             await runCodex(options)
         } catch (error) {

@@ -75,6 +75,7 @@ function buildAgentArgs(opts: {
     mode?: string;
     model?: string;
     yolo?: boolean;
+    autoReview?: boolean;
 }): string[] {
     const args = ['-p', opts.message, '--output-format', 'stream-json', '--trust', '--workspace', opts.cwd];
 
@@ -90,15 +91,19 @@ function buildAgentArgs(opts: {
     if (opts.yolo) {
         args.push('--yolo');
     }
+    if (opts.autoReview) {
+        args.push('--auto-review');
+    }
 
     return args;
 }
 
-function permissionModeToAgentArgs(mode?: string): { mode?: string; yolo?: boolean } {
+function permissionModeToAgentArgs(mode?: string): { mode?: string; yolo?: boolean; autoReview?: boolean } {
     if (mode === 'plan') return { mode: 'plan' };
     if (mode === 'ask') return { mode: 'ask' };
     if (mode === 'debug') return { mode: 'debug' };
     if (mode === 'yolo') return { yolo: true };
+    if (mode === 'autoReview') return { autoReview: true };
     return {};
 }
 
@@ -155,7 +160,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             const { message, mode, isolate: batchIsolated } = batch;
             const specialCommand = parseCursorSpecialCommand(message);
 
-            const { mode: agentMode, yolo } = permissionModeToAgentArgs(mode.permissionMode as string);
+            const { mode: agentMode, yolo, autoReview } = permissionModeToAgentArgs(mode.permissionMode as string);
             this.applyDisplayMode(mode.permissionMode as string);
             messageBuffer.addMessage(message, 'user');
 
@@ -170,7 +175,8 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                 sessionId: cursorSessionId,
                 mode: agentMode,
                 model: mode.model,
-                yolo
+                yolo,
+                autoReview
             });
 
             logger.debug(`[cursor-remote] Spawning agent with args: ${args.join(' ')}`);

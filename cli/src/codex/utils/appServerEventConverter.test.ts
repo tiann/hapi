@@ -72,7 +72,12 @@ describe('AppServerEventConverter', () => {
         expect(interrupted).toEqual([{ type: 'turn_aborted', turn_id: 'turn-1' }]);
 
         const failed = converter.handleNotification('turn/completed', { turn: { id: 'turn-1' }, status: 'Failed', message: 'boom' });
-        expect(failed).toEqual([{ type: 'task_failed', turn_id: 'turn-1', error: 'boom' }]);
+        expect(failed).toEqual([{
+            type: 'task_failed',
+            turn_id: 'turn-1',
+            terminal_source: 'turn_completed',
+            error: 'boom'
+        }]);
     });
 
     it('accumulates agent message deltas', () => {
@@ -127,27 +132,49 @@ describe('AppServerEventConverter', () => {
 
     it('maps command execution items and output deltas', () => {
         const converter = new AppServerEventConverter();
+        const commandActions = [{
+            type: 'listFiles',
+            command: 'ls',
+            path: '.'
+        }];
 
         const started = converter.handleNotification('item/started', {
-            item: { id: 'cmd-1', type: 'commandExecution', command: 'ls' }
+            item: {
+                id: 'cmd-1',
+                type: 'commandExecution',
+                command: 'ls',
+                source: 'agent',
+                commandActions
+            }
         });
         expect(started).toEqual([{
             type: 'exec_command_begin',
             call_id: 'cmd-1',
-            command: 'ls'
+            command: 'ls',
+            command_actions: commandActions,
+            command_source: 'agent'
         }]);
 
         converter.handleNotification('item/commandExecution/outputDelta', { itemId: 'cmd-1', delta: 'ok' });
         const completed = converter.handleNotification('item/completed', {
-            item: { id: 'cmd-1', type: 'commandExecution', exitCode: 0 }
+            item: {
+                id: 'cmd-1',
+                type: 'commandExecution',
+                aggregatedOutput: 'final output',
+                exitCode: 0,
+                durationMs: 42
+            }
         });
 
         expect(completed).toEqual([{
             type: 'exec_command_end',
             call_id: 'cmd-1',
             command: 'ls',
-            output: 'ok',
-            exit_code: 0
+            command_actions: commandActions,
+            command_source: 'agent',
+            output: 'final output',
+            exit_code: 0,
+            duration_ms: 42
         }]);
     });
 
@@ -352,6 +379,145 @@ describe('AppServerEventConverter', () => {
             },
             is_error: false
         }]);
+    });
+
+    it('maps raw MultiAgent V2 calls without inventing collab tool variants', () => {
+        const converter = new AppServerEventConverter();
+
+        expect(converter.handleNotification('rawResponseItem/completed', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: {
+                type: 'function_call',
+                namespace: 'collaboration',
+                name: 'followup_task',
+                arguments: JSON.stringify({ target: '/root/review', message: 'Continue with tests' }),
+                call_id: 'call-followup'
+            }
+        })).toEqual([{
+            thread_id: 'thread-1',
+            turn_id: 'turn-1',
+            type: 'codex_tool_call_begin',
+            call_id: 'call-followup',
+            name: 'followup_task',
+            input: {
+                message: 'Continue with tests',
+                target: '/root/review'
+            }
+        }]);
+
+        expect(converter.handleNotification('rawResponseItem/completed', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: {
+                type: 'function_call_output',
+                call_id: 'call-followup',
+                output: ''
+            }
+        })).toEqual([{
+            thread_id: 'thread-1',
+            turn_id: 'turn-1',
+            type: 'codex_tool_call_end',
+            call_id: 'call-followup',
+            name: 'followup_task',
+            output: '',
+            is_error: false
+        }]);
+
+        expect(converter.handleNotification('item/started', {
+            item: {
+                id: 'call-followup',
+                type: 'collabAgentToolCall',
+                tool: 'followupTask'
+            }
+        })).toEqual([]);
+    });
+
+    it('keeps MultiAgent V1 calls on the collab item stream', () => {
+        const converter = new AppServerEventConverter();
+
+        expect(converter.handleNotification('rawResponseItem/completed', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: {
+                type: 'function_call',
+                namespace: 'multi_agent_v1',
+                name: 'spawn_agent',
+                arguments: JSON.stringify({ message: 'Do side work' }),
+                call_id: 'call-v1-spawn'
+            }
+        })).toEqual([]);
+
+        expect(converter.handleNotification('rawResponseItem/completed', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: {
+                type: 'function_call_output',
+                call_id: 'call-v1-spawn',
+                output: '{"agent_id":"agent-1","nickname":null}'
+            }
+        })).toEqual([]);
+
+        expect(converter.handleNotification('item/started', {
+            item: {
+                id: 'call-v1-spawn',
+                type: 'collabAgentToolCall',
+                tool: 'spawnAgent',
+                prompt: 'Do side work'
+            }
+        })).toEqual([expect.objectContaining({
+            type: 'codex_tool_call_begin',
+            call_id: 'call-v1-spawn',
+            name: 'spawn_agent'
+        })]);
+    });
+
+    it('maps shared MultiAgent V2 names only when their V2 argument shape is present', () => {
+        const converter = new AppServerEventConverter();
+
+        expect(converter.handleNotification('rawResponseItem/completed', {
+            item: {
+                type: 'function_call',
+                namespace: 'collaboration',
+                name: 'spawn_agent',
+                arguments: JSON.stringify({ task_name: 'review', message: 'Review this' }),
+                call_id: 'call-v2-spawn'
+            }
+        })).toEqual([expect.objectContaining({
+            type: 'codex_tool_call_begin',
+            call_id: 'call-v2-spawn',
+            name: 'spawn_agent',
+            input: { task_name: 'review', message: 'Review this' }
+        })]);
+
+        expect(converter.handleNotification('rawResponseItem/completed', {
+            item: {
+                type: 'function_call',
+                namespace: 'collaboration',
+                name: 'wait_agent',
+                arguments: JSON.stringify({ timeout_ms: 10_000 }),
+                call_id: 'call-v2-wait'
+            }
+        })).toEqual([expect.objectContaining({
+            type: 'codex_tool_call_begin',
+            call_id: 'call-v2-wait',
+            name: 'wait_agent',
+            input: { timeout_ms: 10_000 }
+        })]);
+
+        expect(converter.handleNotification('rawResponseItem/completed', {
+            item: {
+                type: 'function_call',
+                namespace: 'agents',
+                name: 'list_agents',
+                arguments: '{}',
+                call_id: 'call-v2-custom-namespace'
+            }
+        })).toEqual([expect.objectContaining({
+            type: 'codex_tool_call_begin',
+            call_id: 'call-v2-custom-namespace',
+            name: 'list_agents'
+        })]);
     });
 
     it('maps reasoning deltas', () => {
@@ -693,6 +859,134 @@ describe('AppServerEventConverter', () => {
         expect(events).toEqual([{ type: 'task_failed', error: 'fatal' }]);
     });
 
+    it('preserves typed non-retryable cyber-policy errors', () => {
+        const converter = new AppServerEventConverter();
+
+        const events = converter.handleNotification('error', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            error: {
+                message: 'This content was flagged for possible cybersecurity risk.',
+                codexErrorInfo: 'cyberPolicy'
+            },
+            willRetry: false
+        });
+
+        expect(events).toEqual([{
+            type: 'task_failed',
+            thread_id: 'thread-1',
+            turn_id: 'turn-1',
+            terminal_source: 'error',
+            retryable: false,
+            codex_error_info: 'cyberPolicy',
+            error: 'This content was flagged for possible cybersecurity risk.'
+        }]);
+    });
+
+    it('preserves cyber-policy metadata from wrapped and completed-turn errors', () => {
+        const converter = new AppServerEventConverter();
+
+        expect(converter.handleNotification('codex/event/error', {
+            msg: {
+                type: 'error',
+                thread_id: 'thread-1',
+                turn_id: 'turn-1',
+                message: 'wrapped policy failure',
+                codex_error_info: 'cyber_policy',
+                will_retry: false
+            }
+        })).toEqual([{
+            type: 'task_failed',
+            thread_id: 'thread-1',
+            turn_id: 'turn-1',
+            retryable: false,
+            codex_error_info: 'cyber_policy',
+            error: 'wrapped policy failure'
+        }]);
+
+        expect(converter.handleNotification('turn/completed', {
+            threadId: 'thread-1',
+            turn: {
+                id: 'turn-1',
+                status: 'failed',
+                error: {
+                    message: 'completed policy failure',
+                    codexErrorInfo: 'CyberPolicy'
+                }
+            }
+        })).toEqual([{
+            type: 'task_failed',
+            thread_id: 'thread-1',
+            turn_id: 'turn-1',
+            terminal_source: 'turn_completed',
+            codex_error_info: 'CyberPolicy',
+            error: 'completed policy failure'
+        }]);
+    });
+
+    it('maps Codex model safety notifications', () => {
+        const converter = new AppServerEventConverter();
+
+        expect(converter.handleNotification('model/safetyBuffering/updated', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            model: 'gpt-5.4',
+            useCases: ['cyber'],
+            reasons: ['review'],
+            showBufferingUi: true,
+            fasterModel: 'gpt-5.4-mini'
+        })).toEqual([{
+            type: 'model_safety_buffering',
+            thread_id: 'thread-1',
+            turn_id: 'turn-1',
+            model: 'gpt-5.4',
+            use_cases: ['cyber'],
+            reasons: ['review'],
+            show_buffering_ui: true,
+            faster_model: 'gpt-5.4-mini'
+        }]);
+
+        expect(converter.handleNotification('model/safetyBuffering/updated', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            showBufferingUi: false
+        })).toEqual([{
+            type: 'model_safety_buffering',
+            thread_id: 'thread-1',
+            turn_id: 'turn-1',
+            use_cases: [],
+            reasons: [],
+            show_buffering_ui: false,
+            faster_model: null
+        }]);
+
+        expect(converter.handleNotification('model/rerouted', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            fromModel: 'gpt-5.4',
+            toModel: 'gpt-5.4-codex',
+            reason: 'highRiskCyberActivity'
+        })).toEqual([{
+            type: 'model_rerouted',
+            thread_id: 'thread-1',
+            turn_id: 'turn-1',
+            from_model: 'gpt-5.4',
+            to_model: 'gpt-5.4-codex',
+            reason: 'highRiskCyberActivity'
+        }]);
+
+        expect(converter.handleNotification('model/verification', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            verifications: ['trustedAccessForCyber']
+        })).toEqual([{
+            type: 'model_verification',
+            thread_id: 'thread-1',
+            turn_id: 'turn-1',
+            verifications: ['trustedAccessForCyber']
+        }]);
+    });
+
     it('maps thread/compacted notifications', () => {
         const converter = new AppServerEventConverter();
         const events = converter.handleNotification('thread/compacted', {
@@ -705,6 +999,29 @@ describe('AppServerEventConverter', () => {
                 type: 'thread_compacted',
                 thread_id: 'thread-1',
                 turn_id: 'turn-compact'
+            },
+            {
+                type: 'context_compacted',
+                thread_id: 'thread-1',
+                turn_id: 'turn-compact'
+            }
+        ]);
+    });
+
+    it('maps completed contextCompaction items and preserves the turn boundary', () => {
+        const converter = new AppServerEventConverter();
+        const events = converter.handleNotification('item/completed', {
+            threadId: 'thread-1',
+            turnId: 'turn-compact',
+            item: { id: 'compact-item-1', type: 'contextCompaction' }
+        });
+
+        expect(events).toEqual([
+            {
+                type: 'thread_compacted',
+                thread_id: 'thread-1',
+                turn_id: 'turn-compact',
+                await_turn_completion: true
             },
             {
                 type: 'context_compacted',

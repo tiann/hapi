@@ -22,6 +22,7 @@ import { createGitRoutes } from './routes/git'
 import { createCliRoutes } from './routes/cli'
 import { createCodexDesktopRoutes } from './routes/codexDesktop'
 import { createPushRoutes } from './routes/push'
+import { createDevicesRoutes } from './routes/devices'
 import { createVoiceRoutes } from './routes/voice'
 import type { SSEManager } from '../sse/sseManager'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
@@ -191,10 +192,18 @@ function findWebappDistDir(): { distDir: string; indexHtmlPath: string } {
 }
 
 function serveEmbeddedAsset(asset: EmbeddedWebAsset): Response {
+    const headers: Record<string, string> = {
+        'Content-Type': asset.mimeType
+    }
+
+    if (asset.path === '/sw.js') {
+        headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+        headers['CDN-Cache-Control'] = 'no-store'
+        headers['Cloudflare-CDN-Cache-Control'] = 'no-store'
+    }
+
     return new Response(Bun.file(asset.sourcePath), {
-        headers: {
-            'Content-Type': asset.mimeType
-        }
+        headers
     })
 }
 
@@ -246,6 +255,7 @@ function createWebApp(options: {
         getSyncEngine: options.getSyncEngine
     }))
     app.route('/api', createPushRoutes(options.store, options.vapidPublicKey))
+    app.route('/api', createDevicesRoutes(options.store))
     app.route('/api', createVoiceRoutes())
 
     // Skip static serving in relay mode, show helpful message on root

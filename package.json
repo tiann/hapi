@@ -25,6 +25,9 @@
         "test:shared": "cd shared && bun run test",
         "test:e2e": "playwright test",
         "test:e2e:ui": "playwright test --ui",
+        "test:mermaid-lightbox:playwright": "timeout 600 node scripts/dev/mermaid-lightbox-playwright.mjs",
+        "test:mermaid-lightbox:live": "timeout 900 env HAPI_LIVE=1 playwright test -c web/playwright.live.config.ts",
+        "seed:mermaid-lightbox:session": "bun run scripts/dev/mermaid-lightbox-seed-session-db.ts",
         "clean-session": "bun run hub/scripts/cleanup-sessions.ts",
         "release-all": "cd cli && bun run release-all"
     },

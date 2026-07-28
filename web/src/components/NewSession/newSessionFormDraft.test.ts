@@ -20,7 +20,10 @@ describe('newSessionFormDraft', () => {
             machineId: 'machine-1',
             effort: 'auto',
             modelReasoningEffort: 'default',
+            serviceTier: 'standard',
+            collaborationMode: 'default',
             yoloMode: false,
+            grokPermissionMode: 'default',
             sessionType: 'simple',
             worktreeName: ''
         })
@@ -32,7 +35,10 @@ describe('newSessionFormDraft', () => {
             machineId: 'machine-1',
             effort: 'auto',
             modelReasoningEffort: 'default',
+            serviceTier: 'standard',
+            collaborationMode: 'default',
             yoloMode: false,
+            grokPermissionMode: 'default',
             sessionType: 'simple',
             worktreeName: ''
         })
@@ -57,7 +63,10 @@ describe('newSessionFormDraft', () => {
             machineId: null,
             effort: 'auto',
             modelReasoningEffort: 'default',
+            serviceTier: 'standard',
+            collaborationMode: 'default',
             yoloMode: false,
+            grokPermissionMode: 'default',
             sessionType: 'simple',
             worktreeName: ''
         })
@@ -73,12 +82,17 @@ describe('newSessionFormDraft', () => {
             machineId: 'machine-a',
             effort: 'auto',
             modelReasoningEffort: 'default',
+            serviceTier: 'fast',
+            collaborationMode: 'plan',
             yoloMode: false,
+            grokPermissionMode: 'default',
             sessionType: 'simple',
             worktreeName: ''
         })
         const draft = loadNewSessionFormDraft()!
         expect(newSessionDraftMatchesMachine(draft, 'machine-b')).toBe(false)
+        expect(draft.serviceTier).toBe('fast')
+        expect(draft.collaborationMode).toBe('plan')
     })
 
     it('coerces a stale uncreatable agent (gemini) to claude and resets dependent fields', () => {
@@ -89,7 +103,10 @@ describe('newSessionFormDraft', () => {
             machineId: 'machine-1',
             effort: 'high',
             modelReasoningEffort: 'high',
+            serviceTier: 'fast',
+            collaborationMode: 'plan',
             yoloMode: true,
+            grokPermissionMode: 'default',
             sessionType: 'simple',
             worktreeName: ''
         })
@@ -101,6 +118,8 @@ describe('newSessionFormDraft', () => {
         expect(loaded.cursorSelectedBase).toBe('auto')
         expect(loaded.effort).toBe('auto')
         expect(loaded.modelReasoningEffort).toBe('default')
+        expect(loaded.serviceTier).toBe('standard')
+        expect(loaded.collaborationMode).toBe('default')
         // agent-independent fields preserved
         expect(loaded.yoloMode).toBe(true)
         expect(loaded.machineId).toBe('machine-1')

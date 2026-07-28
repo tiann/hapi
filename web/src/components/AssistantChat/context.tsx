@@ -12,6 +12,11 @@ export type HappyChatContextValue = {
     disabled: boolean
     onRefresh: () => void
     onRetryMessage?: (localId: string) => void
+    onShareTurn?: (
+        messageElement: HTMLElement | string | null,
+        clientY?: number,
+        fallbackSnapshot?: { html: string; text: string; role?: 'user' | 'assistant' }
+    ) => void
     hasMoreMessages: boolean
     isLoadingMoreMessages: boolean
     loadOlderMessagesPreservingScroll: () => Promise<boolean>

@@ -32,6 +32,14 @@ vi.mock('@/agent/sessionFactory', () => ({
             sessionInfo: harness.sessionInfo
         }
     }),
+    bootstrapLazySession: vi.fn(async (options: Record<string, unknown>) => {
+        harness.bootstrapArgs.push({ ...options, lazy: true })
+        return {
+            api: {},
+            session: harness.session,
+            sessionInfo: harness.sessionInfo
+        }
+    }),
     bootstrapExistingSession: vi.fn(async (options: Record<string, unknown>) => {
         harness.bootstrapArgs.push(options)
         return {
@@ -103,6 +111,7 @@ vi.mock('./utils/codexCliOverrides', () => ({
 }))
 
 import { runCodex as runCodexImpl } from './runCodex'
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 
 describe('runCodex', () => {
     beforeEach(() => {
@@ -202,6 +211,34 @@ describe('runCodex', () => {
         expect(mockCodexSession.setServiceTier).not.toHaveBeenCalled()
     })
 
+    it('does not collapse inherited Codex reasoning effort into explicit default on startup', async () => {
+        await runCodexImpl({ workingDirectory: '/tmp/project' })
+
+        expect(mockCodexSession.setModelReasoningEffort).not.toHaveBeenCalled()
+        expect(harness.loopArgs[0]?.modelReasoningEffort).toBeUndefined()
+    })
+
+    it('uses lazy bootstrap for a fresh terminal launch', async () => {
+        await runCodexImpl({ workingDirectory: '/tmp/project' })
+
+        expect(harness.bootstrapArgs[0]).toEqual(expect.objectContaining({
+            workingDirectory: '/tmp/project',
+            lazy: true
+        }))
+        expect(harness.loopArgs[0]).toEqual(expect.objectContaining({
+            replayTranscriptHistoryOnStart: true
+        }))
+    })
+
+    it('keeps eager bootstrap for runner launches', async () => {
+        await runCodexImpl({
+            startedBy: 'runner',
+            workingDirectory: '/tmp/project'
+        })
+
+        expect(harness.bootstrapArgs[0]).not.toHaveProperty('lazy')
+    })
+
     it('replays transcript history when attaching a new Hapi session to an existing Codex thread', async () => {
         await runCodexImpl({
             workingDirectory: '/tmp/project',
@@ -212,5 +249,37 @@ describe('runCodex', () => {
             resumeSessionId: 'codex-thread-2',
             replayTranscriptHistoryOnStart: true
         }))
+    })
+
+    it('accepts and normalizes model-reported reasoning efforts from session config', async () => {
+        await runCodexImpl({ workingDirectory: '/tmp/project' })
+
+        const registration = harness.session.rpcHandlerManager.registerHandler.mock.calls.find(
+            ([method]) => method === RPC_METHODS.SetSessionConfig
+        )
+        const handler = registration?.[1] as ((payload: unknown) => Promise<unknown>) | undefined
+        expect(handler).toBeTypeOf('function')
+
+        await handler?.({ modelReasoningEffort: 'max' })
+        await handler?.({ modelReasoningEffort: ' EXTREME ' })
+
+        expect(mockCodexSession.setModelReasoningEffort).toHaveBeenNthCalledWith(1, 'max')
+        expect(mockCodexSession.setModelReasoningEffort).toHaveBeenNthCalledWith(2, 'extreme')
+    })
+
+    it('still persists an explicit reasoning effort reset as null', async () => {
+        await runCodexImpl({ workingDirectory: '/tmp/project' })
+
+        const registration = harness.session.rpcHandlerManager.registerHandler.mock.calls.find(
+            ([method]) => method === RPC_METHODS.SetSessionConfig
+        )
+        const handler = registration?.[1] as ((payload: unknown) => Promise<unknown>) | undefined
+        const result = await handler?.({ modelReasoningEffort: null })
+
+        expect(mockCodexSession.setModelReasoningEffort).toHaveBeenCalledTimes(1)
+        expect(mockCodexSession.setModelReasoningEffort).toHaveBeenCalledWith(null)
+        expect(result).toEqual({
+            applied: expect.objectContaining({ modelReasoningEffort: null })
+        })
     })
 })

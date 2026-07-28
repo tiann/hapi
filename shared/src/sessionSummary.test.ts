@@ -65,6 +65,18 @@ describe('getPendingRequestKinds', () => {
 })
 
 describe('toSessionSummary', () => {
+    it('uses grokSessionId as the native resume token', () => {
+        const summary = toSessionSummary(makeSession({
+            metadata: {
+                path: '/proj',
+                host: 'local',
+                flavor: 'grok',
+                grokSessionId: 'grok-session-1'
+            }
+        }))
+        expect(summary.metadata?.agentSessionId).toBe('grok-session-1')
+    })
+
     it('includes pending request kinds and background task count', () => {
         const summary = toSessionSummary(makeSession({
             backgroundTaskCount: 2,

@@ -84,6 +84,23 @@ describe('buildCliArgs', () => {
         expect(args).toContain('fast')
     })
 
+    it('passes --collaboration-mode through for codex Plan mode', () => {
+        const args = buildCliArgs('codex', {
+            directory: '/tmp',
+            collaborationMode: 'plan',
+        })
+        expect(args).toContain('--collaboration-mode')
+        expect(args).toContain('plan')
+    })
+
+    it('omits --collaboration-mode for default collaboration mode', () => {
+        const args = buildCliArgs('codex', {
+            directory: '/tmp',
+            collaborationMode: 'default',
+        })
+        expect(args).not.toContain('--collaboration-mode')
+    })
+
     it('does not pass --service-tier for non-codex agents', () => {
         const args = buildCliArgs('claude', {
             directory: '/tmp',
@@ -92,8 +109,67 @@ describe('buildCliArgs', () => {
         expect(args).not.toContain('--service-tier')
     })
 
+    it('passes existing Hapi session id separately from Codex resume thread', () => {
+        const args = buildCliArgs('codex', {
+            directory: '/tmp',
+            resumeSessionId: 'codex-thread-1',
+            existingSessionId: 'hapi-session-1',
+            model: 'gpt-5.5',
+            modelReasoningEffort: 'low',
+        })
+        expect(args).toEqual([
+            'codex',
+            'resume',
+            'codex-thread-1',
+            '--hapi-starting-mode',
+            'remote',
+            '--started-by',
+            'runner',
+            '--existing-session-id',
+            'hapi-session-1',
+            '--model',
+            'gpt-5.5',
+            '--model-reasoning-effort',
+            'low',
+        ])
+    })
+
+
+
+    it('does not pass existing session id flag to agents that do not reuse HAPI rows', () => {
+        const args = buildCliArgs('claude', {
+            directory: '/tmp',
+            resumeSessionId: 'claude-session-1',
+            existingSessionId: 'hapi-session-1',
+        })
+        expect(args).toContain('--resume')
+        expect(args).toContain('claude-session-1')
+        expect(args).not.toContain('--existing-session-id')
+        expect(args).not.toContain('hapi-session-1')
+    })
+
+    it('passes --existing-session-id for cursor resume when sessionId is set (#991)', () => {
+        const args = buildCliArgs('cursor', {
+            directory: '/tmp',
+            resumeSessionId: 'cursor-csid-1',
+            sessionId: 'hapi-session-991',
+        })
+        expect(args).toContain('--existing-session-id')
+        expect(args).toContain('hapi-session-991')
+        expect(args).toContain('--resume')
+        expect(args).toContain('cursor-csid-1')
+    })
+
+    it('does not pass --collaboration-mode for non-codex agents', () => {
+        const args = buildCliArgs('claude', {
+            directory: '/tmp',
+            collaborationMode: 'plan',
+        })
+        expect(args).not.toContain('--collaboration-mode')
+    })
+
     it('validates all known permission modes', () => {
-        for (const mode of ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan', 'ask', 'read-only', 'safe-yolo', 'yolo']) {
+        for (const mode of ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan', 'ask', 'debug', 'autoReview', 'read-only', 'safe-yolo', 'yolo']) {
             const args = buildCliArgs('claude', {
                 directory: '/tmp',
                 permissionMode: mode,
@@ -101,6 +177,34 @@ describe('buildCliArgs', () => {
             expect(args).toContain('--permission-mode')
             expect(args).toContain(mode)
         }
+    })
+
+    it('passes --cursor-worktree for cursor worktree sessions', () => {
+        const args = buildCliArgs('cursor', {
+            directory: '/tmp/repo',
+            sessionType: 'worktree',
+            worktreeName: 'feature-x',
+        })
+        expect(args).toContain('--cursor-worktree')
+        expect(args).toContain('feature-x')
+    })
+
+    it('passes bare --cursor-worktree when name is omitted', () => {
+        const args = buildCliArgs('cursor', {
+            directory: '/tmp/repo',
+            sessionType: 'worktree',
+        })
+        expect(args).toContain('--cursor-worktree')
+        expect(args[args.length - 1]).toBe('--cursor-worktree')
+    })
+
+    it('does not pass --cursor-worktree for non-cursor worktree sessions', () => {
+        const args = buildCliArgs('claude', {
+            directory: '/tmp/repo',
+            sessionType: 'worktree',
+            worktreeName: 'feature-x',
+        })
+        expect(args).not.toContain('--cursor-worktree')
     })
 
     it('uses --session-id for pi resume (not --resume)', () => {
@@ -141,5 +245,25 @@ describe('buildCliArgs', () => {
         })
         expect(args).toContain('--effort')
         expect(args).toContain('high')
+    })
+
+    it('builds Grok runner resume, model, effort, and permission arguments', () => {
+        const args = buildCliArgs('grok', {
+            directory: '/tmp',
+            resumeSessionId: 'grok-session-1',
+            model: 'grok-4.5',
+            effort: 'low',
+            permissionMode: 'plan'
+        })
+
+        expect(args).toEqual([
+            'grok',
+            '--resume', 'grok-session-1',
+            '--hapi-starting-mode', 'remote',
+            '--started-by', 'runner',
+            '--model', 'grok-4.5',
+            '--effort', 'low',
+            '--permission-mode', 'plan'
+        ])
     })
 })

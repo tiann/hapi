@@ -10,6 +10,7 @@ import { getConfiguration } from '../../configuration'
 import { constantTimeEquals } from '../../utils/crypto'
 import { parseAccessToken } from '../../utils/accessToken'
 import type { Machine, Session, SyncEngine } from '../../sync/syncEngine'
+import { SessionIdentityConflictError } from '../../store/sessions'
 
 const bearerSchema = z.string().regex(/^Bearer\s+(.+)$/i)
 
@@ -94,16 +95,38 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         }
 
         const namespace = c.get('namespace')
-        const session = engine.getOrCreateSession(
-            parsed.data.tag,
-            parsed.data.metadata,
-            parsed.data.agentState ?? null,
-            namespace,
-            parsed.data.model,
-            parsed.data.effort,
-            parsed.data.modelReasoningEffort
-        )
-        return c.json({ session })
+        const machineInput = parsed.data.machine
+        if (machineInput) {
+            const existingMachine = engine.getMachine(machineInput.id)
+            if (existingMachine && existingMachine.namespace !== namespace) {
+                return c.json({ error: 'Machine access denied' }, 403)
+            }
+            engine.getOrCreateMachine(
+                machineInput.id,
+                machineInput.metadata,
+                machineInput.runnerState ?? null,
+                namespace
+            )
+        }
+
+        try {
+            const session = engine.getOrCreateSession(
+                parsed.data.tag,
+                parsed.data.metadata,
+                parsed.data.agentState ?? null,
+                namespace,
+                parsed.data.model,
+                parsed.data.effort,
+                parsed.data.modelReasoningEffort,
+                parsed.data.id
+            )
+            return c.json({ session })
+        } catch (error) {
+            if (error instanceof SessionIdentityConflictError) {
+                return c.json({ error: error.message }, 409)
+            }
+            throw error
+        }
     })
 
     app.get('/sessions/resumable', (c) => {

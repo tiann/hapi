@@ -26,6 +26,51 @@ function createMachine(overrides?: Partial<Machine>): Machine {
 }
 
 describe('machines routes', () => {
+    it('forwards Grok Auto permission mode when spawning', async () => {
+        const machine = createMachine()
+        let capturedPermissionMode: string | undefined
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            spawnSession: async (
+                _machineId: string,
+                _directory: string,
+                _agent?: string,
+                _model?: string,
+                _modelReasoningEffort?: string,
+                _yolo?: boolean,
+                _sessionType?: string,
+                _worktreeName?: string,
+                _resumeSessionId?: string,
+                _effort?: string,
+                permissionMode?: string
+            ) => {
+                capturedPermissionMode = permissionMode
+                return { type: 'success' as const, sessionId: 'session-1' }
+            }
+        } as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/machines/machine-1/spawn', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                directory: '/tmp/project',
+                agent: 'grok',
+                permissionMode: 'auto'
+            })
+        })
+
+        expect(response.status).toBe(200)
+        expect(capturedPermissionMode).toBe('auto')
+    })
+
     it('returns Codex models for an online machine', async () => {
         const machine = createMachine()
         const engine = {
@@ -118,6 +163,42 @@ describe('machines routes', () => {
                 { modelId: 'ollama/exaone:4.5-33b-q8', name: 'Ollama/EXAONE 4.5 33B Q8' }
             ],
             currentModelId: 'ollama/exaone:4.5-33b-q8'
+        })
+    })
+
+    it('forwards cwd to listGrokModelsForCwd for Create-session discovery', async () => {
+        const machine = createMachine()
+        const calls: Array<{ machineId: string; cwd: string }> = []
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            listGrokModelsForCwd: async (machineId: string, cwd: string) => {
+                calls.push({ machineId, cwd })
+                return {
+                    success: true,
+                    availableModels: [{ modelId: 'grok-4.5' }],
+                    currentModelId: 'grok-4.5'
+                }
+            }
+        } as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const response = await app.request(
+            '/api/machines/machine-1/grok-models?cwd=' + encodeURIComponent('/home/user/proj')
+        )
+
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([{ machineId: 'machine-1', cwd: '/home/user/proj' }])
+        expect(await response.json()).toEqual({
+            success: true,
+            availableModels: [{ modelId: 'grok-4.5' }],
+            currentModelId: 'grok-4.5'
         })
     })
 

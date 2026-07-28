@@ -140,6 +140,7 @@ export function CliOutputBlock(props: { text: string }) {
                                 language="shellscript"
                                 title="Terminal output"
                                 showCopyButton={false}
+                                showWrapToggle={false}
                                 collapseLongContent={isCollapsedPreview}
                                 collapsedHeight={PREVIEW_MAX_HEIGHT}
                             />

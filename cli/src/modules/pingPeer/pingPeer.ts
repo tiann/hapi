@@ -1,0 +1,424 @@
+/**
+ * Resume-if-inactive + wait-active + POST /api/sessions/:id/messages.
+ *
+ * Shared by `hapi ping-peer` and MCP `ping_peer`. Uses the same hub JWT flow
+ * as the web app (`POST /api/auth` with CLI_API_TOKEN), scoped to the token's
+ * namespace. Callers must not invent parallel auth or arbitrary hosts.
+ */
+
+import axios, { type AxiosInstance } from 'axios'
+import { configuration } from '@/configuration'
+import { getAuthToken } from '@/api/auth'
+import { buildHubRequestHeaders } from '@/api/hubExtraHeaders'
+
+export type PingPeerErrorCode =
+    | 'bad_args'
+    | 'auth_failed'
+    | 'not_found'
+    | 'ambiguous'
+    | 'resume_failed'
+    | 'timeout'
+    | 'send_failed'
+
+export class PingPeerError extends Error {
+    readonly code: PingPeerErrorCode
+
+    constructor(code: PingPeerErrorCode, message: string) {
+        super(message)
+        this.name = 'PingPeerError'
+        this.code = code
+    }
+}
+
+export type PingPeerSessionSummary = {
+    id: string
+    active: boolean
+    updatedAt?: number
+    metadata?: {
+        name?: string
+        flavor?: string | null
+        piSessionId?: string
+    } | null
+}
+
+export type PingPeerOptions = {
+    sessionIdPrefix: string
+    message: string
+    waitActiveSecs?: number
+    apiUrl?: string
+    accessToken?: string
+    http?: AxiosInstance
+    sleep?: (ms: number) => Promise<void>
+    now?: () => number
+    onProgress?: (message: string) => void
+}
+
+export type PingPeerResult = {
+    sessionId: string
+    name: string
+    resumed: boolean
+}
+
+export type ListPeerSessionsOptions = {
+    apiUrl?: string
+    accessToken?: string
+    http?: AxiosInstance
+    limit?: number
+}
+
+const DEFAULT_WAIT_ACTIVE_SECS = 60
+const POLL_ACTIVE_MS = 2_000
+const POLL_PI_READY_MS = 1_000
+
+function defaultSleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function resolveApiUrl(apiUrl?: string): string {
+    const raw = (apiUrl ?? configuration.apiUrl).trim().replace(/\/+$/, '')
+    if (!raw) {
+        throw new PingPeerError('bad_args', 'HAPI API URL is empty')
+    }
+    // Peer messaging only targets the configured hub - never accept host overrides
+    // from MCP tool args (security: same hub/token/namespace only).
+    return raw
+}
+
+function resolveAccessToken(accessToken?: string): string {
+    const token = (accessToken ?? getAuthToken()).trim()
+    if (!token) {
+        throw new PingPeerError('bad_args', 'CLI_API_TOKEN is required (run `hapi auth login`)')
+    }
+    return token
+}
+
+async function exchangeJwt(
+    apiUrl: string,
+    accessToken: string,
+    http: AxiosInstance
+): Promise<string> {
+    try {
+        const response = await http.post(
+            `${apiUrl}/api/auth`,
+            { accessToken },
+            {
+                headers: buildHubRequestHeaders({ 'Content-Type': 'application/json' }),
+                timeout: 10_000,
+                validateStatus: () => true
+            }
+        )
+        const token = typeof response.data?.token === 'string' ? response.data.token : ''
+        if (response.status < 200 || response.status >= 300 || !token) {
+            const detail = typeof response.data?.error === 'string'
+                ? response.data.error
+                : `HTTP ${response.status}`
+            throw new PingPeerError('auth_failed', `failed to exchange access token for JWT (${detail})`)
+        }
+        return token
+    } catch (error) {
+        if (error instanceof PingPeerError) {
+            throw error
+        }
+        throw new PingPeerError(
+            'auth_failed',
+            `failed to exchange access token for JWT (${error instanceof Error ? error.message : String(error)})`
+        )
+    }
+}
+
+function authHeaders(jwt: string): Record<string, string> {
+    return buildHubRequestHeaders({
+        Authorization: `Bearer ${jwt}`,
+        'Content-Type': 'application/json'
+    })
+}
+
+export function resolveSessionByPrefix(
+    sessions: PingPeerSessionSummary[],
+    prefix: string
+): PingPeerSessionSummary {
+    const trimmed = prefix.trim()
+    if (!trimmed) {
+        throw new PingPeerError('bad_args', 'session id prefix is required')
+    }
+
+    const exact = sessions.filter((session) => session.id === trimmed)
+    if (exact.length === 1) {
+        return exact[0]!
+    }
+
+    const matches = sessions.filter((session) => session.id.startsWith(trimmed))
+    if (matches.length === 0) {
+        throw new PingPeerError('not_found', `no session matching prefix '${trimmed}'`)
+    }
+    if (matches.length > 1) {
+        const sample = matches.slice(0, 5).map((session) => session.id.slice(0, 8)).join(', ')
+        throw new PingPeerError(
+            'ambiguous',
+            `prefix '${trimmed}' matches ${matches.length} sessions (${sample}${matches.length > 5 ? ', ...' : ''}); use a longer prefix`
+        )
+    }
+    return matches[0]!
+}
+
+async function listSessions(
+    apiUrl: string,
+    jwt: string,
+    http: AxiosInstance,
+    limit = 500
+): Promise<PingPeerSessionSummary[]> {
+    const response = await http.get(
+        `${apiUrl}/api/sessions`,
+        {
+            headers: authHeaders(jwt),
+            params: { limit },
+            timeout: 15_000,
+            validateStatus: () => true
+        }
+    )
+    if (response.status < 200 || response.status >= 300) {
+        const detail = typeof response.data?.error === 'string'
+            ? response.data.error
+            : `HTTP ${response.status}`
+        throw new PingPeerError('auth_failed', `failed to list sessions (${detail})`)
+    }
+    const body = response.data
+    const sessions = Array.isArray(body?.sessions)
+        ? body.sessions
+        : Array.isArray(body)
+            ? body
+            : null
+    if (!sessions) {
+        throw new PingPeerError('auth_failed', 'failed to list sessions (unexpected response)')
+    }
+    return sessions as PingPeerSessionSummary[]
+}
+
+async function getSession(
+    apiUrl: string,
+    jwt: string,
+    sessionId: string,
+    http: AxiosInstance
+): Promise<PingPeerSessionSummary> {
+    const response = await http.get(
+        `${apiUrl}/api/sessions/${encodeURIComponent(sessionId)}`,
+        {
+            headers: authHeaders(jwt),
+            timeout: 10_000,
+            validateStatus: () => true
+        }
+    )
+    if (response.status < 200 || response.status >= 300 || !response.data?.session) {
+        const detail = typeof response.data?.error === 'string'
+            ? response.data.error
+            : `HTTP ${response.status}`
+        throw new PingPeerError('not_found', `failed to load session ${sessionId} (${detail})`)
+    }
+    return response.data.session as PingPeerSessionSummary
+}
+
+async function resumeSession(
+    apiUrl: string,
+    jwt: string,
+    sessionId: string,
+    http: AxiosInstance
+): Promise<void> {
+    const response = await http.post(
+        `${apiUrl}/api/sessions/${encodeURIComponent(sessionId)}/resume`,
+        {},
+        {
+            headers: authHeaders(jwt),
+            timeout: 30_000,
+            validateStatus: () => true
+        }
+    )
+    if (response.data?.type === 'success') {
+        return
+    }
+    const detail = typeof response.data?.message === 'string'
+        ? response.data.message
+        : typeof response.data?.error === 'string'
+            ? response.data.error
+            : typeof response.data?.code === 'string'
+                ? response.data.code
+                : `HTTP ${response.status}`
+    throw new PingPeerError('resume_failed', `resume failed: ${detail}`)
+}
+
+async function waitUntilActive(
+    apiUrl: string,
+    jwt: string,
+    sessionId: string,
+    waitActiveSecs: number,
+    http: AxiosInstance,
+    sleep: (ms: number) => Promise<void>,
+    now: () => number,
+    onProgress?: (message: string) => void
+): Promise<void> {
+    const deadline = now() + waitActiveSecs * 1000
+    onProgress?.(`waiting up to ${waitActiveSecs}s for active state...`)
+    while (now() < deadline) {
+        const session = await getSession(apiUrl, jwt, sessionId, http)
+        if (session.active) {
+            return
+        }
+        await sleep(POLL_ACTIVE_MS)
+    }
+    throw new PingPeerError(
+        'timeout',
+        `session did not become active within ${waitActiveSecs}s; runner may have failed to spawn`
+    )
+}
+
+async function waitForPiReady(
+    apiUrl: string,
+    jwt: string,
+    sessionId: string,
+    waitActiveSecs: number,
+    http: AxiosInstance,
+    sleep: (ms: number) => Promise<void>,
+    now: () => number,
+    onProgress?: (message: string) => void
+): Promise<void> {
+    // active can precede piSessionId (tiann/hapi#1143). Instant /messages before
+    // get_state settles wedges (Prompt accepted / agent_start / silence).
+    onProgress?.(`flavor=pi - waiting up to ${waitActiveSecs}s for metadata.piSessionId...`)
+    const deadline = now() + waitActiveSecs * 1000
+    while (now() < deadline) {
+        const session = await getSession(apiUrl, jwt, sessionId, http)
+        const piSessionId = session.metadata?.piSessionId
+        if (typeof piSessionId === 'string' && piSessionId.length > 0) {
+            onProgress?.(`piSessionId=${piSessionId}`)
+            return
+        }
+        await sleep(POLL_PI_READY_MS)
+    }
+    throw new PingPeerError(
+        'timeout',
+        `piSessionId never appeared within ${waitActiveSecs}s; refusing to send (would likely wedge - see #1143)`
+    )
+}
+
+async function sendMessage(
+    apiUrl: string,
+    jwt: string,
+    sessionId: string,
+    message: string,
+    http: AxiosInstance
+): Promise<void> {
+    const response = await http.post(
+        `${apiUrl}/api/sessions/${encodeURIComponent(sessionId)}/messages`,
+        { text: message },
+        {
+            headers: authHeaders(jwt),
+            timeout: 30_000,
+            validateStatus: () => true
+        }
+    )
+    if (response.status >= 200 && response.status < 300 && response.data?.ok === true) {
+        return
+    }
+    const detail = typeof response.data?.error === 'string'
+        ? response.data.error
+        : typeof response.data?.code === 'string'
+            ? response.data.code
+            : `HTTP ${response.status}`
+    throw new PingPeerError('send_failed', `send failed: ${detail}`)
+}
+
+export async function listPeerSessions(
+    options: ListPeerSessionsOptions = {}
+): Promise<PingPeerSessionSummary[]> {
+    const apiUrl = resolveApiUrl(options.apiUrl)
+    const accessToken = resolveAccessToken(options.accessToken)
+    const http = options.http ?? axios
+    const jwt = await exchangeJwt(apiUrl, accessToken, http)
+    return listSessions(apiUrl, jwt, http, options.limit ?? 200)
+}
+
+export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult> {
+    const prefix = options.sessionIdPrefix?.trim() ?? ''
+    const message = options.message ?? ''
+    if (!prefix) {
+        throw new PingPeerError('bad_args', 'session id prefix is required')
+    }
+    if (!message) {
+        throw new PingPeerError('bad_args', 'message is required')
+    }
+
+    const waitActiveSecs = options.waitActiveSecs ?? DEFAULT_WAIT_ACTIVE_SECS
+    if (!Number.isFinite(waitActiveSecs) || waitActiveSecs <= 0) {
+        throw new PingPeerError('bad_args', 'waitActiveSecs must be a positive number')
+    }
+
+    const apiUrl = resolveApiUrl(options.apiUrl)
+    const accessToken = resolveAccessToken(options.accessToken)
+    const http = options.http ?? axios
+    const sleep = options.sleep ?? defaultSleep
+    const now = options.now ?? Date.now
+    const onProgress = options.onProgress
+
+    const jwt = await exchangeJwt(apiUrl, accessToken, http)
+    const sessions = await listSessions(apiUrl, jwt, http)
+    const matched = resolveSessionByPrefix(sessions, prefix)
+    const name = matched.metadata?.name ?? '(unnamed)'
+    onProgress?.(`resolved ${matched.id}  active=${matched.active}  name="${name}"`)
+
+    let resumed = false
+    const ensureActive = async (progressMessage: string): Promise<PingPeerSessionSummary> => {
+        const session = await getSession(apiUrl, jwt, matched.id, http)
+        if (session.active) {
+            return session
+        }
+        onProgress?.(progressMessage)
+        await resumeSession(apiUrl, jwt, matched.id, http)
+        resumed = true
+        await waitUntilActive(apiUrl, jwt, matched.id, waitActiveSecs, http, sleep, now, onProgress)
+        onProgress?.('session active')
+        return getSession(apiUrl, jwt, matched.id, http)
+    }
+
+    // Prefer the list snapshot for the first resume decision, then re-check before
+    // send so a flip to inactive between list and POST cannot 409 (#1195).
+    if (!matched.active) {
+        await ensureActive('requesting resume...')
+    }
+
+    let live = await ensureActive('session went inactive before send; requesting resume...')
+    if (live.metadata?.flavor === 'pi') {
+        await waitForPiReady(apiUrl, jwt, matched.id, waitActiveSecs, http, sleep, now, onProgress)
+        const beforePiResume = resumed
+        live = await ensureActive('session went inactive before send; requesting resume...')
+        if (resumed && !beforePiResume && live.metadata?.flavor === 'pi') {
+            // Fresh agent after mid-wait resume: wait for piSessionId again (#1143).
+            await waitForPiReady(apiUrl, jwt, matched.id, waitActiveSecs, http, sleep, now, onProgress)
+            live = await ensureActive('session went inactive before send; requesting resume...')
+        }
+    }
+
+    onProgress?.(`sending message (${message.length} chars)...`)
+    await sendMessage(apiUrl, jwt, matched.id, message, http)
+
+    return {
+        sessionId: matched.id,
+        name,
+        resumed
+    }
+}
+
+export function exitCodeForPingPeerError(error: PingPeerError): number {
+    switch (error.code) {
+        case 'bad_args':
+        case 'auth_failed':
+        case 'not_found':
+        case 'ambiguous':
+            return 2
+        case 'resume_failed':
+            return 3
+        case 'timeout':
+        case 'send_failed':
+            return 4
+        default:
+            return 1
+    }
+}

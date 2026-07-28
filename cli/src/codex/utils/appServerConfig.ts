@@ -7,7 +7,8 @@ import type {
     SandboxMode,
     SandboxPolicy,
     ThreadStartParams,
-    TurnStartParams
+    TurnStartParams,
+    UserInput
 } from '../appServerTypes';
 import { resolveCodexPermissionModeConfig } from './permissionModeConfig';
 
@@ -23,7 +24,23 @@ const MODELS_WITHOUT_REASONING_SUMMARY = new Set([
     'gpt-5.3-codex-spark'
 ]);
 
+const MCP_ELICITATION_ONLY_APPROVAL_POLICY = {
+    granular: {
+        sandbox_approval: false,
+        rules: false,
+        skill_approval: false,
+        request_permissions: false,
+        mcp_elicitations: true
+    }
+} as const satisfies ApprovalPolicy;
+
 function resolveApprovalPolicy(mode: EnhancedMode): ApprovalPolicy {
+    if (mode.permissionMode === 'yolo' || mode.permissionMode === 'read-only') {
+        // Codex's `never` policy auto-declines MCP elicitations before app-server
+        // can forward them. Keep command/sandbox prompts disabled for Yolo and
+        // read-only while allowing auth and structured input to reach HAPI's UI.
+        return MCP_ELICITATION_ONLY_APPROVAL_POLICY;
+    }
     return resolveCodexPermissionModeConfig(mode.permissionMode).approvalPolicy;
 }
 
@@ -107,8 +124,54 @@ function resolveInstructions(args: {
     };
 }
 
-function appendCollaborationInstructions(developerInstructions: string): string {
-    return `${developerInstructions}\n\n${codexCollaborationSpawnAgentInstructions}`;
+function appendCollaborationInstructions(developerInstructions: string, proactiveMultiAgent?: boolean): string {
+    if (proactiveMultiAgent === undefined) {
+        return `${developerInstructions}\n\n${codexCollaborationSpawnAgentInstructions}`;
+    }
+    const multiAgentMode = proactiveMultiAgent
+        ? 'Proactive multi-agent delegation is active. Any earlier instruction requiring an explicit user request before spawning sub-agents no longer applies. Use sub-agents when parallel work would materially improve speed or quality. This mode remains active until a later multi-agent mode developer message changes it.'
+        : 'Any earlier instruction enabling proactive multi-agent delegation no longer applies. Do not spawn sub-agents unless the user or applicable AGENTS.md/skill instructions explicitly ask for sub-agents, delegation, or parallel agent work.';
+    return `${developerInstructions}\n\n${codexCollaborationSpawnAgentInstructions}\n\n<multi_agent_mode>${multiAgentMode}</multi_agent_mode>`;
+}
+
+function mentionNameFromPath(path: string): string {
+    const parts = path.split(/[\\/]/).filter(Boolean);
+    return parts[parts.length - 1] ?? path;
+}
+
+export function buildUserInputFromMessage(message: string): UserInput[] {
+    const inputs: UserInput[] = [];
+    const mentionPattern = /(^|\s)@"((?:\\.|[^"\\])*)"/g;
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = mentionPattern.exec(message)) !== null) {
+        const prefix = match[1] ?? '';
+        const rawPath = match[2] ?? '';
+        const pathText = rawPath;
+        const path = pathText.replace(/\\(["\\])/g, '$1');
+        if (!path) continue;
+
+        const atIndex = match.index + prefix.length;
+        const textBeforeMention = message.slice(lastIndex, atIndex);
+        if (textBeforeMention) {
+            inputs.push({ type: 'text', text: textBeforeMention });
+        }
+
+        inputs.push({
+            type: 'mention',
+            name: mentionNameFromPath(path),
+            path
+        });
+        lastIndex = mentionPattern.lastIndex - (rawPath.length - pathText.length);
+    }
+
+    const remainder = message.slice(lastIndex);
+    if (remainder || inputs.length === 0) {
+        inputs.push({ type: 'text', text: remainder });
+    }
+
+    return inputs;
 }
 
 export function buildThreadStartParams(args: {
@@ -176,7 +239,7 @@ export function buildTurnStartParams(args: {
     const params: TurnStartParams = {
         threadId: args.threadId,
         cwd: args.cwd,
-        input: [{ type: 'text', text: args.message }]
+        input: buildUserInputFromMessage(args.message)
     };
 
     const allowCliOverrides = args.mode?.permissionMode === 'default';
@@ -217,8 +280,8 @@ export function buildTurnStartParams(args: {
             mode: collaborationMode,
             settings: {
                 model,
-                reasoning_effort: modelReasoningEffort ?? null,
-                developer_instructions: appendCollaborationInstructions(developerInstructions)
+                ...(modelReasoningEffort !== undefined ? { reasoning_effort: modelReasoningEffort } : {}),
+                developer_instructions: appendCollaborationInstructions(developerInstructions, args.mode?.proactiveMultiAgent)
             }
         };
     } else if (model) {

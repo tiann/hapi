@@ -18,7 +18,7 @@ export function formatTaskChildLabel(
         input: child.tool.input,
         result: child.tool.result,
         childrenCount: child.children.length,
-        description: child.tool.description,
+        description: child.tool.nativeTitle ?? child.tool.description,
         metadata,
     }, t)
 

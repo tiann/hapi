@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { codexModelAdvertisesFastTier, isFastServiceTier } from './codexFastMode'
+import {
+    codexModelAdvertisesFastTier,
+    getEffectiveCodexServiceTier,
+    getDisplayedCodexServiceTier,
+    isFastServiceTier
+} from './codexFastMode'
 
 // Mirrors the real Codex catalog: the Fast tier's id is 'priority' and its
 // display name is 'Fast', so the CLI captures both as lowercased tokens
@@ -41,11 +46,35 @@ describe('isFastServiceTier', () => {
     it('detects the fast tier regardless of casing/spacing', () => {
         expect(isFastServiceTier('fast')).toBe(true)
         expect(isFastServiceTier(' Fast ')).toBe(true)
+        expect(isFastServiceTier('priority')).toBe(true)
     })
 
     it('treats null/standard as not fast', () => {
         expect(isFastServiceTier(null)).toBe(false)
         expect(isFastServiceTier(undefined)).toBe(false)
         expect(isFastServiceTier('standard')).toBe(false)
+    })
+})
+
+describe('getEffectiveCodexServiceTier', () => {
+    it('uses the active model default only when the session has no override', () => {
+        const modelsWithDefault = models.map((model) => (
+            model.id === 'gpt-5.5' ? { ...model, defaultServiceTier: 'priority' } : model
+        ))
+
+        expect(getEffectiveCodexServiceTier(null, null, modelsWithDefault)).toBe('priority')
+        expect(getEffectiveCodexServiceTier('standard', null, modelsWithDefault)).toBe('standard')
+    })
+})
+
+describe('getDisplayedCodexServiceTier', () => {
+    it('displays untouched and explicit non-fast tiers as standard', () => {
+        expect(getDisplayedCodexServiceTier(null)).toBe('standard')
+        expect(getDisplayedCodexServiceTier(undefined)).toBe('standard')
+        expect(getDisplayedCodexServiceTier('standard')).toBe('standard')
+    })
+
+    it('preserves the fast selection', () => {
+        expect(getDisplayedCodexServiceTier('fast')).toBe('fast')
     })
 })

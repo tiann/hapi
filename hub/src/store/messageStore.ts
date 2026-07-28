@@ -10,6 +10,11 @@ import {
     getFirstMessages,
     getDeliverableMessagesAfter,
     getMessagesByPosition,
+    getMessagesAfterPosition,
+    getNewestMessagePosition,
+    getMessageEpoch,
+    bumpMessageEpoch,
+    getLocalMessageStates,
     getUninvokedLocalMessages,
     getMatureScheduledMessages,
     getImmediateQueuedLocalMessages,
@@ -23,6 +28,8 @@ import {
     getAllMessages,
     type CancelQueuedMessageResult,
     type LookupQueuedMessageResult,
+    type LocalMessageState,
+    type MessagePosition,
 } from './messages'
 
 export class MessageStore {
@@ -64,6 +71,31 @@ export class MessageStore {
         return getMessagesByPosition(this.db, sessionId, limit, before)
     }
 
+    getMessagesAfterPosition(
+        sessionId: string,
+        limit: number,
+        after: MessagePosition,
+        until?: MessagePosition
+    ): StoredMessage[] {
+        return getMessagesAfterPosition(this.db, sessionId, limit, after, until)
+    }
+
+    getNewestMessagePosition(sessionId: string): MessagePosition | null {
+        return getNewestMessagePosition(this.db, sessionId)
+    }
+
+    getMessageEpoch(sessionId: string): number {
+        return getMessageEpoch(this.db, sessionId)
+    }
+
+    bumpMessageEpoch(sessionId: string): number {
+        return bumpMessageEpoch(this.db, sessionId)
+    }
+
+    getLocalMessageStates(sessionId: string, localIds: string[]): LocalMessageState[] {
+        return getLocalMessageStates(this.db, sessionId, localIds)
+    }
+
     getUninvokedLocalMessages(sessionId: string): StoredMessage[] {
         return getUninvokedLocalMessages(this.db, sessionId)
     }
@@ -100,8 +132,8 @@ export class MessageStore {
         return lookupQueuedMessage(this.db, sessionId, messageId)
     }
 
-    deleteQueuedMessageById(sessionId: string, messageId: string): void {
-        deleteQueuedMessageById(this.db, sessionId, messageId)
+    deleteQueuedMessageById(sessionId: string, messageId: string): boolean {
+        return deleteQueuedMessageById(this.db, sessionId, messageId)
     }
 
     markMessagesInvoked(sessionId: string, localIds: string[], invokedAt: number): void {

@@ -3,6 +3,7 @@ import type { ApiClient } from '@/api/client'
 import type { AttachmentMetadata } from '@/types/api'
 import { isImageMimeType } from '@/lib/fileAttachments'
 import { randomId } from '@/lib/randomId'
+import { getRestoredUploadMetadata } from '@/lib/composer-attachment-drafts'
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 const MAX_PREVIEW_BYTES = 5 * 1024 * 1024
@@ -28,6 +29,21 @@ export function createAttachmentAdapter(api: ApiClient, sessionId: string): Atta
         accept: '*/*',
 
         async *add({ file }): AsyncGenerator<PendingAttachment> {
+            const restored = getRestoredUploadMetadata(file)
+            if (restored) {
+                yield {
+                    id: restored.id,
+                    type: 'file',
+                    name: file.name,
+                    contentType: file.type || 'application/octet-stream',
+                    file,
+                    status: { type: 'requires-action', reason: 'composer-send' },
+                    path: restored.path,
+                    previewUrl: restored.previewUrl,
+                } as PendingUploadAttachment
+                return
+            }
+
             const id = randomId()
             const contentType = file.type || 'application/octet-stream'
 

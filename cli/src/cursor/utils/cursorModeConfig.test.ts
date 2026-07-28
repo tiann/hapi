@@ -3,7 +3,9 @@ import type { AcpSdkBackend } from '@/agent/backends/acp';
 import {
     applyCursorAcpModel,
     applyCursorAcpMode,
+    isCursorAutoReviewMode,
     resolveCursorAcpWireId,
+    resolveCursorModeAfterPlanApproval,
     toCursorAcpMode,
     wireIdForCursorSessionState
 } from './cursorModeConfig';
@@ -19,10 +21,28 @@ describe('toCursorAcpMode', () => {
     it('maps HAPI cursor modes to Cursor ACP modes', () => {
         expect(toCursorAcpMode('default')).toBe('agent');
         expect(toCursorAcpMode('yolo')).toBe('agent');
+        expect(toCursorAcpMode('autoReview')).toBe('agent');
         expect(toCursorAcpMode('plan')).toBe('plan');
         expect(toCursorAcpMode('ask')).toBe('ask');
         expect(toCursorAcpMode('debug')).toBe('debug');
+        expect(isCursorAutoReviewMode('autoReview')).toBe(true);
+        expect(isCursorAutoReviewMode('yolo')).toBe(false);
         expect(toCursorAcpMode(undefined)).toBe('agent');
+    });
+});
+
+describe('resolveCursorModeAfterPlanApproval', () => {
+    it('leaves plan/ask for default so Yes can execute the task', () => {
+        expect(resolveCursorModeAfterPlanApproval('plan')).toBe('default');
+        expect(resolveCursorModeAfterPlanApproval('ask')).toBe('default');
+        expect(resolveCursorModeAfterPlanApproval(undefined)).toBe('default');
+    });
+
+    it('preserves executable modes (yolo, default, debug, autoReview)', () => {
+        expect(resolveCursorModeAfterPlanApproval('yolo')).toBe('yolo');
+        expect(resolveCursorModeAfterPlanApproval('default')).toBe('default');
+        expect(resolveCursorModeAfterPlanApproval('debug')).toBe('debug');
+        expect(resolveCursorModeAfterPlanApproval('autoReview')).toBe('autoReview');
     });
 });
 

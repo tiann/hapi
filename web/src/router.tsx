@@ -27,7 +27,9 @@ import { isTelegramApp } from '@/hooks/useTelegram'
 import { useSidebarResize } from '@/hooks/useSidebarResize'
 import { useMessages } from '@/hooks/queries/useMessages'
 import { useMachines } from '@/hooks/queries/useMachines'
+import { useMachineLabels } from '@/hooks/useMachineLabels'
 import { useSession } from '@/hooks/queries/useSession'
+import { useCursorChatStoreStatus } from '@/hooks/queries/useCursorChatStoreStatus'
 import { useSessions } from '@/hooks/queries/useSessions'
 import { useSlashCommands } from '@/hooks/queries/useSlashCommands'
 import { useSkills } from '@/hooks/queries/useSkills'
@@ -37,19 +39,29 @@ import { ApiError } from '@/api/client'
 import { queryKeys } from '@/lib/query-keys'
 import { useToast } from '@/lib/toast-context'
 import { useTranslation } from '@/lib/use-translation'
-import { fetchLatestMessages, seedMessageWindowFromSession } from '@/lib/message-window-store'
+import { seedMessageWindowFromSession, syncTailMessages } from '@/lib/message-window-store'
 import { clearDraftsAfterSend } from '@/lib/clearDraftsAfterSend'
 import { inactiveSessionCanResume } from '@/lib/sessionResume'
 import { markSessionSeen } from '@/lib/sessionLastSeen'
+import { useSessionBrowserTitle } from '@/hooks/useSessionBrowserTitle'
 import { clearCodexImportedSession, markCodexSessionsImported } from '@/lib/codexImportedSessions'
-import type { Machine, CodexDuplicateSessionGroup, CodexLocalSessionSummary } from '@/types/api'
+import type { CodexDuplicateSessionGroup, CodexLocalSessionSummary } from '@/types/api'
 import FilesPage from '@/routes/sessions/files'
 import FilePage from '@/routes/sessions/file'
 import TerminalPage from '@/routes/sessions/terminal'
-import SettingsPage from '@/routes/settings'
+import SettingsLayout from '@/routes/settings/layout'
+import SettingsHubPage from '@/routes/settings'
+import SettingsGeneralPage from '@/routes/settings/general'
+import SettingsDisplayPage from '@/routes/settings/display'
+import SettingsChatPage from '@/routes/settings/chat'
+import SettingsVoicePage from '@/routes/settings/voice'
+import SettingsVoiceVoicesPage from '@/routes/settings/voice-voices'
+import SettingsVoiceAdvancedPage from '@/routes/settings/voice-advanced'
+import SettingsAboutPage from '@/routes/settings/about'
 import SharePage from '@/routes/share'
 import { setSharePendingTransfer } from '@/lib/sharePendingState'
 import { deleteShareTransfer } from '@/lib/shareTransfer'
+
 
 function BackIcon(props: { className?: string }) {
     return (
@@ -104,9 +116,30 @@ function CodexImportIcon(props: { className?: string }) {
             strokeLinejoin="round"
             className={props.className}
         >
-            {/* 中文注释：入口图标改成纯更新箭头，弱化“聊天”含义，避免用户误解成会话本身而不是导入动作。 */}
-            <path d="M21 12a9 9 0 1 1-2.64-6.36" />
-            <path d="M21 3v6h-6" />
+            {/* 中文注释：导入图标使用“下载进托盘”样式，与刷新按钮的循环箭头区分开，避免两个相邻按钮看起来一样。 */}
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="7 10 12 15 17 10" />
+            <line x1="12" y1="15" x2="12" y2="3" />
+        </svg>
+    )
+}
+
+function RefreshIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+        >
+            <path d="M21 12a9 9 0 1 1-2.64-6.36L21 8" />
+            <path d="M21 3v5h-5" />
         </svg>
     )
 }
@@ -150,12 +183,6 @@ function SettingsIcon(props: { className?: string }) {
     )
 }
 
-function getMachineTitle(machine: Machine): string {
-    if (machine.metadata?.displayName) return machine.metadata.displayName
-    if (machine.metadata?.host) return machine.metadata.host
-    return machine.id.slice(0, 8)
-}
-
 function SessionsPage() {
     const { api } = useAppContext()
     const navigate = useNavigate()
@@ -168,28 +195,39 @@ function SessionsPage() {
     const { machines } = useMachines(api, true)
     const [isSyncingCodexSession, setIsSyncingCodexSession] = useState(false)
     const [codexSessions, setCodexSessions] = useState<CodexLocalSessionSummary[]>([])
+    const [codexImportMachineId, setCodexImportMachineId] = useState<string | null>(null)
     const [isLoadingCodexSessions, setIsLoadingCodexSessions] = useState(false)
     const [isSyncConfirmOpen, setIsSyncConfirmOpen] = useState(false)
     const [isRestartingCodexDesktop, setIsRestartingCodexDesktop] = useState(false)
     const [pendingDuplicateSessionIds, setPendingDuplicateSessionIds] = useState<string[]>([])
+    const [pendingDuplicateHapiSessionIds, setPendingDuplicateHapiSessionIds] = useState<string[]>([])
     const [duplicateSessionGroups, setDuplicateSessionGroups] = useState<CodexDuplicateSessionGroup[]>([])
     const [isDuplicateMergeConfirmOpen, setIsDuplicateMergeConfirmOpen] = useState(false)
     const [isMergingDuplicateSessions, setIsMergingDuplicateSessions] = useState(false)
+    const [codexImportWorkDirectoryOverride, setCodexImportWorkDirectoryOverride] = useState<string | null>(null)
 
     const handleRefresh = useCallback(() => {
-        void refetch()
-    }, [refetch])
+        void (async () => {
+            try {
+                await refetch()
+                addToast({
+                    title: t('sessions.refresh.success.title'),
+                    body: t('sessions.refresh.success.body'),
+                    sessionId: '',
+                    url: ''
+                })
+            } catch (error) {
+                addToast({
+                    title: t('sessions.refresh.failed.title'),
+                    body: error instanceof Error ? error.message : t('dialog.error.default'),
+                    sessionId: '',
+                    url: ''
+                })
+            }
+        })()
+    }, [addToast, refetch, t])
 
-    const projectCount = useMemo(() => new Set(sessions.map(s =>
-        s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other'
-    )).size, [sessions])
-    const machineLabelsById = useMemo(() => {
-        const labels: Record<string, string> = {}
-        for (const machine of machines) {
-            labels[machine.id] = getMachineTitle(machine)
-        }
-        return labels
-    }, [machines])
+    const machineLabelsById = useMachineLabels(machines)
     const machinesById = useMemo(() => {
         const byId: Record<string, typeof machines[number]> = {}
         for (const machine of machines) {
@@ -212,6 +250,10 @@ function SessionsPage() {
     const currentCodexSessionId = selectedSession?.metadata?.flavor === 'codex'
         ? (selectedSession.metadata.agentSessionId ?? null)
         : null
+    const currentWorkDirectory = codexImportWorkDirectoryOverride
+        ?? selectedSession?.metadata?.worktree?.basePath
+        ?? selectedSession?.metadata?.path
+        ?? null
     const isSessionsIndex = pathname === '/sessions' || pathname === '/sessions/'
     const sidebar = useSidebarResize()
     const handleNewSessionInDirectory = useCallback((args: { machineId: string | null; directory: string }) => {
@@ -258,6 +300,7 @@ function SessionsPage() {
         // 中文注释：重复会话确认框关闭时一并清空“本次选中导入”的上下文，确保后续检测不会误用上一轮的 codexSessionId。
         setIsDuplicateMergeConfirmOpen(false)
         setPendingDuplicateSessionIds([])
+        setPendingDuplicateHapiSessionIds([])
         setDuplicateSessionGroups([])
     }, [])
 
@@ -313,7 +356,9 @@ function SessionsPage() {
 
             const redirectTarget = selectedSessionId
                 ? result.merged.find((group) => group.removedSessionIds?.includes(selectedSessionId))
-                : undefined
+                    ?? result.merged.find((group) => Boolean(group.canonicalSessionId))
+                : result.merged.find((group) => Boolean(group.canonicalSessionId))
+            const redirectSessionId = redirectTarget?.canonicalSessionId ?? pendingDuplicateHapiSessionIds[0]
 
             closeDuplicateMergeDialog()
             await Promise.all([
@@ -327,10 +372,10 @@ function SessionsPage() {
             ])
             await refetch()
 
-            if (redirectTarget?.canonicalSessionId) {
+            if (redirectSessionId) {
                 navigate({
                     to: '/sessions/$sessionId',
-                    params: { sessionId: redirectTarget.canonicalSessionId }
+                    params: { sessionId: redirectSessionId }
                 })
             }
         } catch (error) {
@@ -354,6 +399,7 @@ function SessionsPage() {
         isMergingDuplicateSessions,
         navigate,
         normalizeCodexScriptError,
+        pendingDuplicateHapiSessionIds,
         pendingDuplicateSessionIds,
         queryClient,
         refetch,
@@ -361,16 +407,19 @@ function SessionsPage() {
         t
     ])
 
-    const openCodexImportDialog = useCallback(async () => {
+    const openCodexImportDialog = useCallback(async (workDirectory?: string | null) => {
+        setCodexImportWorkDirectoryOverride(workDirectory?.trim() || null)
         if (isLoadingCodexSessions) return
 
         setIsSyncConfirmOpen(true)
         setIsLoadingCodexSessions(true)
         try {
-            const result = await api.getCodexSessions()
+            const result = await api.getCodexSessions(workDirectory)
             setCodexSessions(result.sessions)
+            setCodexImportMachineId(result.machineId ?? null)
         } catch (error) {
             setCodexSessions([])
+            setCodexImportMachineId(null)
             const reason = normalizeCodexScriptError(
                 error instanceof Error ? error.message : null,
                 t('dialog.error.default')
@@ -386,13 +435,22 @@ function SessionsPage() {
         }
     }, [addToast, api, formatCodexSyncFailureBody, isLoadingCodexSessions, normalizeCodexScriptError, t])
 
+    const handleArchiveCodexSession = useCallback(async (codexSession: import('@/types/api').CodexLocalSessionSummary) => {
+        if (!api) return
+        const result = await api.archiveCodexSession(codexSession.id, codexImportMachineId)
+        if (!result.success) {
+            throw new Error(result.error)
+        }
+        setCodexSessions((current) => current.filter((session) => session.id !== codexSession.id))
+    }, [api, codexImportMachineId])
+
     const handleImportCodexSessions = useCallback(async (sessionIds: string[]) => {
         if (isSyncingCodexSession || isLoadingCodexSessions) return
 
         setIsSyncingCodexSession(true)
         try {
             // 中文注释：弹窗提交的是本地 Codex thread ID；后端会直接读取这些 transcript 并导入到 Hapi。
-            const result = await api.syncCodexSession({ sessionIds })
+            const result = await api.syncCodexSession({ sessionIds, cwd: currentWorkDirectory, machineId: codexImportMachineId })
             if (!result.success) {
                 throw new Error(normalizeCodexScriptError(result.error, t('codexSync.failed.body')))
             }
@@ -409,6 +467,7 @@ function SessionsPage() {
             await refetch()
 
             setPendingDuplicateSessionIds([])
+            setPendingDuplicateHapiSessionIds(result.hapiSessionIds ?? [])
             setDuplicateSessionGroups([])
             setIsDuplicateMergeConfirmOpen(false)
             try {
@@ -423,6 +482,7 @@ function SessionsPage() {
 
                 if (duplicateResult.duplicates.length > 0) {
                     setPendingDuplicateSessionIds(sessionIds)
+                    setPendingDuplicateHapiSessionIds(result.hapiSessionIds ?? [])
                     setDuplicateSessionGroups(duplicateResult.duplicates)
                     setIsDuplicateMergeConfirmOpen(true)
                 }
@@ -455,12 +515,15 @@ function SessionsPage() {
         addToast,
         api,
         formatCodexSyncFailureBody,
+        codexImportMachineId,
+        currentWorkDirectory,
         isLoadingCodexSessions,
         isSyncingCodexSession,
         normalizeCodexScriptError,
         refetch,
         setDuplicateSessionGroups,
         setIsDuplicateMergeConfirmOpen,
+        setPendingDuplicateHapiSessionIds,
         setPendingDuplicateSessionIds,
         t
     ])
@@ -469,14 +532,11 @@ function SessionsPage() {
         <>
             <div className="flex h-full min-h-0">
             <div
-                className={`${isSessionsIndex ? 'flex' : 'hidden lg:flex'} w-full shrink-0 flex-col bg-[var(--app-bg)]`}
+                className={`${isSessionsIndex ? 'flex' : 'hidden split:flex'} w-full shrink-0 flex-col bg-[var(--app-bg)]`}
                 style={{ '--sidebar-w': `${sidebar.width}px` } as React.CSSProperties}
             >
-                <div className="bg-[var(--app-bg)] pt-[env(safe-area-inset-top)]">
-                    <div className="mx-auto w-full max-w-content flex items-center justify-between px-3 py-2">
-                        <div className="text-xs text-[var(--app-hint)]">
-                            {t('sessions.count', { n: sessions.length, m: projectCount })}
-                        </div>
+                <div className="session-list-scrollbar-offset shrink-0 bg-[var(--app-bg)] pt-[env(safe-area-inset-top)]">
+                    <div className="mx-auto flex w-full max-w-content items-center justify-end px-2 py-2">
                         <div className="flex items-center gap-2">
                             <button
                                 type="button"
@@ -488,6 +548,17 @@ function SessionsPage() {
                                 title={t('codexSync.tooltip')}
                             >
                                 <CodexImportIcon className={`h-5 w-5 ${isLoadingCodexSessions ? 'animate-spin' : ''}`} />
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleRefresh}
+                                disabled={isLoading}
+                                aria-label={t('button.refresh')}
+                                aria-busy={isLoading}
+                                className="p-1.5 rounded-full text-[var(--app-hint)] hover:text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)] transition-colors disabled:opacity-60 disabled:cursor-wait"
+                                title={t('button.refresh')}
+                            >
+                                <RefreshIcon className={`h-5 w-5 ${isLoading ? 'animate-spin' : ''}`} />
                             </button>
                             <button
                                 type="button"
@@ -508,7 +579,7 @@ function SessionsPage() {
                             <button
                                 type="button"
                                 onClick={() => navigate({ to: '/sessions/new' })}
-                                className="session-list-new-button p-1.5 rounded-full text-[var(--app-link)] transition-colors"
+                                className="session-list-new-button flex h-9 w-9 items-center justify-center rounded-full text-[var(--app-link)] transition-colors"
                                 title={t('sessions.new')}
                             >
                                 <PlusIcon className="h-5 w-5" />
@@ -517,7 +588,7 @@ function SessionsPage() {
                     </div>
                 </div>
 
-                <div className="app-scroll-y flex-1 min-h-0 desktop-scrollbar-left">
+                <div className="flex min-h-0 flex-1 flex-col">
                     {error ? (
                         <div className="mx-auto w-full max-w-content px-3 py-2">
                             <div className="text-sm text-red-600">{error}</div>
@@ -545,12 +616,12 @@ function SessionsPage() {
 
             {/* Resize handle - desktop only */}
             <div
-                className="sidebar-resize-handle hidden lg:block shrink-0"
+                className="sidebar-resize-handle hidden split:block shrink-0"
                 data-dragging={sidebar.isDragging || undefined}
                 onPointerDown={sidebar.onPointerDown}
             />
 
-            <div className={`${isSessionsIndex ? 'hidden lg:flex' : 'flex'} min-w-0 flex-1 flex-col bg-[var(--app-bg)]`}>
+            <div className={`${isSessionsIndex ? 'hidden split:flex' : 'flex'} min-w-0 flex-1 flex-col bg-[var(--app-bg)]`}>
                 <div className="flex-1 min-h-0">
                     <Outlet />
                 </div>
@@ -559,11 +630,17 @@ function SessionsPage() {
             {/* 中文注释：这里展示的是本地 Codex transcript 列表；默认尝试勾选当前 Hapi 会话关联的 Codex thread。 */}
             <CodexSessionSyncDialog
                 isOpen={isSyncConfirmOpen}
-                onClose={() => setIsSyncConfirmOpen(false)}
+                onClose={() => {
+                    setIsSyncConfirmOpen(false)
+                    setCodexImportWorkDirectoryOverride(null)
+                    setCodexImportMachineId(null)
+                }}
                 sessions={codexSessions}
                 currentCodexSessionId={currentCodexSessionId}
+                currentWorkDirectory={currentWorkDirectory}
                 onConfirm={handleImportCodexSessions}
                 onRestartCodexDesktop={handleRestartCodexDesktop}
+                onArchiveSession={handleArchiveCodexSession}
                 isPending={isSyncingCodexSession}
                 isRestartingCodexDesktop={isRestartingCodexDesktop}
                 isLoading={isLoadingCodexSessions}
@@ -625,18 +702,22 @@ function SessionPage() {
         refetch: refetchSession,
     } = useSession(api, sessionId)
     const {
+        status: cursorChatStoreStatus,
+        isApplicable: cursorChatStoreApplicable,
+        error: cursorChatStoreError,
+    } = useCursorChatStoreStatus({ api, session })
+    const {
         messages,
-        pendingMessages,
         warning: messagesWarning,
-        isLoading: messagesLoading,
+        isSyncingTail: messagesSyncingTail,
         isLoadingMore: messagesLoadingMore,
         hasMore: messagesHasMore,
         loadMore: loadMoreMessages,
         refetch: refetchMessages,
-        pendingCount,
+        unseenCount,
         messagesVersion,
-        flushPending,
-        setAtBottom,
+        historyVersion,
+        setViewMode,
     } = useMessages(api, sessionId)
 
     // Tracks the most recent send the hub rejected (4xx/5xx/network), keyed
@@ -719,6 +800,16 @@ function SessionPage() {
         })()
     }, [api, queryClient, navigate, addToast, t])
 
+    const cursorReopenDisabledReason = cursorChatStoreApplicable && cursorChatStoreStatus?.onDisk !== true
+        ? cursorChatStoreError
+            ? t('session.action.reopenCursorCheckFailed')
+            : cursorChatStoreStatus?.onDisk === false
+                ? t('session.action.reopenCursorMissing')
+                : t('session.action.reopenCursorChecking')
+        : undefined
+    const canOfferInactiveReopen = session
+        ? inactiveSessionCanResume(session, messages.length, cursorChatStoreStatus?.onDisk)
+        : false
     const rawSendError = sendErrors[sessionId] ?? null
     const sendError: ComposerSendError | null = rawSendError
         ? {
@@ -726,7 +817,7 @@ function SessionPage() {
             text: rawSendError.text,
             message: rawSendError.message,
             scheduledAt: rawSendError.scheduledAt,
-            action: rawSendError.code === 'session_inactive'
+            action: rawSendError.code === 'session_inactive' && canOfferInactiveReopen
                 ? {
                     label: t('chat.sendError.sessionInactive.action'),
                     onClick: () => reopenFromErrorAffordance(sessionId),
@@ -773,7 +864,7 @@ function SessionPage() {
             if (!api || !session || session.active) {
                 return currentSessionId
             }
-            if (!inactiveSessionCanResume(session, messages.length)) {
+            if (!inactiveSessionCanResume(session, messages.length, cursorChatStoreStatus?.onDisk)) {
                 // #918: surface as a session_inactive ApiError so the
                 // onError consumer's classifier renders the Reopen
                 // affordance.  `status: 409` mirrors the hub guard for
@@ -807,11 +898,11 @@ function SessionPage() {
         onSessionResolved: (resolvedSessionId) => {
             void (async () => {
                 if (api) {
-                    if (session && resolvedSessionId !== session.id) {
-                        seedMessageWindowFromSession(session.id, resolvedSessionId)
-                        queryClient.setQueryData(queryKeys.session(resolvedSessionId), {
-                            session: { ...session, id: resolvedSessionId, active: true }
-                        })
+                    if (session) {
+                        if (resolvedSessionId !== session.id) {
+                            seedMessageWindowFromSession(session.id, resolvedSessionId)
+                        }
+                        void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
                     }
                     try {
                         await Promise.all([
@@ -819,9 +910,16 @@ function SessionPage() {
                                 queryKey: queryKeys.session(resolvedSessionId),
                                 queryFn: () => api.getSession(resolvedSessionId),
                             }),
-                            fetchLatestMessages(api, resolvedSessionId),
+                            syncTailMessages(api, resolvedSessionId),
                         ])
                     } catch {
+                    }
+                    if (session) {
+                        // 中文注释：恢复接口成功后，REST/SSE 可能仍有短暂竞态；最后再乐观置为在线，
+                        // 避免刚 prefetch 到旧 inactive 快照导致状态栏继续显示离线。
+                        queryClient.setQueryData(queryKeys.session(resolvedSessionId), (previous: { session?: typeof session } | undefined) => ({
+                            session: { ...(previous?.session ?? session), id: resolvedSessionId, active: true }
+                        }))
                     }
                 }
                 navigate({
@@ -855,11 +953,26 @@ function SessionPage() {
     } = useSkills(api, sessionId)
 
     const getAutocompleteSuggestions = useCallback(async (query: string) => {
+        if (query.startsWith('@')) {
+            if (agentType !== 'codex' || !api || !sessionId) return []
+            const search = query.slice(1)
+            const response = await api.searchSessionFiles(sessionId, search, 50)
+            if (!response.success || !response.files) return []
+            return response.files.map((file) => {
+                const mentionText = `@"${file.fullPath.replace(/(["\\])/g, '\\$1')}"`
+                return {
+                    key: mentionText,
+                    text: mentionText,
+                    label: `@${file.fileName}`,
+                    description: file.filePath || file.fullPath
+                }
+            })
+        }
         if (query.startsWith('$')) {
             return await getSkillSuggestions(query)
         }
         return await getSlashSuggestions(query)
-    }, [getSkillSuggestions, getSlashSuggestions])
+    }, [agentType, api, sessionId, getSkillSuggestions, getSlashSuggestions])
 
     const refreshSelectedSession = useCallback(() => {
         void refetchSession()
@@ -910,21 +1023,22 @@ function SessionPage() {
         <SessionChat
             api={api}
             session={session}
+            cursorChatOnDisk={cursorChatStoreStatus?.onDisk}
+            reopenDisabledReason={cursorReopenDisabledReason}
             messages={messages}
-            pendingMessages={pendingMessages}
             messagesWarning={messagesWarning}
             hasMoreMessages={messagesHasMore}
-            isLoadingMessages={messagesLoading}
+            isSyncingTail={messagesSyncingTail}
             isLoadingMoreMessages={messagesLoadingMore}
             isSending={isSending}
-            pendingCount={pendingCount}
+            unseenCount={unseenCount}
             messagesVersion={messagesVersion}
+            historyVersion={historyVersion}
             onBack={goBack}
             onRefresh={refreshSelectedSession}
             onLoadMore={loadMoreMessages}
             onSend={sendMessage}
-            onFlushPending={flushPending}
-            onAtBottomChange={setAtBottom}
+            onViewModeChange={setViewMode}
             onRetryMessage={retryMessage}
             autocompleteSuggestions={getAutocompleteSuggestions}
             availableSlashCommands={slashCommands}
@@ -941,7 +1055,8 @@ function SessionDetailRoute() {
     const pathname = useLocation({ select: location => location.pathname })
     const { sessionId } = useParams({ from: '/sessions/$sessionId' })
     const navigate = useNavigate()
-    const { notFound: sessionNotFound } = useSession(api, sessionId)
+    const { session, notFound: sessionNotFound } = useSession(api, sessionId)
+    useSessionBrowserTitle(session)
     const basePath = `/sessions/${sessionId}`
     const isChat = pathname === basePath || pathname === `${basePath}/`
 
@@ -1226,7 +1341,55 @@ const browseRoute = createRoute({
 const settingsRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/settings',
-    component: SettingsPage,
+    component: SettingsLayout,
+})
+
+const settingsIndexRoute = createRoute({
+    getParentRoute: () => settingsRoute,
+    path: '/',
+    component: SettingsHubPage,
+})
+
+const settingsGeneralRoute = createRoute({
+    getParentRoute: () => settingsRoute,
+    path: 'general',
+    component: SettingsGeneralPage,
+})
+
+const settingsDisplayRoute = createRoute({
+    getParentRoute: () => settingsRoute,
+    path: 'display',
+    component: SettingsDisplayPage,
+})
+
+const settingsChatRoute = createRoute({
+    getParentRoute: () => settingsRoute,
+    path: 'chat',
+    component: SettingsChatPage,
+})
+
+const settingsVoiceRoute = createRoute({
+    getParentRoute: () => settingsRoute,
+    path: 'voice',
+    component: SettingsVoicePage,
+})
+
+const settingsVoiceVoicesRoute = createRoute({
+    getParentRoute: () => settingsRoute,
+    path: 'voice/voices',
+    component: SettingsVoiceVoicesPage,
+})
+
+const settingsVoiceAdvancedRoute = createRoute({
+    getParentRoute: () => settingsRoute,
+    path: 'voice/advanced',
+    component: SettingsVoiceAdvancedPage,
+})
+
+const settingsAboutRoute = createRoute({
+    getParentRoute: () => settingsRoute,
+    path: 'about',
+    component: SettingsAboutPage,
 })
 
 // Web Share Target landing route. Service worker (`web/src/sw.ts`)
@@ -1260,7 +1423,16 @@ export const routeTree = rootRoute.addChildren([
         ]),
     ]),
     browseRoute,
-    settingsRoute,
+    settingsRoute.addChildren([
+        settingsIndexRoute,
+        settingsGeneralRoute,
+        settingsDisplayRoute,
+        settingsChatRoute,
+        settingsVoiceRoute,
+        settingsVoiceVoicesRoute,
+        settingsVoiceAdvancedRoute,
+        settingsAboutRoute,
+    ]),
     shareRoute,
 ])
 

@@ -9,6 +9,18 @@ import {
 afterEach(() => cleanup())
 
 describe('HoverTooltip keyboard wiring', () => {
+    it('sizes short localized tooltips to their content up to the maximum width', () => {
+        render(
+            <HoverTooltip id="attention-tooltip" target={<span>dot</span>}>
+                有新活动
+            </HoverTooltip>
+        )
+
+        const tooltip = screen.getByRole('tooltip', { hidden: true })
+        expect(tooltip.className).toContain('w-max')
+        expect(tooltip.className).toContain('max-w-[14rem]')
+    })
+
     it('applies parent row focus-visible reveal classes', () => {
         render(
             <HoverTooltip

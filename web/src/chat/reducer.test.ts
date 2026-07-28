@@ -80,6 +80,51 @@ function decryptedMessage(id: string, content: unknown, createdAt: number): Decr
 }
 
 describe('reduceChatBlocks', () => {
+    it('renders Codex proposed plan tool messages as a completed plan card', () => {
+        const plan = '# Plan\n\n1. Inspect\n2. Implement'
+        const messages = [
+            decryptedMessage('plan-call', {
+                role: 'agent',
+                content: {
+                    type: 'codex',
+                    data: {
+                        type: 'tool-call',
+                        name: 'ExitPlanMode',
+                        callId: 'codex-proposed-plan:plan-1',
+                        input: { plan },
+                        id: 'plan-1'
+                    }
+                }
+            }, 1),
+            decryptedMessage('plan-result', {
+                role: 'agent',
+                content: {
+                    type: 'codex',
+                    data: {
+                        type: 'tool-call-result',
+                        callId: 'codex-proposed-plan:plan-1',
+                        output: null,
+                        id: 'plan-1:result'
+                    }
+                }
+            }, 2)
+        ].map(message => normalizeDecryptedMessage(message))
+            .filter((message): message is NormalizedMessage => message !== null)
+
+        const reduced = reduceChatBlocks(messages, null)
+
+        expect(reduced.blocks).toContainEqual(expect.objectContaining({
+            kind: 'tool-call',
+            id: 'codex-proposed-plan:plan-1',
+            tool: expect.objectContaining({
+                name: 'ExitPlanMode',
+                state: 'completed',
+                input: { plan },
+                result: null
+            })
+        }))
+    })
+
     it('ignores child agent usage when calculating parent latest usage', () => {
         const messages: NormalizedMessage[] = [
             {

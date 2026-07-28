@@ -91,6 +91,23 @@ describe('sessionConfigRpc', () => {
         expect(onApply).toHaveBeenCalledWith({ modelReasoningEffort: 'high' })
     })
 
+    it('applies nullable launch effort for Grok runtime switching', async () => {
+        const harness = createRpcHarness()
+        const onApply = vi.fn()
+
+        registerSessionConfigRpc({
+            rpcHandlerManager: harness.rpcHandlerManager,
+            flavor: 'grok',
+            effortMode: 'nullable',
+            onApply
+        })
+
+        const result = await harness.getHandler()({ effort: 'low' }) as { applied: Record<string, unknown> }
+
+        expect(result.applied.effort).toBe('low')
+        expect(onApply).toHaveBeenCalledWith({ effort: 'low' })
+    })
+
     it('rejects model config for agents configured to reject model changes', async () => {
         const harness = createRpcHarness()
 

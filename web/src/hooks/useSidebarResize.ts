@@ -27,9 +27,16 @@ export function useSidebarResize() {
 
     const onPointerDown = useCallback((e: React.PointerEvent) => {
         e.preventDefault()
+        // The sidebar (the handle's previous sibling) can render narrower than the
+        // stored width when the viewport cap in index.css kicks in on a compact
+        // split. Seed the drag from the actual rendered width so there's no dead
+        // zone before the sidebar responds. Falls back to the stored width when the
+        // element or its measured width is unavailable (e.g. non-DOM test env).
+        const sidebarEl = e.currentTarget.previousElementSibling as HTMLElement | null
+        const renderedWidth = sidebarEl?.getBoundingClientRect().width
         activePointerIdRef.current = e.pointerId
         startXRef.current = e.clientX
-        startWidthRef.current = width
+        startWidthRef.current = renderedWidth || width
         setIsDragging(true)
     }, [width])
 

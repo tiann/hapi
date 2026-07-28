@@ -227,22 +227,33 @@ export function createGitRoutes(getSyncEngine: () => SyncEngine | null): Hono<We
         }
 
         const stdout = result.stdout ?? ''
-        const files = stdout
+        const paths = stdout
             .split('\n')
             .map((line) => line.trim())
             .filter((line) => line.length > 0)
             .slice(0, limit)
-            .map((fullPath) => {
-                const parts = fullPath.split('/')
-                const fileName = parts[parts.length - 1] || fullPath
-                const filePath = parts.slice(0, -1).join('/')
-                return {
-                    fileName,
-                    filePath,
-                    fullPath,
-                    fileType: 'file' as const
-                }
-            })
+
+        const metadataResult = await runRpc(() => engine.statFiles(sessionResult.sessionId, paths))
+        const metadataByPath = new Map(
+            metadataResult.success
+                ? (metadataResult.entries ?? []).map((entry) => [entry.path, entry] as const)
+                : []
+        )
+
+        const files = paths.map((fullPath) => {
+            const parts = fullPath.split('/')
+            const fileName = parts[parts.length - 1] || fullPath
+            const filePath = parts.slice(0, -1).join('/')
+            const metadata = metadataByPath.get(fullPath)
+            return {
+                fileName,
+                filePath,
+                fullPath,
+                fileType: 'file' as const,
+                size: metadata?.size,
+                modified: metadata?.modified
+            }
+        })
 
         return c.json({ success: true, files })
     })

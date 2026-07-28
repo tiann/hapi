@@ -5,7 +5,6 @@ import { queryKeys } from '@/lib/query-keys'
 
 export function useCodexModels(args: {
     api: ApiClient | null
-    sessionId?: string | null
     machineId?: string | null
     enabled?: boolean
 }): {
@@ -13,20 +12,15 @@ export function useCodexModels(args: {
     isLoading: boolean
     error: string | null
 } {
-    const { api, sessionId, machineId } = args
-    const enabled = Boolean(args.enabled && api && (sessionId || machineId))
-    const queryKey = sessionId
-        ? queryKeys.sessionCodexModels(sessionId)
-        : queryKeys.machineCodexModels(machineId ?? 'unknown')
+    const { api, machineId } = args
+    const enabled = Boolean(args.enabled && api && machineId)
+    const queryKey = queryKeys.machineCodexModels(machineId ?? 'unknown')
 
     const query = useQuery({
         queryKey,
         queryFn: async () => {
             if (!api) {
                 throw new Error('API unavailable')
-            }
-            if (sessionId) {
-                return await api.getSessionCodexModels(sessionId)
             }
             if (machineId) {
                 return await api.getMachineCodexModels(machineId)

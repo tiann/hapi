@@ -71,7 +71,7 @@ export const ReasoningGroup: FC<PropsWithChildren> = ({ children }) => {
     }, [isStreaming])
 
     return (
-        <div className="aui-reasoning-group my-3 overflow-hidden rounded-2xl bg-[var(--app-reasoning-bg)]">
+        <div data-hapi-share-exclude="true" className="aui-reasoning-group my-3 overflow-hidden rounded-2xl bg-[var(--app-reasoning-bg)]">
             <button
                 type="button"
                 onClick={() => setIsOpen(!isOpen)}
@@ -96,7 +96,7 @@ export const ReasoningGroup: FC<PropsWithChildren> = ({ children }) => {
                     isOpen ? 'max-h-[5000px] opacity-100' : 'max-h-0 opacity-0'
                 )}
             >
-                <div className="border-t border-[var(--app-divider)] px-3.5 py-3">
+                <div className="max-h-[60vh] overflow-y-auto overscroll-contain border-t border-[var(--app-divider)] px-3.5 py-3">
                     {children}
                 </div>
             </div>

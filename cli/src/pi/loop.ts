@@ -1,14 +1,14 @@
 import { logger } from '@/ui/logger';
 import { convertAgentMessage } from '@/agent/messageConverter';
 import { PiTransport } from './piTransport';
-import { convertPiEvent } from './piEventConverter';
+import { convertPiEvent, convertPiTurnUsage } from './piEventConverter';
 import { PiMessageAccumulator } from './piMessageAccumulator';
-import { parsePiModels, parsePiCommands, PiResponseEventSchema, PiStateDataSchema, PiSetModelDataSchema } from './schemas';
-import type { PiResponseEvent, PiRpcCommand, PiThinkingLevel } from './types';
+import { parsePiModels, parsePiCommands, parsePiContextUsage, PiResponseEventSchema, PiStateDataSchema, PiSetModelDataSchema } from './schemas';
+import type { PiContextUsage, PiResponseEvent, PiRpcCommand, PiThinkingLevel, PiTurnEndEvent } from './types';
 import type { PiSession } from './session';
 
 // --- Response parsers: re-exported from schemas.ts ---
-export { parsePiModels, parsePiCommands } from './schemas';
+export { parsePiModels, parsePiCommands, parsePiContextUsage } from './schemas';
 
 // --- Pending RPC resolver ---
 // Instance-scoped: created once by wireTransportEvents, stored on PiSession.
@@ -143,7 +143,12 @@ function handleResponse(
         const error = response.error ?? 'Unknown Pi error';
         logger.debug(`[pi] RPC error for ${command}: ${error}`);
         resolvePendingRpc(resolver, response);
-        session.sendSessionEvent({ type: 'message', message: error });
+        // get_session_stats is a best-effort compatibility probe. Older Pi
+        // versions may reject it, so fall back silently instead of surfacing an
+        // error event to the user on every completed turn.
+        if (command !== 'get_session_stats') {
+            session.sendSessionEvent({ type: 'message', message: error });
+        }
         if (command === 'prompt' && pendingLocalIds.length > 0) {
             const oldestLocalId = pendingLocalIds.shift()!;
             session.emitMessagesConsumed([oldestLocalId], { clearQueuedThinkingGrace: true });
@@ -154,6 +159,13 @@ function handleResponse(
     switch (command) {
         case 'get_state': {
             handleGetState(response.data, session);
+            // Pi has finished startup init (this is the response that persists
+            // metadata.piSessionId — the signal working callers already wait
+            // for). Release any prompts buffered during the spawn window so they
+            // reach an initialized Pi session instead of wedging (issue #1143).
+            // markReady is idempotent; a missing sessionId still flips ready so
+            // buffered prompts are never swallowed forever.
+            session.markReady();
             break;
         }
         case 'set_model': {
@@ -250,6 +262,43 @@ function handleResponse(
     }
 }
 
+const PI_CONTEXT_USAGE_RPC_TIMEOUT_MS = 1_000;
+
+async function publishPiTurnUsage(
+    event: PiTurnEndEvent,
+    transport: PiTransport,
+    session: PiSession,
+    isLatestRequest: () => boolean,
+): Promise<void> {
+    let contextUsage: PiContextUsage | null | undefined;
+    try {
+        const stats = await sendPiRpcAndWait(
+            session,
+            transport,
+            { type: 'get_session_stats' },
+            PI_CONTEXT_USAGE_RPC_TIMEOUT_MS,
+        );
+        contextUsage = parsePiContextUsage(stats);
+    } catch (error) {
+        // Unsupported/failed stats RPC: convertPiTurnUsage falls back to the
+        // positive per-turn totalTokens value. The fallback is intentionally
+        // local to Pi so providers with different usage semantics are untouched.
+        logger.debug(`[pi] get_session_stats unavailable, using turn usage fallback: ${error instanceof Error ? error.message : String(error)}`);
+        contextUsage = undefined;
+    }
+
+    // RPC responses can arrive after a newer turn has already completed.
+    // Publishing only the newest request prevents stale context values from
+    // overwriting a later turn's usage state.
+    if (!isLatestRequest()) return;
+
+    const usageMessage = convertPiTurnUsage(event, contextUsage);
+    if (!usageMessage) return;
+
+    const converted = convertAgentMessage(usageMessage);
+    if (converted) session.sendAgentMessage(converted);
+}
+
 // --- Wire transport events to session ---
 
 export function wireTransportEvents(
@@ -259,6 +308,7 @@ export function wireTransportEvents(
 ): void {
     session.rpcResolver = new PiRpcResolver();
     const assistantMessageAccumulator = new PiMessageAccumulator();
+    let latestContextUsageRequest = 0;
 
     transport.onEvent((event) => {
         // Debug: log all event types to diagnose missing Pi output
@@ -305,6 +355,13 @@ export function wireTransportEvents(
             }
         } else if (event.type === 'turn_end') {
             session.updateThinkingState(false);
+            const requestVersion = ++latestContextUsageRequest;
+            void publishPiTurnUsage(
+                event as PiTurnEndEvent,
+                transport,
+                session,
+                () => requestVersion === latestContextUsageRequest,
+            );
         } else if (event.type === 'agent_end') {
             session.piIsStreaming = false;
         }

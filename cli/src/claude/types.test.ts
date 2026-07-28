@@ -2,6 +2,18 @@ import { describe, it, expect } from "vitest";
 import { RawJSONLinesSchema } from "./types";
 
 describe("RawJSONLinesSchema", () => {
+    it("accepts Claude Code native ai-title events", () => {
+        expect(RawJSONLinesSchema.parse({
+            type: "ai-title",
+            aiTitle: "根据交接文档部署 HAPI 服务",
+            sessionId: "session-1"
+        })).toEqual({
+            type: "ai-title",
+            aiTitle: "根据交接文档部署 HAPI 服务",
+            sessionId: "session-1"
+        });
+    });
+
     describe("system / turn_duration record", () => {
         it("preserves messageId so the web reducer can match the duration to the right block", () => {
             // Claude code emits turn_duration as a system record carrying the
@@ -79,6 +91,23 @@ describe("RawJSONLinesSchema", () => {
             });
             if (parsed.type !== "system") throw new Error("expected system record");
             expect((parsed as Record<string, unknown>).futureBreakdown).toEqual({ tokens: { in: 1, out: 2 } });
+        });
+    });
+
+    describe("system / away_summary record", () => {
+        it("preserves the recap text in `content` (not declared on the base schema, relies on passthrough)", () => {
+            // Claude code's away_summary record carries the recap text in `content`.
+            // If Zod strips undeclared fields, the recap text never reaches the hub/web.
+            const parsed = RawJSONLinesSchema.parse({
+                type: "system",
+                subtype: "away_summary",
+                uuid: "evt-4",
+                content: "Building X, next: wire up Y.",
+                timestamp: "2026-07-12T00:00:00.000Z",
+                isMeta: false
+            });
+            if (parsed.type !== "system") throw new Error("expected system record");
+            expect((parsed as Record<string, unknown>).content).toBe("Building X, next: wire up Y.");
         });
     });
 });

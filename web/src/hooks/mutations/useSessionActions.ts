@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
-import type { CodexCollaborationMode, PermissionMode } from '@/types/api'
+import type { CodexCollaborationMode, PermissionMode, SessionResponse, SessionsResponse } from '@/types/api'
 import type { ReopenSessionResponse } from '@hapi/protocol/apiTypes'
 import { queryKeys } from '@/lib/query-keys'
 import { clearMessageWindow } from '@/lib/message-window-store'
@@ -28,6 +28,36 @@ export function useSessionActions(
     isPending: boolean
 } {
     const queryClient = useQueryClient()
+
+    const markSessionActiveInCache = (targetSessionId: string) => {
+        // 中文注释：恢复/重开接口成功后，session-alive SSE 可能已经先到或稍后才到。
+        // 这里先乐观更新详情和侧边栏摘要，避免 UI 在下一次 SSE/REST 前仍显示离线。
+        queryClient.setQueryData<SessionResponse | undefined>(queryKeys.session(targetSessionId), (previous) => {
+            if (!previous?.session) return previous
+            return {
+                ...previous,
+                session: {
+                    ...previous.session,
+                    active: true,
+                    activeAt: Math.max(previous.session.activeAt ?? 0, Date.now())
+                }
+            }
+        })
+        queryClient.setQueryData<SessionsResponse | undefined>(queryKeys.sessions, (previous) => {
+            if (!previous) return previous
+            let changed = false
+            const sessions = previous.sessions.map((summary) => {
+                if (summary.id !== targetSessionId) return summary
+                changed = true
+                return {
+                    ...summary,
+                    active: true,
+                    activeAt: Math.max(summary.activeAt ?? 0, Date.now())
+                }
+            })
+            return changed ? { ...previous, sessions } : previous
+        })
+    }
 
     const invalidateSession = async () => {
         if (!sessionId) return
@@ -68,7 +98,12 @@ export function useSessionActions(
             }
             return await api.reopenSession(sessionId)
         },
-        onSuccess: () => void invalidateSession(),
+        onSuccess: (result) => {
+            void (async () => {
+                await invalidateSession()
+                markSessionActiveInCache(result.sessionId)
+            })()
+        },
     })
 
     const switchMutation = useMutation({

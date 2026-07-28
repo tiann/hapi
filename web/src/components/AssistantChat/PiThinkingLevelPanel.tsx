@@ -3,7 +3,7 @@ import type { PiThinkingLevelMap } from '@/types/api'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { isThinkingLevelSupported } from './piThinkingLevelOptions'
 
-const ALL_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const
+const ALL_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 
 /**
  * Determine which thinking levels a model supports.

@@ -1,5 +1,63 @@
+import { render } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
-import { getToolPresentation } from '@/components/ToolCard/knownTools'
+import { formatTerminalCommandTitle, getToolPresentation } from '@/components/ToolCard/knownTools'
+
+describe('formatTerminalCommandTitle', () => {
+    it.each([
+        ['bun run test --watch', 'bun run test'],
+        ['git status --short', 'git status'],
+        ['rg -n "foo" web/src', 'rg'],
+        ['sudo systemctl restart hapi', 'systemctl restart'],
+        ['CI=1 env NODE_ENV=test npm run lint -- --fix', 'npm run lint'],
+        ['/usr/bin/docker compose up -d', 'docker compose up'],
+        ['git -C /tmp/repo status', 'git'],
+        ['sudo -u root systemctl restart hapi', null],
+        ['bun test && bun typecheck', null],
+        ['', null],
+    ])('formats %j as %j', (command, expected) => {
+        expect(formatTerminalCommandTitle(command)).toBe(expected)
+    })
+
+    it.each(['Bash', 'CodexBash', 'shell_command', 'run_shell_command'])('uses the command fallback for %s', (toolName) => {
+        const presentation = getToolPresentation({
+            toolName,
+            input: { command: 'git status --short' },
+            result: null,
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('git status')
+        expect(presentation.subtitle).toBe('git status --short')
+    })
+
+    it('keeps the agent description authoritative', () => {
+        const presentation = getToolPresentation({
+            toolName: 'Bash',
+            input: { command: 'git status --short' },
+            result: null,
+            childrenCount: 0,
+            description: 'Inspect repository status',
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('Inspect repository status')
+    })
+
+    it('shortens a native title that only repeats the raw command', () => {
+        const presentation = getToolPresentation({
+            toolName: 'run_shell_command',
+            input: { command: 'ls -la /tmp' },
+            result: null,
+            childrenCount: 0,
+            description: 'ls -la /tmp',
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('ls')
+    })
+})
 
 describe('getToolPresentation — unknown tool semantic title + subtitle dedup', () => {
     it('promotes semantic title "Run shell" when toolName equals input.command (Gemini ACP case)', () => {
@@ -44,7 +102,7 @@ describe('getToolPresentation — unknown tool semantic title + subtitle dedup',
         expect(presentation.subtitle).toBe('*.ts')
     })
 
-    it('keeps the original toolName when subtitle differs (no promotion needed)', () => {
+    it('uses a concise command title for run_shell_command', () => {
         const presentation = getToolPresentation({
             toolName: 'run_shell_command',
             input: { command: 'ls -la /tmp' },
@@ -54,7 +112,7 @@ describe('getToolPresentation — unknown tool semantic title + subtitle dedup',
             metadata: null,
         })
 
-        expect(presentation.title).toBe('run_shell_command')
+        expect(presentation.title).toBe('ls')
         expect(presentation.subtitle).toBe('ls -la /tmp')
     })
 
@@ -70,6 +128,8 @@ describe('getToolPresentation — unknown tool semantic title + subtitle dedup',
 
         expect(presentation.title).toBe('Tool')
         expect(presentation.subtitle).toBe('Tool 1')
+        const icon = render(<>{presentation.icon}</>).container.querySelector('svg')
+        expect(icon).toHaveClass('translate-y-px')
     })
 
     it('returns null subtitle when no recognized input field is present', () => {
@@ -213,5 +273,145 @@ describe('getToolPresentation — Codex agent tools', () => {
         expect(presentation.subtitle).toBe('Closed (completed)')
         expect(presentation.subtitle).not.toContain('hidden child output')
         expect(presentation.minimal).toBe(true)
+    })
+
+    it('presents MultiAgent V2 messaging tools by intent', () => {
+        const message = getToolPresentation({
+            toolName: 'send_message',
+            input: { target: '/root/review', message: 'Status?' },
+            result: '',
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+        const followup = getToolPresentation({
+            toolName: 'followup_task',
+            input: { target: '/root/review', message: 'Run tests' },
+            result: '',
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+
+        expect(message).toMatchObject({ title: 'Message agent', subtitle: '/root/review', minimal: true })
+        expect(followup).toMatchObject({ title: 'Follow up agent', subtitle: '/root/review', minimal: true })
+    })
+
+    it('summarizes list_agents and interrupt_agent results', () => {
+        const list = getToolPresentation({
+            toolName: 'list_agents',
+            input: {},
+            result: JSON.stringify({
+                agents: [
+                    { agent_name: '/root/a', agent_status: 'running' },
+                    { agent_name: '/root/b', agent_status: { completed: 'done' } }
+                ]
+            }),
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+        const interrupt = getToolPresentation({
+            toolName: 'interrupt_agent',
+            input: { target: '/root/a' },
+            result: '{"previous_status":"running"}',
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+
+        expect(list).toMatchObject({ title: 'List agents', subtitle: '2 live, 1 running' })
+        expect(interrupt).toMatchObject({ title: 'Interrupt agent', subtitle: 'Interrupted (running)' })
+    })
+
+    it('uses MultiAgent V2 result fields and status variants', () => {
+        const spawn = getToolPresentation({
+            toolName: 'spawn_agent',
+            input: { task_name: 'review' },
+            result: JSON.stringify({ task_name: '/root/review', nickname: 'Reviewer' }),
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+        const wait = getToolPresentation({
+            toolName: 'wait_agent',
+            input: { timeout_ms: 1000 },
+            result: JSON.stringify({ message: 'Wait completed.', timed_out: false }),
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+        const list = getToolPresentation({
+            toolName: 'list_agents',
+            input: {},
+            result: JSON.stringify({
+                agents: [{ agent_name: '/root/review', agent_status: { errored: 'test failed' } }]
+            }),
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+
+        expect(spawn.subtitle).toBe('Launched Reviewer (/root/review)')
+        expect(wait.subtitle).toBe('Wait completed.')
+        expect(list.subtitle).toBe('1 live agent')
+    })
+})
+
+describe('getToolPresentation — native titles', () => {
+    it('uses a preserved native title for unknown lowercase tools', () => {
+        const presentation = getToolPresentation({
+            toolName: 'bash',
+            input: { command: 'bun test' },
+            result: null,
+            childrenCount: 0,
+            description: 'Run project tests',
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('Run project tests')
+        expect(presentation.subtitle).toBe('bun test')
+    })
+})
+
+describe('getToolPresentation — request_user_input', () => {
+    it('uses the question header instead of exposing its protocol id', () => {
+        const presentation = getToolPresentation({
+            toolName: 'request_user_input',
+            input: {
+                questions: [{
+                    id: '__mcp_url_confirmation',
+                    header: 'Sign in',
+                    question: 'Sign in to continue'
+                }]
+            },
+            result: null,
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('Sign in')
+        expect(presentation.title).not.toContain('__mcp_url_confirmation')
+        expect(presentation.subtitle).toBe('Sign in to continue')
+    })
+
+    it('falls back to Question rather than exposing an id when no header is present', () => {
+        const presentation = getToolPresentation({
+            toolName: 'request_user_input',
+            input: {
+                questions: [{
+                    id: '__mcp_form_confirmation',
+                    question: 'Continue?'
+                }]
+            },
+            result: null,
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('Question')
+        expect(presentation.subtitle).toBe('Continue?')
     })
 })

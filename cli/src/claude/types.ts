@@ -29,6 +29,11 @@ const RawJSONLinesBaseSchema = z.object({
   uuid: z.string().optional(),
   parentUuid: z.string().nullable().optional(),
   isSidechain: z.boolean().optional(),
+  // The tool_use id of the Agent/Task tool_use that spawned this sidechain
+  // message, when present. Preserved (not just consumed) so downstream (web
+  // tracer) can group sidechain messages directly by this id rather than
+  // solely by exact-matching a sidechain root's prompt text.
+  parentToolUseId: z.string().optional(),
   isMeta: z.boolean().optional(),
   isCompactSummary: z.boolean().optional(),
   userType: z.string().optional(),
@@ -65,6 +70,12 @@ export const RawJSONLinesSchema = z.discriminatedUnion("type", [
     type: z.literal("summary"),
     summary: z.string(),
     leafUuid: z.string(),
+  }),
+
+  // Claude Code's native interactive CLI title event.
+  RawJSONLinesBaseSchema.extend({
+    type: z.literal("ai-title"),
+    aiTitle: z.string(),
   }),
 
   // System message - validates uuid and subtype data used by the UI.

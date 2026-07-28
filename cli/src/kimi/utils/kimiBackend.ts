@@ -1,5 +1,4 @@
 import { AcpSdkBackend } from '@/agent/backends/acp';
-import { buildKimiEnv } from './config';
 
 function filterEnv(env: NodeJS.ProcessEnv): Record<string, string> {
     const result: Record<string, string> = {};
@@ -11,20 +10,17 @@ function filterEnv(env: NodeJS.ProcessEnv): Record<string, string> {
     return result;
 }
 
-export function createKimiBackend(opts: {
-    model?: string;
-    resumeSessionId?: string | null;
-    cwd?: string;
-    permissionMode?: string;
-}): AcpSdkBackend {
-    const env = filterEnv(buildKimiEnv({
-        model: opts.model,
-        cwd: opts.cwd
-    }));
-
+/**
+ * Creates the ACP backend for `kimi acp`. Model selection is intentionally
+ * NOT passed via environment: new kimi-code ignores a plain KIMI_MODEL var
+ * (only the KIMI_MODEL_NAME provider-synthesis family exists), so the model
+ * is applied over ACP (`session/set_model` / `session/set_config_option`)
+ * after session creation — see kimiRemoteLauncher.
+ */
+export function createKimiBackend(): AcpSdkBackend {
     return new AcpSdkBackend({
         command: 'kimi',
         args: ['acp'],
-        env
+        env: filterEnv(process.env)
     });
 }

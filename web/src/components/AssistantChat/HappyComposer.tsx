@@ -35,6 +35,7 @@ import { useTranslation } from '@/lib/use-translation'
 import { getModelOptionsForFlavor, getNextModelForFlavor } from './modelOptions'
 import { getClaudeComposerEffortOptions } from './claudeEffortOptions'
 import { getCodexComposerReasoningEffortOptions } from './codexReasoningEffortOptions'
+import { getDisplayedCodexServiceTier } from './codexFastMode'
 import { getPiThinkingLevelOptions, getHighestThinkingLevel, isThinkingLevelSupported } from './piThinkingLevelOptions'
 import { groupModelsByProvider } from './piModelGroups'
 import { PiModelPanel } from './PiModelPanel'
@@ -158,6 +159,7 @@ export function HappyComposer(props: {
      *  disambiguates when two providers share a modelId). */
     piSelectedModel?: { provider: string; modelId: string } | null
     availableModelReasoningEffortOptions?: Array<{ value: string; name?: string }>
+    availableEffortOptions?: Array<{ value: string; name?: string }>
     /** Cursor: selected base model key (not wire id). */
     selectedModelBase?: string | null
     /** Cursor: selected variant sku/wire for highlight when session stores an ACP wire id. */
@@ -225,6 +227,7 @@ export function HappyComposer(props: {
         piModels,
         piSelectedModel,
         availableModelReasoningEffortOptions,
+        availableEffortOptions,
         selectedModelBase,
         selectedModelVariant,
         modelEffortOptions,
@@ -259,6 +262,7 @@ export function HappyComposer(props: {
     const modelReasoningEffort = rawModelReasoningEffort ?? null
     const effort = rawEffort ?? null
     const serviceTier = rawServiceTier ?? null
+    const displayedServiceTier = getDisplayedCodexServiceTier(serviceTier)
 
     const api = useAssistantApi()
     const { composerEnterBehavior } = useComposerEnterBehavior()
@@ -302,7 +306,24 @@ export function HappyComposer(props: {
     const textareaRef = useRef<HTMLTextAreaElement>(null)
     const prevControlledByUser = useRef(controlledByUser)
 
-    useComposerDraft(sessionId, composerText, (text) => api.composer().setText(text))
+    const attachmentDrafts = attachments.flatMap((attachment) => {
+        if (!attachment.file) return []
+        const upload = attachment as typeof attachment & { path?: string; previewUrl?: string }
+        return [{
+            id: attachment.id,
+            file: attachment.file,
+            path: upload.path,
+            previewUrl: upload.previewUrl,
+        }]
+    })
+    useComposerDraft(
+        sessionId,
+        composerText,
+        attachmentDrafts,
+        active,
+        (text) => api.composer().setText(text),
+        (file) => api.composer().addAttachment(file),
+    )
 
     // assistant-ui clears `composer.text` synchronously the moment a send is
     // invoked AND `SessionChat.handleSend` clears `pendingSchedule` the
@@ -469,7 +490,7 @@ export function HappyComposer(props: {
             ? getCodexComposerReasoningEffortOptions(
                 modelReasoningEffort,
                 agentFlavor,
-                agentFlavor === 'opencode' ? availableModelReasoningEffortOptions : undefined
+                availableModelReasoningEffortOptions
             )
             : [],
         [agentFlavor, modelReasoningEffort, availableModelReasoningEffortOptions]
@@ -506,8 +527,16 @@ export function HappyComposer(props: {
     const claudeEffortOptions = useMemo(
         () => agentFlavor === 'pi'
             ? getPiThinkingLevelOptions(effort, selectedPiModel?.thinkingLevelMap)
+            : agentFlavor === 'grok' && availableEffortOptions && availableEffortOptions.length > 0
+                ? [
+                    { value: null, label: 'Default' },
+                    ...availableEffortOptions.map((option) => ({
+                        value: option.value,
+                        label: option.name ?? option.value
+                    }))
+                ]
             : getClaudeComposerEffortOptions(effort),
-        [agentFlavor, effort, selectedPiModel]
+        [agentFlavor, effort, selectedPiModel, availableEffortOptions]
     )
     const permissionModes = useMemo(
         () => permissionModeOptions.map((option) => option.mode),
@@ -1159,16 +1188,16 @@ export function HappyComposer(props: {
                                     >
                                         <div
                                             className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
-                                                serviceTier === option.value
+                                                displayedServiceTier === option.value
                                                     ? 'border-[var(--app-link)]'
                                                     : 'border-[var(--app-hint)]'
                                             }`}
                                         >
-                                            {serviceTier === option.value && (
+                                            {displayedServiceTier === option.value && (
                                                 <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
                                             )}
                                         </div>
-                                        <span className={serviceTier === option.value ? 'text-[var(--app-link)]' : ''}>
+                                        <span className={displayedServiceTier === option.value ? 'text-[var(--app-link)]' : ''}>
                                             {option.label}
                                         </span>
                                     </button>
@@ -1225,7 +1254,7 @@ export function HappyComposer(props: {
         model,
         modelReasoningEffort,
         effort,
-        serviceTier,
+        displayedServiceTier,
         collaborationModeOptions,
         permissionModeOptions,
         handleCollaborationChange,

@@ -100,6 +100,15 @@ describe('createRunnerLifecycle', () => {
             await lc.cleanup();
             expect(session.sendSessionDeath).toHaveBeenCalledWith('completed');
         });
+
+        it('limits the final connected flush budget to one second', async () => {
+            const session = createMockApiSession();
+            const lc = createRunnerLifecycle({ session, logTag: 'test' });
+
+            await lc.cleanup();
+
+            expect(session.flush).toHaveBeenCalledWith({ timeoutMs: 1_000 });
+        });
     });
 });
 

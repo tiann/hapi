@@ -1,13 +1,13 @@
 # hapi CLI
 
-Run Claude Code, Codex, Cursor Agent, Gemini, or OpenCode sessions from your terminal and control them remotely through the hapi hub.
+Run Claude Code, Codex, Cursor Agent, Grok Build, or OpenCode sessions from your terminal and control them remotely through the hapi hub.
 
 ## What it does
 
 - Starts Claude Code sessions and registers them with hapi-hub.
 - Starts Codex mode for OpenAI-based sessions.
 - Starts Cursor Agent mode for Cursor CLI sessions.
-- Starts Gemini mode via ACP (Anthropic Code Plugins).
+- Starts Grok Build locally or via ACP for remote sessions.
 - Starts OpenCode mode via ACP and its plugin hook system.
 - Provides an MCP stdio bridge for external tools.
 - Manages a background runner for long-running sessions.
@@ -30,11 +30,11 @@ Run Claude Code, Codex, Cursor Agent, Gemini, or OpenCode sessions from your ter
 - `hapi cursor` - Start Cursor Agent mode. See `src/cursor/runCursor.ts`.
   Supports `hapi cursor resume <chatId>`, `hapi cursor --continue`, `--mode plan|ask`, `--yolo`, `--model`.
   Local and remote modes supported; remote uses `agent -p` with stream-json.
-- `hapi gemini` - Start Gemini mode via ACP. See `src/agent/runners/runAgentSession.ts`.
-  Note: Gemini runs in remote mode only; it waits for messages from the hub UI/Telegram.
+- `hapi grok` - Start Grok Build mode. See `src/grok/runGrok.ts`.
 - `hapi opencode` - Start OpenCode mode via ACP. See `src/opencode/runOpencode.ts`.
   Note: OpenCode supports local and remote modes; local mode streams via OpenCode plugins.
 - `hapi resume [sessionId]` - List resumable sessions for this machine or resume one locally.
+- `hapi ping-peer <session-id-prefix> <message>` - Resume (if needed) and message another session. Prefer this or MCP `ping_peer` over reinventing JWT+curl. Also `--message-file` / `--list`.
 
 ### Resume a remote session locally
 
@@ -98,7 +98,7 @@ See `src/configuration.ts` for all options.
 
 - `HAPI_HOME` - Config/data directory (default: ~/.hapi).
 - `HAPI_EXPERIMENTAL` - Enable experimental features (true/1/yes).
-- `HAPI_EXTRA_HEADERS_JSON` - JSON object of extra headers to send on CLI → hub requests, e.g. `{"Cookie":"CF_Authorization=..."}`.
+- `HAPI_EXTRA_HEADERS_JSON` - JSON object of extra headers to send on CLI → hub requests, e.g. `{"Cookie":"CF_Authorization=..."}`. Can also be set as the `extraHeaders` object in `~/.hapi/settings.json` (environment variable wins).
 - `HAPI_CLAUDE_PATH` - Path to a specific `claude` executable.
 - `HAPI_HTTP_MCP_URL` - Default MCP target for `hapi mcp`.
 
@@ -115,6 +115,20 @@ See `src/configuration.ts` for all options.
 - `HAPI_WORKTREE_PATH` - Full worktree path.
 - `HAPI_WORKTREE_CREATED_AT` - Creation timestamp (ms).
 
+### Set for the wrapped agent
+
+- `HAPI_SESSION_ID` - The hub session id for the current run, exported into the wrapped agent/CLI child environment at spawn for every flavor (claude / codex / cursor / gemini / opencode / kimi / grok / pi), both runner-spawned and locally started sessions. Agents can read it to self-target "this chat" over the hub REST API or shell helpers without listing `/api/sessions`. Prefer the MCP `display_image` tool for inline media when it is available; use `HAPI_SESSION_ID` for hub REST / shell tooling where MCP is not. To message **another** session, prefer MCP `ping_peer` or `hapi ping-peer` — do not reinvent JWT+curl.
+
+  Lazy Codex (terminal) sessions export the id only after the hub row is materialized, which happens when the MCP bridge starts — before the agent process is spawned — so path-only self-targeting does not race a missing hub row.
+
+  Example (shell fallback when MCP is unavailable) — path-only, self-targets the current session:
+
+  ```bash
+  bun scripts/tooling/hapi-display-image.mjs /absolute/path/to/image.png "optional title"
+  ```
+
+  Explicit other session (prefix or full uuid) still works; that path may list sessions.
+
 ## Storage
 
 Data is stored in `~/.hapi/` (or `$HAPI_HOME`):
@@ -127,6 +141,7 @@ Data is stored in `~/.hapi/` (or `$HAPI_HOME`):
 
 - Claude CLI installed and logged in (`claude` on PATH).
 - Cursor Agent CLI installed (`agent` on PATH) for `hapi cursor`. Install: `curl https://cursor.com/install -fsS | bash` (macOS/Linux), `irm 'https://cursor.com/install?win32=true' | iex` (Windows).
+- Grok Build CLI installed (`grok` on PATH) for `hapi grok`. Authenticate with `grok login --device-auth` on headless runner machines, or set `XAI_API_KEY`.
 - OpenCode CLI installed (`opencode` on PATH).
 - Bun for building from source.
 
@@ -152,7 +167,8 @@ bun run build:single-exe
 - `src/claude/` - Claude Code integration.
 - `src/codex/` - Codex mode integration.
 - `src/cursor/` - Cursor Agent integration.
-- `src/agent/` - Multi-agent support (Gemini via ACP).
+- `src/grok/` - Grok Build native TUI + ACP integration.
+- `src/agent/` - Shared support for ACP-compatible agents.
 - `src/opencode/` - OpenCode ACP + hook integration.
 - `src/runner/` - Background service.
 - `src/commands/` - CLI command handlers.

@@ -172,4 +172,31 @@ describe('CodexPermissionHandler', () => {
             }
         });
     });
+
+    it('cancels one request_user_input without resetting other pending requests', async () => {
+        const { handler, getAgentState } = createHarness('default');
+        const first = handler.handleUserInputRequest('input-1', {
+            questions: [{ id: 'action', question: 'First?' }]
+        });
+        const second = handler.handleUserInputRequest('input-2', {
+            questions: [{ id: 'action', question: 'Second?' }]
+        });
+
+        handler.cancelUserInputRequest('input-1', 'No longer relevant');
+
+        await expect(first).rejects.toThrow('No longer relevant');
+        expect(getAgentState().requests).toMatchObject({
+            'input-2': { tool: 'request_user_input' }
+        });
+        expect(getAgentState().requests).not.toHaveProperty('input-1');
+        expect(getAgentState().completedRequests).toMatchObject({
+            'input-1': {
+                status: 'canceled',
+                reason: 'No longer relevant'
+            }
+        });
+
+        handler.reset();
+        await expect(second).rejects.toThrow('Session reset');
+    });
 });

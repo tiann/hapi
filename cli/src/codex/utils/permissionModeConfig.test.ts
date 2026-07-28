@@ -10,9 +10,9 @@ describe('resolveCodexPermissionModeConfig', () => {
         });
     });
 
-    it('keeps safe-yolo escalation on failure', () => {
+    it('keeps safe-yolo escalation available with a supported approval policy', () => {
         expect(resolveCodexPermissionModeConfig('safe-yolo')).toEqual({
-            approvalPolicy: 'on-failure',
+            approvalPolicy: 'on-request',
             sandbox: 'workspace-write',
             sandboxPolicy: { type: 'workspaceWrite' }
         });

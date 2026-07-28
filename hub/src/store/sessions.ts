@@ -58,6 +58,7 @@ const SIMPLE_RESUME_TOKENS = [
     'codexSessionId',
     'geminiSessionId',
     'opencodeSessionId',
+    'grokSessionId',
     'cursorSessionId',
     'kimiSessionId'
 ] as const
@@ -187,18 +188,32 @@ export function getOrCreateSession(
     namespace: string,
     model?: string,
     effort?: string,
-    modelReasoningEffort?: string
+    modelReasoningEffort?: string,
+    requestedId?: string
 ): StoredSession {
     const existing = db.prepare(
         'SELECT * FROM sessions WHERE tag = ? AND namespace = ? ORDER BY created_at DESC LIMIT 1'
     ).get(tag, namespace) as DbSessionRow | undefined
 
     if (existing) {
+        if (requestedId && existing.id !== requestedId) {
+            throw new SessionIdentityConflictError('Session tag is already bound to a different id')
+        }
         return toStoredSession(existing)
     }
 
     const now = Date.now()
-    const id = randomUUID()
+    const id = requestedId ?? randomUUID()
+
+    if (requestedId) {
+        const existingById = getSession(db, requestedId)
+        if (existingById) {
+            if (existingById.namespace === namespace && existingById.tag === tag) {
+                return existingById
+            }
+            throw new SessionIdentityConflictError('Session id is already bound to a different session')
+        }
+    }
 
     const metadataJson = JSON.stringify(metadata)
     const agentStateJson = agentState === null || agentState === undefined ? null : JSON.stringify(agentState)
@@ -221,7 +236,7 @@ export function getOrCreateSession(
             @model_reasoning_effort,
             @effort,
             NULL, NULL,
-            0, NULL, 0
+            0, @active_at, 0
         )
     `).run({
         id,
@@ -229,6 +244,9 @@ export function getOrCreateSession(
         namespace,
         created_at: now,
         updated_at: now,
+        // Never persist NULL — CLI SessionSchema requires numeric activeAt.
+        // Legacy rows may still be NULL; sessionCache coerces on read.
+        active_at: now,
         metadata: metadataJson,
         agent_state: agentStateJson,
         model: model ?? null,
@@ -241,6 +259,13 @@ export function getOrCreateSession(
         throw new Error('Failed to create session')
     }
     return row
+}
+
+export class SessionIdentityConflictError extends Error {
+    constructor(message: string) {
+        super(message)
+        this.name = 'SessionIdentityConflictError'
+    }
 }
 
 export function updateSessionMetadata(
@@ -506,6 +531,38 @@ export function setSessionEffort(
             effort,
             updated_at: now,
             touch_updated_at: touchUpdatedAt ? 1 : 0
+        })
+
+        return result.changes === 1
+    } catch {
+        return false
+    }
+}
+
+export function setSessionActive(
+    db: Database,
+    id: string,
+    active: boolean,
+    activeAt: number,
+    namespace: string
+): boolean {
+    try {
+        const result = db.prepare(`
+            UPDATE sessions
+            SET active = @active,
+                active_at = CASE
+                    WHEN active_at IS NULL OR active_at < @active_at THEN @active_at
+                    ELSE active_at
+                END,
+                seq = seq + 1
+            WHERE id = @id
+              AND namespace = @namespace
+              AND (active IS NOT @active OR active_at IS NULL OR active_at < @active_at)
+        `).run({
+            id,
+            namespace,
+            active: active ? 1 : 0,
+            active_at: activeAt
         })
 
         return result.changes === 1

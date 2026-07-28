@@ -8,6 +8,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { CODEX_TOOL_HOOK_MATCHER } from './codexToolHookNames';
 import { getHappyCliCommand } from '@/utils/spawnHappyCLI';
 import type { McpServersConfig } from './buildHapiMcpBridge';
 
@@ -73,9 +74,16 @@ function versionForTomlLikeValue(value: unknown): string {
     return `sha256:${createHash('sha256').update(serialized).digest('hex')}`;
 }
 
-function buildSessionStartHookTrustedHash(command: string): string {
+const CODEX_HOOK_EVENTS = [
+    { configName: 'SessionStart', stateName: 'session_start' },
+    { configName: 'PreToolUse', stateName: 'pre_tool_use', matcher: CODEX_TOOL_HOOK_MATCHER },
+    { configName: 'PostToolUse', stateName: 'post_tool_use', matcher: CODEX_TOOL_HOOK_MATCHER }
+] as const;
+
+function buildCodexHookTrustedHash(command: string, stateName: string, matcher?: string): string {
     return versionForTomlLikeValue({
-        event_name: 'session_start',
+        event_name: stateName,
+        ...(matcher ? { matcher } : {}),
         hooks: [
             {
                 async: false,
@@ -87,14 +95,14 @@ function buildSessionStartHookTrustedHash(command: string): string {
     });
 }
 
-function sessionFlagsHookStateKey(): string {
+function sessionFlagsHookStateKey(stateName: string): string {
     const sourcePath = process.platform === 'win32'
         ? 'C:\\<session-flags>\\config.toml'
         : '/<session-flags>/config.toml';
-    return `${sourcePath}:session_start:0:0`;
+    return `${sourcePath}:${stateName}:0:0`;
 }
 
-export function buildSessionStartHookConfigArgs(port: number, token: string): string[] {
+export function buildCodexHookConfigArgs(port: number, token: string): string[] {
     const { command, args } = getHappyCliCommand([
         'hook-forwarder',
         '--port',
@@ -104,11 +112,24 @@ export function buildSessionStartHookConfigArgs(port: number, token: string): st
     ]);
     const hookCommand = shellJoin([command, ...args]);
     const escapedHookCommand = escapeTomlString(hookCommand);
-    const hookConfig = `hooks.SessionStart=[{ hooks = [{ type = "command", command = "${escapedHookCommand}" }] }]`;
-    const trustedHash = buildSessionStartHookTrustedHash(hookCommand);
-    const escapedStateKey = escapeTomlString(sessionFlagsHookStateKey());
-    const hookState = `hooks.state={"${escapedStateKey}"={trusted_hash="${trustedHash}"}}`;
-    return ['-c', hookConfig, '-c', hookState];
+    const configArgs: string[] = [];
+    const stateEntries: string[] = [];
+
+    for (const event of CODEX_HOOK_EVENTS) {
+        const matcher = 'matcher' in event ? event.matcher : undefined;
+        const matcherConfig = matcher ? ` matcher = "${escapeTomlString(matcher)}",` : '';
+        configArgs.push(
+            '-c',
+            `hooks.${event.configName}=[{${matcherConfig} hooks = [{ type = "command", command = "${escapedHookCommand}" }] }]`
+        );
+
+        const trustedHash = buildCodexHookTrustedHash(hookCommand, event.stateName, matcher);
+        const escapedStateKey = escapeTomlString(sessionFlagsHookStateKey(event.stateName));
+        stateEntries.push(`"${escapedStateKey}"={trusted_hash="${trustedHash}"}`);
+    }
+
+    configArgs.push('-c', `hooks.state={${stateEntries.join(',')}}`);
+    return configArgs;
 }
 
 /**

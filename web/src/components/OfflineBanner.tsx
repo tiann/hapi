@@ -1,16 +1,22 @@
 import { useOnlineStatus } from '@/hooks/useOnlineStatus'
 import { useTranslation } from '@/lib/use-translation'
 
-export function OfflineBanner() {
+export function OfflineBanner({
+    isHubConnected,
+    isReconnecting
+}: {
+    isHubConnected: boolean
+    isReconnecting: boolean
+}) {
     const { t } = useTranslation()
     const isOnline = useOnlineStatus()
 
-    if (isOnline) {
+    if (isOnline || isHubConnected || isReconnecting) {
         return null
     }
 
     return (
-        <div className="fixed top-0 left-0 right-0 bg-amber-500 text-white text-center py-2 text-sm font-medium z-50">
+        <div className="fixed top-0 left-0 right-0 bg-amber-500 text-white text-center pb-2 pt-[calc(env(safe-area-inset-top)+0.5rem)] text-sm font-medium z-50">
             {t('offline.message')}
         </div>
     )

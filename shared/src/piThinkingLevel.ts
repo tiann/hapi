@@ -1,6 +1,6 @@
 // Pi thinking levels (from Pi's rpc-types.ts ThinkingLevel)
 // Controls how much reasoning/thinking the model performs.
-export const PI_THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const
+export const PI_THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 export type PiThinkingLevel = typeof PI_THINKING_LEVELS[number]
 
 export const PI_THINKING_LEVEL_LABELS: Record<PiThinkingLevel, string> = {
@@ -10,4 +10,5 @@ export const PI_THINKING_LEVEL_LABELS: Record<PiThinkingLevel, string> = {
     medium: 'Medium',
     high: 'High',
     xhigh: 'XHigh',
+    max: 'Max'
 }

@@ -8,6 +8,7 @@
 import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { getHappyCliCommand } from '@/utils/spawnHappyCLI';
 import type { ApiSessionClient } from '@/api/apiSession';
+import { exportHapiSessionEnv } from '@/agent/hapiSessionEnv';
 
 /**
  * MCP server entry configuration.
@@ -44,6 +45,11 @@ export interface HapiMcpBridge {
 
 export interface HapiMcpBridgeOptions {
     emitTitleSummary?: boolean;
+    enableChangeTitle?: boolean;
+    skillLookup?: {
+        workingDirectory: string;
+        flavor: string;
+    };
 }
 
 /**
@@ -52,15 +58,50 @@ export interface HapiMcpBridgeOptions {
  *
  * This is the single source of truth for MCP bridge setup,
  * used by both local and remote launchers.
+ *
+ * Lazy Codex sessions stay pending until first materialization. We materialize
+ * here (before startHappyServer / agent spawn) so:
+ * - the hub row exists for REST self-targeting via HAPI_SESSION_ID
+ * - hapiMcpUrl from startHappyServer is persisted to the hub, not only local pending state
  */
 export async function buildHapiMcpBridge(
     client: ApiSessionClient,
     options: HapiMcpBridgeOptions = {}
 ): Promise<HapiMcpBridge> {
+    if (client.isPending()) {
+        const materialized = await client.materialize();
+        if (!materialized) {
+            throw new Error(`Failed to materialize HAPI session ${client.sessionId} before MCP bridge start`);
+        }
+    }
+    // Belt-and-suspenders: onMaterialized already exports; keep env set for non-lazy too.
+    exportHapiSessionEnv(client.sessionId);
+
     const happyServer = await startHappyServer(client, {
-        emitTitleSummary: options.emitTitleSummary
+        emitTitleSummary: options.emitTitleSummary,
+        enableChangeTitle: options.enableChangeTitle,
+        skillLookup: options.skillLookup
     });
-    const bridgeCommand = getHappyCliCommand(['mcp', '--url', happyServer.url]);
+    const bridgeCommand = getHappyCliCommand([
+        'mcp',
+        '--url',
+        happyServer.url,
+        '--tools',
+        happyServer.toolNames.join(',')
+    ]);
+    const tools: Record<string, McpServerToolConfig> = {};
+    if (options.enableChangeTitle !== false) {
+        tools.change_title = {
+            approval_mode: 'approve'
+        };
+    }
+    // ping_peer is registered on the HTTP MCP server / stdio bridge, but is not
+    // auto-approved: it targets another session (resume + inject message).
+    if (options.skillLookup) {
+        tools.skill_lookup = {
+            approval_mode: 'approve'
+        };
+    }
 
     return {
         server: {
@@ -71,11 +112,7 @@ export async function buildHapiMcpBridge(
             hapi: {
                 command: bridgeCommand.command,
                 args: bridgeCommand.args,
-                tools: {
-                    change_title: {
-                        approval_mode: 'approve'
-                    }
-                }
+                tools
             }
         }
     };

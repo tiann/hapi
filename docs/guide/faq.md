@@ -4,7 +4,7 @@
 
 ### What is HAPI?
 
-HAPI is a local-first, self-hosted platform for running and controlling AI coding agents (Claude Code, Codex, Gemini, OpenCode) remotely. It lets you start coding sessions on your computer and monitor/control them from your phone.
+HAPI is a local-first, self-hosted platform for running and controlling AI coding agents (Claude Code, Codex, Cursor Agent, Grok Build, and OpenCode) remotely. It lets you start coding sessions on your computer and monitor/control them from your phone.
 
 ### What does HAPI stand for?
 
@@ -19,7 +19,7 @@ Yes, HAPI is open source and free to use under the AGPL-3.0-only license.
 - **Claude Code** (recommended)
 - **OpenAI Codex**
 - **Cursor Agent**
-- **Google Gemini**
+- **Grok Build**
 - **OpenCode**
 
 ## Setup & Installation

@@ -51,6 +51,92 @@ afterEach(() => {
 });
 
 describe('AcpSdkBackend', () => {
+    it('forwards ACP session_info_update titles without requiring an active prompt', () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const updates: Array<{ sessionId: string | null; title: string | null }> = [];
+        backend.setSessionInfoUpdateListener((update) => updates.push(update));
+
+        const backendInternal = backend as unknown as {
+            handleSessionUpdate: (params: unknown) => void;
+        };
+        backendInternal.handleSessionUpdate({
+            sessionId: 'session-1',
+            update: {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.sessionInfoUpdate,
+                title: 'Native session title'
+            }
+        });
+        backendInternal.handleSessionUpdate({
+            sessionId: 'session-1',
+            update: {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.sessionInfoUpdate,
+                updatedAt: '2026-07-12T00:00:00Z'
+            }
+        });
+
+        expect(updates).toEqual([{ sessionId: 'session-1', title: 'Native session title' }]);
+    });
+
+    it('refreshes native titles through ACP session/list', async () => {
+        const backend = new AcpSdkBackend({ command: 'opencode' });
+        const calls: Array<{ method: string; params: unknown; options: unknown }> = [];
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequest: (method: string, params: unknown, options?: unknown) => Promise<unknown>;
+            } | null;
+        };
+        backendInternal.transport = {
+            sendRequest: async (method, params, options) => {
+                calls.push({ method, params, options });
+                return {
+                    sessions: [
+                        { sessionId: 'other', title: 'Other title' },
+                        { sessionId: 'session-1', title: 'Native OpenCode title' }
+                    ]
+                };
+            }
+        };
+        const updates: Array<{ sessionId: string | null; title: string | null }> = [];
+        backend.setSessionInfoUpdateListener((update) => updates.push(update));
+
+        await backend.refreshSessionInfo('session-1', '/workspace');
+
+        expect(calls).toEqual([{
+            method: 'session/list',
+            params: { cwd: '/workspace' },
+            options: { timeoutMs: 5000 }
+        }]);
+        expect(updates).toEqual([{ sessionId: 'session-1', title: 'Native OpenCode title' }]);
+    });
+
+    it('retries session/list while an asynchronously generated title is still a placeholder', async () => {
+        vi.useFakeTimers();
+        try {
+            const backend = new AcpSdkBackend({ command: 'opencode' });
+            const titles = ['New session - 2026-07-12T00:00:00.000Z', 'Native OpenCode title'];
+            const backendInternal = backend as unknown as {
+                transport: { sendRequest: () => Promise<unknown> } | null;
+            };
+            backendInternal.transport = {
+                sendRequest: async () => ({
+                    sessions: [{ sessionId: 'session-1', title: titles.shift() }]
+                })
+            };
+            const updates: Array<{ sessionId: string | null; title: string | null }> = [];
+            backend.setSessionInfoUpdateListener((update) => updates.push(update));
+
+            await backend.refreshSessionInfo('session-1', '/workspace');
+            await vi.runAllTimersAsync();
+
+            expect(updates).toEqual([
+                { sessionId: 'session-1', title: 'New session - 2026-07-12T00:00:00.000Z' },
+                { sessionId: 'session-1', title: 'Native OpenCode title' }
+            ]);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it('hides the ACP stdio shell on Windows', () => {
         setPlatform('win32');
 
@@ -185,6 +271,79 @@ describe('AcpSdkBackend', () => {
             availableModels: fixtureModels,
             currentModelId: 'ollama/exaone:4.5-33b-q8'
         });
+    });
+
+    it('captures Grok reasoning efforts from x.ai session metadata and switches with set_mode', async () => {
+        const backend = new AcpSdkBackend({ command: 'grok' });
+        const calls: Array<{ method: string; params: unknown }> = [];
+        const backendInternal = backend as unknown as {
+            transport: { sendRequest: (method: string, params: unknown) => Promise<unknown>; close: () => Promise<void> } | null;
+        };
+        backendInternal.transport = {
+            sendRequest: async (method, params) => {
+                calls.push({ method, params });
+                if (method === 'session/new') {
+                    return {
+                        sessionId: 'grok-session-1',
+                        models: {
+                            currentModelId: 'grok-4.5',
+                            availableModels: [{
+                                modelId: 'grok-4.5',
+                                name: 'Grok 4.5',
+                                _meta: {
+                                    reasoningEfforts: [
+                                        { value: 'high', label: 'High Effort', default: true },
+                                        { value: 'low', label: 'Low Effort', default: false }
+                                    ]
+                                }
+                            }]
+                        },
+                        _meta: {
+                            availableCommands: [{ name: 'auto' }],
+                            'x.ai/sessionConfig': {
+                                options: [
+                                    { id: 'high', category: 'mode', label: 'High Effort', selected: false },
+                                    { id: 'low', category: 'mode', label: 'Low Effort', selected: true }
+                                ]
+                            }
+                        }
+                    };
+                }
+                if (method === 'session/set_mode') return { meta: null };
+                return null;
+            },
+            close: async () => {}
+        };
+
+        const sessionId = await backend.newSession({ cwd: '/tmp/x', mcpServers: [] });
+
+        expect(backend.getSessionModelsMetadata(sessionId)).toEqual({
+            availableModels: [{
+                modelId: 'grok-4.5',
+                name: 'Grok 4.5',
+                reasoningEfforts: [
+                    { value: 'high', name: 'High Effort', isDefault: true },
+                    { value: 'low', name: 'Low Effort', isDefault: false }
+                ]
+            }],
+            currentModelId: 'grok-4.5'
+        });
+        expect(backend.getThoughtLevelConfigOption(sessionId)).toMatchObject({
+            currentValue: 'low',
+            options: [
+                { value: 'high', name: 'High Effort' },
+                { value: 'low', name: 'Low Effort' }
+            ]
+        });
+        expect(backend.hasAvailableCommand(sessionId, 'auto')).toBe(true);
+
+        await backend.setMode(sessionId, 'high');
+
+        expect(calls).toContainEqual({
+            method: 'session/set_mode',
+            params: { sessionId, modeId: 'high' }
+        });
+        expect(backend.getThoughtLevelConfigOption(sessionId)?.currentValue).toBe('high');
     });
 
     it('merges configOptions model variants into availableModels when both are present', async () => {
@@ -753,6 +912,52 @@ describe('AcpSdkBackend', () => {
                 m.type === 'usage' && m.contextTokens !== undefined
         );
         expect(realtimeUsage.map((m) => m.contextTokens)).toEqual([1_000, 2_500]);
+    });
+
+    it('forwards title changes from session_info_update', () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const updates: Array<{ sessionId: string | null; title: string | null }> = [];
+        backend.setSessionInfoUpdateListener((update) => updates.push(update));
+
+        const backendInternal = backend as unknown as {
+            activeSessionId: string | null;
+            handleSessionUpdate: (params: unknown) => void;
+        };
+        backendInternal.activeSessionId = 'session-1';
+
+        backendInternal.handleSessionUpdate({
+            sessionId: 'session-1',
+            update: {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.sessionInfoUpdate,
+                title: 'Native ACP title'
+            }
+        });
+        backendInternal.handleSessionUpdate({
+            sessionId: 'session-1',
+            update: {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.sessionInfoUpdate,
+                title: null
+            }
+        });
+        backendInternal.handleSessionUpdate({
+            sessionId: 'session-1',
+            update: {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.sessionInfoUpdate,
+                title: 123
+            }
+        });
+        backendInternal.handleSessionUpdate({
+            sessionId: 'other-session',
+            update: {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.sessionInfoUpdate,
+                title: 'Wrong session'
+            }
+        });
+
+        expect(updates).toEqual([
+            { sessionId: 'session-1', title: 'Native ACP title' },
+            { sessionId: 'session-1', title: null }
+        ]);
     });
 
     it('emits a context-only usage on finalize when the prompt response carries no usage', async () => {

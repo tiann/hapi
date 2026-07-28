@@ -57,7 +57,12 @@ export const claudeCommand: CommandDefinition = {
                     throw new Error('Missing --model value')
                 }
                 options.model = model
-                unknownArgs.push('--model', model)
+            } else if (arg.startsWith('--model=')) {
+                const model = arg.slice('--model='.length)
+                if (!model) {
+                    throw new Error('Missing --model value')
+                }
+                options.model = model
             } else if (arg === '--effort') {
                 const effort = args[++i]
                 if (!effort) {

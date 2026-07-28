@@ -16,6 +16,7 @@ export function resolveAgentSessionIdFromMetadata(
         case 'codex': return metadata.codexSessionId ?? undefined
         case 'gemini': return metadata.geminiSessionId ?? undefined
         case 'opencode': return metadata.opencodeSessionId ?? undefined
+        case 'grok': return metadata.grokSessionId ?? undefined
         case 'cursor': return metadata.cursorSessionId ?? undefined
         case 'kimi': return metadata.kimiSessionId ?? undefined
         case 'pi': return metadata.piSessionId ?? undefined
@@ -26,13 +27,14 @@ export function resolveAgentSessionIdFromMetadata(
 /**
  * Whether an inactive session can be activated via resume (or fresh spawn on first send).
  * Matches hub: resume with agent id, or fresh spawn when path exists, no agent id, no user messages.
- * Claude with messages but no `claudeSessionId` is allowed because hub
- * `recoverClaudeSessionIdFromMessages` reconstructs the resume id from the
- * stored message log (only the claude path has this recovery fallback).
+ * Claude and Codex with messages but no flavor-specific id may attempt the
+ * hub-authoritative stored-message recovery path; the hub still rejects logs
+ * without a safe resume id.
  */
 export function inactiveSessionCanResume(
     session: Session,
     userMessageCount: number,
+    cursorChatOnDisk?: boolean,
 ): boolean {
     if (session.active) {
         return true
@@ -41,10 +43,14 @@ export function inactiveSessionCanResume(
         return false
     }
     if (resolveAgentSessionIdFromMetadata(session.metadata)) {
+        const flavor = isKnownFlavor(session.metadata.flavor) ? session.metadata.flavor : 'claude'
+        if (flavor === 'cursor') {
+            return cursorChatOnDisk === true
+        }
         return true
     }
     const flavor = isKnownFlavor(session.metadata.flavor) ? session.metadata.flavor : 'claude'
-    if (flavor === 'claude' && userMessageCount > 0) {
+    if ((flavor === 'claude' || flavor === 'codex') && userMessageCount > 0) {
         return true
     }
     return userMessageCount === 0

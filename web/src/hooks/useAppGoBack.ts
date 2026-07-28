@@ -1,6 +1,13 @@
 import { useCallback } from 'react'
 import { useLocation, useNavigate, useRouter } from '@tanstack/react-router'
 
+export function getSettingsBackTarget(pathname: string): string | null {
+    if (pathname === '/settings') return '/sessions'
+    if (pathname === '/settings/voice/advanced' || pathname === '/settings/voice/voices') return '/settings/voice'
+    if (pathname.startsWith('/settings/')) return '/settings'
+    return null
+}
+
 export function useAppGoBack(): () => void {
     const navigate = useNavigate()
     const router = useRouter()
@@ -14,9 +21,10 @@ export function useAppGoBack(): () => void {
             return
         }
 
-        // Settings page always goes back to sessions
-        if (pathname === '/settings') {
-            navigate({ to: '/sessions' })
+        // Settings uses explicit parent routes so mobile drill-down remains predictable.
+        const settingsBackTarget = getSettingsBackTarget(pathname)
+        if (settingsBackTarget) {
+            navigate({ to: settingsBackTarget })
             return
         }
 

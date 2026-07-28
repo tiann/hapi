@@ -26,8 +26,27 @@ const AUTO_APPROVE_TOOL_NAME_HINTS = [
     'think',
     'save_memory'
 ];
+const AUTO_APPROVE_EXACT_TOOL_NAMES = new Set([
+    'skill_lookup',
+    'hapi_skill_lookup',
+    'happy__skill_lookup',
+    'mcp__hapi__skill_lookup'
+]);
+// ping_peer intentionally omitted from always-approve: it can resume another
+// session and inject a prompt into a peer, so permission modes must still gate
+// it (Codex PR #1195). Treat it as write-like in read-only so ACP titles such as
+// "Ping Peer Session" also require approval.
 const AUTO_APPROVE_TOOL_ID_HINTS = ['change_title', 'save_memory'];
-const AUTO_APPROVE_WRITE_TOOL_HINTS = ['write', 'edit', 'create', 'delete', 'patch', 'fs-edit'];
+const SENSITIVE_TOOL_NAME_HINTS = ['ping_peer', 'ping peer'];
+const AUTO_APPROVE_WRITE_TOOL_HINTS = [
+    'write',
+    'edit',
+    'create',
+    'delete',
+    'patch',
+    'fs-edit',
+    ...SENSITIVE_TOOL_NAME_HINTS
+];
 
 export function resolveToolAutoApprovalDecision(
     mode: PermissionMode | undefined,
@@ -45,7 +64,10 @@ export function resolveToolAutoApprovalDecision(
     const lowerId = toolCallId.toLowerCase();
     const decisionForMode: AutoApprovalDecision = mode === 'yolo' ? 'approved_for_session' : 'approved';
 
-    if (rules.alwaysToolNameHints.some((name) => lowerTool.includes(name))) {
+    if (
+        AUTO_APPROVE_EXACT_TOOL_NAMES.has(lowerTool)
+        || rules.alwaysToolNameHints.some((name) => lowerTool.includes(name))
+    ) {
         return decisionForMode;
     }
 

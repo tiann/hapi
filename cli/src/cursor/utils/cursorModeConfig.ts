@@ -14,7 +14,27 @@ export function toCursorAcpMode(mode: CursorPermissionMode | undefined): CursorA
     if (mode === 'plan') return 'plan';
     if (mode === 'ask') return 'ask';
     if (mode === 'debug') return 'debug';
+    // autoReview / yolo / default map to agent; auto-review is a spawn flag + slash, not ACP mode.
     return 'agent';
+}
+
+/**
+ * Permission mode to use after the operator accepts a CreatePlan request.
+ * Plan/ask are read-only planning modes — leave them for an executable mode so
+ * "Yes" means continue the task, not "plan complete, stop".
+ */
+export function resolveCursorModeAfterPlanApproval(
+    mode: CursorPermissionMode | undefined
+): CursorPermissionMode {
+    if (mode === 'plan' || mode === 'ask' || mode === undefined) {
+        return 'default';
+    }
+    return mode;
+}
+
+/** True when HAPI permission mode should spawn/toggle Cursor Auto-review. */
+export function isCursorAutoReviewMode(mode: CursorPermissionMode | undefined): boolean {
+    return mode === 'autoReview';
 }
 
 function resolveAcpModeConfigValue(
@@ -28,7 +48,7 @@ function resolveAcpModeConfigValue(
     if (optionValues.includes(acpMode)) {
         return acpMode;
     }
-    if (mode === 'yolo' || mode === 'default') {
+    if (mode === 'yolo' || mode === 'default' || mode === 'autoReview') {
         if (optionValues.includes('agent')) {
             return 'agent';
         }

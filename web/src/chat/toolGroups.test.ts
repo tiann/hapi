@@ -22,6 +22,8 @@ function makeToolBlock(
             createdAt: 1,
             startedAt: 1,
             completedAt: 2,
+            execStartedAt: null,
+            execCompletedAt: null,
             description: null,
             result: null,
             permission: undefined,
@@ -46,6 +48,7 @@ describe('getToolGroupActionKind', () => {
         expect(getToolGroupActionKind(makeToolBlock('read-1', 'Read'))).toBe('read')
         expect(getToolGroupActionKind(makeToolBlock('grep-1', 'Grep'))).toBe('search')
         expect(getToolGroupActionKind(makeToolBlock('bash-1', 'Bash'))).toBe('command')
+        expect(getToolGroupActionKind(makeToolBlock('shell-1', 'run_shell_command'))).toBe('command')
         expect(getToolGroupActionKind(makeToolBlock('edit-1', 'Edit'))).toBe('mutation')
     })
 })
@@ -65,6 +68,8 @@ describe('isEligibleForToolGrouping', () => {
                 createdAt: 1,
                 startedAt: null,
                 completedAt: null,
+                execStartedAt: null,
+                execCompletedAt: null,
                 description: null,
                 permission: {
                     id: 'perm-1',
@@ -84,6 +89,8 @@ describe('isEligibleForToolGrouping', () => {
                 createdAt: 1,
                 startedAt: 1,
                 completedAt: 2,
+                execStartedAt: null,
+                execCompletedAt: null,
                 description: null,
                 permission: {
                     id: 'approved-1',
@@ -101,6 +108,8 @@ describe('isEligibleForToolGrouping', () => {
                 createdAt: 1,
                 startedAt: 1,
                 completedAt: 2,
+                execStartedAt: null,
+                execCompletedAt: null,
                 description: null,
                 permission: {
                     id: 'denied-1',
@@ -121,6 +130,8 @@ describe('isEligibleForToolGrouping', () => {
                 createdAt: 1,
                 startedAt: 1,
                 completedAt: 2,
+                execStartedAt: null,
+                execCompletedAt: null,
                 description: null,
                 permission: {
                     id: 'codex-perm-1',
@@ -131,7 +142,98 @@ describe('isEligibleForToolGrouping', () => {
     })
 })
 
+describe('Codex activity headings', () => {
+    it('associates only an immediately preceding reasoning heading', () => {
+        const reasoning = makeToolBlock('reasoning-1', 'CodexReasoning', { title: 'Inspecting authentication' })
+        const visible = buildVisibleChatBlocks([
+            reasoning,
+            makeToolBlock('read-1', 'Read', { file_path: 'auth.ts' }),
+            makeToolBlock('read-2', 'Read', { file_path: 'session.ts' }),
+        ], { hasMoreMessages: false })
+
+        expect(visible).toHaveLength(2)
+        expect(isToolGroupBlock(visible[1])).toBe(true)
+        expect(isToolGroupBlock(visible[1]) ? visible[1].activityTitle : null).toBe('Inspecting authentication')
+    })
+
+    it('does not carry a heading across a text boundary', () => {
+        const visible = buildVisibleChatBlocks([
+            makeToolBlock('reasoning-1', 'CodexReasoning', { title: 'Inspecting authentication' }),
+            makeTextBlock('text-boundary'),
+            makeToolBlock('read-1', 'Read', { file_path: 'auth.ts' }),
+            makeToolBlock('read-2', 'Read', { file_path: 'session.ts' }),
+        ], { hasMoreMessages: false })
+
+        const group = visible.find(isToolGroupBlock)
+        expect(group?.activityTitle).toBeNull()
+    })
+})
+
 describe('buildVisibleChatBlocks', () => {
+    it('renders one or more structured Codex exploration commands as an open exploration group', () => {
+        const read = makeToolBlock('codex-read', 'CodexBash', {
+            command: 'cat package.json',
+            command_source: 'agent',
+            command_actions: [{
+                type: 'read',
+                command: 'cat package.json',
+                name: 'package.json',
+                path: '/repo/package.json'
+            }]
+        })
+        const search = makeToolBlock('codex-search', 'CodexBash', {
+            command: 'rg nativeTitle web/src',
+            command_source: 'agent',
+            command_actions: [{
+                type: 'search',
+                command: 'rg nativeTitle web/src',
+                query: 'nativeTitle',
+                path: 'web/src'
+            }]
+        })
+
+        const visible = buildVisibleChatBlocks([read, search], { hasMoreMessages: false })
+
+        expect(visible).toHaveLength(1)
+        expect(isToolGroupBlock(visible[0])).toBe(true)
+        if (!isToolGroupBlock(visible[0])) throw new Error('expected exploration group')
+        expect(visible[0].presentationMode).toBe('codex-exploration')
+        expect(visible[0].defaultOpen).toBe(true)
+        expect(visible[0].tools.map((tool) => tool.id)).toEqual(['codex-read', 'codex-search'])
+    })
+
+    it('keeps structured general Codex commands separate from exploration groups', () => {
+        const read = makeToolBlock('codex-read', 'CodexBash', {
+            command: 'cat package.json',
+            command_actions: [{
+                type: 'read',
+                command: 'cat package.json',
+                name: 'package.json',
+                path: '/repo/package.json'
+            }]
+        })
+        const test = makeToolBlock('codex-test', 'CodexBash', {
+            command: 'bun test',
+            command_actions: [{ type: 'unknown', command: 'bun test' }]
+        })
+        const nextRead = makeToolBlock('codex-read-2', 'CodexBash', {
+            command: 'cat README.md',
+            command_actions: [{
+                type: 'read',
+                command: 'cat README.md',
+                name: 'README.md',
+                path: '/repo/README.md'
+            }]
+        })
+
+        const visible = buildVisibleChatBlocks([read, test, nextRead], { hasMoreMessages: false })
+
+        expect(visible).toHaveLength(3)
+        expect(isToolGroupBlock(visible[0]) && visible[0].presentationMode).toBe('codex-exploration')
+        expect(visible[1]).toBe(test)
+        expect(isToolGroupBlock(visible[2]) && visible[2].presentationMode).toBe('codex-exploration')
+    })
+
     it('groups contiguous eligible root tool cards', () => {
         const visible = buildVisibleChatBlocks([
             makeToolBlock('read-1', 'Read', { file_path: 'src/a.ts' }),
@@ -202,6 +304,8 @@ describe('buildVisibleChatBlocks', () => {
                 createdAt: 1,
                 startedAt: 1,
                 completedAt: 2,
+                execStartedAt: null,
+                execCompletedAt: null,
                 description: null,
                 result: 'Approved',
                 permission: {
@@ -276,6 +380,8 @@ describe('buildVisibleChatBlocks', () => {
                 createdAt: 1,
                 startedAt: 1,
                 completedAt: 2,
+                execStartedAt: null,
+                execCompletedAt: null,
                 description: null,
                 result: 'Approved',
                 permission: {

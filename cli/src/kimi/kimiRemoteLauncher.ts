@@ -1,4 +1,5 @@
 import React from 'react';
+import { registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
 import { logger } from '@/ui/logger';
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
 import { convertAgentMessage } from '@/agent/messageConverter';
@@ -10,7 +11,6 @@ import type { PermissionMode } from './types';
 import { createKimiBackend } from './utils/kimiBackend';
 import { KimiPermissionHandler } from './utils/permissionHandler';
 import { resolveKimiRuntimeConfig } from './utils/config';
-
 class KimiRemoteLauncher extends RemoteLauncherBase {
     private readonly session: KimiSession;
     private readonly model?: string;
@@ -23,7 +23,6 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
     private currentBackendModel: string | null = null;
     private setModelSupported: boolean | undefined = undefined;
     private lastDisplayedToolCall = new Map<string, string>();
-
     constructor(session: KimiSession, opts: { model?: string }) {
         super(process.env.DEBUG ? session.logPath : undefined);
         this.session = session;
@@ -45,19 +44,17 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
         const session = this.session;
         const messageBuffer = this.messageBuffer;
 
-        const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client);
+        const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client, {
+            enableChangeTitle: false,
+            skillLookup: { workingDirectory: session.path, flavor: 'kimi' }
+        });
         this.happyServer = happyServer;
 
         const runtimeConfig = resolveKimiRuntimeConfig({ model: this.model });
-        this.displayModel = runtimeConfig.model;
-        messageBuffer.addMessage(`[MODEL:${runtimeConfig.model}]`, 'system');
 
-        const backend = createKimiBackend({
-            model: runtimeConfig.model,
-            cwd: session.path,
-            permissionMode: session.getPermissionMode() as string | undefined
-        });
+        const backend = createKimiBackend();
         this.backend = backend;
+        registerAcpSessionTitleSync(backend, session.client);
 
         backend.onStderrError((error) => {
             logger.debug('[kimi-remote] stderr error', error);
@@ -101,8 +98,25 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
             backend,
             () => session.getPermissionMode() as PermissionMode | undefined
         );
-        this.currentBackendModel = runtimeConfig.model;
-        this.applyDisplayMode(session.getPermissionMode() as PermissionMode, this.currentBackendModel);
+        // Model selection goes over ACP: new kimi-code ignores the KIMI_MODEL
+        // env var (only the KIMI_MODEL_NAME provider-synthesis family exists),
+        // so the resolved model is applied explicitly here. Without one, adopt
+        // the agent-reported current model so the UI shows the truth.
+        let effectiveModel: string | null = null;
+        if (runtimeConfig.model) {
+            effectiveModel = await this.applyInitialModel(backend, acpSessionId, runtimeConfig.model);
+        }
+        if (!effectiveModel) {
+            effectiveModel = backend.getConfigOptionByCategory(acpSessionId, 'model')?.currentValue
+                ?? backend.getSessionModelsMetadata(acpSessionId)?.currentModelId
+                ?? null;
+        }
+        this.currentBackendModel = effectiveModel;
+        if (effectiveModel) {
+            this.displayModel = effectiveModel;
+            messageBuffer.addMessage(`[MODEL:${effectiveModel}]`, 'system');
+        }
+        this.applyDisplayMode(session.getPermissionMode() as PermissionMode, effectiveModel ?? undefined);
 
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbort(),
@@ -124,7 +138,7 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
 
             if (batch.mode.model && batch.mode.model !== this.currentBackendModel) {
                 if (!backend.setModel || this.setModelSupported === false) {
-                    batch.mode.model = this.currentBackendModel!;
+                    batch.mode.model = this.currentBackendModel ?? undefined;
                 } else {
                     logger.debug(`[kimi-remote] Switching model inline: ${this.currentBackendModel} -> ${batch.mode.model}`);
                     try {
@@ -148,7 +162,7 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
                                 message: `Failed to switch model to ${batch.mode.model}. Continuing with ${this.currentBackendModel}.`
                             });
                         }
-                        batch.mode.model = this.currentBackendModel!;
+                        batch.mode.model = this.currentBackendModel ?? undefined;
                     }
                 }
             }
@@ -156,6 +170,8 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
             this.applyDisplayMode(batch.mode.permissionMode, batch.mode.model);
             messageBuffer.addMessage(batch.message, 'user');
 
+            // skill_lookup discovery lives on the MCP tool description — do not
+            // prepend instructions onto user turns (prompt-injection false positive).
             const promptContent: PromptContent[] = [{
                 type: 'text',
                 text: batch.message
@@ -167,6 +183,7 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
                 await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
                     this.handleAgentMessage(message);
                 });
+                void backend.refreshSessionInfo(acpSessionId, session.path);
             } catch (error) {
                 const errorMessage = error instanceof Error ? error.message : String(error);
                 logger.warn('[kimi-remote] prompt failed', { message: errorMessage });
@@ -243,6 +260,42 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
                 const _exhaustive: never = message;
                 return _exhaustive;
             }
+        }
+    }
+
+    private async applyInitialModel(
+        backend: ReturnType<typeof createKimiBackend>,
+        sessionId: string,
+        model: string
+    ): Promise<string | null> {
+        try {
+            await backend.setModel(sessionId, model);
+            this.setModelSupported = true;
+            return model;
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (/method not found/i.test(message)) {
+                this.setModelSupported = false;
+            }
+            logger.debug('[kimi-remote] session/set_model failed, trying model config option', error);
+        }
+
+        const option = backend.getConfigOptionByCategory(sessionId, 'model');
+        if (!option) {
+            logger.warn(`[kimi-remote] Cannot apply model ${model}: agent exposes no model config option`);
+            return null;
+        }
+        try {
+            await backend.setConfigOption(sessionId, option.id, model);
+            return model;
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.warn(`[kimi-remote] Failed to apply model ${model}`, error);
+            this.session.sendSessionEvent({
+                type: 'message',
+                message: `Failed to switch model to ${model}: ${message}. Using the agent default.`
+            });
+            return null;
         }
     }
 

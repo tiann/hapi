@@ -1,4 +1,5 @@
 import { useId, useMemo, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import type { Session } from '@/types/api'
 import type { ApiClient } from '@/api/client'
 import { isTelegramApp } from '@/hooks/useTelegram'
@@ -7,24 +8,17 @@ import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { SessionExportDialog } from '@/components/SessionExportDialog'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import { useScratchlistCount } from '@/lib/use-scratchlist-count'
 import { formatReopenError } from '@/lib/reopenError'
+import { formatCodexReasoningLabel, shouldShowCodexReasoningLabel } from '@/lib/codexStatusLabels'
 import { getSessionModelLabel } from '@/lib/sessionModelLabel'
 import { useTranslation } from '@/lib/use-translation'
 import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
-
-function getSessionTitle(session: Session): string {
-    if (session.metadata?.name) {
-        return session.metadata.name
-    }
-    if (session.metadata?.summary?.text) {
-        return session.metadata.summary.text
-    }
-    if (session.metadata?.path) {
-        const parts = session.metadata.path.split('/').filter(Boolean)
-        return parts.length > 0 ? parts[parts.length - 1] : session.id.slice(0, 8)
-    }
-    return session.id.slice(0, 8)
-}
+import { isFastServiceTier } from '@/components/AssistantChat/codexFastMode'
+import { getSessionTitle } from '@/lib/sessionTitle'
+import { useToast } from '@/lib/toast-context'
+import { queryKeys } from '@/lib/query-keys'
+import { markCodexSessionsImported } from '@/lib/codexImportedSessions'
 
 function FilesIcon(props: { className?: string }) {
     return (
@@ -97,20 +91,34 @@ function MoreVerticalIcon(props: { className?: string }) {
 
 export function SessionHeader(props: {
     session: Session
+    serviceTier?: string | null
     onBack: () => void
     onToggleFiles?: () => void
     filesActive?: boolean
     onToggleOutline?: () => void
     outlineActive?: boolean
     api: ApiClient | null
+    canReopen?: boolean
+    reopenDisabledReason?: string
     onSessionDeleted?: () => void
     onSessionReopened?: (newSessionId: string) => void
 }) {
     const { t } = useTranslation()
+    const queryClient = useQueryClient()
+    const { addToast } = useToast()
     const { session, api, onSessionDeleted, onSessionReopened } = props
     const title = useMemo(() => getSessionTitle(session), [session])
     const worktreeBranch = session.metadata?.worktree?.branch
     const modelLabel = getSessionModelLabel(session)
+    const agentFlavor = session.metadata?.flavor ?? null
+    const reasoningLabel = shouldShowCodexReasoningLabel(agentFlavor)
+        ? formatCodexReasoningLabel(session.modelReasoningEffort)
+        : null
+    // Match expected Fast badge semantics (#1004): only explicit service tier, no effort/model heuristics.
+    const showFastBadge = agentFlavor === 'codex' && isFastServiceTier(props.serviceTier ?? session.serviceTier)
+    const codexSessionId = session.metadata?.flavor === 'codex'
+        ? session.metadata.codexSessionId?.trim() || null
+        : null
 
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
@@ -120,6 +128,7 @@ export function SessionHeader(props: {
     const [exportOpen, setExportOpen] = useState(false)
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
+    const [isSyncingCodex, setIsSyncingCodex] = useState(false)
 
     const { archiveSession, reopenSession, renameSession, deleteSession, isPending } = useSessionActions(
         api,
@@ -127,6 +136,11 @@ export function SessionHeader(props: {
         session.metadata?.flavor ?? null
     )
     const [reopenError, setReopenError] = useState<string | null>(null)
+    // tiann/hapi#893: surface the scratchlist entry count in the
+    // delete-confirm copy so the operator knows what cascades when they
+    // confirm. Read-only hook reuses the cache filled by SessionChat -
+    // no extra network when both components are mounted.
+    const scratchlistCount = useScratchlistCount(session.id, api)
 
     const handleDelete = async () => {
         await deleteSession()
@@ -142,6 +156,47 @@ export function SessionHeader(props: {
             }
         } catch (error) {
             setReopenError(formatReopenError(error))
+        }
+    }
+
+    const handleSyncCodex = async () => {
+        if (!api || !codexSessionId || isSyncingCodex) return
+
+        setIsSyncingCodex(true)
+        try {
+            // 中文注释：手动同步必须携带当前会话归属机器和目录；多台 runner 在线时后端不能靠猜。
+            const result = await api.syncCodexSession({
+                sessionIds: [codexSessionId],
+                cwd: typeof session.metadata?.path === 'string' ? session.metadata.path : undefined,
+                machineId: typeof session.metadata?.machineId === 'string' ? session.metadata.machineId : undefined
+            })
+            if (!result.success) {
+                throw new Error(result.error || t('codexSync.failed.body'))
+            }
+
+            markCodexSessionsImported([codexSessionId])
+            await Promise.all([
+                queryClient.invalidateQueries({ queryKey: queryKeys.session(session.id) }),
+                queryClient.invalidateQueries({ queryKey: queryKeys.messages(session.id) }),
+                queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
+            ])
+            addToast({
+                title: t('codexSync.manual.success.title'),
+                body: (result.syncedCount ?? 1) === 0
+                    ? t('codexSync.manual.success.noNewMessages')
+                    : t('codexSync.manual.success.body', { n: result.syncedCount ?? 1 }),
+                sessionId: session.id,
+                url: `/sessions/${session.id}`
+            })
+        } catch (error) {
+            addToast({
+                title: t('codexSync.manual.failed.title'),
+                body: error instanceof Error ? error.message : t('codexSync.failed.body'),
+                sessionId: session.id,
+                url: `/sessions/${session.id}`
+            })
+        } finally {
+            setIsSyncingCodex(false)
         }
     }
 
@@ -190,12 +245,22 @@ export function SessionHeader(props: {
                         </div>
                         <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-[var(--app-hint)]">
                             <span className="inline-flex items-center gap-1">
-                                <AgentFlavorIcon flavor={session.metadata?.flavor} className="h-3.5 w-3.5 shrink-0" />
+                                <AgentFlavorIcon flavor={session.metadata?.flavor} className="h-3.5 w-3.5 shrink-0 -translate-y-px" />
                                 {session.metadata?.flavor?.trim() || 'unknown'}
                             </span>
                             {modelLabel ? (
                                 <span>
                                     {t(modelLabel.key)}: {modelLabel.value}
+                                </span>
+                            ) : null}
+                            {reasoningLabel ? (
+                                <span data-testid="session-header-reasoning" className="hidden sm:inline">
+                                    {reasoningLabel}
+                                </span>
+                            ) : null}
+                            {showFastBadge ? (
+                                <span data-testid="session-header-fast" className="text-[#34C759]">
+                                    fast
                                 </span>
                             ) : null}
                             {worktreeBranch ? (
@@ -249,11 +314,15 @@ export function SessionHeader(props: {
             <SessionActionMenu
                 isOpen={menuOpen}
                 onClose={() => setMenuOpen(false)}
+                sessionId={session.id}
+                sessionTitle={title}
                 sessionActive={session.active}
                 onRename={() => setRenameOpen(true)}
                 onExport={() => setExportOpen(true)}
+                onSyncCodex={api && codexSessionId ? handleSyncCodex : undefined}
                 onArchive={() => setArchiveOpen(true)}
-                onReopen={handleReopen}
+                onReopen={props.canReopen === false ? undefined : handleReopen}
+                reopenDisabledReason={props.reopenDisabledReason}
                 onDelete={() => setDeleteOpen(true)}
                 anchorPoint={menuAnchorPoint}
                 menuId={menuId}
@@ -283,7 +352,7 @@ export function SessionHeader(props: {
             <SessionExportDialog
                 isOpen={exportOpen}
                 onClose={() => setExportOpen(false)}
-                session={session}
+                sessionId={session.id}
                 api={api}
             />
 
@@ -303,7 +372,16 @@ export function SessionHeader(props: {
                 isOpen={deleteOpen}
                 onClose={() => setDeleteOpen(false)}
                 title={t('dialog.delete.title')}
-                description={t('dialog.delete.description', { name: title })}
+                description={
+                    scratchlistCount > 0
+                        ? `${t('dialog.delete.description', { name: title })} ${t(
+                            scratchlistCount === 1
+                                ? 'dialog.delete.scratchlist.one'
+                                : 'dialog.delete.scratchlist.other',
+                            { n: String(scratchlistCount) }
+                        )}`
+                        : t('dialog.delete.description', { name: title })
+                }
                 confirmLabel={t('dialog.delete.confirm')}
                 confirmingLabel={t('dialog.delete.confirming')}
                 onConfirm={handleDelete}

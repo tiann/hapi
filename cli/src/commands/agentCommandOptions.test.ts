@@ -68,6 +68,30 @@ describe('parseRemoteAgentCommandOptions', () => {
         expect(() => parseRemoteAgentCommandOptions(['--model'], OPENCODE_PERMISSION_MODES)).toThrow('Missing --model value')
         expect(() => parseRemoteAgentCommandOptions(['--model-reasoning-effort'], OPENCODE_PERMISSION_MODES)).toThrow('Missing --model-reasoning-effort value')
     })
+
+    it('accepts OpenCode-native -s / --session as resume aliases', () => {
+        expect(parseRemoteAgentCommandOptions(
+            ['-s', 'opencode-sess-1'],
+            OPENCODE_PERMISSION_MODES
+        ).resumeSessionId).toBe('opencode-sess-1')
+
+        expect(parseRemoteAgentCommandOptions(
+            ['--session', 'opencode-sess-2'],
+            OPENCODE_PERMISSION_MODES
+        ).resumeSessionId).toBe('opencode-sess-2')
+    })
+
+    it('rejects -s / --session with no value', () => {
+        expect(() => parseRemoteAgentCommandOptions(['-s'], OPENCODE_PERMISSION_MODES)).toThrow('Missing -s value')
+        expect(() => parseRemoteAgentCommandOptions(['--session'], OPENCODE_PERMISSION_MODES)).toThrow('Missing --session value')
+    })
+
+    it('a later -s overrides a prior --resume (last-write-wins)', () => {
+        expect(parseRemoteAgentCommandOptions(
+            ['--resume', 'first', '-s', 'second'],
+            OPENCODE_PERMISSION_MODES
+        ).resumeSessionId).toBe('second')
+    })
 })
 
 describe('parseRemoteAgentCommandOptions — pi flavor', () => {

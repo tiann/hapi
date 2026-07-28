@@ -7,10 +7,14 @@ import { useTranslation } from '@/lib/use-translation'
 export const Dialog = DialogPrimitive.Root
 export const DialogTrigger = DialogPrimitive.Trigger
 
+type DialogContentProps = React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & {
+    closeButtonClassName?: string
+}
+
 export const DialogContent = React.forwardRef<
     HTMLDivElement,
-    React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
->(({ className, children, ...props }, ref) => {
+    DialogContentProps
+>(({ className, closeButtonClassName, children, ...props }, ref) => {
     const { t } = useTranslation()
     return (
         <DialogPrimitive.Portal>
@@ -25,7 +29,10 @@ export const DialogContent = React.forwardRef<
             >
                 {children}
                 <DialogPrimitive.Close
-                    className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                    className={cn(
+                        'absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]',
+                        closeButtonClassName
+                    )}
                     aria-label={t('button.close')}
                 >
                     <CloseIcon className="h-4 w-4" />

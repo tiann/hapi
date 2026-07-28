@@ -17,9 +17,9 @@ import type { ScratchlistEntry } from '@/lib/scratchlist'
  * runtime hook and asserts both the setText call AND the exit-mode call
  * fire when the operator clicks promote-to-composer.
  *
- * Promote-to-queue does NOT exit the mode - the queue path bypasses the
- * scratchlist-mode wrapper entirely, and the operator may still want to
- * capture related notes.
+ * Promote-to-queue exits scratchlist mode after a successful send so the
+ * operator can continue normal chat (issue #959). Rejected sends keep mode
+ * on so the entry stays and the operator can retry.
  */
 
 const setText = vi.fn()
@@ -71,7 +71,7 @@ describe('ScratchlistDrawerHost.onPromoteToComposer', () => {
         expect(onSend).not.toHaveBeenCalled()
     })
 
-    it('does NOT exit scratchlist mode when an entry is promoted to queue', async () => {
+    it('exits scratchlist mode when an entry is promoted to queue and the send is accepted', async () => {
         const onExitScratchlistMode = vi.fn()
         const onSend = vi.fn(async () => true)
         const onMove = vi.fn()
@@ -93,11 +93,33 @@ describe('ScratchlistDrawerHost.onPromoteToComposer', () => {
         expect(queueButtons.length).toBeGreaterThan(0)
         fireEvent.click(queueButtons[0]!)
 
-        // Allow the async onSend to settle
-        await Promise.resolve()
-        await Promise.resolve()
+        await waitFor(() => expect(onSend).toHaveBeenCalledWith('send-to-queue text'))
+        expect(onExitScratchlistMode).toHaveBeenCalledTimes(1)
+        expect(setText).not.toHaveBeenCalled()
+    })
 
-        expect(onSend).toHaveBeenCalledWith('send-to-queue text')
+    it('does NOT exit scratchlist mode when promote-to-queue send is rejected', async () => {
+        const onExitScratchlistMode = vi.fn()
+        const onSend = vi.fn(async () => false)
+        const onMove = vi.fn()
+        const onDelete = vi.fn()
+
+        render(
+            <I18nProvider>
+                <ScratchlistDrawerHost
+                    entries={[makeEntry({ id: 'e1', text: 'send-to-queue text' })]}
+                    onMove={onMove}
+                    onDelete={onDelete}
+                    onSend={onSend}
+                    onExitScratchlistMode={onExitScratchlistMode}
+                />
+            </I18nProvider>,
+        )
+
+        const queueButtons = screen.getAllByRole('button', { name: /queue|send/i })
+        fireEvent.click(queueButtons[0]!)
+
+        await waitFor(() => expect(onSend).toHaveBeenCalledWith('send-to-queue text'))
         expect(onExitScratchlistMode).not.toHaveBeenCalled()
         expect(setText).not.toHaveBeenCalled()
     })

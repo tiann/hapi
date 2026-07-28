@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
     buildMcpServerConfigArgs,
     buildDeveloperInstructionsArg,
-    buildSessionStartHookConfigArgs
+    buildCodexHookConfigArgs
 } from './codexMcpConfig';
 
 describe('codexMcpConfig', () => {
@@ -113,18 +113,24 @@ describe('codexMcpConfig', () => {
         });
     });
 
-    describe('buildSessionStartHookConfigArgs', () => {
-        it('builds a SessionStart hook config override', () => {
-            const args = buildSessionStartHookConfigArgs(4312, 'secret-token');
+    describe('buildCodexHookConfigArgs', () => {
+        it('builds trusted SessionStart and tool lifecycle hook overrides', () => {
+            const args = buildCodexHookConfigArgs(4312, 'secret-token');
 
             expect(args[0]).toBe('-c');
             expect(args[1]).toContain('hooks.SessionStart=[');
             expect(args[1]).toContain('type = "command"');
             expect(args[1]).toContain('hook-forwarder --port 4312 --token secret-token');
             expect(args[2]).toBe('-c');
-            expect(args[3]).toContain('hooks.state={');
-            expect(args[3]).toContain(':session_start:0:0');
-            expect(args[3]).toContain('trusted_hash="sha256:');
+            expect(args[3]).toContain('hooks.PreToolUse=[');
+            expect(args[3]).toContain('matcher = "*"');
+            expect(args[5]).toContain('hooks.PostToolUse=[');
+            expect(args[5]).toContain('matcher = "*"');
+            expect(args[7]).toContain('hooks.state={');
+            expect(args[7]).toContain(':session_start:0:0');
+            expect(args[7]).toContain(':pre_tool_use:0:0');
+            expect(args[7]).toContain(':post_tool_use:0:0');
+            expect(args[7].match(/trusted_hash="sha256:/g)).toHaveLength(3);
         });
     });
 });

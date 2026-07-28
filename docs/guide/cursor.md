@@ -23,8 +23,11 @@ hapi cursor resume <chatId>    # Resume a specific chat
 hapi cursor --continue         # Resume the most recent chat
 hapi cursor --mode plan        # Start in Plan mode
 hapi cursor --mode ask         # Start in Ask mode
+hapi cursor --auto-review      # Start with Auto-review (Smart Auto)
 hapi cursor --yolo             # Bypass approval prompts (--force)
 hapi cursor --model <model>    # Specify model
+hapi cursor --cursor-worktree feature-x   # Cursor-native worktree
+hapi cursor --cursor-add-dir ../shared    # Extra workspace root (repeatable)
 ```
 
 ## Permission Modes
@@ -34,9 +37,25 @@ hapi cursor --model <model>    # Specify model
 | `default` | Standard agent behavior |
 | `plan` | Plan mode - design approach before coding |
 | `ask` | Ask mode - explore code without edits |
+| `debug` | Debug mode - hypotheses + instrumentation |
+| `autoReview` | Auto-review (Smart Auto) - allowlist/sandbox/classifier instead of full YOLO |
 | `yolo` | Bypass approval prompts |
 
-Set mode via `--mode` flag or change from the web UI during a session.
+Set mode via `--mode` / `--permission-mode` / `--auto-review`, or change from the web UI during a session.
+
+## Cursor-native worktree & multi-root
+
+- New Session **Worktree** for Cursor uses Cursor's `--worktree` (`~/.cursor/worktrees/<repo>/<name>`), not HAPI's sibling-directory worktree.
+- Mid-session: send `/worktree`, `/apply-worktree`, `/delete-worktree`, or `/add-dir <path>` (isolated pass-through).
+- CLI: `hapi cursor --cursor-worktree feature-x --cursor-add-dir ../shared`
+
+## Slash pass-through (remote)
+
+These commands are isolated in the queue and forwarded to the agent (ACP prompt or legacy `-p`):
+
+`/compress` `/summarize` `/compact` `/model` `/multitask` `/best-of-n` `/worktree` `/apply-worktree` `/delete-worktree` `/add-dir` `/context` `/fork` `/auto-review`
+
+Interactive TUI-only commands (`/config`, `/mcp`, `/sandbox`, `/btw`, `/rewind`, …) are not supported remotely.
 
 ## Modes
 
@@ -45,6 +64,7 @@ Set mode via `--mode` flag or change from the web UI during a session.
 
 ## Limitations
 
+- **Multitask UI** - `/multitask` is slash-driven; HAPI does not yet provide an Agents Window-style fleet pane. Subagent `cursor/task` notifications show as CursorTask cards when the agent emits them.
 - **Legacy sessions** - Cursor sessions created before the ACP migration can still resume temporarily via stream-json. Start a new Cursor session to get ACP permissions, plans, todos, and question support.
 - **Session resume** - ACP sessions resume through `session/load`. Old stream-json `session_id` values are not loadable via ACP; those sessions keep using the legacy path until you start fresh.
 

@@ -7,7 +7,7 @@ import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler'
 import type { AgentState } from '@/api/types';
 import type { CodexSession } from './session';
 import { parseCodexCliOverrides } from './utils/codexCliOverrides';
-import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory';
+import { bootstrapExistingSession, bootstrapLazySession, bootstrapSession } from '@/agent/sessionFactory';
 import { registerLocalHandoffHandler } from '@/agent/localHandoff';
 import { createModeChangeHandler, createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle';
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol';
@@ -19,10 +19,9 @@ import type { ReasoningEffort } from './appServerTypes';
 import { parseCodexSpecialCommand } from './codexSpecialCommands';
 import { listSlashCommands } from '@/modules/common/slashCommands';
 import { resolveCodexSlashCommand } from './utils/slashCommands';
+import { parseReasoningEffortValue } from './utils/reasoningEffort';
 
 export { emitReadyIfIdle } from './utils/emitReadyIfIdle';
-
-const REASONING_EFFORTS = new Set<ReasoningEffort>(['none', 'minimal', 'low', 'medium', 'high', 'xhigh'])
 
 export async function runCodex(opts: {
     startedBy?: 'runner' | 'terminal';
@@ -44,6 +43,7 @@ export async function runCodex(opts: {
     let state: AgentState = {
         controlledByUser: false
     };
+    const useLazyBootstrap = !opts.existingSessionId && startedBy === 'terminal';
     const bootstrap = opts.existingSessionId
         ? await bootstrapExistingSession({
             sessionId: opts.existingSessionId,
@@ -51,7 +51,7 @@ export async function runCodex(opts: {
             startedBy,
             workingDirectory
         })
-        : await bootstrapSession({
+        : await (useLazyBootstrap ? bootstrapLazySession : bootstrapSession)({
             flavor: 'codex',
             startedBy,
             workingDirectory,
@@ -60,6 +60,9 @@ export async function runCodex(opts: {
             modelReasoningEffort: opts.modelReasoningEffort
         });
     const { api, session, sessionInfo } = bootstrap;
+    const codexSourceSessionId = typeof sessionInfo.metadata?.codexSourceSessionId === 'string'
+        ? sessionInfo.metadata.codexSourceSessionId
+        : undefined;
 
     const startingMode: 'local' | 'remote' = startedBy === 'runner' ? 'remote' : 'local';
 
@@ -70,6 +73,7 @@ export async function runCodex(opts: {
         model: mode.model,
         modelReasoningEffort: mode.modelReasoningEffort,
         collaborationMode: mode.collaborationMode,
+        proactiveMultiAgent: mode.proactiveMultiAgent,
         serviceTier: mode.serviceTier
     }));
 
@@ -77,12 +81,18 @@ export async function runCodex(opts: {
     const sessionWrapperRef: { current: CodexSession | null } = { current: null };
     // 中文注释：当用户直接把现成的 Codex thread 导入到一个全新的 Hapi 会话时，
     // 需要在首次附着 transcript 时回放已有历史；恢复已有 Hapi 会话时则保持原来的增量模式，避免重复灌入旧消息。
-    const replayTranscriptHistoryOnStart = Boolean(opts.resumeSessionId && !opts.existingSessionId);
+    const replayTranscriptHistoryOnStart = useLazyBootstrap || Boolean(opts.resumeSessionId && !opts.existingSessionId);
 
-    let currentPermissionMode: PermissionMode = opts.permissionMode ?? 'default';
+    const persistedPermissionMode = sessionInfo.permissionMode ?? sessionInfo.metadata?.preferredPermissionMode;
+    let currentPermissionMode: PermissionMode = opts.permissionMode
+        ?? (persistedPermissionMode && isPermissionModeAllowedForFlavor(persistedPermissionMode, 'codex') ? persistedPermissionMode as PermissionMode : undefined)
+        ?? 'default';
     let currentModel = opts.model;
-    let currentModelReasoningEffort: ReasoningEffort | undefined = opts.modelReasoningEffort;
+    // Three states matter here: `undefined` inherits Codex configuration,
+    // `null` explicitly clears a HAPI override, and a string explicitly sets it.
+    let currentModelReasoningEffort: ReasoningEffort | null | undefined = opts.modelReasoningEffort;
     let currentCollaborationMode: EnhancedMode['collaborationMode'] = opts.collaborationMode ?? 'default';
+    let currentProactiveMultiAgent: boolean | undefined;
     // Service tier (Fast mode), stored representation: `'fast'` and
     // `'standard'` are explicit user choices, `undefined`/`null` mean untouched
     // (use the account default). Prefer the spawn-time override (set by the hub
@@ -110,7 +120,11 @@ export async function runCodex(opts: {
         if (options?.syncModel !== false) {
             sessionInstance.setModel(currentModel ?? null);
         }
-        sessionInstance.setModelReasoningEffort(currentModelReasoningEffort ?? null);
+        // Do not collapse inherited Codex config into an explicit default.
+        // Explicit clears remain `null` and must still be synchronized.
+        if (currentModelReasoningEffort !== undefined) {
+            sessionInstance.setModelReasoningEffort(currentModelReasoningEffort);
+        }
         // Preserve the third state: only sync when the user/persisted session
         // has an explicit tier. `undefined` means "omit" so the keepalive does
         // not overwrite the account-default or persisted Fast tier with null.
@@ -131,6 +145,7 @@ export async function runCodex(opts: {
         modelReasoningEffort?: ReasoningEffort | null;
         collaborationMode?: EnhancedMode['collaborationMode'];
         serviceTier?: string | null;
+        proactiveMultiAgent?: boolean;
     } | undefined): void => {
         if (!updates) return;
         if (updates.permissionMode !== undefined) {
@@ -140,13 +155,16 @@ export async function runCodex(opts: {
             currentModel = updates.model ?? undefined;
         }
         if (updates.modelReasoningEffort !== undefined) {
-            currentModelReasoningEffort = updates.modelReasoningEffort ?? undefined;
+            currentModelReasoningEffort = updates.modelReasoningEffort;
         }
         if (updates.collaborationMode !== undefined) {
             currentCollaborationMode = updates.collaborationMode;
         }
         if (updates.serviceTier !== undefined) {
             currentServiceTier = updates.serviceTier;
+        }
+        if (updates.proactiveMultiAgent !== undefined) {
+            currentProactiveMultiAgent = updates.proactiveMultiAgent;
         }
         applyCurrentConfigToSession();
     };
@@ -162,7 +180,7 @@ export async function runCodex(opts: {
         }
         const sessionModelReasoningEffort = sessionWrapperRef.current?.getModelReasoningEffort();
         if (sessionModelReasoningEffort !== undefined) {
-            currentModelReasoningEffort = (sessionModelReasoningEffort ?? undefined) as ReasoningEffort | undefined;
+            currentModelReasoningEffort = sessionModelReasoningEffort as ReasoningEffort | null;
         }
         const sessionCollaborationMode = sessionWrapperRef.current?.getCollaborationMode();
         if (sessionCollaborationMode) {
@@ -187,8 +205,9 @@ export async function runCodex(opts: {
                     permissionMode: currentPermissionMode,
                     collaborationMode: currentCollaborationMode,
                     model: currentModel,
-                    modelReasoningEffort: currentModelReasoningEffort,
-                    serviceTier: currentServiceTier
+                    modelReasoningEffort: currentModelReasoningEffort ?? undefined,
+                    serviceTier: currentServiceTier,
+                    proactiveMultiAgent: currentProactiveMultiAgent
                 });
                 if (slash.kind === 'goal') {
                     if (slash.message) {
@@ -206,7 +225,7 @@ export async function runCodex(opts: {
                     messageQueue.pushIsolateAndClear(goalCommand, {
                         permissionMode: currentPermissionMode ?? 'default',
                         model: currentModel,
-                        modelReasoningEffort: currentModelReasoningEffort,
+                        modelReasoningEffort: currentModelReasoningEffort ?? undefined,
                         collaborationMode: currentCollaborationMode,
                         serviceTier: currentServiceTier
                     }, localId);
@@ -245,8 +264,9 @@ export async function runCodex(opts: {
                 const enhancedMode: EnhancedMode = {
                     permissionMode: messagePermissionMode ?? 'default',
                     model: currentModel,
-                    modelReasoningEffort: currentModelReasoningEffort,
+                    modelReasoningEffort: currentModelReasoningEffort ?? undefined,
                     collaborationMode: currentCollaborationMode,
+                    proactiveMultiAgent: currentProactiveMultiAgent,
                     serviceTier: currentServiceTier
                 };
                 if (isolatedCommandText) {
@@ -259,8 +279,9 @@ export async function runCodex(opts: {
                 const enhancedMode: EnhancedMode = {
                     permissionMode: currentPermissionMode ?? 'default',
                     model: currentModel,
-                    modelReasoningEffort: currentModelReasoningEffort,
+                    modelReasoningEffort: currentModelReasoningEffort ?? undefined,
                     collaborationMode: currentCollaborationMode,
+                    proactiveMultiAgent: currentProactiveMultiAgent,
                     serviceTier: currentServiceTier
                 };
                 messageQueue.push(formatMessageWithAttachments(message.content.text, message.content.attachments), enhancedMode, localId);
@@ -301,16 +322,6 @@ export async function runCodex(opts: {
             throw new Error('Invalid collaboration mode');
         }
         return parsed.data;
-    };
-
-    const resolveModelReasoningEffort = (value: unknown): ReasoningEffort | undefined => {
-        if (value === null) {
-            return undefined;
-        }
-        if (typeof value !== 'string' || !REASONING_EFFORTS.has(value as ReasoningEffort)) {
-            throw new Error('Invalid model reasoning effort');
-        }
-        return value as ReasoningEffort;
     };
 
     const resolveModel = (value: unknown): string => {
@@ -362,7 +373,7 @@ export async function runCodex(opts: {
         }
 
         if (config.modelReasoningEffort !== undefined) {
-            currentModelReasoningEffort = resolveModelReasoningEffort(config.modelReasoningEffort);
+            currentModelReasoningEffort = parseReasoningEffortValue(config.modelReasoningEffort) ?? null;
         }
 
         if (config.collaborationMode !== undefined) {
@@ -408,9 +419,10 @@ export async function runCodex(opts: {
             startedBy,
             permissionMode: currentPermissionMode,
             model: currentModel,
-            modelReasoningEffort: currentModelReasoningEffort,
+            modelReasoningEffort: currentModelReasoningEffort ?? undefined,
             collaborationMode: currentCollaborationMode,
             resumeSessionId: opts.resumeSessionId,
+            sourceSessionId: codexSourceSessionId,
             replayTranscriptHistoryOnStart,
             onModeChange: createModeChangeHandler(session),
             onSessionReady: (instance) => {

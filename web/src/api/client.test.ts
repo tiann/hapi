@@ -79,4 +79,40 @@ describe('ApiClient error mapping', () => {
             expect(apiError.body).toContain('cursorSessionId')
         }
     })
+
+    it('loads the Cursor chat store status for the selected session', async () => {
+        fetchMock.mockResolvedValueOnce(
+            new Response(JSON.stringify({ onDisk: false, store: null }), { status: 200 })
+        )
+
+        const api = new ApiClient('test-token')
+        await expect(api.getCursorChatStoreStatus('session cursor')).resolves.toEqual({
+            onDisk: false,
+            store: null
+        })
+        expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/sessions/session%20cursor/cursor-chat-store')
+    })
+
+    it('loads the authoritative queued state for encoded session IDs', async () => {
+        fetchMock.mockResolvedValueOnce(
+            new Response(JSON.stringify({
+                queuedLocalIds: ['local-2'],
+                invokedLocalMessages: [{ localId: 'local-3', invokedAt: 1_000 }]
+            }), { status: 200 })
+        )
+
+        const api = new ApiClient('test-token')
+        await expect(api.getQueuedState('session /?#', ['local-1', 'local-2'])).resolves.toEqual({
+            queuedLocalIds: ['local-2'],
+            invokedLocalMessages: [{ localId: 'local-3', invokedAt: 1_000 }]
+        })
+
+        const [url, init] = fetchMock.mock.calls[0] ?? []
+        expect(url).toBe('/api/sessions/session%20%2F%3F%23/messages/queued-state')
+        expect(init).toMatchObject({
+            method: 'POST',
+            body: JSON.stringify({ localIds: ['local-1', 'local-2'] })
+        })
+        expect(new Headers(init?.headers).get('content-type')).toBe('application/json')
+    })
 })

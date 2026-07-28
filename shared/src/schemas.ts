@@ -35,8 +35,12 @@ export const MetadataSchema = z.object({
     machineId: z.string().optional(),
     claudeSessionId: z.string().optional(),
     codexSessionId: z.string().optional(),
+    // 原始 Codex thread id。导入 Codex 历史后，HAPI 会 fork 出自己的续写 thread；
+    // codexSessionId 保存 fork 后的 thread，codexSourceSessionId 保留来源 thread 便于同步/展示。
+    codexSourceSessionId: z.string().optional(),
     geminiSessionId: z.string().optional(),
     opencodeSessionId: z.string().optional(),
+    grokSessionId: z.string().optional(),
     cursorSessionId: z.string().optional(),
     cursorSessionProtocol: z.enum(['acp', 'stream-json']).optional(),
     // Drives the web `CursorMigrationBanner`:
@@ -211,7 +215,8 @@ export const SessionSchema = z.object({
     createdAt: z.number(),
     updatedAt: z.number(),
     active: z.boolean(),
-    activeAt: z.number(),
+    // Hub may still emit null for legacy SQLite rows; keep output type number.
+    activeAt: z.number().nullish().transform((value) => value ?? 0),
     metadata: MetadataSchema.nullable(),
     metadataVersion: z.number(),
     agentState: AgentStateSchema.nullable(),
@@ -242,10 +247,37 @@ export const SessionPatchSchema = z.object({
     serviceTier: z.string().nullable().optional(),
     permissionMode: PermissionModeSchema.optional(),
     collaborationMode: CodexCollaborationModeSchema.optional(),
-    backgroundTaskCount: z.number().optional()
+    backgroundTaskCount: z.number().optional(),
+    // tiann/hapi#893 (scratchlist v2). Bumped whenever any entry on the
+    // session_scratchlist table mutates. Web client uses the change as a
+    // trigger to refetch the entries query - the timestamp itself is the
+    // signal, not the payload. Keep this minimal: per the operator's 80/20
+    // ruling, scratchlist mutations are rare relative to keep-alive
+    // patches, so a fresh event type would be overkill.
+    scratchlistUpdatedAt: z.number().optional()
 }).strict()
 
 export type SessionPatch = z.infer<typeof SessionPatchSchema>
+
+// tiann/hapi#893: per-session scratchlist entries (operator notes /
+// drafts / parking-lot ideas). Hub-side typed-table source of truth;
+// web treats localStorage as offline cache only. Single-user notes -
+// no collaborative edit semantics (no version field, no conflict
+// resolution beyond last-write-wins).
+export const ScratchlistEntrySchema = z.object({
+    entryId: z.string().min(1),
+    text: z.string(),
+    createdAt: z.number(),
+    updatedAt: z.number()
+})
+
+export type ScratchlistEntry = z.infer<typeof ScratchlistEntrySchema>
+
+export const ScratchlistEntriesResponseSchema = z.object({
+    entries: z.array(ScratchlistEntrySchema)
+})
+
+export type ScratchlistEntriesResponse = z.infer<typeof ScratchlistEntriesResponseSchema>
 
 export const MachineMetadataSchema = z.object({
     host: z.string(),

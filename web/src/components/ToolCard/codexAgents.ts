@@ -4,9 +4,13 @@ import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
 export const codexAgentToolNames = [
     'spawn_agent',
     'send_input',
+    'send_message',
     'resume_agent',
+    'followup_task',
     'wait_agent',
-    'close_agent'
+    'close_agent',
+    'interrupt_agent',
+    'list_agents'
 ] as const
 
 export type CodexAgentToolName = typeof codexAgentToolNames[number]
@@ -200,6 +204,9 @@ export function getCodexAgentFieldRows(toolName: string, input: unknown): Array<
 
         const timeout = typeof input.timeout_ms === 'number' ? `${input.timeout_ms} ms` : null
         if (timeout) rows.push({ label: 'Timeout', value: timeout })
+
+        const pathPrefix = asNonEmptyString(input.path_prefix)
+        if (pathPrefix) rows.push({ label: 'Path prefix', value: pathPrefix })
     }
 
     const targets = getCodexAgentTargets(input)
@@ -216,6 +223,7 @@ export function getCodexAgentFieldRows(toolName: string, input: unknown): Array<
 export type CodexSpawnAgentResult = {
     agentId: string | null
     nickname: string | null
+    taskName: string | null
 }
 
 export function parseCodexSpawnAgentResult(result: unknown): CodexSpawnAgentResult | null {
@@ -224,9 +232,10 @@ export function parseCodexSpawnAgentResult(result: unknown): CodexSpawnAgentResu
 
     const agentId = asNonEmptyString(obj.agent_id) ?? asNonEmptyString(obj.agentId) ?? asNonEmptyString(obj.id)
     const nickname = asNonEmptyString(obj.nickname) ?? asNonEmptyString(obj.name)
+    const taskName = asNonEmptyString(obj.task_name) ?? asNonEmptyString(obj.taskName)
 
-    if (!agentId && !nickname) return null
-    return { agentId, nickname }
+    if (!agentId && !nickname && !taskName) return null
+    return { agentId, nickname, taskName }
 }
 
 export type CodexAgentStatus = {
@@ -236,10 +245,12 @@ export type CodexAgentStatus = {
 }
 
 function extractStatusText(value: unknown): string | null {
-    if (typeof value === 'string') return value
+    if (typeof value === 'string') {
+        return normalizeStatusState(value) ? null : value
+    }
     if (!isObject(value)) return null
 
-    const candidates = ['completed', 'failed', 'error', 'message', 'output', 'text', 'reason']
+    const candidates = ['completed', 'errored', 'failed', 'error', 'message', 'output', 'text', 'reason']
     for (const key of candidates) {
         const candidate = value[key]
         if (typeof candidate === 'string') return candidate
@@ -248,19 +259,51 @@ function extractStatusText(value: unknown): string | null {
     return safeStringify(value)
 }
 
+const CODEX_AGENT_STATUS_STATES = new Set([
+    'completed',
+    'errored',
+    'failed',
+    'error',
+    'canceled',
+    'cancelled',
+    'killed',
+    'running',
+    'pending',
+    'pending_init',
+    'interrupted',
+    'shutdown',
+    'not_found'
+])
+
+function normalizeStatusState(value: string): string | null {
+    const state = value
+        .trim()
+        .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+        .toLowerCase()
+        .replace(/[\s-]+/g, '_')
+    if (!CODEX_AGENT_STATUS_STATES.has(state)) return null
+    if (state === 'cancelled') return 'canceled'
+    if (state === 'errored') return 'error'
+    return state
+}
+
 function extractStatusState(value: unknown): string {
+    if (typeof value === 'string') return normalizeStatusState(value) ?? 'completed'
     if (!isObject(value)) return 'completed'
 
-    const states = ['completed', 'failed', 'error', 'canceled', 'cancelled', 'killed', 'running', 'pending']
-    for (const state of states) {
-        if (state in value) return state === 'cancelled' ? 'canceled' : state
+    for (const state of CODEX_AGENT_STATUS_STATES) {
+        if (state in value) return normalizeStatusState(state) ?? state
     }
 
     const status = asNonEmptyString(value.status) ?? asNonEmptyString(value.state)
-    return status ?? 'completed'
+    return status ? normalizeStatusState(status) ?? status : 'completed'
 }
 
-export function parseCodexWaitAgentResult(result: unknown): { statuses: CodexAgentStatus[]; timedOut: boolean | null } | null {
+export function parseCodexWaitAgentResult(result: unknown): {
+    statuses: CodexAgentStatus[]
+    timedOut: boolean | null
+    message: string | null
+} | null {
     const obj = parseMaybeJsonObject(result)
     if (!obj) return null
 
@@ -282,19 +325,22 @@ export function parseCodexWaitAgentResult(result: unknown): { statuses: CodexAge
         : typeof obj.timedOut === 'boolean'
             ? obj.timedOut
             : null
+    const message = asNonEmptyString(obj.message)
 
-    if (statuses.length === 0 && timedOut === null) return null
-    return { statuses, timedOut }
+    if (statuses.length === 0 && timedOut === null && !message) return null
+    return { statuses, timedOut, message }
 }
 
 export function parseCodexCloseAgentResult(result: unknown): CodexAgentStatus | null {
     const obj = parseMaybeJsonObject(result)
     if (!obj) return null
 
-    const previousStatus = isObject(obj.previous_status) ? obj.previous_status
-        : isObject(obj.previousStatus) ? obj.previousStatus
+    const previousStatus = Object.prototype.hasOwnProperty.call(obj, 'previous_status')
+        ? obj.previous_status
+        : Object.prototype.hasOwnProperty.call(obj, 'previousStatus')
+            ? obj.previousStatus
             : null
-    if (!previousStatus) return null
+    if (previousStatus === null || previousStatus === undefined) return null
 
     return {
         agentId: '',
@@ -303,13 +349,36 @@ export function parseCodexCloseAgentResult(result: unknown): CodexAgentStatus | 
     }
 }
 
+export function parseCodexListAgentsResult(result: unknown): CodexAgentStatus[] | null {
+    const obj = parseMaybeJsonObject(result)
+    if (!obj || !Array.isArray(obj.agents)) return null
+
+    const agents = obj.agents.flatMap((value): CodexAgentStatus[] => {
+        if (!isObject(value)) return []
+        const agentId = asNonEmptyString(value.agent_name)
+            ?? asNonEmptyString(value.agentName)
+            ?? asNonEmptyString(value.agent_id)
+            ?? asNonEmptyString(value.agentId)
+        if (!agentId) return []
+        const status = value.agent_status ?? value.agentStatus ?? value.status
+        return [{
+            agentId,
+            state: extractStatusState(status),
+            text: extractStatusText(status)
+        }]
+    })
+
+    return agents
+}
+
 export function summarizeCodexAgentResult(toolName: string, result: unknown): string | null {
     if (toolName === 'spawn_agent') {
         const parsed = parseCodexSpawnAgentResult(result)
         if (!parsed) return null
-        const label = parsed.nickname && parsed.agentId
-            ? `${parsed.nickname} (${parsed.agentId})`
-            : parsed.nickname ?? parsed.agentId
+        const reference = parsed.taskName ?? parsed.agentId
+        const label = parsed.nickname && reference
+            ? `${parsed.nickname} (${reference})`
+            : parsed.nickname ?? reference
         return label ? `Launched ${label}` : 'Agent launched'
     }
 
@@ -317,6 +386,7 @@ export function summarizeCodexAgentResult(toolName: string, result: unknown): st
         const parsed = parseCodexWaitAgentResult(result)
         if (!parsed) return null
         if (parsed.statuses.length === 0 && parsed.timedOut) return 'Timed out'
+        if (parsed.statuses.length === 0 && parsed.message) return parsed.message
         const completed = parsed.statuses.filter((status) => status.state === 'completed').length
         const failed = parsed.statuses.filter((status) => status.state !== 'completed').length
         const parts = []
@@ -326,10 +396,20 @@ export function summarizeCodexAgentResult(toolName: string, result: unknown): st
         return parts.length > 0 ? parts.join(', ') : 'No agent status yet'
     }
 
-    if (toolName === 'close_agent') {
+    if (toolName === 'close_agent' || toolName === 'interrupt_agent') {
         const parsed = parseCodexCloseAgentResult(result)
         if (!parsed) return null
-        return `Closed (${parsed.state})`
+        return `${toolName === 'interrupt_agent' ? 'Interrupted' : 'Closed'} (${parsed.state})`
+    }
+
+    if (toolName === 'list_agents') {
+        const agents = parseCodexListAgentsResult(result)
+        if (!agents) return null
+        if (agents.length === 0) return 'No live agents'
+        const running = agents.filter((agent) => agent.state === 'running').length
+        return running > 0
+            ? `${agents.length} live, ${running} running`
+            : `${agents.length} live agent${agents.length === 1 ? '' : 's'}`
     }
 
     return null

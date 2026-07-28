@@ -12,6 +12,7 @@
 import { z } from 'zod';
 import { PI_THINKING_LEVELS } from '@hapi/protocol';
 import type { PiModelSummary } from '@hapi/protocol/apiTypes';
+import type { PiContextUsage } from './types';
 
 // ============================================================================
 // 字段级容错 schema
@@ -22,6 +23,17 @@ const asOptStr = z.unknown().optional().transform(v => typeof v === 'string' ? v
 
 /** 提取 number 值，非 number 或缺失返回 undefined */
 const asOptNum = z.unknown().optional().transform(v => typeof v === 'number' ? v : undefined);
+
+/** Extract a finite positive number, otherwise return undefined. */
+const asOptPositiveNum = z.unknown().optional().transform(v =>
+    typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : undefined,
+);
+
+/** Context usage tokens may be null immediately after compaction. */
+const asContextTokens = z.unknown().optional().transform((v): number | null | undefined => {
+    if (v === null) return null;
+    return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined;
+});
 
 /** 提取 boolean 值，非 boolean 或缺失返回 undefined */
 const asOptBool = z.unknown().optional().transform(v => typeof v === 'boolean' ? v : undefined);
@@ -135,6 +147,13 @@ const PiModelsResponseDataSchema = z.object({
         .map(r => r.data),
 );
 
+const PiSessionStatsDataSchema = z.object({
+    contextUsage: z.object({
+        tokens: asContextTokens,
+        contextWindow: asOptPositiveNum,
+    }).passthrough().optional(),
+}).passthrough();
+
 // ============================================================================
 // Pi State (get_state response data)
 // ============================================================================
@@ -202,4 +221,21 @@ export function parsePiCommands(data: unknown) {
 export function parsePiModels(data: unknown) {
     const result = PiModelsResponseDataSchema.safeParse(data)
     return result.success ? result.data : []
+}
+
+/**
+ * Parse Pi's authoritative current context-window estimate.
+ *
+ * undefined: stats unavailable/malformed; callers may fall back to turn usage.
+ * null: Pi explicitly reports unknown (for example, immediately after compaction).
+ */
+export function parsePiContextUsage(data: unknown): PiContextUsage | null | undefined {
+    const result = PiSessionStatsDataSchema.safeParse(data);
+    if (!result.success || !result.data.contextUsage) return undefined;
+
+    const { tokens, contextWindow } = result.data.contextUsage;
+    if (tokens === null) return null;
+    if (tokens === undefined) return undefined;
+
+    return contextWindow === undefined ? { tokens } : { tokens, contextWindow };
 }

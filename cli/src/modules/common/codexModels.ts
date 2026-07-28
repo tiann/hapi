@@ -74,6 +74,7 @@ function normalizeModel(entry: unknown): CodexModelSummary | null {
         displayName: asNonEmptyString(record.displayName) ?? id,
         isDefault: record.isDefault === true,
         defaultReasoningEffort: asNonEmptyString(record.defaultReasoningEffort),
+        defaultServiceTier: asNonEmptyString(record.defaultServiceTier),
         supportedReasoningEfforts: normalizeSupportedReasoningEfforts(record.supportedReasoningEfforts),
         serviceTiers: normalizeServiceTiers(record.serviceTiers)
     };

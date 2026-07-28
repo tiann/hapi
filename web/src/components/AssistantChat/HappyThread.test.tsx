@@ -5,9 +5,13 @@ import { I18nProvider } from '@/lib/i18n-context'
 import {
     ConversationOutlinePanel,
     captureScrollAnchor,
+    getHistoryCoverageRetryDelay,
     getScrollIntent,
+    hasAppliedHistoryVersion,
     locateOutlineTargetMessage,
+    prependMissingUserSnapshot,
     restoreScrollAnchor,
+    shouldLoadOlderForViewport,
     shouldCancelInitialScrollSettling,
 } from '@/components/AssistantChat/HappyThread'
 import type { ConversationOutlineItem } from '@/chat/outline'
@@ -46,7 +50,6 @@ function renderPanel(props: Partial<ComponentProps<typeof ConversationOutlinePan
     return render(
         <I18nProvider>
             <ConversationOutlinePanel
-                title="project"
                 items={outlineItems}
                 hasMoreMessages={false}
                 isLoadingMoreMessages={false}
@@ -69,6 +72,16 @@ describe('ConversationOutlinePanel', () => {
         expect(onSelect).toHaveBeenCalledWith(outlineItems[0])
     })
 
+    it('shows each message time instead of a redundant user label', () => {
+        const { container } = renderPanel()
+
+        const timestamps = container.querySelectorAll('time')
+        expect(timestamps).toHaveLength(outlineItems.length)
+        expect(timestamps[0]).toHaveAttribute('dateTime', new Date(outlineItems[0].createdAt).toISOString())
+        expect(timestamps[0]).toHaveAttribute('title')
+        expect(screen.queryByText('User')).not.toBeInTheDocument()
+    })
+
     it('shows load earlier when older messages exist', () => {
         const onLoadMore = vi.fn()
         renderPanel({ hasMoreMessages: true, onLoadMore })
@@ -76,6 +89,43 @@ describe('ConversationOutlinePanel', () => {
         fireEvent.click(screen.getByRole('button', { name: /Load earlier/ }))
 
         expect(onLoadMore).toHaveBeenCalledTimes(1)
+    })
+
+    it('filters loaded outline items without hiding load earlier', () => {
+        const onLoadMore = vi.fn()
+        renderPanel({ hasMoreMessages: true, onLoadMore })
+
+        fireEvent.change(screen.getByRole('searchbox', { name: 'Search outline items' }), {
+            target: { value: 'SECOND' }
+        })
+
+        expect(screen.queryByText('Implement the panel')).not.toBeInTheDocument()
+        expect(screen.getByText('Second user prompt')).toBeInTheDocument()
+        expect(screen.getByText('1 of 2 items')).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: /Load earlier/ }))
+        expect(onLoadMore).toHaveBeenCalledTimes(1)
+    })
+
+    it('shows a search-specific empty state', () => {
+        renderPanel()
+
+        fireEvent.change(screen.getByRole('searchbox', { name: 'Search outline items' }), {
+            target: { value: 'missing' }
+        })
+
+        expect(screen.getByText('No matching outline items')).toBeInTheDocument()
+        expect(screen.queryByText('No outline items in loaded messages')).not.toBeInTheDocument()
+    })
+
+    it('keeps an in-panel close action available', () => {
+        const onClose = vi.fn()
+        renderPanel({ onClose })
+
+        const closeButton = screen.getByRole('button', { name: 'Close' })
+        expect(closeButton).toHaveClass('border', 'rounded-md', 'h-9', 'w-9')
+        fireEvent.click(closeButton)
+
+        expect(onClose).toHaveBeenCalledTimes(1)
     })
 
     it('renders an empty state', () => {
@@ -183,6 +233,35 @@ describe('scroll anchor helpers', () => {
 
         viewport.remove()
     })
+
+    it('waits until assistant-ui has applied the loaded history version', () => {
+        expect(hasAppliedHistoryVersion(4, 4)).toBe(false)
+        expect(hasAppliedHistoryVersion(4, 5)).toBe(true)
+    })
+})
+
+describe('top-triggered history loading', () => {
+    it('recognizes an underfilled viewport and a top sentinel inside the preload margin', () => {
+        expect(shouldLoadOlderForViewport({
+            scrollHeight: 300,
+            clientHeight: 500,
+            viewportTop: 100,
+            sentinelTop: 100,
+            sentinelBottom: 101
+        })).toBe(true)
+        expect(shouldLoadOlderForViewport({
+            scrollHeight: 1_000,
+            clientHeight: 500,
+            viewportTop: 100,
+            sentinelTop: -200,
+            sentinelBottom: -199
+        })).toBe(false)
+    })
+
+    it('defers an intersection signal until the initial scroll-settling deadline', () => {
+        expect(getHistoryCoverageRetryDelay(2_800, 1_000)).toBe(1_816)
+        expect(getHistoryCoverageRetryDelay(900, 1_000)).toBe(16)
+    })
 })
 
 describe('outline target loading', () => {
@@ -225,5 +304,21 @@ describe('outline target loading', () => {
 
         expect(target).toBeNull()
         expect(loadOlderPreservingScroll).toHaveBeenCalledTimes(1)
+    })
+})
+
+describe('share turn snapshots', () => {
+    it('restores the preceding user prompt when a long rendered turn only contains assistant DOM', () => {
+        const assistant = { html: '<div data-hapi-message-role="assistant">answer</div>', text: 'answer', role: 'assistant' as const }
+        const user = { html: '', text: 'original long-conversation prompt', role: 'user' as const }
+
+        expect(prependMissingUserSnapshot([assistant], user)).toEqual([user, assistant])
+    })
+
+    it('does not duplicate a user prompt already captured from the DOM', () => {
+        const user = { html: '<div data-hapi-message-role="user">prompt</div>', text: 'prompt' }
+        const fallback = { html: '', text: 'prompt', role: 'user' as const }
+
+        expect(prependMissingUserSnapshot([user], fallback)).toEqual([user])
     })
 })

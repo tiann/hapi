@@ -1,5 +1,6 @@
 import type { Session } from '../sync/syncEngine'
 import type { SessionEndReason } from '@hapi/protocol'
+import type { NotificationSendContext } from './notificationSendContext'
 
 export type TaskNotification = {
     summary: string
@@ -7,9 +8,9 @@ export type TaskNotification = {
 }
 
 export type NotificationChannel = {
-    sendReady: (session: Session) => Promise<void>
-    sendPermissionRequest: (session: Session) => Promise<void>
-    sendTaskNotification: (session: Session, notification: TaskNotification) => Promise<void>
+    sendReady: (session: Session, ctx?: NotificationSendContext) => Promise<void>
+    sendPermissionRequest: (session: Session, ctx?: NotificationSendContext) => Promise<void>
+    sendTaskNotification: (session: Session, notification: TaskNotification, ctx?: NotificationSendContext) => Promise<void>
     sendSessionCompletion?: (session: Session, reason: SessionEndReason) => Promise<void>
 }
 

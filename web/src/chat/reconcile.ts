@@ -173,6 +173,8 @@ function areToolCallsEqual(left: ToolCallBlock, right: ToolCallBlock, childrenSa
         && left.tool.createdAt === right.tool.createdAt
         && left.tool.startedAt === right.tool.startedAt
         && left.tool.completedAt === right.tool.completedAt
+        && left.tool.execStartedAt === right.tool.execStartedAt
+        && left.tool.execCompletedAt === right.tool.execCompletedAt
         && arePermissionsEqual(left.tool.permission, right.tool.permission)
 }
 

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
 import { getTelegramWebApp } from './useTelegram'
-
-type ColorScheme = 'light' | 'dark' | 'oled'
+import { applyColorTheme, getColorThemeBackground, getColorThemeStorageKey, getStoredColorTheme, type ColorScheme } from './useColorTheme'
 
 export type AppearancePreference = 'system' | 'dark' | 'light' | 'oled'
 
@@ -93,7 +92,7 @@ function applyBrowserThemeColor(scheme: ColorScheme): void {
         document.head.appendChild(meta)
     }
 
-    meta.content = THEME_COLORS[scheme]
+    meta.content = getColorThemeBackground(getStoredColorTheme(), scheme) ?? THEME_COLORS[scheme]
     meta.removeAttribute('media')
 }
 
@@ -102,7 +101,9 @@ export function getThemeColor(scheme: ColorScheme): string {
 }
 
 function applyTheme(scheme: ColorScheme): void {
+    document.documentElement.style.removeProperty('background-color')
     document.documentElement.setAttribute('data-theme', scheme)
+    applyColorTheme(getStoredColorTheme(), scheme)
     applyBrowserThemeColor(scheme)
 }
 
@@ -128,9 +129,9 @@ function getSnapshot(): ColorScheme {
     return currentScheme
 }
 
-function updateScheme(): void {
+function updateScheme(force = false): void {
     const newScheme = getColorScheme()
-    if (newScheme !== currentScheme) {
+    if (force || newScheme !== currentScheme) {
         currentScheme = newScheme
         applyTheme(newScheme)
         listeners.forEach((cb) => cb())
@@ -190,18 +191,20 @@ export function initializeTheme(): void {
         const tg = getTelegramWebApp()
         if (tg?.onEvent) {
             // Telegram theme changes
-            tg.onEvent('themeChanged', updateScheme)
+            tg.onEvent('themeChanged', () => updateScheme())
         } else if (typeof window !== 'undefined' && window.matchMedia) {
             // Browser system preference changes
             const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
-            mediaQuery.addEventListener('change', updateScheme)
+            mediaQuery.addEventListener('change', () => updateScheme())
         }
 
         // Cross-tab appearance sync: update theme when another tab changes localStorage
         if (typeof window !== 'undefined') {
             window.addEventListener('storage', (event: StorageEvent) => {
                 if (event.key === APPEARANCE_KEY) updateScheme()
+                if (event.key === getColorThemeStorageKey()) updateScheme(true)
             })
+            window.addEventListener('hapi-color-theme-change', () => updateScheme(true))
         }
     }
 }

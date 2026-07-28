@@ -64,7 +64,40 @@ describe('sessionResume', () => {
                 flavor: 'cursor',
                 cursorSessionId: 'cursor-thread-1',
             },
-        }), 5)).toBe(true)
+        }), 5, true)).toBe(true)
+    })
+
+    it('conservatively rejects cursor resume until the chat store is verified', () => {
+        expect(inactiveSessionCanResume(makeSession({
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'cursor',
+                cursorSessionId: 'cursor-thread-1',
+            },
+        }), 5)).toBe(false)
+    })
+
+    it('rejects cursor resume when the recorded chat store is missing on its machine', () => {
+        expect(inactiveSessionCanResume(makeSession({
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'cursor',
+                cursorSessionId: 'cursor-thread-1',
+            },
+        }), 5, false)).toBe(false)
+    })
+
+    it('does not apply Cursor chat store status to other agent flavors', () => {
+        expect(inactiveSessionCanResume(makeSession({
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'codex',
+                codexSessionId: 'codex-thread-1',
+            },
+        }), 5, false)).toBe(true)
     })
 
     it('resolveAgentSessionIdFromMetadata still returns cursorSessionId regardless of protocol', () => {
@@ -117,15 +150,21 @@ describe('sessionResume', () => {
         }), 3)).toBe(true)
     })
 
+    it('inactiveSessionCanResume allows codex resume by message recovery when no codexSessionId is stored', () => {
+        expect(inactiveSessionCanResume(makeSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+        }), 3)).toBe(true)
+    })
+
     it('inactiveSessionCanResume allows claude recovery when flavor is missing (defaults to claude)', () => {
         expect(inactiveSessionCanResume(makeSession({
             metadata: { path: '/tmp/project', host: 'localhost' },
         }), 3)).toBe(true)
     })
 
-    it('inactiveSessionCanResume rejects non-claude flavors with messages but no flavor-specific id (no recovery path)', () => {
+    it('inactiveSessionCanResume rejects non-recovering flavors with messages but no flavor-specific id', () => {
         expect(inactiveSessionCanResume(makeSession({
-            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'grok' },
         }), 3)).toBe(false)
     })
 })

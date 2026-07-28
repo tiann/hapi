@@ -41,6 +41,16 @@ describe('parseCodexCliOverrides', () => {
         expect(parseCodexCliOverrides(['-a', 'untrusted', '-a', 'on-failure'])).toEqual({
             approvalPolicy: 'on-failure'
         });
+
+        expect(parseCodexCliOverrides(['-C', 'first', '--cd=second'])).toEqual({
+            cwd: 'second'
+        });
+    });
+
+    it('parses cwd overrides before the argument terminator', () => {
+        expect(parseCodexCliOverrides(['--cd', '../project'])).toEqual({ cwd: '../project' });
+        expect(parseCodexCliOverrides(['-C=/tmp/project'])).toEqual({ cwd: '/tmp/project' });
+        expect(parseCodexCliOverrides(['--', '--cd', '/tmp/ignored'])).toEqual({});
     });
 
     it('ignores invalid values and stops at terminator', () => {

@@ -16,6 +16,131 @@ function createPublisher(events: SyncEvent[]): EventPublisher {
     } as unknown as EventPublisher
 }
 
+function productionCodexMessage(event: Record<string, unknown>): Record<string, unknown> {
+    return {
+        role: 'agent',
+        content: {
+            type: 'codex',
+            data: event
+        }
+    }
+}
+
+function productionCodexContextResetMessage(): Record<string, unknown> {
+    return {
+        role: 'agent',
+        content: {
+            id: 'context-reset-event',
+            type: 'event',
+            data: {
+                type: 'message',
+                message: 'Context was reset'
+            }
+        }
+    }
+}
+
+function productionCodexScope(
+    role: 'parent' | 'child',
+    threadId: string,
+    parentThreadId?: string
+): Record<string, unknown> {
+    const parent = parentThreadId
+        ? { parent_thread_id: parentThreadId, parentThreadId }
+        : {}
+    return {
+        thread_id: threadId,
+        threadId,
+        ...parent,
+        scope_role: role,
+        scopeRole: role,
+        scope: { role, thread_id: threadId, threadId, ...parent }
+    }
+}
+
+async function runCodexResumeScenario(
+    messages: Record<string, unknown>[],
+    codexSessionId?: string,
+    options?: {
+        archived?: boolean
+        concurrentMetadata?: Record<string, unknown>
+    }
+) {
+    const store = new Store(':memory:')
+    const engine = new SyncEngine(
+        store,
+        {} as never,
+        new RpcRegistry(),
+        { broadcast() {} } as never
+    )
+    const session = engine.getOrCreateSession(
+        'session-codex-resume-from-messages',
+        {
+            path: '/tmp/project',
+            host: 'localhost',
+            machineId: 'machine-1',
+            flavor: 'codex',
+            ...(codexSessionId ? { codexSessionId } : {}),
+            ...(options?.archived
+                ? {
+                    lifecycleState: 'archived',
+                    archivedBy: 'cli',
+                    archiveReason: 'Context reset before exit'
+                }
+                : {})
+        },
+        null,
+        'default',
+        'gpt-5'
+    )
+    engine.getOrCreateMachine(
+        'machine-1',
+        { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+        null,
+        'default'
+    )
+    engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+
+    for (const message of messages) {
+        store.messages.addMessage(session.id, message)
+    }
+    if (options?.concurrentMetadata) {
+        const current = store.sessions.getSessionByNamespace(session.id, 'default')!
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            { ...current.metadata!, ...options.concurrentMetadata },
+            current.metadataVersion,
+            'default',
+            { touchUpdatedAt: false }
+        )
+        if (result.result !== 'success') throw new Error('Failed to prepare stale metadata fixture')
+    }
+    const before = store.sessions.getSession(session.id)!
+    const capturedResumeSessionIds: Array<string | undefined> = []
+    ;(engine as any).rpcGateway.spawnSession = async (...args: Parameters<SyncEngine['spawnSession']>) => {
+        capturedResumeSessionIds.push(args[8])
+        return { type: 'success', sessionId: session.id }
+    }
+    ;(engine as any).waitForSessionActive = async () => true
+
+    try {
+        const result = options?.archived
+            ? await engine.reopenSession(session.id, 'default')
+            : await engine.resumeSession(session.id, 'default')
+        const after = store.sessions.getSession(session.id)!
+        return {
+            result,
+            capturedResumeSessionIds,
+            before,
+            after,
+            persistedCodexSessionId: (after.metadata as { codexSessionId?: string } | null)?.codexSessionId,
+            cachedCodexSessionId: engine.getSession(session.id)?.metadata?.codexSessionId
+        }
+    } finally {
+        engine.stop()
+    }
+}
+
 describe('session model', () => {
     it('includes explicit model in session summaries', () => {
         const store = new Store(':memory:')
@@ -715,6 +840,58 @@ describe('session model', () => {
         }
     })
 
+    it('marks a resumed session active in hub cache before returning success without persisting runtime active state', async () => {
+        const store = new Store(':memory:')
+        const events: unknown[] = []
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast(event: unknown) { events.push(event) } } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'session-resume-active-state',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'codex',
+                    codexSessionId: 'codex-thread-1'
+                },
+                null,
+                'default',
+                'gpt-5.4'
+            )
+            engine.getOrCreateMachine(
+                'machine-1',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+
+            ;(engine as any).rpcGateway.spawnSession = async () => ({ type: 'success', sessionId: session.id })
+            ;(engine as any).waitForSessionActive = async () => true
+
+            const result = await engine.resumeSession(session.id, 'default')
+
+            expect(result).toEqual({ type: 'success', sessionId: session.id })
+            expect(engine.getSession(session.id)?.active).toBe(true)
+            // 中文注释：active=true 是运行时状态，不能跨 Hub 重启持久化；否则旧会话会在重启后假在线。
+            expect(store.sessions.getSession(session.id)?.active).toBe(false)
+            expect(events.some((event) => {
+                const record = event as { type?: string; sessionId?: string; data?: { active?: boolean } }
+                return record.type === 'session-updated'
+                    && record.sessionId === session.id
+                    && record.data?.active === true
+            })).toBe(true)
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('passes resume session ID to rpc gateway when resuming claude session', async () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(
@@ -965,6 +1142,251 @@ describe('session model', () => {
         }
     })
 
+    it('recovers the explicit Codex parent thread when a newer child event exists', async () => {
+        const rootThreadId = '33333333-3333-4333-8333-333333333333'
+        const childThreadId = '44444444-4444-4444-8444-444444444444'
+        const outcome = await runCodexResumeScenario([
+            productionCodexMessage({
+                type: 'token_count',
+                ...productionCodexScope('parent', rootThreadId)
+            }),
+            productionCodexMessage({
+                type: 'agent-run-trace',
+                ...productionCodexScope('child', childThreadId, rootThreadId)
+            })
+        ])
+
+        expect(outcome.result).toEqual({ type: 'success', sessionId: outcome.after.id })
+        expect(outcome.capturedResumeSessionIds).toEqual([rootThreadId])
+        expect([
+            outcome.persistedCodexSessionId,
+            outcome.cachedCodexSessionId,
+            outcome.after.metadataVersion,
+            outcome.after.updatedAt
+        ]).toEqual([
+            rootThreadId,
+            rootThreadId,
+            outcome.before.metadataVersion + 1,
+            outcome.before.updatedAt
+        ])
+    })
+
+    it('prefers the Codex resume ID already stored in metadata', async () => {
+        const metadataThreadId = 'metadata-codex-thread'
+        const messageThreadId = '55555555-5555-4555-8555-555555555555'
+        const outcome = await runCodexResumeScenario(
+            [productionCodexMessage(productionCodexScope('parent', messageThreadId))],
+            metadataThreadId
+        )
+
+        expect(outcome.result).toEqual({ type: 'success', sessionId: outcome.after.id })
+        expect(outcome.capturedResumeSessionIds).toEqual([metadataThreadId])
+        expect(outcome.after).toMatchObject({
+            metadata: { codexSessionId: metadataThreadId },
+            metadataVersion: outcome.before.metadataVersion,
+            updatedAt: outcome.before.updatedAt
+        })
+    })
+
+    it('does not recover a Codex thread from before an explicit context reset', async () => {
+        const oldThreadId = '88888888-8888-4888-8888-888888888888'
+        const outcome = await runCodexResumeScenario([
+            productionCodexMessage(productionCodexScope('parent', oldThreadId)),
+            productionCodexContextResetMessage()
+        ], undefined, { archived: true })
+
+        expect(outcome.result).toMatchObject({ type: 'error', code: 'resume_unavailable' })
+        expect(outcome.capturedResumeSessionIds).toEqual([])
+        expect(outcome.persistedCodexSessionId).toBeUndefined()
+        expect(outcome.after.metadata).toMatchObject({
+            lifecycleState: 'archived',
+            archivedBy: 'cli',
+            archiveReason: 'Context reset before exit'
+        })
+    })
+
+    it('recovers a new Codex parent thread created after a context reset', async () => {
+        const oldThreadId = '88888888-8888-4888-8888-888888888888'
+        const newThreadId = '99999999-9999-4999-8999-999999999999'
+        const outcome = await runCodexResumeScenario([
+            productionCodexMessage(productionCodexScope('parent', oldThreadId)),
+            productionCodexContextResetMessage(),
+            productionCodexMessage(productionCodexScope('parent', newThreadId))
+        ])
+
+        expect(outcome.result).toEqual({ type: 'success', sessionId: outcome.after.id })
+        expect(outcome.capturedResumeSessionIds).toEqual([newThreadId])
+        expect(outcome.persistedCodexSessionId).toBe(newThreadId)
+    })
+
+    it('does not treat raw user /clear text as a Codex context reset boundary', async () => {
+        const threadId = '88888888-8888-4888-8888-888888888888'
+        const outcome = await runCodexResumeScenario([
+            productionCodexMessage(productionCodexScope('parent', threadId)),
+            { role: 'user', content: { type: 'text', text: '/clear' } }
+        ])
+
+        expect(outcome.result).toEqual({ type: 'success', sessionId: outcome.after.id })
+        expect(outcome.capturedResumeSessionIds).toEqual([threadId])
+        expect(outcome.persistedCodexSessionId).toBe(threadId)
+    })
+
+    it('prefers a Codex resume ID written concurrently during recovery persistence', async () => {
+        const messageThreadId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+        const concurrentThreadId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+        const outcome = await runCodexResumeScenario(
+            [productionCodexMessage(productionCodexScope('parent', messageThreadId))],
+            undefined,
+            {
+                concurrentMetadata: { codexSessionId: concurrentThreadId }
+            }
+        )
+
+        expect(outcome.result).toEqual({ type: 'success', sessionId: outcome.after.id })
+        expect(outcome.capturedResumeSessionIds).toEqual([concurrentThreadId])
+        expect([
+            outcome.persistedCodexSessionId,
+            outcome.cachedCodexSessionId,
+            outcome.after.metadataVersion,
+            outcome.after.updatedAt
+        ]).toEqual([
+            concurrentThreadId,
+            concurrentThreadId,
+            outcome.before.metadataVersion,
+            outcome.before.updatedAt
+        ])
+    })
+
+    it('retries Codex recovery persistence after an unrelated concurrent metadata write', async () => {
+        const messageThreadId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+        const outcome = await runCodexResumeScenario(
+            [productionCodexMessage(productionCodexScope('parent', messageThreadId))],
+            undefined,
+            {
+                concurrentMetadata: { name: 'Concurrent rename' }
+            }
+        )
+
+        expect(outcome.result).toEqual({ type: 'success', sessionId: outcome.after.id })
+        expect(outcome.capturedResumeSessionIds).toEqual([messageThreadId])
+        expect(outcome.after.metadata).toMatchObject({
+            codexSessionId: messageThreadId,
+            name: 'Concurrent rename'
+        })
+        expect([
+            outcome.cachedCodexSessionId,
+            outcome.after.metadataVersion,
+            outcome.after.updatedAt
+        ]).toEqual([
+            messageThreadId,
+            outcome.before.metadataVersion + 1,
+            outcome.before.updatedAt
+        ])
+    })
+
+    const safeParentThreadId = '66666666-6666-4666-8666-666666666666'
+    const otherThreadId = '77777777-7777-4777-8777-777777777777'
+    const explicitParentEvent = productionCodexScope('parent', safeParentThreadId)
+    const rejectedCodexRecoveryCases: Array<[string, Record<string, unknown>[]]> = [
+        ['child-only event, including parent_thread_id', [
+            productionCodexMessage(productionCodexScope('child', otherThreadId, safeParentThreadId))
+        ]],
+        ['roleless event', [productionCodexMessage({
+            thread_id: safeParentThreadId,
+            scope: { threadId: safeParentThreadId }
+        })]],
+        ['malformed UUID', [productionCodexMessage(productionCodexScope('parent', 'not-a-uuid'))]],
+        ['conflicting role aliases', [productionCodexMessage({
+            ...explicitParentEvent,
+            scopeRole: 'child'
+        })]],
+        ['conflicting thread IDs', [productionCodexMessage({
+            ...explicitParentEvent,
+            scope: { role: 'parent', thread_id: otherThreadId, threadId: otherThreadId }
+        })]],
+        ['valid and malformed thread aliases', [productionCodexMessage({
+            ...explicitParentEvent,
+            threadId: 'not-a-uuid'
+        })]],
+        ['unrelated nested payload', [productionCodexMessage({ payload: explicitParentEvent })]],
+        ['non-production outer envelopes', [
+            { role: 'user', content: { type: 'codex', data: explicitParentEvent } },
+            { role: 'agent', content: { type: 'output', data: explicitParentEvent } }
+        ]]
+    ]
+
+    it.each(rejectedCodexRecoveryCases)('does not recover a Codex resume ID from %s', async (name, messages) => {
+        const outcome = await runCodexResumeScenario(messages)
+
+        expect(outcome.result).toMatchObject({ type: 'error', code: 'resume_unavailable' })
+        expect([
+            outcome.capturedResumeSessionIds,
+            outcome.persistedCodexSessionId,
+            outcome.after.metadataVersion,
+            outcome.after.updatedAt
+        ]).toEqual([[], undefined, outcome.before.metadataVersion, outcome.before.updatedAt])
+    })
+
+    it('does not let stale default resume option override persisted Codex yolo', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'session-codex-yolo-resume',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'codex',
+                    codexSessionId: 'codex-thread-1',
+                    preferredPermissionMode: 'yolo'
+                },
+                null,
+                'default',
+                'gpt-5'
+            )
+            engine.getOrCreateMachine(
+                'machine-1',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+
+            let capturedPermissionMode: string | undefined
+            ;(engine as any).rpcGateway.spawnSession = async (
+                _machineId: string,
+                _directory: string,
+                _agent: string,
+                _model?: string,
+                _modelReasoningEffort?: string,
+                _yolo?: boolean,
+                _sessionType?: string,
+                _worktreeName?: string,
+                _resumeSessionId?: string,
+                _effort?: string,
+                permissionMode?: string
+            ) => {
+                capturedPermissionMode = permissionMode
+                return { type: 'success', sessionId: session.id }
+            }
+            ;(engine as any).waitForSessionActive = async () => true
+
+            const result = await engine.resumeSession(session.id, 'default', { permissionMode: 'default' })
+
+            expect(result).toEqual({ type: 'success', sessionId: session.id })
+            expect(capturedPermissionMode).toBe('yolo')
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('passes the cached permissionMode when respawning a resumed session', async () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(
@@ -1128,6 +1550,158 @@ describe('session model', () => {
         }
     })
 
+    it('cursor ACP resume passes existingSessionId and reuses row without session-ready wait (#991)', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const oldSession = engine.getOrCreateSession(
+                'cursor-reopen-old',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'cursor',
+                    cursorSessionId: 'cursor-csid-load-fail',
+                    cursorSessionProtocol: 'acp'
+                },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'machine-1',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+            engine.handleSessionEnd({ sid: oldSession.id, time: Date.now() })
+
+            let capturedExistingSessionId: string | undefined
+            let waitForSessionReadyCalls = 0
+            let mergeCalls = 0
+            const sessionCache = (engine as any).sessionCache
+            const mergeSessions = sessionCache.mergeSessions.bind(sessionCache)
+            sessionCache.mergeSessions = async (oldSessionId: string, newSessionId: string, namespace: string) => {
+                mergeCalls += 1
+                return mergeSessions(oldSessionId, newSessionId, namespace)
+            }
+
+            ;(engine as any).rpcGateway.spawnSession = async (
+                _machineId: string,
+                _directory: string,
+                _agent: string,
+                _model?: string,
+                _modelReasoningEffort?: string,
+                _yolo?: boolean,
+                _sessionType?: string,
+                _worktreeName?: string,
+                _resumeSessionId?: string,
+                _effort?: string,
+                _permissionMode?: string,
+                _serviceTier?: string,
+                existingSessionId?: string
+            ) => {
+                capturedExistingSessionId = existingSessionId
+                engine.handleSessionAlive({ sid: oldSession.id, time: Date.now() })
+                return { type: 'success', sessionId: oldSession.id }
+            }
+            ;(engine as any).rpcGateway.getCursorChatStoreStatus = async () => ({ onDisk: true, store: 'acp' })
+            ;(engine as any).waitForSessionActive = async () => true
+            ;(engine as any).waitForSessionReady = async () => {
+                waitForSessionReadyCalls += 1
+                return 'timeout'
+            }
+
+            const result = await engine.resumeSession(oldSession.id, 'default')
+
+            expect(result).toEqual({ type: 'success', sessionId: oldSession.id })
+            expect(capturedExistingSessionId).toBe(oldSession.id)
+            expect(waitForSessionReadyCalls).toBe(0)
+            expect(mergeCalls).toBe(0)
+            expect(store.sessions.getSession(oldSession.id)).not.toBeNull()
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('cursor ACP resume succeeds on same row without merge (#991)', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const oldSession = engine.getOrCreateSession(
+                'cursor-reopen-old-ready',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'cursor',
+                    cursorSessionId: 'cursor-csid-load-ok',
+                    cursorSessionProtocol: 'acp'
+                },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'machine-1',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+            engine.handleSessionEnd({ sid: oldSession.id, time: Date.now() })
+
+            let mergeCalls = 0
+            const sessionCache = (engine as any).sessionCache
+            const mergeSessions = sessionCache.mergeSessions.bind(sessionCache)
+            sessionCache.mergeSessions = async (oldSessionId: string, newSessionId: string, namespace: string) => {
+                mergeCalls += 1
+                return mergeSessions(oldSessionId, newSessionId, namespace)
+            }
+
+            ;(engine as any).rpcGateway.spawnSession = async (
+                _machineId: string,
+                _directory: string,
+                _agent: string,
+                _model?: string,
+                _modelReasoningEffort?: string,
+                _yolo?: boolean,
+                _sessionType?: string,
+                _worktreeName?: string,
+                _resumeSessionId?: string,
+                _effort?: string,
+                _permissionMode?: string,
+                _serviceTier?: string,
+                existingSessionId?: string
+            ) => {
+                expect(existingSessionId).toBe(oldSession.id)
+                engine.handleSessionAlive({ sid: oldSession.id, time: Date.now() })
+                return { type: 'success', sessionId: oldSession.id }
+            }
+            ;(engine as any).rpcGateway.getCursorChatStoreStatus = async () => ({ onDisk: true, store: 'acp' })
+            ;(engine as any).waitForSessionActive = async () => true
+
+            const result = await engine.resumeSession(oldSession.id, 'default')
+
+            expect(result).toEqual({ type: 'success', sessionId: oldSession.id })
+            expect(mergeCalls).toBe(0)
+            expect(store.sessions.getSession(oldSession.id)).not.toBeNull()
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('defers mergeSessions for cursor reopen until session-ready (load failure leaves old row)', async () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(
@@ -1187,6 +1761,7 @@ describe('session model', () => {
                 engine.handleSessionAlive({ sid: spawnedSessionId, time: Date.now() })
                 return { type: 'success', sessionId: spawnedSessionId }
             }
+            ;(engine as any).rpcGateway.getCursorChatStoreStatus = async () => ({ onDisk: true, store: 'acp' })
             ;(engine as any).waitForSessionActive = async () => true
             ;(engine as any).waitForSessionReady = async () => 'ended'
 
@@ -1319,6 +1894,7 @@ describe('session model', () => {
                 engine.handleSessionReady({ sid: spawnedSessionId, time: Date.now() })
                 return { type: 'success', sessionId: spawnedSessionId }
             }
+            ;(engine as any).rpcGateway.getCursorChatStoreStatus = async () => ({ onDisk: true, store: 'acp' })
             ;(engine as any).waitForSessionActive = async () => true
 
             const result = await engine.resumeSession(oldSession.id, 'default')
@@ -1387,6 +1963,7 @@ describe('session model', () => {
                 engine.handleSessionAlive({ sid: spawnedSessionId, time: Date.now() })
                 return { type: 'success', sessionId: spawnedSessionId }
             }
+            ;(engine as any).rpcGateway.getCursorChatStoreStatus = async () => ({ onDisk: true, store: 'legacy' })
             ;(engine as any).waitForSessionActive = async () => true
 
             const result = await engine.resumeSession(oldSession.id, 'default')
@@ -1445,6 +2022,47 @@ describe('session model', () => {
                     collaborationMode: undefined
                 }
             })
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('resolves a local resume target for a Grok session', () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'local-resume-grok',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'grok',
+                    grokSessionId: 'grok-session-1'
+                },
+                { controlledByUser: false },
+                'default',
+                'grok-4.5',
+                'low'
+            )
+
+            const result = engine.resolveLocalResumeTarget(session.id, 'default')
+
+            expect(result.type).toBe('success')
+            if (result.type === 'success') {
+                expect(result.target).toMatchObject({
+                    flavor: 'grok',
+                    agentSessionId: 'grok-session-1',
+                    model: 'grok-4.5',
+                    effort: 'low'
+                })
+            }
         } finally {
             engine.stop()
         }
@@ -1552,6 +2170,240 @@ describe('session model', () => {
                 message: 'Resume session ID unavailable. Start a new session in this directory, or retry after the agent has initialized.',
                 code: 'resume_unavailable'
             })
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('refuses Cursor resume before spawning when the recorded chat store is missing', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'cursor-missing-store',
+                {
+                    path: '/tmp/project',
+                    host: 'cursor-host',
+                    machineId: 'cursor-machine',
+                    homeDir: '/home/cursor-owner',
+                    flavor: 'cursor',
+                    cursorSessionId: 'cursor-thread-missing',
+                    cursorSessionProtocol: 'acp'
+                },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'cursor-machine',
+                { host: 'cursor-host', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'cursor-machine', time: Date.now() })
+
+            let spawnCalled = false
+            let probeArgs: unknown[] | null = null
+            ;(engine as any).rpcGateway.getCursorChatStoreStatus = async (...args: unknown[]) => {
+                probeArgs = args
+                return { onDisk: false, store: null }
+            }
+            ;(engine as any).rpcGateway.spawnSession = async () => {
+                spawnCalled = true
+                return { type: 'success', sessionId: session.id }
+            }
+
+            const result = await engine.resumeSession(session.id, 'default')
+
+            expect(result).toEqual({
+                type: 'error',
+                message: 'Cursor chat data is no longer available on the recorded machine',
+                code: 'resume_unavailable'
+            })
+            expect(probeArgs as unknown).toEqual([
+                'cursor-machine',
+                '/tmp/project',
+                'cursor-thread-missing',
+                '/home/cursor-owner'
+            ])
+            expect(spawnCalled).toBe(false)
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('probes Cursor chat data on the session recorded machine', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'cursor-machine-scoped-store',
+                {
+                    path: '/remote/project',
+                    host: 'shared-host-label',
+                    machineId: 'recorded-machine',
+                    homeDir: '/home/recorded-owner',
+                    flavor: 'cursor',
+                    cursorSessionId: 'cursor-thread-remote',
+                    cursorSessionProtocol: 'acp'
+                },
+                null,
+                'default'
+            )
+            for (const machineId of ['other-machine', 'recorded-machine']) {
+                engine.getOrCreateMachine(
+                    machineId,
+                    { host: 'shared-host-label', platform: 'linux', happyCliVersion: '0.1.0' },
+                    null,
+                    'default'
+                )
+                engine.handleMachineAlive({ machineId, time: Date.now() })
+            }
+
+            let captured: unknown[] | null = null
+            ;(engine as any).rpcGateway.getCursorChatStoreStatus = async (...args: unknown[]) => {
+                captured = args
+                return { onDisk: true, store: 'acp' }
+            }
+
+            const result = await engine.getCursorChatStoreStatus(session.id, 'default')
+
+            expect(result).toEqual({
+                type: 'success',
+                status: { onDisk: true, store: 'acp' }
+            })
+            expect(captured as unknown).toEqual([
+                'recorded-machine',
+                '/remote/project',
+                'cursor-thread-remote',
+                '/home/recorded-owner'
+            ])
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('does not probe a same-host machine when the recorded Cursor machine is offline', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'cursor-offline-recorded-machine-status',
+                {
+                    path: '/remote/project',
+                    host: 'shared-host-label',
+                    machineId: 'recorded-machine-offline',
+                    flavor: 'cursor',
+                    cursorSessionId: 'cursor-thread-offline',
+                    cursorSessionProtocol: 'acp'
+                },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'recorded-machine-offline',
+                { host: 'shared-host-label', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'wrong-same-host-machine',
+                { host: 'shared-host-label', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'wrong-same-host-machine', time: Date.now() })
+
+            let probeCalled = false
+            ;(engine as any).rpcGateway.getCursorChatStoreStatus = async () => {
+                probeCalled = true
+                return { onDisk: true, store: 'acp' }
+            }
+
+            expect(await engine.getCursorChatStoreStatus(session.id, 'default')).toEqual({
+                type: 'error',
+                message: 'No machine online',
+                code: 'no_machine_online'
+            })
+            expect(probeCalled).toBe(false)
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('does not probe or spawn on a same-host machine when the recorded Cursor machine is offline', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'cursor-offline-recorded-machine-resume',
+                {
+                    path: '/remote/project',
+                    host: 'shared-host-label',
+                    machineId: 'recorded-machine-offline',
+                    flavor: 'cursor',
+                    cursorSessionId: 'cursor-thread-offline',
+                    cursorSessionProtocol: 'acp'
+                },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'recorded-machine-offline',
+                { host: 'shared-host-label', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'wrong-same-host-machine',
+                { host: 'shared-host-label', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'wrong-same-host-machine', time: Date.now() })
+
+            let probeCalled = false
+            let spawnCalled = false
+            ;(engine as any).rpcGateway.getCursorChatStoreStatus = async () => {
+                probeCalled = true
+                return { onDisk: true, store: 'acp' }
+            }
+            ;(engine as any).rpcGateway.spawnSession = async () => {
+                spawnCalled = true
+                return { type: 'success', sessionId: session.id }
+            }
+            ;(engine as any).waitForSessionActive = async () => true
+
+            expect(await engine.resumeSession(session.id, 'default')).toEqual({
+                type: 'error',
+                message: 'No machine online',
+                code: 'no_machine_online'
+            })
+            expect(probeCalled).toBe(false)
+            expect(spawnCalled).toBe(false)
         } finally {
             engine.stop()
         }

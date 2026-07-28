@@ -10,6 +10,7 @@ export const RPC_METHODS = {
     StopRunner: 'stop-runner',
     ListMachineDirectory: 'list-directory',
     PathExists: 'path-exists',
+    CursorChatStoreStatus: 'cursor-chat-store-status',
     GitStatus: 'git-status',
     GitDiffNumstat: 'git-diff-numstat',
     GitDiffFile: 'git-diff-file',
@@ -17,6 +18,7 @@ export const RPC_METHODS = {
     ReadGeneratedImage: 'readGeneratedImage',
     WriteFile: 'writeFile',
     ListDirectory: 'listDirectory',
+    StatFiles: 'statFiles',
     GetDirectoryTree: 'getDirectoryTree',
     UploadFile: 'uploadFile',
     DeleteUpload: 'deleteUpload',
@@ -26,10 +28,15 @@ export const RPC_METHODS = {
     ListSlashCommands: 'listSlashCommands',
     ListSkills: 'listSkills',
     ListCodexModels: 'listCodexModels',
+    ListCodexSessions: 'listCodexSessions',
+    ArchiveCodexSession: 'archiveCodexSession',
     ListCursorModels: 'listCursorModels',
     ListPiModels: 'listPiModels',
     ListOpencodeModels: 'listOpencodeModels',
     ListOpencodeModelsForCwd: 'listOpencodeModelsForCwd',
+    ListGrokModelsForCwd: 'listGrokModelsForCwd',
+    ListGrokModels: 'listGrokModels',
+    ListGrokReasoningEffortOptions: 'listGrokReasoningEffortOptions',
     ListOpencodeReasoningEffortOptions: 'listOpencodeReasoningEffortOptions'
 } as const
 

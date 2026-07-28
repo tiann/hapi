@@ -155,6 +155,22 @@ export class CodexPermissionHandler extends BasePermissionHandler<PermissionResp
         });
     }
 
+    cancelUserInputRequest(toolCallId: string, reason: string): void {
+        const pending = this.pendingRequests.get(toolCallId);
+        if (!pending || pending.toolName !== 'request_user_input') {
+            return;
+        }
+
+        this.pendingRequests.delete(toolCallId);
+        pending.reject(new Error(reason));
+        this.finalizeRequest(toolCallId, {
+            status: 'canceled',
+            reason,
+            decision: 'abort'
+        });
+        logger.debug(`[Codex] User-input request canceled (${toolCallId}): ${reason}`);
+    }
+
     /**
      * Handle permission responses
      */

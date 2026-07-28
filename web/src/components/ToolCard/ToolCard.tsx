@@ -1,8 +1,8 @@
-import type { ToolCallBlock } from '@/chat/types'
+import type { ChatBlock, ChatToolCall, ToolCallBlock } from '@/chat/types'
 import type { ApiClient } from '@/api/client'
 import type { SessionMetadataSummary } from '@/types/api'
 import { memo, useEffect, useMemo, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
-import { isObject, safeStringify } from '@hapi/protocol'
+import { getClaudeModelLabel, isObject, safeStringify } from '@hapi/protocol'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { CodeBlock } from '@/components/CodeBlock'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
@@ -16,6 +16,8 @@ import { getToolPresentation } from '@/components/ToolCard/knownTools'
 import { getToolFullViewComponent, getToolViewComponent } from '@/components/ToolCard/views/_all'
 import { getToolResultViewComponent } from '@/components/ToolCard/views/_results'
 import { formatTaskChildLabel, TaskStateIcon } from '@/components/ToolCard/helpers'
+import { toolDurationMs } from '@/components/ToolCard/toolDuration'
+import { formatDuration, formatMessageTimestampTitle } from '@/chat/presentation'
 import type { TerminalToolDisplayMode } from '@/hooks/useTerminalToolDisplayMode'
 import { usePointerFocusRing } from '@/hooks/usePointerFocusRing'
 import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
@@ -43,26 +45,169 @@ export function shouldShowInlineToolCardBody(
     return !presentationMinimal
 }
 
-function ElapsedView(props: { from: number; active: boolean }) {
+export function getToolTimingDetails(tool: ChatToolCall, now: number): {
+    startedAt: number | null
+    completedAt: number | null
+    durationMs: number | null
+} {
+    if (tool.state === 'pending') {
+        return { startedAt: null, completedAt: null, durationMs: null }
+    }
+
+    const active = tool.state === 'running'
+    const hasExecPair = tool.execStartedAt != null && tool.execCompletedAt != null
+    const startedAt = active || !hasExecPair
+        ? (tool.startedAt ?? tool.createdAt)
+        : tool.execStartedAt
+    const completedAt = active
+        ? null
+        : (hasExecPair ? tool.execCompletedAt : tool.completedAt)
+    const liveDurationMs = active && startedAt != null ? Math.max(0, now - startedAt) : null
+
+    return {
+        startedAt,
+        completedAt,
+        durationMs: toolDurationMs(tool) ?? liveDurationMs,
+    }
+}
+
+export function formatCompactToolTimestamp(value: number): string {
+    return new Date(value).toLocaleTimeString(undefined, {
+        hour: 'numeric',
+        minute: '2-digit',
+        second: '2-digit',
+    })
+}
+
+export function ToolTimingSummary(props: {
+    startedAt: number | null
+    completedAt: number | null
+    durationMs: number | null
+    typography?: 'detail' | 'group'
+}) {
+    const { t } = useTranslation()
+    const items = [
+        props.startedAt != null ? { label: t('tool.startedAt'), value: formatCompactToolTimestamp(props.startedAt) } : null,
+        props.completedAt != null ? { label: t('tool.completedAt'), value: formatCompactToolTimestamp(props.completedAt) } : null,
+        props.durationMs != null ? { label: t('tool.duration'), value: formatDuration(props.durationMs) } : null,
+    ].filter((item): item is { label: string; value: string } => item !== null)
+
+    if (items.length === 0) return null
+
+    return (
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs text-[var(--app-hint)]">
+            {items.map((item) => (
+                <span key={item.label} className="inline-flex items-baseline gap-1.5 whitespace-nowrap">
+                    <span className={props.typography === 'group' ? undefined : 'font-medium'}>{item.label}</span>
+                    <span className={props.typography === 'group' ? undefined : 'font-mono'}>{item.value}</span>
+                </span>
+            ))}
+        </div>
+    )
+}
+
+function ToolCardTimingSummary(props: { tool: ChatToolCall }) {
+    const active = props.tool.state === 'running'
     const [now, setNow] = useState(() => Date.now())
 
     useEffect(() => {
-        if (!props.active) return
+        if (!active) return
         setNow(Date.now())
         const id = setInterval(() => setNow(Date.now()), ELAPSED_INTERVAL_MS)
         return () => clearInterval(id)
-    }, [props.active, props.from])
+    }, [active, props.tool.startedAt, props.tool.createdAt])
 
-    if (!props.active) return null
+    return <ToolTimingSummary {...getToolTimingDetails(props.tool, now)} />
+}
 
-    const elapsed = Math.max(0, now - props.from) / 1000
-    if (!Number.isFinite(elapsed)) return null
+function ToolTimingDetails(props: { block: ToolCallBlock }) {
+    const { t } = useTranslation()
+    const tool = props.block.tool
+    const active = tool.state === 'running'
+    const [now, setNow] = useState(() => Date.now())
+
+    useEffect(() => {
+        if (!active) return
+        setNow(Date.now())
+        const id = setInterval(() => setNow(Date.now()), ELAPSED_INTERVAL_MS)
+        return () => clearInterval(id)
+    }, [active, tool.startedAt, tool.createdAt])
+
+    const { startedAt, completedAt, durationMs } = getToolTimingDetails(tool, now)
+    const rows = [
+        startedAt != null ? [t('tool.startedAt'), formatMessageTimestampTitle(new Date(startedAt))] : null,
+        !active && completedAt != null ? [t('tool.completedAt'), formatMessageTimestampTitle(new Date(completedAt))] : null,
+        durationMs != null ? [t('tool.duration'), formatDuration(durationMs)] : null,
+    ].filter((row): row is string[] => row !== null)
+
+    if (rows.length === 0) return null
 
     return (
-        <span className="font-mono text-xs text-[var(--app-hint)]">
-            {elapsed.toFixed(1)}s
-        </span>
+        <div className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-xs">
+            {rows.map(([label, value]) => (
+                <div key={label} className="contents">
+                    <span className="font-medium text-[var(--app-hint)]">{label}</span>
+                    <span className="font-mono text-[var(--app-hint)]">{value}</span>
+                </div>
+            ))}
+        </div>
     )
+}
+
+// Matches the full SDK model ids Claude Code echoes back for subagents
+// (e.g. `claude-sonnet-4-5-20250929`, `claude-opus-4-8`) — a lowercase name,
+// a major/minor version, and an optional 8-digit date suffix to discard.
+const CLAUDE_SDK_MODEL_ID_PATTERN = /^claude-([a-z]+)-(\d+)-(\d+)(?:-\d{8})?$/
+
+/**
+ * Formats a raw model id for compact display in the subagent badge.
+ *
+ * Reuses this repo's existing "friendly label, else raw fallback" idiom
+ * (see `getClaudeComposerModelOptions` in claudeModelOptions.ts, which does
+ * `getClaudeModelLabel(model) ?? model`): `getClaudeModelLabel` only maps the
+ * short preset aliases ('sonnet'/'opus'/'fable'), not the full SDK model ids
+ * a subagent's own `model` field actually carries, so this adds a second,
+ * narrow fallback that extracts just the name + version from the SDK id
+ * shape and drops the date suffix. Anything that matches neither (Gemini,
+ * Codex, OpenCode, or any future format) is returned as-is — this
+ * deliberately doesn't try to parse formats it doesn't recognize.
+ */
+export function formatSubagentModelLabel(model: string): string {
+    const presetLabel = getClaudeModelLabel(model)
+    if (presetLabel) return presetLabel
+
+    const match = model.match(CLAUDE_SDK_MODEL_ID_PATTERN)
+    if (match) {
+        const [, name, major, minor] = match
+        return `${name.charAt(0).toUpperCase()}${name.slice(1)} ${major}.${minor}`
+    }
+
+    return model
+}
+
+/**
+ * Derives the model(s) a subagent (Task/Agent tool call) actually executed
+ * under, from its own child blocks — not from the parent `ToolCallBlock.model`,
+ * which reflects the *calling* session's model and would misattribute the
+ * subagent's model if used directly (see reducerTimeline.ts sidechain handling).
+ *
+ * Every child block produced by reducing the subagent's sidechain carries the
+ * `model` of the assistant message it came from. A subagent run can switch
+ * models mid-run (e.g. `--fallback-model` kicking in under overload), so this
+ * collects the distinct non-null/non-empty raw values in first-seen order —
+ * the same "seenModels" pattern `aggregateResponseGroups`
+ * (web/src/lib/assistant-runtime.ts) already uses for top-level multi-turn
+ * message metadata, reused here rather than inventing a new convention — then
+ * formats each for display and joins them.
+ */
+export function getSubagentModel(children: ChatBlock[]): string | null {
+    const seenModels: string[] = []
+    for (const child of children) {
+        if ('model' in child && child.model && !seenModels.includes(child.model)) {
+            seenModels.push(child.model)
+        }
+    }
+    return seenModels.length > 0 ? seenModels.map(formatSubagentModelLabel).join(', ') : null
 }
 
 function getTaskSummaryChildren(block: ToolCallBlock): { visible: ToolCallBlock[]; remaining: number } | null {
@@ -116,9 +261,13 @@ function renderTaskSummary(
 
 function renderToolInput(block: ToolCallBlock, surface: 'inline' | 'dialog' = 'inline'): ReactNode {
     const collapseLongContent = surface === 'inline'
+    // The inline surface renders inside a role="button" preview, so the
+    // wrap toggle's <button> would nest inside an interactive ancestor
+    // (invalid HTML / hydration violation). Suppress it for inline; the
+    // dialog surface (button-free) keeps the toggle.
     const codeBlockSurfaceProps = surface === 'dialog'
         ? { size: 'comfortable' as const, scrollY: true }
-        : {}
+        : { showWrapToggle: false }
     const toolName = block.tool.name
     const input = block.tool.input
 
@@ -222,9 +371,9 @@ export function ToolDetailDialogContent(props: {
     const isQuestionToolWithAnswers = isQuestionTool
         && permission?.answers
         && Object.keys(permission.answers).length > 0
-
     return (
         <div className="mt-3 flex max-h-[75vh] flex-col gap-4 overflow-auto">
+            <ToolTimingDetails block={props.block} />
             <div>
                 <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">
                     {isQuestionToolWithAnswers ? t('tool.questionsAnswers') : t('tool.input')}
@@ -254,13 +403,14 @@ function ToolCardInner(props: ToolCardProps) {
         input: props.block.tool.input,
         result: props.block.tool.result,
         childrenCount: props.block.children.length,
-        description: props.block.tool.description,
+        description: props.block.tool.nativeTitle ?? props.block.tool.description,
         metadata: props.metadata
     }, t), [
         props.block.tool.name,
         props.block.tool.input,
         props.block.tool.result,
         props.block.children.length,
+        props.block.tool.nativeTitle,
         props.block.tool.description,
         props.metadata,
         t
@@ -270,7 +420,7 @@ function ToolCardInner(props: ToolCardProps) {
     const toolTitle = presentation.title
     const subtitle = presentation.subtitle ?? props.block.tool.description
     const taskSummary = renderTaskSummary(props.block, props.metadata, t)
-    const runningFrom = props.block.tool.startedAt ?? props.block.tool.createdAt
+    const subagentModel = isSubagentToolName(toolName) ? getSubagentModel(props.block.children) : null
     const isCodexAgentCard = toolName === 'CodexAgent'
     const useCompactTerminalCard = shouldUseCompactTerminalToolCard(toolName, props.terminalToolDisplayMode)
     const showInline = shouldShowInlineToolCardBody(toolName, presentation.minimal, props.terminalToolDisplayMode)
@@ -285,6 +435,11 @@ function ToolCardInner(props: ToolCardProps) {
         || ((permission.status === 'denied' || permission.status === 'canceled') && Boolean(permission.reason))
     ))
     const hasBody = showInline || taskSummary !== null || showsPermissionFooter
+    // Header/content padding already supplies 12-16px below timing; add only
+    // the remainder needed to match the detail dialog's 16px section gap.
+    const inlineBodySpacing = props.block.tool.state === 'pending'
+        ? 'mt-3'
+        : (subtitle ? 'mt-1' : 'mt-0')
     const stateColor = toolStatusColorClass(props.block.tool.state)
     const { suppressFocusRing, onTriggerPointerDown, onTriggerKeyDown, onTriggerBlur } = usePointerFocusRing()
     const openDetails = () => setDetailsOpen(true)
@@ -323,13 +478,21 @@ function ToolCardInner(props: ToolCardProps) {
                         {truncate(subtitle, 160)}
                     </CardDescription>
                 ) : null}
+                <ToolCardTimingSummary tool={props.block.tool} />
             </div>
 
             <div className={cn(
                 'flex shrink-0 items-center gap-2 self-center text-[var(--app-hint)]',
                 subtitle ? '-translate-y-0.5' : null
             )}>
-                <ElapsedView from={runningFrom} active={props.block.tool.state === 'running'} />
+                {subagentModel ? (
+                    <span
+                        className="inline-block max-w-28 truncate rounded-full bg-[var(--app-subtle-bg)] px-1.5 py-px font-mono text-[10px] leading-tight text-[var(--app-hint)] sm:max-w-40"
+                        title={subagentModel}
+                    >
+                        {subagentModel}
+                    </span>
+                ) : null}
                 <span className={stateColor}>
                     <ToolStatusIcon state={props.block.tool.state} />
                 </span>
@@ -358,8 +521,8 @@ function ToolCardInner(props: ToolCardProps) {
                             {header}
                         </button>
                     </DialogTrigger>
-                    <DialogContent className="max-w-2xl" aria-describedby={undefined}>
-                        <DialogHeader>
+                    <DialogContent className="max-w-2xl" closeButtonClassName="top-2" aria-describedby={undefined}>
+                        <DialogHeader className="text-left">
                             <DialogTitle>{toolTitle}</DialogTitle>
                         </DialogHeader>
                         <ToolDetailDialogContent block={props.block} metadata={props.metadata} />
@@ -378,7 +541,10 @@ function ToolCardInner(props: ToolCardProps) {
                     {showInline ? (
                         CompactToolView ? (
                             <div
-                                className="mt-3 cursor-pointer rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                                className={cn(
+                                    inlineBodySpacing,
+                                    'cursor-pointer rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]'
+                                )}
                                 role="button"
                                 tabIndex={0}
                                 onClick={openDetailsFromInlinePreview}
@@ -387,7 +553,7 @@ function ToolCardInner(props: ToolCardProps) {
                                 <CompactToolView block={props.block} metadata={props.metadata} surface="inline" />
                             </div>
                         ) : (
-                            <div className="mt-3 flex flex-col gap-3">
+                            <div className={cn(inlineBodySpacing, 'flex flex-col gap-4')}>
                                 <div
                                     className="cursor-pointer rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
                                     role="button"

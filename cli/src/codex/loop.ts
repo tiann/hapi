@@ -15,6 +15,7 @@ export interface EnhancedMode {
     permissionMode: PermissionMode;
     model?: string;
     collaborationMode: CodexCollaborationMode;
+    proactiveMultiAgent?: boolean;
     modelReasoningEffort?: ReasoningEffort;
     /**
      * Service tier override. `undefined` leaves it untouched (account default),
@@ -38,6 +39,7 @@ interface LoopOptions {
     modelReasoningEffort?: ReasoningEffort;
     collaborationMode?: CodexCollaborationMode;
     resumeSessionId?: string;
+    sourceSessionId?: string;
     replayTranscriptHistoryOnStart?: boolean;
     onSessionReady?: (session: CodexSession) => void;
 }
@@ -63,6 +65,7 @@ export async function loop(opts: LoopOptions): Promise<void> {
         model: opts.model,
         modelReasoningEffort: opts.modelReasoningEffort,
         collaborationMode: opts.collaborationMode ?? 'default',
+        sourceSessionId: opts.sourceSessionId,
         replayTranscriptHistoryOnStart: opts.replayTranscriptHistoryOnStart ?? false
     });
 

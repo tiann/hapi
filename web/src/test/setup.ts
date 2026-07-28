@@ -1,4 +1,10 @@
 import '@testing-library/jest-dom/vitest'
+import { cleanup } from '@testing-library/react'
+import { afterEach } from 'vitest'
+
+afterEach(() => {
+    cleanup()
+})
 
 function installMemoryLocalStorage(): void {
     const store = new Map<string, string>()

@@ -48,13 +48,43 @@ describe('filterResumeSubcommand', () => {
             .toEqual(['--model', 'gpt-4']);
     });
 
-    it('does not filter resume when it appears as flag value', () => {
-        expect(filterResumeSubcommand(['--name', 'resume'])).toEqual(['--name', 'resume']);
+    it('does not filter resume when it appears as an option value', () => {
+        expect(filterResumeSubcommand(['--model', 'resume'])).toEqual(['--model', 'resume']);
     });
 
-    it('does not filter resume in middle of args', () => {
+    it('filters resume after global options', () => {
         expect(filterResumeSubcommand(['--model', 'gpt-4', 'resume', '123']))
-            .toEqual(['--model', 'gpt-4', 'resume', '123']);
+            .toEqual(['--model', 'gpt-4']);
+        expect(filterResumeSubcommand(['--yolo', 'resume', '--last']))
+            .toEqual(['--yolo']);
+        expect(filterResumeSubcommand(['--config', 'model="resume"', 'resume', '--last']))
+            .toEqual(['--config', 'model="resume"']);
+    });
+
+    it('preserves an optional prompt after the resume selector', () => {
+        expect(filterResumeSubcommand(['resume', 'abc-123', 'continue here']))
+            .toEqual(['continue here']);
+        expect(filterResumeSubcommand(['resume', 'abc-123', 'resume']))
+            .toEqual(['resume']);
+        expect(filterResumeSubcommand(['resume', '--last', 'continue here']))
+            .toEqual(['continue here']);
+    });
+
+    it('does not filter resume after a prompt or option terminator', () => {
+        expect(filterResumeSubcommand(['start here', 'resume', '--last']))
+            .toEqual(['start here', 'resume', '--last']);
+        expect(filterResumeSubcommand(['--', 'resume', '--last']))
+            .toEqual(['--', 'resume', '--last']);
+    });
+
+    it('does not treat variadic image values as a resume subcommand', () => {
+        expect(filterResumeSubcommand(['--image', 'one.png', 'resume', '--last']))
+            .toEqual(['--image', 'one.png', 'resume', '--last']);
+    });
+
+    it('preserves arguments after an option terminator in resume mode', () => {
+        expect(filterResumeSubcommand(['resume', 'abc-123', '--', '--last']))
+            .toEqual(['--', '--last']);
     });
 });
 
@@ -112,6 +142,8 @@ describe('codexLocal', () => {
         const hookArg = args.find((arg) => arg.startsWith('hooks.SessionStart='));
         expect(hookArg).toBeDefined();
         expect(hookArg).toContain('{ hooks = [{ type = "command", command = "');
+        expect(args.some((arg) => arg.startsWith('hooks.PreToolUse='))).toBe(true);
+        expect(args.some((arg) => arg.startsWith('hooks.PostToolUse='))).toBe(true);
         expect(args).toContain("mcp_servers.hapi.args=['mcp','--url','http://127.0.0.1:63995/']");
         expect(args).toContain('mcp_servers.hapi.tools.change_title.approval_mode="approve"');
     });
@@ -135,5 +167,47 @@ describe('codexLocal', () => {
         expect(spawnOptions.args).toContain('-c');
         expect(spawnOptions.args).toContain('model_reasoning_effort="high"');
         expect(spawnOptions.args).not.toContain('--model-reasoning-effort');
+    });
+
+    it('passes resume --last through while Codex is resolving the initial session', async () => {
+        const controller = new AbortController();
+
+        await codexLocal({
+            abort: controller.signal,
+            sessionId: null,
+            path: workspacePath,
+            onSessionFound: vi.fn(),
+            codexArgs: ['--yolo', 'resume', '--last']
+        });
+
+        const spawnOptions = spawnWithTerminalGuardMock.mock.calls[0][0] as {
+            args: string[];
+        };
+        expect(spawnOptions.args.slice(-3)).toEqual(['--yolo', 'resume', '--last']);
+    });
+
+    it('replaces resume --last with the resolved session ID during local handoff', async () => {
+        const controller = new AbortController();
+        const sessionId = '11111111-1111-4111-8111-111111111111';
+
+        await codexLocal({
+            abort: controller.signal,
+            sessionId,
+            path: workspacePath,
+            onSessionFound: vi.fn(),
+            codexArgs: [
+                '--ask-for-approval', 'never',
+                '--sandbox', 'danger-full-access',
+                'resume', '--last'
+            ]
+        });
+
+        const spawnOptions = spawnWithTerminalGuardMock.mock.calls[0][0] as {
+            args: string[];
+        };
+        expect(spawnOptions.args.filter((arg) => arg === 'resume')).toEqual(['resume']);
+        expect(spawnOptions.args).toContain(sessionId);
+        expect(spawnOptions.args).not.toContain('--last');
+        expect(spawnOptions.args).toContain('danger-full-access');
     });
 });

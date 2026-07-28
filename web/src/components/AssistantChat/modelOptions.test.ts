@@ -154,6 +154,16 @@ describe('getModelOptionsForFlavor', () => {
             { value: 'claude-sonnet-4-5', label: 'claude-sonnet-4-5' }
         ])
     })
+
+    it('returns only default/current for grok without falling back to Claude models', () => {
+        expect(getModelOptionsForFlavor('grok')).toEqual([
+            { value: null, label: 'Default' }
+        ])
+        expect(getModelOptionsForFlavor('grok', 'grok-4.5')).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'grok-4.5', label: 'grok-4.5' }
+        ])
+    })
 })
 
 describe('getNextModelForFlavor', () => {
@@ -217,6 +227,10 @@ describe('getNextModelForFlavor', () => {
         // a Pi session via set-session-config.
         const next = getNextModelForFlavor('pi', 'claude-sonnet-4-5')
         expect(next).toBe('claude-sonnet-4-5')
+    })
+
+    it('keeps the current grok model on cycle (no Claude fallback)', () => {
+        expect(getNextModelForFlavor('grok', 'grok-4.5')).toBe('grok-4.5')
     })
 
     it('returns null for pi without a current model (no Claude fallback)', () => {

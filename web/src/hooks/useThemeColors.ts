@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { applyColorTheme, getColorThemePickerValue, getColorThemeStorageKey, getStoredColorTheme, type ColorScheme } from './useColorTheme'
 
 /**
  * Per-appearance "key color" customization.
@@ -243,24 +244,24 @@ export function applyThemeColors(): void {
     if (!isBrowser()) return
 
     const scheme = getThemeScheme()
+    applyColorTheme(getStoredColorTheme(), scheme as ColorScheme)
+
     const overrides = getStoredThemeColors()[scheme] ?? {}
     const rootStyle = document.documentElement.style
 
     for (const key of THEME_COLOR_KEYS) {
         const override = overrides[key.id]
         const hex = override && isHexColor(override) ? override : null
+        if (!hex) continue
 
         for (const cssVar of key.targets) {
-            if (hex) rootStyle.setProperty(cssVar, hex)
-            else rootStyle.removeProperty(cssVar)
+            rootStyle.setProperty(cssVar, hex)
         }
 
-        if (key.derivedTargets) {
-            const derived = hex && key.derive ? key.derive(hex, scheme) : {}
+        if (key.derivedTargets && key.derive) {
+            const derived = key.derive(hex, scheme)
             for (const cssVar of key.derivedTargets) {
-                const value = derived[cssVar]
-                if (value) rootStyle.setProperty(cssVar, value)
-                else rootStyle.removeProperty(cssVar)
+                rootStyle.setProperty(cssVar, derived[cssVar]!)
             }
         }
     }
@@ -268,7 +269,7 @@ export function applyThemeColors(): void {
 
 export function getThemeColorPickerValue(scheme: ThemeScheme, id: ThemeColorKeyId): string {
     const override = getStoredThemeColors()[scheme]?.[id]
-    return override ?? DEFAULT_HEX[scheme][id]
+    return override ?? getColorThemePickerValue(getStoredColorTheme(), scheme, id) ?? DEFAULT_HEX[scheme][id]
 }
 
 export function initializeThemeColors(): void {
@@ -280,8 +281,9 @@ export function initializeThemeColors(): void {
     initialized = true
 
     window.addEventListener('storage', (event: StorageEvent) => {
-        if (event.key === STORAGE_KEY) applyThemeColors()
+        if (event.key === STORAGE_KEY || event.key === getColorThemeStorageKey()) applyThemeColors()
     })
+    window.addEventListener('hapi-color-theme-change', applyThemeColors)
 
     const themeObserver = new MutationObserver(() => {
         applyThemeColors()
@@ -323,13 +325,16 @@ export function useThemeColors(): {
         })
 
         const onStorage = (event: StorageEvent) => {
-            if (event.key === STORAGE_KEY) refresh()
+            if (event.key === STORAGE_KEY || event.key === getColorThemeStorageKey()) refresh()
         }
+        const onColorThemeChange = () => refresh()
         window.addEventListener('storage', onStorage)
+        window.addEventListener('hapi-color-theme-change', onColorThemeChange)
 
         return () => {
             themeObserver.disconnect()
             window.removeEventListener('storage', onStorage)
+            window.removeEventListener('hapi-color-theme-change', onColorThemeChange)
         }
     }, [])
 
@@ -374,7 +379,7 @@ export function useThemeColors(): {
     }, [])
 
     const getPickerValue = useCallback(
-        (id: ThemeColorKeyId) => overrides[id] ?? DEFAULT_HEX[scheme][id],
+        (id: ThemeColorKeyId) => overrides[id] ?? getColorThemePickerValue(getStoredColorTheme(), scheme, id) ?? DEFAULT_HEX[scheme][id],
         [overrides, scheme],
     )
 

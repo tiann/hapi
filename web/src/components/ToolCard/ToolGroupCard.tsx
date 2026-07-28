@@ -1,15 +1,44 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ToolGroupBlock } from '@/chat/toolGroups'
 import type { ToolCallBlock } from '@/chat/types'
+import { getCodexCommandActions, type CodexCommandAction } from '@/chat/codexCommandPresentation'
 import type { SessionMetadataSummary } from '@/types/api'
 import { useHappyChatContext } from '@/components/AssistantChat/context'
-import { ToolDetailDialogContent, ToolStatusIcon, toolStatusColorClass } from '@/components/ToolCard/ToolCard'
+import { getToolTimingDetails, ToolDetailDialogContent, ToolStatusIcon, ToolTimingSummary, toolStatusColorClass } from '@/components/ToolCard/ToolCard'
 import { getToolPresentation } from '@/components/ToolCard/knownTools'
-import { formatGroupedHeaderSubtitle, formatGroupedHeaderTitle } from '@/components/ToolCard/groupedPresentation'
+import { formatGroupedHeaderSubtitle, formatGroupedHeaderTitle, safeGroupedLabelValue } from '@/components/ToolCard/groupedPresentation'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/use-translation'
+import { formatDuration } from '@/chat/presentation'
+
+const TIMING_INTERVAL_MS = 1000
+
+export function getToolGroupTiming(tools: ToolCallBlock[], now: number): {
+    startedAt: number | null
+    completedAt: number | null
+    durationMs: number | null
+    running: boolean
+} {
+    const startedValues = tools
+        .filter((tool) => tool.tool.state !== 'pending')
+        .map((tool) => tool.tool.startedAt ?? tool.tool.createdAt)
+        .filter((value): value is number => Number.isFinite(value))
+    const startedAt = startedValues.length > 0 ? Math.min(...startedValues) : null
+    const running = tools.some((tool) => tool.tool.state === 'running')
+    const allFinished = tools.length > 0 && tools.every((tool) => tool.tool.state === 'completed' || tool.tool.state === 'error')
+    const completedValues = allFinished
+        ? tools.map((tool) => tool.tool.completedAt).filter((value): value is number => value != null && Number.isFinite(value))
+        : []
+    const completedAt = allFinished && completedValues.length === tools.length ? Math.max(...completedValues) : null
+    const durationEnd = running ? now : completedAt
+    const durationMs = startedAt != null && durationEnd != null && durationEnd >= startedAt
+        ? durationEnd - startedAt
+        : null
+
+    return { startedAt, completedAt, durationMs, running }
+}
 
 function DetailsIcon(props: { open: boolean }) {
     return (
@@ -74,7 +103,7 @@ function RowLabel(props: { block: ToolCallBlock; metadata: SessionMetadataSummar
         input: props.block.tool.input,
         result: props.block.tool.result,
         childrenCount: props.block.children.length,
-        description: props.block.tool.description,
+        description: props.block.tool.nativeTitle ?? props.block.tool.description,
         metadata: props.metadata
     }, t), [props.block, props.metadata, t])
 
@@ -99,6 +128,64 @@ function RowLabel(props: { block: ToolCallBlock; metadata: SessionMetadataSummar
     )
 }
 
+function basename(value: string): string {
+    return value.replace(/\\/g, '/').split('/').filter(Boolean).at(-1) ?? value
+}
+
+function codexActionLabel(
+    action: CodexCommandAction,
+    t: (key: string, params?: Record<string, string | number>) => string
+): { title: string; detail: string | null } {
+    if (action.type === 'read') {
+        const detail = safeGroupedLabelValue(action.name) ?? safeGroupedLabelValue(action.path)
+        return { title: t('toolGroup.codex.read'), detail: detail ? basename(detail) : null }
+    }
+    if (action.type === 'listFiles') {
+        return { title: t('toolGroup.codex.list'), detail: safeGroupedLabelValue(action.path) }
+    }
+    if (action.type === 'search') {
+        const query = safeGroupedLabelValue(action.query)
+        const path = safeGroupedLabelValue(action.path)
+        return {
+            title: t('toolGroup.codex.search'),
+            detail: query && path
+                ? t('toolGroup.codex.searchIn', { query, path })
+                : query ?? path
+        }
+    }
+    return { title: t('toolGroup.friendly.genericCommand'), detail: null }
+}
+
+function CodexExplorationRows(props: {
+    tools: ToolCallBlock[]
+    onSelect: (toolId: string) => void
+}) {
+    const { t } = useTranslation()
+    return props.tools.flatMap((tool) => (
+        getCodexCommandActions(tool).map((action, index) => {
+            const label = codexActionLabel(action, t)
+            return (
+                <button
+                    key={`${tool.id}:${index}`}
+                    type="button"
+                    className="flex min-w-0 items-start gap-2 rounded-lg px-2 py-1 text-left hover:bg-[var(--app-subtle-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                    onClick={() => props.onSelect(tool.id)}
+                >
+                    <span className="mt-1 text-xs text-[var(--app-hint)]">└</span>
+                    <span className="shrink-0 text-sm font-medium text-[var(--app-tool-card-accent)]">
+                        {label.title}
+                    </span>
+                    {label.detail ? (
+                        <span className="min-w-0 truncate text-sm text-[var(--app-fg)]">
+                            {label.detail}
+                        </span>
+                    ) : null}
+                </button>
+            )
+        })
+    ))
+}
+
 export function ToolGroupCard(props: {
     block: ToolGroupBlock
     metadata: SessionMetadataSummary | null
@@ -110,8 +197,17 @@ export function ToolGroupCard(props: {
     const [isHydratingHistory, setIsHydratingHistory] = useState(false)
     const [historyExhausted, setHistoryExhausted] = useState(false)
     const [retryNonce, setRetryNonce] = useState(0)
+    const [now, setNow] = useState(() => Date.now())
     const hydrationRunRef = useRef(0)
     const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+    const groupTiming = getToolGroupTiming(props.block.tools, now)
+
+    useEffect(() => {
+        if (!groupTiming.running) return
+        setNow(Date.now())
+        const id = setInterval(() => setNow(Date.now()), TIMING_INTERVAL_MS)
+        return () => clearInterval(id)
+    }, [groupTiming.running, groupTiming.startedAt])
 
     function clearRetryTimer() {
         if (retryTimerRef.current === null) {
@@ -213,13 +309,18 @@ export function ToolGroupCard(props: {
             input: selectedTool.tool.input,
             result: selectedTool.tool.result,
             childrenCount: selectedTool.children.length,
-            description: selectedTool.tool.description,
+            description: selectedTool.tool.nativeTitle ?? selectedTool.tool.description,
             metadata: props.metadata
         }, t)
     }, [selectedTool, props.metadata, t])
 
     const primaryTitle = formatGroupedHeaderTitle(props.block, t)
-    const subtitle = formatGroupedHeaderSubtitle(props.block, t) ?? formatActionSummary(props.block, t)
+    const subtitle = props.block.presentationMode === 'codex-exploration'
+        ? null
+        : formatGroupedHeaderSubtitle(props.block, t) ?? formatActionSummary(props.block, t)
+    const summaryBadgeText = props.block.presentationMode === 'codex-exploration'
+        ? null
+        : subtitle ?? t('toolGroup.toolCount', { n: props.block.tools.length })
     const fileCount = props.block.summary.fileTargets.length
 
     return (
@@ -241,18 +342,26 @@ export function ToolGroupCard(props: {
                                     {primaryTitle}
                                 </CardTitle>
                             </div>
-                            {subtitle ? (
-                                <CardDescription className="truncate whitespace-nowrap font-mono text-xs text-[var(--app-tool-card-subtitle)]">
-                                    {subtitle}
-                                </CardDescription>
-                            ) : null}
+                            <ToolTimingSummary
+                                startedAt={groupTiming.startedAt}
+                                completedAt={groupTiming.completedAt}
+                                durationMs={groupTiming.durationMs}
+                                typography="group"
+                            />
                         </div>
 
                         <div className="flex shrink-0 items-center gap-2 self-center text-[var(--app-hint)]">
-                            <SummaryBadge
-                                className="bg-[var(--app-subtle-bg)] text-[var(--app-hint)]"
-                                text={t('toolGroup.toolCount', { n: props.block.tools.length })}
-                            />
+                            {groupTiming.running ? (
+                                <span className={toolStatusColorClass('running')} aria-label={t('toolGroup.rowStatus.running')}>
+                                    <ToolStatusIcon state="running" />
+                                </span>
+                            ) : null}
+                            {summaryBadgeText ? (
+                                <SummaryBadge
+                                    className="bg-[var(--app-subtle-bg)] text-xs font-normal text-[var(--app-hint)]"
+                                    text={summaryBadgeText}
+                                />
+                            ) : null}
                             {props.block.summary.runningCount > 0 ? (
                                 <SummaryBadge
                                     className="bg-sky-500/10 text-sky-600"
@@ -285,7 +394,10 @@ export function ToolGroupCard(props: {
             {open ? (
                 <CardContent className="px-3 pb-3 pt-1">
                     <div className="flex flex-col gap-2">
-                        {props.block.tools.map((tool) => {
+                        {props.block.presentationMode === 'codex-exploration' ? (
+                            <CodexExplorationRows tools={props.block.tools} onSelect={setSelectedToolId} />
+                        ) : props.block.tools.map((tool) => {
+                            const timing = getToolTimingDetails(tool.tool, now)
                             return (
                                 <button
                                     key={tool.id}
@@ -298,6 +410,11 @@ export function ToolGroupCard(props: {
                                     </span>
                                     <RowLabel block={tool} metadata={props.metadata} />
                                     <div className="flex shrink-0 items-center gap-2">
+                                        {timing.durationMs != null ? (
+                                            <span className="font-mono text-xs text-[var(--app-hint)]">
+                                                {formatDuration(timing.durationMs)}
+                                            </span>
+                                        ) : null}
                                         <RowStatusBadge block={tool} />
                                     </div>
                                 </button>
@@ -323,10 +440,10 @@ export function ToolGroupCard(props: {
                     setSelectedToolId(null)
                 }
             }}>
-                <DialogContent className="max-w-2xl" aria-describedby={undefined}>
+                <DialogContent className="max-w-2xl" closeButtonClassName="top-2" aria-describedby={undefined}>
                     {selectedTool && selectedPresentation ? (
                         <>
-                            <DialogHeader>
+                            <DialogHeader className="text-left">
                                 <DialogTitle>{selectedPresentation.title}</DialogTitle>
                             </DialogHeader>
                             <ToolDetailDialogContent block={selectedTool} metadata={props.metadata} />

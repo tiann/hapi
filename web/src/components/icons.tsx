@@ -61,12 +61,38 @@ export function CheckIcon(props: IconProps) {
     )
 }
 
+export function InfoIcon(props: IconProps) {
+    return createIcon(
+        <>
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 11v5" />
+            <path d="M12 8h.01" />
+        </>,
+        props,
+        2
+    )
+}
+
 /** Composer schedule-send clock — circle + hands (matches ComposerButtons). */
 export function ScheduleIcon(props: IconProps) {
     return createIcon(
         <>
             <circle cx="12" cy="12" r="9" />
             <polyline points="12 7 12 12 15.5 14" />
+        </>,
+        props,
+        2
+    )
+}
+
+/** Word-wrap toggle — lines with a wrap-around arrow on the last line. */
+export function WrapIcon(props: IconProps) {
+    return createIcon(
+        <>
+            <path d="M3 6h18" />
+            <path d="M3 12h13a3 3 0 0 1 0 6h-4" />
+            <polyline points="15 15 12 18 15 21" />
+            <path d="M3 18h4" />
         </>,
         props,
         2

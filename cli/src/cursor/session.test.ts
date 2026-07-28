@@ -38,4 +38,31 @@ describe('CursorSession', () => {
             cursorSessionProtocol: 'acp'
         });
     });
+
+    it('notifies onPermissionModeChanged so runCursor enqueue mode stays in sync', () => {
+        const onPermissionModeChanged = vi.fn();
+        const session = new CursorSession({
+            api: {} as never,
+            client: {
+                updateMetadata: vi.fn(),
+                keepAlive: vi.fn(),
+                emitMessagesConsumed: vi.fn()
+            } as never,
+            path: '/tmp',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: new MessageQueue2<EnhancedMode>(() => 'hash'),
+            onModeChange: vi.fn(),
+            startedBy: 'runner',
+            startingMode: 'remote',
+            mode: 'remote',
+            permissionMode: 'plan',
+            onPermissionModeChanged
+        });
+
+        session.setPermissionMode('default');
+
+        expect(session.getPermissionMode()).toBe('default');
+        expect(onPermissionModeChanged).toHaveBeenCalledWith('default');
+    });
 });

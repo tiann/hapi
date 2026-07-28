@@ -24,11 +24,15 @@ interface LoopOptions {
     session: ApiSessionClient;
     api: ApiClient;
     cursorArgs?: string[];
+    cursorWorktree?: boolean | string;
+    cursorAddDirs?: readonly string[];
     permissionMode?: PermissionMode;
     resumeSessionId?: string;
     model?: string;
     sessionMetadata?: Metadata | null;
     onSessionReady?: (session: CursorSession) => void;
+    /** Keep runCursor's enqueue mode in sync when the session leaves plan/ask. */
+    onPermissionModeChanged?: (mode: PermissionMode) => void;
 }
 
 export async function loop(opts: LoopOptions): Promise<void> {
@@ -47,8 +51,11 @@ export async function loop(opts: LoopOptions): Promise<void> {
         startedBy,
         startingMode,
         cursorArgs: opts.cursorArgs,
+        cursorWorktree: opts.cursorWorktree,
+        cursorAddDirs: opts.cursorAddDirs,
         model: opts.model,
-        permissionMode: opts.permissionMode ?? 'default'
+        permissionMode: opts.permissionMode ?? 'default',
+        onPermissionModeChanged: opts.onPermissionModeChanged
     });
 
     await runLocalRemoteSession({

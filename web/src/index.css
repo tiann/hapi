@@ -352,19 +352,34 @@ body {
     }
 }
 
-/* Desktop sidebar: use custom width from CSS variable */
-@media (min-width: 1024px) {
-    .desktop-scrollbar-left {
-        direction: rtl;
-    }
+/* Keep the session list scrollbar on the left at every viewport size. */
+.session-list-scrollbar-left {
+    direction: rtl;
+    scrollbar-gutter: stable;
+}
 
-    .desktop-scrollbar-left > * {
-        direction: ltr;
-    }
+.session-list-scrollbar-left > * {
+    direction: ltr;
+}
 
-    /* Apply resizable width to sidebar */
+/* Match fixed sidebar controls to the space reserved for the left scrollbar. */
+.session-list-scrollbar-offset {
+    padding-left: 8px;
+}
+
+/* Desktop sidebar: use custom width from CSS variable.
+   Kept in sync with the Tailwind `split` breakpoint (see tailwind.config.ts)
+   so the sidebar width/resize applies as soon as the split view appears on
+   compact tablets. */
+@media (min-width: 920px) {
+    /* Apply resizable width to sidebar.
+       Cap it against the viewport so a wide persisted width (up to 600px, from
+       resizing on desktop) can't crush the detail pane on a compact split.
+       424px = 420px min detail pane + 4px resize handle, which preserves the
+       previous 1024px worst case (1024 - 600 - 4 = 420) down to 920px. The cap
+       is a no-op on desktop where 100vw - 424px exceeds the stored width. */
     div[style*="--sidebar-w"] {
-        width: var(--sidebar-w) !important;
+        width: min(var(--sidebar-w), calc(100vw - 424px)) !important;
     }
 }
 
@@ -433,6 +448,20 @@ body {
     margin-top: max(0px, calc((var(--app-chat-line-height) - var(--app-message-action-size)) / 2));
 }
 
+@media (hover: hover) and (pointer: fine) {
+    .happy-message-actions {
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 150ms ease;
+    }
+
+    .happy-message:hover .happy-message-actions,
+    .happy-message:focus-within .happy-message-actions {
+        opacity: 1;
+        pointer-events: auto;
+    }
+}
+
 .aui-md :where(.contains-task-list) {
     list-style: none;
     padding-left: 0;
@@ -488,26 +517,14 @@ body {
     color: inherit;
 }
 
-.aui-md-codeblock pre.shiki {
-    margin: 0;
-    padding: 0.75rem 1rem;
-    background-color: transparent !important;
-    font-size: 0.875rem;
-}
-
-.aui-md-codeblock pre.shiki code {
-    display: block;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-}
-
 .aui-md-codeblock .shiki,
-.aui-md-codeblock .shiki span {
+.aui-md-codeblock .shiki span:not([data-line-number]) {
     background-color: transparent !important;
 }
 
 /* Shiki dual theme colors */
 .shiki,
-.shiki span {
+.shiki span:not([data-line-number]) {
     color: var(--shiki-light) !important;
     font-style: var(--shiki-light-font-style) !important;
     font-weight: var(--shiki-light-font-weight) !important;
@@ -515,9 +532,9 @@ body {
 }
 
 html[data-theme="dark"] .shiki,
-html[data-theme="dark"] .shiki span,
+html[data-theme="dark"] .shiki span:not([data-line-number]),
 html[data-theme="oled"] .shiki,
-html[data-theme="oled"] .shiki span {
+html[data-theme="oled"] .shiki span:not([data-line-number]) {
     color: var(--shiki-dark) !important;
     font-style: var(--shiki-dark-font-style) !important;
     font-weight: var(--shiki-dark-font-weight) !important;

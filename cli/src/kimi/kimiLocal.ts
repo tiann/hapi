@@ -25,8 +25,7 @@ export async function kimiLocal(opts: {
     }
 
     const env: NodeJS.ProcessEnv = {
-        ...process.env,
-        KIMI_PROJECT_DIR: opts.path
+        ...process.env
     };
 
     logger.debug(`[KimiLocal] Spawning kimi with args: ${JSON.stringify(args)}`);

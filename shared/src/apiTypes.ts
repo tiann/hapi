@@ -15,17 +15,6 @@ import type {
 } from './schemas'
 import type { SessionSummary } from './sessionSummary'
 
-export const CreateOrLoadSessionRequestSchema = z.object({
-    tag: z.string().min(1),
-    metadata: z.unknown(),
-    agentState: z.unknown().nullable().optional(),
-    model: z.string().optional(),
-    modelReasoningEffort: z.string().optional(),
-    effort: z.string().optional()
-})
-
-export type CreateOrLoadSessionRequest = z.infer<typeof CreateOrLoadSessionRequestSchema>
-
 export const CreateOrLoadMachineRequestSchema = z.object({
     id: z.string().min(1),
     metadata: z.unknown(),
@@ -33,6 +22,19 @@ export const CreateOrLoadMachineRequestSchema = z.object({
 })
 
 export type CreateOrLoadMachineRequest = z.infer<typeof CreateOrLoadMachineRequestSchema>
+
+export const CreateOrLoadSessionRequestSchema = z.object({
+    id: z.string().uuid().optional(),
+    tag: z.string().min(1),
+    metadata: z.unknown(),
+    agentState: z.unknown().nullable().optional(),
+    model: z.string().optional(),
+    modelReasoningEffort: z.string().optional(),
+    effort: z.string().optional(),
+    machine: CreateOrLoadMachineRequestSchema.optional()
+})
+
+export type CreateOrLoadSessionRequest = z.infer<typeof CreateOrLoadSessionRequestSchema>
 
 export const CliMessagesResponseSchema = z.object({
     messages: z.array(z.object({
@@ -76,9 +78,16 @@ export type SessionResponse = { session: Session }
 export type MessagesResponse = {
     messages: DecryptedMessage[]
     page: {
+        direction: 'latest' | 'before' | 'after'
         limit: number
+        epoch: number
+        reset: boolean
         nextBeforeSeq: number | null
         nextBeforeAt: number | null
+        nextAfterSeq: number | null
+        nextAfterAt: number | null
+        snapshotHeadSeq: number | null
+        snapshotHeadAt: number | null
         hasMore: boolean
     }
 }
@@ -116,6 +125,65 @@ export const ReopenSessionMissingMetadataResponseSchema = z.object({
 })
 
 export type ReopenSessionMissingMetadataResponse = z.infer<typeof ReopenSessionMissingMetadataResponseSchema>
+
+export const CursorChatStoreStatusSchema = z.object({
+    onDisk: z.boolean(),
+    store: z.enum(['legacy', 'acp']).nullable()
+})
+
+export type CursorChatStoreStatus = z.infer<typeof CursorChatStoreStatusSchema>
+
+export const CodexImportedMessageSchema = z.union([
+    z.object({
+        role: z.literal('user'),
+        content: z.object({ type: z.literal('text'), text: z.string() }),
+        meta: z.object({ sentFrom: z.literal('cli') })
+    }),
+    z.object({
+        role: z.literal('agent'),
+        content: z.object({ type: z.literal('codex'), data: z.unknown() }),
+        meta: z.object({ sentFrom: z.literal('cli') })
+    })
+])
+
+export const CodexLocalSessionSummarySchema = z.object({
+    id: z.string().min(1),
+    title: z.string(),
+    lastUserMessage: z.string().nullable().optional(),
+    cwd: z.string().nullable().optional(),
+    file: z.string().min(1),
+    modifiedAt: z.number(),
+    originator: z.string().nullable().optional(),
+    cliVersion: z.string().nullable().optional(),
+    source: z.string().nullable().optional(),
+    threadSource: z.string().nullable().optional(),
+    forkedFromId: z.string().nullable().optional()
+})
+
+export const CodexLocalSessionWithMessagesSchema = CodexLocalSessionSummarySchema.extend({
+    messages: z.array(CodexImportedMessageSchema)
+})
+
+export const ListCodexSessionsRpcRequestSchema = z.object({
+    cwd: z.string().nullable().optional(),
+    sessionIds: z.array(z.string().min(1)).optional()
+})
+
+export const ListCodexSessionsRpcResponseSchema = z.union([
+    z.object({ success: z.literal(true), sessions: z.array(z.union([CodexLocalSessionWithMessagesSchema, CodexLocalSessionSummarySchema])) }),
+    z.object({ success: z.literal(false), error: z.string() })
+])
+
+export const ArchiveCodexSessionRpcRequestSchema = z.object({ sessionId: z.string().min(1) })
+export const ArchiveCodexSessionRpcResponseSchema = z.union([
+    z.object({ success: z.literal(true), archivedPath: z.string() }),
+    z.object({ success: z.literal(false), error: z.string() })
+])
+
+export type ListCodexSessionsRpcRequest = z.infer<typeof ListCodexSessionsRpcRequestSchema>
+export type ListCodexSessionsRpcResponse = z.infer<typeof ListCodexSessionsRpcResponseSchema>
+export type ArchiveCodexSessionRpcRequest = z.infer<typeof ArchiveCodexSessionRpcRequestSchema>
+export type ArchiveCodexSessionRpcResponse = z.infer<typeof ArchiveCodexSessionRpcResponseSchema>
 
 export const SessionCollaborationModeRequestSchema = z.object({
     mode: CodexCollaborationModeSchema
@@ -162,6 +230,58 @@ export const RenameSessionRequestSchema = z.object({
 })
 
 export type RenameSessionRequest = z.infer<typeof RenameSessionRequestSchema>
+
+/**
+ * Scratchlist v2 (tiann/hapi#893) per-entry caps.
+ *
+ * `MAX_ENTRIES` (200) is a per-session ceiling: refuses to create entry
+ * 201 on the hub. Mirrors `SCRATCHLIST_MAX_ENTRIES` in
+ * `web/src/lib/scratchlist.ts` so the hub and web agree on the limit -
+ * the web side has UX for the cap (disabled add button + atCap hint),
+ * the hub side enforces it as a server-side guard against malicious /
+ * runaway clients writing arbitrary amounts.
+ *
+ * `MAX_TEXT_LENGTH` (10_000) is the per-entry text cap. Mirrors
+ * `SCRATCHLIST_MAX_TEXT_LENGTH`. The web side truncates rather than
+ * rejects; the hub-side schema allows up to this length and rejects
+ * anything longer with 400.
+ */
+export const SCRATCHLIST_MAX_ENTRIES = 200
+export const SCRATCHLIST_MAX_TEXT_LENGTH = 10_000
+/**
+ * Hard cap on client-supplied entry id length. The id is persisted as
+ * part of the SQLite primary key, so without a bound an authenticated
+ * client could grow the table and its index with arbitrarily large
+ * keys. 128 chars comfortably fits a UUID (36) plus any prefix scheme
+ * we might layer on later.
+ */
+export const SCRATCHLIST_MAX_ENTRY_ID_LENGTH = 128
+
+export const ScratchlistEntryCreateRequestSchema = z.object({
+    /**
+     * Optional client-supplied entry id. Lets the web client preserve its
+     * pre-v2 localStorage entry ids during migration so the optimistic-
+     * update path doesn't have to re-key entries already in the React
+     * tree. New entries created post-v2 can omit this and let the hub
+     * generate one.
+     */
+    entryId: z.string().min(1).max(SCRATCHLIST_MAX_ENTRY_ID_LENGTH).optional(),
+    text: z.string().min(1).max(SCRATCHLIST_MAX_TEXT_LENGTH),
+    /**
+     * Optional client-supplied createdAt. Used by the migration path to
+     * preserve the original timestamps from localStorage. New entries
+     * omit this and let the hub stamp `Date.now()`.
+     */
+    createdAt: z.number().int().nonnegative().optional()
+})
+
+export type ScratchlistEntryCreateRequest = z.infer<typeof ScratchlistEntryCreateRequestSchema>
+
+export const ScratchlistEntryUpdateRequestSchema = z.object({
+    text: z.string().min(1).max(SCRATCHLIST_MAX_TEXT_LENGTH)
+})
+
+export type ScratchlistEntryUpdateRequest = z.infer<typeof ScratchlistEntryUpdateRequestSchema>
 
 /** Per-session legacy stream-json → ACP migrator request. See tiann/hapi#824. */
 export const CursorMigrateToAcpRequestSchema = z.object({
@@ -217,10 +337,36 @@ export const MessagesQuerySchema = z.object({
     limit: z.coerce.number().int().min(1).max(200).optional(),
     beforeSeq: z.coerce.number().int().min(1).optional(),
     beforeAt: z.coerce.number().int().min(0).optional(),
-}).refine((data) => (data.beforeAt === undefined) === (data.beforeSeq === undefined), {
-    message: 'beforeAt and beforeSeq must be provided together',
-    path: ['beforeAt'],
+    afterSeq: z.coerce.number().int().min(1).optional(),
+    afterAt: z.coerce.number().int().min(0).optional(),
+    untilSeq: z.coerce.number().int().min(1).optional(),
+    untilAt: z.coerce.number().int().min(0).optional(),
+    epoch: z.coerce.number().int().min(0).optional(),
 })
+    .refine((data) => (data.beforeAt === undefined) === (data.beforeSeq === undefined), {
+        message: 'beforeAt and beforeSeq must be provided together',
+        path: ['beforeAt'],
+    })
+    .refine((data) => (data.afterAt === undefined) === (data.afterSeq === undefined), {
+        message: 'afterAt and afterSeq must be provided together',
+        path: ['afterAt'],
+    })
+    .refine((data) => (data.untilAt === undefined) === (data.untilSeq === undefined), {
+        message: 'untilAt and untilSeq must be provided together',
+        path: ['untilAt'],
+    })
+    .refine((data) => data.beforeAt === undefined || data.afterAt === undefined, {
+        message: 'before and after cursors are mutually exclusive',
+        path: ['afterAt'],
+    })
+    .refine((data) => data.untilAt === undefined || data.afterAt !== undefined, {
+        message: 'until cursor requires an after cursor',
+        path: ['untilAt'],
+    })
+    .refine((data) => data.epoch === undefined || data.afterAt !== undefined, {
+        message: 'epoch requires an after cursor',
+        path: ['epoch'],
+    })
 
 export type MessagesQuery = z.infer<typeof MessagesQuerySchema>
 
@@ -242,6 +388,20 @@ export const SendMessageRequestSchema = z.object({
 
 export type SendMessageRequest = z.infer<typeof SendMessageRequestSchema>
 
+export const QueuedStateRequestSchema = z.object({
+    localIds: z.array(z.string().min(1)).max(1000)
+})
+
+export type QueuedStateRequest = z.infer<typeof QueuedStateRequestSchema>
+
+export type QueuedStateResponse = {
+    queuedLocalIds: string[]
+    invokedLocalMessages: Array<{
+        localId: string
+        invokedAt: number
+    }>
+}
+
 export const SpawnSessionRequestSchema = z.object({
     directory: z.string().min(1),
     agent: AgentFlavorSchema.optional(),
@@ -249,8 +409,11 @@ export const SpawnSessionRequestSchema = z.object({
     effort: z.string().optional(),
     modelReasoningEffort: z.string().optional(),
     yolo: z.boolean().optional(),
+    permissionMode: PermissionModeSchema.optional(),
     sessionType: z.enum(['simple', 'worktree']).optional(),
-    worktreeName: z.string().optional()
+    worktreeName: z.string().optional(),
+    serviceTier: z.enum(['fast', 'standard']).optional(),
+    collaborationMode: CodexCollaborationModeSchema.optional()
 })
 
 export type SpawnSessionRequest = z.infer<typeof SpawnSessionRequestSchema>
@@ -324,6 +487,18 @@ export type ListDirectoryResponse = {
 
 export type RpcListDirectoryResponse = ListDirectoryResponse
 
+export type FileMetadataEntry = {
+    path: string
+    size?: number
+    modified?: number
+}
+
+export type StatFilesResponse = {
+    success: boolean
+    entries?: FileMetadataEntry[]
+    error?: string
+}
+
 export type MachineDirectoryEntry = DirectoryEntry & {
     isGitRepo?: boolean
 }
@@ -345,6 +520,7 @@ export type CodexModelSummary = {
     displayName: string
     isDefault: boolean
     defaultReasoningEffort?: string | null
+    defaultServiceTier?: string | null
     supportedReasoningEfforts?: string[]
     /** Service tier ids advertised for this model in the current auth/plan context (e.g. 'fast'). */
     serviceTiers?: string[]
@@ -373,6 +549,34 @@ export type OpencodeModelsResponse = {
 }
 
 export type ListOpencodeModelsResponse = OpencodeModelsResponse
+
+export type GrokModelSummary = {
+    modelId: string
+    name?: string
+    reasoningEfforts?: GrokReasoningEffortOption[]
+}
+
+export type GrokReasoningEffortOption = {
+    value: string
+    name?: string
+    isDefault?: boolean
+}
+
+export type GrokModelsResponse = {
+    success: boolean
+    availableModels?: GrokModelSummary[]
+    currentModelId?: string | null
+    autoPermissionModeSupported?: boolean
+    error?: string
+}
+export type ListGrokModelsResponse = GrokModelsResponse
+
+export type GrokReasoningEffortResponse = {
+    success: boolean
+    options?: GrokReasoningEffortOption[]
+    currentValue?: string | null
+    error?: string
+}
 
 export type OpencodeReasoningEffortOption = {
     value: string

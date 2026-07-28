@@ -65,7 +65,11 @@ export function ensureToolBlock(
         name: string
         input: unknown
         description: string | null
+        nativeTitle?: string | null
+        nativeKind?: string | null
         permission?: ToolPermission
+        /** Claude entry execution-machine timestamp for the tool_use, if known (see `ChatToolCall.execStartedAt`). */
+        agentTimestamp?: number | null
     }
 ): ToolCallBlock {
     const existing = toolBlocksById.get(id)
@@ -96,6 +100,12 @@ export function ensureToolBlock(
         }
         if (seed.description !== null) {
             existing.tool = { ...existing.tool, description: seed.description }
+        }
+        if (seed.nativeTitle != null) {
+            existing.tool = { ...existing.tool, nativeTitle: seed.nativeTitle }
+        }
+        if (seed.nativeKind != null) {
+            existing.tool = { ...existing.tool, nativeKind: seed.nativeKind }
         }
         // The first call (tool_use) records when the tool was invoked. The
         // second call (tool_result) carries the result message's invokedAt,
@@ -131,7 +141,14 @@ export function ensureToolBlock(
         createdAt: seed.createdAt,
         startedAt: initialState === 'running' ? seed.createdAt : null,
         completedAt: null,
+        // Exec start is only ever a real Claude entry timestamp (never the hub
+        // receive time). Null keeps the tool on the hub-time fallback in
+        // toolDurationMs; the tool_use path backfills the real value.
+        execStartedAt: initialState === 'running' ? (seed.agentTimestamp ?? null) : null,
+        execCompletedAt: null,
         description: seed.description,
+        nativeTitle: seed.nativeTitle ?? null,
+        nativeKind: seed.nativeKind ?? null,
         permission: seed.permission
     }
 
