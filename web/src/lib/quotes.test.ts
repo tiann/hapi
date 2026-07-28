@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { serializeQuotes, type Quote } from './quotes'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { persistQuotes, readQuotes, serializeQuotes, QUOTES_MAX, type Quote } from './quotes'
 
 const q = (id: string, text: string): Quote => ({
     id, text, messageId: 'm1', createdAt: 0,
@@ -42,5 +42,46 @@ describe('serializeQuotes', () => {
 
     it('keeps a trailing separator when the body is empty', () => {
         expect(serializeQuotes([q('1', 'alpha')], '')).toBe('> alpha\n\n')
+    })
+})
+
+describe('quote storage', () => {
+    beforeEach(() => localStorage.clear())
+    afterEach(() => localStorage.clear())
+
+    it('returns an empty list for an unknown session', () => {
+        expect(readQuotes('nope')).toEqual([])
+    })
+
+    it('round-trips through localStorage', () => {
+        persistQuotes('s1', [q('1', 'alpha')])
+        expect(readQuotes('s1').map((x) => x.text)).toEqual(['alpha'])
+    })
+
+    it('isolates sessions', () => {
+        persistQuotes('s1', [q('1', 'alpha')])
+        persistQuotes('s2', [q('2', 'beta')])
+        expect(readQuotes('s1').map((x) => x.text)).toEqual(['alpha'])
+        expect(readQuotes('s2').map((x) => x.text)).toEqual(['beta'])
+    })
+
+    it('survives corrupted storage without throwing', () => {
+        localStorage.setItem('hapi.quotes.v1.s1', '{not json')
+        expect(readQuotes('s1')).toEqual([])
+    })
+
+    it('drops rows that are missing required fields', () => {
+        localStorage.setItem('hapi.quotes.v1.s1', JSON.stringify([
+            { id: '1', text: 'ok', messageId: 'm1', createdAt: 0 },
+            { id: '2' },
+            null,
+        ]))
+        expect(readQuotes('s1').map((x) => x.id)).toEqual(['1'])
+    })
+
+    it('caps the stored list at QUOTES_MAX', () => {
+        const many = Array.from({ length: QUOTES_MAX + 5 }, (_, i) => q(String(i), `t${i}`))
+        persistQuotes('s1', many)
+        expect(readQuotes('s1')).toHaveLength(QUOTES_MAX)
     })
 })

@@ -46,3 +46,64 @@ export function serializeQuotes(quotes: readonly Quote[], body: string): string 
     )
     return `${blocks.join('\n\n')}\n\n${body}`
 }
+
+const STORAGE_KEY_PREFIX = 'hapi.quotes.v1.'
+
+/** 上限存在的意义是挡住失控增长，不是产品约束——正常用法远达不到。 */
+export const QUOTES_MAX = 50
+
+function getStorageKey(sessionId: string): string {
+    return `${STORAGE_KEY_PREFIX}${sessionId}`
+}
+
+function getLocalStorage(): Storage | null {
+    try {
+        return typeof localStorage === 'undefined' ? null : localStorage
+    } catch {
+        // Safari 隐私模式下访问 localStorage 会抛异常
+        return null
+    }
+}
+
+function isQuote(value: unknown): value is Quote {
+    if (!value || typeof value !== 'object') return false
+    const row = value as Partial<Quote>
+    return typeof row.id === 'string'
+        && typeof row.text === 'string'
+        && typeof row.messageId === 'string'
+        && typeof row.createdAt === 'number'
+}
+
+export function readQuotes(sessionId: string): Quote[] {
+    const storage = getLocalStorage()
+    if (!storage) return []
+    const raw = storage.getItem(getStorageKey(sessionId))
+    if (!raw) return []
+    try {
+        const parsed: unknown = JSON.parse(raw)
+        if (!Array.isArray(parsed)) return []
+        return parsed.filter(isQuote).slice(0, QUOTES_MAX)
+    } catch {
+        // 存储损坏时回到空列表而不是抛——引用是草稿状态，不值得让整个会话打不开
+        return []
+    }
+}
+
+export function persistQuotes(sessionId: string, quotes: readonly Quote[]): void {
+    const storage = getLocalStorage()
+    if (!storage) return
+    try {
+        storage.setItem(getStorageKey(sessionId), JSON.stringify(quotes.slice(0, QUOTES_MAX)))
+    } catch {
+        // 配额超限：静默放弃持久化，内存中的引用仍然可用
+    }
+}
+
+export function createQuote(text: string, messageId: string): Quote {
+    return {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        text,
+        messageId,
+        createdAt: Date.now(),
+    }
+}
