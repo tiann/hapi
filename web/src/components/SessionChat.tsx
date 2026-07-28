@@ -43,6 +43,7 @@ import {
     stageScratchlistAttachmentsForComposeSend
 } from '@/lib/scratchlistAttachmentFlow'
 import type { ScratchlistEntry } from '@/lib/scratchlist'
+import { isHubScratchlistAttachmentPath } from '@hapi/protocol'
 import { consumeSharePendingTransfer } from '@/lib/sharePendingState'
 import { deleteShareTransfer, getShareTransfer } from '@/lib/shareTransfer'
 import { getDraft } from '@/lib/composer-drafts'
@@ -532,9 +533,24 @@ function SessionChatInner(props: SessionChatProps) {
             if (shouldRouteToScratchlist(scratchlistMode, attachments, scheduledAt)) {
                 return scratchlist.add(text, attachments)
             }
-            return props.onSend(text, attachments, scheduledAt)
+            // If the user uploaded while scratchlist mode was on, then toggled
+            // it off before send, pending items still carry hub paths. Stage
+            // those through the normal CLI upload dir before chat send.
+            const list = attachments ?? []
+            const hubItems = list.filter((att) => isHubScratchlistAttachmentPath(att.path))
+            let chatAttachments = attachments
+            if (hubItems.length > 0) {
+                const normalItems = list.filter((att) => !isHubScratchlistAttachmentPath(att.path))
+                const staged = await stageScratchlistAttachmentsForComposeSend(
+                    props.api,
+                    props.session.id,
+                    hubItems,
+                )
+                chatAttachments = [...normalItems, ...staged]
+            }
+            return props.onSend(text, chatAttachments, scheduledAt)
         },
-        [props.onSend, scratchlist, scratchlistMode],
+        [props.onSend, props.api, props.session.id, scratchlist, scratchlistMode],
     )
     const agentFlavor = props.session.metadata?.flavor ?? null
     const controlledByUser = props.session.agentState?.controlledByUser === true

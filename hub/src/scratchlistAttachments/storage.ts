@@ -245,6 +245,13 @@ export async function deleteScratchlistAttachmentById(
     sessionId: string,
     attachmentId: string
 ): Promise<boolean> {
+    // Require a full UUID so a partial first-segment like "a1b2c3d4" cannot
+    // startsWith-match `${uuid}-${filename}` and delete a still-referenced file.
+    const SCRATCHLIST_ATTACHMENT_ID_RE =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+    if (!SCRATCHLIST_ATTACHMENT_ID_RE.test(attachmentId)) {
+        return false
+    }
     const dir = resolveScratchlistStoragePath(
         hapiHome,
         `${sanitizeSegment(namespace)}/${sanitizeSegment(sessionId)}`

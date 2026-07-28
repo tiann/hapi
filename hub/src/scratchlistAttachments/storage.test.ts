@@ -62,6 +62,21 @@ describe('scratchlistAttachments storage security', () => {
             )
             expect(deleted).toBe(true)
             expect(await sumScratchlistAttachmentBytesOnDisk(hapiHome, 'default', 'session-a')).toBe(0)
+
+            const otherAgain = await writeScratchlistAttachmentFile(
+                hapiHome,
+                'default',
+                'session-a',
+                'c.png',
+                'image/png',
+                Buffer.from('ccc')
+            )
+            const partialId = otherAgain.id.split('-')[0]!
+            expect(partialId.length).toBe(8)
+            expect(
+                await deleteScratchlistAttachmentById(hapiHome, 'default', 'session-a', partialId)
+            ).toBe(false)
+            expect(await sumScratchlistAttachmentBytesOnDisk(hapiHome, 'default', 'session-a')).toBe(3)
         } finally {
             rmSync(hapiHome, { recursive: true, force: true })
         }
