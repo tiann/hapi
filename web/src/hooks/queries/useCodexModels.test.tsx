@@ -17,7 +17,7 @@ function createWrapper() {
 describe('useCodexModels', () => {
     it('hides cached errors when disabled', async () => {
         const api = {
-            getSessionCodexModels: async () => {
+            getMachineCodexModels: async () => {
                 throw new Error('HTTP 409 Conflict: {"error":"Session is inactive"}')
             },
         } as unknown as ApiClient
@@ -25,7 +25,7 @@ describe('useCodexModels', () => {
         const { result, rerender } = renderHook(
             ({ enabled }) => useCodexModels({
                 api,
-                sessionId: 'session-1',
+                machineId: 'machine-1',
                 enabled,
             }),
             {
