@@ -145,7 +145,24 @@ export default defineConfig({
         })
     ],
     base,
+    optimizeDeps: {
+        // dev 下 VitePWA 会给每个页面注入 service worker 注册，而 sw.ts 里的
+        // workbox 依赖要等 SW 真正注册后才被 Vite 发现，触发一次「optimized
+        // dependencies changed → reloading」的整页刷新。这个刷新会打断当时
+        // 正在跑的 e2e（表现为元素凭空消失）。提前声明即可在启动时一次预构建。
+        include: [
+            'workbox-precaching',
+            'workbox-routing',
+            'workbox-strategies',
+            'workbox-expiration'
+        ]
+    },
     resolve: {
+        // 单例 React 兜底：workspace 里个别依赖（如 @radix-ui/react-popover）
+        // 没被链进 web/node_modules，只能从仓库根解析，于是拿到与应用代码
+        // 不同的那份 react 实例。两份 React 同时存在会让带 hook 的第三方
+        // 组件在渲染时抛 "Invalid hook call"，并连累整棵 React 树卸载。
+        dedupe: ['react', 'react-dom'],
         alias: {
             '@': resolve(__dirname, 'src')
         }
