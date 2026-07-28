@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 type TransportOptions = { command: string; args: string[]; cwd: string };
 type LifecycleOptions = { stopKeepAlive: () => void };
@@ -72,6 +72,26 @@ vi.mock('./piTransport', () => ({
 import { runPi } from './runPi';
 
 describe('runPi startup', () => {
+    beforeEach(() => {
+        harness.transportOptions = null;
+        harness.sent.length = 0;
+    });
+
+    it('lets Pi create a fresh session when no resume ID is provided', async () => {
+        await runPi({ workingDirectory: '/work' });
+
+        expect(harness.transportOptions).toEqual({
+            command: 'pi',
+            args: ['--mode', 'rpc'],
+            cwd: '/work',
+        });
+        expect(harness.sent).toEqual([
+            { type: 'get_state' },
+            { type: 'get_available_models' },
+            { type: 'get_commands' },
+        ]);
+    });
+
     it('resumes with --session and keeps the session selected by Pi', async () => {
         await runPi({
             workingDirectory: '/work',

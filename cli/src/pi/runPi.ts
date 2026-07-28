@@ -388,8 +388,8 @@ export async function runPi(opts: {
     readyFallback.unref?.();
     try {
         transport.start();
-        // Pi creates or resumes its session before RPC mode starts. Sending
-        // new_session here races get_state and discards a resumed session.
+        // Pi creates a fresh session (or resumes --session) before RPC mode
+        // starts. Sending new_session here races get_state and discards a resumed session.
         transport.send({ type: 'get_state' });
         transport.send({ type: 'get_available_models' });
         transport.send({ type: 'get_commands' });
