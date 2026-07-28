@@ -58,6 +58,9 @@ export function createScratchlistAttachmentAdapter(api: ApiClient, sessionId: st
                     contentType
                 )
                 if (cancelledAttachmentIds.has(id)) {
+                    if (result.success && result.attachment) {
+                        await api.deleteScratchlistAttachment(sessionId, result.attachment.id).catch(() => {})
+                    }
                     return
                 }
 

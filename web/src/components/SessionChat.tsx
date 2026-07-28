@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { useNavigate } from '@tanstack/react-router'
 import { AssistantRuntimeProvider, useAssistantApi, useAssistantState } from '@assistant-ui/react'
 import { DragDropZone } from '@/components/AssistantChat/DragDropZone'
@@ -322,6 +323,11 @@ export function ScratchlistDrawerHost(props: {
     const assistantApi = useAssistantApi()
     const handlePromoteToComposer = useCallback(async (entry: ScratchlistEntry) => {
         assistantApi.composer().setText(entry.text)
+        // Exit scratchlist mode before rehydrating attachments so addAttachment
+        // uses the normal chat upload adapter (not the scratchlist hub adapter).
+        flushSync(() => {
+            props.onExitScratchlistMode()
+        })
         if (entry.attachments && entry.attachments.length > 0) {
             await rehydrateScratchlistAttachmentsToComposer(
                 props.api,
@@ -330,7 +336,6 @@ export function ScratchlistDrawerHost(props: {
                 assistantApi.composer()
             )
         }
-        props.onExitScratchlistMode()
     }, [assistantApi, props.api, props.onExitScratchlistMode, props.sessionId])
     const handlePromoteToQueue = useCallback(async (entry: ScratchlistEntry) => {
         let attachments: AttachmentMetadata[] | undefined

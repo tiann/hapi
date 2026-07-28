@@ -28,24 +28,41 @@ describe('createScratchlistAttachmentAdapter', () => {
         expect((ready as { path?: string }).path).toBe('/scratchlist/sessions/s1/proof.png')
     })
 
-    it('deletes hub blob when a pending attachment is removed before send', async () => {
+    it('deletes hub blob when cancel races the in-flight upload completion', async () => {
+        let pendingId = ''
+        let adapter: ReturnType<typeof createScratchlistAttachmentAdapter>
         const deleteScratchlistAttachment = vi.fn().mockResolvedValue(undefined)
-        const api = { deleteScratchlistAttachment } as never
-        const adapter = createScratchlistAttachmentAdapter(api, 'session-1')
-        await adapter.remove({
-            id: 'local-1',
-            type: 'file',
-            name: 'proof.png',
-            contentType: 'image/png',
-            status: { type: 'requires-action', reason: 'composer-send' },
-            hubAttachment: {
-                id: 'hub-1',
-                filename: 'proof.png',
-                mimeType: 'image/png',
-                size: 12,
-                path: 'hapi-hub:scratchlist/default/session-1/hub-1-proof.png',
-            },
-        } as never)
-        expect(deleteScratchlistAttachment).toHaveBeenCalledWith('session-1', 'hub-1')
+        const uploadScratchlistAttachment = vi.fn().mockImplementation(async () => {
+            await adapter.remove({
+                id: pendingId,
+                type: 'file',
+                name: 'proof.png',
+                contentType: 'image/png',
+                status: { type: 'running', reason: 'uploading', progress: 50 },
+            } as never)
+            return {
+                success: true,
+                attachment: {
+                    id: 'hub-race',
+                    filename: 'proof.png',
+                    mimeType: 'image/png',
+                    size: 4,
+                    path: 'hapi-hub:scratchlist/default/session-1/hub-race-proof.png',
+                },
+            }
+        })
+        const api = { uploadScratchlistAttachment, deleteScratchlistAttachment } as never
+        adapter = createScratchlistAttachmentAdapter(api, 'session-1')
+        const file = new File([new Uint8Array([137, 80, 78, 71])], 'proof.png', { type: 'image/png' })
+
+        const iter = adapter.add({ file }) as AsyncGenerator<import('@assistant-ui/react').PendingAttachment>
+        const first = await iter.next()
+        pendingId = (first.value as { id: string }).id
+
+        for await (const _pending of iter) {
+            // drain
+        }
+
+        expect(deleteScratchlistAttachment).toHaveBeenCalledWith('session-1', 'hub-race')
     })
 })
