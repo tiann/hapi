@@ -25,7 +25,7 @@ import { Hono, type Context } from 'hono'
 import type { SyncEngine, Session } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { loadScratchlistAttachmentLimitsFromEnv } from '../../config/scratchlistAttachmentLimits'
-import { validateScratchlistAttachmentsForWrite } from '../../scratchlistAttachments/validate'
+import { validateScratchlistAttachmentsForWrite, scratchlistSessionBytesBeforeForPut } from '../../scratchlistAttachments/validate'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
@@ -933,8 +933,14 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
         const limits = loadScratchlistAttachmentLimitsFromEnv()
         const diskBytes = await engine.sumScratchlistAttachmentBytesOnDisk(sessionResult.sessionId, namespace)
-        const entryBytes = nextAttachments.reduce((sum, att) => sum + att.size, 0)
-        const sessionBytesBefore = Math.max(0, diskBytes - entryBytes)
+        const removedAttachments = existing.attachments.filter(
+            (old) => !nextAttachments.some((next) => next.id === old.id)
+        )
+        const sessionBytesBefore = scratchlistSessionBytesBeforeForPut(
+            diskBytes,
+            nextAttachments,
+            removedAttachments,
+        )
         const attachmentValidation = validateScratchlistAttachmentsForWrite(
             nextAttachments,
             limits,
@@ -943,10 +949,6 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (!attachmentValidation.ok) {
             return c.json({ error: attachmentValidation.error, code: attachmentValidation.code }, 400)
         }
-
-        const removedAttachments = existing.attachments.filter(
-            (old) => !nextAttachments.some((next) => next.id === old.id)
-        )
 
         const updated = engine.updateScratchlistEntry(
             sessionResult.sessionId,
@@ -960,9 +962,17 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ error: 'Scratchlist entry not found' }, 404)
         }
         if (removedAttachments.length > 0) {
-            void import('../../scratchlistAttachments/storage').then(({ deleteScratchlistAttachmentFiles, getHapiHomeDir }) =>
-                deleteScratchlistAttachmentFiles(getHapiHomeDir(), removedAttachments)
+            const remainingIds = new Set(
+                engine
+                    .listScratchlistEntries(sessionResult.sessionId)
+                    .flatMap((entry) => entry.attachments.map((att) => att.id))
             )
+            const orphaned = removedAttachments.filter((att) => !remainingIds.has(att.id))
+            if (orphaned.length > 0) {
+                void import('../../scratchlistAttachments/storage').then(({ deleteScratchlistAttachmentFiles, getHapiHomeDir }) =>
+                    deleteScratchlistAttachmentFiles(getHapiHomeDir(), orphaned)
+                )
+            }
         }
         return c.json({ entry: updated })
     })

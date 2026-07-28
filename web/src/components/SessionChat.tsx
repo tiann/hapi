@@ -202,7 +202,10 @@ export function shouldRouteToScratchlist(
 ): boolean {
     if (!scratchlistMode) return false
     if (scheduledAt != null) return false
-    return true
+    // Only park when every attachment is already hub-resident. Composer
+    // uploads made before scratchlist mode was enabled still have normal
+    // CLI paths; the hub rejects those as scratchlist metadata.
+    return (attachments ?? []).every((att) => isHubScratchlistAttachmentPath(att.path))
 }
 
 function isUninvokedScheduledMessage(message: DecryptedMessage): boolean {

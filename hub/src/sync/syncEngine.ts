@@ -569,9 +569,19 @@ export class SyncEngine {
         const existing = this.store.scratchlist.get(sessionId, entryId)
         const removed = this.store.scratchlist.delete(sessionId, entryId)
         if (removed && existing) {
-            void import('../scratchlistAttachments/storage').then(({ deleteScratchlistAttachmentFiles, getHapiHomeDir }) =>
-                deleteScratchlistAttachmentFiles(getHapiHomeDir(), existing.attachments)
+            // Attachment ids may be shared across entries (direct REST).
+            // Only delete blobs that no remaining entry still references.
+            const remainingIds = new Set(
+                this.store.scratchlist
+                    .list(sessionId)
+                    .flatMap((entry) => entry.attachments.map((att) => att.id))
             )
+            const orphaned = existing.attachments.filter((att) => !remainingIds.has(att.id))
+            if (orphaned.length > 0) {
+                void import('../scratchlistAttachments/storage').then(({ deleteScratchlistAttachmentFiles, getHapiHomeDir }) =>
+                    deleteScratchlistAttachmentFiles(getHapiHomeDir(), orphaned)
+                )
+            }
             this.sessionCache.emitScratchlistChanged(sessionId, Date.now())
         }
         return removed

@@ -4,6 +4,23 @@ export type ScratchlistAttachmentValidationResult =
     | { ok: true }
     | { ok: false; error: string; code: string }
 
+/**
+ * Session byte budget ahead of a PUT that may replace attachments.
+ * `diskBytes` still includes files this update is about to drop — subtract
+ * those first so replacing an 80MB blob with another 80MB blob does not
+ * falsely trip the session cap.
+ */
+export function scratchlistSessionBytesBeforeForPut(
+    diskBytes: number,
+    nextAttachments: Array<{ size: number }>,
+    removedAttachments: Array<{ size: number }>,
+): number {
+    const entryBytes = nextAttachments.reduce((sum, att) => sum + att.size, 0)
+    const removedBytes = removedAttachments.reduce((sum, att) => sum + att.size, 0)
+    const diskBytesAfterRemoval = Math.max(0, diskBytes - removedBytes)
+    return Math.max(0, diskBytesAfterRemoval - entryBytes)
+}
+
 export function validateScratchlistAttachmentsForWrite(
     attachments: ScratchlistAttachmentMetadata[],
     limits: ScratchlistAttachmentLimits,
