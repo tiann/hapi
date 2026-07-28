@@ -786,7 +786,8 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         return new Response(file.buffer, {
             headers: {
                 'Content-Type': match.mimeType,
-                'Content-Disposition': `inline; filename="${match.filename}"`,
+                // Defense in depth: metadata may predate resolve-time canonicalize.
+                'Content-Disposition': `inline; filename="${match.filename.replace(/[\r\n\0"\\]/g, '_')}"`,
             },
         })
     })

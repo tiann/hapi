@@ -10,9 +10,12 @@ import {
 } from '@hapi/protocol'
 
 function sanitizeFilename(filename: string): string {
+    // Strip path tricks and Content-Disposition hazards (CR/LF/quotes/controls).
     const sanitized = filename
         .replace(/[/\\]/g, '_')
         .replace(/\.\./g, '_')
+        .replace(/[\r\n\0"\\]/g, '_')
+        .replace(/[\u0000-\u001f\u007f]/g, '_')
         .replace(/\s+/g, '_')
         .slice(0, 255)
     return sanitized || 'upload'
@@ -213,7 +216,9 @@ export async function resolveScratchlistAttachmentForSession(
             ok: true,
             attachment: {
                 id: claimed.id,
-                filename: claimed.filename,
+                // Canonicalize from the on-disk key (already sanitized at write).
+                // Never trust claimed.filename for Content-Disposition later.
+                filename: sanitizeFilename(fileName.slice(`${claimed.id}-`.length)),
                 mimeType: claimed.mimeType,
                 size: info.size,
                 path: toHubScratchlistAttachmentPath(storageKey),
