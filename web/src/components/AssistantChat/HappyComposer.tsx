@@ -13,6 +13,7 @@ import {
     useState
 } from 'react'
 import { isRichComposerMentionsEnabled } from '@/lib/composerSegments'
+import type { SessionMentionTooltipModel } from '@/lib/sessionReference'
 import {
     RichComposerInput,
     type RichComposerInputHandle,
@@ -207,6 +208,8 @@ export function HappyComposer(props: {
     // inline error affordance until the user dismisses or starts editing.
     sendError?: ComposerSendError | null
     onClearSendError?: () => void
+    /** Chip hover / aria-label resolver (SessionChat → useSessions). */
+    resolveSessionMentionTooltip?: (id: string, title: string) => SessionMentionTooltipModel
 }) {
     const { t } = useTranslation()
     const {
@@ -257,7 +260,8 @@ export function HappyComposer(props: {
         onSchedule: onScheduleProp,
         onClearSchedule: onClearScheduleProp,
         sendError = null,
-        onClearSendError
+        onClearSendError,
+        resolveSessionMentionTooltip,
     } = props
 
     // Use ?? so missing values fall back to default (destructuring defaults only handle undefined)
@@ -1377,6 +1381,7 @@ export function HappyComposer(props: {
                                     onMirrorChange={(state) => setInputState(state)}
                                     onKeyDown={handleKeyDown}
                                     onPaste={handlePaste}
+                                    resolveSessionMentionTooltip={resolveSessionMentionTooltip}
                                     onEdit={() => {
                                         if (sendError && onClearSendError) onClearSendError()
                                     }}

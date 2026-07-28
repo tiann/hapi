@@ -5,10 +5,13 @@ import {
     useImperativeHandle,
     useLayoutEffect,
     useRef,
+    useState,
     type ClipboardEvent as ReactClipboardEvent,
     type FormEvent as ReactFormEvent,
     type KeyboardEvent as ReactKeyboardEvent,
+    type PointerEvent as ReactPointerEvent,
 } from 'react'
+import { createPortal } from 'react-dom'
 import {
     COMPOSER_MENTION_MIRROR_CHAR,
     coalesceComposerSegments,
@@ -21,6 +24,10 @@ import {
     type ComposerSegment,
     type ComposerSelection,
 } from '@/lib/composerSegments'
+import {
+    formatSessionMentionTooltip,
+    type SessionMentionTooltipModel,
+} from '@/lib/sessionReference'
 
 export type RichComposerInputHandle = {
     focus: () => void
@@ -34,6 +41,11 @@ export type RichComposerInputHandle = {
     ) => { text: string; selection: ComposerSelection }
 }
 
+type ResolveSessionMentionTooltip = (
+    id: string,
+    title: string
+) => SessionMentionTooltipModel
+
 type Props = {
     value: string
     disabled?: boolean
@@ -45,9 +57,21 @@ type Props = {
     onKeyDown?: (e: ReactKeyboardEvent<HTMLDivElement>) => void
     onPaste?: (e: ReactClipboardEvent<HTMLDivElement>) => void
     onEdit?: () => void
+    /** Live session meta for chip hover / aria-label (from useSessions). */
+    resolveSessionMentionTooltip?: ResolveSessionMentionTooltip
 }
 
-function createMentionSpan(id: string, title: string): HTMLSpanElement {
+type MentionTooltipState = {
+    model: SessionMentionTooltipModel
+    top: number
+    left: number
+}
+
+function createMentionSpan(
+    id: string,
+    title: string,
+    resolveTooltip?: ResolveSessionMentionTooltip
+): HTMLSpanElement {
     const span = document.createElement('span')
     span.contentEditable = 'false'
     span.dataset.sessionId = id
@@ -56,6 +80,9 @@ function createMentionSpan(id: string, title: string): HTMLSpanElement {
     span.className =
         'mx-0.5 inline-flex max-w-[12rem] items-center truncate rounded-md bg-[var(--app-subtle-bg)] px-1.5 py-0.5 align-baseline text-[0.95em] font-medium text-[var(--app-link)]'
     span.textContent = `@${title || id.slice(0, 8)}`
+    const tip = resolveTooltip?.(id, title)
+        ?? formatSessionMentionTooltip(null, title, id)
+    span.setAttribute('aria-label', tip.ariaLabel)
     return span
 }
 
@@ -161,7 +188,11 @@ function insertLineBreakAtCaret(root: HTMLElement): void {
     sel.addRange(range)
 }
 
-function renderSegmentsToEditor(root: HTMLElement, segments: readonly ComposerSegment[]) {
+function renderSegmentsToEditor(
+    root: HTMLElement,
+    segments: readonly ComposerSegment[],
+    resolveTooltip?: ResolveSessionMentionTooltip
+) {
     root.replaceChildren()
     for (const segment of segments) {
         if (segment.type === 'text') {
@@ -176,7 +207,7 @@ function renderSegmentsToEditor(root: HTMLElement, segments: readonly ComposerSe
             }
             continue
         }
-        root.appendChild(createMentionSpan(segment.id, segment.title))
+        root.appendChild(createMentionSpan(segment.id, segment.title, resolveTooltip))
     }
     if (root.childNodes.length === 0) {
         root.appendChild(document.createTextNode(''))
@@ -325,6 +356,8 @@ function setMirrorSelection(root: HTMLElement, selection: ComposerSelection) {
     place(root, root.childNodes.length)
 }
 
+const MENTION_TOOLTIP_DELAY_MS = 300
+
 export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(function RichComposerInput(
     {
         value,
@@ -337,12 +370,23 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         onKeyDown,
         onPaste,
         onEdit,
+        resolveSessionMentionTooltip,
     },
     ref
 ) {
     const rootRef = useRef<HTMLDivElement>(null)
     const lastEmittedRef = useRef(value)
     const composingRef = useRef(false)
+    const tooltipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+    const [mentionTooltip, setMentionTooltip] = useState<MentionTooltipState | null>(null)
+
+    const clearMentionTooltip = useCallback(() => {
+        if (tooltipTimerRef.current) {
+            clearTimeout(tooltipTimerRef.current)
+            tooltipTimerRef.current = null
+        }
+        setMentionTooltip(null)
+    }, [])
 
     const emitFromDom = useCallback(() => {
         const root = rootRef.current
@@ -360,13 +404,13 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         const root = rootRef.current
         if (!root) return
         const segments = parseComposerSegments(next)
-        renderSegmentsToEditor(root, segments)
+        renderSegmentsToEditor(root, segments, resolveSessionMentionTooltip)
         lastEmittedRef.current = next
         const mirror = mirrorComposerSegments(segments)
         const sel = selection ?? { start: mirror.length, end: mirror.length }
         setMirrorSelection(root, sel)
         onMirrorChange({ text: mirror, selection: sel })
-    }, [onMirrorChange])
+    }, [onMirrorChange, resolveSessionMentionTooltip])
 
     useLayoutEffect(() => {
         if (value === lastEmittedRef.current) return
@@ -397,7 +441,7 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
             const selection = getMirrorSelection(root)
             const result = insertSessionMentionInComposerSegments(segments, selection, mention, prefixes)
             const serialized = serializeComposerSegments(result.segments)
-            renderSegmentsToEditor(root, result.segments)
+            renderSegmentsToEditor(root, result.segments, resolveSessionMentionTooltip)
             lastEmittedRef.current = serialized
             setMirrorSelection(root, result.selection)
             onValueChange(serialized)
@@ -416,7 +460,7 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
             const selection = getMirrorSelection(root)
             const result = insertPlainTextInComposerSegments(segments, selection, suggestionText, prefixes)
             const serialized = serializeComposerSegments(result.segments)
-            renderSegmentsToEditor(root, result.segments)
+            renderSegmentsToEditor(root, result.segments, resolveSessionMentionTooltip)
             lastEmittedRef.current = serialized
             setMirrorSelection(root, result.selection)
             onValueChange(serialized)
@@ -426,7 +470,45 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
             })
             return { text: serialized, selection: result.selection }
         },
-    }), [onMirrorChange, onValueChange, value])
+    }), [onMirrorChange, onValueChange, resolveSessionMentionTooltip, value])
+
+    useEffect(() => () => {
+        if (tooltipTimerRef.current) clearTimeout(tooltipTimerRef.current)
+    }, [])
+
+    const handlePointerOver = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+        // Touch: no bubble (matches HoverTooltip). Mouse/pen only.
+        if (e.pointerType === 'touch') return
+        const target = (e.target as HTMLElement | null)?.closest?.(
+            '[data-composer-mention="session"]'
+        ) as HTMLElement | null
+        if (!target || !rootRef.current?.contains(target)) return
+        const id = target.dataset.sessionId
+        if (!id) return
+        const title = target.dataset.sessionTitle || id.slice(0, 8)
+        const model = resolveSessionMentionTooltip?.(id, title)
+            ?? formatSessionMentionTooltip(null, title, id)
+        target.setAttribute('aria-label', model.ariaLabel)
+        if (tooltipTimerRef.current) clearTimeout(tooltipTimerRef.current)
+        tooltipTimerRef.current = setTimeout(() => {
+            const rect = target.getBoundingClientRect()
+            setMentionTooltip({
+                model,
+                top: rect.top - 8,
+                left: rect.left + rect.width / 2,
+            })
+        }, MENTION_TOOLTIP_DELAY_MS)
+    }, [resolveSessionMentionTooltip])
+
+    const handlePointerOut = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+        const related = e.relatedTarget as Node | null
+        const leaving = e.target as HTMLElement | null
+        const fromChip = leaving?.closest?.('[data-composer-mention="session"]')
+        if (!fromChip) return
+        // Still inside the same chip (moving between text nodes) — keep open.
+        if (related && fromChip.contains(related)) return
+        clearMentionTooltip()
+    }, [clearMentionTooltip])
 
     const handleInput = useCallback((_e: ReactFormEvent<HTMLDivElement>) => {
         if (composingRef.current) return
@@ -453,7 +535,7 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
                     e.preventDefault()
                     const result = deleteBackwardInComposerSegments(segments, selection)
                     const serialized = serializeComposerSegments(result.segments)
-                    renderSegmentsToEditor(root, result.segments)
+                    renderSegmentsToEditor(root, result.segments, resolveSessionMentionTooltip)
                     lastEmittedRef.current = serialized
                     setMirrorSelection(root, result.selection)
                     onValueChange(serialized)
@@ -485,7 +567,14 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
             onEdit?.()
             emitFromDom()
         }
-    }, [emitFromDom, onEdit, onKeyDown, onMirrorChange, onValueChange])
+    }, [
+        emitFromDom,
+        onEdit,
+        onKeyDown,
+        onMirrorChange,
+        onValueChange,
+        resolveSessionMentionTooltip,
+    ])
 
     return (
         <div className="relative min-w-0 flex-1">
@@ -507,6 +596,8 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
                 className={className}
                 onInput={handleInput}
                 onKeyDown={handleKeyDown}
+                onPointerOver={handlePointerOver}
+                onPointerOut={handlePointerOut}
                 onPaste={onPaste}
                 onCompositionStart={() => {
                     composingRef.current = true
@@ -535,6 +626,27 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
                     })
                 }}
             />
+            {mentionTooltip && typeof document !== 'undefined'
+                ? createPortal(
+                    <div
+                        role="tooltip"
+                        data-testid="rich-composer-mention-tooltip"
+                        className="pointer-events-none fixed z-[80] w-max max-w-[18rem] -translate-x-1/2 -translate-y-full rounded-md border border-[var(--app-border)] bg-[var(--app-secondary-bg)] px-2 py-1.5 text-xs leading-snug text-[var(--app-fg)] shadow-lg"
+                        style={{ top: mentionTooltip.top, left: mentionTooltip.left }}
+                    >
+                        <span className="block font-medium">{mentionTooltip.model.title}</span>
+                        {mentionTooltip.model.lines.map((line) => (
+                            <span
+                                key={line}
+                                className="mt-0.5 block text-[var(--app-hint)] break-all"
+                            >
+                                {line}
+                            </span>
+                        ))}
+                    </div>,
+                    document.body
+                )
+                : null}
         </div>
     )
 })

@@ -113,3 +113,51 @@ export function parseSessionPathHref(href: string): string | null {
         return null
     }
 }
+
+/** Live / fallback fields for composer mention chip hover tooltips. */
+export type SessionMentionTooltipSource = {
+    id: string
+    title: string
+    active: boolean
+    lifecycleState?: string | null
+    path?: string | null
+    worktreePath?: string | null
+}
+
+export type SessionMentionTooltipModel = {
+    title: string
+    lines: string[]
+    ariaLabel: string
+}
+
+/**
+ * Expand a truncated `@chip` into full title + lightweight meta for hover / a11y.
+ * When `session` is null (draft rehydrate, unknown id), fall back to title + short id.
+ */
+export function formatSessionMentionTooltip(
+    session: SessionMentionTooltipSource | null,
+    fallbackTitle: string,
+    id: string
+): SessionMentionTooltipModel {
+    const shortId = id.slice(0, 8)
+    const rawTitle = (session?.title || fallbackTitle || shortId).replace(/\s+/g, ' ').trim()
+    const title = rawTitle || shortId
+
+    let status: string | null = null
+    if (session) {
+        if (session.lifecycleState === 'archived') status = 'Archived'
+        else status = session.active ? 'Active' : 'Inactive'
+    }
+
+    const path = (session?.worktreePath || session?.path || '').trim() || null
+    const lines: string[] = [
+        status ? `Session · ${shortId} · ${status}` : `Session · ${shortId}`,
+    ]
+    if (path) lines.push(path)
+
+    return {
+        title,
+        lines,
+        ariaLabel: [title, ...lines].join('. '),
+    }
+}

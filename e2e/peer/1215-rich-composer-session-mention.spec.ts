@@ -75,6 +75,14 @@ test.describe('rich composer session @ mentions — peer stack (#1215)', () => {
         await expect(rich.locator('[data-composer-mention="session"]')).toHaveCount(1)
         await expect(rich).not.toContainText('See session')
 
+        // 1b) Hover chip → expansive tooltip (full title + meta)
+        const chip = rich.locator('[data-composer-mention="session"]').first()
+        await chip.hover()
+        const tip = page.getByTestId('rich-composer-mention-tooltip')
+        await expect(tip).toBeVisible({ timeout: 5_000 })
+        await expect(tip).toContainText('Peer1215 Target Alpha')
+        await expect(tip).toContainText('Session ·')
+
         // 2) Second mention mid-prose
         await page.keyboard.type('vs ', { delay: 20 })
         await pickSessionMention(page, '@Peer1215', '@Peer1215 Target Alpha')
