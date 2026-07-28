@@ -1,11 +1,32 @@
 import { describe, expect, it } from 'vitest'
+import type { SessionSummary } from '@/types/api'
 import {
     buildSessionReferencePath,
     buildSessionReferenceText,
     matchSessionsForMention,
     parseSessionPathHref,
-    type SessionMentionCandidate,
 } from './sessionReference'
+import { getSessionTitle } from './sessionTitle'
+
+function makeSession(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
+    return {
+        active: false,
+        thinking: false,
+        activeAt: 0,
+        updatedAt: 0,
+        metadata: null,
+        todoProgress: null,
+        pendingRequestsCount: 0,
+        pendingRequestKinds: [],
+        pendingRequests: [],
+        backgroundTaskCount: 0,
+        futureScheduledMessageCount: 0,
+        nextScheduledAt: null,
+        model: null,
+        effort: null,
+        ...overrides,
+    }
+}
 
 describe('buildSessionReferencePath', () => {
     it('builds a relative session path', () => {
@@ -38,34 +59,60 @@ describe('buildSessionReferenceText', () => {
     })
 })
 
-function cand(
-    partial: Partial<SessionMentionCandidate> & Pick<SessionMentionCandidate, 'id' | 'title'>
-): SessionMentionCandidate {
-    return {
-        active: false,
-        updatedAt: 0,
-        lifecycleState: null,
-        ...partial,
-    }
-}
-
 describe('matchSessionsForMention', () => {
     const sessions = [
-        cand({ id: 'aaa-active', title: 'Peer #921: scratchlist', active: true, updatedAt: 100 }),
-        cand({ id: 'bbb-recent', title: 'session external_refs + PR chip', updatedAt: 200 }),
-        cand({
-            id: 'ccc-old',
-            title: 'old scratchlist notes',
-            updatedAt: 50,
-            lifecycleState: 'archived',
+        makeSession({
+            id: 'aaa-active',
+            active: true,
+            updatedAt: 100,
+            metadata: {
+                path: '/work/a',
+                name: 'Peer #921: scratchlist',
+                lifecycleState: 'running',
+            },
         }),
-        cand({ id: 'ddd-meta', title: 'Meta soup custodian', active: true, updatedAt: 150 }),
+        makeSession({
+            id: 'bbb-recent',
+            updatedAt: 200,
+            metadata: { path: '/work/b', name: 'session external_refs + PR chip' },
+        }),
+        makeSession({
+            id: 'ccc-old',
+            updatedAt: 50,
+            metadata: {
+                path: '/work/c',
+                name: 'old scratchlist notes',
+                lifecycleState: 'archived',
+            },
+        }),
+        makeSession({
+            id: 'ddd-meta',
+            active: true,
+            updatedAt: 150,
+            metadata: {
+                path: '/work/d',
+                name: 'Meta soup custodian',
+                lifecycleState: 'running',
+            },
+        }),
+        // Official name vs agent summary — same dual-field case as share/sidebar search.
+        makeSession({
+            id: 'eee-parity',
+            active: true,
+            updatedAt: 180,
+            metadata: {
+                path: '/work/e',
+                name: 'share picker title parity',
+                summary: { text: 'Upstream Feature Fix' },
+                lifecycleState: 'running',
+            },
+        }),
     ]
 
     it('excludes the current session', () => {
         const hits = matchSessionsForMention(sessions, 'scratch', { excludeId: 'aaa-active' })
         expect(hits.map((s) => s.id)).not.toContain('aaa-active')
-        expect(hits.some((s) => s.title.includes('scratch'))).toBe(true)
+        expect(hits.some((s) => getSessionTitle(s).includes('scratch'))).toBe(true)
     })
 
     it('ranks title prefix / contains matches and prefers active', () => {
@@ -74,15 +121,51 @@ describe('matchSessionsForMention', () => {
         expect(hits.map((s) => s.id)).toContain('ccc-old')
     })
 
-    it('matches id prefixes', () => {
+    it('matches id prefixes via sessionMatchesQuery', () => {
         const hits = matchSessionsForMention(sessions, 'bbb-rec')
         expect(hits.map((s) => s.id)).toEqual(['bbb-recent'])
+    })
+
+    it('matches summary.text while displaying/inserting official name', () => {
+        const hits = matchSessionsForMention(sessions, 'Upstream Feature')
+        expect(hits.map((s) => s.id)).toContain('eee-parity')
+        const hit = hits.find((s) => s.id === 'eee-parity')!
+        expect(getSessionTitle(hit)).toBe('share picker title parity')
+        expect(buildSessionReferenceText(getSessionTitle(hit), hit.id)).toContain(
+            'share picker title parity'
+        )
+        expect(buildSessionReferenceText(getSessionTitle(hit), hit.id)).not.toContain(
+            'Upstream Feature Fix'
+        )
+    })
+
+    it('matches machine label via the same sessionMatchesQuery resolver', () => {
+        const withMachine = [
+            makeSession({
+                id: 'fff-machine',
+                updatedAt: 90,
+                metadata: {
+                    path: '/work/f',
+                    name: 'quiet title',
+                    machineId: 'machine-abcdef12',
+                },
+            }),
+        ]
+        const hits = matchSessionsForMention(withMachine, 'desktop', {
+            resolveMachineLabel: (id) => (id === 'machine-abcdef12' ? 'desktop' : id?.slice(0, 8) ?? ''),
+        })
+        expect(hits.map((s) => s.id)).toEqual(['fff-machine'])
     })
 
     it('empty query returns active/recent shortlist without archived', () => {
         const hits = matchSessionsForMention(sessions, '', { limit: 10 })
         // Active first (by updatedAt), then inactive recent — archived omitted.
-        expect(hits.map((s) => s.id)).toEqual(['ddd-meta', 'aaa-active', 'bbb-recent'])
+        expect(hits.map((s) => s.id)).toEqual([
+            'eee-parity',
+            'ddd-meta',
+            'aaa-active',
+            'bbb-recent',
+        ])
         expect(hits.map((s) => s.id)).not.toContain('ccc-old')
     })
 })

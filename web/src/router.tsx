@@ -954,31 +954,39 @@ function SessionPage() {
     const {
         getSuggestions: getSkillSuggestions,
     } = useSkills(api, sessionId)
-    // Same list as the sidebar — client-side @ session mention ranking (tiann/hapi#1213).
+    // Same list + search matcher as sidebar / share picker (tiann/hapi#1213).
     const { sessions: allSessions } = useSessions(api)
+    const { machines: mentionMachines } = useMachines(api, true)
+    const mentionMachineLabelsById = useMachineLabels(mentionMachines)
+    // Same fallbacks as share picker / SessionList search.
+    const resolveMentionMachineLabel = useCallback((machineId: string | null) => {
+        if (machineId && mentionMachineLabelsById[machineId]) {
+            return mentionMachineLabelsById[machineId]
+        }
+        if (machineId) {
+            return machineId.slice(0, 8)
+        }
+        return t('machine.unknown')
+    }, [mentionMachineLabelsById, t])
 
     const getAutocompleteSuggestions = useCallback(async (query: string) => {
         if (query.startsWith('@')) {
             const search = query.slice(1)
             // v1: plain-text expansion (same grammar as Copy reference).
-            // v2: segmented rich composer with inline session tokens (#1213).
-            const sessionHits = matchSessionsForMention(
-                allSessions.map((s) => ({
-                    id: s.id,
-                    title: getSessionTitle(s),
-                    active: s.active,
-                    updatedAt: s.updatedAt,
-                    lifecycleState: s.metadata?.lifecycleState ?? null,
-                })),
-                search,
-                { excludeId: sessionId, limit: 20 }
-            ).map((s) => {
-                const mentionText = buildSessionReferenceText(s.title, s.id)
+            // v2: segmented rich composer with inline session tokens (#1215).
+            // Match via sessionMatchesQuery (share/sidebar); label/insert via getSessionTitle.
+            const sessionHits = matchSessionsForMention(allSessions, search, {
+                excludeId: sessionId,
+                limit: 20,
+                resolveMachineLabel: resolveMentionMachineLabel,
+            }).map((s) => {
+                const title = getSessionTitle(s)
+                const mentionText = buildSessionReferenceText(title, s.id)
                 const idPrefix = s.id.slice(0, 8)
                 return {
                     key: `session:${s.id}`,
                     text: mentionText,
-                    label: `@${s.title || idPrefix}`,
+                    label: `@${title || idPrefix}`,
                     description: s.active
                         ? `Session · ${idPrefix} · active`
                         : `Session · ${idPrefix}`,
@@ -1007,7 +1015,15 @@ function SessionPage() {
             return await getSkillSuggestions(query)
         }
         return await getSlashSuggestions(query)
-    }, [agentType, api, sessionId, allSessions, getSkillSuggestions, getSlashSuggestions])
+    }, [
+        agentType,
+        api,
+        sessionId,
+        allSessions,
+        resolveMentionMachineLabel,
+        getSkillSuggestions,
+        getSlashSuggestions,
+    ])
 
     const refreshSelectedSession = useCallback(() => {
         void refetchSession()

@@ -1,3 +1,7 @@
+import type { SessionSummary } from '@/types/api'
+import { normalizeSearch, sessionMatchesQuery } from '@/components/SessionList'
+import { getSessionTitle } from '@/lib/sessionTitle'
+
 export function buildSessionReferencePath(sessionId: string): string {
     const base = import.meta.env.BASE_URL ?? '/'
     const normalizedBase = base.endsWith('/') ? base : `${base}/`
@@ -18,71 +22,67 @@ export function buildSessionReferenceText(sessionTitle: string, sessionId: strin
     return `See HAPI session ${path} for context`
 }
 
-/** Minimal session shape for @-mention ranking (avoids coupling to full SessionSummary). */
-export type SessionMentionCandidate = {
-    id: string
-    title: string
-    active: boolean
-    updatedAt: number
-    /** When `archived`, deprioritized unless the query matches. */
-    lifecycleState?: string | null
-}
-
 export type MatchSessionsForMentionOptions = {
     excludeId?: string
     limit?: number
+    /** Same resolver share/sidebar pass into `sessionMatchesQuery`. */
+    resolveMachineLabel?: (machineId: string | null) => string
 }
 
-function normalizeQuery(query: string): string {
-    return query.replace(/\s+/g, ' ').trim().toLowerCase()
-}
-
-function scoreSession(session: SessionMentionCandidate, query: string): number | null {
-    if (!query) {
-        // Empty / whitespace query: shortlist only — active first, then recent.
-        // Archived stay searchable once the user types.
-        if (session.lifecycleState === 'archived') return null
-        return session.active ? 1_000_000_000 + session.updatedAt : session.updatedAt
-    }
-
-    const title = session.title.toLowerCase()
+/**
+ * Rank score for a session that already passed `sessionMatchesQuery`.
+ * Prefer official-title / id hits over summary-or-path-only matches; then active + recency.
+ */
+function scoreMatchedSession(session: SessionSummary, query: string): number {
+    const title = getSessionTitle(session).toLowerCase()
     const id = session.id.toLowerCase()
     const idPrefix = id.slice(0, 8)
 
-    let score = 0
+    // Matched via summary/path/machine/etc. — keep below id/title tiers.
+    let score = 150
     if (title === query) score = 500
     else if (title.startsWith(query)) score = 400
     else if (title.includes(query)) score = 300
     else if (idPrefix.startsWith(query) || id.startsWith(query)) score = 200
     else if (id.includes(query)) score = 100
-    else return null
 
     if (session.active) score += 50
-    if (session.lifecycleState === 'archived') score -= 25
-    // Prefer recently updated among equal textual matches.
+    if (session.metadata?.lifecycleState === 'archived') score -= 25
     return score * 1e13 + session.updatedAt
 }
 
 /**
  * Rank sessions for composer `@` autocomplete.
+ * Match filter is the same code path as share/sidebar search (`sessionMatchesQuery`).
+ * Display/insert still use `getSessionTitle` (name before summary).
  * Empty query → active/recent shortlist (excludes archived).
- * Non-empty → fuzzy match on title + id prefix across all candidates including archived.
  */
 export function matchSessionsForMention(
-    sessions: readonly SessionMentionCandidate[],
+    sessions: readonly SessionSummary[],
     query: string,
     options: MatchSessionsForMentionOptions = {}
-): SessionMentionCandidate[] {
+): SessionSummary[] {
     const limit = options.limit ?? 20
     const excludeId = options.excludeId
-    const normalized = normalizeQuery(query)
+    const resolveMachineLabel = options.resolveMachineLabel ?? (() => '')
+    const normalized = normalizeSearch(query)
 
-    const scored: { session: SessionMentionCandidate; score: number }[] = []
+    const scored: { session: SessionSummary; score: number }[] = []
     for (const session of sessions) {
         if (excludeId && session.id === excludeId) continue
-        const score = scoreSession(session, normalized)
-        if (score === null) continue
-        scored.push({ session, score })
+
+        if (!normalized) {
+            // Empty / whitespace query: shortlist only — active first, then recent.
+            // Archived stay searchable once the user types (same as share: type to widen).
+            if (session.metadata?.lifecycleState === 'archived') continue
+            const score = session.active ? 1_000_000_000 + session.updatedAt : session.updatedAt
+            scored.push({ session, score })
+            continue
+        }
+
+        const machineLabel = resolveMachineLabel(session.metadata?.machineId ?? null)
+        if (!sessionMatchesQuery(session, normalized, machineLabel)) continue
+        scored.push({ session, score: scoreMatchedSession(session, normalized) })
     }
 
     scored.sort((a, b) => b.score - a.score)
