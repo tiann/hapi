@@ -2,6 +2,7 @@ import { createRoot } from 'react-dom/client'
 import { useCallback, useRef, useState } from 'react'
 import { QuoteSelectionPopover } from '@/components/AssistantChat/QuoteSelectionPopover'
 import { QuoteChips } from '@/components/AssistantChat/QuoteChips'
+import { QuoteHighlights } from '@/components/AssistantChat/QuoteHighlights'
 import { useQuoteSelection, type QuotableSelection } from '@/hooks/useQuoteSelection'
 import { useComposerQuotes } from '@/lib/use-composer-quotes'
 import { serializeQuotes } from '@/lib/quotes'
@@ -13,6 +14,7 @@ function Harness() {
     const { selection, clear } = useQuoteSelection(containerRef)
     const quotes = useComposerQuotes('e2e-session')
     const [body, setBody] = useState('')
+    const [activeQuoteId, setActiveQuoteId] = useState<string | null>(null)
 
     const handleQuote = useCallback((picked: QuotableSelection) => {
         quotes.add(picked.text, picked.messageId)
@@ -28,8 +30,20 @@ function Harness() {
                 <div className="happy-message" id="msg-2">
                     <p>Do not delete the normalize fallback. It is a deliberate last line of defence.</p>
                 </div>
+                {/* 必须和真实应用一样挂在消息容器内：角标是相对该容器绝对定位的 */}
+                <QuoteHighlights
+                    quotes={quotes.quotes}
+                    containerRef={containerRef}
+                    activeQuoteId={activeQuoteId}
+                />
             </div>
-            <QuoteChips quotes={quotes.quotes} onRemove={quotes.remove} onJump={() => {}} />
+            <QuoteChips
+                quotes={quotes.quotes}
+                onRemove={quotes.remove}
+                onJump={() => {}}
+                activeQuoteId={activeQuoteId}
+                onHover={setActiveQuoteId}
+            />
             <textarea
                 data-testid="body-input"
                 value={body}

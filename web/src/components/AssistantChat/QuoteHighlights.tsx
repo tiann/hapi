@@ -96,7 +96,14 @@ export function QuoteHighlights(props: {
             })
         })
 
-        CSS.highlights.set(HIGHLIGHT_NAME, new Highlight(...ranges))
+        // 没有任何可高亮的 range 时移除注册项，而不是塞一个空 Highlight：
+        // 空 Highlight 虽然不画任何东西，却会让 CSS.highlights 永远含有本键，
+        // 「当前有没有高亮」就无从判断了。
+        if (ranges.length === 0) {
+            CSS.highlights.delete(HIGHLIGHT_NAME)
+        } else {
+            CSS.highlights.set(HIGHLIGHT_NAME, new Highlight(...ranges))
+        }
         setMarkers(next)
     }, [props.quotes, props.containerRef])
 
