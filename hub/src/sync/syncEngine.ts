@@ -585,7 +585,12 @@ async uploadScratchlistAttachment(
         mimeType: string
     ): Promise<{ success: true; attachment: import('@hapi/protocol').ScratchlistAttachmentMetadata } | { success: false; error: string; code?: string }> {
         const { loadScratchlistAttachmentLimitsFromEnv, isAllowedScratchlistMime } = await import('../config/scratchlistAttachmentLimits')
-        const { estimateBase64Bytes, writeScratchlistAttachmentFile, getHapiHomeDir } = await import('../scratchlistAttachments/storage')
+        const {
+            estimateBase64Bytes,
+            writeScratchlistAttachmentFile,
+            getHapiHomeDir,
+            sumScratchlistAttachmentBytesOnDisk,
+        } = await import('../scratchlistAttachments/storage')
         const { validateScratchlistAttachmentsForWrite } = await import('../scratchlistAttachments/validate')
 
         const limits = loadScratchlistAttachmentLimitsFromEnv()
@@ -597,8 +602,9 @@ async uploadScratchlistAttachment(
             return { success: false, error: 'Mime type not allowed', code: 'scratchlist_attachment_mime' }
         }
 
-        const sessionBytes = this.store.scratchlist.sumAttachmentBytes(sessionId)
+        const hapiHome = getHapiHomeDir()
         const buffer = Buffer.from(contentBase64, 'base64')
+        const sessionBytes = await sumScratchlistAttachmentBytesOnDisk(hapiHome, namespace, sessionId)
         const provisional = {
             id: 'pending',
             filename,
@@ -612,7 +618,7 @@ async uploadScratchlistAttachment(
         }
 
         const attachment = await writeScratchlistAttachmentFile(
-            getHapiHomeDir(),
+            hapiHome,
             namespace,
             sessionId,
             filename,
@@ -620,6 +626,41 @@ async uploadScratchlistAttachment(
             buffer
         )
         return { success: true, attachment }
+    }
+
+    async resolveScratchlistAttachmentsForSession(
+        sessionId: string,
+        namespace: string,
+        claimed: import('@hapi/protocol').ScratchlistAttachmentMetadata[]
+    ): Promise<
+        | { ok: true; attachments: import('@hapi/protocol').ScratchlistAttachmentMetadata[] }
+        | { ok: false; error: string }
+    > {
+        const {
+            resolveScratchlistAttachmentsForSession: resolveAttachments,
+            getHapiHomeDir,
+        } = await import('../scratchlistAttachments/storage')
+        return resolveAttachments(getHapiHomeDir(), namespace, sessionId, claimed)
+    }
+
+    async sumScratchlistAttachmentBytesOnDisk(sessionId: string, namespace: string): Promise<number> {
+        const {
+            sumScratchlistAttachmentBytesOnDisk: sumOnDisk,
+            getHapiHomeDir,
+        } = await import('../scratchlistAttachments/storage')
+        return sumOnDisk(getHapiHomeDir(), namespace, sessionId)
+    }
+
+    async deleteScratchlistAttachmentById(
+        sessionId: string,
+        namespace: string,
+        attachmentId: string
+    ): Promise<boolean> {
+        const {
+            deleteScratchlistAttachmentById: deleteById,
+            getHapiHomeDir,
+        } = await import('../scratchlistAttachments/storage')
+        return deleteById(getHapiHomeDir(), namespace, sessionId, attachmentId)
     }
 
     async readScratchlistAttachment(

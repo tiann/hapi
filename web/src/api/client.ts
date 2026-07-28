@@ -819,6 +819,13 @@ export class ApiClient {
         return await response.blob()
     }
 
+    async deleteScratchlistAttachment(sessionId: string, attachmentId: string): Promise<void> {
+        await this.request(
+            `/api/sessions/${encodeURIComponent(sessionId)}/scratchlist/attachments/${encodeURIComponent(attachmentId)}`,
+            { method: 'DELETE' }
+        )
+    }
+
     async createScratchlistEntry(
         sessionId: string,
         body: {

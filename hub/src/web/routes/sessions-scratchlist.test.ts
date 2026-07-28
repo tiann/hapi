@@ -104,7 +104,14 @@ function createApp(session: Session, overrides: EngineOverrides = {}) {
                 updatedAt: 2000,
                 attachments: [],
             })),
-        deleteScratchlistEntry: overrides.deleteScratchlistEntry ?? (() => true)
+        deleteScratchlistEntry: overrides.deleteScratchlistEntry ?? (() => true),
+        resolveScratchlistAttachmentsForSession: async (
+            _sessionId: string,
+            _namespace: string,
+            claimed: Array<{ id: string; filename: string; mimeType: string; size: number; path: string }>
+        ) => ({ ok: true as const, attachments: claimed }),
+        sumScratchlistAttachmentBytesOnDisk: async () => 0,
+        deleteScratchlistAttachmentById: async () => true,
     } as unknown as SyncEngine
 
     const app = new Hono<WebAppEnv>()

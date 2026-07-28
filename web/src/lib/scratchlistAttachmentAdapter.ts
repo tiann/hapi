@@ -103,6 +103,11 @@ export function createScratchlistAttachmentAdapter(api: ApiClient, sessionId: st
 
         async remove(attachment: Attachment): Promise<void> {
             cancelledAttachmentIds.add(attachment.id)
+            const pending = attachment as PendingScratchlistAttachment
+            const hubId = pending.hubAttachment?.id
+            if (hubId) {
+                await api.deleteScratchlistAttachment(sessionId, hubId).catch(() => {})
+            }
         },
 
         async send(attachment: PendingAttachment): Promise<CompleteAttachment> {

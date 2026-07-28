@@ -851,11 +851,23 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const limits = loadScratchlistAttachmentLimitsFromEnv()
-        const sessionBytes = engine.sumScratchlistAttachmentBytes(sessionResult.sessionId)
+        const namespace = c.get('namespace')
+        const checked = await engine.resolveScratchlistAttachmentsForSession(
+            sessionResult.sessionId,
+            namespace,
+            parsed.data.attachments
+        )
+        if (!checked.ok) {
+            return c.json({ error: checked.error, code: 'scratchlist_attachment_invalid' }, 400)
+        }
+        const diskBytes = await engine.sumScratchlistAttachmentBytesOnDisk(sessionResult.sessionId, namespace)
+        const entryBytes = checked.attachments.reduce((sum, att) => sum + att.size, 0)
+        // Files are already on disk from upload; don't double-count them.
+        const sessionBytesBefore = Math.max(0, diskBytes - entryBytes)
         const attachmentValidation = validateScratchlistAttachmentsForWrite(
-            parsed.data.attachments,
+            checked.attachments,
             limits,
-            sessionBytes
+            sessionBytesBefore
         )
         if (!attachmentValidation.ok) {
             return c.json({ error: attachmentValidation.error, code: attachmentValidation.code }, 400)
@@ -867,7 +879,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             {
                 entryId: parsed.data.entryId,
                 createdAt: parsed.data.createdAt,
-                attachments: parsed.data.attachments,
+                attachments: checked.attachments,
             }
         )
         if (result.outcome === 'session-not-found') {
@@ -906,18 +918,33 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const nextText = parsed.data.text !== undefined ? parsed.data.text.trim() : existing.text
-        const nextAttachments = parsed.data.attachments ?? existing.attachments
+        const claimedAttachments = parsed.data.attachments ?? existing.attachments
+        const namespace = c.get('namespace')
+        const checked = await engine.resolveScratchlistAttachmentsForSession(
+            sessionResult.sessionId,
+            namespace,
+            claimedAttachments
+        )
+        if (!checked.ok) {
+            return c.json({ error: checked.error, code: 'scratchlist_attachment_invalid' }, 400)
+        }
+        const nextAttachments = checked.attachments
         const limits = loadScratchlistAttachmentLimitsFromEnv()
-        const sessionBytes = engine.sumScratchlistAttachmentBytes(sessionResult.sessionId)
-            - existing.attachments.reduce((sum, att) => sum + att.size, 0)
+        const diskBytes = await engine.sumScratchlistAttachmentBytesOnDisk(sessionResult.sessionId, namespace)
+        const entryBytes = nextAttachments.reduce((sum, att) => sum + att.size, 0)
+        const sessionBytesBefore = Math.max(0, diskBytes - entryBytes)
         const attachmentValidation = validateScratchlistAttachmentsForWrite(
             nextAttachments,
             limits,
-            sessionBytes
+            sessionBytesBefore
         )
         if (!attachmentValidation.ok) {
             return c.json({ error: attachmentValidation.error, code: attachmentValidation.code }, 400)
         }
+
+        const removedAttachments = existing.attachments.filter(
+            (old) => !nextAttachments.some((next) => next.id === old.id)
+        )
 
         const updated = engine.updateScratchlistEntry(
             sessionResult.sessionId,
@@ -930,7 +957,48 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (!updated) {
             return c.json({ error: 'Scratchlist entry not found' }, 404)
         }
+        if (removedAttachments.length > 0) {
+            void import('../../scratchlistAttachments/storage').then(({ deleteScratchlistAttachmentFiles, getHapiHomeDir }) =>
+                deleteScratchlistAttachmentFiles(getHapiHomeDir(), removedAttachments)
+            )
+        }
         return c.json({ entry: updated })
+    })
+
+    app.delete('/sessions/:id/scratchlist/attachments/:attachmentId', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        const attachmentId = c.req.param('attachmentId')
+        if (!attachmentId) {
+            return c.json({ error: 'Missing attachmentId' }, 400)
+        }
+
+        const entries = engine.listScratchlistEntries(sessionResult.sessionId)
+        const stillReferenced = entries.some((entry) =>
+            entry.attachments.some((att) => att.id === attachmentId)
+        )
+        if (stillReferenced) {
+            return c.json({
+                error: 'Attachment is still referenced by a scratchlist entry',
+                code: 'scratchlist_attachment_in_use',
+            }, 409)
+        }
+
+        const removed = await engine.deleteScratchlistAttachmentById(
+            sessionResult.sessionId,
+            c.get('namespace'),
+            attachmentId
+        )
+        if (!removed) {
+            return c.json({ error: 'Attachment not found' }, 404)
+        }
+        return c.json({ ok: true })
     })
 
     app.delete('/sessions/:id/scratchlist/:entryId', (c) => {

@@ -27,4 +27,25 @@ describe('createScratchlistAttachmentAdapter', () => {
         expect(ready?.status).toEqual({ type: 'requires-action', reason: 'composer-send' })
         expect((ready as { path?: string }).path).toBe('/scratchlist/sessions/s1/proof.png')
     })
+
+    it('deletes hub blob when a pending attachment is removed before send', async () => {
+        const deleteScratchlistAttachment = vi.fn().mockResolvedValue(undefined)
+        const api = { deleteScratchlistAttachment } as never
+        const adapter = createScratchlistAttachmentAdapter(api, 'session-1')
+        await adapter.remove({
+            id: 'local-1',
+            type: 'file',
+            name: 'proof.png',
+            contentType: 'image/png',
+            status: { type: 'requires-action', reason: 'composer-send' },
+            hubAttachment: {
+                id: 'hub-1',
+                filename: 'proof.png',
+                mimeType: 'image/png',
+                size: 12,
+                path: 'hapi-hub:scratchlist/default/session-1/hub-1-proof.png',
+            },
+        } as never)
+        expect(deleteScratchlistAttachment).toHaveBeenCalledWith('session-1', 'hub-1')
+    })
 })

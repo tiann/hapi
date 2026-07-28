@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -129,4 +129,134 @@ export function estimateBase64Bytes(base64: string): number {
     if (len === 0) return 0
     const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0
     return Math.floor((len * 3) / 4) - padding
+}
+
+function sessionStoragePrefix(namespace: string, sessionId: string): string {
+    return `${sanitizeSegment(namespace)}/${sanitizeSegment(sessionId)}/`
+}
+
+/**
+ * Sum bytes of all files already written under the session's scratchlist
+ * attachment directory (includes pending uploads not yet referenced by an entry).
+ */
+export async function sumScratchlistAttachmentBytesOnDisk(
+    hapiHome: string,
+    namespace: string,
+    sessionId: string
+): Promise<number> {
+    const dir = resolveScratchlistStoragePath(
+        hapiHome,
+        `${sanitizeSegment(namespace)}/${sanitizeSegment(sessionId)}`
+    )
+    let total = 0
+    try {
+        const names = await readdir(dir)
+        for (const name of names) {
+            try {
+                const info = await stat(join(dir, name))
+                if (info.isFile()) {
+                    total += info.size
+                }
+            } catch {
+                // skip unreadable entries
+            }
+        }
+    } catch {
+        return 0
+    }
+    return total
+}
+
+/**
+ * Verify claimed metadata points at a hub file owned by this namespace/session,
+ * then return server-authoritative metadata (size from disk).
+ */
+export async function resolveScratchlistAttachmentForSession(
+    hapiHome: string,
+    namespace: string,
+    sessionId: string,
+    claimed: ScratchlistAttachmentMetadata
+): Promise<
+    | { ok: true; attachment: ScratchlistAttachmentMetadata }
+    | { ok: false; error: string }
+> {
+    const storageKey = parseHubScratchlistAttachmentPath(claimed.path)
+    if (!storageKey) {
+        return { ok: false, error: 'Invalid scratchlist attachment path' }
+    }
+    const expectedPrefix = sessionStoragePrefix(namespace, sessionId)
+    if (!storageKey.startsWith(expectedPrefix)) {
+        return { ok: false, error: 'Attachment path is outside this session' }
+    }
+    const fileName = storageKey.slice(expectedPrefix.length)
+    if (!fileName.startsWith(`${claimed.id}-`)) {
+        return { ok: false, error: 'Attachment id does not match stored file' }
+    }
+    let filePath: string
+    try {
+        filePath = resolveScratchlistStoragePath(hapiHome, storageKey)
+    } catch {
+        return { ok: false, error: 'Invalid scratchlist attachment path' }
+    }
+    try {
+        const info = await stat(filePath)
+        if (!info.isFile()) {
+            return { ok: false, error: 'Attachment file missing' }
+        }
+        return {
+            ok: true,
+            attachment: {
+                id: claimed.id,
+                filename: claimed.filename,
+                mimeType: claimed.mimeType,
+                size: info.size,
+                path: toHubScratchlistAttachmentPath(storageKey),
+            },
+        }
+    } catch {
+        return { ok: false, error: 'Attachment file missing' }
+    }
+}
+
+export async function resolveScratchlistAttachmentsForSession(
+    hapiHome: string,
+    namespace: string,
+    sessionId: string,
+    claimed: ScratchlistAttachmentMetadata[]
+): Promise<
+    | { ok: true; attachments: ScratchlistAttachmentMetadata[] }
+    | { ok: false; error: string }
+> {
+    const resolved: ScratchlistAttachmentMetadata[] = []
+    for (const item of claimed) {
+        const result = await resolveScratchlistAttachmentForSession(hapiHome, namespace, sessionId, item)
+        if (!result.ok) {
+            return result
+        }
+        resolved.push(result.attachment)
+    }
+    return { ok: true, attachments: resolved }
+}
+
+/** Delete a pending/orphan upload by attachment id from the session directory. */
+export async function deleteScratchlistAttachmentById(
+    hapiHome: string,
+    namespace: string,
+    sessionId: string,
+    attachmentId: string
+): Promise<boolean> {
+    const dir = resolveScratchlistStoragePath(
+        hapiHome,
+        `${sanitizeSegment(namespace)}/${sanitizeSegment(sessionId)}`
+    )
+    try {
+        const names = await readdir(dir)
+        const prefix = `${attachmentId}-`
+        const match = names.find((name) => name.startsWith(prefix))
+        if (!match) return false
+        await rm(join(dir, match), { force: true })
+        return true
+    } catch {
+        return false
+    }
 }
