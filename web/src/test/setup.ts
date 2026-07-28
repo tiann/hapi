@@ -75,6 +75,13 @@ if (!('IntersectionObserver' in globalThis)) {
     })
 }
 
+if (typeof Range.prototype.getBoundingClientRect !== 'function') {
+    // jsdom has no layout engine, so Range never got a getBoundingClientRect implementation.
+    Range.prototype.getBoundingClientRect = function (): DOMRect {
+        return new DOMRect(0, 0, 0, 0)
+    }
+}
+
 if (typeof window.matchMedia !== 'function') {
     Object.defineProperty(window, 'matchMedia', {
         writable: true,
