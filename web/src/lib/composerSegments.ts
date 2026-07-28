@@ -235,13 +235,20 @@ export function insertPlainTextInComposerSegments(
     }
 }
 
+/**
+ * Rich segmented composer is the product default (same as v1 @ autocomplete:
+ * no user opt-in). Emergency kill-switch only:
+ *   localStorage `hapi.composer.richMentions=0` or `?richMentions=0`
+ *   or build `VITE_RICH_COMPOSER_MENTIONS=false`
+ */
 export function isRichComposerMentionsEnabled(): boolean {
-    if (typeof window === 'undefined') return false
+    if (typeof window === 'undefined') return true
     try {
-        if (window.localStorage.getItem('hapi.composer.richMentions') === '1') return true
-        if (new URLSearchParams(window.location.search).get('richMentions') === '1') return true
+        if (window.localStorage.getItem('hapi.composer.richMentions') === '0') return false
+        if (new URLSearchParams(window.location.search).get('richMentions') === '0') return false
     } catch {
         // ignore storage / URL access failures
     }
-    return import.meta.env.VITE_RICH_COMPOSER_MENTIONS === 'true'
+    if (import.meta.env.VITE_RICH_COMPOSER_MENTIONS === 'false') return false
+    return true
 }

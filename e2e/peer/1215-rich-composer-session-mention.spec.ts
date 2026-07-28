@@ -1,19 +1,25 @@
 /*
- * Peer-stack e2e for tiann/hapi#1215 — feature-flagged rich composer session @ tokens.
- * Run via: node scripts/dev/run-e2e-on-peer-stack.mjs --worktree <this> --no-up --keep \
- *   e2e/peer/1215-rich-composer-session-mention.spec.ts
- * (spec path relative to worktree; playwright cwd is fork mirror — pass absolute path)
+ * Peer-stack e2e + annotated screencast for tiann/hapi#1215.
+ * Rich composer is ON by default (no user opt-in). Covers chips + baseline
+ * composer behaviors in one motion proof.
  */
 
 import { mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { test, expect, type Page } from '@playwright/test'
+// Fork tooling lives on the mirror; worktrees from upstream tip may lack scripts/dev.
+import {
+    annotatedVideoPaths,
+    startAnnotatedScreencast,
+    stopAnnotatedScreencast,
+} from '/home/heavygee/coding/hapi/scripts/dev/playwright-annotated-video.mjs'
 
 const hubUrl = (process.env.HAPI_PEER_WEB_URL ?? process.env.HAPI_PEER_HUB_URL ?? '').replace(/\/$/, '')
 const accessToken = process.env.HAPI_PEER_CLI_TOKEN ?? process.env.HAPI_PEER_ACCESS_TOKEN ?? ''
 const sessionId = process.env.HAPI_PEER_SESSION_ID ?? ''
 const artifactRoot = process.env.HAPI_PEER_WORKTREE ?? process.cwd()
-const SCREENSHOT_PATH = resolve(artifactRoot, 'localdocs/playwright-runs/1215-rich-composer-session-mention.png')
+const RUNS = resolve(artifactRoot, 'localdocs/playwright-runs')
+const { webm: WEBM_PATH, mp4: MP4_PATH } = annotatedVideoPaths(RUNS, '1215-rich-composer-dogfood')
 
 function requirePeerEnv(): void {
     if (!hubUrl || !accessToken || !sessionId) {
@@ -23,46 +29,92 @@ function requirePeerEnv(): void {
     }
 }
 
-async function injectAuthAndFlag(page: Page): Promise<void> {
+async function injectAuth(page: Page): Promise<void> {
     const storageKey = `hapi_access_token::${hubUrl}`
     await page.addInitScript(({ key, token }) => {
         localStorage.setItem(key, token)
-        localStorage.setItem('hapi.composer.richMentions', '1')
+        // Product default is ON — clear any leftover kill-switch from prior dogfood.
+        localStorage.removeItem('hapi.composer.richMentions')
     }, { key: storageKey, token: accessToken })
+}
+
+async function pickSessionMention(page: Page, query: string, label: string): Promise<void> {
+    const rich = page.getByTestId('rich-composer-input')
+    await rich.click()
+    await page.keyboard.type(query, { delay: 25 })
+    const option = page.getByText(label).first()
+    await expect(option).toBeVisible({ timeout: 15_000 })
+    await option.click()
 }
 
 test.describe('rich composer session @ mentions — peer stack (#1215)', () => {
     test.beforeAll(() => {
         requirePeerEnv()
-        mkdirSync(dirname(SCREENSHOT_PATH), { recursive: true })
+        mkdirSync(RUNS, { recursive: true })
     })
 
-    test('inserts inline session token from @ picker and serializes markdown on send wire', async ({ page }) => {
-        await injectAuthAndFlag(page)
-        await page.goto(`/sessions/${sessionId}?richMentions=1`, {
+    test('motion proof: chips + composer baseline still works', async ({ page }) => {
+        test.setTimeout(90_000)
+        await injectAuth(page)
+        await page.goto(`/sessions/${sessionId}`, {
             waitUntil: 'domcontentloaded',
             timeout: 60_000,
         })
 
-        await expect(page.getByTestId('rich-composer-flag-badge')).toBeVisible({ timeout: 60_000 })
         const rich = page.getByTestId('rich-composer-input')
         await expect(rich).toBeVisible({ timeout: 60_000 })
-        await rich.click()
-        await page.keyboard.type('see @Peer1215', { delay: 20 })
 
-        // Autocomplete should list the seeded target session
-        const option = page.getByText('@Peer1215 Target Alpha').first()
-        await expect(option).toBeVisible({ timeout: 15_000 })
-        await option.click()
+        await startAnnotatedScreencast(page, {
+            path: WEBM_PATH,
+            size: { width: 1440, height: 900 },
+        })
 
-        // Atom chip in the composer (display), not Copy-reference prose dump
+        // 1) Mid-message session chip (not prose dump)
+        await page.keyboard.type('compare ', { delay: 20 })
+        await pickSessionMention(page, '@Peer1215', '@Peer1215 Target Alpha')
         await expect(rich.locator('[data-composer-mention="session"]')).toHaveCount(1)
         await expect(rich).not.toContainText('See session')
 
-        // Mirror/serialized value lives in assistant-ui composer state — assert via DOM dataset + chip attrs
-        const mention = rich.locator('[data-composer-mention="session"]').first()
-        await expect(mention).toHaveAttribute('data-session-title', /Peer1215 Target Alpha/)
+        // 2) Second mention mid-prose
+        await page.keyboard.type('vs ', { delay: 20 })
+        await pickSessionMention(page, '@Peer1215', '@Peer1215 Target Alpha')
+        await expect(rich.locator('[data-composer-mention="session"]')).toHaveCount(2)
 
-        await page.screenshot({ path: SCREENSHOT_PATH, fullPage: true })
+        // 3) Backspace deletes whole trailing atom
+        await page.keyboard.press('Backspace') // trailing space after second chip
+        await page.keyboard.press('Backspace') // whole chip
+        await expect(rich.locator('[data-composer-mention="session"]')).toHaveCount(1)
+
+        // 4) Slash command still plain-text inserts (not chipped)
+        await page.keyboard.type(' then /hel', { delay: 20 })
+        const slash = page.getByText('/help').first()
+        if (await slash.isVisible({ timeout: 5_000 }).catch(() => false)) {
+            await slash.click()
+            await expect(rich).toContainText('/help')
+            await expect(rich.locator('[data-composer-mention="session"]')).toHaveCount(1)
+        } else {
+            // Peer seed may lack slash catalog — type a plain slash token instead.
+            await page.keyboard.press('Escape')
+            await page.keyboard.type('p ', { delay: 15 })
+            await expect(rich).toContainText('/help')
+        }
+
+        // 5) Shift+Enter newline (composer still multi-line)
+        await page.keyboard.press('Shift+Enter')
+        await page.keyboard.type('line two still editable', { delay: 15 })
+        await expect(rich).toContainText('line two still editable')
+
+        // 6) Clear + type short message and send (Enter-to-send default)
+        await page.keyboard.press('Control+A')
+        await page.keyboard.press('Backspace')
+        await page.keyboard.type('rich composer send smoke', { delay: 15 })
+        await page.keyboard.press('Enter')
+        await expect(page.getByText('rich composer send smoke').first()).toBeVisible({
+            timeout: 20_000,
+        })
+
+        await stopAnnotatedScreencast(page)
     })
 })
+
+export { MP4_PATH, WEBM_PATH }

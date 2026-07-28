@@ -1365,32 +1365,23 @@ export function HappyComposer(props: {
                             </div>
                         ) : null}
 
-                        <div className="flex items-center gap-2 px-4 py-3">
+                        <div className="flex items-center px-4 py-3">
                             {richMentionsEnabled ? (
-                                <>
-                                    <span
-                                        data-testid="rich-composer-flag-badge"
-                                        title="Inline session @ mentions (hapi.composer.richMentions)"
-                                        className="shrink-0 rounded-md bg-[var(--app-subtle-bg)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--app-link)]"
-                                    >
-                                        @
-                                    </span>
-                                    <RichComposerInput
-                                        ref={richInputRef}
-                                        value={composerText}
-                                        autoFocus={!controlsDisabled && !isTouch}
-                                        placeholder={showContinueHint ? t('misc.typeMessage') : t('misc.typeAMessage')}
-                                        disabled={controlsDisabled}
-                                        onValueChange={(text) => api.composer().setText(text)}
-                                        onMirrorChange={(state) => setInputState(state)}
-                                        onKeyDown={handleKeyDown}
-                                        onPaste={handlePaste}
-                                        onEdit={() => {
-                                            if (sendError && onClearSendError) onClearSendError()
-                                        }}
-                                        className="max-h-[7.5rem] min-h-[1.5rem] flex-1 overflow-y-auto whitespace-pre-wrap break-words bg-transparent text-base leading-snug text-[var(--app-fg)] focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 empty:before:content-none"
-                                    />
-                                </>
+                                <RichComposerInput
+                                    ref={richInputRef}
+                                    value={composerText}
+                                    autoFocus={!controlsDisabled && !isTouch}
+                                    placeholder={showContinueHint ? t('misc.typeMessage') : t('misc.typeAMessage')}
+                                    disabled={controlsDisabled}
+                                    onValueChange={(text) => api.composer().setText(text)}
+                                    onMirrorChange={(state) => setInputState(state)}
+                                    onKeyDown={handleKeyDown}
+                                    onPaste={handlePaste}
+                                    onEdit={() => {
+                                        if (sendError && onClearSendError) onClearSendError()
+                                    }}
+                                    className="max-h-[7.5rem] min-h-[1.5rem] flex-1 overflow-y-auto whitespace-pre-wrap break-words bg-transparent text-base leading-snug text-[var(--app-fg)] focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 empty:before:content-none"
+                                />
                             ) : (
                                 <ComposerPrimitive.Input
                                     ref={textareaRef}
