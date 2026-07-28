@@ -5,6 +5,10 @@ describe('findActiveWord', () => {
     it('does not let active words span newlines', () => {
         expect(findActiveWord('@foo\nbar', { start: 8, end: 8 }, ['@', '/'])).toBeUndefined()
         expect(findActiveWord('/help\nsome', { start: 10, end: 10 }, ['@', '/'])).toBeUndefined()
+        // Cold-review regression: line-2 caret must not pull @ from line 1.
+        expect(
+            findActiveWord('@abc\ndef', { start: 8, end: 8 }, ['@', '/', '$'])
+        ).toBeUndefined()
     })
 
     it('treats U+FFFC mention atoms as hard boundaries', () => {

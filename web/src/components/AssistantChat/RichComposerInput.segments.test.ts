@@ -15,6 +15,12 @@ describe('segmentsFromEditor', () => {
         expect(serializeComposerSegments(segmentsFromEditor(root))).toBe('a\nb')
     })
 
+    it('drops Chromium trailing placeholder br (insertLineBreak at EOL)', () => {
+        const root = document.createElement('div')
+        root.innerHTML = 'a<br><br>'
+        expect(serializeComposerSegments(segmentsFromEditor(root))).toBe('a\n')
+    })
+
     it('strips caret-pad ZWSP used for trailing linebreak line-boxes', () => {
         const root = document.createElement('div')
         root.appendChild(document.createTextNode('a'))
@@ -50,5 +56,15 @@ describe('mirrorOffsetFromPoint', () => {
             '<span contenteditable="false" data-composer-mention="session" data-session-id="aaa" data-session-title="Peer A">@Peer A</span> after'
         expect(mirrorOffsetFromPoint(root, root, 0)).toBe(0)
         expect(mirrorOffsetFromPoint(root, root, 1)).toBe(1)
+    })
+
+    it('matches segmentsFromEditor length for br-separated lines', () => {
+        const root = document.createElement('div')
+        root.innerHTML = 'a<br>b'
+        const mirrorLen = serializeComposerSegments(segmentsFromEditor(root)).length
+        // caret after 'b' → end of second text node
+        const b = root.childNodes[2] as Text
+        expect(b.nodeType).toBe(Node.TEXT_NODE)
+        expect(mirrorOffsetFromPoint(root, b, b.textContent!.length)).toBe(mirrorLen)
     })
 })

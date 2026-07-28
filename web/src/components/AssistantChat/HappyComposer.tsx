@@ -314,9 +314,9 @@ export function HappyComposer(props: {
 
     const textareaRef = useRef<HTMLTextAreaElement>(null)
     const richInputRef = useRef<RichComposerInputHandle>(null)
-    // Cheap + intentional: re-read every render so kill-switch =0 / ?richMentions=0
-    // takes effect after hard reload (no sticky true from mount-time memo).
-    const richMentionsEnabled = isRichComposerMentionsEnabled()
+    // Kill-switch only (?richMentions=0 / localStorage=0 / VITE=false). Mount-time
+    // read — hard reload required, so no per-keystroke localStorage/URL parse.
+    const [richMentionsEnabled] = useState(() => isRichComposerMentionsEnabled())
     const prevControlledByUser = useRef(controlledByUser)
 
     const attachmentDrafts = attachments.flatMap((attachment) => {

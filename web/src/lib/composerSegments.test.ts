@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { findActiveWord } from '@/utils/findActiveWord'
 import {
     COMPOSER_MENTION_MIRROR_CHAR,
     deleteBackwardInComposerSegments,
     insertPlainTextInComposerSegments,
     insertSessionMentionInComposerSegments,
+    isRichComposerMentionsEnabled,
     mirrorComposerSegments,
     parseComposerSegments,
     serializeComposerSegments,
@@ -107,6 +108,33 @@ describe('findActiveWord with mention mirror atoms', () => {
         const active = findActiveWord(mirror, { start: mirror.length, end: mirror.length }, ['@'])
         expect(active?.activeWord).toBe('@pee')
         expect(active?.offset).toBe(1)
+    })
+})
+
+describe('isRichComposerMentionsEnabled', () => {
+    const originalSearch = window.location.search
+
+    afterEach(() => {
+        window.localStorage.removeItem('hapi.composer.richMentions')
+        window.history.replaceState({}, '', `${window.location.pathname}${originalSearch}`)
+    })
+
+    it('defaults to ON', () => {
+        window.localStorage.removeItem('hapi.composer.richMentions')
+        window.history.replaceState({}, '', window.location.pathname)
+        expect(isRichComposerMentionsEnabled()).toBe(true)
+    })
+
+    it('kills via localStorage=0', () => {
+        window.localStorage.setItem('hapi.composer.richMentions', '0')
+        expect(isRichComposerMentionsEnabled()).toBe(false)
+    })
+
+    it('kills via ?richMentions=0 (not =1 force-on)', () => {
+        window.history.replaceState({}, '', `${window.location.pathname}?richMentions=0`)
+        expect(isRichComposerMentionsEnabled()).toBe(false)
+        window.history.replaceState({}, '', `${window.location.pathname}?richMentions=1`)
+        expect(isRichComposerMentionsEnabled()).toBe(true)
     })
 })
 

@@ -153,7 +153,31 @@ export function segmentsFromEditor(root: HTMLElement): ComposerSegment[] {
     for (const child of Array.from(root.childNodes)) {
         walk(child)
     }
-    return coalesceComposerSegments(segments)
+    let coalesced = coalesceComposerSegments(segments)
+    // Chromium insertLineBreak at EOL leaves a trailing placeholder <br><br>.
+    // Drop one synthesized newline when the last two meaningful root kids are BRs.
+    const meaningful = Array.from(root.childNodes).filter((n) => {
+        if (n.nodeType === Node.TEXT_NODE) return Boolean(stripCaretPad(n.textContent ?? ''))
+        return n.nodeType === Node.ELEMENT_NODE
+    })
+    const last = meaningful[meaningful.length - 1]
+    const prev = meaningful[meaningful.length - 2]
+    if (
+        last?.nodeType === Node.ELEMENT_NODE
+        && (last as HTMLElement).tagName === 'BR'
+        && prev?.nodeType === Node.ELEMENT_NODE
+        && (prev as HTMLElement).tagName === 'BR'
+        && coalesced.length > 0
+    ) {
+        const tail = coalesced[coalesced.length - 1]!
+        if (tail.type === 'text' && tail.text.endsWith('\n')) {
+            const trimmed = tail.text.slice(0, -1)
+            coalesced = trimmed
+                ? [...coalesced.slice(0, -1), { type: 'text', text: trimmed }]
+                : coalesced.slice(0, -1)
+        }
+    }
+    return coalesceComposerSegments(coalesced)
 }
 
 function insertLineBreakAtCaret(root: HTMLElement): void {
@@ -370,6 +394,19 @@ function setMirrorSelection(root: HTMLElement, selection: ComposerSelection) {
 
 const MENTION_TOOLTIP_DELAY_MS = 300
 
+/** Firefox <136 treats unknown contenteditable values as inherit (not editable). */
+function contentEditableValue(disabled: boolean): boolean | 'plaintext-only' {
+    if (disabled) return false
+    if (typeof document === 'undefined') return true
+    try {
+        const probe = document.createElement('div')
+        probe.contentEditable = 'plaintext-only'
+        return probe.contentEditable === 'plaintext-only' ? 'plaintext-only' : true
+    } catch {
+        return true
+    }
+}
+
 export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(function RichComposerInput(
     {
         value,
@@ -421,11 +458,17 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         const segments = parseComposerSegments(next)
         renderSegmentsToEditor(root, segments, resolveSessionMentionTooltip)
         lastEmittedRef.current = next
+        clearMentionTooltip()
         const mirror = mirrorComposerSegments(segments)
         const sel = selection ?? { start: mirror.length, end: mirror.length }
-        setMirrorSelection(root, sel)
+        // Placing a Selection inside contenteditable focuses it in Blink/WebKit —
+        // skip when the editor is not already focused (draft restore / queue edit).
+        const hadFocus = root.contains(document.activeElement)
+        if (hadFocus || selection) {
+            setMirrorSelection(root, sel)
+        }
         onMirrorChange({ text: mirror, selection: sel })
-    }, [onMirrorChange, resolveSessionMentionTooltip])
+    }, [clearMentionTooltip, onMirrorChange, resolveSessionMentionTooltip])
 
     useLayoutEffect(() => {
         if (value === lastEmittedRef.current) return
@@ -507,8 +550,15 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
                 clearMentionTooltip()
             }
         }
+        const dismiss = () => clearMentionTooltip()
         window.addEventListener('pointermove', onMove, { passive: true })
-        return () => window.removeEventListener('pointermove', onMove)
+        window.addEventListener('scroll', dismiss, { capture: true, passive: true })
+        window.addEventListener('resize', dismiss, { passive: true })
+        return () => {
+            window.removeEventListener('pointermove', onMove)
+            window.removeEventListener('scroll', dismiss, true)
+            window.removeEventListener('resize', dismiss)
+        }
     }, [mentionTooltip, clearMentionTooltip])
 
     const showMentionTooltipForChip = useCallback((chip: HTMLElement) => {
@@ -604,6 +654,7 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
                     && mirror[selection.start - 1] === COMPOSER_MENTION_MIRROR_CHAR
                 if (againstAtom || selection.start !== selection.end) {
                     e.preventDefault()
+                    clearMentionTooltip()
                     const result = deleteBackwardInComposerSegments(segments, selection)
                     const serialized = serializeComposerSegments(result.segments)
                     renderSegmentsToEditor(root, result.segments, resolveSessionMentionTooltip)
@@ -624,13 +675,9 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         // was left alone (Shift+Enter, or Enter-inserts-newline mode), insert a
         // <br> instead of letting Chromium split the editor into block <div>s
         // that would collapse to "line1line2" on serialize.
-        if (
-            !e.defaultPrevented
-            && e.key === 'Enter'
-            && !e.ctrlKey
-            && !e.metaKey
-            && !e.altKey
-        ) {
+        // Any Enter the parent left unprevented (incl. Alt/Ctrl when !canSend) must
+        // become a <br> — never Chromium block <div>s (offset/serialize footguns).
+        if (!e.defaultPrevented && e.key === 'Enter') {
             const root = rootRef.current
             if (!root) return
             e.preventDefault()
@@ -645,6 +692,7 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         onMirrorChange,
         onValueChange,
         resolveSessionMentionTooltip,
+        clearMentionTooltip,
     ])
 
     return (
@@ -663,7 +711,9 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
                 aria-multiline="true"
                 aria-label={placeholder}
                 aria-disabled={disabled || undefined}
-                contentEditable={!disabled}
+                // Prefer plaintext-only when the engine accepts it (Chrome/Safari/FF136+);
+                // handlePaste still forces text/plain for engines that keep HTML paste.
+                contentEditable={contentEditableValue(disabled)}
                 suppressContentEditableWarning
                 data-testid="rich-composer-input"
                 className={`${className ?? ''}${disabled ? ' cursor-not-allowed opacity-50' : ''}`}
