@@ -67,6 +67,9 @@ export class AcpStdioTransport {
     private guardReleased = false;
     private closed = false;
     private closeError: Error | null = null;
+    /** True after process 'exit'; blocks new writes until 'close' drains stderr. */
+    private exited = false;
+    private exitError: Error | null = null;
 
     /** Rolling join window for stderr before close-time classification. */
     private static readonly RECENT_STDERR_WINDOW = 8_000;
@@ -126,8 +129,18 @@ export class AcpStdioTransport {
             }
         });
 
-        // Use 'close' (not 'exit') so final stderr chunks are drained before we classify
-        // the failure — Node may fire 'exit' before the last stderr 'data' event.
+        // Block new stdin writes as soon as the process exits, but defer markClosed
+        // until 'close' so final stderr chunks can still enrich the failure.
+        this.process.on('exit', (code, signal) => {
+            this.releaseAgentCliGuard();
+            this.exited = true;
+            this.exitError = new Error(
+                `ACP process exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`
+            );
+        });
+
+        // Use 'close' (not only 'exit') so final stderr chunks are drained before we
+        // classify the failure — Node may fire 'exit' before the last stderr 'data'.
         this.process.on('close', (code, signal) => {
             this.releaseAgentCliGuard();
             const stderr = this.stderrForCloseError();
@@ -170,8 +183,10 @@ export class AcpStdioTransport {
     static readonly DEFAULT_TIMEOUT_MS = 120_000;
 
     async sendRequest(method: string, params?: unknown, options?: { timeoutMs?: number }): Promise<unknown> {
-        if (this.closed) {
-            return Promise.reject(this.closeError ?? new Error('ACP transport is closed'));
+        if (this.closed || this.exited) {
+            return Promise.reject(
+                this.closeError ?? this.exitError ?? new Error('ACP transport is closed')
+            );
         }
 
         const id = this.nextId++;
@@ -217,7 +232,7 @@ export class AcpStdioTransport {
     }
 
     sendNotification(method: string, params?: unknown): void {
-        if (this.closed) {
+        if (this.closed || this.exited) {
             return;
         }
 

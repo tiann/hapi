@@ -97,6 +97,27 @@ describe('AcpStdioTransport closed stdin writes', () => {
         spawnState.closeHandlers = [];
     });
 
+    test('rejects new requests after process exit before close without writing stdin', async () => {
+        const transport = new AcpStdioTransport({ command: 'gemini' });
+        spawnState.exitCode = 1;
+        spawnState.stdinWrite.mockClear();
+
+        for (const handler of spawnState.exitHandlers) {
+            handler(1, null);
+        }
+
+        await expect(transport.sendRequest('session/new')).rejects.toThrow(
+            'ACP process exited (code=1, signal=null)'
+        );
+        expect(spawnState.stdinWrite).not.toHaveBeenCalled();
+        expect(() => transport.sendNotification('session/cancel', {})).not.toThrow();
+        expect(spawnState.stdinWrite).not.toHaveBeenCalled();
+
+        for (const handler of spawnState.closeHandlers) {
+            handler(1, null);
+        }
+    });
+
     test('rejects new requests after the ACP process exits instead of throwing from stdin.write', async () => {
         const transport = new AcpStdioTransport({ command: 'gemini' });
         spawnState.exitCode = 1;
