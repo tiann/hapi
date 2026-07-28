@@ -27,7 +27,7 @@ import { useTranslation } from '@/lib/use-translation'
 import { useOptionalHappyChatContext } from '@/components/AssistantChat/context'
 import { decodeFilePathHref, remarkFilePathLinks } from '@/lib/remark-file-path-links'
 import { remarkSessionPathLinks } from '@/lib/remark-session-path-links'
-import { parseSessionPathHref } from '@/lib/sessionReference'
+import { buildSessionReferencePath, parseSessionPathHref } from '@/lib/sessionReference'
 import { UriConfirmDialog } from '@/components/UriConfirmDialog'
 
 import type { MarkdownTextPrimitiveProps } from '@assistant-ui/react-markdown'
@@ -512,7 +512,8 @@ function FilePathAnchor(props: ComponentPropsWithoutRef<'a'> & { filePath: strin
 function SessionPathAnchor(props: ComponentPropsWithoutRef<'a'> & { targetSessionId: string }) {
     const navigate = useNavigate()
     const rel = props.target === '_blank' ? (props.rel ?? 'noreferrer') : props.rel
-    const href = `/sessions/${encodeURIComponent(props.targetSessionId)}`
+    // Preserve Vite BASE_URL for copy / open-in-new-tab (SPA click uses navigate).
+    const href = buildSessionReferencePath(props.targetSessionId)
 
     const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
         props.onClick?.(event)
