@@ -9,6 +9,7 @@ import { useAuth } from '@/hooks/useAuth'
 import { useAuthSource } from '@/hooks/useAuthSource'
 import { useServerUrl } from '@/hooks/useServerUrl'
 import { useSSE } from '@/hooks/useSSE'
+import { useReconnectingState } from '@/hooks/useReconnectingState'
 import { useSyncingState } from '@/hooks/useSyncingState'
 import { usePushNotifications } from '@/hooks/usePushNotifications'
 import { useViewportHeight } from '@/hooks/useViewportHeight'
@@ -139,8 +140,12 @@ function AppInner() {
     const sessionMatch = matchRoute({ to: '/sessions/$sessionId' })
     const selectedSessionId = sessionMatch && sessionMatch.sessionId !== 'new' ? sessionMatch.sessionId : null
     const { isSyncing, startSync, endSync } = useSyncingState()
-    const [sseDisconnected, setSseDisconnected] = useState(false)
-    const [sseDisconnectReason, setSseDisconnectReason] = useState<string | null>(null)
+    const {
+        isReconnecting: sseDisconnected,
+        reason: sseDisconnectReason,
+        reportConnect: reportSseConnect,
+        reportDisconnect: reportSseDisconnect
+    } = useReconnectingState()
     const syncTokenRef = useRef(0)
     const isFirstConnectRef = useRef(true)
     const baseUrlRef = useRef(baseUrl)
@@ -204,8 +209,7 @@ function AppInner() {
 
     const handleSseConnect = useCallback(() => {
         // Clear disconnected state on successful connection
-        setSseDisconnected(false)
-        setSseDisconnectReason(null)
+        reportSseConnect()
 
         // Increment token to track this specific connection
         const token = ++syncTokenRef.current
@@ -241,15 +245,14 @@ function AppInner() {
                     endSync()
                 }
             })
-    }, [api, queryClient, selectedSessionId, startSync, endSync])
+    }, [api, queryClient, selectedSessionId, startSync, endSync, reportSseConnect])
 
     const handleSseDisconnect = useCallback((reason: string) => {
         // Only show reconnecting banner if we've already connected once
         if (!isFirstConnectRef.current) {
-            setSseDisconnected(true)
-            setSseDisconnectReason(reason)
+            reportSseDisconnect(reason)
         }
-    }, [])
+    }, [reportSseDisconnect])
 
     const handleSseEvent = useCallback((event: SyncEvent) => {
         if (event.type !== 'messages-invalidated') {
