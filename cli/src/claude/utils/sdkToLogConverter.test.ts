@@ -69,6 +69,52 @@ describe('SDKToLogConverter', () => {
             expect(logMessage?.type).toBe('user')
             expect((logMessage as any).message.content).toHaveLength(2)
         })
+
+        it('should mark synthetic user messages as meta', () => {
+            // Skill injections arrive over stream-json as plain-text user messages
+            // flagged with isSynthetic. The on-disk transcript flags the same event
+            // with isMeta, which is what every downstream filter looks for.
+            const sdkMessage: SDKUserMessage = {
+                type: 'user',
+                isSynthetic: true,
+                message: {
+                    role: 'user',
+                    content: [
+                        { type: 'text', text: 'Base directory for this skill: /home/user/.claude/skills/foo' }
+                    ]
+                }
+            }
+
+            const logMessage = converter.convert(sdkMessage)
+
+            expect(logMessage?.type).toBe('user')
+            expect(logMessage?.isMeta).toBe(true)
+        })
+
+        it('should preserve isMeta on user messages', () => {
+            const sdkMessage: SDKUserMessage = {
+                type: 'user',
+                isMeta: true,
+                message: {
+                    role: 'user',
+                    content: 'injected context'
+                }
+            }
+
+            expect(converter.convert(sdkMessage)?.isMeta).toBe(true)
+        })
+
+        it('should not mark genuine user messages as meta', () => {
+            const sdkMessage: SDKUserMessage = {
+                type: 'user',
+                message: {
+                    role: 'user',
+                    content: 'Hello Claude'
+                }
+            }
+
+            expect(converter.convert(sdkMessage)?.isMeta).toBeUndefined()
+        })
     })
 
     describe('Assistant messages', () => {

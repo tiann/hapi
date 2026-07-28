@@ -271,6 +271,16 @@ export class SDKToLogConverter {
                     message: userMsg.message
                 }
 
+                // Claude Code injects its own user-role turns (skill bodies, compact
+                // continuation summaries). Over stream-json they are flagged
+                // `isSynthetic`, while the on-disk transcript the local launcher reads
+                // flags them `isMeta`. Normalize to `isMeta` so both paths hit the same
+                // downstream filters — otherwise the injected text reaches the web UI
+                // and is rendered as if the human had typed it.
+                if (userMsg.isSynthetic === true || userMsg.isMeta === true) {
+                    logMessage.isMeta = true
+                }
+
                 // Check if this is a tool result and add mode if available
                 if (Array.isArray(userMsg.message.content)) {
                     for (const content of userMsg.message.content) {
