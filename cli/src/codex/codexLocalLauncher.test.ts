@@ -161,6 +161,7 @@ function createSessionStub(
                 agentMessages.push(message);
                 messageEvents.push({ type: 'agent-message', message });
             },
+            recordCodexUsage: () => {},
             queue: createQueueStub()
         },
         sessionEvents,
