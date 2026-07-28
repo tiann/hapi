@@ -192,6 +192,30 @@ describe('AcpStdioTransport closed stdin writes', () => {
         expect(seen.some((entry) => /Cannot use this model: grok-4\.5\[fast=true\]/.test(entry.message))).toBe(true);
     });
 
+    test('pins Cannot use this model head when Available models catalog exceeds the rolling window', async () => {
+        const transport = new AcpStdioTransport({ command: 'agent', args: ['acp'] });
+        const proc = (transport as unknown as { process: {
+            stderr: { on: ReturnType<typeof vi.fn> };
+        } }).process;
+        const stderrHandlers = (proc.stderr.on as ReturnType<typeof vi.fn>).mock.calls
+            .filter((call) => call[0] === 'data')
+            .map((call) => call[1] as (chunk: string) => void);
+
+        const hugeCatalog = Array.from({ length: 2_000 }, (_, i) => `model-${i}`).join(', ');
+        for (const handler of stderrHandlers) {
+            handler(`Cannot use this model: stale-id. Available models: ${hugeCatalog}\n`);
+        }
+
+        spawnState.exitCode = 1;
+        for (const handler of spawnState.closeHandlers) {
+            handler(1, null);
+        }
+
+        await expect(transport.sendRequest('session/load')).rejects.toThrow(
+            /Cannot use this model: stale-id/
+        );
+    });
+
     test('keeps the head of long stderr so Cannot use this model survives Available models lists', async () => {
         const transport = new AcpStdioTransport({ command: 'agent', args: ['acp'] });
         const proc = (transport as unknown as { process: {

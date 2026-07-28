@@ -99,9 +99,19 @@ export class AcpStdioTransport {
             const raw = chunk.toString();
             if (raw) {
                 const next = this.recentStderr + raw;
-                this.recentStderr = next.length > AcpStdioTransport.RECENT_STDERR_WINDOW
-                    ? next.slice(-AcpStdioTransport.RECENT_STDERR_WINDOW)
-                    : next;
+                const matchIdx = next.search(/Cannot use this model:/i);
+                if (matchIdx >= 0) {
+                    // Pin from the rejection head so a long Available models catalog
+                    // cannot roll `Cannot use this model: <id>` out of the window.
+                    const modelStderr = next.slice(matchIdx);
+                    this.recentStderr = modelStderr.length > AcpStdioTransport.RECENT_STDERR_WINDOW
+                        ? modelStderr.slice(0, AcpStdioTransport.RECENT_STDERR_WINDOW)
+                        : modelStderr;
+                } else {
+                    this.recentStderr = next.length > AcpStdioTransport.RECENT_STDERR_WINDOW
+                        ? next.slice(-AcpStdioTransport.RECENT_STDERR_WINDOW)
+                        : next;
+                }
             }
             const text = raw.trim();
             logger.debug(`[ACP][stderr] ${text}`);
