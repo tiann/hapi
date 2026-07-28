@@ -378,6 +378,7 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
     const lastEmittedRef = useRef(value)
     const composingRef = useRef(false)
     const tooltipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+    const hoveredChipRef = useRef<HTMLElement | null>(null)
     const [mentionTooltip, setMentionTooltip] = useState<MentionTooltipState | null>(null)
 
     const clearMentionTooltip = useCallback(() => {
@@ -385,6 +386,7 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
             clearTimeout(tooltipTimerRef.current)
             tooltipTimerRef.current = null
         }
+        hoveredChipRef.current = null
         setMentionTooltip(null)
     }, [])
 
@@ -476,22 +478,38 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         if (tooltipTimerRef.current) clearTimeout(tooltipTimerRef.current)
     }, [])
 
-    const handlePointerOver = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
-        // Touch: no bubble (matches HoverTooltip). Mouse/pen only.
-        if (e.pointerType === 'touch') return
-        const target = (e.target as HTMLElement | null)?.closest?.(
-            '[data-composer-mention="session"]'
-        ) as HTMLElement | null
-        if (!target || !rootRef.current?.contains(target)) return
-        const id = target.dataset.sessionId
+    // While open, poll hit-test: contenteditable pointerout/relatedTarget is flaky
+    // (chip → prose / outside often never clears). elementFromPoint is the truth.
+    useEffect(() => {
+        if (!mentionTooltip) return
+        const onMove = (ev: PointerEvent) => {
+            if (ev.pointerType === 'touch') return
+            const chip = hoveredChipRef.current
+            if (!chip || !chip.isConnected) {
+                clearMentionTooltip()
+                return
+            }
+            const el = document.elementFromPoint(ev.clientX, ev.clientY)
+            if (!el || !chip.contains(el)) {
+                clearMentionTooltip()
+            }
+        }
+        window.addEventListener('pointermove', onMove, { passive: true })
+        return () => window.removeEventListener('pointermove', onMove)
+    }, [mentionTooltip, clearMentionTooltip])
+
+    const showMentionTooltipForChip = useCallback((chip: HTMLElement) => {
+        const id = chip.dataset.sessionId
         if (!id) return
-        const title = target.dataset.sessionTitle || id.slice(0, 8)
+        const title = chip.dataset.sessionTitle || id.slice(0, 8)
         const model = resolveSessionMentionTooltip?.(id, title)
             ?? formatSessionMentionTooltip(null, title, id)
-        target.setAttribute('aria-label', model.ariaLabel)
+        chip.setAttribute('aria-label', model.ariaLabel)
+        hoveredChipRef.current = chip
         if (tooltipTimerRef.current) clearTimeout(tooltipTimerRef.current)
         tooltipTimerRef.current = setTimeout(() => {
-            const rect = target.getBoundingClientRect()
+            if (hoveredChipRef.current !== chip || !chip.isConnected) return
+            const rect = chip.getBoundingClientRect()
             setMentionTooltip({
                 model,
                 top: rect.top - 8,
@@ -500,21 +518,32 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         }, MENTION_TOOLTIP_DELAY_MS)
     }, [resolveSessionMentionTooltip])
 
-    const handlePointerOut = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
-        const related = e.relatedTarget as Node | null
-        const leaving = e.target as HTMLElement | null
-        const fromChip = leaving?.closest?.('[data-composer-mention="session"]')
-        if (!fromChip) return
-        // Still inside the same chip (moving between text nodes) — keep open.
-        if (related && fromChip.contains(related)) return
+    const handlePointerOver = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+        // Touch: no bubble (matches HoverTooltip). Mouse/pen only.
+        if (e.pointerType === 'touch') return
+        const chip = (e.target as HTMLElement | null)?.closest?.(
+            '[data-composer-mention="session"]'
+        ) as HTMLElement | null
+        if (!chip || !rootRef.current?.contains(chip)) {
+            // Over editor prose / empty space — dismiss any open chip tip.
+            if (hoveredChipRef.current) clearMentionTooltip()
+            return
+        }
+        if (hoveredChipRef.current === chip) return
+        showMentionTooltipForChip(chip)
+    }, [clearMentionTooltip, showMentionTooltipForChip])
+
+    const handlePointerLeave = useCallback(() => {
+        // Leaving the editor root entirely (does not fire for chip→prose moves).
         clearMentionTooltip()
     }, [clearMentionTooltip])
 
     const handleInput = useCallback((_e: ReactFormEvent<HTMLDivElement>) => {
+        clearMentionTooltip()
         if (composingRef.current) return
         onEdit?.()
         emitFromDom()
-    }, [emitFromDom, onEdit])
+    }, [clearMentionTooltip, emitFromDom, onEdit])
 
     const handleKeyDown = useCallback((e: ReactKeyboardEvent<HTMLDivElement>) => {
         if (e.nativeEvent.isComposing) {
@@ -597,7 +626,7 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
                 onInput={handleInput}
                 onKeyDown={handleKeyDown}
                 onPointerOver={handlePointerOver}
-                onPointerOut={handlePointerOut}
+                onPointerLeave={handlePointerLeave}
                 onPaste={onPaste}
                 onCompositionStart={() => {
                     composingRef.current = true
@@ -638,7 +667,7 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
                         {mentionTooltip.model.lines.map((line) => (
                             <span
                                 key={line}
-                                className="mt-0.5 block text-[var(--app-hint)] break-all"
+                                className="mt-0.5 block break-words text-[var(--app-hint)]"
                             >
                                 {line}
                             </span>
