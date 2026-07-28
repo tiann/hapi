@@ -1,16 +1,43 @@
 import type { AttachmentAdapter, Attachment, CompleteAttachment, PendingAttachment } from '@assistant-ui/react'
 import type { ScratchlistAttachmentMetadata } from '@hapi/protocol'
+import { parseHubScratchlistAttachmentPath } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
+import { getRestoredUploadMetadata } from '@/lib/composer-attachment-drafts'
 import { isImageMimeType } from '@/lib/fileAttachments'
 import { randomId } from '@/lib/randomId'
 
 const MAX_PREVIEW_BYTES = 5 * 1024 * 1024
+
+/** Matches hub `SCRATCHLIST_ATTACHMENT_ID_RE` — file names are `${uuid}-${filename}`. */
+const HUB_ATTACHMENT_ID_PREFIX_RE =
+    /^([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})-/i
 
 type PendingScratchlistAttachment = PendingAttachment & {
     /** Mirrors chat upload adapter — HappyComposer treats requires-action + path as ready. */
     path?: string
     hubAttachment?: ScratchlistAttachmentMetadata
     previewUrl?: string
+}
+
+/** Rebuild hub metadata from a composer-draft path so remount does not re-upload. */
+export function hubAttachmentFromRestoredDraft(
+    path: string,
+    file: File,
+    contentType: string
+): ScratchlistAttachmentMetadata | null {
+    const key = parseHubScratchlistAttachmentPath(path)
+    if (!key) return null
+    const storedName = key.split('/').pop()
+    if (!storedName) return null
+    const match = storedName.match(HUB_ATTACHMENT_ID_PREFIX_RE)
+    if (!match?.[1]) return null
+    return {
+        id: match[1],
+        filename: file.name,
+        mimeType: contentType,
+        size: file.size,
+        path,
+    }
 }
 
 export function createScratchlistAttachmentAdapter(api: ApiClient, sessionId: string): AttachmentAdapter {
@@ -20,8 +47,27 @@ export function createScratchlistAttachmentAdapter(api: ApiClient, sessionId: st
         accept: '*/*',
 
         async *add({ file }): AsyncGenerator<PendingAttachment> {
-            const id = randomId()
             const contentType = file.type || 'application/octet-stream'
+            const restored = getRestoredUploadMetadata(file)
+            if (restored) {
+                const hubAttachment = hubAttachmentFromRestoredDraft(restored.path, file, contentType)
+                if (hubAttachment) {
+                    yield {
+                        id: restored.id,
+                        type: 'file',
+                        name: file.name,
+                        contentType,
+                        file,
+                        status: { type: 'requires-action', reason: 'composer-send' },
+                        path: restored.path,
+                        hubAttachment,
+                        previewUrl: restored.previewUrl,
+                    } as PendingScratchlistAttachment
+                    return
+                }
+            }
+
+            const id = randomId()
 
             yield {
                 id,
