@@ -116,8 +116,12 @@ export class AcpStdioTransport {
             const text = raw.trim();
             logger.debug(`[ACP][stderr] ${text}`);
             this.parseStderrError(text);
-            // If this chunk alone missed a split keyword, retry against the window.
-            if (text && !/cannot use this model/i.test(text) && /cannot use this model/i.test(this.recentStderr)) {
+            // If this chunk alone missed a split keyword/id, retry against the window.
+            if (
+                text
+                && !/Cannot use this model:\s*\S/i.test(text)
+                && /Cannot use this model:\s*\S/i.test(this.recentStderr)
+            ) {
                 this.parseStderrError(this.stderrForCloseError() ?? this.recentStderr);
             }
         });
@@ -410,17 +414,21 @@ export class AcpStdioTransport {
         const lowerText = text.toLowerCase();
 
         // Cursor rejects `--model` / config ids with this exact stderr shape.
+        // Require at least one non-space after the colon so a split before the
+        // model id does not emit a partial line and suppress the completed one.
         // Pass the agent text through (including any Available models hint); do not
         // invent a Gemini-style catalog here.
-        if (lowerText.includes('cannot use this model')) {
+        const modelRejection = text.match(/Cannot use this model:\s*\S[\s\S]*/i);
+        if (modelRejection) {
             if (this.emittedModelRejection) {
                 return;
             }
+            const message = modelRejection[0].trim();
             this.emittedModelRejection = true;
             this.stderrErrorHandler({
                 type: 'model_not_found',
-                message: text,
-                raw: text
+                message,
+                raw: message
             });
             return;
         }
