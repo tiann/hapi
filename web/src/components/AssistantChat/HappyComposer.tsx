@@ -204,6 +204,8 @@ export function HappyComposer(props: {
     quotes?: readonly Quote[]
     onQuoteRemove?: (id: string) => void
     onQuoteJump?: (quote: Quote) => void
+    activeQuoteId?: string | null
+    onQuoteHover?: (id: string | null) => void
     // Set when the most recent send failed (4xx/5xx/network).  The composer
     // restores the original text once per `sendError.id` and renders an
     // inline error affordance until the user dismisses or starts editing.
@@ -1331,6 +1333,8 @@ export function HappyComposer(props: {
                                 quotes={props.quotes}
                                 onRemove={props.onQuoteRemove}
                                 onJump={props.onQuoteJump}
+                                activeQuoteId={props.activeQuoteId}
+                                onHover={props.onQuoteHover}
                             />
                         ) : null}
 
@@ -1343,6 +1347,7 @@ export function HappyComposer(props: {
                         <div className="flex items-center px-4 py-3">
                             <ComposerPrimitive.Input
                                 ref={textareaRef}
+                                data-quote-focus-target=""
                                 autoFocus={!controlsDisabled && !isTouch}
                                 placeholder={showContinueHint ? t('misc.typeMessage') : t('misc.typeAMessage')}
                                 disabled={controlsDisabled}

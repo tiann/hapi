@@ -500,6 +500,7 @@ function SessionChatInner(props: SessionChatProps) {
         input?.focus()
         input?.setSelectionRange(input.value.length, input.value.length)
     }, [composerQuotes.add])
+    const [activeQuoteId, setActiveQuoteId] = useState<string | null>(null)
     const [scratchlistMode, setScratchlistMode] = useState(false)
     // Mode resets across sessions implicitly: SessionChat is keyed by
     // session.id at the public-export boundary, so a session switch
@@ -1337,6 +1338,7 @@ function SessionChatInner(props: SessionChatProps) {
                         onOutlineOpenChange={setOutlineOpen}
                         quotes={composerQuotes.quotes}
                         onQuoteAdd={handleQuoteAdd}
+                        activeQuoteId={activeQuoteId}
                     />
 
                     <div className={outlineOpen ? 'max-sm:hidden' : undefined}>
@@ -1543,6 +1545,8 @@ function SessionChatInner(props: SessionChatProps) {
                         quotes={composerQuotes.quotes}
                         onQuoteRemove={composerQuotes.remove}
                         onQuoteJump={handleQuoteJump}
+                        activeQuoteId={activeQuoteId}
+                        onQuoteHover={setActiveQuoteId}
                         sendError={props.sendError ?? null}
                         onClearSendError={props.onClearSendError}
                         />

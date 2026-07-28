@@ -397,6 +397,7 @@ export function HappyThread(props: {
     onOutlineItemClick?: (item: ConversationOutlineItem) => void
     quotes?: readonly Quote[]
     onQuoteAdd?: (text: string, messageId: string) => void
+    activeQuoteId?: string | null
 }) {
     const { t } = useTranslation()
     const { terminalToolDisplayMode } = useTerminalToolDisplayMode()
@@ -971,7 +972,11 @@ export function HappyThread(props: {
                             <div ref={messagesRef} className="happy-thread-messages relative flex flex-col gap-3">
                                 <ThreadPrimitive.Messages components={THREAD_MESSAGE_COMPONENTS} />
                                 {props.quotes && props.quotes.length > 0 ? (
-                                    <QuoteHighlights quotes={props.quotes} containerRef={messagesRef} />
+                                    <QuoteHighlights
+                                        quotes={props.quotes}
+                                        containerRef={messagesRef}
+                                        activeQuoteId={props.activeQuoteId}
+                                    />
                                 ) : null}
                             </div>
                         </div>

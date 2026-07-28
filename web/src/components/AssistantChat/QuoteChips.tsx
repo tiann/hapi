@@ -15,6 +15,8 @@ export function QuoteChips(props: {
     quotes: readonly Quote[]
     onRemove: (id: string) => void
     onJump: (quote: Quote) => void
+    activeQuoteId?: string | null
+    onHover?: (id: string | null) => void
 }) {
     const { t } = useTranslation()
     if (props.quotes.length === 0) return null
@@ -28,7 +30,11 @@ export function QuoteChips(props: {
                     data-testid="quote-chip"
                     title={t('quote.jumpToSource')}
                     onClick={() => props.onJump(quote)}
-                    className="group relative flex items-center gap-2 overflow-hidden rounded-[7px] bg-[var(--app-md-quote-bg)] py-[5px] pl-[11px] pr-[6px] text-left text-[12.5px] transition-shadow hover:shadow-[0_0_0_1px_var(--app-chat-user-chip-fg)]"
+                    onMouseEnter={() => props.onHover?.(quote.id)}
+                    onMouseLeave={() => props.onHover?.(null)}
+                    className={`group relative flex items-center gap-2 overflow-hidden rounded-[7px] bg-[var(--app-md-quote-bg)] py-[5px] pl-[11px] pr-[6px] text-left text-[12.5px] transition-shadow hover:shadow-[0_0_0_1px_var(--app-chat-user-chip-fg)] ${
+                        props.activeQuoteId === quote.id ? 'shadow-[0_0_0_1px_var(--app-chat-user-chip-fg)]' : ''
+                    }`}
                 >
                     <span
                         aria-hidden="true"

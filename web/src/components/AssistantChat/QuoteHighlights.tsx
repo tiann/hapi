@@ -59,6 +59,7 @@ function findRange(messageId: string, text: string): Range | null {
 export function QuoteHighlights(props: {
     quotes: readonly Quote[]
     containerRef: React.RefObject<HTMLElement | null>
+    activeQuoteId?: string | null
 }) {
     const [markers, setMarkers] = useState<Marker[]>([])
     const warnedRef = useRef(false)
@@ -131,7 +132,11 @@ export function QuoteHighlights(props: {
                     data-testid="quote-marker"
                     aria-hidden="true"
                     style={{ position: 'absolute', left: marker.left, top: marker.top }}
-                    className="pointer-events-none z-[5] rounded-[4px] bg-[var(--app-bg)] px-[3.5px] py-[2px] font-mono text-[9.5px] font-bold leading-none text-[var(--app-chat-user-chip-fg)] shadow-[0_0_0_1px_var(--app-chat-user-chip-bg)]"
+                    className={`pointer-events-none z-[5] rounded-[4px] px-[3.5px] py-[2px] font-mono text-[9.5px] font-bold leading-none text-[var(--app-chat-user-chip-fg)] transition-colors ${
+                        props.activeQuoteId === marker.id
+                            ? 'bg-[var(--app-chat-user-chip-bg)] shadow-[0_0_0_1px_var(--app-chat-user-chip-fg)]'
+                            : 'bg-[var(--app-bg)] shadow-[0_0_0_1px_var(--app-chat-user-chip-bg)]'
+                    }`}
                 >
                     {marker.index + 1}
                 </span>
