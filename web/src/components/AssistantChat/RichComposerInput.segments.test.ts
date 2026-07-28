@@ -1,6 +1,30 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { serializeComposerSegments } from '@/lib/composerSegments'
-import { mirrorOffsetFromPoint, segmentsFromEditor } from './RichComposerInput'
+import {
+    insertLineBreakAtCaret,
+    mirrorOffsetFromPoint,
+    segmentsFromEditor,
+} from './RichComposerInput'
+
+const CARET_PAD = '\u200B'
+
+function placeCaretAtEnd(root: HTMLElement, textNode: Text) {
+    const range = document.createRange()
+    range.setStart(textNode, textNode.textContent?.length ?? 0)
+    range.collapse(true)
+    const sel = window.getSelection()
+    sel?.removeAllRanges()
+    sel?.addRange(range)
+}
+
+function placeCaretInText(textNode: Text, offset: number) {
+    const range = document.createRange()
+    range.setStart(textNode, offset)
+    range.collapse(true)
+    const sel = window.getSelection()
+    sel?.removeAllRanges()
+    sel?.addRange(range)
+}
 
 describe('segmentsFromEditor', () => {
     it('preserves newlines between Chromium block divs (Enter-inserts-newline)', () => {
@@ -60,6 +84,40 @@ describe('segmentsFromEditor', () => {
         const list = document.createElement('div')
         list.innerHTML = '<ul><li>one</li><li>two</li></ul>'
         expect(serializeComposerSegments(segmentsFromEditor(list))).toBe('one\ntwo')
+    })
+})
+
+describe('insertLineBreakAtCaret', () => {
+    afterEach(() => {
+        document.body.replaceChildren()
+        window.getSelection()?.removeAllRanges()
+    })
+
+    it('inserts CARET_PAD after EOL break even when insertNode leaves an empty sibling', () => {
+        const root = document.createElement('div')
+        document.body.appendChild(root)
+        const hello = document.createTextNode('hello')
+        root.appendChild(hello)
+        placeCaretAtEnd(root, hello)
+
+        insertLineBreakAtCaret(root)
+
+        const texts = Array.from(root.childNodes).map((n) => n.textContent ?? '')
+        expect(texts).toContain(CARET_PAD)
+        expect(serializeComposerSegments(segmentsFromEditor(root))).toBe('hello\n')
+    })
+
+    it('does not pad when there is meaningful content after the caret', () => {
+        const root = document.createElement('div')
+        document.body.appendChild(root)
+        const text = document.createTextNode('helloworld')
+        root.appendChild(text)
+        placeCaretInText(text, 5) // between hello|world
+
+        insertLineBreakAtCaret(root)
+
+        expect(serializeComposerSegments(segmentsFromEditor(root))).toBe('hello\nworld')
+        expect(Array.from(root.childNodes).some((n) => n.textContent === CARET_PAD)).toBe(false)
     })
 })
 

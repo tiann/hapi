@@ -158,12 +158,29 @@ export function segmentsFromEditor(root: HTMLElement): ComposerSegment[] {
 }
 
 /**
+ * True when some node after `from` carries mirror-visible content.
+ * Range.insertNode splits the caret's text node, so a bare `\n` at EOL always
+ * has an empty Text nextSibling — `!nextSibling` is the wrong at-end test.
+ */
+function hasMeaningfulTrailingAfter(from: Node): boolean {
+    for (let n: Node | null = from.nextSibling; n; n = n.nextSibling) {
+        if (n.nodeType === Node.TEXT_NODE) {
+            if (stripCaretPad(n.textContent ?? '')) return true
+            continue
+        }
+        return true
+    }
+    return false
+}
+
+/**
  * Insert a single mirror newline at the caret. Prefer this over execCommand
  * ('insertLineBreak'): in plaintext-only / pre-wrap Chromium inserts two `\n`
  * text nodes (placeholder), which serializes as `\n\n` on the wire.
  * Manual `\n` + CARET_PAD gives the same line-box height and serializes once.
+ * Exported for jsdom coverage of the EOL pad path.
  */
-function insertLineBreakAtCaret(root: HTMLElement): void {
+export function insertLineBreakAtCaret(root: HTMLElement): void {
     const sel = window.getSelection()
     if (!sel || sel.rangeCount === 0) return
 
@@ -172,8 +189,7 @@ function insertLineBreakAtCaret(root: HTMLElement): void {
     range.deleteContents()
     const nl = document.createTextNode('\n')
     range.insertNode(nl)
-    const atEnd = !nl.nextSibling
-    if (atEnd) {
+    if (!hasMeaningfulTrailingAfter(nl)) {
         const pad = document.createTextNode(CARET_PAD)
         nl.parentNode?.insertBefore(pad, nl.nextSibling)
         range.setStart(pad, pad.length)
@@ -630,10 +646,12 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
     }, [insertPlainClipboardText, onPaste])
 
     const handleDrop = useCallback((e: ReactDragEvent<HTMLDivElement>) => {
-        const text = e.dataTransfer?.getData('text/plain') ?? ''
-        if (!text) return
+        // Always take drops that aren't files (DragDropZone owns Files). Without
+        // preventDefault, html/uri-only transfers hit native CE and can inject markup.
+        if (e.dataTransfer?.types?.includes('Files')) return
         e.preventDefault()
-        insertPlainClipboardText(text)
+        const text = e.dataTransfer?.getData('text/plain') ?? ''
+        if (text) insertPlainClipboardText(text)
     }, [insertPlainClipboardText])
 
     const handleKeyDown = useCallback((e: ReactKeyboardEvent<HTMLDivElement>) => {
