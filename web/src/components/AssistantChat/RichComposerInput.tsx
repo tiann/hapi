@@ -28,6 +28,8 @@ import {
     formatSessionMentionTooltip,
     type SessionMentionTooltipModel,
 } from '@/lib/sessionReference'
+import { SessionRowSummary } from '@/components/SessionRowSummary'
+import type { SessionSummary } from '@/types/api'
 
 export type RichComposerInputHandle = {
     focus: () => void
@@ -41,10 +43,16 @@ export type RichComposerInputHandle = {
     ) => { text: string; selection: ComposerSelection }
 }
 
+export type SessionMentionResolveResult = {
+    model: SessionMentionTooltipModel
+    /** Live row for sidebar-parity chip tooltip; null → fallback text tip. */
+    session: SessionSummary | null
+}
+
 type ResolveSessionMentionTooltip = (
     id: string,
     title: string
-) => SessionMentionTooltipModel
+) => SessionMentionResolveResult
 
 type Props = {
     value: string
@@ -63,6 +71,7 @@ type Props = {
 
 type MentionTooltipState = {
     model: SessionMentionTooltipModel
+    session: SessionSummary | null
     top: number
     left: number
 }
@@ -80,7 +89,7 @@ function createMentionSpan(
     span.className =
         'mx-0.5 inline-flex max-w-[12rem] items-center truncate rounded-md bg-[var(--app-subtle-bg)] px-1.5 py-0.5 align-baseline text-[0.95em] font-medium text-[var(--app-link)]'
     span.textContent = `@${title || id.slice(0, 8)}`
-    const tip = resolveTooltip?.(id, title)
+    const tip = resolveTooltip?.(id, title)?.model
         ?? formatSessionMentionTooltip(null, title, id)
     span.setAttribute('aria-label', tip.ariaLabel)
     return span
@@ -563,8 +572,8 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         const id = chip.dataset.sessionId
         if (!id) return
         const title = chip.dataset.sessionTitle || id.slice(0, 8)
-        const model = resolveSessionMentionTooltip?.(id, title)
-            ?? formatSessionMentionTooltip(null, title, id)
+        const resolved = resolveSessionMentionTooltip?.(id, title)
+        const model = resolved?.model ?? formatSessionMentionTooltip(null, title, id)
         chip.setAttribute('aria-label', model.ariaLabel)
         hoveredChipRef.current = chip
         if (tooltipTimerRef.current) clearTimeout(tooltipTimerRef.current)
@@ -573,6 +582,7 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
             const rect = chip.getBoundingClientRect()
             setMentionTooltip({
                 model,
+                session: resolved?.session ?? null,
                 top: rect.top - 8,
                 left: rect.left + rect.width / 2,
             })
@@ -764,18 +774,30 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
                     <div
                         role="tooltip"
                         data-testid="rich-composer-mention-tooltip"
-                        className="pointer-events-none fixed z-[80] w-max max-w-[18rem] -translate-x-1/2 -translate-y-full rounded-md border border-[var(--app-border)] bg-[var(--app-secondary-bg)] px-2 py-1.5 text-xs leading-snug text-[var(--app-fg)] shadow-lg"
+                        className="pointer-events-none fixed z-[80] w-[min(20rem,calc(100vw-1.5rem))] -translate-x-1/2 -translate-y-full rounded-lg border border-[var(--app-border)] bg-[var(--app-secondary-bg)] px-2.5 py-2 text-[var(--app-fg)] shadow-lg"
                         style={{ top: mentionTooltip.top, left: mentionTooltip.left }}
                     >
-                        <span className="block font-medium">{mentionTooltip.model.title}</span>
-                        {mentionTooltip.model.lines.map((line) => (
-                            <span
-                                key={line}
-                                className="mt-0.5 block break-words text-[var(--app-hint)]"
-                            >
-                                {line}
-                            </span>
-                        ))}
+                        {mentionTooltip.session ? (
+                            <SessionRowSummary
+                                session={mentionTooltip.session}
+                                showDetailedStatus
+                                nestedTooltips={false}
+                            />
+                        ) : (
+                            <>
+                                <span className="block text-sm font-medium">
+                                    {mentionTooltip.model.title}
+                                </span>
+                                {mentionTooltip.model.lines.map((line) => (
+                                    <span
+                                        key={line}
+                                        className="mt-0.5 block break-words text-xs text-[var(--app-hint)]"
+                                    >
+                                        {line}
+                                    </span>
+                                ))}
+                            </>
+                        )}
                     </div>,
                     document.body
                 )

@@ -113,8 +113,9 @@ test.describe('rich composer session @ mentions — peer stack (#1215)', () => {
         await chip.hover()
         const tip = page.getByTestId('rich-composer-mention-tooltip')
         await expect(tip).toBeVisible({ timeout: 5_000 })
+        // Sidebar-parity tip: title + relative "ago" (not the old Session · lines).
         await expect(tip).toContainText('Peer1215 Target Alpha')
-        await expect(tip).toContainText('Session ·')
+        await expect(tip.getByText(/just now|m ago|h ago|d ago|\d{4}\/\d{2}\/\d{2}/i)).toBeVisible()
         await page.mouse.move(8, 8)
         await expect(tip).toBeHidden({ timeout: 5_000 })
 

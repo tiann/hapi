@@ -122,6 +122,11 @@ export type SessionMentionTooltipSource = {
     lifecycleState?: string | null
     path?: string | null
     worktreePath?: string | null
+    /** Preformatted relative time (sidebar "ago"), when available. */
+    relativeTime?: string | null
+    thinking?: boolean
+    /** Sidebar attention label (permission / input / unread / …). */
+    attentionLabel?: string | null
 }
 
 export type SessionMentionTooltipModel = {
@@ -131,8 +136,8 @@ export type SessionMentionTooltipModel = {
 }
 
 /**
- * Expand a truncated `@chip` into full title + lightweight meta for hover / a11y.
- * When `session` is null (draft rehydrate, unknown id), fall back to title + short id.
+ * Expand a truncated `@chip` into full title + meta for aria-label / fallback tip.
+ * Visual hover uses SessionRowSummary when a live SessionSummary is available.
  */
 export function formatSessionMentionTooltip(
     session: SessionMentionTooltipSource | null,
@@ -146,6 +151,8 @@ export function formatSessionMentionTooltip(
     let status: string | null = null
     if (session) {
         if (session.lifecycleState === 'archived') status = 'Archived'
+        else if (session.thinking) status = 'Thinking'
+        else if (session.attentionLabel) status = session.attentionLabel
         else status = session.active ? 'Active' : 'Inactive'
     }
 
@@ -153,6 +160,8 @@ export function formatSessionMentionTooltip(
     const lines: string[] = [
         status ? `Session · ${shortId} · ${status}` : `Session · ${shortId}`,
     ]
+    const ago = session?.relativeTime?.trim()
+    if (ago) lines.push(ago)
     if (path) lines.push(path)
 
     return {

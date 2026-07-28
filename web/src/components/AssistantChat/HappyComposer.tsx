@@ -13,7 +13,7 @@ import {
     useState
 } from 'react'
 import { isRichComposerMentionsEnabled } from '@/lib/composerSegments'
-import type { SessionMentionTooltipModel } from '@/lib/sessionReference'
+import type { SessionMentionResolveResult } from '@/components/AssistantChat/RichComposerInput'
 import {
     RichComposerInput,
     type RichComposerInputHandle,
@@ -209,7 +209,7 @@ export function HappyComposer(props: {
     sendError?: ComposerSendError | null
     onClearSendError?: () => void
     /** Chip hover / aria-label resolver (SessionChat → useSessions). */
-    resolveSessionMentionTooltip?: (id: string, title: string) => SessionMentionTooltipModel
+    resolveSessionMentionTooltip?: (id: string, title: string) => SessionMentionResolveResult
 }) {
     const { t } = useTranslation()
     const {
