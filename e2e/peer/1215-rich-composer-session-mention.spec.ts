@@ -44,6 +44,7 @@ test.describe('rich composer session @ mentions — peer stack (#1215)', () => {
             timeout: 60_000,
         })
 
+        await expect(page.getByTestId('rich-composer-flag-badge')).toBeVisible({ timeout: 60_000 })
         const rich = page.getByTestId('rich-composer-input')
         await expect(rich).toBeVisible({ timeout: 60_000 })
         await rich.click()
