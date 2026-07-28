@@ -1381,7 +1381,7 @@ export function HappyComposer(props: {
                                     onEdit={() => {
                                         if (sendError && onClearSendError) onClearSendError()
                                     }}
-                                    className="max-h-[7.5rem] min-h-[1.5rem] flex-1 overflow-y-auto whitespace-pre-wrap break-words bg-transparent text-base leading-snug text-[var(--app-fg)] focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 empty:before:content-none"
+                                    className="max-h-[7.5rem] min-h-[1.5rem] flex-1 overflow-y-auto whitespace-pre-wrap break-words bg-transparent text-base leading-snug text-[var(--app-fg)] focus:outline-none"
                                 />
                             ) : (
                                 <ComposerPrimitive.Input

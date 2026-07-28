@@ -7,6 +7,7 @@ import {
     useRef,
     useState,
     type ClipboardEvent as ReactClipboardEvent,
+    type DragEvent as ReactDragEvent,
     type FormEvent as ReactFormEvent,
     type KeyboardEvent as ReactKeyboardEvent,
     type PointerEvent as ReactPointerEvent,
@@ -153,49 +154,20 @@ export function segmentsFromEditor(root: HTMLElement): ComposerSegment[] {
     for (const child of Array.from(root.childNodes)) {
         walk(child)
     }
-    let coalesced = coalesceComposerSegments(segments)
-    // Chromium insertLineBreak at EOL leaves a trailing placeholder <br><br>.
-    // Drop one synthesized newline when the last two meaningful root kids are BRs.
-    const meaningful = Array.from(root.childNodes).filter((n) => {
-        if (n.nodeType === Node.TEXT_NODE) return Boolean(stripCaretPad(n.textContent ?? ''))
-        return n.nodeType === Node.ELEMENT_NODE
-    })
-    const last = meaningful[meaningful.length - 1]
-    const prev = meaningful[meaningful.length - 2]
-    if (
-        last?.nodeType === Node.ELEMENT_NODE
-        && (last as HTMLElement).tagName === 'BR'
-        && prev?.nodeType === Node.ELEMENT_NODE
-        && (prev as HTMLElement).tagName === 'BR'
-        && coalesced.length > 0
-    ) {
-        const tail = coalesced[coalesced.length - 1]!
-        if (tail.type === 'text' && tail.text.endsWith('\n')) {
-            const trimmed = tail.text.slice(0, -1)
-            coalesced = trimmed
-                ? [...coalesced.slice(0, -1), { type: 'text', text: trimmed }]
-                : coalesced.slice(0, -1)
-        }
-    }
-    return coalesceComposerSegments(coalesced)
+    return coalesceComposerSegments(segments)
 }
 
+/**
+ * Insert a single mirror newline at the caret. Prefer this over execCommand
+ * ('insertLineBreak'): in plaintext-only / pre-wrap Chromium inserts two `\n`
+ * text nodes (placeholder), which serializes as `\n\n` on the wire.
+ * Manual `\n` + CARET_PAD gives the same line-box height and serializes once.
+ */
 function insertLineBreakAtCaret(root: HTMLElement): void {
     const sel = window.getSelection()
     if (!sel || sel.rangeCount === 0) return
 
-    // Chromium's insertLineBreak handles the trailing "bogus BR" / line-box case
-    // that a manual <br> + empty text node does not (Shift+Enter looked like a no-op).
     root.focus()
-    try {
-        if (root.ownerDocument.execCommand('insertLineBreak')) {
-            return
-        }
-    } catch {
-        // Deprecated / unsupported — fall through to literal newline.
-    }
-
-    // Fallback: literal newline (editor is whitespace-pre-wrap) + caret pad at EOL.
     const range = sel.getRangeAt(0)
     range.deleteContents()
     const nl = document.createTextNode('\n')
@@ -394,17 +366,28 @@ function setMirrorSelection(root: HTMLElement, selection: ComposerSelection) {
 
 const MENTION_TOOLTIP_DELAY_MS = 300
 
-/** Firefox <136 treats unknown contenteditable values as inherit (not editable). */
-function contentEditableValue(disabled: boolean): boolean | 'plaintext-only' {
-    if (disabled) return false
-    if (typeof document === 'undefined') return true
+/** Lazily probed once — Firefox <136 treats unknown values as inherit (not editable). */
+let supportsPlaintextOnlyCached: boolean | null = null
+
+function supportsPlaintextOnly(): boolean {
+    if (supportsPlaintextOnlyCached !== null) return supportsPlaintextOnlyCached
+    if (typeof document === 'undefined') {
+        supportsPlaintextOnlyCached = false
+        return false
+    }
     try {
         const probe = document.createElement('div')
         probe.contentEditable = 'plaintext-only'
-        return probe.contentEditable === 'plaintext-only' ? 'plaintext-only' : true
+        supportsPlaintextOnlyCached = probe.contentEditable === 'plaintext-only'
     } catch {
-        return true
+        supportsPlaintextOnlyCached = false
     }
+    return supportsPlaintextOnlyCached
+}
+
+function contentEditableValue(disabled: boolean): boolean | 'plaintext-only' {
+    if (disabled) return false
+    return supportsPlaintextOnly() ? 'plaintext-only' : true
 }
 
 export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(function RichComposerInput(
@@ -608,23 +591,19 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         emitFromDom()
     }, [clearMentionTooltip, emitFromDom, onEdit])
 
-    const handlePaste = useCallback((e: ReactClipboardEvent<HTMLDivElement>) => {
-        const files = Array.from(e.clipboardData?.files ?? [])
-        const hasImage = files.some((file) => file.type.startsWith('image/'))
-        if (hasImage) {
-            onPaste?.(e)
-            return
-        }
-        // Contenteditable default paste inserts HTML; nested blocks collapse in
-        // segmentsFromEditor without depth-aware breaks. Force plain text.
-        e.preventDefault()
-        const text = e.clipboardData?.getData('text/plain') ?? ''
-        if (!text) return
+    const insertPlainClipboardText = useCallback((text: string) => {
         const root = rootRef.current
-        if (!root) return
+        if (!root || !text) return
         const segments = segmentsFromEditor(root)
         const selection = getMirrorSelection(root)
-        const result = insertPlainTextInComposerSegments(segments, selection, text, [])
+        // Paste/drop must not apply autocomplete trailing-space.
+        const result = insertPlainTextInComposerSegments(
+            segments,
+            selection,
+            text,
+            [],
+            false
+        )
         const serialized = serializeComposerSegments(result.segments)
         renderSegmentsToEditor(root, result.segments, resolveSessionMentionTooltip)
         lastEmittedRef.current = serialized
@@ -635,7 +614,27 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
             selection: result.selection,
         })
         onEdit?.()
-    }, [onEdit, onMirrorChange, onPaste, onValueChange, resolveSessionMentionTooltip])
+    }, [onEdit, onMirrorChange, onValueChange, resolveSessionMentionTooltip])
+
+    const handlePaste = useCallback((e: ReactClipboardEvent<HTMLDivElement>) => {
+        const files = Array.from(e.clipboardData?.files ?? [])
+        const hasImage = files.some((file) => file.type.startsWith('image/'))
+        if (hasImage) {
+            onPaste?.(e)
+            return
+        }
+        // Contenteditable default paste inserts HTML; nested blocks collapse in
+        // segmentsFromEditor without depth-aware breaks. Force plain text.
+        e.preventDefault()
+        insertPlainClipboardText(e.clipboardData?.getData('text/plain') ?? '')
+    }, [insertPlainClipboardText, onPaste])
+
+    const handleDrop = useCallback((e: ReactDragEvent<HTMLDivElement>) => {
+        const text = e.dataTransfer?.getData('text/plain') ?? ''
+        if (!text) return
+        e.preventDefault()
+        insertPlainClipboardText(text)
+    }, [insertPlainClipboardText])
 
     const handleKeyDown = useCallback((e: ReactKeyboardEvent<HTMLDivElement>) => {
         if (e.nativeEvent.isComposing) {
@@ -722,6 +721,7 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
                 onPointerOver={handlePointerOver}
                 onPointerLeave={handlePointerLeave}
                 onPaste={handlePaste}
+                onDrop={handleDrop}
                 onCompositionStart={() => {
                     composingRef.current = true
                 }}

@@ -210,12 +210,16 @@ export function deleteBackwardInComposerSegments(
     return { segments: next, selection: { start: caret, end: caret } }
 }
 
-/** Replace a mirror-space range with plain text (slash / skill / file @ picks). */
+/**
+ * Replace a mirror-space range with plain text (slash / skill / file @ picks).
+ * `addSpace` defaults true for autocomplete acceptance; paste/drop must pass false.
+ */
 export function insertPlainTextInComposerSegments(
     segments: readonly ComposerSegment[],
     selection: ComposerSelection,
     text: string,
-    prefixes: string[] = ['@', '/', '$']
+    prefixes: string[] = ['@', '/', '$'],
+    addSpace: boolean = true
 ): { segments: ComposerSegment[]; selection: ComposerSelection } {
     const mirror = mirrorComposerSegments(segments)
     const active = findActiveWord(mirror, selection, prefixes)
@@ -224,7 +228,8 @@ export function insertPlainTextInComposerSegments(
     const { before } = splitMirrorAt(segments, replaceStart)
     const { after } = splitMirrorAt(segments, replaceEnd)
     const afterMirror = mirrorComposerSegments(after)
-    const needsTrailingSpace = afterMirror.length === 0 || afterMirror[0] !== ' '
+    const needsTrailingSpace =
+        addSpace && (afterMirror.length === 0 || afterMirror[0] !== ' ')
     const insert = needsTrailingSpace ? `${text} ` : text
     const inserted: ComposerSegment[] = [...before, { type: 'text', text: insert }]
     const next = coalesceComposerSegments([...inserted, ...after])

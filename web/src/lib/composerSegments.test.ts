@@ -100,6 +100,35 @@ describe('insertPlainTextInComposerSegments', () => {
             'ref [Peer A](/sessions/aaa) /help '
         )
     })
+
+    it('paste/drop path does not append trailing space', () => {
+        const empty = insertPlainTextInComposerSegments(
+            [],
+            { start: 0, end: 0 },
+            'pasted',
+            [],
+            false
+        )
+        expect(serializeComposerSegments(empty.segments)).toBe('pasted')
+
+        const mid = insertPlainTextInComposerSegments(
+            [{ type: 'text', text: 'abcd' }],
+            { start: 2, end: 2 },
+            'X',
+            [],
+            false
+        )
+        expect(serializeComposerSegments(mid.segments)).toBe('abXcd')
+
+        const multi = insertPlainTextInComposerSegments(
+            [],
+            { start: 0, end: 0 },
+            'l1\nl2',
+            [],
+            false
+        )
+        expect(serializeComposerSegments(multi.segments)).toBe('l1\nl2')
+    })
 })
 
 describe('findActiveWord with mention mirror atoms', () => {

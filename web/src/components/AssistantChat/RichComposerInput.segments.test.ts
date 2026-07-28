@@ -15,10 +15,24 @@ describe('segmentsFromEditor', () => {
         expect(serializeComposerSegments(segmentsFromEditor(root))).toBe('a\nb')
     })
 
-    it('drops Chromium trailing placeholder br (insertLineBreak at EOL)', () => {
+    it('preserves blank-line endings from renderSegments (br+br+pad)', () => {
+        // renderSegmentsToEditor maps "...\n\n" → text + <br> + <br> + ZWSP.
+        // Must not strip a real trailing blank line on re-serialize.
         const root = document.createElement('div')
-        root.innerHTML = 'a<br><br>'
-        expect(serializeComposerSegments(segmentsFromEditor(root))).toBe('a\n')
+        root.appendChild(document.createTextNode('a'))
+        root.appendChild(document.createElement('br'))
+        root.appendChild(document.createElement('br'))
+        root.appendChild(document.createTextNode('\u200B'))
+        expect(serializeComposerSegments(segmentsFromEditor(root))).toBe('a\n\n')
+    })
+
+    it('serializes Chromium-style LF text nodes without inventing extras', () => {
+        // plaintext-only insertLineBreak used to leave hello + \\n + \\n text nodes.
+        const root = document.createElement('div')
+        root.appendChild(document.createTextNode('hello'))
+        root.appendChild(document.createTextNode('\n'))
+        root.appendChild(document.createTextNode('\n'))
+        expect(serializeComposerSegments(segmentsFromEditor(root))).toBe('hello\n\n')
     })
 
     it('strips caret-pad ZWSP used for trailing linebreak line-boxes', () => {
