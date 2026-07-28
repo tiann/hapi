@@ -7,6 +7,7 @@ import type { SyncEngine } from '../../sync/syncEngine'
 import type { VisibilityState } from '../../visibility/visibilityTracker'
 import type { VisibilityTracker } from '../../visibility/visibilityTracker'
 import type { WebAppEnv } from '../middleware/auth'
+import { compressSseResponse } from '../sseCompression'
 import { requireSession } from './guards'
 
 function parseOptionalId(value: string | undefined): string | null {
@@ -77,7 +78,7 @@ export function createEventsRoutes(
             }
         }
 
-        return streamSSE(c, async (stream) => {
+        const response = streamSSE(c, async (stream) => {
             manager.subscribe({
                 id: subscriptionId,
                 namespace,
@@ -117,6 +118,8 @@ export function createEventsRoutes(
 
             manager.unsubscribe(subscriptionId)
         })
+
+        return compressSseResponse(response, c.req.header('Accept-Encoding'))
     })
 
     app.post('/visibility', async (c) => {
