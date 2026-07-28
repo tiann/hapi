@@ -435,6 +435,11 @@ function ToolCardInner(props: ToolCardProps) {
         || ((permission.status === 'denied' || permission.status === 'canceled') && Boolean(permission.reason))
     ))
     const hasBody = showInline || taskSummary !== null || showsPermissionFooter
+    // Header/content padding already supplies 12-16px below timing; add only
+    // the remainder needed to match the detail dialog's 16px section gap.
+    const inlineBodySpacing = props.block.tool.state === 'pending'
+        ? 'mt-3'
+        : (subtitle ? 'mt-1' : 'mt-0')
     const stateColor = toolStatusColorClass(props.block.tool.state)
     const { suppressFocusRing, onTriggerPointerDown, onTriggerKeyDown, onTriggerBlur } = usePointerFocusRing()
     const openDetails = () => setDetailsOpen(true)
@@ -536,7 +541,10 @@ function ToolCardInner(props: ToolCardProps) {
                     {showInline ? (
                         CompactToolView ? (
                             <div
-                                className="mt-3 cursor-pointer rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                                className={cn(
+                                    inlineBodySpacing,
+                                    'cursor-pointer rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]'
+                                )}
                                 role="button"
                                 tabIndex={0}
                                 onClick={openDetailsFromInlinePreview}
@@ -545,7 +553,7 @@ function ToolCardInner(props: ToolCardProps) {
                                 <CompactToolView block={props.block} metadata={props.metadata} surface="inline" />
                             </div>
                         ) : (
-                            <div className="mt-3 flex flex-col gap-3">
+                            <div className={cn(inlineBodySpacing, 'flex flex-col gap-3')}>
                                 <div
                                     className="cursor-pointer rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
                                     role="button"
