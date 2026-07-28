@@ -25,7 +25,10 @@ export type ComposerToolbarLayout = {
 
 export const DEFAULT_COMPOSER_TOOLBAR_LAYOUT: ComposerToolbarLayout = {
     mode: 'left',
-    left: [...COMPOSER_TOOLBAR_ITEM_IDS],
+    left: [
+        ...COMPOSER_TOOLBAR_ITEM_IDS.filter((item) => item !== 'abort'),
+        'abort',
+    ],
     right: [],
 }
 

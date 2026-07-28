@@ -5,6 +5,23 @@ import {
     normalizeComposerToolbarLayout,
 } from './useComposerToolbarLayout'
 
+describe('DEFAULT_COMPOSER_TOOLBAR_LAYOUT', () => {
+    it('keeps abort last in the default order', () => {
+        expect(DEFAULT_COMPOSER_TOOLBAR_LAYOUT.left).toEqual([
+            'attachment',
+            'settings',
+            'piModel',
+            'piThinking',
+            'terminal',
+            'switch',
+            'voiceMic',
+            'scratchlist',
+            'schedule',
+            'abort',
+        ])
+    })
+})
+
 describe('normalizeComposerToolbarLayout', () => {
     beforeEach(() => localStorage.clear())
 
