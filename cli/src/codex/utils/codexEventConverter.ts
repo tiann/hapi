@@ -6,7 +6,9 @@ import { logger } from '@/ui/logger';
 const CodexSessionEventSchema = z.object({
     timestamp: z.string().optional(),
     type: z.string(),
-    payload: z.unknown().optional()
+    payload: z.unknown().optional(),
+    thread_id: z.string().optional(),
+    threadId: z.string().optional()
 });
 
 export type CodexSessionEvent = z.infer<typeof CodexSessionEventSchema>;
@@ -33,6 +35,10 @@ export type CodexMessage = {
     id: string;
     usageSchema: InclusiveInputTokenUsageMarker['usageSchema'];
     inputTokenSemantics: InclusiveInputTokenUsageMarker['inputTokenSemantics'];
+    thread_id?: string;
+    threadId?: string;
+    scope_role?: string;
+    scopeRole?: string;
 } | {
     type: 'tool-call';
     name: string;
@@ -602,12 +608,22 @@ export function convertCodexEvent(rawEvent: unknown): CodexEventProjection | nul
                     info.rate_limits = rateLimits;
                 }
             }
+            const threadId = asString(payloadRecord.thread_id)
+                ?? asString(payloadRecord.threadId)
+                ?? asString(parsed.data.thread_id)
+                ?? asString(parsed.data.threadId);
+            const scope = asRecord(payloadRecord.scope);
+            const scopeRole = asString(payloadRecord.scope_role)
+                ?? asString(payloadRecord.scopeRole)
+                ?? asString(scope?.role);
             return {
                 messages: [{
                     type: 'token_count',
                     ...INCLUSIVE_INPUT_TOKEN_USAGE_MARKER,
                     info,
-                    id: randomUUID()
+                    id: randomUUID(),
+                    ...(threadId ? { thread_id: threadId, threadId } : {}),
+                    ...(scopeRole ? { scope_role: scopeRole, scopeRole } : {})
                 }]
             };
         }

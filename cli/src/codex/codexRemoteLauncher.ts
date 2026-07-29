@@ -375,9 +375,18 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             onEvent: (event) => {
                 const converted = convertCodexEvent(event);
                 for (const message of converted?.messages ?? []) {
-                    if (message.type === 'token_count') {
-                        this.session.recordCodexUsage(message);
+                    if (message.type !== 'token_count') {
+                        continue;
                     }
+                    const scopeRole = message.scopeRole ?? message.scope_role;
+                    if (scopeRole === 'child') {
+                        continue;
+                    }
+                    const eventThreadId = message.threadId ?? message.thread_id;
+                    if (eventThreadId && eventThreadId !== threadId) {
+                        continue;
+                    }
+                    this.session.recordCodexUsage(message);
                 }
             }
         });
