@@ -124,3 +124,29 @@ test('two quotes render numbered markers pinned to the source', async ({ page })
             .some((el) => getComputedStyle(el).position !== 'absolute'))
     expect(inFlow).toBe(false)
 })
+
+test('chip jump and remove are separate, keyboard-reachable controls', async ({ page }) => {
+    // chip 曾经是一个 <button> 里面套一个 role="button" 的 span。那样 HTML
+    // 校验能过，但键盘和辅助技术无法区分该激活哪一个。现在是两个并列按钮。
+    await page.goto(FIXTURE)
+    await dragSelect(page, '#msg-1 p')
+    await page.getByTestId('quote-button').click()
+    await expect(page.getByTestId('quote-chip')).toHaveCount(1)
+
+    // 两个控件都是真正的 button，且不互相嵌套
+    const nested = await page.evaluate(() => {
+        const jump = document.querySelector('[data-testid="quote-chip-jump"]')
+        const remove = document.querySelector('[data-testid="quote-chip-remove"]')
+        return {
+            jumpTag: jump?.tagName,
+            removeTag: remove?.tagName,
+            removeInsideJump: Boolean(jump && remove && jump.contains(remove)),
+        }
+    })
+    expect(nested).toEqual({ jumpTag: 'BUTTON', removeTag: 'BUTTON', removeInsideJump: false })
+
+    // 移除按钮可以纯键盘触达并激活
+    await page.getByTestId('quote-chip-remove').first().focus()
+    await page.keyboard.press('Enter')
+    await expect(page.getByTestId('quote-chip')).toHaveCount(0)
+})

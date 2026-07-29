@@ -33,6 +33,14 @@ export function resolveQuotableSelection(
     if (!text) return null
 
     const range = selection.getRangeAt(0)
+    // 选区两端都必须落在消息容器内。只校验命中的消息节点是不够的：从消息里
+    // 起拖、在 composer 或页面空白处松手时，起点仍在某条消息内，检查会通过，
+    // 但 selection.toString() 已经把界面上的无关文字一起卷进来，并原样序列化
+    // 进发给 agent 的 prompt。
+    if (!container.contains(range.startContainer) || !container.contains(range.endContainer)) {
+        return null
+    }
+
     let message = closestElement(range.commonAncestorContainer)?.closest('.happy-message') ?? null
     if (!message) {
         // 跨消息选区的 commonAncestorContainer 会落在两条消息的公共祖先上，
