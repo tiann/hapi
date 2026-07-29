@@ -6,8 +6,9 @@ import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import { isCodexSubagentSource } from '@/codex/utils/codexSessionMetadata'
 
 const DEFAULT_CODEX_SESSION_SCAN_LIMIT = 200
-/** Head window for summary listing — enough for session_meta + early user/title events. */
+/** Head/tail window for summary listing — enough for session_meta + recent title/user events. */
 const CODEX_SUMMARY_HEAD_BYTES = 256 * 1024
+const CODEX_SUMMARY_TAIL_BYTES = CODEX_SUMMARY_HEAD_BYTES
 
 type CodexSessionIndexTitle = {
     threadName: string
@@ -105,6 +106,26 @@ function readFileHead(filePath: string, maxBytes: number): string | null {
         fd = openSync(filePath, 'r')
         const buffer = Buffer.alloc(Math.max(1, maxBytes))
         const bytesRead = readSync(fd, buffer, 0, buffer.length, 0)
+        return buffer.subarray(0, bytesRead).toString('utf-8')
+    } catch {
+        return null
+    } finally {
+        if (fd !== undefined) {
+            try { closeSync(fd) } catch { /* ignore */ }
+        }
+    }
+}
+
+function readFileTail(filePath: string, maxBytes: number): string | null {
+    let fd: number | undefined
+    try {
+        const size = statSync(filePath).size
+        if (size <= 0) return ''
+        const length = Math.min(size, Math.max(1, maxBytes))
+        const position = size - length
+        fd = openSync(filePath, 'r')
+        const buffer = Buffer.alloc(length)
+        const bytesRead = readSync(fd, buffer, 0, length, position)
         return buffer.subarray(0, bytesRead).toString('utf-8')
     } catch {
         return null
@@ -378,10 +399,12 @@ function parseCodexLocalSession(
     sessionId = sessionId ?? inferSessionIdFromFileName(filePath)
     if (!sessionId) return null
     const sessionIndexTitle = sessionIndexTitles.get(sessionId)?.threadName ?? null
-    // Title/last-user scans stay on the same line set we already loaded (head for
-    // summaries, full file only when importing messages).
-    const changedTitle = getLatestCodexChangedTitle(includeMessages ? lines : headLines)
-    const lastUserMessage = getLatestCodexUserMessage(includeMessages ? lines : headLines)
+    // Title/last-user scans need the transcript tail; head alone goes stale on large sessions.
+    const latestLines = includeMessages
+        ? lines
+        : (readFileTail(filePath, CODEX_SUMMARY_TAIL_BYTES)?.split(/\r?\n/).filter(Boolean) ?? headLines)
+    const changedTitle = getLatestCodexChangedTitle(latestLines)
+    const lastUserMessage = getLatestCodexUserMessage(latestLines)
     let modifiedAt = Date.now()
     try { modifiedAt = statSync(filePath).mtimeMs } catch {}
     const summary = {

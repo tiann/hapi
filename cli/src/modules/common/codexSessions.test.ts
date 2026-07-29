@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, utimesSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, utimesSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { archiveLocalCodexSession, listLocalCodexSessionSummaries, listLocalCodexSessionsWithMessagesByIds } from './codexSessions'
@@ -204,6 +204,66 @@ describe('listLocalCodexSessionSummaries', () => {
         expect(sessions).toHaveLength(1)
         expect(sessions[0]?.cwd).toBe('/tmp/new')
         expect(sessions[0]?.file).toBe(newer)
+
+        rmSync(root, { recursive: true, force: true })
+    })
+
+    it('reads latest title and last user message from the transcript tail', () => {
+        const root = mkdtempSync(join(tmpdir(), 'codex-home-'))
+        process.env.CODEX_HOME = root
+        const sessionsDir = join(root, 'sessions', '2026', '06', '27')
+        mkdirSync(sessionsDir, { recursive: true })
+
+        // Build a transcript larger than the 256 KiB summary head window.
+        const fillerLine = JSON.stringify({
+            type: 'response_item',
+            payload: {
+                type: 'message',
+                role: 'assistant',
+                content: [{ type: 'output_text', text: 'x'.repeat(4000) }]
+            }
+        })
+        const lines = [
+            JSON.stringify({
+                type: 'session_meta',
+                payload: { id: 'tail-session-id', cwd: '/tmp/project' }
+            }),
+            JSON.stringify({
+                type: 'response_item',
+                payload: {
+                    type: 'message',
+                    role: 'user',
+                    content: [{ type: 'input_text', text: 'early prompt' }]
+                }
+            }),
+            ...Array.from({ length: 80 }, () => fillerLine),
+            JSON.stringify({
+                type: 'event_msg',
+                payload: {
+                    type: 'mcp_tool_call_end',
+                    invocation: {
+                        tool: 'change_title',
+                        arguments: { title: 'tail title' }
+                    }
+                }
+            }),
+            JSON.stringify({
+                type: 'response_item',
+                payload: {
+                    type: 'message',
+                    role: 'user',
+                    content: [{ type: 'input_text', text: 'latest prompt from the tail' }]
+                }
+            })
+        ]
+        const filePath = join(sessionsDir, 'tail.jsonl')
+        writeFileSync(filePath, lines.join('\n') + '\n')
+        expect(statSync(filePath).size).toBeGreaterThan(256 * 1024)
+
+        const sessions = listLocalCodexSessionSummaries()
+        expect(sessions).toHaveLength(1)
+        expect(sessions[0]?.title).toBe('tail title')
+        expect(sessions[0]?.lastUserMessage).toBe('latest prompt from the tail')
 
         rmSync(root, { recursive: true, force: true })
     })
