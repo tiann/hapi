@@ -957,13 +957,15 @@ function SessionItem(props: {
                 />
             ) : null}
 
-            <RenameSessionDialog
-                isOpen={renameOpen}
-                onClose={() => setRenameOpen(false)}
-                currentName={sessionName}
-                onRename={renameSession}
-                isPending={isPending}
-            />
+            {renameOpen ? (
+                <RenameSessionDialog
+                    isOpen={true}
+                    onClose={() => setRenameOpen(false)}
+                    currentName={sessionName}
+                    onRename={renameSession}
+                    isPending={isPending}
+                />
+            ) : null}
 
             {exportOpen ? (
                 <SessionExportDialog
@@ -974,29 +976,33 @@ function SessionItem(props: {
                 />
             ) : null}
 
-            <ConfirmDialog
-                isOpen={archiveOpen}
-                onClose={() => setArchiveOpen(false)}
-                title={t('dialog.archive.title')}
-                description={t('dialog.archive.description', { name: sessionName })}
-                confirmLabel={t('dialog.archive.confirm')}
-                confirmingLabel={t('dialog.archive.confirming')}
-                onConfirm={archiveSession}
-                isPending={isPending}
-                destructive
-            />
+            {archiveOpen ? (
+                <ConfirmDialog
+                    isOpen={true}
+                    onClose={() => setArchiveOpen(false)}
+                    title={t('dialog.archive.title')}
+                    description={t('dialog.archive.description', { name: sessionName })}
+                    confirmLabel={t('dialog.archive.confirm')}
+                    confirmingLabel={t('dialog.archive.confirming')}
+                    onConfirm={archiveSession}
+                    isPending={isPending}
+                    destructive
+                />
+            ) : null}
 
-            <ConfirmDialog
-                isOpen={deleteOpen}
-                onClose={() => setDeleteOpen(false)}
-                title={t('dialog.delete.title')}
-                description={t('dialog.delete.description', { name: sessionName })}
-                confirmLabel={t('dialog.delete.confirm')}
-                confirmingLabel={t('dialog.delete.confirming')}
-                onConfirm={deleteSession}
-                isPending={isPending}
-                destructive
-            />
+            {deleteOpen ? (
+                <ConfirmDialog
+                    isOpen={true}
+                    onClose={() => setDeleteOpen(false)}
+                    title={t('dialog.delete.title')}
+                    description={t('dialog.delete.description', { name: sessionName })}
+                    confirmLabel={t('dialog.delete.confirm')}
+                    confirmingLabel={t('dialog.delete.confirming')}
+                    onConfirm={deleteSession}
+                    isPending={isPending}
+                    destructive
+                />
+            ) : null}
         </>
     )
 }
