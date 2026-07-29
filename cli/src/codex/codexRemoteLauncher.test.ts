@@ -3194,6 +3194,17 @@ describe('codexRemoteLauncher', () => {
         });
         harness.scannerEvents[0]?.({
             type: 'event_msg',
+            thread_id: 'child-thread',
+            payload: {
+                type: 'token_count',
+                scope_role: 'child',
+                info: {
+                    total_token_usage: { total_tokens: 999 }
+                }
+            }
+        });
+        harness.scannerEvents[0]?.({
+            type: 'event_msg',
             payload: {
                 type: 'agent_message',
                 message: 'transcript duplicate'
