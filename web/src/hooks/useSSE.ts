@@ -59,6 +59,26 @@ function isSessionRecord(value: unknown): value is Session {
     return SessionSchema.safeParse(value).success
 }
 
+/**
+ * True when the only difference between two summaries is `activeAt`.
+ *
+ * The CLI keep-alive makes the hub re-broadcast a full session patch about
+ * every 10s per active session even when nothing changed, and `activeAt` is
+ * the sole field that moves. No component reads `activeAt` - the list shows
+ * `updatedAt` and sorts on active/pendingRequestsCount/updatedAt - so storing
+ * it costs a new object identity and a full list re-render for nothing.
+ */
+export function isRenderIrrelevantPatch(current: SessionSummary, next: SessionSummary): boolean {
+    return current.active === next.active
+        && current.thinking === next.thinking
+        && current.updatedAt === next.updatedAt
+        && current.backgroundTaskCount === next.backgroundTaskCount
+        && current.model === next.model
+        && current.modelReasoningEffort === next.modelReasoningEffort
+        && current.effort === next.effort
+        && current.pendingRequestsCount === next.pendingRequestsCount
+}
+
 function getSessionPatch(value: unknown): SessionPatch | null {
     const parsed = SessionPatchSchema.safeParse(value)
     if (!parsed.success) {
@@ -370,6 +390,13 @@ export function useSSE(options: {
                 }
 
                 patched = true
+                // The keep-alive patch repeats every field every ~10s per active
+                // session, and `activeAt` is the only one that actually moves.
+                // Nothing renders `activeAt`, so writing a new object for it just
+                // hands React Query a fresh reference and re-renders the list.
+                if (isRenderIrrelevantPatch(current, nextSummary)) {
+                    return previous
+                }
                 nextSessions[index] = nextSummary
                 nextSessions.sort(sortSessionSummaries)
                 return { ...previous, sessions: nextSessions }
