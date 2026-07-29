@@ -1,6 +1,33 @@
 import zlib from 'node:zlib'
 
 /**
+ * True when the client is willing to receive gzip.
+ *
+ * `Accept-Encoding: gzip;q=0` means the opposite of what a substring match
+ * would suggest, so parse the q-value rather than looking for the word.
+ */
+function acceptsGzip(acceptEncoding: string | undefined): boolean {
+    if (!acceptEncoding) {
+        return false
+    }
+    for (const part of acceptEncoding.split(',')) {
+        const [rawName, ...params] = part.split(';')
+        const name = rawName?.trim().toLowerCase()
+        if (name !== 'gzip' && name !== '*') {
+            continue
+        }
+        const q = params
+            .map((param) => param.trim().toLowerCase())
+            .find((param) => param.startsWith('q='))
+        if (q && Number(q.slice(2)) === 0) {
+            return false
+        }
+        return true
+    }
+    return false
+}
+
+/**
  * Wraps an SSE response in a gzip stream when the client accepts it.
  *
  * SSE payloads are plain JSON with the same field names repeated on every
@@ -15,17 +42,38 @@ import zlib from 'node:zlib'
  * `Transfer-Encoding` is set, and `streamSSE` always sets it.)
  */
 export function compressSseResponse(response: Response, acceptEncoding: string | undefined): Response {
-    if (!acceptEncoding?.toLowerCase().includes('gzip') || !response.body) {
+    if (!acceptsGzip(acceptEncoding) || !response.body) {
         return response
     }
 
     const gzip = zlib.createGzip({ flush: zlib.constants.Z_SYNC_FLUSH })
     const source = response.body
+    // Acquired synchronously so `cancel` can always reach it. Cancelling
+    // `source` directly would throw: it is locked for as long as we hold a
+    // reader, which is the whole lifetime of the connection.
+    const reader = source.getReader()
+    let resumeRead: (() => void) | null = null
 
     const compressed = new ReadableStream<Uint8Array>({
         start(controller) {
+            // Gate reading on downstream demand. Checking only zlib's own
+            // buffer is not enough: SSE compresses so well that a slow client
+            // can be megabytes behind while the compressed queue still looks
+            // nearly empty.
+            const awaitDemand = (): Promise<void> => {
+                if ((controller.desiredSize ?? 1) > 0) {
+                    return Promise.resolve()
+                }
+                return new Promise<void>((resolve) => {
+                    resumeRead = resolve
+                })
+            }
+
             gzip.on('data', (chunk: Buffer) => {
                 controller.enqueue(new Uint8Array(chunk))
+                if ((controller.desiredSize ?? 1) <= 0) {
+                    gzip.pause()
+                }
             })
             gzip.on('end', () => {
                 controller.close()
@@ -35,28 +83,36 @@ export function compressSseResponse(response: Response, acceptEncoding: string |
             })
 
             void (async () => {
-                const reader = source.getReader()
                 try {
                     for (;;) {
+                        await awaitDemand()
                         const { done, value } = await reader.read()
                         if (done) {
                             break
                         }
-                        gzip.write(Buffer.from(value))
+                        if (!gzip.write(Buffer.from(value))) {
+                            await new Promise<void>((resolve) => gzip.once('drain', resolve))
+                        }
                         gzip.flush(zlib.constants.Z_SYNC_FLUSH)
                     }
                 } catch (error) {
                     gzip.destroy(error as Error)
                     return
-                } finally {
-                    reader.releaseLock()
                 }
                 gzip.end()
             })()
         },
+        pull() {
+            gzip.resume()
+            const resume = resumeRead
+            resumeRead = null
+            resume?.()
+        },
         cancel(reason) {
-            gzip.destroy(reason instanceof Error ? reason : undefined)
-            void source.cancel(reason)
+            gzip.destroy()
+            resumeRead?.()
+            resumeRead = null
+            return reader.cancel(reason)
         }
     })
 
