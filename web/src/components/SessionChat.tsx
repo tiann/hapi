@@ -48,6 +48,7 @@ import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
 import { createScratchlistAttachmentAdapter } from '@/lib/scratchlistAttachmentAdapter'
 import {
     attachmentsNeedScratchlistMigration,
+    finalizeMigratedScratchlistParkCleanup,
     rehydrateScratchlistAttachmentsToComposer,
     stageScratchlistAttachmentsForComposeSend
 } from '@/lib/scratchlistAttachmentFlow'
@@ -624,7 +625,14 @@ function SessionChatInner(props: SessionChatProps) {
                 return false
             }
             if (shouldRouteToScratchlist(scratchlistMode, attachments, scheduledAt)) {
-                return scratchlist.add(text, attachments)
+                const accepted = await scratchlist.add(text, attachments)
+                await finalizeMigratedScratchlistParkCleanup(
+                    props.api,
+                    props.session.id,
+                    attachments,
+                    accepted,
+                )
+                return accepted
             }
             // If the user uploaded while scratchlist mode was on, then toggled
             // it off before send, pending items still carry hub paths. Stage

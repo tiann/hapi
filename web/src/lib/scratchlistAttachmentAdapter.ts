@@ -183,11 +183,18 @@ export function createScratchlistAttachmentAdapter(api: ApiClient, sessionId: st
             const pending = attachment as PendingScratchlistAttachment
             let hubAttachment = pending.hubAttachment
             let previewUrl = pending.previewUrl
+            let migratedFromPath: string | undefined
 
             // Attach-before-mode: composer still holds a chat-path pending from
             // the normal upload adapter. Migrate into hub scratchlist storage
             // so park keeps the image (#1226). Fail closed (throw) — empty
             // content would park text-only and clear chips silently.
+            //
+            // Do NOT delete the chat-path upload here: send() runs before
+            // scratchlist.add succeeds. If park is rejected (at-cap / 409 /
+            // network), the composer keeps chips that still reference the
+            // chat path; deleting early poisons retry and orphans the hub
+            // blob. Cleanup is deferred to onSendForComposer.
             if (!hubAttachment) {
                 const file = attachment.file
                 if (!file) {
@@ -211,7 +218,7 @@ export function createScratchlistAttachmentAdapter(api: ApiClient, sessionId: st
                     pending.path
                     && !isHubScratchlistAttachmentPath(pending.path)
                 ) {
-                    await api.deleteUploadFile(sessionId, pending.path).catch(() => {})
+                    migratedFromPath = pending.path
                 }
                 if (!previewUrl && isImageMimeType(contentType) && file.size <= MAX_PREVIEW_BYTES) {
                     previewUrl = await fileToDataUrl(file)
@@ -229,7 +236,8 @@ export function createScratchlistAttachmentAdapter(api: ApiClient, sessionId: st
                     text: JSON.stringify({
                         __attachmentMetadata: {
                             ...hubAttachment,
-                            previewUrl
+                            previewUrl,
+                            ...(migratedFromPath ? { migratedFromPath } : {}),
                         }
                     })
                 }]

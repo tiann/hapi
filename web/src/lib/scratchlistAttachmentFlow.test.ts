@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest'
 import type { AttachmentMetadata } from '@/types/api'
 import {
     attachmentsNeedScratchlistMigration,
+    finalizeMigratedScratchlistParkCleanup,
     migrateChatPathAttachmentsToScratchlist,
+    type ParkAttachmentMetadata,
 } from './scratchlistAttachmentFlow'
 
 function chatAttachment(path = '/tmp/hapi-blobs/a.png'): AttachmentMetadata {
@@ -111,5 +113,78 @@ describe('migrateChatPathAttachmentsToScratchlist (#1226)', () => {
         )).rejects.toThrow(/too big|Failed to migrate/i)
 
         expect(deleteScratchlistAttachment).toHaveBeenCalledWith('session-1', 'hub-ok')
+    })
+})
+
+describe('finalizeMigratedScratchlistParkCleanup (#1226)', () => {
+    const hubPath = 'hapi-hub:scratchlist/default/session-1/hub-1-a.png'
+    const chatPath = '/tmp/hapi-blobs/a.png'
+
+    it('deletes chat uploads after accepted park', async () => {
+        const deleteUploadFile = vi.fn().mockResolvedValue(undefined)
+        const deleteScratchlistAttachment = vi.fn()
+        const api = { deleteUploadFile, deleteScratchlistAttachment } as never
+
+        await finalizeMigratedScratchlistParkCleanup(
+            api,
+            'session-1',
+            [{
+                id: 'hub-1',
+                filename: 'a.png',
+                mimeType: 'image/png',
+                size: 1,
+                path: hubPath,
+                migratedFromPath: chatPath,
+            } as ParkAttachmentMetadata],
+            true,
+        )
+
+        expect(deleteUploadFile).toHaveBeenCalledWith('session-1', chatPath)
+        expect(deleteScratchlistAttachment).not.toHaveBeenCalled()
+    })
+
+    it('deletes orphan hub blobs after rejected park so retry can remigrate', async () => {
+        const deleteUploadFile = vi.fn()
+        const deleteScratchlistAttachment = vi.fn().mockResolvedValue(undefined)
+        const api = { deleteUploadFile, deleteScratchlistAttachment } as never
+
+        await finalizeMigratedScratchlistParkCleanup(
+            api,
+            'session-1',
+            [{
+                id: 'hub-1',
+                filename: 'a.png',
+                mimeType: 'image/png',
+                size: 1,
+                path: hubPath,
+                migratedFromPath: chatPath,
+            } as ParkAttachmentMetadata],
+            false,
+        )
+
+        expect(deleteScratchlistAttachment).toHaveBeenCalledWith('session-1', 'hub-1')
+        expect(deleteUploadFile).not.toHaveBeenCalled()
+    })
+
+    it('no-ops when nothing was migrated from a chat path', async () => {
+        const deleteUploadFile = vi.fn()
+        const deleteScratchlistAttachment = vi.fn()
+        const api = { deleteUploadFile, deleteScratchlistAttachment } as never
+
+        await finalizeMigratedScratchlistParkCleanup(
+            api,
+            'session-1',
+            [{
+                id: 'hub-1',
+                filename: 'a.png',
+                mimeType: 'image/png',
+                size: 1,
+                path: hubPath,
+            }],
+            true,
+        )
+
+        expect(deleteUploadFile).not.toHaveBeenCalled()
+        expect(deleteScratchlistAttachment).not.toHaveBeenCalled()
     })
 })

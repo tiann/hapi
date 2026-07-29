@@ -23,11 +23,43 @@ async function blobToBase64(blob: Blob): Promise<string> {
     })
 }
 
+/** Client-only marker stashed on park payloads after chat→hub migrate (#1226). */
+export type ParkAttachmentMetadata = AttachmentMetadata & {
+    migratedFromPath?: string
+}
+
 /** True when any composer attachment still lives on the normal chat upload path. */
 export function attachmentsNeedScratchlistMigration(
     attachments: AttachmentMetadata[] | undefined
 ): boolean {
     return (attachments ?? []).some((att) => !isHubScratchlistAttachmentPath(att.path))
+}
+
+/**
+ * After a scratchlist park attempt for migrated chat-path chips:
+ * - accepted: drop the original chat uploads (hub blobs are on the entry)
+ * - rejected: drop the orphan hub blobs so retry can re-migrate from chat paths
+ */
+export async function finalizeMigratedScratchlistParkCleanup(
+    api: ApiClient,
+    sessionId: string,
+    attachments: AttachmentMetadata[] | undefined,
+    accepted: boolean,
+): Promise<void> {
+    const list = (attachments ?? []) as ParkAttachmentMetadata[]
+    const migrated = list.filter((att) => typeof att.migratedFromPath === 'string' && att.migratedFromPath.length > 0)
+    if (migrated.length === 0) return
+
+    if (accepted) {
+        await Promise.allSettled(
+            migrated.map((att) => api.deleteUploadFile(sessionId, att.migratedFromPath!))
+        )
+        return
+    }
+
+    await Promise.allSettled(
+        migrated.map((att) => api.deleteScratchlistAttachment(sessionId, att.id))
+    )
 }
 
 /**

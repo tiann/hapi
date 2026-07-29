@@ -333,10 +333,8 @@ describe('createScratchlistAttachmentAdapter.send migrates chat-path chips (#122
             expect.any(String),
             'image/png',
         )
-        expect(deleteUploadFile).toHaveBeenCalledWith(
-            'session-1',
-            '/tmp/hapi-blobs/session-1/before-mode.png',
-        )
+        // Chat-path cleanup is deferred until scratchlist.add succeeds (#1226 review).
+        expect(deleteUploadFile).not.toHaveBeenCalled()
         expect(complete.content).toEqual([
             {
                 type: 'text',
@@ -344,6 +342,7 @@ describe('createScratchlistAttachmentAdapter.send migrates chat-path chips (#122
                     __attachmentMetadata: {
                         ...hubAttachment,
                         previewUrl: 'data:image/png;base64,iVBORw0KGgo=',
+                        migratedFromPath: '/tmp/hapi-blobs/session-1/before-mode.png',
                     },
                 }),
             },
