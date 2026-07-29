@@ -1,6 +1,9 @@
 import type { AttachmentAdapter, Attachment, CompleteAttachment, PendingAttachment } from '@assistant-ui/react'
 import type { ScratchlistAttachmentMetadata } from '@hapi/protocol'
-import { parseHubScratchlistAttachmentPath } from '@hapi/protocol'
+import {
+    isHubScratchlistAttachmentPath,
+    parseHubScratchlistAttachmentPath,
+} from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
 import { getRestoredUploadMetadata } from '@/lib/composer-attachment-drafts'
 import { isImageMimeType } from '@/lib/fileAttachments'
@@ -168,12 +171,52 @@ export function createScratchlistAttachmentAdapter(api: ApiClient, sessionId: st
             const hubId = pending.hubAttachment?.id
             if (hubId) {
                 await api.deleteScratchlistAttachment(sessionId, hubId).catch(() => {})
+                return
+            }
+            // Chat-path chip attached before scratchlist mode was enabled (#1226).
+            if (pending.path && !isHubScratchlistAttachmentPath(pending.path)) {
+                await api.deleteUploadFile(sessionId, pending.path).catch(() => {})
             }
         },
 
         async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
             const pending = attachment as PendingScratchlistAttachment
-            const hubAttachment = pending.hubAttachment
+            let hubAttachment = pending.hubAttachment
+            let previewUrl = pending.previewUrl
+
+            // Attach-before-mode: composer still holds a chat-path pending from
+            // the normal upload adapter. Migrate into hub scratchlist storage
+            // so park keeps the image (#1226). Fail closed (throw) — empty
+            // content would park text-only and clear chips silently.
+            if (!hubAttachment) {
+                const file = attachment.file
+                if (!file) {
+                    throw new Error('Cannot park scratchlist attachment without file bytes')
+                }
+                const contentType = attachment.contentType || file.type || 'application/octet-stream'
+                const content = await fileToBase64(file)
+                const result = await api.uploadScratchlistAttachment(
+                    sessionId,
+                    attachment.name,
+                    content,
+                    contentType
+                )
+                if (!result.success || !result.attachment) {
+                    throw new Error(
+                        result.error ?? 'Failed to migrate attachment to scratchlist storage'
+                    )
+                }
+                hubAttachment = result.attachment
+                if (
+                    pending.path
+                    && !isHubScratchlistAttachmentPath(pending.path)
+                ) {
+                    await api.deleteUploadFile(sessionId, pending.path).catch(() => {})
+                }
+                if (!previewUrl && isImageMimeType(contentType) && file.size <= MAX_PREVIEW_BYTES) {
+                    previewUrl = await fileToDataUrl(file)
+                }
+            }
 
             return {
                 id: attachment.id,
@@ -181,17 +224,15 @@ export function createScratchlistAttachmentAdapter(api: ApiClient, sessionId: st
                 name: attachment.name,
                 contentType: attachment.contentType,
                 status: { type: 'complete' },
-                content: hubAttachment
-                    ? [{
-                        type: 'text',
-                        text: JSON.stringify({
-                            __attachmentMetadata: {
-                                ...hubAttachment,
-                                previewUrl: pending.previewUrl
-                            }
-                        })
-                    }]
-                    : []
+                content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        __attachmentMetadata: {
+                            ...hubAttachment,
+                            previewUrl
+                        }
+                    })
+                }]
             }
         }
     }

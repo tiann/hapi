@@ -47,6 +47,7 @@ import type { OlderLoadOutcome } from '@/lib/message-window-store'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
 import { createScratchlistAttachmentAdapter } from '@/lib/scratchlistAttachmentAdapter'
 import {
+    attachmentsNeedScratchlistMigration,
     rehydrateScratchlistAttachmentsToComposer,
     stageScratchlistAttachmentsForComposeSend
 } from '@/lib/scratchlistAttachmentFlow'
@@ -202,6 +203,11 @@ export function isScratchlistHotkeyBlockedTarget(target: EventTarget | null): bo
  * Decide whether a submit should be routed to the per-session scratchlist
  * or to the regular chat send. Scratchlist entries support text and hub-
  * stored attachments; scheduled sends still fall through to chat.
+ *
+ * Chat-path chips attached before scratchlist mode are migrated to hub
+ * storage in the scratchlist attachment adapter's send() (#1226). This
+ * predicate still rejects non-hub paths as a fail-closed backstop —
+ * onSendForComposer refuses park rather than dropping images.
  *
  * Pure / exported so it can be unit tested without mounting SessionChat.
  */
@@ -598,6 +604,11 @@ function SessionChatInner(props: SessionChatProps) {
      * they can keep adding entries while sticky-mode is on. If add()
      * returns false (empty after trim, at-cap), we resolve false so
      * the composer keeps its text and the operator can fix it.
+     *
+     * Chat-path chips attached before scratchlist mode are migrated in
+     * the scratchlist attachment adapter's send() (#1226). If any
+     * non-hub path still reaches this wrapper, fail closed — never park
+     * text-only and clear chips.
      */
     const onSendForComposer = useCallback(
         async (
@@ -605,6 +616,13 @@ function SessionChatInner(props: SessionChatProps) {
             attachments?: AttachmentMetadata[],
             scheduledAt?: number | null,
         ): Promise<boolean> => {
+            if (
+                scratchlistMode
+                && scheduledAt == null
+                && attachmentsNeedScratchlistMigration(attachments)
+            ) {
+                return false
+            }
             if (shouldRouteToScratchlist(scratchlistMode, attachments, scheduledAt)) {
                 return scratchlist.add(text, attachments)
             }
