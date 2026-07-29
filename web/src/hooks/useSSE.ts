@@ -55,6 +55,27 @@ function sortSessionSummaries(left: SessionSummary, right: SessionSummary): numb
     return right.updatedAt - left.updatedAt
 }
 
+/**
+ * True when applying `patch` to `session` would change nothing that renders.
+ *
+ * Same reasoning as {@link isRenderIrrelevantPatch}, for the session-detail
+ * cache: the keep-alive patch repeats every field it knows about, so compare
+ * each one against the value already stored and ignore `activeAt`, which has
+ * no reader.
+ */
+export function isRenderIrrelevantSessionPatch(session: Session, patch: SessionPatch): boolean {
+    const current = session as unknown as Record<string, unknown>
+    for (const [key, value] of Object.entries(patch)) {
+        if (key === 'activeAt') {
+            continue
+        }
+        if (current[key] !== value) {
+            return false
+        }
+    }
+    return true
+}
+
 function isSessionRecord(value: unknown): value is Session {
     return SessionSchema.safeParse(value).success
 }
@@ -411,6 +432,9 @@ export function useSSE(options: {
                     return previous
                 }
                 patched = true
+                if (isRenderIrrelevantSessionPatch(previous.session, patch)) {
+                    return previous
+                }
                 return {
                     ...previous,
                     session: {

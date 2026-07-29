@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionSummary } from '@/types/api'
-import { isGlobalScopedMessageStreamEvent, isRenderIrrelevantPatch } from './useSSE'
+import type { Session } from '@/types/api'
+import { isGlobalScopedMessageStreamEvent, isRenderIrrelevantPatch, isRenderIrrelevantSessionPatch } from './useSSE'
 
 function makeSummary(overrides: Partial<SessionSummary> = {}): SessionSummary {
     return {
@@ -68,5 +69,51 @@ describe('isRenderIrrelevantPatch', () => {
         const next = makeSummary({ ...change, activeAt: 11_000 })
 
         expect(isRenderIrrelevantPatch(current, next)).toBe(false)
+    })
+})
+
+describe('isRenderIrrelevantSessionPatch', () => {
+    const session = {
+        id: 'session-1',
+        active: true,
+        thinking: false,
+        activeAt: 1_000,
+        updatedAt: 2_000,
+        model: 'opus',
+        effort: null,
+        permissionMode: 'default',
+        serviceTier: null
+    } as unknown as Session
+
+    it('treats a keep-alive that only moves activeAt as irrelevant', () => {
+        expect(isRenderIrrelevantSessionPatch(session, {
+            active: true,
+            thinking: false,
+            activeAt: 11_000,
+            model: 'opus',
+            effort: null,
+            permissionMode: 'default',
+            serviceTier: null
+        })).toBe(true)
+    })
+
+    it('reports a changed field as relevant even alongside a new activeAt', () => {
+        expect(isRenderIrrelevantSessionPatch(session, {
+            thinking: true,
+            activeAt: 11_000
+        })).toBe(false)
+    })
+
+    it('reports a field the session does not carry yet as relevant', () => {
+        // scratchlistUpdatedAt is absent from the cached session, so the patch
+        // genuinely adds information and must not be dropped.
+        expect(isRenderIrrelevantSessionPatch(session, {
+            activeAt: 11_000,
+            scratchlistUpdatedAt: 5_000
+        })).toBe(false)
+    })
+
+    it('treats an empty patch as irrelevant', () => {
+        expect(isRenderIrrelevantSessionPatch(session, {})).toBe(true)
     })
 })
