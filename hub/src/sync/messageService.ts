@@ -138,13 +138,29 @@ export class MessageService {
             }
         }
 
+        // Chronological ASC for archive readability (store list is DESC).
+        const scratchlist = this.store.scratchlist.list(sessionId)
+            .slice()
+            .sort((a, b) => {
+                if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt
+                return a.entryId < b.entryId ? -1 : a.entryId > b.entryId ? 1 : 0
+            })
+            .map((row) => ({
+                entryId: row.entryId,
+                text: row.text,
+                createdAt: row.createdAt,
+                updatedAt: row.updatedAt,
+                attachments: row.attachments
+            }))
+
         return {
             type: 'success',
             payload: {
                 schemaVersion: HAPI_SESSION_EXPORT_SCHEMA_VERSION,
                 exportedAt: Date.now(),
                 session,
-                messages
+                messages,
+                scratchlist
             }
         }
     }

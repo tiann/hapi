@@ -137,10 +137,11 @@ function createApp(session: Session, opts?: {
         getSessionExport: opts?.getSessionExport ?? (() => ({
             type: 'success',
             payload: {
-                schemaVersion: 1,
+                schemaVersion: 2,
                 exportedAt: 1_762_000_000_000,
                 session,
-                messages: []
+                messages: [],
+                scratchlist: []
             }
         })),
         listSlashCommands: opts?.listSlashCommands ?? (async () => ({
@@ -191,10 +192,11 @@ describe('sessions routes', () => {
 
         expect(response.status).toBe(200)
         expect(await response.json()).toEqual({
-            schemaVersion: 1,
+            schemaVersion: 2,
             exportedAt: 1_762_000_000_000,
             session,
-            messages: []
+            messages: [],
+            scratchlist: []
         })
     })
 
@@ -224,10 +226,11 @@ describe('sessions routes', () => {
             getSessionExport: () => ({
                 type: 'success',
                 payload: {
-                    schemaVersion: 1,
+                    schemaVersion: 2,
                     exportedAt: 1_762_000_000_000,
                     session,
-                    messages
+                    messages,
+                    scratchlist: []
                 }
             })
         })

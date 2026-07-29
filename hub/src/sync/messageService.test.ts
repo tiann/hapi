@@ -190,6 +190,71 @@ describe('MessageService goal status filtering', () => {
         })
     })
 
+    it('includes scratchlist text and attachment metadata in chronological order (tiann/hapi#1235)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'session-export-scratchlist')
+
+        store.messages.addMessage(session.id, { role: 'user', content: 'Hello' })
+        const older = store.scratchlist.create(session.id, 'Park this idea', {
+            entryId: 'entry-older',
+            createdAt: 1_000,
+            attachments: [{
+                id: 'att-1',
+                filename: 'note.png',
+                mimeType: 'image/png',
+                size: 42,
+                path: 'hapi-hub:scratchlist/att-1'
+            }]
+        })
+        const newer = store.scratchlist.create(session.id, 'Follow up tomorrow', {
+            entryId: 'entry-newer',
+            createdAt: 2_000
+        })
+        expect(older.outcome).toBe('created')
+        expect(newer.outcome).toBe('created')
+
+        const service = new MessageService(store, makeIo(() => {}), makePublisher() as any)
+        const result = service.getSessionExport(session.id, toProtocolSession(session))
+
+        expect(result.type).toBe('success')
+        if (result.type !== 'success') throw new Error('Expected success export')
+        expect(result.payload.schemaVersion).toBe(2)
+        expect(result.payload.scratchlist).toEqual([
+            {
+                entryId: 'entry-older',
+                text: 'Park this idea',
+                createdAt: 1_000,
+                updatedAt: expect.any(Number),
+                attachments: [{
+                    id: 'att-1',
+                    filename: 'note.png',
+                    mimeType: 'image/png',
+                    size: 42,
+                    path: 'hapi-hub:scratchlist/att-1'
+                }]
+            },
+            {
+                entryId: 'entry-newer',
+                text: 'Follow up tomorrow',
+                createdAt: 2_000,
+                updatedAt: expect.any(Number),
+                attachments: []
+            }
+        ])
+    })
+
+    it('emits an empty scratchlist array when the session has no notes', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'session-export-no-scratchlist')
+
+        const service = new MessageService(store, makeIo(() => {}), makePublisher() as any)
+        const result = service.getSessionExport(session.id, toProtocolSession(session))
+
+        expect(result.type).toBe('success')
+        if (result.type !== 'success') throw new Error('Expected success export')
+        expect(result.payload.scratchlist).toEqual([])
+    })
+
     it('pages past hidden-only goal status rows', () => {
         const store = makeStore()
         const session = makeSession(store, 'goal-status-pagination')

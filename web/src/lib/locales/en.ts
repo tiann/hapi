@@ -220,9 +220,9 @@ export default {
 
   // Session export
   'session.export.title': 'Export conversation',
-  'session.export.description': 'Choose a format, then download the full visible conversation.',
+  'session.export.description': 'Choose a format, then download the full visible conversation and scratchlist notes.',
   'session.export.format.json': 'JSON',
-  'session.export.format.json.description': 'Lossless payload with session metadata and messages.',
+  'session.export.format.json.description': 'Lossless payload with session metadata, messages, and scratchlist notes (attachment metadata only).',
   'session.export.format.markdown': 'Markdown',
   'session.export.format.markdown.description': 'Readable view generated from the same export payload.',
   'session.export.download': 'Download',

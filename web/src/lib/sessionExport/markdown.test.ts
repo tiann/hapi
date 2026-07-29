@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest'
 import { serializeSessionMarkdown } from './markdown'
 import type { HapiSessionExport } from '@hapi/protocol/sessionExport'
 
-function makeExport(messages: HapiSessionExport['messages']): HapiSessionExport {
+function makeExport(
+    messages: HapiSessionExport['messages'],
+    scratchlist: HapiSessionExport['scratchlist'] = []
+): HapiSessionExport {
     return {
-        schemaVersion: 1,
+        schemaVersion: 2,
         exportedAt: Date.UTC(2026, 5, 5, 12, 0, 0),
         session: {
             id: 'session-abcdef123456',
@@ -32,7 +35,8 @@ function makeExport(messages: HapiSessionExport['messages']): HapiSessionExport 
             permissionMode: 'default',
             collaborationMode: 'default'
         },
-        messages
+        messages,
+        scratchlist
     }
 }
 
@@ -84,6 +88,44 @@ describe('serializeSessionMarkdown', () => {
         expect(markdown).toContain('path: "/tmp/line\\nbreak"')
         expect(markdown).toContain('host: "host\\"quote"')
         expect(markdown).toMatch(/^---\n[\s\S]*\n---\n/)
+    })
+
+    it('renders a Scratchlist section with text and attachment metadata', () => {
+        const markdown = serializeSessionMarkdown(makeExport([], [
+            {
+                entryId: 'entry-1',
+                text: 'Remember to file the ticket',
+                createdAt: Date.UTC(2026, 5, 5, 10, 30, 0),
+                updatedAt: Date.UTC(2026, 5, 5, 10, 31, 0),
+                attachments: [{
+                    id: 'att-1',
+                    filename: 'sketch.png',
+                    mimeType: 'image/png',
+                    size: 128,
+                    path: 'hapi-hub:scratchlist/att-1'
+                }]
+            },
+            {
+                entryId: 'entry-2',
+                text: 'Empty attachments ok',
+                createdAt: Date.UTC(2026, 5, 5, 10, 32, 0),
+                updatedAt: Date.UTC(2026, 5, 5, 10, 32, 0),
+                attachments: []
+            }
+        ]))
+
+        expect(markdown).toContain('## Scratchlist')
+        expect(markdown).toContain('Remember to file the ticket')
+        expect(markdown).toContain('Empty attachments ok')
+        expect(markdown).toContain('- Attachment: sketch.png (image/png, 128 bytes)')
+        expect(markdown).toContain('scratchlistCount: 2')
+    })
+
+    it('omits the Scratchlist section when there are no notes', () => {
+        const markdown = serializeSessionMarkdown(makeExport([]))
+
+        expect(markdown).not.toContain('## Scratchlist')
+        expect(markdown).toContain('scratchlistCount: 0')
     })
 
     it('skips messages that normalize to null and summarizes tool calls', () => {

@@ -30,12 +30,14 @@ function formatTimestamp(value: number): string {
 
 function formatFrontMatter(payload: HapiSessionExport, title: string): string {
     const metadata = payload.session.metadata
+    const scratchlist = payload.scratchlist ?? []
     const lines = [
         '---',
         `title: "${escapeYamlString(title)}"`,
         `sessionId: "${escapeYamlString(payload.session.id)}"`,
         `exportedAt: "${formatTimestamp(payload.exportedAt)}"`,
-        `messageCount: ${payload.messages.length}`
+        `messageCount: ${payload.messages.length}`,
+        `scratchlistCount: ${scratchlist.length}`
     ]
     if (metadata?.path) {
         lines.push(`path: "${escapeYamlString(metadata.path)}"`)
@@ -48,6 +50,21 @@ function formatFrontMatter(payload: HapiSessionExport, title: string): string {
     }
     lines.push('---')
     return lines.join('\n')
+}
+
+function formatScratchlistSection(payload: HapiSessionExport): string | null {
+    const entries = payload.scratchlist ?? []
+    if (entries.length === 0) return null
+
+    const blocks: string[] = ['## Scratchlist']
+    for (const entry of entries) {
+        const timestamp = formatTimestamp(entry.createdAt)
+        const attachments = entry.attachments?.length
+            ? `\n\n${entry.attachments.map((attachment) => `- Attachment: ${attachment.filename} (${attachment.mimeType}, ${attachment.size} bytes)`).join('\n')}`
+            : ''
+        blocks.push(`### Note\n\n_Time: ${timestamp}_\n\n${entry.text}${attachments}`)
+    }
+    return blocks.join('\n\n')
 }
 
 function truncate(value: string, maxLength: number): string {
@@ -121,6 +138,9 @@ export function serializeSessionMarkdown(payload: HapiSessionExport): string {
         `Session: \`${payload.session.id}\``,
         `Exported: ${formatTimestamp(payload.exportedAt)}`
     ]
+
+    const scratchlistSection = formatScratchlistSection(payload)
+    if (scratchlistSection) sections.push(scratchlistSection)
 
     for (const message of payload.messages) {
         const normalized = normalizeDecryptedMessage(message)

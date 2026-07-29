@@ -224,9 +224,9 @@ export default {
 
   // Session export
   'session.export.title': '导出对话',
-  'session.export.description': '选择格式，然后下载完整可见对话。',
+  'session.export.description': '选择格式，然后下载完整可见对话与 scratchlist 笔记。',
   'session.export.format.json': 'JSON',
-  'session.export.format.json.description': '保留会话元数据和消息的无损载荷。',
+  'session.export.format.json.description': '保留会话元数据、消息与 scratchlist 笔记的无损载荷（附件仅含元数据）。',
   'session.export.format.markdown': 'Markdown',
   'session.export.format.markdown.description': '从同一份导出载荷生成的可读视图。',
   'session.export.download': '下载',
