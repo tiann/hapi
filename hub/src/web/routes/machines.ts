@@ -20,7 +20,14 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const namespace = c.get('namespace')
-        const machines = engine.getOnlineMachinesByNamespace(namespace)
+        // Default stays online-only: every existing caller (session list, machine
+        // filter, new-session picker) wants machines it can actually spawn on.
+        // The settings page opts in, because a machine you can rename is not the
+        // same set as a machine you can run on.
+        const includeOffline = c.req.query('includeOffline') === '1'
+        const machines = includeOffline
+            ? engine.getMachinesByNamespace(namespace)
+            : engine.getOnlineMachinesByNamespace(namespace)
         return c.json({ machines })
     })
 

@@ -315,6 +315,54 @@ describe('machines routes', () => {
         })
     })
 
+    describe('GET /machines', () => {
+        function createApp(engine: Partial<SyncEngine>) {
+            const app = new Hono<WebAppEnv>()
+            app.use('*', async (c, next) => {
+                c.set('namespace', 'default')
+                await next()
+            })
+            app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+            return app
+        }
+
+        const online = createMachine({ id: 'online-1', active: true })
+        const offline = createMachine({ id: 'offline-1', active: false })
+
+        it('returns online machines by default', async () => {
+            const app = createApp({
+                getOnlineMachinesByNamespace: () => [online],
+                getMachinesByNamespace: () => [online, offline],
+            } as Partial<SyncEngine>)
+
+            const body = await (await app.request('/api/machines')).json() as { machines: Machine[] }
+
+            expect(body.machines.map((m) => m.id)).toEqual(['online-1'])
+        })
+
+        it('includes offline machines when asked', async () => {
+            const app = createApp({
+                getOnlineMachinesByNamespace: () => [online],
+                getMachinesByNamespace: () => [online, offline],
+            } as Partial<SyncEngine>)
+
+            const body = await (await app.request('/api/machines?includeOffline=1')).json() as { machines: Machine[] }
+
+            expect(body.machines.map((m) => m.id)).toEqual(['online-1', 'offline-1'])
+        })
+
+        it('ignores an includeOffline value other than 1', async () => {
+            const app = createApp({
+                getOnlineMachinesByNamespace: () => [online],
+                getMachinesByNamespace: () => [online, offline],
+            } as Partial<SyncEngine>)
+
+            const body = await (await app.request('/api/machines?includeOffline=true')).json() as { machines: Machine[] }
+
+            expect(body.machines.map((m) => m.id)).toEqual(['online-1'])
+        })
+    })
+
     describe('PATCH /machines/:id', () => {
         function createApp(engine: Partial<SyncEngine>) {
             const app = new Hono<WebAppEnv>()
