@@ -31,6 +31,32 @@ describe('serializeComposerSegments', () => {
         ]
         expect(serializeComposerSegments(segments)).toBe('[foo \\[bar\\]](/sessions/x)')
     })
+
+    it('puts the full session UUID in the agent prompt wire (not title alone)', () => {
+        // Chip UI shows "@hub runner version governance"; send must expand to
+        // markdown with the real session id so CLI/agents can resolve it.
+        const sessionId = '7d55ed21-8a9f-4309-b4f8-30069df36b4b'
+        const title = 'hub runner version governance'
+        const wire = serializeComposerSegments([
+            { type: 'text', text: 'see ' },
+            { type: 'session', id: sessionId, title },
+            { type: 'text', text: ' please' },
+        ])
+        expect(wire).toBe(
+            `see [${title}](/sessions/${sessionId}) please`
+        )
+        expect(wire).toContain(sessionId)
+        expect(wire).not.toBe(title)
+        expect(wire).not.toMatch(new RegExp(`^@?${title}$`))
+    })
+
+    it('skips session atoms with empty id (never title-only wire)', () => {
+        expect(serializeComposerSegments([
+            { type: 'text', text: 'before ' },
+            { type: 'session', id: '  ', title: 'orphan title' },
+            { type: 'text', text: ' after' },
+        ])).toBe('before  after')
+    })
 })
 
 describe('parseComposerSegments', () => {
@@ -69,6 +95,22 @@ describe('insertSessionMentionInComposerSegments', () => {
         )
         // caret after the mention (+ trailing space)
         expect(result.selection.start).toBeGreaterThan(4)
+    })
+
+    it('expands @ pick to markdown with full session id for the agent prompt', () => {
+        const sessionId = '7d55ed21-8a9f-4309-b4f8-30069df36b4b'
+        const title = 'hub runner version governance'
+        const result = insertSessionMentionInComposerSegments(
+            [{ type: 'text', text: 'ref @hub' }],
+            { start: 8, end: 8 },
+            { id: sessionId, title },
+            ['@']
+        )
+        const wire = serializeComposerSegments(result.segments)
+        expect(wire).toBe(`ref [${title}](/sessions/${sessionId}) `)
+        expect(wire.includes(sessionId)).toBe(true)
+        // Must not be chip-visible title alone
+        expect(wire.includes(`@${title}`)).toBe(false)
     })
 
     it('supports mid-message second mention', () => {

@@ -33,6 +33,12 @@ import type { SessionSummary } from '@/types/api'
 
 export type RichComposerInputHandle = {
     focus: () => void
+    /**
+     * Re-read the contenteditable → serialize session chips to
+     * `[title](/sessions/<id>)` and push into composer state. Call before
+     * send so the agent prompt never gets chip-visible `@title` alone.
+     */
+    flushSerializedText: () => string
     insertSessionMention: (
         mention: { id: string; title: string },
         prefixes?: string[]
@@ -132,13 +138,19 @@ export function segmentsFromEditor(root: HTMLElement): ComposerSegment[] {
         }
         if (node.nodeType !== Node.ELEMENT_NODE) return
         const el = node as HTMLElement
-        if (el.dataset.composerMention === 'session' && el.dataset.sessionId) {
+        // Session chips are atomic. Never walk their visible `@title` text —
+        // that would strip the id from the agent prompt on send.
+        if (el.dataset.composerMention === 'session') {
             pushNewlineIfNeeded()
-            segments.push({
-                type: 'session',
-                id: el.dataset.sessionId,
-                title: el.dataset.sessionTitle || el.dataset.sessionId.slice(0, 8),
-            })
+            const id = el.dataset.sessionId?.trim()
+            if (id) {
+                segments.push({
+                    type: 'session',
+                    id,
+                    title: el.dataset.sessionTitle || id.slice(0, 8),
+                })
+            }
+            // Orphan chip (missing id): drop it rather than emit title-only.
             return
         }
         if (el.tagName === 'BR') {
@@ -496,6 +508,19 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
     useImperativeHandle(ref, () => ({
         focus: () => {
             rootRef.current?.focus()
+        },
+        flushSerializedText: () => {
+            const root = rootRef.current
+            if (!root) return value
+            const segments = segmentsFromEditor(root)
+            const serialized = serializeComposerSegments(segments)
+            lastEmittedRef.current = serialized
+            onValueChange(serialized)
+            onMirrorChange({
+                text: mirrorComposerSegments(segments),
+                selection: getMirrorSelection(root),
+            })
+            return serialized
         },
         insertSessionMention: (mention, prefixes = ['@', '/', '$']) => {
             const root = rootRef.current

@@ -1,12 +1,15 @@
 /**
- * Resume-if-inactive + wait-active + POST /api/sessions/:id/messages.
+ * Resume-if-inactive + wait-active + POST /api/sessions/:id/messages,
+ * plus read-only inspectPeer (GET session + messages, never resume).
  *
- * Shared by `hapi ping-peer` and MCP `ping_peer`. Uses the same hub JWT flow
- * as the web app (`POST /api/auth` with CLI_API_TOKEN), scoped to the token's
- * namespace. Callers must not invent parallel auth or arbitrary hosts.
+ * Shared by `hapi ping-peer` / `hapi inspect-peer` and MCP `ping_peer` /
+ * `inspect_peer`. Uses the same hub JWT flow as the web app
+ * (`POST /api/auth` with CLI_API_TOKEN), scoped to the token's namespace.
+ * Callers must not invent parallel auth or arbitrary hosts.
  */
 
 import axios, { type AxiosInstance } from 'axios'
+import { extractAssistantPlainText, isObject } from '@hapi/protocol'
 import { configuration } from '@/configuration'
 import { getAuthToken } from '@/api/auth'
 import { buildHubRequestHeaders } from '@/api/hubExtraHeaders'
@@ -33,10 +36,13 @@ export class PingPeerError extends Error {
 export type PingPeerSessionSummary = {
     id: string
     active: boolean
+    thinking?: boolean
     updatedAt?: number
     metadata?: {
         name?: string
         flavor?: string | null
+        path?: string | null
+        lifecycleState?: string | null
         piSessionId?: string
     } | null
 }
@@ -421,4 +427,182 @@ export function exitCodeForPingPeerError(error: PingPeerError): number {
         default:
             return 1
     }
+}
+
+// ── inspect_peer (read twin; no resume) ─────────────────────────────────────
+
+export type InspectPeerOptions = {
+    sessionIdPrefix: string
+    /** Recent message page size (default 30, clamped 1..100). */
+    messageLimit?: number
+    apiUrl?: string
+    accessToken?: string
+    http?: AxiosInstance
+}
+
+export type InspectPeerMessage = {
+    id: string
+    role: string
+    text: string
+    createdAt: number | null
+}
+
+export type InspectPeerResult = {
+    sessionId: string
+    name: string
+    active: boolean
+    thinking: boolean
+    flavor: string | null
+    path: string | null
+    lifecycleState: string | null
+    updatedAt: number | null
+    messages: InspectPeerMessage[]
+}
+
+const DEFAULT_INSPECT_MESSAGE_LIMIT = 30
+const MAX_INSPECT_MESSAGE_LIMIT = 100
+const MAX_SNIPPET_CHARS = 1_200
+
+function clampInspectMessageLimit(raw: number | undefined): number {
+    const n = raw ?? DEFAULT_INSPECT_MESSAGE_LIMIT
+    if (!Number.isFinite(n)) {
+        throw new PingPeerError('bad_args', 'messageLimit must be a number')
+    }
+    return Math.min(MAX_INSPECT_MESSAGE_LIMIT, Math.max(1, Math.floor(n)))
+}
+
+function extractUserPlainText(inner: unknown): string | null {
+    if (typeof inner === 'string' && inner.trim()) return inner
+    if (!isObject(inner)) return null
+    if (typeof inner.text === 'string' && inner.text.trim()) return inner.text
+    if (isObject(inner.content) && typeof inner.content.text === 'string' && inner.content.text.trim()) {
+        return inner.content.text
+    }
+    return null
+}
+
+/** Best-effort text from a hub message row; skip tool-call / empty noise. */
+export function extractInspectMessageSnippet(content: unknown): InspectPeerMessage | null {
+    if (!isObject(content)) return null
+    const role = typeof content.role === 'string' ? content.role : 'unknown'
+    const inner = content.content
+    let text: string | null = null
+    if (role === 'user') {
+        text = extractUserPlainText(inner)
+    } else {
+        text = extractAssistantPlainText(inner)
+        if (!text) text = extractUserPlainText(inner)
+    }
+    if (!text) return null
+    const trimmed = text.replace(/\s+/g, ' ').trim()
+    if (!trimmed) return null
+    const snippet = trimmed.length > MAX_SNIPPET_CHARS
+        ? `${trimmed.slice(0, MAX_SNIPPET_CHARS)}…`
+        : trimmed
+    return {
+        id: typeof content.id === 'string' ? content.id : '',
+        role,
+        text: snippet,
+        createdAt: null
+    }
+}
+
+async function fetchSessionMessages(
+    apiUrl: string,
+    jwt: string,
+    sessionId: string,
+    limit: number,
+    http: AxiosInstance
+): Promise<InspectPeerMessage[]> {
+    const response = await http.get(
+        `${apiUrl}/api/sessions/${encodeURIComponent(sessionId)}/messages`,
+        {
+            headers: authHeaders(jwt),
+            params: { limit },
+            timeout: 20_000,
+            validateStatus: () => true
+        }
+    )
+    if (response.status < 200 || response.status >= 300) {
+        const detail = typeof response.data?.error === 'string'
+            ? response.data.error
+            : `HTTP ${response.status}`
+        throw new PingPeerError('not_found', `failed to load messages for ${sessionId} (${detail})`)
+    }
+    const rows = Array.isArray(response.data?.messages) ? response.data.messages : []
+    const out: InspectPeerMessage[] = []
+    for (const row of rows) {
+        if (!isObject(row)) continue
+        const snippet = extractInspectMessageSnippet(row.content)
+        if (!snippet) continue
+        out.push({
+            ...snippet,
+            id: typeof row.id === 'string' ? row.id : snippet.id,
+            createdAt: typeof row.createdAt === 'number' ? row.createdAt : null
+        })
+    }
+    return out
+}
+
+/**
+ * Resolve a peer by id/prefix and return metadata + recent text messages.
+ * Read-only: never resumes inactive sessions (unlike `pingPeer`).
+ */
+export async function inspectPeer(options: InspectPeerOptions): Promise<InspectPeerResult> {
+    const prefix = options.sessionIdPrefix?.trim() ?? ''
+    if (!prefix) {
+        throw new PingPeerError('bad_args', 'session id prefix is required')
+    }
+    const messageLimit = clampInspectMessageLimit(options.messageLimit)
+
+    const apiUrl = resolveApiUrl(options.apiUrl)
+    const accessToken = resolveAccessToken(options.accessToken)
+    const http = options.http ?? axios
+
+    const jwt = await exchangeJwt(apiUrl, accessToken, http)
+    const sessions = await listSessions(apiUrl, jwt, http)
+    const matched = resolveSessionByPrefix(sessions, prefix)
+    const live = await getSession(apiUrl, jwt, matched.id, http)
+    const meta = live.metadata ?? matched.metadata ?? null
+    const messages = await fetchSessionMessages(apiUrl, jwt, matched.id, messageLimit, http)
+
+    return {
+        sessionId: matched.id,
+        name: meta?.name ?? '(unnamed)',
+        active: live.active,
+        thinking: Boolean(live.thinking),
+        flavor: typeof meta?.flavor === 'string' ? meta.flavor : null,
+        path: typeof meta?.path === 'string' ? meta.path : null,
+        lifecycleState: typeof meta?.lifecycleState === 'string' ? meta.lifecycleState : null,
+        updatedAt: typeof live.updatedAt === 'number'
+            ? live.updatedAt
+            : typeof matched.updatedAt === 'number'
+                ? matched.updatedAt
+                : null,
+        messages
+    }
+}
+
+/** Human/agent-readable report for MCP tool results and CLI stdout. */
+export function formatInspectPeerReport(result: InspectPeerResult): string {
+    const lines: string[] = [
+        `sessionId: ${result.sessionId}`,
+        `path: /sessions/${result.sessionId}`,
+        `name: ${result.name}`,
+        `flavor: ${result.flavor ?? '(unknown)'}`,
+        `active: ${result.active}`,
+        `thinking: ${result.thinking}`,
+        `lifecycle: ${result.lifecycleState ?? '(none)'}`,
+        `cwd: ${result.path ?? '(unknown)'}`,
+        `updatedAt: ${result.updatedAt ?? '(unknown)'}`,
+        `messages (text snippets, newest page): ${result.messages.length}`
+    ]
+    if (result.messages.length === 0) {
+        lines.push('(no extractable user/assistant text in this page)')
+    } else {
+        for (const message of result.messages) {
+            lines.push(`[${message.role}] ${message.text}`)
+        }
+    }
+    return lines.join('\n')
 }

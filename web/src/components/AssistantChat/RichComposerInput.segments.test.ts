@@ -76,6 +76,25 @@ describe('segmentsFromEditor', () => {
         )
     })
 
+    it('serializes chip with full UUID — never chip-visible @title alone', () => {
+        const sessionId = '7d55ed21-8a9f-4309-b4f8-30069df36b4b'
+        const title = 'hub runner version governance'
+        const root = document.createElement('div')
+        root.innerHTML =
+            `see <span contenteditable="false" data-composer-mention="session" data-session-id="${sessionId}" data-session-title="${title}">@${title}</span>`
+        const wire = serializeComposerSegments(segmentsFromEditor(root))
+        expect(wire).toBe(`see [${title}](/sessions/${sessionId})`)
+        expect(wire).toContain(sessionId)
+        expect(wire.includes(`@${title}`)).toBe(false)
+    })
+
+    it('drops orphan session chips missing data-session-id (no title-only wire)', () => {
+        const root = document.createElement('div')
+        root.innerHTML =
+            'see <span contenteditable="false" data-composer-mention="session" data-session-title="orphan">@orphan</span> x'
+        expect(serializeComposerSegments(segmentsFromEditor(root))).toBe('see  x')
+    })
+
     it('preserves newlines inside pasted wrapper blocks (nested p/li)', () => {
         const root = document.createElement('div')
         root.innerHTML = '<div><p>a</p><p>b</p></div>'

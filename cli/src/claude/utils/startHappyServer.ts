@@ -14,7 +14,7 @@ import { ApiSessionClient } from "@/api/apiSession";
 import { randomUUID } from "node:crypto";
 import { detectImageMimeType, registerGeneratedImage } from "@/modules/common/generatedImages";
 import { resolveSkill } from "@/modules/common/skills";
-import { PingPeerError, pingPeer } from "@/modules/pingPeer/pingPeer";
+import { PingPeerError, formatInspectPeerReport, inspectPeer, pingPeer } from "@/modules/pingPeer/pingPeer";
 
 type StartHappyServerOptions = {
     emitTitleSummary?: boolean;
@@ -77,9 +77,18 @@ function createHapiMcpServer(
 
     const pingPeerInputSchema: z.ZodTypeAny = z.object({
         sessionIdPrefix: z.string().trim().min(1).describe(
-            'Target HAPI session id or unique id prefix (another session - not this chat)'
+            'Target HAPI session id or unique id prefix (another session - not this chat). Prefer the full UUID from a [title](/sessions/<id>) citation.'
         ),
         message: z.string().min(1).describe('Message text to deliver to the target session'),
+    });
+
+    const inspectPeerInputSchema: z.ZodTypeAny = z.object({
+        sessionIdPrefix: z.string().trim().min(1).describe(
+            'Target HAPI session id or unique id prefix. Prefer the full UUID from a [title](/sessions/<id>) citation.'
+        ),
+        messageLimit: z.number().int().min(1).max(100).optional().describe(
+            'Recent message page size (default 30, max 100). Text snippets only.'
+        ),
     });
 
     const skillLookupInputSchema: z.ZodTypeAny = z.object({
@@ -184,7 +193,7 @@ function createHapiMcpServer(
     });
 
     mcp.registerTool<any, any>('ping_peer', {
-        description: 'Send a message to another HAPI session (peer handoff / nudge). Resolves by session id prefix, resumes if inactive, then POSTs the message on the same hub/namespace. Prefer this (or `hapi ping-peer`) over reinventing JWT+curl. Targets another session - not the current chat.',
+        description: 'Send a message to another HAPI session (peer handoff / nudge). Resolves by session id prefix, resumes if inactive, then POSTs the message on the same hub/namespace. Prefer this (or `hapi ping-peer`) over reinventing JWT+curl. Targets another session - not the current chat. When the user cites [title](/sessions/<id>), pass that <id> as sessionIdPrefix.',
         title: 'Ping Peer Session',
         inputSchema: pingPeerInputSchema,
     }, async (args: { sessionIdPrefix: string; message: string }) => {
@@ -215,6 +224,45 @@ function createHapiMcpServer(
                     {
                         type: 'text' as const,
                         text: `Failed to ping peer: ${message}`,
+                    },
+                ],
+                isError: true,
+            };
+        }
+    });
+
+    mcp.registerTool<any, any>('inspect_peer', {
+        description: 'Read another HAPI session (metadata + recent message text). Resolves by session id / prefix on the same hub/namespace. Read-only: does not resume. Prefer this (or `hapi inspect-peer`) over JWT+curl. When the user cites [title](/sessions/<id>), pass that <id> as sessionIdPrefix.',
+        title: 'Inspect Peer Session',
+        inputSchema: inspectPeerInputSchema,
+    }, async (args: { sessionIdPrefix: string; messageLimit?: number }) => {
+        logger.debug('[hapiMCP] inspect_peer:', args.sessionIdPrefix);
+        try {
+            const result = await inspectPeer({
+                sessionIdPrefix: args.sessionIdPrefix,
+                messageLimit: args.messageLimit,
+            });
+            return {
+                content: [
+                    {
+                        type: 'text' as const,
+                        text: formatInspectPeerReport(result),
+                    },
+                ],
+                isError: false,
+            };
+        } catch (error) {
+            const message = error instanceof PingPeerError
+                ? error.message
+                : error instanceof Error
+                    ? error.message
+                    : String(error);
+            logger.debug('[hapiMCP] inspect_peer failed:', message);
+            return {
+                content: [
+                    {
+                        type: 'text' as const,
+                        text: `Failed to inspect peer: ${message}`,
                     },
                 ],
                 isError: true,
@@ -342,8 +390,8 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
     }));
 
     const toolNames = enableChangeTitle
-        ? ['change_title', 'display_image', 'ping_peer']
-        : ['display_image', 'ping_peer'];
+        ? ['change_title', 'display_image', 'ping_peer', 'inspect_peer']
+        : ['display_image', 'ping_peer', 'inspect_peer'];
     if (options.skillLookup) {
         toolNames.push('skill_lookup');
     }

@@ -582,6 +582,14 @@ export function HappyComposer(props: {
         [permissionModeOptions]
     )
 
+    /** Flush rich chips → `[title](/sessions/<id>)` into composer.text, then send. */
+    const flushAndSend = useCallback(() => {
+        if (richMentionsEnabled && richInputRef.current) {
+            richInputRef.current.flushSerializedText()
+        }
+        api.composer().send()
+    }, [api, richMentionsEnabled])
+
     const handleKeyDown = useCallback((e: ReactKeyboardEvent<HTMLTextAreaElement | HTMLDivElement>) => {
         const key = e.key
 
@@ -608,14 +616,14 @@ export function HappyComposer(props: {
             if (composerEnterBehavior === 'newline') {
                 if ((e.ctrlKey || e.metaKey) && !e.altKey && canSend) {
                     e.preventDefault()
-                    api.composer().send()
+                    flushAndSend()
                     setShowContinueHint(false)
                 }
                 return
             }
             e.preventDefault()
             if (!e.ctrlKey && !e.altKey && !e.metaKey && canSend) {
-                api.composer().send()
+                flushAndSend()
                 setShowContinueHint(false)
             }
             return
@@ -676,6 +684,7 @@ export function HappyComposer(props: {
         haptic,
         composerEnterBehavior,
         richMentionsEnabled,
+        flushAndSend,
     ])
 
     useEffect(() => {
@@ -841,7 +850,7 @@ export function HappyComposer(props: {
     const voiceEnabled = Boolean(onVoiceToggle)
 
     const handleSend = useCallback(() => {
-        api.composer().send()
+        flushAndSend()
         // SessionChat owns clearing the schedule — it clears only after awaiting
         // the send hook's accepted result, which covers both pre-mutation guards
         // and async inactive-session resume failure. Clearing here unconditionally
@@ -852,7 +861,7 @@ export function HappyComposer(props: {
         // the route-level state (`onSuccess`/`onError` in router.tsx) replaces
         // or clears it based on the actual mutation result, so the user keeps
         // the error context while the new attempt is in flight.
-    }, [api])
+    }, [flushAndSend])
 
     // Pi: selected model info for UI labels and thinking level filtering
     const piModelLabel = agentFlavor === 'pi'

@@ -17,7 +17,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { z } from 'zod';
 
-const DEFAULT_TOOL_NAMES = ['change_title', 'display_image', 'ping_peer'];
+const DEFAULT_TOOL_NAMES = ['change_title', 'display_image', 'ping_peer', 'inspect_peer'];
 
 function parseArgs(argv: string[]): { url: string | null; toolNames: Set<string> } {
   let url: string | null = null;
@@ -135,7 +135,7 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
 
     const pingPeerInputSchema: z.ZodTypeAny = z.object({
       sessionIdPrefix: z.string().trim().min(1).describe(
-        'Target HAPI session id or unique id prefix (another session - not this chat)'
+        'Target HAPI session id or unique id prefix (another session - not this chat). Prefer the full UUID from a [title](/sessions/<id>) citation.'
       ),
       message: z.string().min(1).describe('Message text to deliver to the target session'),
     });
@@ -144,7 +144,7 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       server.registerTool<any, any>(
         'ping_peer',
         {
-          description: 'Send a message to another HAPI session (peer handoff / nudge). Resolves by session id prefix, resumes if inactive, then POSTs the message on the same hub/namespace. Prefer this (or `hapi ping-peer`) over reinventing JWT+curl. Targets another session - not the current chat.',
+          description: 'Send a message to another HAPI session (peer handoff / nudge). Resolves by session id prefix, resumes if inactive, then POSTs the message on the same hub/namespace. Prefer this (or `hapi ping-peer`) over reinventing JWT+curl. Targets another session - not the current chat. When the user cites [title](/sessions/<id>), pass that <id> as sessionIdPrefix.',
           title: 'Ping Peer Session',
           inputSchema: pingPeerInputSchema,
         },
@@ -157,6 +157,40 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
             return {
               content: [
                 { type: 'text' as const, text: `Failed to ping peer: ${error instanceof Error ? error.message : String(error)}` },
+              ],
+              isError: true,
+            };
+          }
+        }
+      );
+    }
+
+    const inspectPeerInputSchema: z.ZodTypeAny = z.object({
+      sessionIdPrefix: z.string().trim().min(1).describe(
+        'Target HAPI session id or unique id prefix. Prefer the full UUID from a [title](/sessions/<id>) citation.'
+      ),
+      messageLimit: z.number().int().min(1).max(100).optional().describe(
+        'Recent message page size (default 30, max 100). Text snippets only.'
+      ),
+    });
+
+    if (toolNames.has('inspect_peer')) {
+      server.registerTool<any, any>(
+        'inspect_peer',
+        {
+          description: 'Read another HAPI session (metadata + recent message text). Resolves by session id / prefix on the same hub/namespace. Read-only: does not resume. Prefer this (or `hapi inspect-peer`) over JWT+curl. When the user cites [title](/sessions/<id>), pass that <id> as sessionIdPrefix.',
+          title: 'Inspect Peer Session',
+          inputSchema: inspectPeerInputSchema,
+        },
+        async (args: Record<string, unknown>) => {
+          try {
+            const client = await ensureHttpClient();
+            const response = await client.callTool({ name: 'inspect_peer', arguments: args });
+            return response as any;
+          } catch (error) {
+            return {
+              content: [
+                { type: 'text' as const, text: `Failed to inspect peer: ${error instanceof Error ? error.message : String(error)}` },
               ],
               isError: true,
             };

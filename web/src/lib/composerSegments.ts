@@ -34,7 +34,12 @@ function unescapeMarkdownLinkLabel(label: string): string {
     return label.replace(/\\([\\\[\]])/g, '$1')
 }
 
-/** Wire format for send / drafts / send-error restore. */
+/**
+ * Wire format for send / drafts / send-error restore.
+ * Session atoms become `[title](/sessions/<id>)` so the agent prompt includes
+ * the full session id (not chip-visible `@title` alone). Hub + CLI pass this
+ * string through unchanged to every agent flavor.
+ */
 export function serializeComposerSegments(segments: readonly ComposerSegment[]): string {
     let out = ''
     for (const segment of segments) {
@@ -42,8 +47,10 @@ export function serializeComposerSegments(segments: readonly ComposerSegment[]):
             out += segment.text
             continue
         }
-        const path = buildSessionReferencePath(segment.id)
-        const label = escapeMarkdownLinkLabel(segment.title) || segment.id.slice(0, 8)
+        const id = segment.id.trim()
+        if (!id) continue
+        const path = buildSessionReferencePath(id)
+        const label = escapeMarkdownLinkLabel(segment.title) || id.slice(0, 8)
         out += `[${label}](${path})`
     }
     return out

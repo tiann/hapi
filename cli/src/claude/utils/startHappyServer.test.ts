@@ -108,7 +108,8 @@ describe('startHappyServer skill_lookup', () => {
         expect(tools.tools.map((tool) => tool.name)).toEqual([
             'change_title',
             'display_image',
-            'ping_peer'
+            'ping_peer',
+            'inspect_peer'
         ])
     })
 
@@ -126,8 +127,12 @@ describe('startHappyServer skill_lookup', () => {
         await mcp.connect(new StreamableHTTPClientTransport(new URL(server.url)))
         const tools = await mcp.listTools()
 
-        expect(server.toolNames).toEqual(['display_image', 'ping_peer'])
-        expect(tools.tools.map((tool) => tool.name)).toEqual(['display_image', 'ping_peer'])
+        expect(server.toolNames).toEqual(['display_image', 'ping_peer', 'inspect_peer'])
+        expect(tools.tools.map((tool) => tool.name)).toEqual([
+            'display_image',
+            'ping_peer',
+            'inspect_peer'
+        ])
     })
 
 })
@@ -138,10 +143,12 @@ describe('toClaudeAllowedHapiMcpTools', () => {
             'change_title',
             'display_image',
             'ping_peer',
+            'inspect_peer',
             'skill_lookup'
         ])).toEqual([
             'mcp__hapi__change_title',
             'mcp__hapi__display_image',
+            'mcp__hapi__inspect_peer',
             'mcp__hapi__skill_lookup'
         ])
     })
