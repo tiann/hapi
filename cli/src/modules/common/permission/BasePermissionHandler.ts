@@ -32,12 +32,18 @@ const AUTO_APPROVE_EXACT_TOOL_NAMES = new Set([
     'happy__skill_lookup',
     'mcp__hapi__skill_lookup'
 ]);
-// ping_peer intentionally omitted from always-approve: it can resume another
-// session and inject a prompt into a peer, so permission modes must still gate
-// it (Codex PR #1195). Treat it as write-like in read-only so ACP titles such as
-// "Ping Peer Session" also require approval.
+// ping_peer / inspect_peer intentionally omitted from always-approve: they can
+// resume+inject into another session or read peer histories, so permission
+// modes must still gate them. Treat both as write-like in read-only so ACP
+// titles such as "Ping Peer Session" / "Inspect Peer Session" also require
+// approval.
 const AUTO_APPROVE_TOOL_ID_HINTS = ['change_title', 'save_memory'];
-const SENSITIVE_TOOL_NAME_HINTS = ['ping_peer', 'ping peer'];
+const SENSITIVE_TOOL_NAME_HINTS = [
+    'ping_peer',
+    'ping peer',
+    'inspect_peer',
+    'inspect peer',
+];
 const AUTO_APPROVE_WRITE_TOOL_HINTS = [
     'write',
     'edit',

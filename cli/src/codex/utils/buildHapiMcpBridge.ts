@@ -95,9 +95,9 @@ export async function buildHapiMcpBridge(
             approval_mode: 'approve'
         };
     }
-    // ping_peer is registered on the HTTP MCP server / stdio bridge, but is not
-    // auto-approved: it targets another session (resume + inject message).
-    // inspect_peer is read-only (no resume) and stays on the default tool list.
+    // ping_peer / inspect_peer are registered on the HTTP MCP server / stdio
+    // bridge, but are not auto-approved: they target another session (resume +
+    // inject, or read peer histories).
     if (options.skillLookup) {
         tools.skill_lookup = {
             approval_mode: 'approve'

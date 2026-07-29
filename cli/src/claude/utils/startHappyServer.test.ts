@@ -138,7 +138,7 @@ describe('startHappyServer skill_lookup', () => {
 })
 
 describe('toClaudeAllowedHapiMcpTools', () => {
-    it('keeps ping_peer registered but out of Claude --allowedTools', () => {
+    it('keeps ping_peer and inspect_peer registered but out of Claude --allowedTools', () => {
         expect(toClaudeAllowedHapiMcpTools([
             'change_title',
             'display_image',
@@ -148,7 +148,6 @@ describe('toClaudeAllowedHapiMcpTools', () => {
         ])).toEqual([
             'mcp__hapi__change_title',
             'mcp__hapi__display_image',
-            'mcp__hapi__inspect_peer',
             'mcp__hapi__skill_lookup'
         ])
     })
