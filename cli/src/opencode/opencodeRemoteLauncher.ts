@@ -420,7 +420,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         const isCancelled = (): boolean => (localId ? (this.options.isLocalIdCancelled?.(localId) ?? false) : false);
 
         const backend = this.backend;
-        if (!this.baseUrl || !backend) {
+        const baseUrl = this.baseUrl;
+        if (!baseUrl || !backend) {
             if (!isCancelled()) {
                 session.sendSessionEvent({
                     type: 'message',
@@ -442,12 +443,19 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             return;
         }
 
-        const result = await triggerOpencodeCompact({
-            baseUrl: this.baseUrl,
+        // Suppressed: OpenCode keeps streaming session/update notifications
+        // (agent_thought_chunk etc.) over the ACP transport while this raw
+        // HTTP call runs — with no prompt() turn in flight to own them, they
+        // would otherwise leak into the previous turn's still-installed
+        // onUpdate and render as a duplicate assistant message alongside the
+        // explicit summary we show below (from fetchCompactionSummary).
+        // See AcpSdkBackend.suppressUpdatesDuring's doc comment.
+        const result = await backend.suppressUpdatesDuring(() => triggerOpencodeCompact({
+            baseUrl,
             sessionId: acpSessionId,
             providerId: split.providerId,
             modelId: split.modelId
-        });
+        }));
         if (!result.ok) {
             if (!isCancelled()) {
                 session.sendSessionEvent({ type: 'message', message: `📦 Compaction failed: ${result.error}` });
@@ -463,7 +471,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         // suppresses "Compaction completed" and the Reasoning block
         // together — this mirrors the pre-redesign behavior, where both were
         // produced by one combined async step checked once.
-        const summary = await fetchCompactionSummary({ baseUrl: this.baseUrl, sessionId: acpSessionId });
+        const summary = await fetchCompactionSummary({ baseUrl, sessionId: acpSessionId });
 
         if (isCancelled()) {
             logger.debug('[opencode-remote] /compact result suppressed: cancelled before it resolved');

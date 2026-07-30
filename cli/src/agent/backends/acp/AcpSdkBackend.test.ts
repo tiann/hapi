@@ -1139,4 +1139,58 @@ describe('AcpSdkBackend', () => {
 
         expect(registered.get('cursor/ask_question')).toBe(handler);
     });
+
+    it('suppressUpdatesDuring drops session/update notifications that would otherwise leak into the previous turn\'s onUpdate, then restores normal forwarding', async () => {
+        // Reproduces the real /compact duplicate-summary bug: OpenCode keeps
+        // streaming session/update notifications (over the same ACP
+        // transport) while a raw-HTTP /compact call is in flight outside
+        // prompt(), and handleSessionUpdate forwards them unconditionally to
+        // whatever messageHandler is still installed from the last prompt()
+        // turn — rendering the same content a second time alongside the
+        // compact bridge's own explicit summary message.
+        const backend = new AcpSdkBackend({ command: 'opencode' });
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequest: (...args: unknown[]) => Promise<unknown>;
+                close: () => Promise<void>;
+            } | null;
+            handleSessionUpdate: (params: unknown) => void;
+            messageHandler: unknown;
+        };
+        backendInternal.transport = {
+            sendRequest: async () => ({ stopReason: 'end_turn' }),
+            close: async () => {}
+        };
+
+        const turn1: AgentMessage[] = [];
+        await backend.prompt('session-1', [{ type: 'text', text: 'hi' }], (m) => turn1.push(m));
+
+        const emitPlanUpdate = () => backendInternal.handleSessionUpdate({
+            sessionId: 'session-1',
+            update: {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.plan,
+                entries: [{ content: 'leaked plan step', priority: 'medium', status: 'pending' }]
+            }
+        });
+
+        const handlerBeforeSuppression = backendInternal.messageHandler;
+        expect(handlerBeforeSuppression).not.toBeNull();
+
+        let handlerDuringSuppression: unknown = 'not-checked';
+        const result = await backend.suppressUpdatesDuring(async () => {
+            handlerDuringSuppression = backendInternal.messageHandler;
+            emitPlanUpdate();
+            return 'compact result';
+        });
+
+        expect(result).toBe('compact result');
+        expect(handlerDuringSuppression).toBeNull();
+        expect(turn1.some((m) => m.type === 'plan')).toBe(false);
+
+        // The previous turn's handler must be back in place afterward so
+        // ordinary straggler-forwarding (covered elsewhere) is unaffected.
+        expect(backendInternal.messageHandler).toBe(handlerBeforeSuppression);
+        emitPlanUpdate();
+        expect(turn1.some((m) => m.type === 'plan')).toBe(true);
+    });
 });

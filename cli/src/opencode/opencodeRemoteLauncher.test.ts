@@ -73,7 +73,12 @@ vi.mock('./utils/opencodeBackend', () => ({
         onPermissionRequest: vi.fn(),
         disconnect: vi.fn(async () => {}),
         getSessionModelsMetadata: vi.fn(() => harness.sessionModelsMetadata),
-        getThoughtLevelConfigOption: vi.fn(() => harness.thoughtLevelOption ?? undefined)
+        getThoughtLevelConfigOption: vi.fn(() => harness.thoughtLevelOption ?? undefined),
+        // Real AcpSdkBackend.suppressUpdatesDuring swaps out the message
+        // handler around `fn`; that detail is irrelevant to these
+        // launcher-level tests (which never assert on ACP session/update
+        // forwarding), so the stub is a transparent pass-through.
+        suppressUpdatesDuring: vi.fn(async <T>(fn: () => Promise<T>): Promise<T> => fn())
     }))
 }));
 
@@ -470,7 +475,8 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             getSessionModelsMetadata: vi.fn(() => ({
                 currentModelId: 'ollama/qwen3.6:35b-a3b-q8_0-mtp',
                 availableModels: []
-            }))
+            })),
+            suppressUpdatesDuring: vi.fn(async <T>(fn: () => Promise<T>): Promise<T> => fn())
         }));
 
         const { session, sessionEvents } = createSessionStub([
@@ -489,6 +495,13 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         ]);
         const messages = sessionEvents.filter((event) => event.type === 'message').map((event) => event.message);
         expect(messages).toEqual(['📦 Compaction started', '📦 Compaction completed']);
+
+        // The REST bridge call must run inside suppressUpdatesDuring so any
+        // session/update notifications OpenCode streams while it's in
+        // flight don't leak into the previous turn's onUpdate and render as
+        // a duplicate assistant message (see AcpSdkBackend.suppressUpdatesDuring).
+        const backendInstance = factory.mock.results[0]?.value as { suppressUpdatesDuring: ReturnType<typeof vi.fn> };
+        expect(backendInstance.suppressUpdatesDuring).toHaveBeenCalledTimes(1);
     });
 
     it('sends the fetched compaction summary as a reasoning-type agent message', async () => {
