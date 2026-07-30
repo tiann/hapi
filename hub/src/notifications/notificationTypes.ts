@@ -60,4 +60,10 @@ export type NotificationChannel = {
 export type NotificationHubOptions = {
     readyCooldownMs?: number
     permissionDebounceMs?: number
+    /**
+     * Backoff delays (ms) for model-error delivery retries after a failed
+     * dispatch. Empty / omitted uses the default ladder. Exhausted delays
+     * keep the watermark so session-updated storms do not re-fire forever.
+     */
+    modelErrorRetryDelaysMs?: number[]
 }
