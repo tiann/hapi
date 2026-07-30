@@ -216,6 +216,7 @@ export default {
   'session.modelError.banner.midExecution': '上一轮代理在执行过程中失败。',
   'session.modelError.banner.dismiss': '忽略',
   'session.modelError.banner.viewRaw': '查看原始错误',
+  'session.modelError.listIndicator': '模型错误 — 点击查看',
 
   // Session inactive
   'session.inactive.autoResume': '此会话已停止。发送消息即可恢复。',

@@ -216,6 +216,7 @@ export default {
   'session.modelError.banner.midExecution': 'The last agent turn failed mid-execution.',
   'session.modelError.banner.dismiss': 'Dismiss',
   'session.modelError.banner.viewRaw': 'View raw error',
+  'session.modelError.listIndicator': 'Model error \u2014 click to view',
 
   // Session inactive
   'session.inactive.autoResume': 'This session is inactive. Send a message to resume.',
