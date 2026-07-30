@@ -129,7 +129,21 @@ describe('isRenderIrrelevantPatch', () => {
         ['model', { model: 'opus' }],
         ['modelReasoningEffort', { modelReasoningEffort: 'high' }],
         ['effort', { effort: 'medium' }],
-        ['pendingRequestsCount', { pendingRequestsCount: 2 }]
+        ['pendingRequestsCount', { pendingRequestsCount: 2 }],
+        ['metadata.path', { metadata: { path: '/other', name: undefined } }],
+        ['metadata.flavor', { metadata: { path: '/tmp', flavor: 'claude' as const } }],
+        ['metadata.machineId', { metadata: { path: '/tmp', machineId: 'Teemo' } }],
+        ['metadata.worktree.branch', {
+            metadata: {
+                path: '/tmp',
+                worktree: {
+                    basePath: '/tmp',
+                    branch: 'feat/x',
+                    name: 'x',
+                    worktreePath: '/tmp/x'
+                }
+            }
+        }]
     ] as Array<[string, Partial<SessionSummary>]>)('reports %s changes as relevant', (_field, change) => {
         const current = makeSummary()
         const next = makeSummary({ ...change, activeAt: 11_000 })

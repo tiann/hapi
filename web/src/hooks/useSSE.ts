@@ -137,6 +137,30 @@ function isSessionRecord(value: unknown): value is Session {
  * `updatedAt` and sorts on active/pendingRequestsCount/updatedAt - so storing
  * it costs a new object identity and a full list re-render for nothing.
  */
+export function sameSessionSummaryMetadata(
+    current: SessionSummary['metadata'],
+    next: SessionSummary['metadata']
+): boolean {
+    if (current === next) {
+        return true
+    }
+    if (current == null || next == null) {
+        return current == null && next == null
+    }
+    return current.name === next.name
+        && current.path === next.path
+        && current.machineId === next.machineId
+        && current.summary?.text === next.summary?.text
+        && current.flavor === next.flavor
+        && current.agentSessionId === next.agentSessionId
+        && current.lifecycleState === next.lifecycleState
+        && current.worktree?.basePath === next.worktree?.basePath
+        && current.worktree?.branch === next.worktree?.branch
+        && current.worktree?.name === next.worktree?.name
+        && current.worktree?.worktreePath === next.worktree?.worktreePath
+        && current.worktree?.createdAt === next.worktree?.createdAt
+}
+
 export function isRenderIrrelevantPatch(current: SessionSummary, next: SessionSummary): boolean {
     return current.active === next.active
         && current.thinking === next.thinking
@@ -156,10 +180,7 @@ export function isRenderIrrelevantPatch(current: SessionSummary, next: SessionSu
         && current.pendingRequestKinds.every((kind, i) => kind === next.pendingRequestKinds[i])
         && current.pendingRequests.length === next.pendingRequests.length
         && current.pendingRequests.every((req, i) => req.id === next.pendingRequests[i]?.id)
-        && current.metadata?.name === next.metadata?.name
-        && current.metadata?.summary?.text === next.metadata?.summary?.text
-        && current.metadata?.agentSessionId === next.metadata?.agentSessionId
-        && current.metadata?.lifecycleState === next.metadata?.lifecycleState
+        && sameSessionSummaryMetadata(current.metadata, next.metadata)
 }
 
 function getSessionPatch(value: unknown): SessionPatch | null {
