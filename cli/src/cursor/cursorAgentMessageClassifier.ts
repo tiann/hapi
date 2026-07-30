@@ -168,22 +168,44 @@ export function classifyCursorAgentMessage(text: string): CursorAgentStreamFailu
 }
 
 /**
+ * Strong failure signatures required before promoting a typed ACP stderr
+ * event to modelError. The transport assigns rate_limit / authentication /
+ * quota_exceeded from bare substrings ("rate limit", "authentication",
+ * "quota"), so a line like "authentication provider initialized" becomes
+ * type authentication. We re-check raw text here.
+ */
+const STRONG_STDERR_PATTERNS = {
+    rate_limit: /status 429|ratelimitexceeded|rate limit (?:exceeded|reached|hit)/i,
+    model_not_found: /Cannot use this model:|status 404|model (?:is )?not found|\bnot_found\b/i,
+    authentication: /status (?:401|403)|\bunauthenticated\b|permission denied|authentication (?:failed|required|expired)/i,
+    quota_exceeded: /quota (?:exceeded|exhausted|limit reached)|resource ?exhausted/i
+} as const
+
+/**
  * Maps an AcpStderrError (typed by AcpStdioTransport.parseStderrError) to
- * a CursorAgentStreamFailure. Structural: `error.type` is already classified
- * by the transport from the stderr stream, so this is just a name mapping.
+ * a CursorAgentStreamFailure when the raw text also carries a strong
+ * failure signature. Accepts a minimal AcpStderrError shape so this module
+ * stays decoupled from the transport package.
  *
- * Accepts a minimal shape of AcpStderrError so this module stays decoupled
- * from the transport package.
+ * Returns null for:
+ * - `unknown` (transport labels any "error"/"failed"/"exception" line)
+ * - typed events whose raw text is only a weak substring match
  *
- * Returns null for `unknown`: ACP stderr is logging (`Clients MAY capture,
- * forward, or ignore`), and the transport emits `unknown` for any line
- * containing "error"/"failed"/"exception". Promoting those would false-alarm
- * model-error banners on unrelated agent/runtime logs. Typed kinds only.
+ * ACP treats stderr as logging (`Clients MAY capture, forward, or ignore`);
+ * urgent model-error alerts need a definitive failure signature.
  */
 export function mapAcpStderrToFailure(error: {
     type: 'rate_limit' | 'model_not_found' | 'authentication' | 'quota_exceeded' | 'unknown'
     raw: string
 }): CursorAgentStreamFailure | null {
+    if (error.type === 'unknown') {
+        return null
+    }
+
+    if (!STRONG_STDERR_PATTERNS[error.type].test(error.raw)) {
+        return null
+    }
+
     switch (error.type) {
         case 'rate_limit':
             return { kind: 'rate_limited', transient: true, raw: error.raw, source: 'stderr' }
@@ -193,7 +215,6 @@ export function mapAcpStderrToFailure(error: {
             return { kind: 'auth_failed', transient: false, raw: error.raw, source: 'stderr' }
         case 'quota_exceeded':
             return { kind: 'quota_exhausted', transient: false, raw: error.raw, source: 'stderr' }
-        case 'unknown':
         default:
             return null
     }

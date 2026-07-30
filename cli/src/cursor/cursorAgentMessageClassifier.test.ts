@@ -269,11 +269,38 @@ describe('mapAcpStderrToFailure (structural stderr signal)', () => {
         expect(out!.transient).toBe(false)
     })
 
+    it('maps Cursor Cannot use this model rejection', () => {
+        const out = mapAcpStderrToFailure({
+            type: 'model_not_found',
+            raw: 'Cannot use this model: grok-4.5[fast=true]. Available models: auto'
+        })
+        expect(out?.kind).toBe('model_not_found')
+    })
+
     it('ignores unknown stderr (status-only; do not promote to modelError)', () => {
         // Transport emits type:unknown for any stderr containing error/failed/
         // exception — too broad for urgent model-error alerts.
         const out = mapAcpStderrToFailure({ type: 'unknown', raw: 'unexpected exception in agent' })
         expect(out).toBeNull()
+    })
+
+    it('ignores weak typed stderr that only matches transport substrings', () => {
+        expect(mapAcpStderrToFailure({
+            type: 'authentication',
+            raw: 'authentication provider initialized'
+        })).toBeNull()
+        expect(mapAcpStderrToFailure({
+            type: 'rate_limit',
+            raw: 'checking rate limit configuration'
+        })).toBeNull()
+        expect(mapAcpStderrToFailure({
+            type: 'quota_exceeded',
+            raw: 'quota tracker warmed up'
+        })).toBeNull()
+        expect(mapAcpStderrToFailure({
+            type: 'model_not_found',
+            raw: 'catalog refresh skipped for unknown models'
+        })).toBeNull()
     })
 })
 

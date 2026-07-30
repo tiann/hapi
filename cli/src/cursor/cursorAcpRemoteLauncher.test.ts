@@ -948,6 +948,31 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(wroteLastModelError).toBe(false);
     });
 
+    it('keeps weak typed authentication stderr status-only and still emits ready', async () => {
+        // Transport types "authentication provider initialized" as authentication
+        // via bare substring; strong-signature gate must keep it status-only.
+        harness.emitStderrOnPrompt = {
+            type: 'authentication',
+            message: 'authentication provider initialized',
+            raw: 'authentication provider initialized'
+        };
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            sendSessionEvent: ReturnType<typeof vi.fn>
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        session.queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(false);
+    });
+
     it('still records modelError for typed rate_limit stderr and suppresses ready', async () => {
         harness.emitStderrOnPrompt = {
             type: 'rate_limit',
