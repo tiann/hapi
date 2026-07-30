@@ -3,6 +3,9 @@ export const queryKeys = {
     session: (sessionId: string) => ['session', sessionId] as const,
     messages: (sessionId: string) => ['messages', sessionId] as const,
     machines: ['machines'] as const,
+    // Separate entry so offline machines never leak into the session list or the
+    // machine filter. Prefixed with `machines` so prefix-based invalidation hits both.
+    machinesWithOffline: ['machines', 'withOffline'] as const,
     sqliteStorage: ['sqlite-storage'] as const,
     machineCodexModels: (machineId: string) => ['machine-codex-models', machineId] as const,
     gitStatus: (sessionId: string) => ['git-status', sessionId] as const,

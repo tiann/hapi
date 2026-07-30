@@ -840,6 +840,8 @@ export default {
   'settings.machines.error': 'Could not rename this machine.',
   'settings.machines.action.name': 'Name',
   'settings.machines.action.edit': 'Rename',
+  'settings.machines.status.online': 'Online',
+  'settings.machines.status.offline': 'Offline',
   'settings.hub.machines.summary': 'Custom names for your machines',
   'settings.about.title': 'About',
   'settings.about.description': 'HAPI links and version information.',

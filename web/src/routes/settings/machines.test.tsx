@@ -90,6 +90,18 @@ describe('SettingsMachinesPage', () => {
         expect(screen.getByText('workstation.local')).toBeTruthy()
     })
 
+    it('exposes online and offline state to assistive tech', () => {
+        machinesMock.mockReturnValue([
+            makeMachine({ id: 'on', active: true } as Partial<Machine>),
+            makeMachine({ id: 'off', active: false, metadata: { host: 'sleeping', platform: 'linux', happyCliVersion: '1.0.0' } } as Partial<Machine>),
+        ])
+
+        renderPage()
+
+        expect(screen.getByRole('img', { name: 'Online' })).toBeTruthy()
+        expect(screen.getByRole('img', { name: 'Offline' })).toBeTruthy()
+    })
+
     it('lists online machines before offline ones', () => {
         machinesMock.mockReturnValue([
             makeMachine({ id: 'off', active: false, metadata: { host: 'sleeping', platform: 'linux', happyCliVersion: '1.0.0' } } as Partial<Machine>),

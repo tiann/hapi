@@ -844,6 +844,8 @@ export default {
   'settings.machines.error': '重命名失败。',
   'settings.machines.action.name': '命名',
   'settings.machines.action.edit': '改名',
+  'settings.machines.status.online': '在线',
+  'settings.machines.status.offline': '离线',
   'settings.hub.machines.summary': '给设备起自定义名字',
   'settings.about.title': '关于',
   'settings.about.description': 'HAPI 链接和版本信息。',

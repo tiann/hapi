@@ -14,7 +14,7 @@ export function useMachines(api: ApiClient | null, enabled: boolean, options?: {
         // Offline machines get their own cache entry so they never leak into the
         // session list or the machine filter. Still prefixed with queryKeys.machines,
         // so the `machine-updated` invalidation in useSSE refreshes both.
-        queryKey: includeOffline ? [...queryKeys.machines, 'withOffline'] : queryKeys.machines,
+        queryKey: includeOffline ? queryKeys.machinesWithOffline : queryKeys.machines,
         queryFn: async () => {
             if (!api) {
                 throw new Error('API unavailable')

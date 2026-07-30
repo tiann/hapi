@@ -163,6 +163,48 @@ function buildEventsUrl(
     }
 }
 
+/**
+ * Fold a live machine update into a cached machine list.
+ *
+ * The two machine caches disagree about what an offline machine means, so the
+ * caller states which contract it wants:
+ *
+ * - `keepOffline: false` — the online-only list behind the session list and the
+ *   machine filter. Going offline removes the machine, since you cannot spawn on it.
+ * - `keepOffline: true` — the settings page list, where offline is a state to
+ *   render rather than a reason to vanish.
+ *
+ * An unpopulated cache is left alone: the query has not loaded yet, and seeding
+ * it from a single event would produce a list of one.
+ */
+export function applyMachineToCache(
+    previous: MachinesResponse | undefined,
+    machine: Machine,
+    options: { keepOffline: boolean }
+): MachinesResponse | undefined {
+    if (!previous) {
+        return previous
+    }
+
+    const nextMachines = previous.machines.slice()
+    const index = nextMachines.findIndex((item) => item.id === machine.id)
+
+    if (!machine.active && !options.keepOffline) {
+        if (index < 0) {
+            return previous
+        }
+        nextMachines.splice(index, 1)
+        return { ...previous, machines: nextMachines }
+    }
+
+    if (index >= 0) {
+        nextMachines[index] = machine
+    } else {
+        nextMachines.push(machine)
+    }
+    return { ...previous, machines: nextMachines }
+}
+
 export function useSSE(options: {
     enabled: boolean
     token: string
@@ -469,32 +511,22 @@ export function useSSE(options: {
         }
 
         const upsertMachine = (machine: Machine) => {
-            queryClient.setQueryData<MachinesResponse | undefined>(queryKeys.machines, (previous) => {
-                if (!previous) {
-                    return previous
-                }
-
-                const nextMachines = previous.machines.slice()
-                const index = nextMachines.findIndex((item) => item.id === machine.id)
-                if (!machine.active) {
-                    if (index >= 0) {
-                        nextMachines.splice(index, 1)
-                        return { ...previous, machines: nextMachines }
-                    }
-                    return previous
-                }
-
-                if (index >= 0) {
-                    nextMachines[index] = machine
-                } else {
-                    nextMachines.push(machine)
-                }
-                return { ...previous, machines: nextMachines }
-            })
+            // Two caches with different contracts. The online-only one backs the
+            // session list and machine filter, so a machine that goes offline is
+            // removed. The offline-inclusive one backs the machines settings page,
+            // where going offline is a state to display, not a reason to disappear.
+            queryClient.setQueryData<MachinesResponse | undefined>(
+                queryKeys.machines,
+                (previous) => applyMachineToCache(previous, machine, { keepOffline: false })
+            )
+            queryClient.setQueryData<MachinesResponse | undefined>(
+                queryKeys.machinesWithOffline,
+                (previous) => applyMachineToCache(previous, machine, { keepOffline: true })
+            )
         }
 
         const removeMachine = (machineId: string) => {
-            queryClient.setQueryData<MachinesResponse | undefined>(queryKeys.machines, (previous) => {
+            const drop = (previous: MachinesResponse | undefined) => {
                 if (!previous) {
                     return previous
                 }
@@ -503,7 +535,10 @@ export function useSSE(options: {
                     return previous
                 }
                 return { ...previous, machines: nextMachines }
-            })
+            }
+            // A deleted machine is gone from both views.
+            queryClient.setQueryData<MachinesResponse | undefined>(queryKeys.machines, drop)
+            queryClient.setQueryData<MachinesResponse | undefined>(queryKeys.machinesWithOffline, drop)
         }
 
         const handleSyncEvent = (event: SyncEvent) => {

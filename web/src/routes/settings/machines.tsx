@@ -71,7 +71,9 @@ function MachineRow(props: { api: ApiClient | null; machine: Machine }) {
         <div className="group px-3 py-3">
             <div className="flex items-center gap-2.5">
                 <span
-                    aria-hidden
+                    role="img"
+                    aria-label={online ? t('settings.machines.status.online') : t('settings.machines.status.offline')}
+                    title={online ? t('settings.machines.status.online') : t('settings.machines.status.offline')}
                     className={online
                         ? 'h-[7px] w-[7px] shrink-0 rounded-full bg-emerald-500'
                         : 'h-[7px] w-[7px] shrink-0 rounded-full border-[1.5px] border-[var(--app-link-muted)]'}
