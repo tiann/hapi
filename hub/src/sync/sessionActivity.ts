@@ -26,29 +26,11 @@ function hasHumanTextContent(content: unknown): boolean {
         && record.text.trim().length > 0
 }
 
-function isReadyEventContent(content: unknown): boolean {
-    const record = asRecord(content)
-    if (record?.type !== 'event') {
-        return false
-    }
-
-    const data = asRecord(record.data)
-    return data?.type === 'ready'
-}
-
 export function shouldRecordSessionActivity(content: unknown): boolean {
     const message = unwrapRoleWrappedRecordEnvelope(content)
     if (!message) {
         return false
     }
 
-    if (message.role === 'user') {
-        return hasHumanTextContent(message.content)
-    }
-
-    if (message.role !== 'agent') {
-        return false
-    }
-
-    return isReadyEventContent(message.content)
+    return message.role === 'user' && hasHumanTextContent(message.content)
 }

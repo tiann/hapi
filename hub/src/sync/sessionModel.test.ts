@@ -612,7 +612,7 @@ describe('session model', () => {
         }
     })
 
-    it('reports session activity when CLI receives a turn-ready event over socket', () => {
+    it('records CLI user text activity but stores and broadcasts ready without recording activity', () => {
         const store = new Store(':memory:')
         const events: SyncEvent[] = []
         const cache = new SessionCache(store, createPublisher(events))
@@ -624,12 +624,13 @@ describe('session model', () => {
         )
         const handlers = new Map<string, (payload: unknown) => void>()
         const activity: Array<{ sessionId: string; updatedAt: number }> = []
+        const roomEvents: unknown[] = []
 
         registerSessionHandlers({
             on: (event: string, handler: (payload: unknown) => void) => {
                 handlers.set(event, handler)
             },
-            to: () => ({ emit() {} })
+            to: () => ({ emit: (_event: string, update: unknown) => roomEvents.push(update) })
         } as never, {
             store,
             resolveSessionAccess: (sessionId) => {
@@ -644,6 +645,10 @@ describe('session model', () => {
 
         handlers.get('message')?.({
             sid: session.id,
+            message: JSON.stringify({ role: 'user', content: { type: 'text', text: 'hello' } })
+        })
+        handlers.get('message')?.({
+            sid: session.id,
             message: JSON.stringify({
                 role: 'agent',
                 content: {
@@ -653,9 +658,305 @@ describe('session model', () => {
             })
         })
 
+        const messages = store.messages.getMessages(session.id)
+        expect(messages).toHaveLength(2)
+        expect(roomEvents).toHaveLength(2)
         expect(activity).toHaveLength(1)
         expect(activity[0].sessionId).toBe(session.id)
-        expect(activity[0].updatedAt).toBe(store.messages.getMessages(session.id, 1)[0]?.createdAt)
+        expect(activity[0].updatedAt).toBe(messages[0]?.createdAt)
+    })
+
+    it('records activity only for the first messages-consumed transition while retaining duplicate acknowledgements', () => {
+        const originalDateNow = Date.now
+        let now = 1_000
+        Date.now = () => now
+        try {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+            const session = cache.getOrCreateSession(
+                'session-cli-consumed-activity',
+                { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+                null,
+                'default'
+            )
+            const queued = store.messages.addMessage(
+                session.id,
+                { role: 'user', content: { type: 'text', text: 'hello' } },
+                'local-activity'
+            )
+            const handlers = new Map<string, (payload: unknown) => void>()
+            const activity: Array<{ sessionId: string; updatedAt: number }> = []
+            const webEvents: SyncEvent[] = []
+
+            registerSessionHandlers({
+                on: (event: string, handler: (payload: unknown) => void) => {
+                    handlers.set(event, handler)
+                },
+                to: () => ({ emit() {} })
+            } as never, {
+                store,
+                resolveSessionAccess: (sessionId) => {
+                    const stored = store.sessions.getSessionByNamespace(sessionId, 'default')
+                    return stored ? { ok: true, value: stored } : { ok: false, reason: 'not-found' }
+                },
+                emitAccessError: () => {},
+                onSessionActivity: (sessionId, updatedAt) => {
+                    activity.push({ sessionId, updatedAt })
+                    cache.recordSessionActivity(sessionId, updatedAt)
+                },
+                onWebappEvent: (event) => webEvents.push(event)
+            })
+
+            now = 2_000
+            handlers.get('messages-consumed')?.({ sid: session.id, localIds: ['local-activity'] })
+            now = 3_000
+            handlers.get('messages-consumed')?.({ sid: session.id, localIds: ['local-activity'] })
+            now = 4_000
+            handlers.get('message')?.({
+                sid: session.id,
+                message: JSON.stringify({
+                    role: 'agent',
+                    content: { type: 'event', data: { type: 'ready' } }
+                })
+            })
+
+            const invoked = store.messages.getMessages(session.id).find((message) => message.id === queued.id)
+            expect(invoked?.invokedAt).toBe(2_000)
+            expect(activity).toEqual([
+                { sessionId: session.id, updatedAt: 2_000 },
+                { sessionId: session.id, updatedAt: 2_000 }
+            ])
+            expect(store.sessions.getSession(session.id)?.updatedAt).toBe(2_000)
+            expect(events.filter((event) => event.type === 'session-updated')).toHaveLength(1)
+            expect(webEvents.filter((event) => event.type === 'messages-consumed')).toHaveLength(2)
+        } finally {
+            Date.now = originalDateNow
+        }
+    })
+
+    it('replays the persisted invocation timestamp after the first activity callback fails', () => {
+        const originalDateNow = Date.now
+        const originalConsoleError = console.error
+        let now = 1_000
+        Date.now = () => now
+        console.error = () => {}
+        try {
+            const store = new Store(':memory:')
+            const session = store.sessions.getOrCreateSession(
+                'session-cli-consumed-replay',
+                { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+                null,
+                'default'
+            )
+            store.messages.addMessage(
+                session.id,
+                { role: 'user', content: { type: 'text', text: 'hello' } },
+                'local-replay'
+            )
+            const handlers = new Map<string, (payload: unknown) => void>()
+            const activity: Array<{ sessionId: string; updatedAt: number }> = []
+            const webEvents: SyncEvent[] = []
+            let failActivity = true
+
+            registerSessionHandlers({
+                on: (event: string, handler: (payload: unknown) => void) => {
+                    handlers.set(event, handler)
+                },
+                to: () => ({ emit() {} })
+            } as never, {
+                store,
+                resolveSessionAccess: (sessionId) => {
+                    const stored = store.sessions.getSessionByNamespace(sessionId, 'default')
+                    return stored ? { ok: true, value: stored } : { ok: false, reason: 'not-found' }
+                },
+                emitAccessError: () => {},
+                onSessionActivity: (sessionId, updatedAt) => {
+                    if (failActivity) throw new Error('activity callback failed')
+                    activity.push({ sessionId, updatedAt })
+                },
+                onWebappEvent: (event) => webEvents.push(event)
+            })
+
+            now = 2_000
+            handlers.get('messages-consumed')?.({ sid: session.id, localIds: ['local-replay'] })
+            failActivity = false
+            now = 3_000
+            handlers.get('messages-consumed')?.({ sid: session.id, localIds: ['local-replay'] })
+
+            expect(store.messages.getLocalMessageStates(session.id, ['local-replay']))
+                .toEqual([{ localId: 'local-replay', invokedAt: 2_000 }])
+            expect(store.sessions.getSession(session.id)?.updatedAt).toBe(2_000)
+            expect(activity).toEqual([{ sessionId: session.id, updatedAt: 2_000 }])
+            expect(webEvents.filter((event) => event.type === 'messages-consumed').map((event) => event.invokedAt))
+                .toEqual([2_000, 3_000])
+        } finally {
+            Date.now = originalDateNow
+            console.error = originalConsoleError
+        }
+    })
+
+    it('uses the newest persisted invocation timestamp for a partial messages-consumed batch', () => {
+        const originalDateNow = Date.now
+        let now = 1_000
+        Date.now = () => now
+        try {
+            const store = new Store(':memory:')
+            const session = store.sessions.getOrCreateSession(
+                'session-cli-consumed-partial',
+                { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+                null,
+                'default'
+            )
+            store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'old' } }, 'local-old')
+            store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'fresh' } }, 'local-fresh')
+            store.messages.markMessagesInvoked(session.id, ['local-old'], 1_500)
+            const handlers = new Map<string, (payload: unknown) => void>()
+            const activity: Array<{ sessionId: string; updatedAt: number }> = []
+            const webEvents: SyncEvent[] = []
+
+            registerSessionHandlers({
+                on: (event: string, handler: (payload: unknown) => void) => {
+                    handlers.set(event, handler)
+                },
+                to: () => ({ emit() {} })
+            } as never, {
+                store,
+                resolveSessionAccess: (sessionId) => {
+                    const stored = store.sessions.getSessionByNamespace(sessionId, 'default')
+                    return stored ? { ok: true, value: stored } : { ok: false, reason: 'not-found' }
+                },
+                emitAccessError: () => {},
+                onSessionActivity: (sessionId, updatedAt) => activity.push({ sessionId, updatedAt }),
+                onWebappEvent: (event) => webEvents.push(event)
+            })
+
+            now = 2_000
+            handlers.get('messages-consumed')?.({ sid: session.id, localIds: ['local-old', 'local-fresh'] })
+
+            expect(store.messages.getLocalMessageStates(session.id, ['local-old', 'local-fresh']))
+                .toEqual([
+                    { localId: 'local-old', invokedAt: 1_500 },
+                    { localId: 'local-fresh', invokedAt: 2_000 }
+                ])
+            expect(activity).toEqual([{ sessionId: session.id, updatedAt: 2_000 }])
+            expect(webEvents.filter((event) => event.type === 'messages-consumed').map((event) => event.invokedAt))
+                .toEqual([2_000])
+        } finally {
+            Date.now = originalDateNow
+        }
+    })
+
+    it('keeps the batch ACK timestamp for heterogeneous sibling-preinvoked and unknown IDs', () => {
+        const originalDateNow = Date.now
+        let now = 1_000
+        Date.now = () => now
+        try {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+            const session = cache.getOrCreateSession(
+                'session-cli-consumed-sibling-preinvoked',
+                { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+                null,
+                'default'
+            )
+            store.messages.addMessage(
+                session.id,
+                { role: 'user', content: { type: 'text', text: 'already sent by sibling' } },
+                'local-sibling-preinvoked'
+            )
+            store.messages.addMessage(
+                session.id,
+                { role: 'user', content: { type: 'text', text: 'second sibling send' } },
+                'local-sibling-preinvoked-newer'
+            )
+            store.messages.markMessagesInvoked(session.id, ['local-sibling-preinvoked'], 1_500)
+            store.messages.markMessagesInvoked(session.id, ['local-sibling-preinvoked-newer'], 1_800)
+            const handlers = new Map<string, (payload: unknown) => void>()
+            const activity: Array<{ sessionId: string; updatedAt: number }> = []
+            const webEvents: SyncEvent[] = []
+
+            registerSessionHandlers({
+                on: (event: string, handler: (payload: unknown) => void) => {
+                    handlers.set(event, handler)
+                },
+                to: () => ({ emit() {} })
+            } as never, {
+                store,
+                resolveSessionAccess: (sessionId) => {
+                    const stored = store.sessions.getSessionByNamespace(sessionId, 'default')
+                    return stored ? { ok: true, value: stored } : { ok: false, reason: 'not-found' }
+                },
+                emitAccessError: () => {},
+                onSessionActivity: (sessionId, updatedAt) => {
+                    activity.push({ sessionId, updatedAt })
+                    cache.recordSessionActivity(sessionId, updatedAt)
+                },
+                onWebappEvent: (event) => webEvents.push(event)
+            })
+
+            now = 2_000
+            handlers.get('messages-consumed')?.({
+                sid: session.id,
+                localIds: ['local-sibling-preinvoked', 'local-sibling-preinvoked-newer', 'local-unknown']
+            })
+
+            expect(store.messages.getLocalMessageStates(session.id, [
+                'local-sibling-preinvoked',
+                'local-sibling-preinvoked-newer'
+            ])).toEqual([
+                { localId: 'local-sibling-preinvoked', invokedAt: 1_500 },
+                { localId: 'local-sibling-preinvoked-newer', invokedAt: 1_800 }
+            ])
+            expect(activity).toEqual([{ sessionId: session.id, updatedAt: 1_000 }])
+            expect(store.sessions.getSession(session.id)?.updatedAt).toBe(1_000)
+            expect(events.filter((event) => event.type === 'session-updated')).toHaveLength(0)
+            expect(webEvents.filter((event) => event.type === 'messages-consumed').map((event) => event.invokedAt))
+                .toEqual([2_000])
+        } finally {
+            Date.now = originalDateNow
+        }
+    })
+
+    it('keeps the ACK timestamp for messages-consumed SSE when local IDs are unknown', () => {
+        const originalDateNow = Date.now
+        let now = 1_000
+        Date.now = () => now
+        try {
+            const store = new Store(':memory:')
+            const session = store.sessions.getOrCreateSession(
+                'session-cli-consumed-unknown-id',
+                { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+                null,
+                'default'
+            )
+            const handlers = new Map<string, (payload: unknown) => void>()
+            const webEvents: SyncEvent[] = []
+
+            registerSessionHandlers({
+                on: (event: string, handler: (payload: unknown) => void) => {
+                    handlers.set(event, handler)
+                },
+                to: () => ({ emit() {} })
+            } as never, {
+                store,
+                resolveSessionAccess: (sessionId) => {
+                    const stored = store.sessions.getSessionByNamespace(sessionId, 'default')
+                    return stored ? { ok: true, value: stored } : { ok: false, reason: 'not-found' }
+                },
+                emitAccessError: () => {},
+                onWebappEvent: (event) => webEvents.push(event)
+            })
+
+            now = 2_000
+            handlers.get('messages-consumed')?.({ sid: session.id, localIds: ['local-unknown'] })
+
+            expect(webEvents.filter((event) => event.type === 'messages-consumed').map((event) => event.invokedAt))
+                .toEqual([2_000])
+        } finally {
+            Date.now = originalDateNow
+        }
     })
 
     it('does not report session activity for CLI tool messages', () => {
@@ -3335,9 +3636,11 @@ describe('session model', () => {
                 'default'
             )
 
+            const updatedAtBeforeArchive = store.sessions.getSession(session.id)?.updatedAt
             cache.markSessionArchivedFromHub(session.id, 'Archived from hub (CLI unreachable)')
 
             const meta = cache.getSession(session.id)?.metadata as Record<string, unknown> | null | undefined
+            expect(store.sessions.getSession(session.id)?.updatedAt).toBe(updatedAtBeforeArchive)
             expect(meta?.lifecycleState).toBe('archived')
             expect(meta?.archivedBy).toBe('hub')
             expect(meta?.archiveReason).toBe('Archived from hub (CLI unreachable)')

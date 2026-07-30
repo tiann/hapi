@@ -136,8 +136,8 @@ export class MessageStore {
         return deleteQueuedMessageById(this.db, sessionId, messageId)
     }
 
-    markMessagesInvoked(sessionId: string, localIds: string[], invokedAt: number): void {
-        markMessagesInvoked(this.db, sessionId, localIds, invokedAt)
+    markMessagesInvoked(sessionId: string, localIds: string[], invokedAt: number): number {
+        return markMessagesInvoked(this.db, sessionId, localIds, invokedAt)
     }
 
     mergeSessionMessages(fromSessionId: string, toSessionId: string): { moved: number; oldMaxSeq: number; newMaxSeq: number } {

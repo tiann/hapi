@@ -175,6 +175,21 @@ describe('cancelQueuedMessage', () => {
     })
 })
 
+describe('recordMessagesConsumed', () => {
+    it('rolls back the invocation transition when the session namespace cannot be verified', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'consumed-rollback-wrong-namespace')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'hello' } }, 'local-rollback')
+        const originalUpdatedAt = store.sessions.getSession(session.id)?.updatedAt
+
+        expect(() => store.recordMessagesConsumed(session.id, ['local-rollback'], 2_000, 'other-namespace'))
+            .toThrow('session not found after messages-consumed transition')
+        expect(store.messages.getLocalMessageStates(session.id, ['local-rollback']))
+            .toEqual([{ localId: 'local-rollback', invokedAt: null }])
+        expect(store.sessions.getSession(session.id)?.updatedAt).toBe(originalUpdatedAt)
+    })
+})
+
 describe('position pagination and structural epochs', () => {
     it('returns rows strictly after a cursor and respects an inclusive snapshot head', () => {
         const store = makeStore()

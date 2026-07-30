@@ -107,6 +107,36 @@ export class Store {
         this.scratchlist = new ScratchlistStore(this.db)
     }
 
+    /**
+     * Atomically records a CLI prompt-consumption acknowledgement and returns
+     * the persisted session activity timestamp. A duplicate or sibling-stamped
+     * acknowledgement leaves the session untouched while returning its existing
+     * timestamp for replay-safe in-memory cache synchronization.
+     */
+    recordMessagesConsumed(
+        sessionId: string,
+        localIds: string[],
+        invokedAt: number,
+        namespace: string
+    ): number {
+        return this.db.transaction(() => {
+            const changes = this.messages.markMessagesInvoked(sessionId, localIds, invokedAt)
+            if (changes > 0) {
+                this.sessions.touchSessionUpdatedAt(sessionId, invokedAt, namespace)
+            }
+
+            const session = this.sessions.getSessionByNamespace(sessionId, namespace)
+            if (!session) {
+                throw new Error('session not found after messages-consumed transition')
+            }
+            if (changes > 0 && session.updatedAt < invokedAt) {
+                throw new Error('session activity was not persisted after messages-consumed transition')
+            }
+
+            return session.updatedAt
+        })()
+    }
+
     close(): void {
         if (this.closed) return
         this.db.close()

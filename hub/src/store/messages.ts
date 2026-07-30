@@ -629,16 +629,16 @@ export function markMessagesInvoked(
     sessionId: string,
     localIds: string[],
     invokedAt: number
-): void {
-    if (localIds.length === 0) return
+): number {
+    if (localIds.length === 0) return 0
     const placeholders = localIds.map(() => '?').join(', ')
-    db.prepare(
+    return db.prepare(
         `UPDATE messages
          SET invoked_at = ?
          WHERE session_id = ?
            AND local_id IN (${placeholders})
            AND invoked_at IS NULL`
-    ).run(invokedAt, sessionId, ...localIds)
+    ).run(invokedAt, sessionId, ...localIds).changes
 }
 
 export function mergeSessionMessages(

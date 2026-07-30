@@ -311,25 +311,37 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
         const invokedAt = Date.now()
+        let sessionUpdatedAt: number
         try {
-            store.messages.markMessagesInvoked(data.sid, localIds, invokedAt)
-            onSessionActivity?.(data.sid, invokedAt)
-            // Only drop the queued-thinking grace when the CLI explicitly opts in
-            // (synchronous handlers like slash commands that will never send
-            // their own `thinking=true` keepalive). Normal queue drains still
-            // need the grace so the spinner doesn't flicker between the queue
-            // shift and `backend.prompt` start.
-            if (data.clearQueuedThinkingGrace === true) {
-                onMessagesConsumed?.(data.sid)
-            }
-            // Emit only after the DB write succeeds. Otherwise a transient SQLite
-            // failure would broadcast an `invokedAt` that was never persisted —
-            // live clients would hide the queued rows while a refresh / secondary
-            // client would see them as queued again, diverging the state.
-            onWebappEvent?.({ type: 'messages-consumed', sessionId: data.sid, localIds, invokedAt })
+            sessionUpdatedAt = store.recordMessagesConsumed(
+                data.sid,
+                localIds,
+                invokedAt,
+                sessionAccess.value.namespace
+            )
         } catch (err) {
-            console.error('markMessagesInvoked failed', err)
+            console.error('recordMessagesConsumed failed', err)
+            return
         }
+
+        try {
+            onSessionActivity?.(data.sid, sessionUpdatedAt)
+        } catch (err) {
+            console.error('onSessionActivity failed', err)
+        }
+
+        // Only drop the queued-thinking grace when the CLI explicitly opts in
+        // (synchronous handlers like slash commands that will never send
+        // their own `thinking=true` keepalive). Normal queue drains still
+        // need the grace so the spinner doesn't flicker between the queue
+        // shift and `backend.prompt` start.
+        if (data.clearQueuedThinkingGrace === true) {
+            onMessagesConsumed?.(data.sid)
+        }
+        // Emit only after the DB transaction succeeds. This is an ACK-level
+        // batch contract, so preserve its original timestamp even when IDs are
+        // heterogeneous, replayed, or unknown.
+        onWebappEvent?.({ type: 'messages-consumed', sessionId: data.sid, localIds, invokedAt })
     })
 
     socket.on('session-end', (data: SessionEndPayload) => {
