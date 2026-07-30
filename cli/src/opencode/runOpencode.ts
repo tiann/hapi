@@ -16,8 +16,6 @@ import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import { listSlashCommands } from '@/modules/common/slashCommands';
 import { resolveOpencodeSlashCommand } from './utils/slashCommands';
-import type { OpencodeCompactResult } from './utils/opencodeCompactBridge';
-import { convertAgentMessage } from '@/agent/messageConverter';
 
 export async function runOpencode(opts: {
     startedBy?: 'runner' | 'terminal';
@@ -81,15 +79,24 @@ export async function runOpencode(opts: {
         // batches with different intent don't merge — the launcher uses null
         // to mean "switch back to defaultBackendModel".
         model: mode.model === null ? '__reset__' : mode.model ?? null,
-        modelReasoningEffort: mode.modelReasoningEffort ?? null
+        modelReasoningEffort: mode.modelReasoningEffort ?? null,
+        // Defense in depth: a compact item is always pushed via
+        // `pushIsolated` (never batches with siblings regardless of mode
+        // hash), but including `operation` here too means a prompt and a
+        // compact request could never be merged into one batch even if that
+        // isolation guard were ever bypassed.
+        operation: mode.operation ?? null
     }));
 
     const sessionWrapperRef: { current: OpencodeSession | null } = { current: null };
-    // Populated by opencodeRemoteLauncher once the ACP backend + internal
-    // HTTP baseUrl are available (remote mode only). Stays null in local
-    // mode, so /compact gracefully falls back to a not-yet-supported message
-    // there — see the `slash.kind === 'compact'` branch below.
-    const compactTriggerRef: { current: (() => Promise<OpencodeCompactResult>) | null } = { current: null };
+    // Set by opencodeRemoteLauncher once the ACP backend + internal HTTP
+    // baseUrl are available (remote mode only), and reset to false whenever
+    // this session leaves remote mode (see loop.ts's `runLocal:` — covers
+    // both starting in local mode and a remote->local handoff mid-session).
+    // While false, /compact falls back to a not-yet-supported message
+    // instead of being queued — see the `slash.kind === 'compact'` branch
+    // below.
+    let compactSupported = false;
     let currentPermissionMode: PermissionMode = opts.permissionMode ?? 'default';
     let sessionModel: string | null = initialModel;
     let sessionModelReasoningEffort: string | null = initialModelReasoningEffort;
@@ -141,6 +148,52 @@ export async function runOpencode(opts: {
     // short-circuit when it resumes.
     const preparingLocalIds = new Set<string>();
     const cancelledBeforeEnqueue = new Set<string>();
+    // Mirrors `cancelledBeforeEnqueue` above, but for the other side of the
+    // queued-compact ack: `onCancelQueuedMessage` below can still fire for a
+    // localId that's neither in the queue nor in `preparingLocalIds`. Track
+    // it here and let the launcher consume it via `isLocalIdCancelled`
+    // (passed through opencodeLoop) so it can suppress the eventual
+    // "Compaction completed/failed" + Reasoning-block result if this really
+    // was that localId.
+    //
+    // Note on how narrow this window actually is: the hub only calls back
+    // into the CLI's `onCancelQueuedMessage` when its own DB lookup still
+    // finds the row queued (invoked_at IS NULL) — see
+    // `cancelQueuedMessage`'s Phase 1 in hub/src/sync/messageService.ts.
+    // `session.emitMessagesConsumed([localId])` a few lines below fires the
+    // "invoked" ack for the /compact message *before* it's pushed onto
+    // `messageQueue`, i.e. long before the launcher ever dequeues it and
+    // starts the REST call. So once that ack's DB write lands, every later
+    // cancel request short-circuits on the hub side and never reaches the
+    // CLI at all — this Set can only ever be populated during the brief
+    // network round trip between the CLI emitting that ack and the hub
+    // recording it, not while the compact REST call is actually running.
+    // That's an existing characteristic of the hub's first-write-wins
+    // queued-message protocol (present since Phase 1 of this feature, not
+    // something this change introduced or is trying to fix — a hub-side
+    // redesign of that protocol is out of scope here since it would affect
+    // cancel behavior for every flavor, not just OpenCode /compact).
+    //
+    // Nothing here distinguishes "this localId was actually a /compact
+    // message" from any other queued message whose cancel happened to land
+    // in that race window — the fallback branch below has no way to know.
+    // For a real /compact race, `isLocalIdCancelled` reads (and deletes) the
+    // entry once `runCompactOperation` checks it; for anything else, the
+    // entry would sit here unread for the rest of the process's life. Cap
+    // the Set (oldest-first eviction, relying on Set's insertion-order
+    // iteration) so a long-running session can't accumulate these forever —
+    // realistically at most a handful of entries would ever coexist, so this
+    // cap is a defensive bound, not something expected to trigger.
+    const MAX_CANCELLED_DEQUEUED_LOCAL_IDS = 50;
+    const cancelledDequeuedLocalIds = new Set<string>();
+    const addCancelledDequeuedLocalId = (localId: string): void => {
+        cancelledDequeuedLocalIds.add(localId);
+        while (cancelledDequeuedLocalIds.size > MAX_CANCELLED_DEQUEUED_LOCAL_IDS) {
+            const oldest = cancelledDequeuedLocalIds.values().next().value;
+            if (oldest === undefined) break;
+            cancelledDequeuedLocalIds.delete(oldest);
+        }
+    };
 
     let userMessageChain: Promise<void> = Promise.resolve();
     session.onUserMessage((message, localId) => {
@@ -175,14 +228,10 @@ export async function runOpencode(opts: {
                 });
 
                 if (slash.kind === 'compact') {
-                    // Ack the user's /compact message the same way the
-                    // synchronous 'handled' branch below does, before
-                    // starting the (potentially 90s+) REST round trip.
-                    if (localId) {
-                        session.emitMessagesConsumed([localId], { clearQueuedThinkingGrace: true });
-                    }
-                    const trigger = compactTriggerRef.current;
-                    if (!trigger) {
+                    if (!compactSupported) {
+                        if (localId) {
+                            session.emitMessagesConsumed([localId], { clearQueuedThinkingGrace: true });
+                        }
                         session.sendAgentMessage({
                             type: 'message',
                             message: '/compact is not yet supported in HAPI OpenCode sessions.',
@@ -191,67 +240,28 @@ export async function runOpencode(opts: {
                         sessionWrapperRef.current?.onThinkingChange(false);
                         return;
                     }
-                    // Claude/Codex report compaction start/completion/failure
-                    // via sendSessionEvent (a dedicated status-line channel —
-                    // web/src/chat/presentation.ts renders it as a small
-                    // inline indicator, same as "Switched to local" or
-                    // Claude's automatic microcompaction notice), not as a
-                    // regular chat bubble. Match that so /compact doesn't
-                    // pile three permanent chat messages into the transcript
-                    // every time it's used.
-                    session.sendSessionEvent({
-                        type: 'message',
-                        message: '📦 Compaction started'
-                    });
-                    sessionWrapperRef.current?.onThinkingChange(true);
-                    try {
-                        const result = await trigger();
-                        // The compaction itself already happened server-side
-                        // by the time this resolves — there is no way to
-                        // cancel the in-flight REST call — but if the user
-                        // cancelled this message while we were waiting (up to
-                        // several minutes), don't surface a result for an
-                        // action they no longer expect a reply from. Same
-                        // race contract as other async event handling in this
-                        // chain: a cancel that lands before the async work
-                        // resolves suppresses the eventual UI update.
-                        if (wasCancelled()) {
-                            logger.debug('[opencode] /compact result suppressed: cancelled before it resolved');
-                            return;
-                        }
-                        session.sendSessionEvent({
-                            type: 'message',
-                            message: result.ok ? '📦 Compaction completed' : `📦 Compaction failed: ${result.error}`
-                        });
-                        // Show the actual summary OpenCode generated as a
-                        // "Reasoning" block (reusing the existing collapsed
-                        // Reasoning UI as-is — no new component/content-part
-                        // type). Silently skipped if the bridge couldn't find
-                        // it (e.g. an unexpected response shape) — that's a
-                        // cosmetic miss, not a compaction failure.
-                        if (result.ok && result.summaryText) {
-                            const converted = convertAgentMessage({
-                                type: 'reasoning',
-                                text: result.summaryText,
-                                id: randomUUID()
-                            });
-                            if (converted) {
-                                session.sendAgentMessage(converted);
-                            }
-                        }
-                    } catch (error) {
-                        if (wasCancelled()) {
-                            logger.debug('[opencode] /compact error suppressed: cancelled before it resolved');
-                            return;
-                        }
-                        const message = error instanceof Error ? error.message : String(error);
-                        session.sendSessionEvent({
-                            type: 'message',
-                            message: `📦 Compaction failed: ${message}`
-                        });
-                    } finally {
-                        sessionWrapperRef.current?.onThinkingChange(false);
+                    // Ack the user's /compact message, but — unlike the
+                    // synchronous 'handled' branch below — do NOT pass
+                    // `clearQueuedThinkingGrace`. That flag is only for
+                    // handlers that will never call onThinkingChange(true)
+                    // afterward (see the contract documented at its
+                    // definition in apiSession.ts); a queued /compact WILL
+                    // call onThinkingChange(true) once dequeued in
+                    // opencodeRemoteLauncher.ts, just later than usual (it
+                    // may sit behind other queued prompts first) — the hub
+                    // still needs its normal queued-thinking grace to bridge
+                    // that gap without the spinner flickering.
+                    if (localId) {
+                        session.emitMessagesConsumed([localId]);
                     }
+                    // pushIsolated (not push): must never batch with a
+                    // sibling prompt, but must still occupy its real FIFO
+                    // position relative to prompts already queued ahead of
+                    // it. A prior design ran /compact via a trigger function
+                    // invoked directly from this chain, bypassing the queue
+                    // entirely — that let /compact "cut in line" ahead of an
+                    // already-queued-but-not-yet-dequeued prompt.
+                    messageQueue.pushIsolated('', { ...buildMode(), operation: 'compact' }, localId);
                     return;
                 }
 
@@ -334,7 +344,20 @@ export async function runOpencode(opts: {
             logger.debug(`[opencode] cancelByLocalId(${localId}): marked for cancellation before enqueue`);
             return true;
         }
-        logger.debug(`[opencode] cancelByLocalId(${localId}): not found (best-effort)`);
+        // Not in the queue and not in the pre-enqueue preparing window. As
+        // explained where `cancelledDequeuedLocalIds` is declared above, the
+        // hub only calls this at all while its own row is still queued, so
+        // reaching this branch means we're in the brief race between our
+        // /compact ack (`emitMessagesConsumed`) being sent and the hub
+        // recording it — not, as the name might suggest, the compact REST
+        // call itself running. Remember it so the launcher can suppress the
+        // result if that's what this turns out to be; harmless if it doesn't
+        // match anything (just an unread entry that never gets consumed).
+        // Return value is unchanged from before this tracking existed — we
+        // don't actually know whether this cancelled anything real, so this
+        // stays "best-effort: not found".
+        addCancelledDequeuedLocalId(localId);
+        logger.debug(`[opencode] cancelByLocalId(${localId}): not found in queue; marked in case it lands in the compact ack race window (best-effort)`);
         return false;
     });
 
@@ -381,9 +404,10 @@ export async function runOpencode(opts: {
                 sessionWrapperRef.current = instance;
                 syncSessionMode();
             },
-            onCompactTriggerReady: (trigger) => {
-                compactTriggerRef.current = trigger;
-            }
+            onCompactAvailabilityChange: (available) => {
+                compactSupported = available;
+            },
+            isLocalIdCancelled: (localId) => cancelledDequeuedLocalIds.delete(localId)
         });
     } catch (error) {
         crashed = true;

@@ -1,4 +1,5 @@
 import React from 'react';
+import { randomUUID } from 'node:crypto';
 import { registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
 import { logger } from '@/ui/logger';
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
@@ -10,14 +11,27 @@ import type { OpencodeSession } from './session';
 import type { OpencodeMode, PermissionMode } from './types';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { allocateFreePort, createOpencodeBackend } from './utils/opencodeBackend';
-import { fetchCompactionSummary, splitProviderModel, triggerOpencodeCompact, type OpencodeCompactResult } from './utils/opencodeCompactBridge';
+import { fetchCompactionSummary, splitProviderModel, triggerOpencodeCompact } from './utils/opencodeCompactBridge';
 import { OpencodePermissionHandler } from './utils/permissionHandler';
 import { OPENCODE_NATIVE_TOOL_INSTRUCTION, PLAN_MODE_INSTRUCTION } from './utils/systemPrompt';
 import { resolveThoughtLevelEffort } from './thoughtLevelEffort';
 
 type OpencodeRemoteLauncherOptions = {
     onReasoningEffortRollback?: (effort: string | null) => void;
-    onCompactTriggerReady?: (trigger: () => Promise<OpencodeCompactResult>) => void;
+    // Called with `true` once the ACP backend + internal HTTP baseUrl are
+    // ready (so /compact can actually run) and with `false` whenever this
+    // session leaves remote mode. runOpencode.ts uses this to decide whether
+    // a `/compact` message should be queued or immediately answered with a
+    // "not yet supported" reply — see its `slash.kind === 'compact'` branch.
+    onCompactAvailabilityChange?: (available: boolean) => void;
+    // Consumes (delete-and-return) whether the queued item with this localId
+    // was cancelled via runOpencode.ts's `onCancelQueuedMessage` fallback
+    // branch (see the comment on `cancelledDequeuedLocalIds` there for what
+    // that actually covers — in practice a narrow ack-vs-hub-DB-write race,
+    // not "cancel while the REST call is running"). Checked once the REST
+    // call (and summary lookup) settles, so a cancelled request's result
+    // doesn't surface for an action the user no longer expects a reply from.
+    isLocalIdCancelled?: (localId: string) => boolean;
 };
 
 class OpencodeRemoteLauncher extends RemoteLauncherBase {
@@ -36,16 +50,6 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private defaultBackendEffort: string | null = null;
     private setModelSupported: boolean | undefined = undefined;
     private setEffortSupported: boolean | undefined = undefined;
-    // Serializes session/prompt and /compact against each other: both act on
-    // the same underlying OpenCode session, and firing them concurrently
-    // would let the REST /summarize call and an in-flight ACP session/prompt
-    // race on the same opencode session with no coordination on HAPI's side.
-    // `turnLock` is a promise chain — `runExclusive` reassigns it
-    // synchronously (no `await` in between reading the previous link and
-    // writing the new one), so two near-simultaneous callers still resolve
-    // into a well-defined FIFO order with no race window, unlike a
-    // check-then-set boolean/gate.
-    private turnLock: Promise<unknown> = Promise.resolve();
 
     constructor(
         session: OpencodeSession,
@@ -141,43 +145,11 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         this.currentBackendEffort = thoughtLevelOption?.currentValue ?? null;
         this.defaultBackendEffort = this.currentBackendEffort;
 
-        // Let the caller (runOpencode.ts) drive native /compact: it needs a
-        // way to reach the ACP backend + internal HTTP baseUrl that only this
-        // launcher owns. The trigger re-reads current model metadata on every
-        // call (not just at registration time) so it reflects the latest
-        // inline model switch.
-        this.options.onCompactTriggerReady?.((): Promise<OpencodeCompactResult> => this.runExclusive(async () => {
-            if (!this.baseUrl) {
-                return { ok: false, error: 'OpenCode internal HTTP API base URL is not available.' };
-            }
-            const metadata = backend.getSessionModelsMetadata?.(acpSessionId);
-            const split = splitProviderModel(metadata?.currentModelId ?? this.currentBackendModel);
-            if (!split) {
-                return {
-                    ok: false,
-                    error: 'OpenCode model metadata is not available; cannot determine provider/model for compaction.'
-                };
-            }
-            const result = await triggerOpencodeCompact({
-                baseUrl: this.baseUrl,
-                sessionId: acpSessionId,
-                providerId: split.providerId,
-                modelId: split.modelId
-            });
-            if (!result.ok) {
-                return result;
-            }
-            // Best-effort: fetch the actual summary text OpenCode generated
-            // so the caller can surface it as a "Reasoning" block. Never lets
-            // a lookup failure turn a successful compaction into a reported
-            // failure — this is a cosmetic enhancement, not part of the
-            // compaction contract.
-            const summary = await fetchCompactionSummary({
-                baseUrl: this.baseUrl,
-                sessionId: acpSessionId
-            });
-            return summary.found ? { ok: true, summaryText: summary.text } : { ok: true };
-        }));
+        // Let the caller (runOpencode.ts) know native /compact can actually
+        // run now that the ACP backend + internal HTTP baseUrl exist. The
+        // dequeue loop below (not an externally-invoked trigger) is what
+        // executes it, in its actual FIFO queue position.
+        this.options.onCompactAvailabilityChange?.(true);
 
         // Expose the cached models metadata via per-session RPC so the hub can
         // forward it to the web UI's model selector without round-tripping ACP.
@@ -335,6 +307,32 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             this.applyDisplayMode(batch.mode.permissionMode);
             messageBuffer.addMessage(batch.message, 'user');
 
+            // /compact reaches here through the exact same dequeue loop as
+            // any prompt — it was pushed via messageQueue.pushIsolated(...)
+            // in runOpencode.ts, so it occupies its real FIFO position
+            // relative to prompts queued before or after it (fixes a prior
+            // design where /compact ran via an externally-invoked trigger
+            // and could execute ahead of an already-queued prompt). The
+            // model/effort switch above already ran for this batch just like
+            // any other, so compaction runs under whatever model this batch
+            // resolved to.
+            if (batch.mode.operation === 'compact') {
+                // A compact batch is always a single isolated item (pushed
+                // via pushIsolated), so its own localId is exactly
+                // batch.items[0]?.localId.
+                const compactLocalId = batch.items[0]?.localId;
+                session.onThinkingChange(true);
+                try {
+                    await this.runCompactOperation(acpSessionId, compactLocalId);
+                } finally {
+                    session.onThinkingChange(false);
+                    if (session.queue.size() === 0 && !this.shouldExit) {
+                        sendReady();
+                    }
+                }
+                continue;
+            }
+
             // Inject title instructions on first prompt
             let messageText = batch.message;
             if (batch.mode.permissionMode === 'plan') {
@@ -353,14 +351,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             session.onThinkingChange(true);
 
             try {
-                // Serialized against /compact via the same turnLock — see its
-                // doc comment. Without this, a /compact fired while this
-                // prompt is still generating would call the REST bridge and
-                // ACP session/prompt concurrently against the same OpenCode
-                // session with no coordination on HAPI's side.
-                await this.runExclusive(() => backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
+                await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
                     this.handleAgentMessage(message);
-                }));
+                });
                 void backend.refreshSessionInfo(acpSessionId, session.path);
             } catch (error) {
                 logger.warn('[opencode-remote] prompt failed', error);
@@ -406,22 +399,84 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     }
 
     /**
-     * Runs `fn` only after every previously-submitted `runExclusive` call has
-     * settled, regardless of how close together they were submitted. The
-     * critical section here (reading `this.turnLock` and replacing it) is
-     * fully synchronous — no `await` in between — so even two callers
-     * invoked back-to-back in the same microtask turn still get a
-     * well-defined FIFO order instead of racing on a boolean flag.
+     * Executes the /compact operation for a queued `operation:'compact'`
+     * batch. Reached only through the main dequeue loop (so it never runs
+     * concurrently with a prompt turn — see the loop's doc comment), which
+     * is also why this needs no timeout/mutex of its own despite the REST
+     * call it makes potentially taking several minutes.
+     *
+     * `localId` is used to detect a cancel that runOpencode.ts's
+     * `isLocalIdCancelled` reports for this item (see its declaration there
+     * for the real — and narrow — race window that covers) — checked at each
+     * point below right before a result would be shown, same as the
+     * pre-redesign behavior where this was a single `wasCancelled()` check
+     * after one combined async trigger(). "Compaction started" itself is
+     * never suppressed (it wasn't before either).
      */
-    private runExclusive<T>(fn: () => Promise<T>): Promise<T> {
-        const acquired = this.turnLock.then(fn, fn);
-        // Keep the chain alive even if `fn` rejected, so a failed prompt or
-        // failed compact doesn't permanently wedge future turns.
-        this.turnLock = acquired.then(
-            () => undefined,
-            () => undefined
-        );
-        return acquired;
+    private async runCompactOperation(acpSessionId: string, localId?: string): Promise<void> {
+        const session = this.session;
+        session.sendSessionEvent({ type: 'message', message: '📦 Compaction started' });
+
+        const isCancelled = (): boolean => (localId ? (this.options.isLocalIdCancelled?.(localId) ?? false) : false);
+
+        const backend = this.backend;
+        if (!this.baseUrl || !backend) {
+            if (!isCancelled()) {
+                session.sendSessionEvent({
+                    type: 'message',
+                    message: '📦 Compaction failed: OpenCode internal HTTP API base URL is not available.'
+                });
+            }
+            return;
+        }
+
+        const metadata = backend.getSessionModelsMetadata?.(acpSessionId);
+        const split = splitProviderModel(metadata?.currentModelId ?? this.currentBackendModel);
+        if (!split) {
+            if (!isCancelled()) {
+                session.sendSessionEvent({
+                    type: 'message',
+                    message: '📦 Compaction failed: OpenCode model metadata is not available; cannot determine provider/model for compaction.'
+                });
+            }
+            return;
+        }
+
+        const result = await triggerOpencodeCompact({
+            baseUrl: this.baseUrl,
+            sessionId: acpSessionId,
+            providerId: split.providerId,
+            modelId: split.modelId
+        });
+        if (!result.ok) {
+            if (!isCancelled()) {
+                session.sendSessionEvent({ type: 'message', message: `📦 Compaction failed: ${result.error}` });
+            } else {
+                logger.debug('[opencode-remote] /compact failure suppressed: cancelled before it resolved');
+            }
+            return;
+        }
+
+        // Best-effort: fetch the actual summary text OpenCode generated
+        // before the final cancellation check, so a cancel landing anywhere
+        // during this whole operation (REST call or summary lookup)
+        // suppresses "Compaction completed" and the Reasoning block
+        // together — this mirrors the pre-redesign behavior, where both were
+        // produced by one combined async step checked once.
+        const summary = await fetchCompactionSummary({ baseUrl: this.baseUrl, sessionId: acpSessionId });
+
+        if (isCancelled()) {
+            logger.debug('[opencode-remote] /compact result suppressed: cancelled before it resolved');
+            return;
+        }
+
+        session.sendSessionEvent({ type: 'message', message: '📦 Compaction completed' });
+        if (summary.found) {
+            const converted = convertAgentMessage({ type: 'reasoning', text: summary.text, id: randomUUID() });
+            if (converted) {
+                session.sendAgentMessage(converted);
+            }
+        }
     }
 
     private handleAgentMessage(message: AgentMessage): void {

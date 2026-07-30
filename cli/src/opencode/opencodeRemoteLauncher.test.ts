@@ -33,6 +33,14 @@ vi.mock('./utils/opencodeBackend', () => ({
             if (harness.setModelImpl) {
                 await harness.setModelImpl(sessionId, modelId);
             }
+            // Mirror AcpSdkBackend's optimistic currentModelId update for the
+            // opencode flavor (see updateCurrentModelOptimistic) so a
+            // subsequent getSessionModelsMetadata() call in the same test
+            // reflects the switch — needed to verify /compact runs under the
+            // model a batch just switched to, not a stale cached one.
+            if (harness.sessionModelsMetadata) {
+                harness.sessionModelsMetadata = { ...harness.sessionModelsMetadata, currentModelId: modelId };
+            }
         }),
         setConfigOption: vi.fn(async (sessionId: string, configId: string, value: string) => {
             harness.events.push(`setConfigOption:${value}`);
@@ -152,18 +160,27 @@ function createResetMode(): OpencodeMode {
     };
 }
 
-function createSessionStub(items: Array<{ message: string; mode: OpencodeMode }>) {
+function createSessionStub(
+    items: Array<{ message: string; mode: OpencodeMode; localId?: string }>,
+    opts: { keepOpen?: boolean } = {}
+) {
     const queue = new MessageQueue2<OpencodeMode>((mode) => JSON.stringify(mode));
-    items.forEach(({ message, mode }, index) => {
+    items.forEach(({ message, mode, localId }, index) => {
         if (index === 0 && items.length > 1) {
-            queue.pushIsolateAndClear(message, mode);
+            queue.pushIsolateAndClear(message, mode, localId);
         } else {
-            queue.push(message, mode);
+            queue.push(message, mode, localId);
         }
     });
-    queue.close();
+    // A test simulating a message arriving mid-run (e.g. /compact reaching
+    // the queue while an earlier item is still executing) needs to push to
+    // this queue after createSessionStub returns, so it can't be closed yet.
+    if (!opts.keepOpen) {
+        queue.close();
+    }
 
     const sessionEvents: Array<{ type: string; [key: string]: unknown }> = [];
+    const sentAgentMessages: unknown[] = [];
     const rpcHandlers = new Map<string, (params: unknown) => unknown>();
     const setModelReasoningEffort = vi.fn();
     const pushKeepAlive = vi.fn();
@@ -201,14 +218,24 @@ function createSessionStub(items: Array<{ message: string; mode: OpencodeMode }>
         onSessionFound(id: string) {
             session.sessionId = id;
         },
-        sendAgentMessage(_message: unknown) {},
+        sendAgentMessage(message: unknown) {
+            sentAgentMessages.push(message);
+        },
         sendSessionEvent(event: { type: string; [key: string]: unknown }) {
             client.sendSessionEvent(event);
         },
         sendUserMessage(_text: string) {}
     };
 
-    return { session, sessionEvents, rpcHandlers, setModelReasoningEffort, pushKeepAlive };
+    return { session, sessionEvents, sentAgentMessages, rpcHandlers, setModelReasoningEffort, pushKeepAlive };
+}
+
+function createCompactMode(model?: string): OpencodeMode {
+    return {
+        permissionMode: 'default' as PermissionMode,
+        model,
+        operation: 'compact'
+    };
 }
 
 describe('opencodeRemoteLauncher inline model switch', () => {
@@ -231,21 +258,25 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         harness.sessionModelsMetadata = undefined;
     });
 
-    it('waits for an in-flight prompt to finish before starting a compact call', async () => {
+    it('processes a queued /compact operation only after an earlier queued prompt has finished', async () => {
         let resolvePrompt: (() => void) | null = null;
         harness.promptImpl = () => new Promise<void>((resolve) => {
             resolvePrompt = resolve;
         });
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
 
+        // The compact item is queued right behind the prompt from the start
+        // (both pre-populated via createSessionStub) — this is the exact
+        // "message A generating, message B (compact) already queued" race a
+        // prior design got wrong by running /compact through an
+        // externally-invoked trigger instead of this same queue.
         const { session } = createSessionStub([
-            { message: 'first', mode: createMode('ollama/x') }
+            { message: 'first', mode: createMode('ollama/x') },
+            { message: '', mode: createCompactMode('ollama/x') }
         ]);
 
-        let capturedTrigger: (() => Promise<{ ok: true } | { ok: false; error: string }>) | null = null;
         const launcherPromise = opencodeRemoteLauncher(session as never, {
-            onCompactTriggerReady: (trigger) => {
-                capturedTrigger = trigger;
-            }
+            onCompactAvailabilityChange: () => {}
         });
 
         // Deterministically wait until the prompt is confirmed in-flight
@@ -253,12 +284,10 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         while (!harness.events.includes('prompt:start')) {
             await new Promise<void>((resolve) => setImmediate(resolve));
         }
-        expect(capturedTrigger).not.toBeNull();
 
-        const compactPromise = capturedTrigger!();
-        // Give the trigger several ticks to run ahead if it were (incorrectly)
-        // not serialized — it must still be queued behind the in-flight
-        // prompt via runExclusive, not calling the REST bridge yet.
+        // Give the loop several ticks to (incorrectly) run the already-queued
+        // compact item ahead of the still-running prompt, if the fix weren't
+        // in place.
         for (let i = 0; i < 5; i++) {
             await new Promise<void>((resolve) => setImmediate(resolve));
         }
@@ -267,17 +296,12 @@ describe('opencodeRemoteLauncher inline model switch', () => {
 
         resolvePrompt!();
         await launcherPromise;
-        await compactPromise;
 
         expect(harness.events).toEqual(['prompt:start', 'prompt:end']);
         expect(compactHarness.calls.length).toBe(1);
     });
 
-    it('blocks a new prompt from starting while a compact call is in progress', async () => {
-        // Compact fires before any turn has been dequeued, so
-        // currentBackendModel hasn't been seeded from a batch yet — the
-        // trigger needs getSessionModelsMetadata (seeded right after
-        // session/new) to resolve a provider/model pair.
+    it('processes a queued prompt only after an earlier queued /compact operation has finished', async () => {
         harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
 
         const { triggerOpencodeCompact } = await import('./utils/opencodeCompactBridge');
@@ -290,43 +314,82 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             });
         });
 
+        // Compact is queued first this time, with a prompt right behind it.
         const { session } = createSessionStub([
-            { message: 'only', mode: createMode('ollama/x') }
+            { message: '', mode: createCompactMode('ollama/x') },
+            { message: 'second', mode: createMode('ollama/x') }
         ]);
 
-        // `onCompactTriggerReady` fires synchronously before the launcher's
-        // while-loop starts dequeuing. Invoking the trigger right inside that
-        // callback (rather than polling for it afterwards) guarantees its
-        // `runExclusive` call acquires the mutex before the main loop ever
-        // gets a chance to — otherwise which side "wins" the race to call
-        // `runExclusive` first would depend on unrelated scheduling details
-        // (e.g. whether the queue already has data buffered), not on the
-        // property this test is meant to verify.
-        let compactPromise: Promise<{ ok: true } | { ok: false; error: string }> | null = null;
         const launcherPromise = opencodeRemoteLauncher(session as never, {
-            onCompactTriggerReady: (trigger) => {
-                compactPromise = trigger();
-            }
+            onCompactAvailabilityChange: () => {}
         });
 
         // Give the main loop plenty of ticks to (incorrectly) start the
-        // queued prompt if it weren't serialized behind the compact call.
+        // queued prompt while compact is still in flight.
         for (let i = 0; i < 10; i++) {
             await new Promise<void>((resolve) => setImmediate(resolve));
         }
         expect(compactHarness.calls.length).toBe(1);
         expect(harness.promptCount).toBe(0);
-        expect(harness.events).toEqual([]);
 
         resolveCompact!();
-        await compactPromise;
         await launcherPromise;
 
         expect(harness.promptCount).toBe(1);
         expect(harness.events).toEqual(['prompt:start', 'prompt:end']);
     });
 
-    it('registers a compact trigger that posts to the REST bridge using the session baseUrl and current model', async () => {
+    it('runs the exact 3-stage scenario reported by HAPI Bot: prompt A generating, prompt B already queued, /compact arrives after — final order is A, B, compact', async () => {
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        const resolvers: Array<() => void> = [];
+        harness.promptImpl = () => new Promise<void>((resolve) => {
+            resolvers.push(resolve);
+        });
+
+        // Prompt A and prompt B are both already queued up front. Keep the
+        // queue open so /compact can be pushed onto it mid-run, exactly like
+        // runOpencode.ts's messageQueue.pushIsolated(...) call would while A
+        // is still generating.
+        const { session } = createSessionStub([
+            { message: 'A', mode: createMode('ollama/x') },
+            { message: 'B', mode: createMode('ollama/x') }
+        ], { keepOpen: true });
+
+        const launcherPromise = opencodeRemoteLauncher(session as never, {
+            onCompactAvailabilityChange: () => {}
+        });
+
+        // Wait until prompt A is confirmed in-flight.
+        while (!harness.events.includes('prompt:start')) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        expect(harness.promptContents).toEqual([[{ type: 'text', text: expect.stringContaining('A') }]]);
+
+        // /compact arrives now — after B was already queued, while A is
+        // still generating.
+        session.queue.pushIsolated('', { ...createMode('ollama/x'), operation: 'compact' });
+        session.queue.close();
+
+        // Resolve A; B must run to completion before compact fires, even
+        // though /compact arrived before B had a chance to be dequeued.
+        resolvers[0]!();
+        while (harness.promptCount < 2) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        expect(compactHarness.calls).toEqual([]);
+
+        resolvers[1]!();
+        await launcherPromise;
+
+        expect(harness.promptContents).toEqual([
+            [{ type: 'text', text: expect.stringContaining('A') }],
+            [{ type: 'text', text: expect.stringContaining('B') }]
+        ]);
+        expect(compactHarness.calls.length).toBe(1);
+        expect(harness.events).toEqual(['prompt:start', 'prompt:end', 'prompt:start', 'prompt:end']);
+    });
+
+    it('a queued /compact operation posts to the REST bridge using the session baseUrl and current model, and reports started/completed', async () => {
         const opencodeBackendModule = await import('./utils/opencodeBackend');
         const factory = (opencodeBackendModule as unknown as { createOpencodeBackend: ReturnType<typeof vi.fn> }).createOpencodeBackend;
         factory.mockImplementationOnce(() => ({
@@ -348,20 +411,12 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             }))
         }));
 
-        const { session } = createSessionStub([
-            { message: 'first', mode: createMode() }
+        const { session, sessionEvents } = createSessionStub([
+            { message: '', mode: createCompactMode() }
         ]);
 
-        let capturedTrigger: (() => Promise<{ ok: true } | { ok: false; error: string }>) | null = null;
-        await opencodeRemoteLauncher(session as never, {
-            onCompactTriggerReady: (trigger) => {
-                capturedTrigger = trigger;
-            }
-        });
+        await opencodeRemoteLauncher(session as never);
 
-        expect(capturedTrigger).not.toBeNull();
-        const result = await capturedTrigger!();
-        expect(result).toEqual({ ok: true });
         expect(compactHarness.calls).toEqual([
             {
                 baseUrl: 'http://127.0.0.1:48273',
@@ -370,85 +425,138 @@ describe('opencodeRemoteLauncher inline model switch', () => {
                 modelId: 'qwen3.6:35b-a3b-q8_0-mtp'
             }
         ]);
+        const messages = sessionEvents.filter((event) => event.type === 'message').map((event) => event.message);
+        expect(messages).toEqual(['📦 Compaction started', '📦 Compaction completed']);
     });
 
-    it('attaches the fetched summary text to a successful compact result', async () => {
-        const opencodeBackendModule = await import('./utils/opencodeBackend');
-        const factory = (opencodeBackendModule as unknown as { createOpencodeBackend: ReturnType<typeof vi.fn> }).createOpencodeBackend;
-        factory.mockImplementationOnce(() => ({
-            initialize: vi.fn(async () => {}),
-            newSession: vi.fn(async () => 'acp-session-1'),
-            loadSession: vi.fn(async () => 'acp-session-1'),
-            setModel: vi.fn(async () => {}),
-            prompt: vi.fn(async () => {}),
-            cancelPrompt: vi.fn(async () => {}),
-            respondToPermission: vi.fn(async () => {}),
-            onStderrError: vi.fn(),
-            setSessionInfoUpdateListener: vi.fn(),
-            refreshSessionInfo: vi.fn(async () => {}),
-            onPermissionRequest: vi.fn(),
-            disconnect: vi.fn(async () => {}),
-            getSessionModelsMetadata: vi.fn(() => ({
-                currentModelId: 'ollama/qwen3.6:35b-a3b-q8_0-mtp',
-                availableModels: []
-            }))
-        }));
+    it('sends the fetched compaction summary as a reasoning-type agent message', async () => {
         compactHarness.summaryResult = { found: true, text: '## Objective\n- Did the thing' };
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/qwen3.6:35b-a3b-q8_0-mtp', availableModels: [] };
 
-        const { session } = createSessionStub([
-            { message: 'first', mode: createMode() }
+        const { session, sentAgentMessages } = createSessionStub([
+            { message: '', mode: createCompactMode() }
         ]);
 
-        let capturedTrigger: (() => Promise<{ ok: true; summaryText?: string } | { ok: false; error: string }>) | null = null;
-        await opencodeRemoteLauncher(session as never, {
-            onCompactTriggerReady: (trigger) => {
-                capturedTrigger = trigger;
-            }
-        });
+        await opencodeRemoteLauncher(session as never);
 
-        const result = await capturedTrigger!();
-        expect(result).toEqual({ ok: true, summaryText: '## Objective\n- Did the thing' });
         expect(compactHarness.summaryCalls).toEqual([
             { baseUrl: 'http://127.0.0.1:48273', sessionId: 'acp-session-1' }
         ]);
+        expect(sentAgentMessages).toEqual([
+            { type: 'reasoning', message: '## Objective\n- Did the thing', id: expect.any(String) }
+        ]);
+    });
+
+    it('suppresses the Compaction completed result if the item is cancelled after being dequeued', async () => {
+        // A /compact item's REST call can run for minutes, well past the
+        // point messageQueue.cancelByLocalId (runOpencode.ts) could still
+        // catch it — isLocalIdCancelled is how the launcher finds out a
+        // cancel landed while it was running.
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        const isLocalIdCancelled = vi.fn((id: string) => id === 'compact-1');
+
+        const { session, sessionEvents, sentAgentMessages } = createSessionStub([
+            { message: '', mode: createCompactMode('ollama/x'), localId: 'compact-1' }
+        ]);
+
+        await opencodeRemoteLauncher(session as never, { isLocalIdCancelled });
+
+        expect(isLocalIdCancelled).toHaveBeenCalledWith('compact-1');
+        const messages = sessionEvents.filter((event) => event.type === 'message').map((event) => event.message);
+        // "Compaction started" is never suppressed (it wasn't before this
+        // redesign either) — only the eventual result is.
+        expect(messages).toEqual(['📦 Compaction started']);
+        expect(sentAgentMessages).toEqual([]);
+    });
+
+    it('suppresses a Compaction failed result too if the item is cancelled after being dequeued', async () => {
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        const { triggerOpencodeCompact } = await import('./utils/opencodeCompactBridge');
+        (triggerOpencodeCompact as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => ({ ok: false, error: 'boom' }));
+        const isLocalIdCancelled = vi.fn(() => true);
+
+        const { session, sessionEvents } = createSessionStub([
+            { message: '', mode: createCompactMode('ollama/x'), localId: 'compact-2' }
+        ]);
+
+        await opencodeRemoteLauncher(session as never, { isLocalIdCancelled });
+
+        const messages = sessionEvents.filter((event) => event.type === 'message').map((event) => event.message);
+        expect(messages).toEqual(['📦 Compaction started']);
+    });
+
+    it('does not suppress the result when isLocalIdCancelled reports false', async () => {
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        const isLocalIdCancelled = vi.fn(() => false);
+
+        const { session, sessionEvents } = createSessionStub([
+            { message: '', mode: createCompactMode('ollama/x'), localId: 'compact-3' }
+        ]);
+
+        await opencodeRemoteLauncher(session as never, { isLocalIdCancelled });
+
+        const messages = sessionEvents.filter((event) => event.type === 'message').map((event) => event.message);
+        expect(messages).toEqual(['📦 Compaction started', '📦 Compaction completed']);
     });
 
     it('does not look up a summary when the compact REST call itself failed', async () => {
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
         const { triggerOpencodeCompact } = await import('./utils/opencodeCompactBridge');
         (triggerOpencodeCompact as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => ({ ok: false, error: 'boom' }));
 
-        const { session } = createSessionStub([
-            { message: 'first', mode: createMode('ollama/x') }
+        const { session, sessionEvents } = createSessionStub([
+            { message: '', mode: createCompactMode('ollama/x') }
         ]);
 
-        let capturedTrigger: (() => Promise<{ ok: true } | { ok: false; error: string }>) | null = null;
-        await opencodeRemoteLauncher(session as never, {
-            onCompactTriggerReady: (trigger) => {
-                capturedTrigger = trigger;
-            }
-        });
+        await opencodeRemoteLauncher(session as never);
 
-        const result = await capturedTrigger!();
-        expect(result).toEqual({ ok: false, error: 'boom' });
         expect(compactHarness.summaryCalls).toEqual([]);
+        const messages = sessionEvents.filter((event) => event.type === 'message').map((event) => event.message);
+        expect(messages).toEqual(['📦 Compaction started', '📦 Compaction failed: boom']);
     });
 
-    it('compact trigger reports a clear failure when the session has no model metadata', async () => {
-        // Default harness mock's getSessionModelsMetadata returns undefined.
-        const { session } = createSessionStub([
-            { message: 'first', mode: createMode() }
+    it('reports a clear failure when the session has no model metadata', async () => {
+        // Default harness mock's getSessionModelsMetadata returns undefined
+        // (harness.sessionModelsMetadata stays undefined).
+        const { session, sessionEvents } = createSessionStub([
+            { message: '', mode: createCompactMode() }
         ]);
 
-        let capturedTrigger: (() => Promise<{ ok: true } | { ok: false; error: string }>) | null = null;
-        await opencodeRemoteLauncher(session as never, {
-            onCompactTriggerReady: (trigger) => {
-                capturedTrigger = trigger;
-            }
-        });
+        await opencodeRemoteLauncher(session as never);
 
-        const result = await capturedTrigger!();
-        expect(result.ok).toBe(false);
         expect(compactHarness.calls).toEqual([]);
+        const messages = sessionEvents.filter((event) => event.type === 'message').map((event) => event.message);
+        expect(messages).toEqual([
+            '📦 Compaction started',
+            '📦 Compaction failed: OpenCode model metadata is not available; cannot determine provider/model for compaction.'
+        ]);
+    });
+
+    it('switches the model for a queued /compact operation before running it, same as a prompt turn', async () => {
+        // Addresses the reviewer's secondary concern: model/effort switching
+        // must apply to a compact batch too, in its actual queue position —
+        // not be skipped or applied "outside" the ordering guarantee.
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/launch-default', availableModels: [] };
+
+        const { session } = createSessionStub([
+            { message: '', mode: createCompactMode('ollama/switched') }
+        ]);
+
+        await opencodeRemoteLauncher(session as never);
+
+        expect(harness.setModelArgs).toEqual([
+            { sessionId: 'acp-session-1', modelId: 'ollama/switched', flavor: 'opencode' }
+        ]);
+        // The compact REST call must reflect the just-switched model, not the
+        // launch-time default it replaced.
+        expect(compactHarness.calls).toEqual([
+            {
+                baseUrl: 'http://127.0.0.1:48273',
+                sessionId: 'acp-session-1',
+                providerId: 'ollama',
+                modelId: 'switched'
+            }
+        ]);
     });
 
     it('injects the skill lookup instruction only on the first prompt', async () => {

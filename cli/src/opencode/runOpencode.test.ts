@@ -261,14 +261,16 @@ describe('runOpencode set-session-config handler', () => {
         expect(harness.session.sendAgentMessage).toHaveBeenCalled();
     });
 
-    it('triggers native compaction via the REST bridge and reports started/completed', async () => {
+    it('queues a /compact request (isolated, with operation:"compact") once compact becomes available', async () => {
         await runOpencode({});
 
-        const onCompactTriggerReady = harness.opencodeLoopArgs[0]?.onCompactTriggerReady as
-            ((trigger: () => Promise<{ ok: true } | { ok: false; error: string }>) => void) | undefined;
-        expect(onCompactTriggerReady).toBeDefined();
-        const trigger = vi.fn(async () => ({ ok: true as const }));
-        onCompactTriggerReady!(trigger);
+        const onCompactAvailabilityChange = harness.opencodeLoopArgs[0]?.onCompactAvailabilityChange as
+            ((available: boolean) => void) | undefined;
+        expect(onCompactAvailabilityChange).toBeDefined();
+        onCompactAvailabilityChange!(true);
+
+        const messageQueue = harness.opencodeLoopArgs[0]?.messageQueue as
+            { queue: Array<{ message: string; mode: { operation?: string }; localId?: string; isolate?: boolean }> };
 
         const userMessageHandler = harness.session.onUserMessage.mock.calls[0]?.[0] as
             ((msg: { content: { text: string; attachments?: unknown[] } }, localId?: string) => void)
@@ -277,125 +279,42 @@ describe('runOpencode set-session-config handler', () => {
 
         userMessageHandler!({ content: { text: '/compact' } }, 'local-compact');
         // Drain microtasks across the async chain: listSlashCommands -> slash
-        // resolve -> await trigger().
+        // resolve -> messageQueue.pushIsolated(...).
         for (let i = 0; i < 5; i++) {
             await new Promise((resolve) => setTimeout(resolve, 0));
         }
 
-        expect(trigger).toHaveBeenCalledTimes(1);
-        expect(harness.session.emitMessagesConsumed).toHaveBeenCalledWith(
-            ['local-compact'],
-            { clearQueuedThinkingGrace: true }
-        );
-        // Compaction started/completed/failed go through sendSessionEvent
-        // (the status-line channel Claude/Codex already use for this), not
-        // sendAgentMessage (regular chat bubbles) — see the doc comment at
-        // the call site in runOpencode.ts.
-        const events = harness.session.sendSessionEvent.mock.calls.map((call) => (call[0] as { message: string }).message);
-        expect(events).toEqual(['📦 Compaction started', '📦 Compaction completed']);
-        // No summaryText on the result (matches the bridge's default
-        // "not found" case) — no reasoning block should be emitted.
+        // No `clearQueuedThinkingGrace` here (unlike the synchronous
+        // 'handled' branch) — that flag is only for handlers that will never
+        // call onThinkingChange(true) afterward, and a queued /compact WILL
+        // (once dequeued in opencodeRemoteLauncher.ts, just later than
+        // usual), so the hub still needs its normal queued-thinking grace.
+        expect(harness.session.emitMessagesConsumed).toHaveBeenCalledWith(['local-compact']);
+        // The actual REST call, "Compaction started/completed" status events,
+        // and Reasoning-block summary now all happen inside
+        // opencodeRemoteLauncher.ts's dequeue loop once this item reaches the
+        // front of the queue (covered by opencodeRemoteLauncher.test.ts) —
+        // runOpencode.ts's job for a supported /compact is only to queue it
+        // in its correct FIFO position, never to run it directly.
+        expect(messageQueue.queue).toEqual([
+            {
+                message: '',
+                mode: expect.objectContaining({ operation: 'compact' }),
+                modeHash: expect.any(String),
+                localId: 'local-compact',
+                isolate: true
+            }
+        ]);
+        expect(harness.session.sendSessionEvent).not.toHaveBeenCalled();
         expect(harness.session.sendAgentMessage).not.toHaveBeenCalled();
     });
 
-    it('shows the compaction summary as a Reasoning block when the bridge result includes summaryText', async () => {
+    it('falls back to a not-yet-supported message for /compact when compact is not available (e.g. local mode)', async () => {
         await runOpencode({});
-
-        const onCompactTriggerReady = harness.opencodeLoopArgs[0]?.onCompactTriggerReady as
-            ((trigger: () => Promise<{ ok: true; summaryText?: string } | { ok: false; error: string }>) => void) | undefined;
-        const trigger = vi.fn(async () => ({ ok: true as const, summaryText: '## Objective\n- Did the thing' }));
-        onCompactTriggerReady!(trigger);
-
-        const userMessageHandler = harness.session.onUserMessage.mock.calls[0]?.[0] as
-            ((msg: { content: { text: string; attachments?: unknown[] } }, localId?: string) => void)
-            | undefined;
-        userMessageHandler!({ content: { text: '/compact' } }, 'local-compact-summary');
-        for (let i = 0; i < 5; i++) {
-            await new Promise((resolve) => setTimeout(resolve, 0));
-        }
-
-        const events = harness.session.sendSessionEvent.mock.calls.map((call) => (call[0] as { message: string }).message);
-        expect(events).toEqual(['📦 Compaction started', '📦 Compaction completed']);
-
-        // Reuses the existing Reasoning content-part/UI — sent via the same
-        // convertAgentMessage()->sendAgentMessage() path as any other
-        // reasoning chunk, not a new component or schema field.
-        expect(harness.session.sendAgentMessage).toHaveBeenCalledTimes(1);
-        const [reasoningPayload] = harness.session.sendAgentMessage.mock.calls[0] as [{ type: string; message: string }];
-        expect(reasoningPayload).toMatchObject({
-            type: 'reasoning',
-            message: '## Objective\n- Did the thing'
-        });
-    });
-
-    it('reports a Compaction failed message when the REST bridge fails', async () => {
-        await runOpencode({});
-
-        const onCompactTriggerReady = harness.opencodeLoopArgs[0]?.onCompactTriggerReady as
-            ((trigger: () => Promise<{ ok: true } | { ok: false; error: string }>) => void) | undefined;
-        const trigger = vi.fn(async () => ({ ok: false as const, error: 'boom' }));
-        onCompactTriggerReady!(trigger);
-
-        const userMessageHandler = harness.session.onUserMessage.mock.calls[0]?.[0] as
-            ((msg: { content: { text: string; attachments?: unknown[] } }, localId?: string) => void)
-            | undefined;
-        userMessageHandler!({ content: { text: '/compact' } }, 'local-compact-fail');
-        for (let i = 0; i < 5; i++) {
-            await new Promise((resolve) => setTimeout(resolve, 0));
-        }
-
-        const events = harness.session.sendSessionEvent.mock.calls.map((call) => (call[0] as { message: string }).message);
-        expect(events).toEqual(['📦 Compaction started', '📦 Compaction failed: boom']);
-    });
-
-    it('suppresses the Compaction completed message if the request is cancelled while the bridge call is in flight', async () => {
-        await runOpencode({});
-
-        const onCompactTriggerReady = harness.opencodeLoopArgs[0]?.onCompactTriggerReady as
-            ((trigger: () => Promise<{ ok: true } | { ok: false; error: string }>) => void) | undefined;
-        let resolveTrigger: (() => void) | null = null;
-        const trigger = vi.fn(() => new Promise<{ ok: true } | { ok: false; error: string }>((resolve) => {
-            resolveTrigger = () => resolve({ ok: true });
-        }));
-        onCompactTriggerReady!(trigger);
-
-        const userMessageHandler = harness.session.onUserMessage.mock.calls[0]?.[0] as
-            ((msg: { content: { text: string; attachments?: unknown[] } }, localId?: string) => void)
-            | undefined;
-        const cancelHandler = harness.session.onCancelQueuedMessage.mock.calls[0]?.[0] as
-            ((localId: string) => boolean) | undefined;
-        expect(userMessageHandler).toBeDefined();
-        expect(cancelHandler).toBeDefined();
-
-        userMessageHandler!({ content: { text: '/compact' } }, 'local-compact-cancel');
-        // Drain until the compact branch has called trigger() and is now
-        // suspended awaiting our controllable promise.
-        for (let i = 0; i < 5; i++) {
-            await new Promise((resolve) => setTimeout(resolve, 0));
-        }
-        expect(trigger).toHaveBeenCalledTimes(1);
-
-        // The user cancels while the REST bridge call is still pending —
-        // `preparingLocalIds` still holds this localId at this point because
-        // the outer chain's `finally` cleanup only runs once the whole
-        // compact branch (including this await) settles.
-        expect(cancelHandler!('local-compact-cancel')).toBe(true);
-
-        resolveTrigger!();
-        for (let i = 0; i < 5; i++) {
-            await new Promise((resolve) => setTimeout(resolve, 0));
-        }
-
-        const events = harness.session.sendSessionEvent.mock.calls.map((call) => (call[0] as { message: string }).message);
-        expect(events).toEqual(['📦 Compaction started']);
-        // The suppressed result must not have leaked out as a regular chat
-        // message either.
-        expect(harness.session.sendAgentMessage).not.toHaveBeenCalled();
-    });
-
-    it('falls back to a not-yet-supported message for /compact when no bridge trigger is registered (e.g. local mode)', async () => {
-        await runOpencode({});
-        // Deliberately do not call onCompactTriggerReady.
+        // Deliberately do not call onCompactAvailabilityChange(true) — this
+        // is the state a local-mode session stays in (loop.ts resets it to
+        // false on every local entry and opencodeLocalLauncher never sets it
+        // true).
 
         const userMessageHandler = harness.session.onUserMessage.mock.calls[0]?.[0] as
             ((msg: { content: { text: string; attachments?: unknown[] } }, localId?: string) => void)
@@ -407,6 +326,32 @@ describe('runOpencode set-session-config handler', () => {
 
         const messages = harness.session.sendAgentMessage.mock.calls.map((call) => (call[0] as { message: string }).message);
         expect(messages).toEqual(['/compact is not yet supported in HAPI OpenCode sessions.']);
+
+        const messageQueue = harness.opencodeLoopArgs[0]?.messageQueue as { queue: unknown[] };
+        expect(messageQueue.queue).toEqual([]);
+    });
+
+    it('stops queuing /compact once availability is reset to false (e.g. a remote->local handoff mid-session)', async () => {
+        await runOpencode({});
+
+        const onCompactAvailabilityChange = harness.opencodeLoopArgs[0]?.onCompactAvailabilityChange as
+            ((available: boolean) => void) | undefined;
+        onCompactAvailabilityChange!(true);
+        onCompactAvailabilityChange!(false);
+
+        const userMessageHandler = harness.session.onUserMessage.mock.calls[0]?.[0] as
+            ((msg: { content: { text: string; attachments?: unknown[] } }, localId?: string) => void)
+            | undefined;
+        userMessageHandler!({ content: { text: '/compact' } }, 'local-compact-reset');
+        for (let i = 0; i < 5; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+
+        const messages = harness.session.sendAgentMessage.mock.calls.map((call) => (call[0] as { message: string }).message);
+        expect(messages).toEqual(['/compact is not yet supported in HAPI OpenCode sessions.']);
+
+        const messageQueue = harness.opencodeLoopArgs[0]?.messageQueue as { queue: unknown[] };
+        expect(messageQueue.queue).toEqual([]);
     });
 
     it('cancels a slash command that is cancelled before listSlashCommands resolves', async () => {
@@ -439,5 +384,37 @@ describe('runOpencode set-session-config handler', () => {
 
         expect(harness.session.sendAgentMessage).not.toHaveBeenCalled();
         expect(harness.session.emitMessagesConsumed).not.toHaveBeenCalled();
+    });
+
+    it('bounds the unmatched-cancel tracking Set so it cannot grow unboundedly over a long session', async () => {
+        await runOpencode({});
+
+        const cancelHandler = harness.session.onCancelQueuedMessage.mock.calls[0]?.[0] as
+            ((localId: string) => boolean) | undefined;
+        const isLocalIdCancelled = harness.opencodeLoopArgs[0]?.isLocalIdCancelled as
+            ((localId: string) => boolean) | undefined;
+        expect(cancelHandler).toBeDefined();
+        expect(isLocalIdCancelled).toBeDefined();
+
+        // None of these localIds are in the queue or in the pre-enqueue
+        // preparing window, so every call falls into the fallback branch
+        // that records it as a possible dequeued-compact cancel. Simulate
+        // far more of these than could ever realistically be in flight at
+        // once (see the comment on `cancelledDequeuedLocalIds` in
+        // runOpencode.ts for why this branch is only reachable during a
+        // brief per-message ack race) to prove the tracking Set evicts its
+        // oldest entries instead of growing forever.
+        const localIds = Array.from({ length: 200 }, (_, i) => `unmatched-${i}`);
+        for (const localId of localIds) {
+            cancelHandler!(localId);
+        }
+
+        // The earliest entries must have been evicted...
+        expect(isLocalIdCancelled!('unmatched-0')).toBe(false);
+        // ...while a recent one is still tracked (delete-and-return: true
+        // once, then gone).
+        const lastLocalId = localIds[localIds.length - 1]!;
+        expect(isLocalIdCancelled!(lastLocalId)).toBe(true);
+        expect(isLocalIdCancelled!(lastLocalId)).toBe(false);
     });
 });
