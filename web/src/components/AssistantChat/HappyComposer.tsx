@@ -38,6 +38,7 @@ import { StatusBar } from '@/components/AssistantChat/StatusBar'
 import { ComposerButtons } from '@/components/AssistantChat/ComposerButtons'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { AttachmentItem } from '@/components/AssistantChat/AttachmentItem'
+import { ComposerParkingContext } from '@/components/AssistantChat/composerParkingContext'
 import { useTranslation } from '@/lib/use-translation'
 import { getModelOptionsForFlavor, getNextModelForFlavor } from './modelOptions'
 import { getClaudeComposerEffortOptions } from './claudeEffortOptions'
@@ -382,7 +383,10 @@ export function HappyComposer(props: {
         }
     }, [dictationActive, voiceInput.voiceMode, voiceStatus, onVoiceToggle, dictation.status, dictation.toggle])
 
-    const controlsDisabled = disabled || (!active && !allowSendWhenInactive) || threadIsDisabled
+    const [isParkingScratchlist, setIsParkingScratchlist] = useState(false)
+    const parkInFlightRef = useRef(false)
+
+    const controlsDisabled = disabled || (!active && !allowSendWhenInactive) || threadIsDisabled || isParkingScratchlist
     const trimmed = composerText.trim()
     const hasText = trimmed.length > 0
     const hasAttachments = attachments.length > 0
@@ -861,15 +865,22 @@ export function HappyComposer(props: {
             && pendingSchedule == null
             && props.onParkScratchlist
         ) {
-            if (!canSend) return
-            const state = api.composer().getState()
-            const accepted = await props.onParkScratchlist(
-                state.text,
-                state.attachments,
-            )
-            if (!accepted) return
-            api.composer().setText('')
-            await api.composer().clearAttachments()
+            if (!canSend || parkInFlightRef.current) return
+            parkInFlightRef.current = true
+            setIsParkingScratchlist(true)
+            try {
+                const state = api.composer().getState()
+                const accepted = await props.onParkScratchlist(
+                    state.text,
+                    state.attachments,
+                )
+                if (!accepted) return
+                api.composer().setText('')
+                await api.composer().clearAttachments()
+            } finally {
+                parkInFlightRef.current = false
+                setIsParkingScratchlist(false)
+            }
             return
         }
         // Flush rich chips → `[title](/sessions/<id>)` into composer.text, then send.
@@ -1646,6 +1657,7 @@ export function HappyComposer(props: {
         : 'max-h-[7.5rem] min-h-[1.5rem] flex-1 overflow-y-auto whitespace-pre-wrap break-words bg-transparent text-base leading-snug text-[var(--app-fg)] focus:outline-none'
 
     return (
+        <ComposerParkingContext.Provider value={isParkingScratchlist}>
         <div className={shellClassName} data-testid="composer-shell" data-expanded={isExpanded || undefined}>
             <div className={innerClassName}>
                 <ComposerPrimitive.Root className={rootClassName} onSubmit={handleSubmit}>
@@ -1812,5 +1824,6 @@ export function HappyComposer(props: {
                 </ComposerPrimitive.Root>
             </div>
         </div>
+        </ComposerParkingContext.Provider>
     )
 }
