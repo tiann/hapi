@@ -460,21 +460,12 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 logger.debug('[Codex] Remote usage scanner setup failed during detach:', error);
             }
         }
+        // In-flight setup sees usageScannerThreadId mismatch and cleans its own scanner.
         if (scanner) {
             try {
                 await scanner.cleanup();
             } catch (error) {
                 logger.debug('[Codex] Remote usage scanner detach failed:', error);
-            }
-        }
-        // Setup may have assigned a scanner after we cleared the thread id; drop leftovers.
-        if (this.usageScanner) {
-            const leftover = this.usageScanner;
-            this.usageScanner = null;
-            try {
-                await leftover.cleanup();
-            } catch (error) {
-                logger.debug('[Codex] Remote usage scanner leftover cleanup failed:', error);
             }
         }
     }
