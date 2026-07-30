@@ -300,22 +300,27 @@ export class NotificationHub {
 
     private async notifyModelError(session: Session, notification: ModelErrorNotification): Promise<boolean> {
         const ctx: NotificationSendContext = { nativeGate: { sent: false } }
-        let attempted = 0
-        let succeeded = 0
+        let attempted = false
+        let delivered = false
         for (const channel of this.channels) {
             if (typeof channel.sendModelError !== 'function') {
                 continue
             }
-            attempted++
             try {
-                await channel.sendModelError(session, notification, ctx)
-                succeeded++
+                const outcome = await channel.sendModelError(session, notification, ctx)
+                if (outcome !== 'unavailable') {
+                    attempted = true
+                }
+                if (outcome === 'delivered') {
+                    delivered = true
+                }
             } catch (error) {
+                attempted = true
                 console.error('[NotificationHub] Failed to send model-error notification:', error)
             }
         }
-        // No implementers: nothing to deliver - keep watermark (avoid retry storm).
-        // All implementers threw: roll back so a later session-updated can retry.
-        return attempted === 0 || succeeded > 0
+        // No implementers / all unavailable: keep watermark (avoid retry storm).
+        // At least one channel tried and none delivered: roll back for retry.
+        return !attempted || delivered
     }
 }

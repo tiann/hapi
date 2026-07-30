@@ -1,5 +1,5 @@
 import type { Session } from '../sync/syncEngine'
-import type { ModelErrorNotification, NotificationChannel, TaskNotification } from '../notifications/notificationTypes'
+import type { ModelErrorNotification, ModelErrorSendOutcome, NotificationChannel, TaskNotification } from '../notifications/notificationTypes'
 import type { NotificationSendContext } from '../notifications/notificationSendContext'
 import { NATIVE_CONTRACT_VERSION, NativeNotificationComposer, type ComposedNativeNotification } from '../notifications/nativeNotificationComposer'
 import { formatModelErrorBody, formatModelErrorTitle } from '../notifications/modelErrorCopy'
@@ -49,9 +49,9 @@ export class FcmNotificationChannel implements NotificationChannel {
         session: Session,
         notification: ModelErrorNotification,
         ctx?: NotificationSendContext
-    ): Promise<void> {
+    ): Promise<ModelErrorSendOutcome> {
         if (!session.active) {
-            return
+            return 'unavailable'
         }
 
         const agentName = getAgentName(session)
@@ -59,7 +59,7 @@ export class FcmNotificationChannel implements NotificationChannel {
         const title = formatModelErrorTitle(notification.kind)
         const body = formatModelErrorBody(notification, { agentName, sessionName })
 
-        await this.deliver(session, {
+        const result = await this.deliver(session, {
             title,
             body,
             tag: `model-error-${session.id}-${notification.atTs}`,
@@ -74,6 +74,14 @@ export class FcmNotificationChannel implements NotificationChannel {
                 severity: 'error'
             }
         }, ctx)
+        if ((result?.sent ?? 0) > 0) {
+            return 'delivered'
+        }
+        // No devices registered for this namespace - not a hard failure.
+        if ((result?.failed ?? 0) === 0) {
+            return 'unavailable'
+        }
+        return 'failed'
     }
 
     private toFcmPayload(composed: ComposedNativeNotification): FcmSendPayload {
@@ -96,7 +104,7 @@ export class FcmNotificationChannel implements NotificationChannel {
         }
     }
 
-    private async deliver(session: Session, payload: FcmSendPayload, ctx?: NotificationSendContext): Promise<void> {
+    private async deliver(session: Session, payload: FcmSendPayload, ctx?: NotificationSendContext) {
         // Native companion is the canonical surface: always fire FCM when the
         // hub asks us to. The previous SSE-toast shortcut here meant that
         // when the operator had the PWA open in foreground, the watch got
@@ -110,5 +118,6 @@ export class FcmNotificationChannel implements NotificationChannel {
         if ((result?.sent ?? 0) > 0 && ctx?.nativeGate) {
             ctx.nativeGate.sent = true
         }
+        return result
     }
 }

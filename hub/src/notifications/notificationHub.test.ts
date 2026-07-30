@@ -3,6 +3,7 @@ import type { Session, SyncEvent, SyncEventListener, SyncEngine } from '../sync/
 import type { SessionEndReason } from '@hapi/protocol'
 import type {
     ModelErrorNotification,
+    ModelErrorSendOutcome,
     NotificationChannel,
     TaskNotification
 } from './notificationTypes'
@@ -57,8 +58,9 @@ class StubChannel implements NotificationChannel {
         this.sessionCompletions.push(session)
     }
 
-    async sendModelError(session: Session, notification: ModelErrorNotification): Promise<void> {
+    async sendModelError(session: Session, notification: ModelErrorNotification): Promise<ModelErrorSendOutcome> {
         this.modelErrors.push({ session, notification })
+        return 'delivered'
     }
 }
 
@@ -426,6 +428,7 @@ describe('NotificationHub', () => {
                 if (ctx?.nativeGate) {
                     ctx.nativeGate.sent = true
                 }
+                return 'delivered'
             }
         }
         const pushChannel: NotificationChannel = {
@@ -434,9 +437,10 @@ describe('NotificationHub', () => {
             async sendTaskNotification() {},
             async sendModelError(_session, notification, ctx) {
                 if (ctx?.nativeGate?.sent) {
-                    return
+                    return 'unavailable'
                 }
                 pushCalls.push(notification)
+                return 'delivered'
             }
         }
 
@@ -472,6 +476,7 @@ describe('NotificationHub', () => {
             async sendTaskNotification() {},
             async sendModelError() {
                 // Delivered zero - leave nativeGate.sent false
+                return 'failed'
             }
         }
         const pushChannel: NotificationChannel = {
@@ -480,9 +485,10 @@ describe('NotificationHub', () => {
             async sendTaskNotification() {},
             async sendModelError(_session, notification, ctx) {
                 if (ctx?.nativeGate?.sent) {
-                    return
+                    return 'unavailable'
                 }
                 pushCalls.push(notification)
+                return 'delivered'
             }
         }
 
@@ -538,6 +544,42 @@ describe('NotificationHub', () => {
         expect(attempts).toBe(1)
 
         // Same atTs should retry after rollback.
+        engine.emit({ type: 'session-updated', sessionId: session.id })
+        await sleep(10)
+        expect(attempts).toBe(2)
+
+        hub.stop()
+    })
+
+    it('rolls back watermark when channels resolve with failed (zero deliveries)', async () => {
+        const engine = new FakeSyncEngine()
+        let attempts = 0
+        const channel: NotificationChannel = {
+            async sendReady() {},
+            async sendPermissionRequest() {},
+            async sendTaskNotification() {},
+            async sendModelError() {
+                attempts++
+                return 'failed'
+            }
+        }
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [channel])
+        const session = createSession({
+            metadata: {
+                lastModelError: {
+                    kind: 'quota_exhausted',
+                    transient: false,
+                    rawSnippet: 'zero-sent',
+                    atTs: 6500,
+                    priorAssistantClaimsDone: false
+                }
+            } as Session['metadata']
+        })
+        engine.setSession(session)
+        engine.emit({ type: 'session-updated', sessionId: session.id })
+        await sleep(10)
+        expect(attempts).toBe(1)
+
         engine.emit({ type: 'session-updated', sessionId: session.id })
         await sleep(10)
         expect(attempts).toBe(2)
