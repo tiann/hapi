@@ -688,7 +688,7 @@ describe('message tail synchronization', () => {
 })
 
 describe('history view and older pagination', () => {
-    it('appends while reading history, increments unseen state, then clears and compacts at the tail', () => {
+    it('appends while reading history, then compacts at the tail', () => {
         const id = sessionId('history-unseen')
         const initial = Array.from({ length: VISIBLE_WINDOW_SIZE }, (_, index) =>
             makeAgentMessage({ id: `initial-${index}`, seq: index + 1, at: index + 1 })
@@ -701,16 +701,12 @@ describe('history view and older pagination', () => {
             makeAgentMessage({ id: 'new-2', seq: 402, at: 402 })
         ])
 
-        expect(getMessageWindowState(id)).toMatchObject({
-            viewMode: 'history',
-            unseenCount: 2
-        })
+        expect(getMessageWindowState(id).viewMode).toBe('history')
         expect(getMessageWindowState(id).messages.map((message) => message.id)).toContain('new-2')
 
         setMessageViewMode(id, 'tail')
         const state = getMessageWindowState(id)
         expect(state.viewMode).toBe('tail')
-        expect(state.unseenCount).toBe(0)
         expect(state.messages).toHaveLength(VISIBLE_WINDOW_SIZE)
         expect(state.messages.at(-1)?.id).toBe('new-2')
     })

@@ -23,7 +23,6 @@ export const EMPTY_STATE: MessageWindowState = {
     isLoadingMore: false,
     warning: null,
     viewMode: 'tail',
-    unseenCount: 0,
     messagesVersion: 0,
     historyVersion: 0,
 }
@@ -34,7 +33,7 @@ export function useMessages(api: ApiClient | null, sessionId: string | null): {
     isSyncingTail: boolean
     isLoadingMore: boolean
     hasMore: boolean
-    unseenCount: number
+    viewMode: MessageViewMode
     messagesVersion: number
     historyVersion: number
     loadMore: () => Promise<boolean>
@@ -87,7 +86,7 @@ export function useMessages(api: ApiClient | null, sessionId: string | null): {
         isSyncingTail: state.isSyncingTail,
         isLoadingMore: state.isLoadingMore,
         hasMore: state.hasMore,
-        unseenCount: state.unseenCount,
+        viewMode: state.viewMode,
         messagesVersion: state.messagesVersion,
         historyVersion: state.historyVersion,
         loadMore,

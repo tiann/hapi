@@ -151,7 +151,6 @@ function FixtureThread() {
         isSyncingTail,
         isLoadingMore,
         hasMore,
-        unseenCount,
         messagesVersion,
         historyVersion,
         loadMore,
@@ -206,7 +205,9 @@ function FixtureThread() {
                     hasMoreMessages={hasMore}
                     isLoadingMoreMessages={isLoadingMore}
                     onLoadMore={loadMore}
-                    unseenCount={unseenCount}
+                    // This fixture drives HappyThread directly, bypassing the
+                    // SessionChat block reduction that computes the real count.
+                    unseenCount={0}
                     rawMessagesCount={messages.length}
                     normalizedMessagesCount={normalizedMessages.length}
                     messagesVersion={messagesVersion}

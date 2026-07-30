@@ -1,5 +1,4 @@
 import type { ApiClient } from '@/api/client'
-import { normalizeDecryptedMessage } from '@/chat/normalize'
 import type { DecryptedMessage, MessageStatus, MessagesResponse } from '@/types/api'
 import { isQueuedForInvocation, mergeMessages } from '@/lib/messages'
 
@@ -16,7 +15,6 @@ export type MessageWindowState = {
     isLoadingMore: boolean
     warning: string | null
     viewMode: MessageViewMode
-    unseenCount: number
     messagesVersion: number
     historyVersion: number
 }
@@ -37,7 +35,6 @@ type InternalState = MessageWindowState & {
     oldestPositionSeq: number | null
     newestPositionAt: number | null
     newestPositionSeq: number | null
-    unseenIds: Set<string>
     requiresLatestReset: boolean
     syncGeneration: number
     olderGeneration: number
@@ -216,14 +213,12 @@ function createState(sessionId: string): InternalState {
         isLoadingMore: false,
         warning: null,
         viewMode: 'tail',
-        unseenCount: 0,
         messagesVersion: 0,
         historyVersion: 0,
         oldestPositionAt: null,
         oldestPositionSeq: null,
         newestPositionAt: null,
         newestPositionSeq: null,
-        unseenIds: new Set(),
         requiresLatestReset: false,
         syncGeneration: 0,
         olderGeneration: 0
@@ -373,7 +368,6 @@ function buildState(
         | 'oldestPositionSeq'
         | 'newestPositionAt'
         | 'newestPositionSeq'
-        | 'unseenIds'
         | 'requiresLatestReset'
         | 'syncGeneration'
         | 'olderGeneration'
@@ -381,7 +375,6 @@ function buildState(
     >>
 ): InternalState {
     const messages = updates.messages ?? previous.messages
-    const unseenIds = updates.unseenIds ?? previous.unseenIds
     const bounds = deriveSeqBounds(messages)
     return {
         ...previous,
@@ -389,8 +382,6 @@ function buildState(
         messages,
         oldestSeq: bounds.oldestSeq,
         newestSeq: bounds.newestSeq,
-        unseenIds,
-        unseenCount: unseenIds.size,
         messagesVersion: messages === previous.messages
             ? previous.messagesVersion
             : previous.messagesVersion + 1
@@ -450,39 +441,10 @@ function optimisticMessage(message: DecryptedMessage): boolean {
     return Boolean(message.localId && message.id === message.localId)
 }
 
-function unseenIdentity(message: DecryptedMessage): string {
-    return message.localId ? `local:${message.localId}` : `id:${message.id}`
-}
-
-function collectNewUnseenIds(
-    previous: InternalState,
-    incoming: DecryptedMessage[]
-): Set<string> {
-    if (previous.viewMode === 'tail' || incoming.length === 0) {
-        return previous.unseenIds
-    }
-    const representedIds = new Set(previous.messages.map((message) => message.id))
-    const representedLocalIds = new Set(
-        previous.messages.flatMap((message) => message.localId ? [message.localId] : [])
-    )
-    const unseenIds = new Set(previous.unseenIds)
-    for (const message of incoming) {
-        const alreadyRepresented = representedIds.has(message.id)
-            || Boolean(message.localId && representedLocalIds.has(message.localId))
-        representedIds.add(message.id)
-        if (message.localId) representedLocalIds.add(message.localId)
-        if (alreadyRepresented || isQueuedForInvocation(message)) continue
-        if (normalizeDecryptedMessage(message) === null) continue
-        unseenIds.add(unseenIdentity(message))
-    }
-    return unseenIds
-}
-
 function mergeIntoWindow(
     previous: InternalState,
     incoming: DecryptedMessage[],
     options: {
-        countUnseen?: boolean
         mode?: 'append' | 'prepend'
         regularLimit?: number
     } = {}
@@ -496,8 +458,7 @@ function mergeIntoWindow(
     const merged = mergeMessages(previous.messages, incoming)
     const { kept, dropped } = trimPreservingQueued(merged, regularLimit, mode)
     let next = buildState(previous, {
-        messages: kept,
-        unseenIds: options.countUnseen ? collectNewUnseenIds(previous, incoming) : previous.unseenIds
+        messages: kept
     })
     if (dropped.length === 0) {
         return next
@@ -565,7 +526,6 @@ function applyLatestResponse(
         oldestPositionSeq: oldest?.seq ?? null,
         newestPositionAt: newest?.at ?? null,
         newestPositionSeq: newest?.seq ?? null,
-        unseenIds: collectNewUnseenIds(previous, response.messages),
         requiresLatestReset: false,
         isLoadingMore: options.replaceServerRows ? false : previous.isLoadingMore,
         olderGeneration: options.replaceServerRows
@@ -663,9 +623,7 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
 
             updateState(sessionId, (previous) => {
                 if (previous.syncGeneration !== generation) return previous
-                const merged = mergeIntoWindow(previous, response.messages, {
-                    countUnseen: previous.viewMode === 'history'
-                })
+                const merged = mergeIntoWindow(previous, response.messages)
                 if (merged.requiresLatestReset) {
                     return buildState(merged, {
                         epoch: response.page.epoch,
@@ -748,7 +706,6 @@ function enterTailMode(previous: InternalState): InternalState {
         messages: kept,
         hasMore: previous.hasMore || dropped.length > 0,
         viewMode: 'tail',
-        unseenIds: new Set(),
         epoch: forceLatest ? null : previous.epoch,
         oldestPositionAt: oldest?.at ?? null,
         oldestPositionSeq: oldest?.seq ?? null,
@@ -763,7 +720,6 @@ export function activateMessageWindow(sessionId: string): void {
         const forceLatest = previous.requiresLatestReset
         if (
             previous.viewMode === 'tail'
-            && previous.unseenIds.size === 0
             && kept.length === previous.messages.length
             && !forceLatest
         ) {
@@ -875,9 +831,7 @@ export function setMessageViewMode(sessionId: string, mode: MessageViewMode): vo
 export function ingestIncomingMessages(sessionId: string, incoming: DecryptedMessage[]): void {
     if (incoming.length === 0) return
     updateState(sessionId, (previous) => {
-        let merged = mergeIntoWindow(previous, incoming, {
-            countUnseen: previous.viewMode === 'history'
-        })
+        let merged = mergeIntoWindow(previous, incoming)
         if (merged.epoch === null || merged.requiresLatestReset) {
             return merged
         }
