@@ -58,8 +58,14 @@ export class NotificationHub {
     private handleSyncEvent(event: SyncEvent): void {
         if ((event.type === 'session-updated' || event.type === 'session-added') && event.sessionId) {
             const session = this.syncEngine.getSession(event.sessionId)
-            if (!session || !session.active) {
-                this.clearSessionState(event.sessionId)
+            if (!session) {
+                this.clearSessionState(event.sessionId, true)
+                return
+            }
+            if (!session.active) {
+                // Keep lastModelErrorNotifiedAt across inactive/resume so the
+                // same atTs does not re-ping when the session comes back.
+                this.clearSessionState(event.sessionId, false)
                 return
             }
             this.checkForPermissionNotification(session)
@@ -71,7 +77,7 @@ export class NotificationHub {
         }
 
         if (event.type === 'session-removed' && event.sessionId) {
-            this.clearSessionState(event.sessionId)
+            this.clearSessionState(event.sessionId, true)
             return
         }
 
@@ -101,7 +107,7 @@ export class NotificationHub {
         }
     }
 
-    private clearSessionState(sessionId: string): void {
+    private clearSessionState(sessionId: string, removeModelErrorWatermark = false): void {
         const existingTimer = this.notificationDebounce.get(sessionId)
         if (existingTimer) {
             clearTimeout(existingTimer)
@@ -109,7 +115,9 @@ export class NotificationHub {
         }
         this.lastKnownRequests.delete(sessionId)
         this.lastReadyNotificationAt.delete(sessionId)
-        this.lastModelErrorNotifiedAt.delete(sessionId)
+        if (removeModelErrorWatermark) {
+            this.lastModelErrorNotifiedAt.delete(sessionId)
+        }
     }
 
     private checkForModelErrorNotification(session: Session): void {
@@ -128,18 +136,29 @@ export class NotificationHub {
         if (lastModelError.atTs <= lastNotifiedAt) {
             return
         }
-        this.lastModelErrorNotifiedAt.set(session.id, lastModelError.atTs)
+        const atTs = lastModelError.atTs
+        // Optimistic watermark: prevents concurrent session-updated storms
+        // from double-firing. Rolled back below if every channel throws so
+        // a later update can retry the emergency ping.
+        this.lastModelErrorNotifiedAt.set(session.id, atTs)
 
         const notification: ModelErrorNotification = {
             kind: lastModelError.kind,
             transient: lastModelError.transient,
             rawSnippet: lastModelError.rawSnippet,
             priorAssistantClaimsDone: Boolean(lastModelError.priorAssistantClaimsDone),
-            atTs: lastModelError.atTs
+            atTs
         }
 
-        this.notifyModelError(session, notification).catch((error) => {
+        void this.notifyModelError(session, notification).then((completed) => {
+            if (!completed && this.lastModelErrorNotifiedAt.get(session.id) === atTs) {
+                this.lastModelErrorNotifiedAt.delete(session.id)
+            }
+        }).catch((error) => {
             console.error('[NotificationHub] Failed to send model-error notification:', error)
+            if (this.lastModelErrorNotifiedAt.get(session.id) === atTs) {
+                this.lastModelErrorNotifiedAt.delete(session.id)
+            }
         })
     }
 
@@ -279,17 +298,24 @@ export class NotificationHub {
         }
     }
 
-    private async notifyModelError(session: Session, notification: ModelErrorNotification): Promise<void> {
+    private async notifyModelError(session: Session, notification: ModelErrorNotification): Promise<boolean> {
         const ctx: NotificationSendContext = { nativeGate: { sent: false } }
+        let attempted = 0
+        let succeeded = 0
         for (const channel of this.channels) {
             if (typeof channel.sendModelError !== 'function') {
                 continue
             }
+            attempted++
             try {
                 await channel.sendModelError(session, notification, ctx)
+                succeeded++
             } catch (error) {
                 console.error('[NotificationHub] Failed to send model-error notification:', error)
             }
         }
+        // No implementers: nothing to deliver - keep watermark (avoid retry storm).
+        // All implementers threw: roll back so a later session-updated can retry.
+        return attempted === 0 || succeeded > 0
     }
 }

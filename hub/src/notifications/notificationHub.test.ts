@@ -507,4 +507,75 @@ describe('NotificationHub', () => {
 
         hub.stop()
     })
+
+    it('rolls back model-error watermark when every channel throws so later updates retry', async () => {
+        const engine = new FakeSyncEngine()
+        let attempts = 0
+        const channel: NotificationChannel = {
+            async sendReady() {},
+            async sendPermissionRequest() {},
+            async sendTaskNotification() {},
+            async sendModelError() {
+                attempts++
+                throw new Error('transient outage')
+            }
+        }
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [channel])
+        const session = createSession({
+            metadata: {
+                lastModelError: {
+                    kind: 'quota_exhausted',
+                    transient: false,
+                    rawSnippet: 'retry-me',
+                    atTs: 6000,
+                    priorAssistantClaimsDone: false
+                }
+            } as Session['metadata']
+        })
+        engine.setSession(session)
+        engine.emit({ type: 'session-updated', sessionId: session.id })
+        await sleep(10)
+        expect(attempts).toBe(1)
+
+        // Same atTs should retry after rollback.
+        engine.emit({ type: 'session-updated', sessionId: session.id })
+        await sleep(10)
+        expect(attempts).toBe(2)
+
+        hub.stop()
+    })
+
+    it('does not re-fire model-error after inactive/resume for the same atTs', async () => {
+        const engine = new FakeSyncEngine()
+        const channel = new StubChannel()
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [channel])
+        const session = createSession({
+            metadata: {
+                lastModelError: {
+                    kind: 'rate_limited',
+                    transient: true,
+                    rawSnippet: 'status 429',
+                    atTs: 7000,
+                    priorAssistantClaimsDone: false
+                }
+            } as Session['metadata']
+        })
+        engine.setSession(session)
+        engine.emit({ type: 'session-updated', sessionId: session.id })
+        await sleep(10)
+        expect(channel.modelErrors).toHaveLength(1)
+
+        // Become inactive (clears timers but keeps watermark).
+        engine.setSession({ ...session, active: false })
+        engine.emit({ type: 'session-updated', sessionId: session.id })
+        await sleep(5)
+
+        // Resume with same unacknowledged atTs - must not re-ping.
+        engine.setSession({ ...session, active: true })
+        engine.emit({ type: 'session-updated', sessionId: session.id })
+        await sleep(10)
+        expect(channel.modelErrors).toHaveLength(1)
+
+        hub.stop()
+    })
 })
