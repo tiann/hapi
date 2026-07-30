@@ -140,8 +140,17 @@ export class PushNotificationChannel implements NotificationChannel {
         await this.pushService.sendToNamespace(session.namespace, payload)
     }
 
-    async sendModelError(session: Session, notification: ModelErrorNotification): Promise<void> {
+    async sendModelError(
+        session: Session,
+        notification: ModelErrorNotification,
+        ctx?: NotificationSendContext
+    ): Promise<void> {
         if (!session.active) {
+            return
+        }
+
+        if (ctx?.nativeGate?.sent) {
+            this.logBranch('model-error', session.namespace, 'defer-to-native', 'fcm-delivered-this-dispatch')
             return
         }
 
@@ -170,7 +179,9 @@ export class PushNotificationChannel implements NotificationChannel {
         // ephemeral and easy to miss; an error of this severity should
         // ALWAYS surface as a real push so a backgrounded operator gets
         // a system-tray ping. The web banner + pulsing-dot already
-        // cover the foreground case.
+        // cover the foreground case. Still defer when FCM already
+        // delivered this dispatch (nativeGate).
+        this.logBranch('model-error', session.namespace, 'web-push-fired')
         await this.pushService.sendToNamespace(session.namespace, payload)
     }
 

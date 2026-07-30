@@ -258,7 +258,11 @@ export class FcmNotificationChannel implements NotificationChannel {
         await this.deliver(session, payload, ctx)
     }
 
-    async sendModelError(session: Session, notification: ModelErrorNotification): Promise<void> {
+    async sendModelError(
+        session: Session,
+        notification: ModelErrorNotification,
+        ctx?: NotificationSendContext
+    ): Promise<void> {
         if (!session.active) {
             return
         }
@@ -280,7 +284,7 @@ export class FcmNotificationChannel implements NotificationChannel {
             severity: 'error'
         })
 
-        await this.deliver(session, payload)
+        await this.deliver(session, payload, ctx)
     }
 
     private buildPayload(input: {
