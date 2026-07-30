@@ -19,6 +19,10 @@ import { ShareTurnDialog } from '@/components/AssistantChat/ShareTurnDialog'
 import { formatCodexReasoningLabel, shouldShowCodexReasoningLabel } from '@/lib/codexStatusLabels'
 import { getSessionModelLabel } from '@/lib/sessionModelLabel'
 import { isFastServiceTier } from '@/components/AssistantChat/codexFastMode'
+import { QuoteHighlights } from '@/components/AssistantChat/QuoteHighlights'
+import { QuoteSelectionPopover } from '@/components/AssistantChat/QuoteSelectionPopover'
+import { useQuoteSelection, type QuotableSelection } from '@/hooks/useQuoteSelection'
+import type { Quote } from '@/lib/quotes'
 
 type ScrollAnchor = {
     id: string
@@ -391,6 +395,9 @@ export function HappyThread(props: {
     outlineItems: readonly ConversationOutlineItem[]
     onOutlineOpenChange: (open: boolean) => void
     onOutlineItemClick?: (item: ConversationOutlineItem) => void
+    quotes?: readonly Quote[]
+    onQuoteAdd?: (text: string, messageId: string) => void
+    activeQuoteId?: string | null
 }) {
     const { t } = useTranslation()
     const { terminalToolDisplayMode } = useTerminalToolDisplayMode()
@@ -401,6 +408,7 @@ export function HappyThread(props: {
     appliedHistoryVersionRef.current = appliedHistoryVersion
     const viewportRef = useRef<HTMLDivElement | null>(null)
     const contentRef = useRef<HTMLDivElement | null>(null)
+    const messagesRef = useRef<HTMLDivElement | null>(null)
     const [shareTurn, setShareTurn] = useState<ShareTurnState>(null)
     const shareTurnIdRef = useRef(0)
     const topSentinelRef = useRef<HTMLDivElement | null>(null)
@@ -892,6 +900,15 @@ export function HappyThread(props: {
         })
     }, [props.metadata, props.sessionId])
 
+    const { selection, clear: clearSelection } = useQuoteSelection(messagesRef)
+
+    const handleQuote = useCallback((picked: QuotableSelection) => {
+        props.onQuoteAdd?.(picked.text, picked.messageId)
+        // 引用完成后主动清掉选区：否则气泡会继续悬停在刚引用过的文本上，
+        // 看起来像"没生效"。
+        clearSelection()
+    }, [props.onQuoteAdd, clearSelection])
+
     return (
         <HappyChatProvider value={{
             api: props.api,
@@ -952,8 +969,15 @@ export function HappyThread(props: {
                                     ) : null}
                                 </>
                             )}
-                            <div className="happy-thread-messages flex flex-col gap-3">
+                            <div ref={messagesRef} className="happy-thread-messages relative flex flex-col gap-3">
                                 <ThreadPrimitive.Messages components={THREAD_MESSAGE_COMPONENTS} />
+                                {props.quotes && props.quotes.length > 0 ? (
+                                    <QuoteHighlights
+                                        quotes={props.quotes}
+                                        containerRef={messagesRef}
+                                        activeQuoteId={props.activeQuoteId}
+                                    />
+                                ) : null}
                             </div>
                         </div>
                     </div>
@@ -996,6 +1020,9 @@ export function HappyThread(props: {
                     sourceSnapshots={shareTurn?.snapshots ?? []}
                     onClose={() => setShareTurn(null)}
                 />
+                {props.onQuoteAdd ? (
+                    <QuoteSelectionPopover selection={selection} onQuote={handleQuote} />
+                ) : null}
             </ThreadPrimitive.Root>
         </HappyChatProvider>
     )

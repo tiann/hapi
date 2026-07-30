@@ -31,6 +31,8 @@ import { shouldShowComposerStatusBar, StatusBar } from '@/components/AssistantCh
 import { ComposerButtons } from '@/components/AssistantChat/ComposerButtons'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { AttachmentItem } from '@/components/AssistantChat/AttachmentItem'
+import { QuoteChips } from '@/components/AssistantChat/QuoteChips'
+import type { Quote } from '@/lib/quotes'
 import { useTranslation } from '@/lib/use-translation'
 import { getModelOptionsForFlavor, getNextModelForFlavor } from './modelOptions'
 import { getClaudeComposerEffortOptions } from './claudeEffortOptions'
@@ -197,6 +199,13 @@ export function HappyComposer(props: {
     scratchlistMode?: boolean
     scratchlistCount?: number
     onScratchlistToggle?: () => void
+    // Quote chips - SessionChat owns the state, same pattern as scratchlist.
+    // When undefined, the chip row doesn't render (back-compat for other consumers).
+    quotes?: readonly Quote[]
+    onQuoteRemove?: (id: string) => void
+    onQuoteJump?: (quote: Quote) => void
+    activeQuoteId?: string | null
+    onQuoteHover?: (id: string | null) => void
     // Set when the most recent send failed (4xx/5xx/network).  The composer
     // restores the original text once per `sendError.id` and renders an
     // inline error affordance until the user dismisses or starts editing.
@@ -1319,6 +1328,16 @@ export function HappyComposer(props: {
                             sendError ? 'ring-1 ring-red-500' : ''
                         }`}
                     >
+                        {props.quotes && props.quotes.length > 0 && props.onQuoteRemove && props.onQuoteJump ? (
+                            <QuoteChips
+                                quotes={props.quotes}
+                                onRemove={props.onQuoteRemove}
+                                onJump={props.onQuoteJump}
+                                activeQuoteId={props.activeQuoteId}
+                                onHover={props.onQuoteHover}
+                            />
+                        ) : null}
+
                         {attachments.length > 0 ? (
                             <div className="flex flex-wrap gap-2 px-4 pt-3">
                                 <ComposerPrimitive.Attachments components={{ Attachment: AttachmentItem }} />
@@ -1328,6 +1347,7 @@ export function HappyComposer(props: {
                         <div className="flex items-center px-4 py-3">
                             <ComposerPrimitive.Input
                                 ref={textareaRef}
+                                data-quote-focus-target=""
                                 autoFocus={!controlsDisabled && !isTouch}
                                 placeholder={showContinueHint ? t('misc.typeMessage') : t('misc.typeAMessage')}
                                 disabled={controlsDisabled}

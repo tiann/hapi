@@ -641,3 +641,9 @@ html[data-theme="oled"] .shiki span:not([data-line-number]) {
   bottom: 50% !important;
   transform: translateY(50%);
 }
+
+/* 被引用原文的底纹。用 ::highlight() 而不是包 <mark>：消息由 React 渲染
+   markdown，插入的 DOM 节点会在下次 re-render 时被抹掉。 */
+::highlight(hapi-quote) {
+    background-color: var(--app-md-quote-bg);
+}
