@@ -447,25 +447,41 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         });
     }
 
-    private async cleanupUsageScanner(): Promise<void> {
-        if (this.usageScannerSetup) {
-            try {
-                await this.usageScannerSetup;
-            } catch (error) {
-                logger.debug('[Codex] Remote usage scanner setup failed during cleanup:', error);
-            }
-        }
-        this.shuttingDown = true;
+    private async detachUsageScanner(): Promise<void> {
+        this.usageScannerThreadId = null;
+        const setup = this.usageScannerSetup;
+        this.usageScannerSetup = null;
         const scanner = this.usageScanner;
         this.usageScanner = null;
-        this.usageScannerThreadId = null;
+        if (setup) {
+            try {
+                await setup;
+            } catch (error) {
+                logger.debug('[Codex] Remote usage scanner setup failed during detach:', error);
+            }
+        }
         if (scanner) {
             try {
                 await scanner.cleanup();
             } catch (error) {
-                logger.debug('[Codex] Remote usage scanner cleanup failed:', error);
+                logger.debug('[Codex] Remote usage scanner detach failed:', error);
             }
         }
+        // Setup may have assigned a scanner after we cleared the thread id; drop leftovers.
+        if (this.usageScanner) {
+            const leftover = this.usageScanner;
+            this.usageScanner = null;
+            try {
+                await leftover.cleanup();
+            } catch (error) {
+                logger.debug('[Codex] Remote usage scanner leftover cleanup failed:', error);
+            }
+        }
+    }
+
+    private async cleanupUsageScanner(): Promise<void> {
+        this.shuttingDown = true;
+        await this.detachUsageScanner();
     }
 
     public async launch(): Promise<RemoteLauncherExitReason> {
@@ -2903,11 +2919,15 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
 
             if (!eventThreadId && this.currentThreadId && isScopeSensitiveCodexEvent(msgType) && hasKnownChildAgents()) {
-                logger.debug(
-                    `[Codex] Dropping unscoped scope-sensitive event while child agents are active; ` +
-                    `type=${msgType}, activeThread=${this.currentThreadId}`
-                );
-                return;
+                const isAccountUsage = msgType === 'token_count'
+                    && (msg.usage_scope === 'account' || msg.usageScope === 'account');
+                if (!isAccountUsage) {
+                    logger.debug(
+                        `[Codex] Dropping unscoped scope-sensitive event while child agents are active; ` +
+                        `type=${msgType}, activeThread=${this.currentThreadId}`
+                    );
+                    return;
+                }
             }
 
             if (msgType === 'thread_goal_updated') {
@@ -3367,6 +3387,10 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 }
             }
             if (msgType === 'token_count') {
+                const isAccountUsage = msg.usage_scope === 'account' || msg.usageScope === 'account';
+                if (!isAccountUsage && eventThreadId && eventThreadId !== this.currentThreadId) {
+                    return;
+                }
                 const threadId = eventThreadId ?? this.currentThreadId;
                 session.recordCodexUsage(msg);
                 session.sendAgentMessage({
@@ -4091,6 +4115,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             if (specialCommand.type === 'clear') {
                 await interruptActiveTurn();
                 resetCurrentTurnState();
+                await this.detachUsageScanner();
                 this.currentThreadId = null;
                 invalidThreadId = null;
                 hasThread = false;
