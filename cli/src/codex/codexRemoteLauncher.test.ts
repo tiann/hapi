@@ -520,6 +520,8 @@ vi.mock('./codexAppServerClient', () => {
                             payload: {
                                 type: 'token_count',
                                 info: {
+                                    total_token_usage: { total_tokens: 42000, input_tokens: 40000, output_tokens: 2000 },
+                                    model_context_window: 128000,
                                     rate_limits: {
                                         primary: { used_percent: 99, window_minutes: 300 }
                                     }
@@ -3667,6 +3669,14 @@ describe('codexRemoteLauncher', () => {
                 })
             })
         }));
+        // Account-only live snapshot must not block transcript context.
+        expect(usagePayloads).toContainEqual(expect.objectContaining({
+            type: 'token_count',
+            info: expect.objectContaining({
+                total_token_usage: expect.objectContaining({ total_tokens: 42000 }),
+                model_context_window: 128000
+            })
+        }));
         expect(usagePayloads).not.toContainEqual(expect.objectContaining({
             info: expect.objectContaining({
                 rate_limits: expect.objectContaining({
@@ -3674,7 +3684,6 @@ describe('codexRemoteLauncher', () => {
                 })
             })
         }));
-        // Live account snapshot must remain the last rate-limit-bearing write.
         const rateLimitWrites = usagePayloads.filter((payload) => {
             if (!payload || typeof payload !== 'object') return false;
             const info = (payload as { info?: { rate_limits?: unknown } }).info;
