@@ -175,6 +175,31 @@ function unwrapUsagePayload(value: unknown): Record<string, unknown> | null {
     return record;
 }
 
+export type CodexUsageUpdate = {
+    usage: CodexUsage;
+    hasRateLimitSnapshot: boolean;
+};
+
+function payloadHasRateLimitSnapshot(value: unknown): boolean {
+    const record = asRecord(value);
+    if (!record) return false;
+    if ('rate_limits' in record || 'rateLimits' in record) return true;
+    const info = asRecord(record.info);
+    if (info && ('rate_limits' in info || 'rateLimits' in info)) return true;
+    const tokenUsage = asRecord(record.tokenUsage ?? record.token_usage);
+    if (tokenUsage && ('rate_limits' in tokenUsage || 'rateLimits' in tokenUsage)) return true;
+    return false;
+}
+
+export function normalizeCodexUsageUpdate(value: unknown, options: NormalizerOptions = {}): CodexUsageUpdate | null {
+    const usage = normalizeCodexUsage(value, options);
+    if (!usage) return null;
+    return {
+        usage,
+        hasRateLimitSnapshot: payloadHasRateLimitSnapshot(value)
+    };
+}
+
 export function normalizeCodexUsage(value: unknown, options: NormalizerOptions = {}): CodexUsage | null {
     const now = options.now ?? Date.now();
     const record = unwrapUsagePayload(value);

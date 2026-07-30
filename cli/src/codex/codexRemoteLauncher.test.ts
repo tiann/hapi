@@ -3179,6 +3179,36 @@ describe('codexRemoteLauncher', () => {
 
     it('tails remote Codex transcript for usage without replaying transcript messages', async () => {
         harness.transcriptPathByThreadId.set('thread-1', '/tmp/codex-thread-1.jsonl');
+        harness.scannerReplayOnCreate = [
+            {
+                type: 'event_msg',
+                payload: {
+                    type: 'token_count',
+                    info: {
+                        total_token_usage: { total_tokens: 42000 },
+                        model_context_window: 128000
+                    }
+                }
+            },
+            {
+                type: 'event_msg',
+                thread_id: 'child-thread',
+                payload: {
+                    type: 'token_count',
+                    scope_role: 'child',
+                    info: {
+                        total_token_usage: { total_tokens: 999 }
+                    }
+                }
+            },
+            {
+                type: 'event_msg',
+                payload: {
+                    type: 'agent_message',
+                    message: 'transcript duplicate'
+                }
+            }
+        ];
         const { session, codexMessages, usagePayloads } = createSessionStub();
 
         const exitReason = await codexRemoteLauncher(session as never);
@@ -3188,36 +3218,6 @@ describe('codexRemoteLauncher', () => {
             transcriptPath: '/tmp/codex-thread-1.jsonl',
             replayExistingHistory: true
         }]);
-
-        harness.scannerEvents[0]?.({
-            type: 'event_msg',
-            payload: {
-                type: 'token_count',
-                info: {
-                    total_token_usage: { total_tokens: 42000 },
-                    model_context_window: 128000
-                }
-            }
-        });
-        harness.scannerEvents[0]?.({
-            type: 'event_msg',
-            thread_id: 'child-thread',
-            payload: {
-                type: 'token_count',
-                scope_role: 'child',
-                info: {
-                    total_token_usage: { total_tokens: 999 }
-                }
-            }
-        });
-        harness.scannerEvents[0]?.({
-            type: 'event_msg',
-            payload: {
-                type: 'agent_message',
-                message: 'transcript duplicate'
-            }
-        });
-
         expect(usagePayloads).toHaveLength(1);
         expect(usagePayloads[0]).toMatchObject({
             type: 'token_count',
@@ -3226,6 +3226,16 @@ describe('codexRemoteLauncher', () => {
                 model_context_window: 128000
             }
         });
+
+        // Delayed events after the thread is gone must not resurrect usage.
+        harness.scannerEvents[0]?.({
+            type: 'event_msg',
+            payload: {
+                type: 'token_count',
+                info: { total_token_usage: { total_tokens: 99999 } }
+            }
+        });
+        expect(usagePayloads).toHaveLength(1);
         expect(codexMessages).not.toContainEqual(expect.objectContaining({
             message: 'transcript duplicate'
         }));
