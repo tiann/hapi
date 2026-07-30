@@ -526,6 +526,56 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
         expect(metadata?.lifecycleState).toBe('archived')
     })
 
+    it('preserves lastModelError.acknowledgedAt against stale CLI rewrite of same atTs', () => {
+        const store = makeStore()
+        const atTs = 1_700_000_000_111
+        const session = store.sessions.getOrCreateSession(
+            'cursor-model-error-ack-survives',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                cursorSessionId: 'ack-uuid',
+                lastModelError: {
+                    kind: 'quota_exhausted',
+                    transient: false,
+                    rawSnippet: 'Error: T: [resource_exhausted]',
+                    atTs,
+                    priorAssistantClaimsDone: false,
+                    acknowledgedAt: 1_700_000_000_222
+                }
+            },
+            null,
+            'default'
+        )
+
+        // CLI local snapshot still has the same error without acknowledgedAt.
+        store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                cursorSessionId: 'ack-uuid',
+                lastModelError: {
+                    kind: 'quota_exhausted',
+                    transient: false,
+                    rawSnippet: 'Error: T: [resource_exhausted]',
+                    atTs,
+                    priorAssistantClaimsDone: false
+                }
+            },
+            session.metadataVersion,
+            'default'
+        )
+
+        const metadata = getMetadata(store, session.id) as {
+            lastModelError?: { atTs?: number; acknowledgedAt?: number }
+        } | null
+        expect(metadata?.lastModelError?.atTs).toBe(atTs)
+        expect(metadata?.lastModelError?.acknowledgedAt).toBe(1_700_000_000_222)
+    })
+
     it('does not invent path or host when prior had none', () => {
         const store = makeStore()
         // create with minimal raw metadata (path is technically required by

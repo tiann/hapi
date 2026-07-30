@@ -176,8 +176,8 @@ export function classifyCursorAgentMessage(text: string): CursorAgentStreamFailu
  */
 const STRONG_STDERR_PATTERNS = {
     rate_limit: /status 429|ratelimitexceeded|rate limit (?:exceeded|reached|hit)/i,
-    model_not_found: /Cannot use this model:|status 404|model (?:is )?not found|\bnot_found\b/i,
-    authentication: /status (?:401|403)|\bunauthenticated\b|permission denied|authentication (?:failed|required|expired)/i,
+    model_not_found: /Cannot use this model:\s*\S|status 404[^\n]*\bmodel\b|model (?:is )?not found/i,
+    authentication: /status (?:401|403)|\bunauthenticated\b|authentication (?:failed|required|expired)|(?:token|credential)[^\n]{0,80}permission denied/i,
     quota_exceeded: /quota (?:exceeded|exhausted|limit reached)|resource ?exhausted/i
 } as const
 
