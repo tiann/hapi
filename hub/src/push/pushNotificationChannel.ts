@@ -1,6 +1,7 @@
 import type { Session } from '../sync/syncEngine'
 import type {
     ModelErrorNotification,
+    ModelErrorSendOutcome,
     NotificationChannel,
     TaskNotification
 } from '../notifications/notificationTypes'
@@ -144,14 +145,14 @@ export class PushNotificationChannel implements NotificationChannel {
         session: Session,
         notification: ModelErrorNotification,
         ctx?: NotificationSendContext
-    ): Promise<void> {
+    ): Promise<ModelErrorSendOutcome> {
         if (!session.active) {
-            return
+            return 'unavailable'
         }
 
         if (ctx?.nativeGate?.sent) {
             this.logBranch('model-error', session.namespace, 'defer-to-native', 'fcm-delivered-this-dispatch')
-            return
+            return 'unavailable'
         }
 
         const agentName = getAgentName(session)
@@ -182,7 +183,14 @@ export class PushNotificationChannel implements NotificationChannel {
         // cover the foreground case. Still defer when FCM already
         // delivered this dispatch (nativeGate).
         this.logBranch('model-error', session.namespace, 'web-push-fired')
-        await this.pushService.sendToNamespace(session.namespace, payload)
+        const result = await this.pushService.sendToNamespace(session.namespace, payload)
+        if (result.sent > 0) {
+            return 'delivered'
+        }
+        if (result.subscriptions === 0) {
+            return 'unavailable'
+        }
+        return 'failed'
     }
 
     private buildSessionPath(sessionId: string): string {

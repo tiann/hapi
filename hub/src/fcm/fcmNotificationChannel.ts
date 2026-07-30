@@ -1,5 +1,5 @@
 import type { Session } from '../sync/syncEngine'
-import type { ModelErrorNotification, NotificationChannel, TaskNotification } from '../notifications/notificationTypes'
+import type { ModelErrorNotification, ModelErrorSendOutcome, NotificationChannel, TaskNotification } from '../notifications/notificationTypes'
 import type { NotificationSendContext } from '../notifications/notificationSendContext'
 import { formatModelErrorBody, formatModelErrorTitle } from '../notifications/modelErrorCopy'
 import { getAgentName, getSessionName } from '../notifications/sessionInfo'
@@ -262,9 +262,9 @@ export class FcmNotificationChannel implements NotificationChannel {
         session: Session,
         notification: ModelErrorNotification,
         ctx?: NotificationSendContext
-    ): Promise<void> {
+    ): Promise<ModelErrorSendOutcome> {
         if (!session.active) {
-            return
+            return 'unavailable'
         }
 
         const agentName = getAgentName(session)
@@ -284,7 +284,18 @@ export class FcmNotificationChannel implements NotificationChannel {
             severity: 'error'
         })
 
-        await this.deliver(session, payload, ctx)
+        const result = await this.fcmService.sendToNamespace(session.namespace, payload)
+        if ((result?.sent ?? 0) > 0) {
+            if (ctx?.nativeGate) {
+                ctx.nativeGate.sent = true
+            }
+            return 'delivered'
+        }
+        // No devices registered for this namespace - not a hard failure.
+        if ((result?.failed ?? 0) === 0) {
+            return 'unavailable'
+        }
+        return 'failed'
     }
 
     private buildPayload(input: {

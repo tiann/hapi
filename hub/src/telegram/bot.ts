@@ -12,6 +12,7 @@ import { formatReadyNotification, formatSessionNotification, createNotificationK
 import { getAgentName, getSessionName } from '../notifications/sessionInfo'
 import type {
     ModelErrorNotification,
+    ModelErrorSendOutcome,
     NotificationChannel,
     TaskNotification
 } from '../notifications/notificationTypes'
@@ -274,9 +275,9 @@ export class HappyBot implements NotificationChannel {
         session: Session,
         notification: ModelErrorNotification,
         _ctx?: NotificationSendContext
-    ): Promise<void> {
+    ): Promise<ModelErrorSendOutcome> {
         if (!session.active) {
-            return
+            return 'unavailable'
         }
 
         const agentName = getAgentName(session)
@@ -291,18 +292,21 @@ export class HappyBot implements NotificationChannel {
 
         const chatIds = this.getBoundChatIds(session.namespace)
         if (chatIds.length === 0) {
-            return
+            return 'unavailable'
         }
 
+        let delivered = 0
         for (const chatId of chatIds) {
             try {
                 await this.bot.api.sendMessage(chatId, text, {
                     reply_markup: keyboard
                 })
+                delivered++
             } catch (error) {
                 console.error(`[HAPIBot] Failed to send model-error notification to chat ${chatId}:`, error)
             }
         }
+        return delivered > 0 ? 'delivered' : 'failed'
     }
 
     async sendTaskNotification(session: Session, notification: TaskNotification): Promise<void> {

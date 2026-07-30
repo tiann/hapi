@@ -26,6 +26,15 @@ export type ModelErrorNotification = {
     atTs: number                          // metadata.lastModelError.atTs, used for dedup
 }
 
+/**
+ * Outcome of a model-error channel send. Used by NotificationHub to decide
+ * whether to keep or roll back the per-session watermark:
+ * - delivered: at least one destination accepted the ping
+ * - unavailable: channel had nothing to do (no subs, deferred to native, inactive)
+ * - failed: channel tried and every destination failed
+ */
+export type ModelErrorSendOutcome = 'delivered' | 'unavailable' | 'failed'
+
 export type NotificationChannel = {
     sendReady: (session: Session, ctx?: NotificationSendContext) => Promise<void>
     sendPermissionRequest: (session: Session, ctx?: NotificationSendContext) => Promise<void>
@@ -38,12 +47,14 @@ export type NotificationChannel = {
      *
      * Pass the same NotificationSendContext as ready/permission/task so
      * FCM can set nativeGate.sent and Web Push can defer (one OS ping).
+     * Return a real delivery outcome so the hub watermark is not consumed
+     * when every destination failed.
      */
     sendModelError?: (
         session: Session,
         notification: ModelErrorNotification,
         ctx?: NotificationSendContext
-    ) => Promise<void>
+    ) => Promise<ModelErrorSendOutcome>
 }
 
 export type NotificationHubOptions = {

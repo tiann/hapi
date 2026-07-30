@@ -22,6 +22,7 @@ describe('PushNotificationChannel', () => {
             {
                 sendToNamespace: async (namespace: string, payload: PushPayload) => {
                     pushed.push({ namespace, payload })
+                    return { sent: 1, failed: 0, subscriptions: 1 }
                 }
             } as never,
             {
@@ -51,6 +52,7 @@ describe('PushNotificationChannel', () => {
             {
                 sendToNamespace: async (namespace: string, payload: PushPayload) => {
                     pushed.push({ namespace, payload })
+                    return { sent: 1, failed: 0, subscriptions: 1 }
                 }
             } as never,
             {
@@ -82,6 +84,7 @@ describe('PushNotificationChannel', () => {
             {
                 sendToNamespace: async (namespace: string, payload: PushPayload) => {
                     pushed.push({ namespace, payload })
+                    return { sent: 1, failed: 0, subscriptions: 1 }
                 }
             } as never,
             {
@@ -115,6 +118,7 @@ describe('PushNotificationChannel', () => {
             {
                 sendToNamespace: async (namespace: string, payload: PushPayload) => {
                     pushed.push({ namespace, payload })
+                    return { sent: 1, failed: 0, subscriptions: 1 }
                 }
             } as never,
             {
@@ -137,6 +141,7 @@ describe('PushNotificationChannel', () => {
             {
                 sendToNamespace: async (namespace: string, payload: PushPayload) => {
                     pushed.push({ namespace, payload })
+                    return { sent: 1, failed: 0, subscriptions: 1 }
                 }
             } as never,
             {
@@ -160,6 +165,7 @@ describe('PushNotificationChannel', () => {
             {
                 sendToNamespace: async (namespace: string, payload: PushPayload) => {
                     pushed.push({ namespace, payload })
+                    return { sent: 1, failed: 0, subscriptions: 1 }
                 }
             } as never,
             {
@@ -198,6 +204,7 @@ describe('PushNotificationChannel', () => {
             {
                 sendToNamespace: async (namespace: string, payload: PushPayload) => {
                     pushed.push({ namespace, payload })
+                    return { sent: 1, failed: 0, subscriptions: 1 }
                 }
             } as never,
             { sendToast: async () => 0 } as never,
@@ -222,6 +229,7 @@ describe('PushNotificationChannel', () => {
             {
                 sendToNamespace: async (namespace: string, payload: PushPayload) => {
                     pushed.push({ namespace, payload })
+                    return { sent: 1, failed: 0, subscriptions: 1 }
                 }
             } as never,
             { sendToast: async () => 0 } as never,
