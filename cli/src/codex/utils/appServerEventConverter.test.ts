@@ -670,6 +670,7 @@ describe('AppServerEventConverter', () => {
         });
         expect(events).toEqual([{
             type: 'token_count',
+            usage_scope: 'account',
             info: {
                 rate_limits: {
                     primary: { usedPercent: 40, windowMinutes: 300 },
@@ -684,6 +685,7 @@ describe('AppServerEventConverter', () => {
         });
         expect(cleared).toEqual([{
             type: 'token_count',
+            usage_scope: 'account',
             info: { rate_limits: null }
         }]);
     });

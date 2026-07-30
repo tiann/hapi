@@ -668,6 +668,7 @@ export class AppServerEventConverter {
             const rateLimits = paramsRecord.rateLimits ?? paramsRecord.rate_limits ?? null;
             events.push(scoped({
                 type: 'token_count',
+                usage_scope: 'account',
                 info: { rate_limits: rateLimits }
             }));
             return events;

@@ -91,6 +91,8 @@ const harness = vi.hoisted(() => ({
     emitRunningChildTurnBeforeSuppressedParent: false,
     emitCompletedChildTurnBeforeSuppressedParent: false,
     emitTurnAbortedOnInterrupt: false,
+    emitLateUsageAfterClear: false,
+    emitAccountRateLimitsDuringChild: false,
     bridgeOptions: [] as unknown[]
 }));
 
@@ -680,6 +682,17 @@ vi.mock('./codexAppServerClient', () => {
                     this.notificationHandler?.('thread/tokenUsage/updated', ambiguousUsage);
                 }
 
+                if (harness.emitAccountRateLimitsDuringChild) {
+                    const accountLimits = {
+                        rateLimits: {
+                            primary: { usedPercent: 100, windowMinutes: 300 },
+                            credits: { hasCredits: false, unlimited: false, balance: '0' }
+                        }
+                    };
+                    harness.notifications.push({ method: 'account/rateLimits/updated', params: accountLimits });
+                    this.notificationHandler?.('account/rateLimits/updated', accountLimits);
+                }
+
                 if (harness.emitChildGoalEvent) {
                     const childGoal = {
                         threadId: childThreadId,
@@ -1189,6 +1202,26 @@ function createSessionStub(
         resetCodexThread() {
             resetThreadCalls.push(session.sessionId ?? 'none');
             session.sessionId = null;
+            usagePayloads.length = 0;
+            if (harness.emitLateUsageAfterClear) {
+                harness.scannerEvents[0]?.({
+                    type: 'event_msg',
+                    payload: {
+                        type: 'token_count',
+                        info: { total_token_usage: { total_tokens: 99999 }, model_context_window: 128000 }
+                    }
+                });
+                harness.dispatchNotification?.('codex/event/token_count', {
+                    msg: {
+                        type: 'token_count',
+                        thread_id: 'thread-1',
+                        info: {
+                            total_token_usage: { total_tokens: 88888 },
+                            model_context_window: 128000
+                        }
+                    }
+                });
+            }
         },
         sendAgentMessage(message: unknown) {
             client.sendAgentMessage(message);
@@ -1310,6 +1343,8 @@ describe('codexRemoteLauncher', () => {
         harness.emitRunningChildTurnBeforeSuppressedParent = false;
         harness.emitCompletedChildTurnBeforeSuppressedParent = false;
         harness.emitTurnAbortedOnInterrupt = false;
+        harness.emitLateUsageAfterClear = false;
+        harness.emitAccountRateLimitsDuringChild = false;
         harness.bridgeOptions = [];
         harness.transcriptPathByThreadId = new Map();
         harness.scannerStarts = [];
@@ -3016,6 +3051,39 @@ describe('codexRemoteLauncher', () => {
             message: 'Context was reset'
         });
         expect(session.thinking).toBe(false);
+    });
+
+    it('keeps usage cleared after /clear when late scanner and app-server events arrive', async () => {
+        harness.suppressTurnCompletion = true;
+        harness.emitLateUsageAfterClear = true;
+        harness.transcriptPathByThreadId.set('thread-1', '/tmp/codex-thread-1.jsonl');
+        harness.emitParentUsageEvents = true;
+        const { session, usagePayloads, resetThreadCalls } = createSessionStub(['first message', '/clear']);
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(resetThreadCalls).toEqual(['thread-1']);
+        expect(usagePayloads).toEqual([]);
+        expect(harness.scannerCleanups).toBeGreaterThanOrEqual(1);
+    });
+
+    it('records account-wide rate-limit updates while child agents are active', async () => {
+        harness.emitChildThreadEvents = true;
+        harness.emitAccountRateLimitsDuringChild = true;
+        const { session, usagePayloads } = createSessionStub();
+
+        await codexRemoteLauncher(session as never);
+
+        expect(usagePayloads).toContainEqual(expect.objectContaining({
+            type: 'token_count',
+            usage_scope: 'account',
+            info: expect.objectContaining({
+                rate_limits: expect.objectContaining({
+                    primary: expect.objectContaining({ usedPercent: 100 })
+                })
+            })
+        }));
     });
 
     it('interrupts active child agent turns before clearing codex thread state', async () => {
