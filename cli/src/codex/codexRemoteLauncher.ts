@@ -16,7 +16,7 @@ import { AppServerEventConverter } from './utils/appServerEventConverter';
 import { registerGeneratedImageFromPath } from '@/modules/common/generatedImages';
 import { convertCodexEvent } from './utils/codexEventConverter';
 import { createCodexSessionScanner, type CodexSessionScanner } from './utils/codexSessionScanner';
-import { createReplayUsageAccumulator, noteReplayUsageSample, orderedReplayUsagePayloads } from './utils/codexUsage';
+import { createReplayUsageAccumulator, filterTranscriptUsageForLive, markLiveUsageDimensions, noteReplayUsageSample, orderedReplayUsagePayloads, type LiveUsageDimensions } from './utils/codexUsage';
 import { registerAppServerPermissionHandlers } from './utils/appServerPermissionAdapter';
 import { buildThreadStartParams, buildTurnStartParams } from './utils/appServerConfig';
 import type { SkillMetadata, ThreadGoal, ThreadGoalStatus } from './appServerTypes';
@@ -226,7 +226,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
     private usageScanner: CodexSessionScanner | null = null;
     private usageScannerThreadId: string | null = null;
     private usageScannerSetup: Promise<void> | null = null;
-    private readonly liveUsageThreads = new Set<string>();
+    private readonly liveUsageByThread = new Map<string, LiveUsageDimensions>();
     private shuttingDown = false;
 
     constructor(session: CodexSession) {
@@ -373,15 +373,21 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     if (
                         this.currentThreadId !== threadId
                         || this.usageScannerThreadId !== threadId
-                        || this.liveUsageThreads.has(threadId)
                     ) {
                         continue;
                     }
+                    const live = this.liveUsageByThread.get(threadId);
                     if (replayingHistory) {
                         noteReplayUsageSample(replayUsage, message);
                         continue;
                     }
-                    this.session.recordCodexUsage(message);
+                    const filtered = filterTranscriptUsageForLive(
+                        message,
+                        live ?? { tokens: false, rateLimits: false }
+                    );
+                    if (filtered) {
+                        this.session.recordCodexUsage(filtered);
+                    }
                 }
             }
         });
@@ -390,13 +396,13 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             await scanner.cleanup();
             return;
         }
-        if (
-            this.currentThreadId === threadId
-            && this.usageScannerThreadId === threadId
-            && !this.liveUsageThreads.has(threadId)
-        ) {
+        if (this.currentThreadId === threadId && this.usageScannerThreadId === threadId) {
+            const live = this.liveUsageByThread.get(threadId) ?? { tokens: false, rateLimits: false };
             for (const payload of orderedReplayUsagePayloads(replayUsage)) {
-                this.session.recordCodexUsage(payload);
+                const filtered = filterTranscriptUsageForLive(payload, live);
+                if (filtered) {
+                    this.session.recordCodexUsage(filtered);
+                }
             }
         }
         this.usageScanner = scanner;
@@ -433,7 +439,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
     private async detachUsageScanner(): Promise<void> {
         this.usageScannerThreadId = null;
-        this.liveUsageThreads.clear();
+        this.liveUsageByThread.clear();
         const setup = this.usageScannerSetup;
         this.usageScannerSetup = null;
         const scanner = this.usageScanner;
@@ -3041,7 +3047,10 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 }
                 const threadId = eventThreadId ?? this.currentThreadId;
                 if (threadId) {
-                    this.liveUsageThreads.add(threadId);
+                    this.liveUsageByThread.set(
+                        threadId,
+                        markLiveUsageDimensions(this.liveUsageByThread.get(threadId), msg)
+                    );
                 }
                 session.recordCodexUsage(msg);
                 session.sendAgentMessage({

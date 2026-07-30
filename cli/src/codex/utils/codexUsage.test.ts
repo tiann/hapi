@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
     createReplayUsageAccumulator,
+    filterTranscriptUsageForLive,
+    markLiveUsageDimensions,
     normalizeCodexUsage,
     normalizeCodexUsageUpdate,
     noteReplayUsageSample,
@@ -318,5 +320,30 @@ describe('normalizeCodexUsage', () => {
         noteReplayUsageSample(accumulator, laterTokens);
 
         expect(orderedReplayUsagePayloads(accumulator)).toEqual([rateLimitsOnly, laterTokens]);
+    });
+
+    it('filters transcript payloads per live dimension', () => {
+        const mixed = {
+            type: 'token_count',
+            info: {
+                model_context_window: 100_000,
+                total_token_usage: { total_tokens: 1200, input_tokens: 1000, output_tokens: 200 },
+                rate_limits: { primary: { used_percent: 99, window_minutes: 300 } }
+            }
+        };
+
+        expect(filterTranscriptUsageForLive(mixed, { tokens: false, rateLimits: true })).toEqual({
+            type: 'token_count',
+            info: {
+                model_context_window: 100_000,
+                total_token_usage: { total_tokens: 1200, input_tokens: 1000, output_tokens: 200 }
+            }
+        });
+        expect(filterTranscriptUsageForLive(mixed, { tokens: true, rateLimits: true })).toBeNull();
+        expect(markLiveUsageDimensions(undefined, {
+            type: 'token_count',
+            usage_scope: 'account',
+            info: { rate_limits: { primary: { used_percent: 12, window_minutes: 300 } } }
+        })).toEqual({ tokens: false, rateLimits: true });
     });
 });

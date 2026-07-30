@@ -252,6 +252,78 @@ export function orderedReplayUsagePayloads(accumulator: ReplayUsageAccumulator):
         .map((item) => item.payload);
 }
 
+export type LiveUsageDimensions = {
+    tokens: boolean;
+    rateLimits: boolean;
+};
+
+export function emptyLiveUsageDimensions(): LiveUsageDimensions {
+    return { tokens: false, rateLimits: false };
+}
+
+export function markLiveUsageDimensions(
+    previous: LiveUsageDimensions | undefined,
+    payload: unknown
+): LiveUsageDimensions {
+    const live = previous ?? emptyLiveUsageDimensions();
+    const update = normalizeCodexUsageUpdate(payload);
+    if (!update) {
+        return live;
+    }
+    return {
+        tokens: live.tokens
+            || Boolean(update.usage.contextWindow || update.usage.totalTokenUsage || update.usage.lastTokenUsage),
+        rateLimits: live.rateLimits || update.hasRateLimitSnapshot
+    };
+}
+
+/** Keep transcript samples for dimensions not yet observed from live app-server. */
+export function filterTranscriptUsageForLive(
+    payload: unknown,
+    live: LiveUsageDimensions
+): unknown | null {
+    const update = normalizeCodexUsageUpdate(payload);
+    if (!update) {
+        return null;
+    }
+    const hasTokens = Boolean(
+        update.usage.contextWindow || update.usage.totalTokenUsage || update.usage.lastTokenUsage
+    );
+    const hasRateLimits = update.hasRateLimitSnapshot;
+    const takeTokens = hasTokens && !live.tokens;
+    const takeRateLimits = hasRateLimits && !live.rateLimits;
+    if (!takeTokens && !takeRateLimits) {
+        return null;
+    }
+    if (takeTokens && takeRateLimits) {
+        return payload;
+    }
+
+    const record = asRecord(payload) ?? {};
+    const info = asRecord(record.info) ?? {};
+    if (takeTokens) {
+        const nextInfo = { ...info };
+        delete nextInfo.rate_limits;
+        delete nextInfo.rateLimits;
+        const next: Record<string, unknown> = {
+            ...record,
+            type: record.type ?? 'token_count',
+            info: nextInfo
+        };
+        delete next.rate_limits;
+        delete next.rateLimits;
+        return next;
+    }
+
+    return {
+        type: 'token_count',
+        info: {
+            rate_limits: info.rate_limits ?? info.rateLimits ?? record.rate_limits ?? record.rateLimits ?? null
+        }
+    };
+}
+
+
 export function normalizeCodexUsage(value: unknown, options: NormalizerOptions = {}): CodexUsage | null {
     const now = options.now ?? Date.now();
     const record = unwrapUsagePayload(value);
