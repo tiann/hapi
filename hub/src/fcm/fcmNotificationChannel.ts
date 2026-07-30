@@ -45,7 +45,11 @@ export class FcmNotificationChannel implements NotificationChannel {
         await this.deliver(session, this.toFcmPayload(this.composer.composeTask(session, notification)), ctx)
     }
 
-    async sendModelError(session: Session, notification: ModelErrorNotification): Promise<void> {
+    async sendModelError(
+        session: Session,
+        notification: ModelErrorNotification,
+        ctx?: NotificationSendContext
+    ): Promise<void> {
         if (!session.active) {
             return
         }
@@ -69,7 +73,7 @@ export class FcmNotificationChannel implements NotificationChannel {
                 contractVersion: NATIVE_CONTRACT_VERSION,
                 severity: 'error'
             }
-        })
+        }, ctx)
     }
 
     private toFcmPayload(composed: ComposedNativeNotification): FcmSendPayload {

@@ -411,4 +411,100 @@ describe('NotificationHub', () => {
         // recording surface. Test passes if hub.stop() returns cleanly.
         hub.stop()
     })
+
+    it('shares nativeGate across model-error channels so later channels can defer', async () => {
+        const engine = new FakeSyncEngine()
+        const fcmCalls: ModelErrorNotification[] = []
+        const pushCalls: ModelErrorNotification[] = []
+
+        const fcmChannel: NotificationChannel = {
+            async sendReady() {},
+            async sendPermissionRequest() {},
+            async sendTaskNotification() {},
+            async sendModelError(_session, notification, ctx) {
+                fcmCalls.push(notification)
+                if (ctx?.nativeGate) {
+                    ctx.nativeGate.sent = true
+                }
+            }
+        }
+        const pushChannel: NotificationChannel = {
+            async sendReady() {},
+            async sendPermissionRequest() {},
+            async sendTaskNotification() {},
+            async sendModelError(_session, notification, ctx) {
+                if (ctx?.nativeGate?.sent) {
+                    return
+                }
+                pushCalls.push(notification)
+            }
+        }
+
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [fcmChannel, pushChannel])
+        const session = createSession({
+            metadata: {
+                lastModelError: {
+                    kind: 'quota_exhausted',
+                    transient: false,
+                    rawSnippet: 'gate-test',
+                    atTs: 4000,
+                    priorAssistantClaimsDone: false
+                }
+            } as Session['metadata']
+        })
+        engine.setSession(session)
+        engine.emit({ type: 'session-updated', sessionId: session.id })
+        await sleep(5)
+
+        expect(fcmCalls).toHaveLength(1)
+        expect(pushCalls).toHaveLength(0)
+
+        hub.stop()
+    })
+
+    it('falls back to later model-error channels when native gate stays unset', async () => {
+        const engine = new FakeSyncEngine()
+        const pushCalls: ModelErrorNotification[] = []
+
+        const fcmChannel: NotificationChannel = {
+            async sendReady() {},
+            async sendPermissionRequest() {},
+            async sendTaskNotification() {},
+            async sendModelError() {
+                // Delivered zero - leave nativeGate.sent false
+            }
+        }
+        const pushChannel: NotificationChannel = {
+            async sendReady() {},
+            async sendPermissionRequest() {},
+            async sendTaskNotification() {},
+            async sendModelError(_session, notification, ctx) {
+                if (ctx?.nativeGate?.sent) {
+                    return
+                }
+                pushCalls.push(notification)
+            }
+        }
+
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [fcmChannel, pushChannel])
+        const session = createSession({
+            metadata: {
+                lastModelError: {
+                    kind: 'rate_limited',
+                    transient: true,
+                    rawSnippet: 'fallback-test',
+                    atTs: 5000,
+                    priorAssistantClaimsDone: false
+                }
+            } as Session['metadata']
+        })
+        engine.setSession(session)
+        engine.emit({ type: 'session-updated', sessionId: session.id })
+        await sleep(5)
+
+        expect(pushCalls).toHaveLength(1)
+        expect(pushCalls[0]?.atTs).toBe(5000)
+
+        hub.stop()
+    })
 })

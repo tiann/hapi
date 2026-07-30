@@ -280,12 +280,13 @@ export class NotificationHub {
     }
 
     private async notifyModelError(session: Session, notification: ModelErrorNotification): Promise<void> {
+        const ctx: NotificationSendContext = { nativeGate: { sent: false } }
         for (const channel of this.channels) {
             if (typeof channel.sendModelError !== 'function') {
                 continue
             }
             try {
-                await channel.sendModelError(session, notification)
+                await channel.sendModelError(session, notification, ctx)
             } catch (error) {
                 console.error('[NotificationHub] Failed to send model-error notification:', error)
             }

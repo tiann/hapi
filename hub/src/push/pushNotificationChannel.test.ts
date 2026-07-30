@@ -191,4 +191,53 @@ describe('PushNotificationChannel', () => {
         expect(toasts).toHaveLength(0)
         expect(pushed).toHaveLength(0)
     })
+
+    it('sendModelError defers when nativeGate.sent is true', async () => {
+        const pushed: Array<{ namespace: string; payload: PushPayload }> = []
+        const channel = new PushNotificationChannel(
+            {
+                sendToNamespace: async (namespace: string, payload: PushPayload) => {
+                    pushed.push({ namespace, payload })
+                }
+            } as never,
+            { sendToast: async () => 0 } as never,
+            { hasVisibleConnection: () => false } as never,
+            ''
+        )
+
+        await channel.sendModelError(createSession(), {
+            kind: 'quota_exhausted',
+            transient: false,
+            rawSnippet: 'x',
+            priorAssistantClaimsDone: false,
+            atTs: 1
+        }, { nativeGate: { sent: true } })
+
+        expect(pushed).toHaveLength(0)
+    })
+
+    it('sendModelError fires web-push when nativeGate.sent is false', async () => {
+        const pushed: Array<{ namespace: string; payload: PushPayload }> = []
+        const channel = new PushNotificationChannel(
+            {
+                sendToNamespace: async (namespace: string, payload: PushPayload) => {
+                    pushed.push({ namespace, payload })
+                }
+            } as never,
+            { sendToast: async () => 0 } as never,
+            { hasVisibleConnection: () => false } as never,
+            ''
+        )
+
+        await channel.sendModelError(createSession(), {
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'y',
+            priorAssistantClaimsDone: false,
+            atTs: 2
+        }, { nativeGate: { sent: false } })
+
+        expect(pushed).toHaveLength(1)
+        expect(pushed[0]?.payload.data?.type).toBe('model-error')
+    })
 })

@@ -654,4 +654,46 @@ describe('FcmNotificationChannel', () => {
         expect(sent[0].data.type).toBe('model-error')
         expect(sent[1].data.severity).toBe('error')
     })
+
+    it('sendModelError sets nativeGate.sent when FCM delivers', async () => {
+        const gate = { sent: false }
+        const channel = new FcmNotificationChannel(
+            {
+                sendToNamespace: async () => ({ sent: 1, failed: 0, invalidTokens: [] })
+            } as never,
+            { sendToast: async () => 0 } as never,
+            { hasVisibleConnection: () => false } as never
+        )
+
+        await channel.sendModelError(createSession(), {
+            kind: 'quota_exhausted',
+            transient: false,
+            rawSnippet: 'limit',
+            priorAssistantClaimsDone: false,
+            atTs: 9
+        }, { nativeGate: gate })
+
+        expect(gate.sent).toBe(true)
+    })
+
+    it('sendModelError leaves nativeGate.sent false when FCM sends zero', async () => {
+        const gate = { sent: false }
+        const channel = new FcmNotificationChannel(
+            {
+                sendToNamespace: async () => ({ sent: 0, failed: 1, invalidTokens: [] })
+            } as never,
+            { sendToast: async () => 0 } as never,
+            { hasVisibleConnection: () => false } as never
+        )
+
+        await channel.sendModelError(createSession(), {
+            kind: 'quota_exhausted',
+            transient: false,
+            rawSnippet: 'limit',
+            priorAssistantClaimsDone: false,
+            atTs: 9
+        }, { nativeGate: gate })
+
+        expect(gate.sent).toBe(false)
+    })
 })

@@ -35,8 +35,15 @@ export type NotificationChannel = {
      * Optional. Channels that don't implement it just skip model-error
      * pings (matches sendSessionCompletion's pattern). Wire this when
      * the channel can render a higher-urgency error variant.
+     *
+     * Pass the same NotificationSendContext as ready/permission/task so
+     * FCM can set nativeGate.sent and Web Push can defer (one OS ping).
      */
-    sendModelError?: (session: Session, notification: ModelErrorNotification) => Promise<void>
+    sendModelError?: (
+        session: Session,
+        notification: ModelErrorNotification,
+        ctx?: NotificationSendContext
+    ) => Promise<void>
 }
 
 export type NotificationHubOptions = {

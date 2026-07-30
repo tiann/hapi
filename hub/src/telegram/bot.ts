@@ -15,6 +15,7 @@ import type {
     NotificationChannel,
     TaskNotification
 } from '../notifications/notificationTypes'
+import type { NotificationSendContext } from '../notifications/notificationSendContext'
 import { formatModelErrorBody, formatModelErrorTitle } from '../notifications/modelErrorCopy'
 import type { Store } from '../store'
 
@@ -269,7 +270,11 @@ export class HappyBot implements NotificationChannel {
         }
     }
 
-    async sendModelError(session: Session, notification: ModelErrorNotification): Promise<void> {
+    async sendModelError(
+        session: Session,
+        notification: ModelErrorNotification,
+        _ctx?: NotificationSendContext
+    ): Promise<void> {
         if (!session.active) {
             return
         }
