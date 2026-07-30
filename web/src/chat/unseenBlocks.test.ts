@@ -34,6 +34,17 @@ function agentText(id: string, text: string, createdAt: number): NormalizedMessa
     } as NormalizedMessage
 }
 
+function agentReasoning(id: string, text: string, createdAt: number): NormalizedMessage {
+    return {
+        id,
+        localId: null,
+        createdAt,
+        role: 'agent',
+        isSidechain: false,
+        content: [{ type: 'reasoning', text, uuid: `uuid-${id}`, parentUUID: null }]
+    } as NormalizedMessage
+}
+
 function toolCall(id: string, name: string, createdAt: number, input: unknown = {}): NormalizedMessage {
     return {
         id,
@@ -181,7 +192,8 @@ describe('countUnseenBlocks', () => {
         expect(countUnseenBlocks(replaced, watermark)).toBe(0)
     })
 
-    it('counts consecutive independent blocks individually', () => {        const seed = [userMsg('u1', 'go', BASE_AT)]
+    it('counts alternating user and assistant turns as separate rows', () => {
+        const seed = [userMsg('u1', 'go', BASE_AT)]
         const watermark = createUnseenWatermark(visible(seed))
 
         const blocks = visible([
@@ -191,6 +203,40 @@ describe('countUnseenBlocks', () => {
             agentText('a2', 'second', BASE_AT + 3)
         ])
         expect(countUnseenBlocks(blocks, watermark)).toBe(3)
+    })
+
+    it('counts one response of reasoning + text + tool as a single row', () => {
+        // assistant-ui joins adjacent assistant-role blocks into one card, so a
+        // multi-part response must not read as several new messages.
+        const seed = [userMsg('u1', 'go', BASE_AT)]
+        const watermark = createUnseenWatermark(visible(seed))
+
+        const blocks = visible([
+            ...seed,
+            agentReasoning('r1', 'thinking', BASE_AT + 1),
+            agentText('a1', 'here is the answer', BASE_AT + 2),
+            toolCall('bash-1', 'Bash', BASE_AT + 3, { command: 'ls' })
+        ])
+
+        // Four blocks in the window...
+        expect(blocks).toHaveLength(4)
+        // ...but only one new card below the anchor.
+        expect(countUnseenBlocks(blocks, watermark)).toBe(1)
+    })
+
+    it('does not bump the count when a response grows another assistant block', () => {
+        const seed = [userMsg('u1', 'go', BASE_AT)]
+        const watermark = createUnseenWatermark(visible(seed))
+
+        const started = visible([...seed, agentText('a1', 'partial', BASE_AT + 1)])
+        expect(countUnseenBlocks(started, watermark)).toBe(1)
+
+        const continued = visible([
+            ...seed,
+            agentText('a1', 'partial', BASE_AT + 1),
+            toolCall('bash-1', 'Bash', BASE_AT + 2, { command: 'ls' })
+        ])
+        expect(countUnseenBlocks(continued, watermark)).toBe(1)
     })
 
     it('recognizes an optimistic block after the stored row replaces its id', () => {

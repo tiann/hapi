@@ -38,6 +38,20 @@ export type ToolGroupBlock = {
 
 export type VisibleChatBlock = ChatBlock | ToolGroupBlock
 
+export type VisibleChatBlockRole = 'user' | 'assistant' | 'system'
+
+/**
+ * The role a block renders under in the thread. `@assistant-ui/react` joins
+ * adjacent assistant-role blocks into a single card, so this also determines
+ * how many rows a run of blocks actually produces on screen.
+ */
+export function visibleBlockRole(block: VisibleChatBlock): VisibleChatBlockRole {
+    if (block.kind === 'user-text') return 'user'
+    if (block.kind === 'agent-event') return 'system'
+    if (block.kind === 'cli-output') return block.source === 'user' ? 'user' : 'assistant'
+    return 'assistant'
+}
+
 type ToolGroupingOptions = {
     hasMoreMessages: boolean
     previousGroups?: ToolGroupBlock[]

@@ -16,8 +16,11 @@ type Props = {
     items: VisibleChatBlock[]
 }
 
+// user-role blocks never join with each other, so each one is exactly one
+// rendered row — keeping these cases about the state machine rather than about
+// assistant-card joining (covered in chat/unseenBlocks.test.ts).
 function block(id: string): ChatBlock {
-    return { kind: 'agent-text', id, localId: null, createdAt: 1, text: id }
+    return { kind: 'user-text', id, localId: null, createdAt: 1, text: id }
 }
 
 function blocks(...ids: string[]): VisibleChatBlock[] {

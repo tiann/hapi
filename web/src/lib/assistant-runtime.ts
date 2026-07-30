@@ -9,6 +9,7 @@ import { renderEventLabel } from '@/chat/presentation'
 import type { ChatBlock, CliOutputBlock, CodexReview, UsageData } from '@/chat/types'
 import type { AgentEvent, ToolCallBlock } from '@/chat/types'
 import type { ToolGroupBlock, VisibleChatBlock } from '@/chat/toolGroups'
+import { visibleBlockRole } from '@/chat/toolGroups'
 import type { AttachmentMetadata, MessageStatus as HappyMessageStatus, Session } from '@/types/api'
 
 /**
@@ -73,20 +74,6 @@ function formatCodexReviewText(review: CodexReview): string {
     return lines.join('\n')
 }
 
-type VisibleChatBlockRole = 'user' | 'assistant' | 'system'
-
-/**
- * Mirror the role assignment used by `toThreadMessageLike` so response
- * group boundaries (the `@assistant-ui/react` converter joins adjacent
- * assistant-role messages only) stay consistent with what the library
- * actually flushes as one card.
- */
-function visibleBlockRole(block: VisibleChatBlock): VisibleChatBlockRole {
-    if (block.kind === 'user-text') return 'user'
-    if (block.kind === 'agent-event') return 'system'
-    if (block.kind === 'cli-output') return block.source === 'user' ? 'user' : 'assistant'
-    return 'assistant'
-}
 
 export function getBlockPresentationTimestamp(block: VisibleChatBlock): number {
     if (visibleBlockRole(block) === 'user') {

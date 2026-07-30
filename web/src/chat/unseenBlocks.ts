@@ -1,4 +1,4 @@
-import { isToolGroupBlock, type VisibleChatBlock } from '@/chat/toolGroups'
+import { isToolGroupBlock, visibleBlockRole, type VisibleChatBlock } from '@/chat/toolGroups'
 
 /**
  * Snapshot of the blocks the user had already seen when they scrolled away
@@ -50,8 +50,29 @@ function isKnownBlock(block: VisibleChatBlock, watermark: UnseenWatermark): bool
 }
 
 /**
- * Counts the blocks that appeared after the last block the watermark knows
- * about — i.e. what the user would find by scrolling down.
+ * Counts the rows that appeared after the anchor. Blocks are not rows:
+ * `@assistant-ui/react` joins a run of adjacent assistant-role blocks into one
+ * card, so a response made of reasoning + text + a tool call renders as a single
+ * new row. Role assignment is shared with the runtime via `visibleBlockRole` so
+ * the two cannot drift apart.
+ */
+function countRenderedRowsAfter(blocks: readonly VisibleChatBlock[], anchor: number): number {
+    let rows = 0
+    let previousRole = visibleBlockRole(blocks[anchor])
+    for (let index = anchor + 1; index < blocks.length; index += 1) {
+        const role = visibleBlockRole(blocks[index])
+        // A new row starts unless this block joins the assistant card above it.
+        if (role !== 'assistant' || previousRole !== 'assistant') {
+            rows += 1
+        }
+        previousRole = role
+    }
+    return rows
+}
+
+/**
+ * Counts the rendered rows that appeared after the last block the watermark
+ * knows about — i.e. what the user would find by scrolling down.
  *
  * Deliberately anchor-based rather than timestamp-based: the blocks array is
  * not monotonic in `createdAt` (messages sort by `invokedAt ?? createdAt`, so a
@@ -76,7 +97,7 @@ export function countUnseenBlocks(
     }
     for (let index = blocks.length - 1; index >= 0; index -= 1) {
         if (isKnownBlock(blocks[index], watermark)) {
-            return blocks.length - 1 - index
+            return countRenderedRowsAfter(blocks, index)
         }
     }
     // Every seen block has been trimmed out of the window. Report nothing
