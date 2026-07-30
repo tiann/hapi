@@ -605,11 +605,15 @@ describe('NotificationHub', () => {
             async sendReady() {},
             async sendPermissionRequest() {},
             async sendTaskNotification() {},
-            async sendModelError() {
+            async sendModelError(session) {
                 attempts++
+                // Production channels used to return unavailable when !active —
+                // that marked retries "completed" and dropped the ping.
                 if (attempts === 1) {
+                    expect(session.active).toBe(true)
                     return 'failed'
                 }
+                expect(session.active).toBe(false)
                 return 'delivered'
             }
         }
@@ -632,11 +636,73 @@ describe('NotificationHub', () => {
         await sleep(5)
         expect(attempts).toBe(1)
 
-        // Go inactive before the retry - timer must still fire.
+        // Go inactive before the retry - timer must still fire AND deliver.
         engine.setSession({ ...session, active: false })
         engine.emit({ type: 'session-updated', sessionId: session.id })
         await sleep(30)
         expect(attempts).toBe(2)
+
+        hub.stop()
+    })
+
+    it('does not let an obsolete retry schedule over a newer atTs', async () => {
+        const engine = new FakeSyncEngine()
+        const outcomes: number[] = []
+        const channel: NotificationChannel = {
+            async sendReady() {},
+            async sendPermissionRequest() {},
+            async sendTaskNotification() {},
+            async sendModelError(_session, notification) {
+                outcomes.push(notification.atTs)
+                // First error always fails; second succeeds.
+                return notification.atTs === 7000 ? 'failed' : 'delivered'
+            }
+        }
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [channel], {
+            modelErrorRetryDelaysMs: [40]
+        })
+
+        const first = createSession({
+            id: 'session-1',
+            metadata: {
+                lastModelError: {
+                    kind: 'canceled',
+                    transient: true,
+                    rawSnippet: 'first',
+                    atTs: 7000,
+                    priorAssistantClaimsDone: false
+                }
+            } as Session['metadata']
+        })
+        engine.setSession(first)
+        engine.emit({ type: 'session-updated', sessionId: first.id })
+        await sleep(5)
+        expect(outcomes).toEqual([7000])
+
+        // Newer error arrives while first retry is pending.
+        const second = {
+            ...first,
+            metadata: {
+                lastModelError: {
+                    kind: 'quota_exhausted',
+                    transient: false,
+                    rawSnippet: 'second',
+                    atTs: 8000,
+                    priorAssistantClaimsDone: false
+                }
+            } as Session['metadata']
+        }
+        engine.setSession(second)
+        engine.emit({ type: 'session-updated', sessionId: second.id })
+        await sleep(5)
+        expect(outcomes).toEqual([7000, 8000])
+
+        // Obsolete timer for 7000 must not steal / block retries for 8000.
+        // Force 8000 to fail once so it needs its own retry, then wait.
+        // (8000 already delivered above — verify stale timer is a no-op.)
+        await sleep(50)
+        expect(outcomes.filter((ts) => ts === 7000)).toHaveLength(1)
+        expect(outcomes.filter((ts) => ts === 8000)).toHaveLength(1)
 
         hub.stop()
     })

@@ -236,6 +236,11 @@ export class NotificationHub {
 
         try {
             const completed = await this.notifyModelError(session, notification)
+            // A newer atTs may have taken the watermark while we were in flight.
+            // Do not install an obsolete retry that blocks the latest error.
+            if (this.lastModelErrorNotifiedAt.get(sessionId) !== atTs) {
+                return
+            }
             if (completed) {
                 this.modelErrorRetryAttempts.delete(sessionId)
                 return
@@ -243,6 +248,9 @@ export class NotificationHub {
             this.scheduleModelErrorRetry(sessionId, atTs)
         } catch (error) {
             console.error('[NotificationHub] Failed to retry model-error notification:', error)
+            if (this.lastModelErrorNotifiedAt.get(sessionId) !== atTs) {
+                return
+            }
             this.scheduleModelErrorRetry(sessionId, atTs)
         }
     }
