@@ -70,6 +70,29 @@ describe('normalizeCodexUsage', () => {
         });
     });
 
+    it('falls back to input+output when total_tokens is omitted (cached/reasoning are subsets)', () => {
+        const usage = normalizeCodexUsage({
+            info: {
+                model_context_window: 100_000,
+                total_token_usage: {
+                    input_tokens: 1000,
+                    cached_input_tokens: 400,
+                    output_tokens: 250,
+                    reasoning_output_tokens: 100
+                }
+            }
+        }, { now: 3_000_000 });
+
+        expect(usage?.totalTokenUsage).toMatchObject({
+            inputTokens: 1000,
+            cachedInputTokens: 400,
+            outputTokens: 250,
+            reasoningOutputTokens: 100,
+            totalTokens: 1250
+        });
+        expect(usage?.contextWindow?.usedTokens).toBe(1250);
+    });
+
     it('parses transcript token_count info with sibling rate limits', () => {
         const usage = normalizeCodexUsage({
             info: {
