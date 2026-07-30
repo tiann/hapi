@@ -127,6 +127,34 @@ function preserveCursorProtocolPair(
     return merged
 }
 
+/**
+ * Web ack sets acknowledgedAt on the hub copy; the CLI's local snapshot may
+ * still hold the same lastModelError without that field. A later ordinary
+ * CLI metadata write would otherwise overwrite the ack and resurrect the
+ * banner. When atTs matches and prior was acknowledged, keep acknowledgedAt.
+ */
+function preserveModelErrorAcknowledgement(
+    prior: Record<string, unknown>,
+    next: Record<string, unknown>,
+    merged: Record<string, unknown> | null
+): Record<string, unknown> | null {
+    const oldError = isPlainObject(prior.lastModelError) ? prior.lastModelError : null
+    const newError = isPlainObject(next.lastModelError) ? next.lastModelError : null
+    if (
+        !oldError
+        || !newError
+        || oldError.atTs !== newError.atTs
+        || typeof oldError.acknowledgedAt !== 'number'
+        || newError.acknowledgedAt !== undefined
+    ) {
+        return merged
+    }
+
+    const result = merged ?? { ...next }
+    result.lastModelError = { ...newError, acknowledgedAt: oldError.acknowledgedAt }
+    return result
+}
+
 export function mergeSessionMetadata(prior: unknown, next: unknown): unknown {
     if (!isPlainObject(prior) || !isPlainObject(next)) {
         return next
@@ -137,6 +165,7 @@ export function mergeSessionMetadata(prior: unknown, next: unknown): unknown {
     merged = carryForwardIfMissing(prior, next, merged, SIMPLE_RESUME_TOKENS)
     merged = carryForwardIfMissing(prior, next, merged, ALERT_STATE_FIELDS)
     merged = preserveCursorProtocolPair(prior, next, merged)
+    merged = preserveModelErrorAcknowledgement(prior, next, merged)
     return merged ?? next
 }
 

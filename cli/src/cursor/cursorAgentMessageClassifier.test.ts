@@ -302,6 +302,14 @@ describe('mapAcpStderrToFailure (structural stderr signal)', () => {
             type: 'model_not_found',
             raw: 'catalog refresh skipped for unknown models'
         })).toBeNull()
+        expect(mapAcpStderrToFailure({
+            type: 'authentication',
+            raw: 'failed to read config: permission denied'
+        })).toBeNull()
+        expect(mapAcpStderrToFailure({
+            type: 'model_not_found',
+            raw: 'plugin cache entry not_found'
+        })).toBeNull()
     })
 })
 
