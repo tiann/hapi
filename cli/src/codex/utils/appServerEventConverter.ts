@@ -665,6 +665,11 @@ export class AppServerEventConverter {
         }
 
         if (method === 'account/rateLimits/updated') {
+            const rateLimits = paramsRecord.rateLimits ?? paramsRecord.rate_limits ?? null;
+            events.push(scoped({
+                type: 'token_count',
+                info: { rate_limits: rateLimits }
+            }));
             return events;
         }
 

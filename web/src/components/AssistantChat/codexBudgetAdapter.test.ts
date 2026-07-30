@@ -132,18 +132,26 @@ describe('toCodexBudgetState', () => {
         expect(state?.effectiveReason).toContain('Blocked')
     })
 
-    it('does not flag blocked when only one window is capped (the other still has room)', () => {
-        // 5h at cap during weekly reset window - user can still send via
-        // the weekly bucket. Should be red (5h at cap) not blocked.
-        const usage: CodexUsage = {
+    it('flags blocked when either subscription window is capped and credits are gone', () => {
+        // 5h / weekly are independent constraints. With no credits to cover,
+        // hitting either cap blocks subscription use.
+        const fiveHourOnly: CodexUsage = {
             rateLimits: {
                 fiveHour: { usedPercent: 100, windowMinutes: 300 },
                 weekly: { usedPercent: 30, windowMinutes: 10080 }
             },
             credits: { hasCredits: false, unlimited: false, balance: '0' }
         }
-        const state = toCodexBudgetState(usage)
-        expect(state?.effective).toBe('red')
+        expect(toCodexBudgetState(fiveHourOnly)?.effective).toBe('blocked')
+
+        const weeklyOnly: CodexUsage = {
+            rateLimits: {
+                fiveHour: { usedPercent: 10, windowMinutes: 300 },
+                weekly: { usedPercent: 100, windowMinutes: 10080 }
+            },
+            credits: { hasCredits: false, unlimited: false, balance: '0' }
+        }
+        expect(toCodexBudgetState(weeklyOnly)?.effective).toBe('blocked')
     })
 
     it('flags blocked with the codex reached-type code when codex sets one', () => {

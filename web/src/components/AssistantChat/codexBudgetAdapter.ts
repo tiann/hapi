@@ -49,11 +49,11 @@ export function isCodexUsageBlocked(usage: CodexUsage | null | undefined): boole
     const fiveHour = usage.rateLimits?.fiveHour
     const weekly = usage.rateLimits?.weekly
     const noTimeWindows = !fiveHour && !weekly
-    // Shape (b): both windows present but at the cap. Either-or doesn't
-    // trigger blocked - one window might cap while the other has room
-    // (e.g. 5h hit during weekly's reset period).
-    const bothWindowsCapped = (fiveHour?.usedPercent ?? 0) >= 100 && (weekly?.usedPercent ?? 0) >= 100
-    return creditsExhausted && (noTimeWindows || bothWindowsCapped)
+    // Either window at cap is enough to block subscription use when credits
+    // cannot cover - 5h and weekly are independent constraints.
+    const anyWindowCapped = (fiveHour?.usedPercent ?? 0) >= 100
+        || (weekly?.usedPercent ?? 0) >= 100
+    return creditsExhausted && (noTimeWindows || anyWindowCapped)
 }
 
 export function formatRateLimitReachedType(value: string): string {

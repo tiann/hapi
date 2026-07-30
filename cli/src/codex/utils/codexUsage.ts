@@ -192,12 +192,19 @@ function payloadHasRateLimitSnapshot(value: unknown): boolean {
 }
 
 export function normalizeCodexUsageUpdate(value: unknown, options: NormalizerOptions = {}): CodexUsageUpdate | null {
+    const hasRateLimitSnapshot = payloadHasRateLimitSnapshot(value);
     const usage = normalizeCodexUsage(value, options);
-    if (!usage) return null;
-    return {
-        usage,
-        hasRateLimitSnapshot: payloadHasRateLimitSnapshot(value)
-    };
+    if (usage) {
+        return { usage, hasRateLimitSnapshot };
+    }
+    // Explicit empty/null rate-limit snapshots still need to clear stale buckets.
+    if (hasRateLimitSnapshot) {
+        return {
+            usage: { rateLimits: {} },
+            hasRateLimitSnapshot: true
+        };
+    }
+    return null;
 }
 
 export function normalizeCodexUsage(value: unknown, options: NormalizerOptions = {}): CodexUsage | null {
