@@ -1030,6 +1030,67 @@ describe('history view and older pagination', () => {
         expect(kept.some((message) => message.id === 'top-0')).toBe(true)
         expect(kept.some((message) => message.id === 'top-9')).toBe(true)
     })
+
+    it('refetches the latest page when returning to the tail after a subagent overflow', async () => {
+        const id = sessionId('sidechain-recovery')
+        const getMessages = vi.fn(async () => latestResponse(
+            [makeAgentMessage({ id: 'top-0', seq: 1, at: 1 })],
+            { epoch: 7 }
+        )) as unknown as ApiClient['getMessages']
+        await syncTailMessages(createApi(getMessages), id)
+        expect(getMessageWindowState(id).epoch).toBe(7)
+
+        setMessageViewMode(id, 'history')
+        ingestIncomingMessages(id, Array.from({ length: SIDECHAIN_WINDOW_SIZE + 50 }, (_, index) =>
+            makeSidechainMessage(`side-${index}`, index + 100, index + 100)
+        ))
+        // Suppressing the reset while reading history leaves the window short of
+        // the transcript. Without redeeming that debt on the way back, the Task
+        // card would stay permanently incomplete.
+        expect(getMessageWindowState(id).epoch).toBe(7)
+
+        setMessageViewMode(id, 'tail')
+
+        expect(getMessageWindowState(id).epoch).toBe(null)
+    })
+
+    it('drops subagent messages left past the newest surviving top-level row', () => {
+        const id = sessionId('sidechain-orphan-tail')
+        ingestIncomingMessages(id, [makeAgentMessage({ id: 'anchor', seq: 1, at: 1 })])
+        setMessageViewMode(id, 'history')
+        // Prepend keeps the oldest top-level rows and drops the newest, so any
+        // subagent that started after the last survivor has lost its Task card.
+        // tracer.ts would render those parentless rows at the top level.
+        ingestIncomingMessages(id, [
+            ...Array.from({ length: HISTORY_WINDOW_SIZE + 20 }, (_, index) =>
+                makeAgentMessage({ id: `top-${index}`, seq: index + 2, at: index + 2 })
+            ),
+            ...Array.from({ length: 30 }, (_, index) =>
+                makeSidechainMessage(`late-side-${index}`, index + 5_000, index + 5_000)
+            )
+        ])
+
+        const kept = getMessageWindowState(id).messages
+        const keptTopSeq = kept
+            .filter((message) => !message.id.startsWith('late-side-'))
+            .map((message) => message.seq ?? 0)
+        expect(Math.max(...keptTopSeq)).toBeLessThan(5_000)
+        expect(kept.some((message) => message.id.startsWith('late-side-'))).toBe(false)
+    })
+
+    it('handles a window that holds nothing but subagent messages', () => {
+        const id = sessionId('sidechain-only')
+        setMessageViewMode(id, 'history')
+        ingestIncomingMessages(id, Array.from({ length: SIDECHAIN_WINDOW_SIZE + 50 }, (_, index) =>
+            makeSidechainMessage(`side-${index}`, index + 1, index + 1)
+        ))
+
+        const state = getMessageWindowState(id)
+        // No top-level row exists to anchor the span, so the budget alone applies
+        // and the reset stays deferred rather than firing on every overflow.
+        expect(state.messages).toHaveLength(SIDECHAIN_WINDOW_SIZE)
+        expect(state.viewMode).toBe('history')
+    })
 })
 
 describe('optimistic and queued-message operations', () => {
