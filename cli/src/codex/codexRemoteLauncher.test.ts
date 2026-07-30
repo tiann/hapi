@@ -99,6 +99,7 @@ const harness = vi.hoisted(() => ({
     emitTurnAbortedOnInterrupt: false,
     emitLateUsageAfterClear: false,
     emitAccountRateLimitsDuringChild: false,
+    emitLiveUsageThenDelayedTranscript: false,
     bridgeOptions: [] as unknown[]
 }));
 
@@ -499,6 +500,33 @@ vi.mock('./codexAppServerClient', () => {
                     const parentCompact = { thread: { id: threadId } };
                     harness.notifications.push({ method: 'thread/compacted', params: parentCompact });
                     this.notificationHandler?.('thread/compacted', parentCompact);
+                }
+
+                if (harness.emitLiveUsageThenDelayedTranscript) {
+                    const accountLimits = {
+                        rateLimits: {
+                            primary: { usedPercent: 12, windowMinutes: 300 },
+                            credits: { hasCredits: true, unlimited: false, balance: '50' }
+                        }
+                    };
+                    harness.notifications.push({ method: 'account/rateLimits/updated', params: accountLimits });
+                    this.notificationHandler?.('account/rateLimits/updated', accountLimits);
+                    for (let attempt = 0; attempt < 40 && harness.scannerEvents.length === 0; attempt += 1) {
+                        await new Promise((resolve) => setTimeout(resolve, 25));
+                    }
+                    for (const onEvent of harness.scannerEvents) {
+                        onEvent({
+                            type: 'event_msg',
+                            payload: {
+                                type: 'token_count',
+                                info: {
+                                    rate_limits: {
+                                        primary: { used_percent: 99, window_minutes: 300 }
+                                    }
+                                }
+                            }
+                        });
+                    }
                 }
 
                 if (harness.emitParentV2AgentTools) {
@@ -1552,6 +1580,7 @@ describe('codexRemoteLauncher', () => {
         harness.emitTurnAbortedOnInterrupt = false;
         harness.emitLateUsageAfterClear = false;
         harness.emitAccountRateLimitsDuringChild = false;
+        harness.emitLiveUsageThenDelayedTranscript = false;
         harness.bridgeOptions = [];
         harness.transcriptPathByThreadId = new Map();
         harness.scannerStarts = [];
@@ -3617,6 +3646,46 @@ describe('codexRemoteLauncher', () => {
             info: {
                 total_token_usage: { total_tokens: 42000 },
                 model_context_window: 128000
+            }
+        });
+    });
+
+    it('keeps live app-server usage authoritative over delayed transcript events', async () => {
+        harness.transcriptPathByThreadId.set('thread-1', '/tmp/codex-thread-1.jsonl');
+        harness.emitLiveUsageThenDelayedTranscript = true;
+        const { session, usagePayloads } = createSessionStub();
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(usagePayloads).toContainEqual(expect.objectContaining({
+            type: 'token_count',
+            usage_scope: 'account',
+            info: expect.objectContaining({
+                rate_limits: expect.objectContaining({
+                    primary: expect.objectContaining({ usedPercent: 12 })
+                })
+            })
+        }));
+        expect(usagePayloads).not.toContainEqual(expect.objectContaining({
+            info: expect.objectContaining({
+                rate_limits: expect.objectContaining({
+                    primary: expect.objectContaining({ used_percent: 99 })
+                })
+            })
+        }));
+        // Live account snapshot must remain the last rate-limit-bearing write.
+        const rateLimitWrites = usagePayloads.filter((payload) => {
+            if (!payload || typeof payload !== 'object') return false;
+            const info = (payload as { info?: { rate_limits?: unknown } }).info;
+            return Boolean(info && 'rate_limits' in info);
+        });
+        expect(rateLimitWrites.at(-1)).toMatchObject({
+            usage_scope: 'account',
+            info: {
+                rate_limits: {
+                    primary: { usedPercent: 12 }
+                }
             }
         });
     });
