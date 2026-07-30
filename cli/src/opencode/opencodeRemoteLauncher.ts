@@ -10,7 +10,7 @@ import type { OpencodeSession } from './session';
 import type { OpencodeMode, PermissionMode } from './types';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { allocateFreePort, createOpencodeBackend } from './utils/opencodeBackend';
-import { splitProviderModel, triggerOpencodeCompact, type OpencodeCompactResult } from './utils/opencodeCompactBridge';
+import { fetchCompactionSummary, splitProviderModel, triggerOpencodeCompact, type OpencodeCompactResult } from './utils/opencodeCompactBridge';
 import { OpencodePermissionHandler } from './utils/permissionHandler';
 import { OPENCODE_NATIVE_TOOL_INSTRUCTION, PLAN_MODE_INSTRUCTION } from './utils/systemPrompt';
 import { resolveThoughtLevelEffort } from './thoughtLevelEffort';
@@ -158,12 +158,25 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     error: 'OpenCode model metadata is not available; cannot determine provider/model for compaction.'
                 };
             }
-            return triggerOpencodeCompact({
+            const result = await triggerOpencodeCompact({
                 baseUrl: this.baseUrl,
                 sessionId: acpSessionId,
                 providerId: split.providerId,
                 modelId: split.modelId
             });
+            if (!result.ok) {
+                return result;
+            }
+            // Best-effort: fetch the actual summary text OpenCode generated
+            // so the caller can surface it as a "Reasoning" block. Never lets
+            // a lookup failure turn a successful compaction into a reported
+            // failure — this is a cosmetic enhancement, not part of the
+            // compaction contract.
+            const summary = await fetchCompactionSummary({
+                baseUrl: this.baseUrl,
+                sessionId: acpSessionId
+            });
+            return summary.found ? { ok: true, summaryText: summary.text } : { ok: true };
         }));
 
         // Expose the cached models metadata via per-session RPC so the hub can

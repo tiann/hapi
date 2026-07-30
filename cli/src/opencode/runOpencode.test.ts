@@ -292,7 +292,40 @@ describe('runOpencode set-session-config handler', () => {
         // sendAgentMessage (regular chat bubbles) — see the doc comment at
         // the call site in runOpencode.ts.
         const events = harness.session.sendSessionEvent.mock.calls.map((call) => (call[0] as { message: string }).message);
-        expect(events).toEqual(['Compaction started', 'Compaction completed']);
+        expect(events).toEqual(['📦 Compaction started', '📦 Compaction completed']);
+        // No summaryText on the result (matches the bridge's default
+        // "not found" case) — no reasoning block should be emitted.
+        expect(harness.session.sendAgentMessage).not.toHaveBeenCalled();
+    });
+
+    it('shows the compaction summary as a Reasoning block when the bridge result includes summaryText', async () => {
+        await runOpencode({});
+
+        const onCompactTriggerReady = harness.opencodeLoopArgs[0]?.onCompactTriggerReady as
+            ((trigger: () => Promise<{ ok: true; summaryText?: string } | { ok: false; error: string }>) => void) | undefined;
+        const trigger = vi.fn(async () => ({ ok: true as const, summaryText: '## Objective\n- Did the thing' }));
+        onCompactTriggerReady!(trigger);
+
+        const userMessageHandler = harness.session.onUserMessage.mock.calls[0]?.[0] as
+            ((msg: { content: { text: string; attachments?: unknown[] } }, localId?: string) => void)
+            | undefined;
+        userMessageHandler!({ content: { text: '/compact' } }, 'local-compact-summary');
+        for (let i = 0; i < 5; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+
+        const events = harness.session.sendSessionEvent.mock.calls.map((call) => (call[0] as { message: string }).message);
+        expect(events).toEqual(['📦 Compaction started', '📦 Compaction completed']);
+
+        // Reuses the existing Reasoning content-part/UI — sent via the same
+        // convertAgentMessage()->sendAgentMessage() path as any other
+        // reasoning chunk, not a new component or schema field.
+        expect(harness.session.sendAgentMessage).toHaveBeenCalledTimes(1);
+        const [reasoningPayload] = harness.session.sendAgentMessage.mock.calls[0] as [{ type: string; message: string }];
+        expect(reasoningPayload).toMatchObject({
+            type: 'reasoning',
+            message: '## Objective\n- Did the thing'
+        });
     });
 
     it('reports a Compaction failed message when the REST bridge fails', async () => {
@@ -312,7 +345,7 @@ describe('runOpencode set-session-config handler', () => {
         }
 
         const events = harness.session.sendSessionEvent.mock.calls.map((call) => (call[0] as { message: string }).message);
-        expect(events).toEqual(['Compaction started', 'Compaction failed: boom']);
+        expect(events).toEqual(['📦 Compaction started', '📦 Compaction failed: boom']);
     });
 
     it('suppresses the Compaction completed message if the request is cancelled while the bridge call is in flight', async () => {
@@ -354,7 +387,7 @@ describe('runOpencode set-session-config handler', () => {
         }
 
         const events = harness.session.sendSessionEvent.mock.calls.map((call) => (call[0] as { message: string }).message);
-        expect(events).toEqual(['Compaction started']);
+        expect(events).toEqual(['📦 Compaction started']);
         // The suppressed result must not have leaked out as a regular chat
         // message either.
         expect(harness.session.sendAgentMessage).not.toHaveBeenCalled();

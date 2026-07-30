@@ -91,7 +91,9 @@ vi.mock('@/ui/ink/OpencodeDisplay', () => ({
 
 const compactHarness = vi.hoisted(() => ({
     calls: [] as Array<{ baseUrl: string; sessionId: string; providerId: string; modelId: string }>,
-    result: { ok: true } as { ok: true } | { ok: false; error: string }
+    result: { ok: true } as { ok: true } | { ok: false; error: string },
+    summaryCalls: [] as Array<{ baseUrl: string; sessionId: string }>,
+    summaryResult: { found: false } as { found: true; text: string } | { found: false }
 }));
 
 vi.mock('./utils/opencodeCompactBridge', () => ({
@@ -104,6 +106,10 @@ vi.mock('./utils/opencodeCompactBridge', () => ({
     triggerOpencodeCompact: vi.fn(async (opts: { baseUrl: string; sessionId: string; providerId: string; modelId: string }) => {
         compactHarness.calls.push(opts);
         return compactHarness.result;
+    }),
+    fetchCompactionSummary: vi.fn(async (opts: { baseUrl: string; sessionId: string }) => {
+        compactHarness.summaryCalls.push(opts);
+        return compactHarness.summaryResult;
     })
 }));
 
@@ -219,6 +225,8 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         harness.thoughtLevelOption = null;
         compactHarness.calls = [];
         compactHarness.result = { ok: true };
+        compactHarness.summaryCalls = [];
+        compactHarness.summaryResult = { found: false };
         harness.promptImpl = null;
         harness.sessionModelsMetadata = undefined;
     });
@@ -362,6 +370,67 @@ describe('opencodeRemoteLauncher inline model switch', () => {
                 modelId: 'qwen3.6:35b-a3b-q8_0-mtp'
             }
         ]);
+    });
+
+    it('attaches the fetched summary text to a successful compact result', async () => {
+        const opencodeBackendModule = await import('./utils/opencodeBackend');
+        const factory = (opencodeBackendModule as unknown as { createOpencodeBackend: ReturnType<typeof vi.fn> }).createOpencodeBackend;
+        factory.mockImplementationOnce(() => ({
+            initialize: vi.fn(async () => {}),
+            newSession: vi.fn(async () => 'acp-session-1'),
+            loadSession: vi.fn(async () => 'acp-session-1'),
+            setModel: vi.fn(async () => {}),
+            prompt: vi.fn(async () => {}),
+            cancelPrompt: vi.fn(async () => {}),
+            respondToPermission: vi.fn(async () => {}),
+            onStderrError: vi.fn(),
+            setSessionInfoUpdateListener: vi.fn(),
+            refreshSessionInfo: vi.fn(async () => {}),
+            onPermissionRequest: vi.fn(),
+            disconnect: vi.fn(async () => {}),
+            getSessionModelsMetadata: vi.fn(() => ({
+                currentModelId: 'ollama/qwen3.6:35b-a3b-q8_0-mtp',
+                availableModels: []
+            }))
+        }));
+        compactHarness.summaryResult = { found: true, text: '## Objective\n- Did the thing' };
+
+        const { session } = createSessionStub([
+            { message: 'first', mode: createMode() }
+        ]);
+
+        let capturedTrigger: (() => Promise<{ ok: true; summaryText?: string } | { ok: false; error: string }>) | null = null;
+        await opencodeRemoteLauncher(session as never, {
+            onCompactTriggerReady: (trigger) => {
+                capturedTrigger = trigger;
+            }
+        });
+
+        const result = await capturedTrigger!();
+        expect(result).toEqual({ ok: true, summaryText: '## Objective\n- Did the thing' });
+        expect(compactHarness.summaryCalls).toEqual([
+            { baseUrl: 'http://127.0.0.1:48273', sessionId: 'acp-session-1' }
+        ]);
+    });
+
+    it('does not look up a summary when the compact REST call itself failed', async () => {
+        const { triggerOpencodeCompact } = await import('./utils/opencodeCompactBridge');
+        (triggerOpencodeCompact as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => ({ ok: false, error: 'boom' }));
+
+        const { session } = createSessionStub([
+            { message: 'first', mode: createMode('ollama/x') }
+        ]);
+
+        let capturedTrigger: (() => Promise<{ ok: true } | { ok: false; error: string }>) | null = null;
+        await opencodeRemoteLauncher(session as never, {
+            onCompactTriggerReady: (trigger) => {
+                capturedTrigger = trigger;
+            }
+        });
+
+        const result = await capturedTrigger!();
+        expect(result).toEqual({ ok: false, error: 'boom' });
+        expect(compactHarness.summaryCalls).toEqual([]);
     });
 
     it('compact trigger reports a clear failure when the session has no model metadata', async () => {

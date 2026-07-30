@@ -17,6 +17,7 @@ import { getInvokedCwd } from '@/utils/invokedCwd';
 import { listSlashCommands } from '@/modules/common/slashCommands';
 import { resolveOpencodeSlashCommand } from './utils/slashCommands';
 import type { OpencodeCompactResult } from './utils/opencodeCompactBridge';
+import { convertAgentMessage } from '@/agent/messageConverter';
 
 export async function runOpencode(opts: {
     startedBy?: 'runner' | 'terminal';
@@ -200,7 +201,7 @@ export async function runOpencode(opts: {
                     // every time it's used.
                     session.sendSessionEvent({
                         type: 'message',
-                        message: 'Compaction started'
+                        message: '📦 Compaction started'
                     });
                     sessionWrapperRef.current?.onThinkingChange(true);
                     try {
@@ -220,8 +221,24 @@ export async function runOpencode(opts: {
                         }
                         session.sendSessionEvent({
                             type: 'message',
-                            message: result.ok ? 'Compaction completed' : `Compaction failed: ${result.error}`
+                            message: result.ok ? '📦 Compaction completed' : `📦 Compaction failed: ${result.error}`
                         });
+                        // Show the actual summary OpenCode generated as a
+                        // "Reasoning" block (reusing the existing collapsed
+                        // Reasoning UI as-is — no new component/content-part
+                        // type). Silently skipped if the bridge couldn't find
+                        // it (e.g. an unexpected response shape) — that's a
+                        // cosmetic miss, not a compaction failure.
+                        if (result.ok && result.summaryText) {
+                            const converted = convertAgentMessage({
+                                type: 'reasoning',
+                                text: result.summaryText,
+                                id: randomUUID()
+                            });
+                            if (converted) {
+                                session.sendAgentMessage(converted);
+                            }
+                        }
                     } catch (error) {
                         if (wasCancelled()) {
                             logger.debug('[opencode] /compact error suppressed: cancelled before it resolved');
@@ -230,7 +247,7 @@ export async function runOpencode(opts: {
                         const message = error instanceof Error ? error.message : String(error);
                         session.sendSessionEvent({
                             type: 'message',
-                            message: `Compaction failed: ${message}`
+                            message: `📦 Compaction failed: ${message}`
                         });
                     } finally {
                         sessionWrapperRef.current?.onThinkingChange(false);
