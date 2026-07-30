@@ -18,6 +18,7 @@ import { BaseLocalLauncher } from '@/modules/common/launcher/BaseLocalLauncher';
 import { createCodexTranscriptLocator, type CodexTranscriptLocator } from './utils/codexTranscriptLocator';
 import { CodexToolHookBridge, isCodexToolHookEvent } from './utils/codexToolHookBridge';
 import { countHookCoveredExecCalls } from './utils/codexExecWrapper';
+import { createReplayUsageAccumulator, noteReplayUsageSample, orderedReplayUsagePayloads } from './utils/codexUsage';
 
 type ProposedPlanMessage = Extract<CodexMessage, { type: 'proposed_plan' }>;
 type ToolCallMessage = Extract<CodexMessage, { type: 'tool-call' }>;
@@ -64,7 +65,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
     let scannerReplayedExistingHistory = false;
     let transcriptModel: string | null = null;
     let replayingUsage = false;
-    let latestReplayUsage: unknown = null;
+    let replayUsage = createReplayUsageAccumulator();
     let convertTranscriptEvent = createCodexEventConverter();
     const pendingPlansByTurnId = new Map<string, ProposedPlanMessage>();
     const pendingExecWrappers = new Map<string, PendingExecWrapper>();
@@ -217,7 +218,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                 }
             } else if (message.type === 'token_count') {
                 if (replayingUsage) {
-                    latestReplayUsage = message;
+                    noteReplayUsageSample(replayUsage, message);
                 } else {
                     session.recordCodexUsage(message);
                 }
@@ -298,7 +299,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
         }
         const replayExistingHistory = session.shouldReplayTranscriptHistory();
         replayingUsage = replayExistingHistory;
-        latestReplayUsage = null;
+        replayUsage = createReplayUsageAccumulator();
         const createdScanner = await createCodexSessionScanner({
             transcriptPath,
             // 中文注释：导入模式下允许 scanner 首次回放 transcript 全量内容，补齐 Codex 客户端里已有但 Hapi 还未看到的消息。
@@ -326,8 +327,8 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
             }
         });
         replayingUsage = false;
-        if (latestReplayUsage) {
-            session.recordCodexUsage(latestReplayUsage);
+        for (const payload of orderedReplayUsagePayloads(replayUsage)) {
+            session.recordCodexUsage(payload);
         }
         if (shuttingDown) {
             await drainAndCleanupScanner(createdScanner, replayExistingHistory);

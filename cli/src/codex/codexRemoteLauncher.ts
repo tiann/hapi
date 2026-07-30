@@ -17,6 +17,7 @@ import { AppServerEventConverter } from './utils/appServerEventConverter';
 import { registerGeneratedImageFromPath } from '@/modules/common/generatedImages';
 import { convertCodexEvent } from './utils/codexEventConverter';
 import { createCodexSessionScanner, type CodexSessionScanner } from './utils/codexSessionScanner';
+import { createReplayUsageAccumulator, noteReplayUsageSample, orderedReplayUsagePayloads } from './utils/codexUsage';
 import { registerAppServerPermissionHandlers } from './utils/appServerPermissionAdapter';
 import { buildThreadStartParams, buildTurnStartParams } from './utils/appServerConfig';
 import type { SkillMetadata, ThreadGoal, ThreadGoalStatus } from './appServerTypes';
@@ -370,7 +371,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         }
 
         let replayingHistory = true;
-        let latestReplayUsage: unknown = null;
+        const replayUsage = createReplayUsageAccumulator();
         const scanner = await createCodexSessionScanner({
             transcriptPath,
             replayExistingHistory: true,
@@ -389,7 +390,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         continue;
                     }
                     // Initial replay can emit one token_count per historical turn.
-                    // Keep only the latest snapshot, then record once after create returns.
+                    // Keep latest token and rate-limit dimensions, then record after create returns.
                     if (
                         this.currentThreadId !== threadId
                         || this.usageScannerThreadId !== threadId
@@ -397,7 +398,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         continue;
                     }
                     if (replayingHistory) {
-                        latestReplayUsage = message;
+                        noteReplayUsageSample(replayUsage, message);
                         continue;
                     }
                     this.session.recordCodexUsage(message);
@@ -409,12 +410,10 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             await scanner.cleanup();
             return;
         }
-        if (
-            latestReplayUsage
-            && this.currentThreadId === threadId
-            && this.usageScannerThreadId === threadId
-        ) {
-            this.session.recordCodexUsage(latestReplayUsage);
+        if (this.currentThreadId === threadId && this.usageScannerThreadId === threadId) {
+            for (const payload of orderedReplayUsagePayloads(replayUsage)) {
+                this.session.recordCodexUsage(payload);
+            }
         }
         this.usageScanner = scanner;
     }

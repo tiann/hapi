@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeCodexUsage, normalizeCodexUsageUpdate } from './codexUsage';
+import {
+    createReplayUsageAccumulator,
+    normalizeCodexUsage,
+    normalizeCodexUsageUpdate,
+    noteReplayUsageSample,
+    orderedReplayUsagePayloads
+} from './codexUsage';
 
 describe('normalizeCodexUsage', () => {
     it('parses app-server token usage with context and rate-limit buckets', () => {
@@ -284,5 +290,33 @@ describe('normalizeCodexUsage', () => {
             },
             hasRateLimitSnapshot: true
         });
+    });
+
+    it('coalesces replay samples by dimension while preserving order', () => {
+        const accumulator = createReplayUsageAccumulator();
+        const tokensOnly = {
+            type: 'token_count',
+            info: {
+                model_context_window: 100_000,
+                total_token_usage: { total_tokens: 1200, input_tokens: 1000, output_tokens: 200 }
+            }
+        };
+        const rateLimitsOnly = {
+            type: 'token_count',
+            info: { rate_limits: { primary: { used_percent: 40, window_minutes: 300 } } }
+        };
+        const laterTokens = {
+            type: 'token_count',
+            info: {
+                model_context_window: 100_000,
+                total_token_usage: { total_tokens: 1500, input_tokens: 1200, output_tokens: 300 }
+            }
+        };
+
+        noteReplayUsageSample(accumulator, tokensOnly);
+        noteReplayUsageSample(accumulator, rateLimitsOnly);
+        noteReplayUsageSample(accumulator, laterTokens);
+
+        expect(orderedReplayUsagePayloads(accumulator)).toEqual([rateLimitsOnly, laterTokens]);
     });
 });
