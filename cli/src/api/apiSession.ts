@@ -967,6 +967,9 @@ export class ApiSessionClient extends EventEmitter {
         type: 'message'
         message: string
     } | {
+        type: 'error'
+        message: string
+    } | {
         type: 'permission-mode-changed'
         mode: SessionPermissionMode
     } | {
@@ -991,7 +994,7 @@ export class ApiSessionClient extends EventEmitter {
                 sid: this.sessionId,
                 message: content
             })
-        }, event.type === 'message' ? 'lossless' : 'droppable')
+        }, event.type === 'message' || event.type === 'error' ? 'lossless' : 'droppable')
     }
 
     emitAgentTerminalOutput(data: string): void {

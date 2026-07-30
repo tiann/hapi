@@ -729,6 +729,121 @@ describe('agyPtyLauncher session-found wiring (brain UUID -> scanner)', () => {
     })
 })
 
+describe('agyPtyLauncher quota visibility', () => {
+    const quotaFrame = 'Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 7h28m43s. Error ID: f5bb4da7-3689-4eca-b1ea-fd171bae4f71-215 How\'s the CLI experience so far? Help us improve: ? for shortcuts'
+
+    async function launchForQuotaTest() {
+        harness.exitReason = null
+        const { session } = createSessionStub()
+        const nextMessage = deferred<{ message: string } | null>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => nextMessage.promise)
+        const launcher = agyPtyLauncher(session as never)
+        await tick(20)
+        vi.mocked(session.client.sendSessionEvent).mockClear()
+        return { session, nextMessage, launcher }
+    }
+
+    async function closeQuotaTest(nextMessage: ReturnType<typeof deferred<{ message: string } | null>>, launcher: Promise<unknown>) {
+        harness.exitReason = 'exit'
+        nextMessage.resolve(null)
+        await launcher
+    }
+
+    it('reports one quota error for the screenshot-verified AGY frame while preserving raw terminal chunks', async () => {
+        const { session, nextMessage, launcher } = await launchForQuotaTest()
+
+        await ptyOptsCaptured.onBeforeMessageSubmit?.()
+        ptyOptsCaptured.onMessage(quotaFrame)
+        ptyOptsCaptured.onMessage(quotaFrame)
+
+        expect(session.client.emitAgentTerminalOutput).toHaveBeenCalledWith(quotaFrame)
+        expect(session.client.sendSessionEvent).toHaveBeenCalledTimes(1)
+        expect(session.client.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'error',
+            message: 'Antigravity quota reached · resets in 7h28m43s',
+        })
+
+        await closeQuotaTest(nextMessage, launcher)
+    })
+
+    it('detects a raw frame split through ANSI escape fragments', async () => {
+        const { session, nextMessage, launcher } = await launchForQuotaTest()
+        const split = [
+            'Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 7h',
+            '28m43s. Error ID: f5bb4da7-3689-4eca-b1ea-fd171bae4f71-215 How\'s the CLI experience so far? Help us ',
+            '\x1b[',
+            '31mimprove:\x1b[0m ? for shortcuts',
+        ]
+
+        await ptyOptsCaptured.onBeforeMessageSubmit?.()
+        split.forEach((chunk) => ptyOptsCaptured.onMessage(chunk))
+
+        expect(session.client.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'error',
+            message: 'Antigravity quota reached · resets in 7h28m43s',
+        })
+        await closeQuotaTest(nextMessage, launcher)
+    })
+
+    it('reports the quota failure without a reset countdown when that optional text is absent', async () => {
+        const { session, nextMessage, launcher } = await launchForQuotaTest()
+        const frameWithoutReset = quotaFrame.replace('Resets in 7h28m43s. ', '')
+
+        await ptyOptsCaptured.onBeforeMessageSubmit?.()
+        ptyOptsCaptured.onMessage(frameWithoutReset)
+
+        expect(session.client.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'error',
+            message: 'Antigravity quota reached',
+        })
+        await closeQuotaTest(nextMessage, launcher)
+    })
+
+    it('fails closed for user echo before arming and agent prose without AGY-only frame context', async () => {
+        const { session, nextMessage, launcher } = await launchForQuotaTest()
+        const quotedQuota = 'Individual quota reached. Please upgrade your subscription to increase your limits.'
+
+        ptyOptsCaptured.onMessage(`${quotedQuota} ${quotaFrame.slice(quotaFrame.indexOf('Resets in'))}`)
+        await ptyOptsCaptured.onBeforeAgentRunStart?.()
+        ptyOptsCaptured.onMessage(`The user quoted: ${quotedQuota}`)
+        ptyOptsCaptured.onAgentRunCompleted?.()
+        ptyOptsCaptured.onMessage(quotaFrame)
+
+        expect(session.client.sendSessionEvent).not.toHaveBeenCalled()
+        await closeQuotaTest(nextMessage, launcher)
+    })
+
+    it('does not arm at the run boundary until after the outgoing text echo', async () => {
+        const { session, nextMessage, launcher } = await launchForQuotaTest()
+
+        await ptyOptsCaptured.onBeforeAgentRunStart?.()
+        ptyOptsCaptured.onMessage(quotaFrame)
+        expect(session.client.sendSessionEvent).not.toHaveBeenCalled()
+
+        await ptyOptsCaptured.onBeforeMessageSubmit?.()
+        ptyOptsCaptured.onMessage(quotaFrame)
+        ptyOptsCaptured.onMessageSubmitted?.('new turn')
+
+        expect(session.client.sendSessionEvent).toHaveBeenCalledTimes(1)
+        await closeQuotaTest(nextMessage, launcher)
+    })
+
+    it('clears the prior frame at each run boundary and re-emits only for a second actual quota frame', async () => {
+        const { session, nextMessage, launcher } = await launchForQuotaTest()
+
+        await ptyOptsCaptured.onBeforeMessageSubmit?.()
+        ptyOptsCaptured.onMessage(quotaFrame)
+        await ptyOptsCaptured.onAgentRunCompleted?.()
+        await ptyOptsCaptured.onBeforeMessageSubmit?.()
+        ptyOptsCaptured.onMessage('ordinary output after the new run started')
+        expect(session.client.sendSessionEvent).toHaveBeenCalledTimes(1)
+
+        ptyOptsCaptured.onMessage(quotaFrame)
+        expect(session.client.sendSessionEvent).toHaveBeenCalledTimes(2)
+        await closeQuotaTest(nextMessage, launcher)
+    })
+})
+
 // --- Finding F1: a question must never outlive the TUI selector it answers ---
 // The pending request registered via agyPermissionHandler.registerQuestionRequest
 // is normally only settled by the web `permission` RPC. If the PTY crashes/

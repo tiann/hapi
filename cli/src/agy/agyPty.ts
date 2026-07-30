@@ -22,6 +22,7 @@ export type AgyPtyOpts = {
     onThinkingChange?: (thinking: boolean) => void
     onMessageSubmitted?: (message: string) => void | Promise<void>
     onBeforeAgentRunStart?: () => void | Promise<void>
+    onBeforeMessageSubmit?: (message: string) => void | Promise<void>
     onAgentRunCompleted?: () => void | Promise<void>
     onExit?: (code: number | null) => void
     onAuthFailure?: () => void
@@ -149,6 +150,7 @@ export async function agyPty(opts: AgyPtyOpts): Promise<void> {
         onThinkingChange: opts.onThinkingChange,
         onMessageSubmitted: opts.onMessageSubmitted,
         onBeforeAgentRunStart: opts.onBeforeAgentRunStart,
+        onBeforeMessageSubmit: opts.onBeforeMessageSubmit,
         onAgentRunCompleted: opts.onAgentRunCompleted,
         onExit: opts.onExit,
         onAuthFailure: opts.onAuthFailure,

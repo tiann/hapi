@@ -19,6 +19,52 @@ import {
 // NOT consume a pending tool_call invocation, or the FIFO pairing drifts and the
 // real tool actions in the same planner batch get mis-labeled.
 const AGY_NON_TOOL_ACTION_TYPES = new Set(['ERROR_MESSAGE', 'SYSTEM_MESSAGE'])
+const QUOTA_DETECTOR_RAW_TAIL_SIZE = 8 * 1024
+const QUOTA_ANCHOR = 'Individual quota reached. Please upgrade your subscription to increase your limits.'
+const QUOTA_SCREEN_CONTEXT = "How's the CLI experience so far? Help us improve:"
+
+function stripTerminalControlSequences(raw: string): string {
+    let clean = ''
+    for (let index = 0; index < raw.length; index += 1) {
+        const character = raw[index]
+        if (character === '\x1b') {
+            const next = raw[index + 1]
+            if (next === '[') {
+                let end = index + 2
+                while (end < raw.length && (raw.charCodeAt(end) < 0x40 || raw.charCodeAt(end) > 0x7e)) end += 1
+                if (end >= raw.length) break
+                index = end
+                continue
+            }
+            if (next === ']') {
+                let end = index + 2
+                while (end < raw.length) {
+                    if (raw[end] === '\x07') break
+                    if (raw[end] === '\x1b' && raw[end + 1] === '\\') {
+                        end += 1
+                        break
+                    }
+                    end += 1
+                }
+                if (end >= raw.length) break
+                index = end
+                continue
+            }
+            index += next === undefined ? 0 : 1
+            continue
+        }
+        if (character < ' ' || character === '\x7f') continue
+        clean += character
+    }
+    return clean
+}
+
+function quotaResetDuration(cleanOutput: string): string | null {
+    const match = /\bResets in\s+(.{1,64}?)(?=\.\s*(?:Error ID:|How's the CLI experience|\? for shortcuts)|$)/i.exec(cleanOutput)
+    if (!match) return null
+    const duration = match[1].trim()
+    return /^[A-Za-z0-9:._ -]+$/.test(duration) ? duration : null
+}
 
 type PendingWebDelivery = {
     message: string
@@ -92,6 +138,11 @@ class AgyPtyLauncher extends RemoteLauncherBase {
     private interactionTail: Promise<void> = Promise.resolve()
     private outputWaiter: { expected: string; resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> } | null = null
     private recentOutput = ''
+    // Separate from recentOutput: the model-picker watcher resets its own tail
+    // around picker navigation, while quota detection is scoped to an agent run.
+    private quotaDetectorRawTail = ''
+    private quotaDetectorArmed = false
+    private quotaReportedForCurrentRun = false
     // Tool calls (name + args) from the most recent PLANNER_RESPONSE, awaiting
     // pairing with the action entries that follow it. agy splits a tool
     // invocation (on the planner step) from its result (the action entry), so
@@ -262,6 +313,35 @@ class AgyPtyLauncher extends RemoteLauncherBase {
         waiter.resolve()
     }
 
+    private armQuotaDetector(): void {
+        this.quotaDetectorArmed = true
+        this.quotaDetectorRawTail = ''
+        this.quotaReportedForCurrentRun = false
+    }
+
+    private disarmQuotaDetector(): void {
+        this.quotaDetectorArmed = false
+        this.quotaDetectorRawTail = ''
+    }
+
+    private detectQuotaOutput(chunk: string): void {
+        if (!this.quotaDetectorArmed || this.quotaReportedForCurrentRun) return
+        this.quotaDetectorRawTail = `${this.quotaDetectorRawTail}${chunk}`.slice(-QUOTA_DETECTOR_RAW_TAIL_SIZE)
+        const cleanOutput = stripTerminalControlSequences(this.quotaDetectorRawTail).replace(/\s+/g, ' ')
+        const hasQuotaFrame = cleanOutput.includes(QUOTA_ANCHOR)
+            && /\bError ID:\s*[0-9a-f]{8}(?:-[0-9a-f]+){4,}\b/i.test(cleanOutput)
+            && cleanOutput.includes(QUOTA_SCREEN_CONTEXT)
+            && /\?\s+for shortcuts\b/.test(cleanOutput)
+        if (!hasQuotaFrame) return
+
+        this.quotaReportedForCurrentRun = true
+        const reset = quotaResetDuration(cleanOutput)
+        this.session.client.sendSessionEvent({
+            type: 'error',
+            message: reset ? `Antigravity quota reached · resets in ${reset}` : 'Antigravity quota reached',
+        })
+    }
+
     private applyLiveModelNow(model: string | null, generation: number): Promise<void> {
         const target = buildAgyModelPickerTarget(model)
         return this.enqueuePtyInteraction(async () => {
@@ -314,6 +394,7 @@ class AgyPtyLauncher extends RemoteLauncherBase {
     }
 
     private async completeAgentRun(): Promise<void> {
+        this.disarmQuotaDetector()
         this.agentRunInProgress = false
         await this.applyPendingModelChange()
     }
@@ -413,6 +494,7 @@ class AgyPtyLauncher extends RemoteLauncherBase {
                         logger.debug(`[agy-pty:onMessage] received ${data.length} bytes`)
                     }
                     this.session.client.emitAgentTerminalOutput(data)
+                    this.detectQuotaOutput(data)
                     if (!this.agySessionId) {
                         const discovered = this.scanner.getBrainUuid()
                         if (discovered) {
@@ -440,6 +522,12 @@ class AgyPtyLauncher extends RemoteLauncherBase {
                     await this.interactionTail
                     await this.applyPendingModelChange()
                 },
+                onBeforeMessageSubmit: () => {
+                    // The driver's text echo has completed but its CR has not
+                    // yet been written, so user-input echo cannot trigger this
+                    // output-only detector.
+                    this.armQuotaDetector()
+                },
                 onAgentRunCompleted: () => this.completeAgentRun(),
                 onExit: (code: number | null) => {
                     logger.debug(`[agy-pty]: agy PTY exited with code ${code}`)
@@ -447,6 +535,7 @@ class AgyPtyLauncher extends RemoteLauncherBase {
                     this.ptyGeneration += 1
                     this.agentRunInProgress = false
                     this.agentRunReserved = false
+                    this.disarmQuotaDetector()
                     this.rejectPendingModelChange('AGY PTY ended before the live model change')
                     // Finding F1 (hostile-review): a respawn (runRespawnLoop)
                     // establishes a brand-new PTY/selector — Phase 0 measured

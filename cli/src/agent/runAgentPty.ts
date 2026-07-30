@@ -123,6 +123,12 @@ export type RunAgentPtyOpts = {
     /** Called at the serialized boundary immediately before a queued message starts a new agent run. */
     onBeforeAgentRunStart?: () => void | Promise<void>
     /**
+     * Called after the queued text has echoed from the PTY, immediately before
+     * the driver writes its separate CR submit key. This is the first safe
+     * boundary for output observers that must ignore user-input echo.
+     */
+    onBeforeMessageSubmit?: (message: string) => void | Promise<void>
+    /**
      * Fired once after a submitted agent run has shown a busy marker and then
      * returned to an explicit idle prompt marker. The next queued message is
      * not submitted until this promise settles.
@@ -324,6 +330,7 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
             }
         }
         await sleep(150)
+        await opts.onBeforeMessageSubmit?.(message)
         manager.write('\r')
         await sleep(50)
     }
@@ -347,6 +354,7 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
             cols: 80,
             rows: 24,
             onData: (data) => {
+                let reachedIdleMarker = false
                 sawOutput = true
                 lastOutputAt = Date.now()
                 promptBuffer = (promptBuffer + data).slice(-PROMPT_BUFFER_SIZE)
@@ -381,7 +389,7 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
                 } else if (idleMarkers.length > 0 && anyMarker(promptBuffer, idleMarkers)) {
                     setThinking(false)
                     inputReady = true
-                    completeAgentRun()
+                    reachedIdleMarker = true
                     promptBuffer = ''
                 } else if (thinking) {
                     // Still producing output (e.g. streaming response text with no
@@ -390,6 +398,10 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
                 }
                 if (process.env.DEBUG_PTY) logger.debug(`${debugPrefix} onData: ${data.length} bytes`)
                 opts.onMessage(data)
+                // Consumers must receive the final idle-footer chunk while the
+                // run is still armed; their completion callback can then clear
+                // run-scoped state after observing the same raw output.
+                if (reachedIdleMarker) completeAgentRun()
             },
             onExit: (code) => {
                 logger.debug(`${debugPrefix} Process exited with code ${code}`)

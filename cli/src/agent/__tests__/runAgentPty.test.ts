@@ -557,6 +557,61 @@ describe('runAgentPty', () => {
         await promise
     })
 
+    it('arms quota observation after an outgoing echo and delivers an idle-footer quota frame before completion', async () => {
+        const quotaFrame = "Individual quota reached. Please upgrade your subscription to increase your limits. Error ID: f5bb4da7-3689-4eca-b1ea-fd171bae4f71-215 How's the CLI experience so far? Help us improve: ? for shortcuts"
+        const done = deferred<{ message: string } | null>()
+        const observedQuotaFrames: string[] = []
+        let quotaDetectorArmed = false
+        const onMessage = vi.fn((data: string) => {
+            if (quotaDetectorArmed && data === quotaFrame) observedQuotaFrames.push(data)
+        })
+        const onBeforeMessageSubmit = vi.fn(() => { quotaDetectorArmed = true })
+        const onAgentRunCompleted = vi.fn(() => { quotaDetectorArmed = false })
+        const nextMessage = vi.fn()
+            .mockResolvedValueOnce({ message: quotaFrame })
+            .mockImplementationOnce(() => done.promise)
+        const promise = runAgentPty(makeOpts({
+            promptMarkers: ['? for shortcuts'],
+            busyMarkers: ['Generating'],
+            idleMarkers: ['? for shortcuts'],
+            requirePromptMarker: true,
+            idleReadyMs: 20,
+            nextMessage,
+            onMessage,
+            onBeforeMessageSubmit,
+            onAgentRunCompleted,
+        }))
+
+        harness.triggerData('? for shortcuts')
+        await tick(120)
+        await tick(300)
+
+        // The queued text is echoed before onBeforeMessageSubmit, so an exact
+        // user quote cannot be mistaken for an agent quota failure.
+        const echoedQuotaCall = onMessage.mock.calls.findIndex(([data]) => data === quotaFrame)
+        expect(echoedQuotaCall).toBeGreaterThanOrEqual(0)
+        expect(observedQuotaFrames).toEqual([])
+        expect(onBeforeMessageSubmit).toHaveBeenCalledWith(quotaFrame)
+        expect(onBeforeMessageSubmit.mock.invocationCallOrder[0])
+            .toBeGreaterThan(onMessage.mock.invocationCallOrder[echoedQuotaCall])
+        expect(quotaDetectorArmed).toBe(true)
+        expect(onAgentRunCompleted).not.toHaveBeenCalled()
+
+        harness.triggerData('Generating...')
+        harness.triggerData(quotaFrame)
+
+        // onMessage must see the idle-footer frame while armed; completion
+        // disarms only after the same raw chunk reaches the consumer.
+        expect(onMessage).toHaveBeenLastCalledWith(quotaFrame)
+        expect(observedQuotaFrames).toEqual([quotaFrame])
+        expect(onAgentRunCompleted).toHaveBeenCalledTimes(1)
+        expect(onAgentRunCompleted.mock.invocationCallOrder[0])
+            .toBeGreaterThan(onMessage.mock.invocationCallOrder.at(-1)!)
+
+        done.resolve(null)
+        await promise
+    })
+
     it('bracketed-paste wraps a multiline message so only the final CR submits', async () => {
         const msg1 = deferred<{ message: string } | null>()
         const msg2 = deferred<{ message: string } | null>()
