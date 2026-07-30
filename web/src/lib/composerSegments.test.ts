@@ -4,11 +4,13 @@ import {
     COMPOSER_MENTION_MIRROR_CHAR,
     deleteBackwardInComposerSegments,
     insertPlainTextInComposerSegments,
+    insertSegmentsInComposerSegments,
     insertSessionMentionInComposerSegments,
     isRichComposerMentionsEnabled,
     mirrorComposerSegments,
     parseComposerSegments,
     serializeComposerSegments,
+    serializeComposerSelection,
     type ComposerSegment,
 } from './composerSegments'
 
@@ -206,6 +208,38 @@ describe('isRichComposerMentionsEnabled', () => {
         expect(isRichComposerMentionsEnabled()).toBe(false)
         window.history.replaceState({}, '', `${window.location.pathname}?richMentions=1`)
         expect(isRichComposerMentionsEnabled()).toBe(true)
+    })
+})
+
+describe('serializeComposerSelection', () => {
+    it('emits wire markdown with session ids for a chip selection', () => {
+        const segments = parseComposerSegments('see [Peer A](/sessions/aaa) please')
+        // mirror: "see \uFFFC please" — select the atom only
+        const start = 'see '.length
+        const end = start + 1
+        expect(serializeComposerSelection(segments, { start, end })).toBe(
+            '[Peer A](/sessions/aaa)'
+        )
+    })
+
+    it('returns null for a caret (empty selection)', () => {
+        const segments: ComposerSegment[] = [{ type: 'text', text: 'abc' }]
+        expect(serializeComposerSelection(segments, { start: 1, end: 1 })).toBeNull()
+    })
+})
+
+describe('insertSegmentsInComposerSegments', () => {
+    it('paste of wire markdown restores session atoms (not title-only text)', () => {
+        const segments: ComposerSegment[] = [{ type: 'text', text: 'before ' }]
+        const pasted = parseComposerSegments('[Peer A](/sessions/aaa) after')
+        const result = insertSegmentsInComposerSegments(
+            segments,
+            { start: 'before '.length, end: 'before '.length },
+            pasted,
+        )
+        expect(serializeComposerSegments(result.segments)).toBe(
+            'before [Peer A](/sessions/aaa) after'
+        )
     })
 })
 

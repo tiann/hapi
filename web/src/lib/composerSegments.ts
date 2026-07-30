@@ -248,6 +248,44 @@ export function insertPlainTextInComposerSegments(
 }
 
 /**
+ * Serialize a mirror-space selection to wire text (session atoms keep full ids).
+ * Returns null when the selection is empty (browser default copy is fine).
+ */
+export function serializeComposerSelection(
+    segments: readonly ComposerSegment[],
+    selection: ComposerSelection,
+): string | null {
+    if (selection.start === selection.end) return null
+    const start = Math.max(0, Math.min(selection.start, selection.end))
+    const end = Math.max(selection.start, selection.end)
+    const { after } = splitMirrorAt(segments, start)
+    const { before: selected } = splitMirrorAt(after, end - start)
+    return serializeComposerSegments(selected)
+}
+
+/**
+ * Insert parsed segments at the current selection (paste of wire markdown /
+ * plain text). Does not treat an active `@…` word as the replace range —
+ * paste always targets the caret/selection only.
+ */
+export function insertSegmentsInComposerSegments(
+    segments: readonly ComposerSegment[],
+    selection: ComposerSelection,
+    inserted: readonly ComposerSegment[],
+): { segments: ComposerSegment[]; selection: ComposerSelection } {
+    const { before } = splitMirrorAt(segments, selection.start)
+    const { after } = splitMirrorAt(segments, selection.end)
+    const mid = coalesceComposerSegments(inserted)
+    const head = coalesceComposerSegments([...before, ...mid])
+    const next = coalesceComposerSegments([...head, ...after])
+    const caret = mirrorComposerSegments(head).length
+    return {
+        segments: next,
+        selection: { start: caret, end: caret },
+    }
+}
+
+/**
  * Rich segmented composer is the product default (same as v1 @ autocomplete:
  * no user opt-in). Emergency kill-switch only:
  *   localStorage `hapi.composer.richMentions=0` or `?richMentions=0`

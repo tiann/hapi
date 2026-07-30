@@ -17,10 +17,12 @@ import {
     coalesceComposerSegments,
     deleteBackwardInComposerSegments,
     insertPlainTextInComposerSegments,
+    insertSegmentsInComposerSegments,
     insertSessionMentionInComposerSegments,
     mirrorComposerSegments,
     parseComposerSegments,
     serializeComposerSegments,
+    serializeComposerSelection,
     type ComposerSegment,
     type ComposerSelection,
 } from '@/lib/composerSegments'
@@ -646,13 +648,12 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         if (!root || !text) return
         const segments = segmentsFromEditor(root)
         const selection = getMirrorSelection(root)
-        // Paste/drop must not apply autocomplete trailing-space.
-        const result = insertPlainTextInComposerSegments(
+        // Parse wire markdown so `[title](/sessions/<id>)` paste restores chips
+        // (copy/cut put that format on the clipboard). Plain prose stays text.
+        const result = insertSegmentsInComposerSegments(
             segments,
             selection,
-            text,
-            [],
-            false
+            parseComposerSegments(text),
         )
         const serialized = serializeComposerSegments(result.segments)
         renderSegmentsToEditor(root, result.segments, resolveSessionMentionTooltip)
@@ -665,6 +666,36 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         })
         onEdit?.()
     }, [onEdit, onMirrorChange, onValueChange, resolveSessionMentionTooltip])
+
+    const handleCopyOrCut = useCallback((e: ReactClipboardEvent<HTMLDivElement>, cut: boolean) => {
+        const root = rootRef.current
+        if (!root) return
+        const segments = segmentsFromEditor(root)
+        const selection = getMirrorSelection(root)
+        const text = serializeComposerSelection(segments, selection)
+        if (text === null) return
+        e.preventDefault()
+        e.clipboardData.setData('text/plain', text)
+        if (!cut) return
+        clearMentionTooltip()
+        const result = deleteBackwardInComposerSegments(segments, selection)
+        const serialized = serializeComposerSegments(result.segments)
+        renderSegmentsToEditor(root, result.segments, resolveSessionMentionTooltip)
+        lastEmittedRef.current = serialized
+        setMirrorSelection(root, result.selection)
+        onValueChange(serialized)
+        onMirrorChange({
+            text: mirrorComposerSegments(result.segments),
+            selection: result.selection,
+        })
+        onEdit?.()
+    }, [
+        clearMentionTooltip,
+        onEdit,
+        onMirrorChange,
+        onValueChange,
+        resolveSessionMentionTooltip,
+    ])
 
     const handlePaste = useCallback((e: ReactClipboardEvent<HTMLDivElement>) => {
         const files = Array.from(e.clipboardData?.files ?? [])
@@ -766,6 +797,8 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
                 onKeyDown={handleKeyDown}
                 onPointerOver={handlePointerOver}
                 onPointerLeave={handlePointerLeave}
+                onCopy={(e) => handleCopyOrCut(e, false)}
+                onCut={(e) => handleCopyOrCut(e, true)}
                 onPaste={handlePaste}
                 onCompositionStart={() => {
                     composingRef.current = true
