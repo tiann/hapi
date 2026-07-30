@@ -50,6 +50,12 @@ export type SessionSummary = {
     activeAt: number
     updatedAt: number
     metadata: SessionSummaryMetadata | null
+    /** Watermarks for structured SSE patches (PR #897). List cache must gate
+     *  without requiring a detail query — otherwise global SSE forces O(N)
+     *  /sessions invalidation for every versioned write. */
+    metadataVersion: number
+    agentStateVersion: number
+    todosUpdatedAt: number
     todoProgress: { completed: number; total: number } | null
     pendingRequestsCount: number
     pendingRequestKinds: PendingRequestKind[]
@@ -196,6 +202,9 @@ export function toSessionSummary(session: Session): SessionSummary {
         activeAt: session.activeAt,
         updatedAt: session.updatedAt,
         metadata: toSessionSummaryMetadata(session.metadata),
+        metadataVersion: session.metadataVersion,
+        agentStateVersion: session.agentStateVersion,
+        todosUpdatedAt: session.todosUpdatedAt ?? 0,
         todoProgress: computeTodoProgress(session.todos),
         pendingRequestsCount: computePendingRequestsCount(session.agentState),
         pendingRequestKinds: computePendingRequestKinds(session.agentState),

@@ -18,6 +18,9 @@ function makeSummary(overrides: Partial<SessionSummary> = {}): SessionSummary {
         activeAt: 1_000,
         updatedAt: 2_000,
         metadata: null,
+        metadataVersion: 0,
+        agentStateVersion: 0,
+        todosUpdatedAt: 0,
         todoProgress: null,
         pendingRequestsCount: 0,
         pendingRequestKinds: [],
@@ -37,7 +40,7 @@ describe('canApplyVersionedSummaryPatch (PR #897 review, HAPI Bot 2026-07-23 Maj
         expect(canApplyVersionedSummaryPatch({ metadata: undefined, agentState: undefined }, false)).toBe(true)
     })
 
-    it('refuses metadata/agentState/todos/teamState summary patches when detail version source is missing', () => {
+    it('refuses metadata/agentState/todos summary patches when detail version source is missing', () => {
         expect(
             canApplyVersionedSummaryPatch(
                 { metadata: { version: 1, value: null } },
@@ -56,12 +59,15 @@ describe('canApplyVersionedSummaryPatch (PR #897 review, HAPI Bot 2026-07-23 Maj
                 false
             )
         ).toBe(false)
+    })
+
+    it('allows teamState-only patches without detail (summary no-op)', () => {
         expect(
             canApplyVersionedSummaryPatch(
                 { teamState: { version: 1, value: null } },
                 false
             )
-        ).toBe(false)
+        ).toBe(true)
     })
 
     it('allows versioned summary patches when detail is present', () => {
