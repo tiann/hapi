@@ -284,12 +284,19 @@ describe('runOpencode set-session-config handler', () => {
             await new Promise((resolve) => setTimeout(resolve, 0));
         }
 
-        // No `clearQueuedThinkingGrace` here (unlike the synchronous
-        // 'handled' branch) — that flag is only for handlers that will never
-        // call onThinkingChange(true) afterward, and a queued /compact WILL
-        // (once dequeued in opencodeRemoteLauncher.ts, just later than
-        // usual), so the hub still needs its normal queued-thinking grace.
-        expect(harness.session.emitMessagesConsumed).toHaveBeenCalledWith(['local-compact']);
+        // No manual emitMessagesConsumed call here (unlike the synchronous
+        // 'handled' branch) — the ack now happens automatically at dequeue
+        // time via MessageQueue2's onBatchConsumed (wired in
+        // AgentSessionBase's constructor onto session.queue, same as any
+        // regular prompt), not synchronously when queuing. A manual call
+        // right here used to exist and fire immediately regardless of FIFO
+        // position — that's what let the hub mark a still-queued /compact
+        // "invoked" before it was actually dequeued, breaking cancellation
+        // of it while queued (see the comment on this branch in
+        // runOpencode.ts and opencodeRemoteLauncher.test.ts's "cancelling a
+        // /compact operation while it is still queued behind another
+        // prompt" test for the fix this enables).
+        expect(harness.session.emitMessagesConsumed).not.toHaveBeenCalled();
         // The actual REST call, "Compaction started/completed" status events,
         // and Reasoning-block summary now all happen inside
         // opencodeRemoteLauncher.ts's dequeue loop once this item reaches the

@@ -389,6 +389,68 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         expect(harness.events).toEqual(['prompt:start', 'prompt:end', 'prompt:start', 'prompt:end']);
     });
 
+    it('cancelling a /compact operation while it is still queued behind a running prompt keeps the REST bridge from ever being called', async () => {
+        // Reproduces the exact scenario a PR reviewer bot reported: prompt A
+        // is already generating, /compact is queued behind it (not yet
+        // dequeued), and the user cancels /compact before A finishes.
+        //
+        // Note on what this test does and doesn't prove: `queue.cancelByLocalId`
+        // removing a still-queued item and the dequeue loop never reaching a
+        // removed item both already worked at this (launcher + MessageQueue2)
+        // level before the runOpencode.ts fix below — this test would pass
+        // either way, since it drives session.queue directly and never goes
+        // through runOpencode.ts's onUserMessage/onCancelQueuedMessage
+        // handlers. What actually changed with the fix — runOpencode.ts no
+        // longer calling session.emitMessagesConsumed([localId]) synchronously
+        // the instant /compact is queued, a leftover from when /compact ran
+        // via a trigger function outside the queue entirely — is that the hub
+        // would otherwise mark the message "invoked" before it was ever
+        // dequeued and never ask the CLI to cancel it at all, so the cancel
+        // request this test simulates (queue.cancelByLocalId) would never
+        // have been *made* in the first place. That RED/GREEN is covered in
+        // runOpencode.test.ts ("queues a /compact request..." — asserts
+        // emitMessagesConsumed is not called at queue time). This test locks
+        // in the launcher-side half of the contract that fix depends on: once
+        // a cancel *does* reach the CLI for a still-queued /compact behind a
+        // running prompt, the bridge must never be called.
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        const resolvers: Array<() => void> = [];
+        harness.promptImpl = () => new Promise<void>((resolve) => {
+            resolvers.push(resolve);
+        });
+
+        const { session } = createSessionStub([
+            { message: 'A', mode: createMode('ollama/x') }
+        ], { keepOpen: true });
+
+        const launcherPromise = opencodeRemoteLauncher(session as never, {
+            onCompactAvailabilityChange: () => {}
+        });
+
+        // Wait until prompt A is confirmed in-flight.
+        while (!harness.events.includes('prompt:start')) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+
+        // /compact is queued behind A while A is still generating — mirrors
+        // runOpencode.ts's messageQueue.pushIsolated(...) call for a
+        // /compact slash command.
+        session.queue.pushIsolated('', { ...createMode('ollama/x'), operation: 'compact' }, 'local-compact');
+
+        // The user cancels /compact before A finishes. It's still sitting
+        // in the queue (never dequeued), so this must remove it cleanly —
+        // the same call runOpencode.ts's onCancelQueuedMessage makes for any
+        // other still-queued item.
+        expect(session.queue.cancelByLocalId('local-compact')).toBe(true);
+        session.queue.close();
+
+        resolvers[0]!();
+        await launcherPromise;
+
+        expect(compactHarness.calls).toEqual([]);
+        expect(harness.events).toEqual(['prompt:start', 'prompt:end']);
+    });
+
     it('a queued /compact operation posts to the REST bridge using the session baseUrl and current model, and reports started/completed', async () => {
         const opencodeBackendModule = await import('./utils/opencodeBackend');
         const factory = (opencodeBackendModule as unknown as { createOpencodeBackend: ReturnType<typeof vi.fn> }).createOpencodeBackend;
