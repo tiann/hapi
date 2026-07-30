@@ -25,6 +25,10 @@ export const VISIBLE_WINDOW_SIZE = 400
 export const HISTORY_WINDOW_SIZE = 600
 const AGENT_RUN_WINDOW_SIZE = 800
 const OLDER_LOAD_WINDOW_SIZE = 800
+// Subagent transcripts get their own budget: they fold into a single Task card,
+// so they must not consume the top-level budget that decides how far back the
+// user can scroll. Sized to hold several full runs while still bounding memory.
+export const SIDECHAIN_WINDOW_SIZE = 4000
 const PAGE_SIZE = 200
 
 type MessagePosition = {
@@ -413,19 +417,53 @@ function sliceForTrim<T>(
         : { kept: items.slice(items.length - limit), dropped: items.slice(0, items.length - limit) }
 }
 
-function isCodexAgentRunMessage(message: DecryptedMessage): boolean {
+function agentPayload(message: DecryptedMessage): { type?: unknown; data?: unknown } | null {
     const outer = message.content
     if (!outer || typeof outer !== 'object' || (outer as { role?: unknown }).role !== 'agent') {
-        return false
+        return null
     }
     const content = (outer as { content?: unknown }).content
-    if (!content || typeof content !== 'object') return false
-    const payload = content as { type?: unknown; data?: unknown }
+    if (!content || typeof content !== 'object') return null
+    return content as { type?: unknown; data?: unknown }
+}
+
+function isCodexAgentRunMessage(message: DecryptedMessage): boolean {
+    const payload = agentPayload(message)
+    if (!payload) return false
     if (payload.type !== 'codex' || !payload.data || typeof payload.data !== 'object') {
         return false
     }
     const type = (payload.data as { type?: unknown }).type
     return type === 'agent-run-start' || type === 'agent-run-update' || type === 'agent-run-trace'
+}
+
+/**
+ * A subagent's own transcript. The SDK emits one message per step, but the
+ * timeline folds the whole run into a single Task card (tracer.ts groups them
+ * by `parentToolUseId`), so these cost the reader nothing to keep and nothing
+ * to drop — yet under a single budget they crowd out the top-level messages
+ * that actually render as rows.
+ *
+ * Read straight off the stored payload, the same field `normalizeAgent` reads.
+ * This is deliberately a per-message property and not the reducer's grouping:
+ * the reducer is stateful (a sidechain message only resolves to a Task once its
+ * `tool_use` has been seen), which the store cannot and should not reproduce.
+ */
+function isSidechainMessage(message: DecryptedMessage): boolean {
+    const payload = agentPayload(message)
+    if (!payload || !payload.data || typeof payload.data !== 'object') return false
+    return (payload.data as { isSidechain?: unknown }).isSidechain === true
+}
+
+function oldestSeqOf(messages: DecryptedMessage[]): number | null {
+    let oldest: number | null = null
+    for (const message of messages) {
+        if (typeof message.seq !== 'number') continue
+        if (oldest === null || message.seq < oldest) {
+            oldest = message.seq
+        }
+    }
+    return oldest
 }
 
 function trimPreservingQueued(
@@ -437,13 +475,46 @@ function trimPreservingQueued(
     const queuedIds = new Set(queued.map((message) => message.id))
     const nonQueued = messages.filter((message) => !queuedIds.has(message.id))
     const agentRuns = nonQueued.filter(isCodexAgentRunMessage)
-    const regular = nonQueued.filter((message) => !isCodexAgentRunMessage(message))
+    const rest = nonQueued.filter((message) => !isCodexAgentRunMessage(message))
+    const sidechain = rest.filter(isSidechainMessage)
+    const regular = rest.filter((message) => !isSidechainMessage(message))
     const regularTrim = sliceForTrim(regular, Math.max(0, regularLimit - queued.length), mode)
     const agentRunTrim = sliceForTrim(agentRuns, AGENT_RUN_WINDOW_SIZE, mode)
+    const sidechainTrim = trimSidechain(sidechain, regularTrim.kept, mode)
     return {
-        kept: mergeMessages([...regularTrim.kept, ...agentRunTrim.kept], queued),
-        dropped: [...regularTrim.dropped, ...agentRunTrim.dropped]
+        kept: mergeMessages(
+            [...regularTrim.kept, ...agentRunTrim.kept, ...sidechainTrim.kept],
+            queued
+        ),
+        dropped: [...regularTrim.dropped, ...agentRunTrim.dropped, ...sidechainTrim.dropped]
     }
+}
+
+/**
+ * Subagent messages are capped separately so a long run cannot evict top-level
+ * history, but they must not outlive the Task card that owns them: `tracer.ts`
+ * falls back to rendering a sidechain message at the top level when it cannot
+ * resolve a parent, so a subagent transcript whose `tool_use` was trimmed away
+ * would spill into the timeline as loose rows. Dropping anything older than the
+ * oldest surviving top-level message keeps every kept sidechain message inside
+ * the span its parent can still live in.
+ */
+function trimSidechain(
+    sidechain: DecryptedMessage[],
+    keptRegular: DecryptedMessage[],
+    mode: 'append' | 'prepend'
+): { kept: DecryptedMessage[]; dropped: DecryptedMessage[] } {
+    const boundary = oldestSeqOf(keptRegular)
+    const orphaned: DecryptedMessage[] = []
+    const inSpan = boundary === null
+        ? sidechain
+        : sidechain.filter((message) => {
+            if (typeof message.seq !== 'number' || message.seq >= boundary) return true
+            orphaned.push(message)
+            return false
+        })
+    const trimmed = sliceForTrim(inSpan, SIDECHAIN_WINDOW_SIZE, mode)
+    return { kept: trimmed.kept, dropped: [...orphaned, ...trimmed.dropped] }
 }
 
 function optimisticMessage(message: DecryptedMessage): boolean {
@@ -510,7 +581,19 @@ function mergeIntoWindow(
             oldestPositionSeq: oldest?.seq ?? next.oldestPositionSeq
         })
     }
+    // Prepend means the window overflowed at the tail, so the newest messages
+    // are the ones that left, and the window can no longer answer "what is the
+    // session doing now" — hence the reset. Subagent rows are exempt: they fold
+    // into a Task card rather than rendering as the live tail, and trimming them
+    // against their own budget always drops the newest of *them*. Letting that
+    // arm the reset would refetch the latest page and yank the reader back to
+    // the tail they deliberately scrolled away from.
     const newest = derivePosition(kept, 'newest')
+    const keptTailNewest = derivePosition(kept.filter((message) => !isSidechainMessage(message)), 'newest')
+    const mergedTailNewest = derivePosition(merged.filter((message) => !isSidechainMessage(message)), 'newest')
+    if (keptTailNewest && mergedTailNewest && comparePosition(keptTailNewest, mergedTailNewest) >= 0) {
+        return next
+    }
     next = buildState(next, {
         requiresLatestReset: true,
         newestPositionAt: newest?.at ?? null,
