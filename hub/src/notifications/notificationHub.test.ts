@@ -514,7 +514,7 @@ describe('NotificationHub', () => {
         hub.stop()
     })
 
-    it('rolls back model-error watermark when every channel throws so later updates retry', async () => {
+    it('schedules bounded backoff retry when every channel throws (keeps watermark)', async () => {
         const engine = new FakeSyncEngine()
         let attempts = 0
         const channel: NotificationChannel = {
@@ -526,7 +526,9 @@ describe('NotificationHub', () => {
                 throw new Error('transient outage')
             }
         }
-        const hub = new NotificationHub(engine as unknown as SyncEngine, [channel])
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [channel], {
+            modelErrorRetryDelaysMs: [25]
+        })
         const session = createSession({
             metadata: {
                 lastModelError: {
@@ -543,15 +545,19 @@ describe('NotificationHub', () => {
         await sleep(10)
         expect(attempts).toBe(1)
 
-        // Same atTs should retry after rollback.
+        // Keepalive session-updated must NOT storm - watermark stays.
         engine.emit({ type: 'session-updated', sessionId: session.id })
-        await sleep(10)
+        await sleep(5)
+        expect(attempts).toBe(1)
+
+        // Backoff timer fires the retry.
+        await sleep(35)
         expect(attempts).toBe(2)
 
         hub.stop()
     })
 
-    it('rolls back watermark when channels resolve with failed (zero deliveries)', async () => {
+    it('schedules backoff retry when channels resolve with failed (zero deliveries)', async () => {
         const engine = new FakeSyncEngine()
         let attempts = 0
         const channel: NotificationChannel = {
@@ -563,7 +569,9 @@ describe('NotificationHub', () => {
                 return 'failed'
             }
         }
-        const hub = new NotificationHub(engine as unknown as SyncEngine, [channel])
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [channel], {
+            modelErrorRetryDelaysMs: [15]
+        })
         const session = createSession({
             metadata: {
                 lastModelError: {
@@ -577,11 +585,57 @@ describe('NotificationHub', () => {
         })
         engine.setSession(session)
         engine.emit({ type: 'session-updated', sessionId: session.id })
-        await sleep(10)
+        await sleep(5)
         expect(attempts).toBe(1)
 
         engine.emit({ type: 'session-updated', sessionId: session.id })
-        await sleep(10)
+        await sleep(5)
+        expect(attempts).toBe(1)
+
+        await sleep(25)
+        expect(attempts).toBe(2)
+
+        hub.stop()
+    })
+
+    it('retries model-error for inactive sessions via backoff timer', async () => {
+        const engine = new FakeSyncEngine()
+        let attempts = 0
+        const channel: NotificationChannel = {
+            async sendReady() {},
+            async sendPermissionRequest() {},
+            async sendTaskNotification() {},
+            async sendModelError() {
+                attempts++
+                if (attempts === 1) {
+                    return 'failed'
+                }
+                return 'delivered'
+            }
+        }
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [channel], {
+            modelErrorRetryDelaysMs: [20]
+        })
+        const session = createSession({
+            metadata: {
+                lastModelError: {
+                    kind: 'rate_limited',
+                    transient: true,
+                    rawSnippet: 'status 429',
+                    atTs: 6600,
+                    priorAssistantClaimsDone: false
+                }
+            } as Session['metadata']
+        })
+        engine.setSession(session)
+        engine.emit({ type: 'session-updated', sessionId: session.id })
+        await sleep(5)
+        expect(attempts).toBe(1)
+
+        // Go inactive before the retry - timer must still fire.
+        engine.setSession({ ...session, active: false })
+        engine.emit({ type: 'session-updated', sessionId: session.id })
+        await sleep(30)
         expect(attempts).toBe(2)
 
         hub.stop()
