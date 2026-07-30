@@ -243,6 +243,11 @@ describe('MessageService message pagination', () => {
         expect(page.messages.map((message) => message.id)).toEqual([second.id, third.id])
         expect(page.page.nextBeforeAt).toBe(2_000)
         expect(page.page.nextBeforeSeq).toBe(second.seq)
+        expect(page.page.direction).toBe('latest')
+        expect(page.page.epoch).toBe(0)
+        expect(page.page.reset).toBe(false)
+        expect(page.page.snapshotHeadAt).toBe(3_000)
+        expect(page.page.snapshotHeadSeq).toBe(third.seq)
         expect(page.page.hasMore).toBe(true)
         expect(first.id).toBeDefined()
     })
@@ -266,6 +271,7 @@ describe('MessageService message pagination', () => {
         expect(older.messages.map((message) => message.id)).toEqual([first.id])
         expect(older.page.nextBeforeAt).toBe(1_000)
         expect(older.page.nextBeforeSeq).toBe(first.seq)
+        expect(older.page.direction).toBe('before')
         expect(older.page.hasMore).toBe(false)
         expect(second.id).toBeDefined()
         expect(third.id).toBeDefined()
@@ -304,6 +310,97 @@ describe('MessageService message pagination', () => {
         expect(page.page.nextBeforeAt).toBe(scheduled.createdAt + 1_000)
         expect(page.page.nextBeforeSeq).toBe(invoked.seq)
         expect(page.page.hasMore).toBe(true)
+    })
+
+    it('pages forward to a fixed snapshot head', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'page-after')
+        const first = store.messages.addMessage(session.id, 'first', 'local-first')
+        const second = store.messages.addMessage(session.id, 'second', 'local-second')
+        const third = store.messages.addMessage(session.id, 'third', 'local-third')
+        const fourth = store.messages.addMessage(session.id, 'fourth', 'local-fourth')
+        store.messages.markMessagesInvoked(session.id, ['local-first'], 1_000)
+        store.messages.markMessagesInvoked(session.id, ['local-second'], 2_000)
+        store.messages.markMessagesInvoked(session.id, ['local-third'], 3_000)
+        store.messages.markMessagesInvoked(session.id, ['local-fourth'], 4_000)
+
+        const service = makeService(store)
+        const firstDelta = service.getMessagesPage(session.id, {
+            limit: 1,
+            after: { at: 1_000, seq: first.seq },
+            epoch: 0
+        })
+
+        expect(firstDelta.messages.map((message) => message.id)).toEqual([second.id])
+        expect(firstDelta.page).toMatchObject({
+            direction: 'after',
+            nextAfterAt: 2_000,
+            nextAfterSeq: second.seq,
+            snapshotHeadAt: 4_000,
+            snapshotHeadSeq: fourth.seq,
+            hasMore: true,
+            reset: false
+        })
+
+        const fifth = store.messages.addMessage(session.id, 'fifth', 'local-fifth')
+        store.messages.markMessagesInvoked(session.id, ['local-fifth'], 5_000)
+
+        const secondDelta = service.getMessagesPage(session.id, {
+            limit: 10,
+            after: { at: firstDelta.page.nextAfterAt!, seq: firstDelta.page.nextAfterSeq! },
+            until: { at: firstDelta.page.snapshotHeadAt!, seq: firstDelta.page.snapshotHeadSeq! },
+            epoch: firstDelta.page.epoch
+        })
+
+        expect(secondDelta.messages.map((message) => message.id)).toEqual([third.id, fourth.id])
+        expect(secondDelta.page.hasMore).toBe(false)
+        expect(secondDelta.messages.some((message) => message.id === fifth.id)).toBe(false)
+    })
+
+    it('completes a fixed snapshot when no raw row remains before its head', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'page-after-empty-snapshot-gap')
+        const first = store.messages.addMessage(session.id, 'first', 'local-first')
+        const latest = store.messages.addMessage(session.id, 'latest', 'local-latest')
+        store.messages.markMessagesInvoked(session.id, ['local-first'], 1_000)
+        store.messages.markMessagesInvoked(session.id, ['local-latest'], 4_000)
+
+        const response = makeService(store).getMessagesPage(session.id, {
+            limit: 10,
+            after: { at: 2_000, seq: first.seq },
+            until: { at: 3_000, seq: latest.seq },
+            epoch: 0
+        })
+
+        expect(response.messages).toEqual([])
+        expect(response.page).toMatchObject({
+            direction: 'after',
+            nextAfterAt: 3_000,
+            nextAfterSeq: latest.seq,
+            snapshotHeadAt: 3_000,
+            snapshotHeadSeq: latest.seq,
+            hasMore: false
+        })
+    })
+
+    it('returns a reset latest page when the structural epoch changed', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'page-after-reset')
+        const first = store.messages.addMessage(session.id, 'first', 'local-first')
+        store.messages.markMessagesInvoked(session.id, ['local-first'], 1_000)
+        const queued = store.messages.addMessage(session.id, 'queued', 'local-queued')
+        store.messages.cancelQueuedMessage(session.id, queued.id)
+
+        const response = makeService(store).getMessagesPage(session.id, {
+            limit: 10,
+            after: { at: 1_000, seq: first.seq },
+            epoch: 0
+        })
+
+        expect(response.page.direction).toBe('latest')
+        expect(response.page.reset).toBe(true)
+        expect(response.page.epoch).toBe(1)
+        expect(response.messages.map((message) => message.id)).toEqual([first.id])
     })
 })
 

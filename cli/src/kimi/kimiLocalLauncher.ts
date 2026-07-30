@@ -3,8 +3,10 @@ import { kimiLocal } from './kimiLocal';
 import { KimiSession } from './session';
 import type { PermissionMode } from './types';
 import { BaseLocalLauncher } from '@/modules/common/launcher/BaseLocalLauncher';
+import { createNativeSessionTitleMetadataSync } from '@/agent/nativeSessionTitle';
 import { createKimiWireLocator, type KimiWireLocator } from './utils/kimiWireLocator';
 import { convertKimiWireEvent, createKimiWireScanner, type KimiWireScanner } from './utils/kimiWireScanner';
+import { createKimiSessionTitleWatcher, type KimiSessionTitleWatcher } from './utils/kimiSessionTitleWatcher';
 
 function mapApprovalMode(mode: PermissionMode | undefined): { yolo: boolean; plan: boolean } {
     if (!mode || mode === 'default' || mode === 'read-only') {
@@ -22,13 +24,15 @@ export async function kimiLocalLauncher(
         model?: string;
     }
 ): Promise<'switch' | 'exit'> {
-    // Local mode spawns the kimi TUI directly, so the only way to mirror the
-    // terminal conversation to hub/web is to watch the wire.jsonl journal the
-    // kimi-code process writes (same role as the codex transcript scanner).
+    // Local mode spawns the kimi TUI directly. Mirror conversation events from
+    // wire.jsonl and Kimi's authoritative native title from state.json.
     const startupTimestampMs = Date.now();
     let shuttingDown = false;
     let scanner: KimiWireScanner | null = null;
+    let titleWatcher: KimiSessionTitleWatcher | null = null;
     let pendingScannerSetup: Promise<void> | null = null;
+    let pendingTitleWatcherSetup: Promise<void> | null = null;
+    const syncTitle = createNativeSessionTitleMetadataSync(session.client);
 
     const attachWireScanner = (wirePath: string): Promise<void> => {
         const setup = (async () => {
@@ -65,19 +69,41 @@ export async function kimiLocalLauncher(
         return pendingScannerSetup;
     };
 
+    const attachTitleWatcher = (statePath: string): Promise<void> => {
+        const setup = (async () => {
+            const created = await createKimiSessionTitleWatcher({
+                statePath,
+                onTitle: syncTitle
+            });
+            if (shuttingDown) {
+                await created.cleanup();
+                return;
+            }
+            titleWatcher = created;
+            logger.debug(`[kimi-local]: Attached title watcher to ${statePath}`);
+        })();
+        pendingTitleWatcherSetup = setup.catch((error) => {
+            logger.warn(`[kimi-local]: Title watcher setup failed for ${statePath}`, error);
+        }).finally(() => {
+            pendingTitleWatcherSetup = null;
+        });
+        return pendingTitleWatcherSetup;
+    };
+
     const locator: KimiWireLocator = createKimiWireLocator({
         cwd: session.path,
         startupTimestampMs,
         resumeSessionId: session.sessionId,
-        onLocated: ({ sessionId, wirePath }) => {
+        onLocated: ({ sessionId, wirePath, statePath }) => {
             if (shuttingDown) {
                 return;
             }
             session.onSessionFound(sessionId);
             void attachWireScanner(wirePath);
+            void attachTitleWatcher(statePath);
         },
         onAmbiguous: (sessionIds) => {
-            logger.warn(`[kimi-local]: Multiple fresh kimi sessions found (${sessionIds.join(', ')}); transcript sync disabled for this launch`);
+            logger.warn(`[kimi-local]: Multiple fresh kimi sessions found (${sessionIds.join(', ')}); session sync disabled for this launch`);
         }
     });
 
@@ -119,10 +145,18 @@ export async function kimiLocalLauncher(
         if (pendingScannerSetup) {
             await pendingScannerSetup;
         }
+        if (pendingTitleWatcherSetup) {
+            await pendingTitleWatcherSetup;
+        }
         const activeScanner = scanner as KimiWireScanner | null;
         if (activeScanner) {
             await activeScanner.cleanup();
             scanner = null;
+        }
+        const activeTitleWatcher = titleWatcher as KimiSessionTitleWatcher | null;
+        if (activeTitleWatcher) {
+            await activeTitleWatcher.cleanup();
+            titleWatcher = null;
         }
     }
 }

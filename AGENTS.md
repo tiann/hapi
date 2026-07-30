@@ -60,6 +60,10 @@ Bun workspaces; `shared` consumed by cli, hub, web.
 - Prefer 4-space indentation
 - Zod for runtime validation (schemas in `shared/src/schemas.ts`)
 
+## Patched dependencies
+
+- `@assistant-ui/tap` (`patches/`): raises tap scheduler `MAX_FLUSH_LIMIT` 50→2000. Bulk message prepends (older-history pages) create hundreds of tap resources in one flush; the default limit throws and drops the overflow, leaving the thread stale. Re-check the patch when upgrading `@assistant-ui/react`.
+
 ## Common commands (repo root)
 
 ```bash

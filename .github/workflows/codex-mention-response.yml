@@ -129,6 +129,8 @@ jobs:
           responses-api-endpoint: ${{ secrets.OPENAI_BASE_URL }}
           model: ${{ vars.OPENAI_MODEL || 'gpt-5.4' }}
           effort: ${{ vars.OPENAI_EFFORT || 'high' }}
+          # Tolerate flaky relay streams: more reconnects, longer idle timeout
+          codex-args: '-c model_providers.codex-action-responses-proxy.stream_max_retries=10 -c model_providers.codex-action-responses-proxy.stream_idle_timeout_ms=600000'
           sandbox: danger-full-access
           safety-strategy: drop-sudo
           prompt-file: .github/prompts/codex-mention-response.md

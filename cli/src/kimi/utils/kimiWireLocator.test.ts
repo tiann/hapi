@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import {
     createKimiWireLocator,
     encodeKimiWorkDirKey,
+    getKimiStatePath,
     getKimiWirePath,
     type LocatedKimiWire
 } from './kimiWireLocator';
@@ -74,6 +75,7 @@ describe('kimiWireLocator', () => {
             expect(located).toHaveLength(1);
             expect(located[0]?.sessionId).toBe('session_aaa-bbb');
             expect(located[0]?.wirePath).toBe(getKimiWirePath(join(homeDir, 'sessions', encodeKimiWorkDirKey(workDir), 'session_aaa-bbb')));
+            expect(located[0]?.statePath).toBe(getKimiStatePath(join(homeDir, 'sessions', encodeKimiWorkDirKey(workDir), 'session_aaa-bbb')));
         } finally {
             await locator.cleanup();
         }

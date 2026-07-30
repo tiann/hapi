@@ -3,7 +3,9 @@ import {
     type BlockWithThreadMessageId,
     aggregateResponseGroups,
     assignThreadMessageIds,
-    assignThreadMessageIdsWithStableWrappers
+    assignThreadMessageIdsWithStableWrappers,
+    getBlockPresentationTimestamp,
+    getResponseGroupTimestamps
 } from './assistant-runtime'
 import type { AgentEventBlock, AgentTextBlock, CliOutputBlock, ToolCallBlock, UserTextBlock } from '@/chat/types'
 import type { ToolGroupBlock, VisibleChatBlock } from '@/chat/toolGroups'
@@ -130,6 +132,79 @@ describe('assignThreadMessageIds', () => {
         expect(second[0]).toBe(first[0])
         expect(second[0].threadMessageId).toBe('agent-text:a')
         expect(second[1].threadMessageId).toBe('user-text:u')
+    })
+})
+
+describe('message presentation timestamps', () => {
+    it('uses invocation time for user-role messages and falls back to creation time', () => {
+        expect(getBlockPresentationTimestamp(userText('queued', {
+            createdAt: 100,
+            invokedAt: 200
+        }))).toBe(200)
+        expect(getBlockPresentationTimestamp(userText('immediate', {
+            createdAt: 300
+        }))).toBe(300)
+        expect(getBlockPresentationTimestamp(cliOutput('terminal', 'user', {
+            createdAt: 400,
+            invokedAt: 500
+        }))).toBe(500)
+    })
+
+    it('keeps a joined response timestamp stable when older assistant blocks are prepended', () => {
+        const middle = agentText('middle', { createdAt: 200 })
+        const tail = agentText('tail', { createdAt: 300 })
+
+        const initial = getResponseGroupTimestamps([middle, tail])
+        expect(initial.get(middle)).toBe(300)
+
+        const older = agentText('older', { createdAt: 100 })
+        const prepended = getResponseGroupTimestamps([older, middle, tail])
+        expect(prepended.get(older)).toBe(300)
+    })
+
+    it('splits response timestamps at user and system boundaries', () => {
+        const first = agentText('a1', { createdAt: 100 })
+        const second = agentText('a2', { createdAt: 200 })
+        const third = agentText('a3', { createdAt: 400 })
+        const fourth = agentText('a4', { createdAt: 600 })
+        const timestamps = getResponseGroupTimestamps([
+            first,
+            second,
+            userText('u1', { createdAt: 300 }),
+            third,
+            agentEvent('e1', { type: 'ready' }),
+            fourth
+        ])
+
+        expect(timestamps.get(first)).toBe(200)
+        expect(timestamps.get(third)).toBe(400)
+        expect(timestamps.get(fourth)).toBe(600)
+        expect(timestamps.size).toBe(3)
+    })
+
+    it('uses the latest grouped tool completion as response activity time', () => {
+        const first = toolCall('t1', {
+            createdAt: 100,
+            tool: {
+                ...toolCall('seed').tool,
+                id: 't1',
+                createdAt: 100,
+                completedAt: 300
+            }
+        })
+        const last = toolCall('t2', {
+            createdAt: 200,
+            tool: {
+                ...toolCall('seed').tool,
+                id: 't2',
+                createdAt: 200,
+                completedAt: 250
+            }
+        })
+        const group = toolGroup('g1', [first, last], { createdAt: 100 })
+
+        expect(getBlockPresentationTimestamp(group)).toBe(300)
+        expect(getResponseGroupTimestamps([group]).get(group)).toBe(300)
     })
 })
 

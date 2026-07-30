@@ -3,11 +3,25 @@ import { useTranslation } from '@/lib/use-translation'
 import { useAppearance } from '@/hooks/useTheme'
 import { useFontScale } from '@/hooks/useFontScale'
 import { useComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
+import { useAppContext } from '@/lib/app-context'
 import { settingsCategories } from '@/routes/settings/categories'
 import { ChevronRightIcon } from './SettingsPrimitives'
 
+function getNamespace(token: string): string | null {
+    try {
+        const payload = token.split('.')[1]
+        if (!payload) return null
+        const base64 = payload.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(payload.length / 4) * 4, '=')
+        const decoded = JSON.parse(atob(base64)) as { ns?: unknown }
+        return typeof decoded.ns === 'string' ? decoded.ns : null
+    } catch {
+        return null
+    }
+}
+
 export function SettingsNav(props: { activeId?: string; mobile?: boolean }) {
     const navigate = useNavigate()
+    const { token } = useAppContext()
     const { t, locale } = useTranslation()
     const { appearance } = useAppearance()
     const { fontScale } = useFontScale()
@@ -18,12 +32,15 @@ export function SettingsNav(props: { activeId?: string; mobile?: boolean }) {
         display: `${t(`settings.display.appearance.${appearance}`)} · ${Math.round(fontScale * 100)}%`,
         chat: t(`settings.chat.enterBehavior.${composerEnterBehavior}`),
         voice: t('settings.hub.voice.summary'),
+        machines: t('settings.hub.machines.summary'),
+        storage: t('settings.storage.summary'),
         about: `v${__APP_VERSION__}`,
     }
+    const visibleCategories = settingsCategories.filter((category) => category.id !== 'storage' || getNamespace(token) === 'default')
 
     return (
         <nav aria-label={t('settings.title')} className={props.mobile ? 'divide-y divide-[var(--app-divider)]' : 'space-y-1 p-3'}>
-            {settingsCategories.map((category) => {
+            {visibleCategories.map((category) => {
                 const active = props.activeId === category.id
                 return (
                     <button

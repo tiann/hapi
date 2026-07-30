@@ -36,8 +36,8 @@ export default function SettingsLayout() {
                         <BackIcon />
                     </button>
                     <div className="min-w-0 flex-1 font-semibold">
-                        <h1 className="truncate lg:hidden">{mobileTitle}</h1>
-                        <span className="hidden lg:inline">{t('settings.title')}</span>
+                        <h1 className="truncate text-lg lg:hidden">{mobileTitle}</h1>
+                        <h1 className="hidden text-lg lg:block">{t('settings.title')}</h1>
                     </div>
                 </div>
             </header>
@@ -47,7 +47,7 @@ export default function SettingsLayout() {
                     <aside className="hidden w-56 shrink-0 border-r border-[var(--app-border)] lg:block">
                         <SettingsNav activeId={category?.id ?? 'display'} />
                     </aside>
-                    <main className="app-scroll-y min-w-0 flex-1">
+                    <main className="app-scroll-y min-w-0 flex-1 lg:[scrollbar-gutter:stable_both-edges]">
                         <Outlet />
                     </main>
                 </div>

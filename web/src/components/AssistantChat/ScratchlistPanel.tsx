@@ -18,8 +18,12 @@ import {
     shouldConfirmDelete,
     type ScratchlistEntry,
 } from '@/lib/scratchlist'
+import type { ApiClient } from '@/api/client'
+import type { ScratchlistAttachmentMetadata } from '@hapi/protocol'
+import { isImageMimeType } from '@/lib/fileAttachments'
 import { safeCopyToClipboard } from '@/lib/clipboard'
 import { useTranslation } from '@/lib/use-translation'
+import { formatAbsoluteDateTime, formatRelativeTime } from '@/lib/relativeTime'
 
 const STORAGE_KEY_PREFIX = 'hapi.scratchlist-collapsed.v1.'
 
@@ -150,6 +154,57 @@ function CopyIcon() {
     )
 }
 
+function ClockIcon() {
+    return (
+        <svg viewBox="0 0 16 16" fill="none" className="h-3.5 w-3.5" aria-hidden="true">
+            <circle cx="8" cy="8" r="5.5" stroke="currentColor" strokeWidth="1.4" />
+            <path d="M8 5v3l2 1.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+    )
+}
+
+/**
+ * Per-entry age indicator: clock icon with a tooltip showing
+ * smart-relative time (e.g. "2m ago") and the absolute timestamp on a
+ * second line, so an operator can tell at-a-glance how stale a note is.
+ *
+ * Renders nothing when no usable timestamp is available - this happens
+ * for legacy localStorage entries that pre-date the v2 hub-sync work
+ * (no `updatedAt` recorded) AND have no `createdAt` either, which is
+ * vanishingly rare but still a guard against `NaN` titles.
+ *
+ * Falls back to `createdAt` when `updatedAt` is missing so newly-loaded
+ * v1-only rows still get a useful tooltip during the migration window.
+ */
+function EntryAgeIndicator({
+    entry,
+}: {
+    entry: ScratchlistEntry
+}) {
+    const { t } = useTranslation()
+    const stamp = entry.updatedAt ?? entry.createdAt
+    if (!Number.isFinite(stamp) || stamp <= 0) return null
+    const relative = formatRelativeTime(stamp, t)
+    if (!relative) return null
+    const absolute = formatAbsoluteDateTime(stamp)
+    const ariaLabel = t('scratchlist.entry.lastSavedAriaLabel', { time: relative })
+    const title = absolute
+        ? `${t('scratchlist.entry.lastSaved', { time: relative })}\n${absolute}`
+        : t('scratchlist.entry.lastSaved', { time: relative })
+    return (
+        <span
+            role="img"
+            aria-label={ariaLabel}
+            title={title}
+            data-testid="scratchlist-entry-age"
+            data-entry-age={relative}
+            className="flex h-6 w-6 items-center justify-center rounded text-[var(--app-hint)]"
+        >
+            <ClockIcon />
+        </span>
+    )
+}
+
 function ClipboardCheckIcon() {
     return (
         <svg viewBox="0 0 16 16" fill="none" className="h-3.5 w-3.5" aria-hidden="true">
@@ -191,6 +246,64 @@ function useCopiedFeedback(clearAfterMs: number = COPIED_FEEDBACK_MS) {
  * entries + callbacks. Used by both the always-visible ScratchlistPanel
  * and the composer-controlled drawer below.
  */
+function ScratchlistAttachmentThumbnails(props: {
+    sessionId: string
+    api: ApiClient
+    attachments: ScratchlistAttachmentMetadata[]
+}) {
+    const [urls, setUrls] = useState<Array<{ id: string; url: string; filename: string }>>([])
+
+    useEffect(() => {
+        let cancelled = false
+        const created: string[] = []
+        void (async () => {
+            const next: Array<{ id: string; url: string; filename: string }> = []
+            for (const attachment of props.attachments) {
+                if (!isImageMimeType(attachment.mimeType)) continue
+                try {
+                    const blob = await props.api.fetchScratchlistAttachmentBlob(props.sessionId, attachment.id)
+                    const url = URL.createObjectURL(blob)
+                    created.push(url)
+                    next.push({ id: attachment.id, url, filename: attachment.filename })
+                } catch {
+                    // Non-fatal: entry still shows text/actions.
+                }
+            }
+            if (!cancelled) {
+                setUrls(next)
+            } else {
+                for (const url of created) URL.revokeObjectURL(url)
+            }
+        })()
+        return () => {
+            cancelled = true
+            setUrls((prev) => {
+                for (const item of prev) URL.revokeObjectURL(item.url)
+                return []
+            })
+        }
+    }, [props.api, props.sessionId, props.attachments])
+
+    if (urls.length === 0) return null
+
+    return (
+        <div
+            className="float-left mr-2 mb-1 flex max-w-[min(8rem,40%)] flex-col gap-1"
+            data-testid="scratchlist-attachment-thumbs"
+        >
+            {urls.map((item) => (
+                <img
+                    key={item.id}
+                    src={item.url}
+                    alt={item.filename}
+                    className="max-h-20 w-full rounded border border-[var(--app-border)] object-cover"
+                    data-testid="scratchlist-attachment-thumb"
+                />
+            ))}
+        </div>
+    )
+}
+
 function ScratchlistInventory({
     entries,
     busyEntryId,
@@ -198,13 +311,17 @@ function ScratchlistInventory({
     onPromoteToQueue,
     onDelete,
     onMove,
+    sessionId,
+    api,
 }: {
     entries: ScratchlistEntry[]
     busyEntryId: string | null
-    onPromoteToComposer: (entry: ScratchlistEntry) => void
-    onPromoteToQueue: (entry: ScratchlistEntry) => void
+    onPromoteToComposer: (entry: ScratchlistEntry) => void | Promise<void>
+    onPromoteToQueue: (entry: ScratchlistEntry) => void | Promise<void>
     onDelete: (entry: ScratchlistEntry) => void
     onMove: (entry: ScratchlistEntry, direction: 'up' | 'down') => void
+    sessionId?: string
+    api?: ApiClient
 }) {
     const { t } = useTranslation()
     const { copiedEntryId, signalCopied } = useCopiedFeedback()
@@ -237,13 +354,30 @@ function ScratchlistInventory({
                 return (
                     <li
                         key={entry.id}
-                        className="flex items-start gap-2 rounded-md bg-[var(--app-bg)] px-2 py-1.5 shadow-sm"
+                        className="flex flex-col gap-1 rounded-md bg-[var(--app-bg)] px-2 py-1.5 shadow-sm"
                         data-testid="scratchlist-entry"
                     >
-                        <span className="flex-1 min-w-0 whitespace-pre-wrap break-words text-sm text-[var(--app-fg)] line-clamp-4">
-                            {entry.text}
-                        </span>
-                        <div className="flex shrink-0 items-center gap-0.5 text-[var(--app-hint)]">
+                        <div className="flex items-start gap-2">
+                            <div className="min-w-0 flex-1 overflow-hidden">
+                                {sessionId && api && entry.attachments && entry.attachments.length > 0 ? (
+                                    <ScratchlistAttachmentThumbnails
+                                        sessionId={sessionId}
+                                        api={api}
+                                        attachments={entry.attachments}
+                                    />
+                                ) : null}
+                                <p
+                                    className={
+                                        entry.attachments?.length
+                                            ? 'whitespace-pre-wrap break-words text-sm text-[var(--app-fg)]'
+                                            : 'line-clamp-4 whitespace-pre-wrap break-words text-sm text-[var(--app-fg)]'
+                                    }
+                                >
+                                    {entry.text || (entry.attachments?.length ? t('scratchlist.attachmentOnly') : '')}
+                                </p>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-0.5 text-[var(--app-hint)]">
+                            <EntryAgeIndicator entry={entry} />
                             <button
                                 type="button"
                                 aria-label={t('scratchlist.action.moveUp')}
@@ -314,6 +448,7 @@ function ScratchlistInventory({
                                 <TrashIcon />
                             </button>
                         </div>
+                        </div>
                     </li>
                 )
             })}
@@ -334,12 +469,16 @@ export function ScratchlistDrawer({
     onDelete,
     onPromoteToComposer,
     onPromoteToQueue,
+    sessionId,
+    api,
 }: {
     entries: ScratchlistEntry[]
     onMove: (id: string, direction: 'up' | 'down') => void
     onDelete: (id: string) => void
-    onPromoteToComposer: (text: string) => void
-    onPromoteToQueue: (text: string) => Promise<boolean>
+    onPromoteToComposer: (entry: ScratchlistEntry) => void | Promise<void>
+    onPromoteToQueue: (entry: ScratchlistEntry) => Promise<boolean>
+    sessionId: string
+    api: ApiClient
 }) {
     const { t } = useTranslation()
     const [busyEntryId, setBusyEntryId] = useState<string | null>(null)
@@ -365,14 +504,14 @@ export function ScratchlistDrawer({
     }, [onMove])
 
     const handlePromoteToComposer = useCallback((entry: ScratchlistEntry) => {
-        onPromoteToComposer(entry.text)
+        void onPromoteToComposer(entry)
     }, [onPromoteToComposer])
 
     const handlePromoteToQueue = useCallback(async (entry: ScratchlistEntry) => {
         if (busyEntryId) return
         setBusyEntryId(entry.id)
         try {
-            const accepted = await onPromoteToQueue(entry.text)
+            const accepted = await onPromoteToQueue(entry)
             if (accepted) onDelete(entry.id)
         } finally {
             setBusyEntryId(null)
@@ -408,6 +547,8 @@ export function ScratchlistDrawer({
                     <ScratchlistInventory
                         entries={entries}
                         busyEntryId={busyEntryId}
+                        sessionId={sessionId}
+                        api={api}
                         onPromoteToComposer={handlePromoteToComposer}
                         onPromoteToQueue={handlePromoteToQueue}
                         onDelete={handleDelete}
@@ -665,6 +806,7 @@ export function ScratchlistPanel({
                                                     {entry.text}
                                                 </span>
                                                 <div className="flex shrink-0 items-center gap-0.5 text-[var(--app-hint)]">
+                                                    <EntryAgeIndicator entry={entry} />
                                                     <button
                                                         type="button"
                                                         aria-label={t('scratchlist.action.moveUp')}

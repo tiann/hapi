@@ -5,7 +5,7 @@ import { codexLocal } from './codexLocal';
 import type { ReasoningEffort } from './appServerTypes';
 import { CodexSession } from './session';
 import { createCodexSessionScanner, type CodexSessionScanner } from './utils/codexSessionScanner';
-import { convertCodexEvent, type CodexMessage } from './utils/codexEventConverter';
+import { convertCodexEvent, type CodexMessage, type CodexSessionEvent } from './utils/codexEventConverter';
 import { buildHapiMcpBridge } from './utils/buildHapiMcpBridge';
 import { parseCodexCliOverrides, stripCodexCliOverrides } from './utils/codexCliOverrides';
 import { buildCodexPermissionModeCliArgs } from './utils/permissionModeConfig';
@@ -22,6 +22,20 @@ type PendingExecWrapper = {
     turnId?: string;
 };
 
+function extractTurnContextReasoningEffort(event: CodexSessionEvent): ReasoningEffort | null | undefined {
+    if (event.type !== 'turn_context') {
+        return undefined;
+    }
+    if (!event.payload || typeof event.payload !== 'object') {
+        return null;
+    }
+    const effort = (event.payload as Record<string, unknown>).effort;
+    if (typeof effort !== 'string' || !effort.trim()) {
+        return null;
+    }
+    return effort.trim().toLowerCase();
+}
+
 export async function codexLocalLauncher(session: CodexSession): Promise<'switch' | 'exit'> {
     const resumeSessionId = session.sessionId;
     let primarySessionId = resumeSessionId;
@@ -32,6 +46,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
     let pendingScannerSetup: Promise<void> | null = null;
     let transcriptLocator: CodexTranscriptLocator | null = null;
     let scannerTranscriptPath: string | null = null;
+    let scannerReplayedExistingHistory = false;
     const pendingPlansByTurnId = new Map<string, ProposedPlanMessage>();
     const pendingExecWrappers = new Map<string, PendingExecWrapper>();
     const toolHookBridge = new CodexToolHookBridge();
@@ -60,6 +75,21 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
             type: 'message',
             message: `${message} Keeping local Codex running; remote transcript sync is unavailable for this launch.`
         });
+    };
+
+    const drainAndCleanupScanner = async (
+        activeScanner: CodexSessionScanner,
+        replayedExistingHistory: boolean
+    ): Promise<void> => {
+        try {
+            // Codex can flush its final transcript records after the last watcher tick.
+            await activeScanner.flush();
+            if (replayedExistingHistory) {
+                session.markTranscriptHistoryReplayConsumed();
+            }
+        } finally {
+            await activeScanner.cleanup();
+        }
     };
 
     const handleSessionFound = (sessionId: string, allowSwitch = false): void => {
@@ -160,10 +190,11 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
             scannerTranscriptPath = transcriptPath;
             return;
         }
+        const replayExistingHistory = session.shouldReplayTranscriptHistory();
         const createdScanner = await createCodexSessionScanner({
             transcriptPath,
             // 中文注释：导入模式下允许 scanner 首次回放 transcript 全量内容，补齐 Codex 客户端里已有但 Hapi 还未看到的消息。
-            replayExistingHistory: session.replayTranscriptHistoryOnStart,
+            replayExistingHistory,
             onSessionId: (sessionId) => {
                 if (!isPrimarySessionId(sessionId)) {
                     logger.debug(`[codex-local]: Ignoring transcript session id ${sessionId}; primary is ${primarySessionId}`);
@@ -172,6 +203,10 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                 session.onSessionFound(sessionId);
             },
             onEvent: (event) => {
+                const observedReasoningEffort = extractTurnContextReasoningEffort(event);
+                if (observedReasoningEffort !== undefined) {
+                    session.setModelReasoningEffort(observedReasoningEffort);
+                }
                 const converted = convertCodexEvent(event);
                 if (converted?.sessionId) {
                     if (!isPrimarySessionId(converted.sessionId)) {
@@ -219,11 +254,12 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
             }
         });
         if (shuttingDown) {
-            await createdScanner.cleanup();
+            await drainAndCleanupScanner(createdScanner, replayExistingHistory);
             return;
         }
         scanner = createdScanner;
         scannerTranscriptPath = transcriptPath;
+        scannerReplayedExistingHistory = replayExistingHistory;
     };
 
     const handleTranscriptPath = (transcriptPath: string): Promise<void> => {
@@ -358,7 +394,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
         }
         const activeScanner = scanner as CodexSessionScanner | null;
         if (activeScanner) {
-            await activeScanner.cleanup();
+            await drainAndCleanupScanner(activeScanner, scannerReplayedExistingHistory);
         }
         flushAllPendingExecWrappers();
         for (const message of toolHookBridge.finish()) {

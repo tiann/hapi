@@ -102,9 +102,6 @@ function findMessageByLocalId(
     for (const message of state.messages) {
         if (message.localId === localId) return message
     }
-    for (const message of state.pending) {
-        if (message.localId === localId) return message
-    }
     return null
 }
 

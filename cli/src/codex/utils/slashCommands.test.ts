@@ -9,6 +9,19 @@ const state = {
 };
 
 describe('resolveCodexSlashCommand', () => {
+    it('toggles proactive multi-agent mode', () => {
+        expect(resolveCodexSlashCommand('/agent', state)).toMatchObject({
+            updates: { proactiveMultiAgent: true }
+        });
+        expect(resolveCodexSlashCommand('/agent off', { ...state, proactiveMultiAgent: true })).toMatchObject({
+            updates: { proactiveMultiAgent: false }
+        });
+        expect(resolveCodexSlashCommand('/agent status', { ...state, proactiveMultiAgent: true })).toEqual({
+            kind: 'handled',
+            message: 'Codex proactive multi-agent mode: on'
+        });
+    });
+
     it('enables plan mode without sending a turn', () => {
         expect(resolveCodexSlashCommand('/plan', state)).toEqual({
             kind: 'handled',

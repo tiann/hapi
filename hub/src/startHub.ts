@@ -11,6 +11,9 @@ import { SSEManager } from './sse/sseManager'
 import { getOrCreateVapidKeys } from './config/vapidKeys'
 import { PushService } from './push/pushService'
 import { PushNotificationChannel } from './push/pushNotificationChannel'
+import { FcmService } from './fcm/fcmService'
+import { FcmNotificationChannel } from './fcm/fcmNotificationChannel'
+import { resolveFcmConfig } from './fcm/fcmConfig'
 import { VisibilityTracker } from './visibility/visibilityTracker'
 import { TunnelManager } from './tunnel'
 import { waitForTunnelTlsReady } from './tunnel/tlsGate'
@@ -196,9 +199,33 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
 
     syncEngine = new SyncEngine(store, socketServer.io, socketServer.rpcRegistry, sseManager)
 
-    const notificationChannels: NotificationChannel[] = [
-        new PushNotificationChannel(pushService, sseManager, visibilityTracker, config.publicUrl)
-    ]
+    const fcmConfig = resolveFcmConfig()
+
+    // Build the optional FCM service early so the native-fallback probe
+    // can consult its health gate. When FCM is configured, `fcmService` is
+    // shared between the FcmNotificationChannel and the probe so a broken
+    // pipeline (expired credentials, sustained 5xx) lets web-push run as
+    // a last-resort surface for the namespace instead of silently muting
+    // both channels.
+    const fcmService = fcmConfig
+        ? new FcmService(fcmConfig.projectId, fcmConfig.serviceAccount, store)
+        : null
+
+    const notificationChannels: NotificationChannel[] = []
+
+    if (fcmConfig && fcmService) {
+        notificationChannels.push(new FcmNotificationChannel(fcmService, sseManager, visibilityTracker, store))
+        console.log('[Fcm] Native companion push enabled (project:', fcmConfig.projectId + ')')
+    }
+
+    notificationChannels.push(
+        new PushNotificationChannel(
+            pushService,
+            sseManager,
+            visibilityTracker,
+            config.publicUrl
+        )
+    )
 
     if (config.serverChanSendKey && config.serverChanNotification) {
         notificationChannels.push(new ServerChanChannel(config.serverChanSendKey, config.publicUrl))
@@ -298,6 +325,28 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
                 console.log(qrString)
             } catch {
                 // QR code generation failure should not affect main flow
+            }
+
+            // Companion app pairing QR (deeplink scheme; PWA users ignore, native app picks up).
+            const companionParams = new URLSearchParams({
+                hub: tunnelUrl,
+                code: config.cliApiToken
+            })
+            const companionDeeplink = `hapicompanion://bind?${companionParams.toString()}`
+            console.log('')
+            console.log('Or pair the HAPI companion app (Android phone / Wear OS):')
+            console.log(`  ${companionDeeplink}`)
+            try {
+                const companionQrString = await QRCode.toString(companionDeeplink, {
+                    type: 'terminal',
+                    small: true,
+                    margin: 1,
+                    errorCorrectionLevel: 'L'
+                })
+                console.log('')
+                console.log(companionQrString)
+            } catch {
+                // Non-fatal; deeplink text above is sufficient if QR rendering fails.
             }
         }
 

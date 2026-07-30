@@ -1,28 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { AcpSdkBackend } from '@/agent/backends/acp';
+import { normalizeNativeSessionTitle } from '@/agent/nativeSessionTitle';
 
 type AcpSessionTitleBackend = Pick<AcpSdkBackend, 'setSessionInfoUpdateListener'>;
 type AcpSessionTitleClient = Pick<ApiSessionClient, 'sendClaudeSessionMessage'>;
 
-function isPlaceholderTitle(title: string): boolean {
-    return title === 'Untitled'
-        || /^(?:New|Child) session - \d{4}-\d{2}-\d{2}T/.test(title);
-}
-
-/** Syncs agent-generated ACP session titles into HAPI session metadata. */
-export function registerAcpSessionTitleSync(
-    backend: AcpSessionTitleBackend,
-    client: AcpSessionTitleClient
-): void {
+/** Creates a normalized, deduplicated native-title sink for a HAPI session. */
+function createSessionTitleSync(client: AcpSessionTitleClient): (title: unknown) => void {
     let lastTitle: string | null = null;
 
-    backend.setSessionInfoUpdateListener(({ title }) => {
-        if (typeof title !== 'string') {
-            return;
-        }
-        const normalizedTitle = title.trim();
-        if (!normalizedTitle || isPlaceholderTitle(normalizedTitle) || normalizedTitle === lastTitle) {
+    return (title) => {
+        const normalizedTitle = normalizeNativeSessionTitle(title);
+        if (!normalizedTitle || normalizedTitle === lastTitle) {
             return;
         }
         lastTitle = normalizedTitle;
@@ -31,5 +21,17 @@ export function registerAcpSessionTitleSync(
             summary: normalizedTitle,
             leafUuid: randomUUID()
         });
+    };
+}
+
+/** Syncs agent-generated ACP session titles into HAPI session metadata. */
+export function registerAcpSessionTitleSync(
+    backend: AcpSessionTitleBackend,
+    client: AcpSessionTitleClient
+): void {
+    const syncTitle = createSessionTitleSync(client);
+
+    backend.setSessionInfoUpdateListener(({ title }) => {
+        syncTitle(title);
     });
 }

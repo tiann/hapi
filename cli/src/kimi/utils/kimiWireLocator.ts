@@ -7,6 +7,7 @@ import { getKimiCodeHome } from './config';
 export type LocatedKimiWire = {
     sessionId: string;
     wirePath: string;
+    statePath: string;
 };
 
 export type KimiWireLocator = {
@@ -63,10 +64,14 @@ export function getKimiWirePath(sessionDir: string): string {
     return join(sessionDir, 'agents', 'main', 'wire.jsonl');
 }
 
+export function getKimiStatePath(sessionDir: string): string {
+    return join(sessionDir, 'state.json');
+}
+
 /**
  * Polls the kimi-code session storage for the session the locally spawned
  * `kimi` process just created in this working directory, and resolves with
- * its wire transcript path. Mirrors the codex transcript locator: sessions
+ * its wire transcript and state paths. Mirrors the codex transcript locator: sessions
  * created before hapi's launch are ignored; multiple fresh candidates are
  * treated as ambiguous rather than attaching to the wrong session.
  */
@@ -202,6 +207,7 @@ class KimiWireLocatorImpl {
 
             const sessionDir = join(this.workspaceDir, entry.name);
             const wirePath = getKimiWirePath(sessionDir);
+            const statePath = getKimiStatePath(sessionDir);
             const wireStats = await stat(wirePath).catch(() => null);
             if (!wireStats || !wireStats.isFile()) {
                 continue;
@@ -223,14 +229,14 @@ class KimiWireLocatorImpl {
                 }
             }
 
-            candidates.push({ sessionId: entry.name, wirePath });
+            candidates.push({ sessionId: entry.name, wirePath, statePath });
         }
         return candidates;
     }
 
     private async matchesWorkDir(sessionDir: string): Promise<boolean> {
         try {
-            const raw = await readFile(join(sessionDir, 'state.json'), 'utf8');
+            const raw = await readFile(getKimiStatePath(sessionDir), 'utf8');
             const parsed = JSON.parse(raw) as { workDir?: unknown };
             if (typeof parsed.workDir !== 'string' || parsed.workDir.length === 0) {
                 return true;

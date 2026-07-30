@@ -19,6 +19,7 @@ describe('registerAcpSessionTitleSync', () => {
         listener!({ sessionId: 'session-1', title: '' });
         listener!({ sessionId: 'session-1', title: null });
         listener!({ sessionId: 'session-1', title: 'Untitled' });
+        listener!({ sessionId: 'session-1', title: 'New Session' });
         listener!({ sessionId: 'session-1', title: 'New session - 2026-07-12T15:30:03.251Z' });
 
         expect(sendClaudeSessionMessage).toHaveBeenCalledTimes(1);

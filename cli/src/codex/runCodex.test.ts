@@ -211,6 +211,13 @@ describe('runCodex', () => {
         expect(mockCodexSession.setServiceTier).not.toHaveBeenCalled()
     })
 
+    it('does not collapse inherited Codex reasoning effort into explicit default on startup', async () => {
+        await runCodexImpl({ workingDirectory: '/tmp/project' })
+
+        expect(mockCodexSession.setModelReasoningEffort).not.toHaveBeenCalled()
+        expect(harness.loopArgs[0]?.modelReasoningEffort).toBeUndefined()
+    })
+
     it('uses lazy bootstrap for a fresh terminal launch', async () => {
         await runCodexImpl({ workingDirectory: '/tmp/project' })
 
@@ -256,7 +263,23 @@ describe('runCodex', () => {
         await handler?.({ modelReasoningEffort: 'max' })
         await handler?.({ modelReasoningEffort: ' EXTREME ' })
 
-        expect(mockCodexSession.setModelReasoningEffort).toHaveBeenNthCalledWith(2, 'max')
-        expect(mockCodexSession.setModelReasoningEffort).toHaveBeenNthCalledWith(3, 'extreme')
+        expect(mockCodexSession.setModelReasoningEffort).toHaveBeenNthCalledWith(1, 'max')
+        expect(mockCodexSession.setModelReasoningEffort).toHaveBeenNthCalledWith(2, 'extreme')
+    })
+
+    it('still persists an explicit reasoning effort reset as null', async () => {
+        await runCodexImpl({ workingDirectory: '/tmp/project' })
+
+        const registration = harness.session.rpcHandlerManager.registerHandler.mock.calls.find(
+            ([method]) => method === RPC_METHODS.SetSessionConfig
+        )
+        const handler = registration?.[1] as ((payload: unknown) => Promise<unknown>) | undefined
+        const result = await handler?.({ modelReasoningEffort: null })
+
+        expect(mockCodexSession.setModelReasoningEffort).toHaveBeenCalledTimes(1)
+        expect(mockCodexSession.setModelReasoningEffort).toHaveBeenCalledWith(null)
+        expect(result).toEqual({
+            applied: expect.objectContaining({ modelReasoningEffort: null })
+        })
     })
 })

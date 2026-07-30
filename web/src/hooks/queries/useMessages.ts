@@ -1,104 +1,97 @@
-import { useCallback, useEffect, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useSyncExternalStore } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { DecryptedMessage } from '@/types/api'
 import {
-    fetchLatestMessages,
+    activateMessageWindow,
     fetchOlderMessages,
-    flushPendingMessages,
     getMessageWindowState,
-    setAtBottom as setMessageWindowAtBottom,
+    setMessageViewMode,
     subscribeMessageWindow,
+    syncTailMessages,
+    type MessageViewMode,
     type MessageWindowState,
 } from '@/lib/message-window-store'
 
 export const EMPTY_STATE: MessageWindowState = {
     sessionId: 'unknown',
     messages: [],
-    pending: [],
-    pendingCount: 0,
     hasMore: false,
     oldestSeq: null,
     newestSeq: null,
-    isLoading: false,
+    epoch: null,
+    isSyncingTail: false,
     isLoadingMore: false,
     warning: null,
-    atBottom: true,
+    viewMode: 'tail',
+    unseenCount: 0,
     messagesVersion: 0,
+    historyVersion: 0,
 }
 
 export function useMessages(api: ApiClient | null, sessionId: string | null): {
     messages: DecryptedMessage[]
-    pendingMessages: DecryptedMessage[]
     warning: string | null
-    isLoading: boolean
+    isSyncingTail: boolean
     isLoadingMore: boolean
     hasMore: boolean
-    pendingCount: number
+    unseenCount: number
     messagesVersion: number
-    loadMore: () => Promise<unknown>
-    refetch: () => Promise<unknown>
-    flushPending: () => Promise<void>
-    setAtBottom: (atBottom: boolean) => void
+    historyVersion: number
+    loadMore: () => Promise<boolean>
+    refetch: () => Promise<void>
+    setViewMode: (mode: MessageViewMode) => void
 } {
     const state = useSyncExternalStore(
         useCallback((listener) => {
-            if (!sessionId) {
-                return () => {}
-            }
+            if (!sessionId) return () => {}
             return subscribeMessageWindow(sessionId, listener)
         }, [sessionId]),
-        useCallback(() => {
-            if (!sessionId) {
-                return EMPTY_STATE
-            }
-            return getMessageWindowState(sessionId)
-        }, [sessionId]),
+        useCallback(() => sessionId ? getMessageWindowState(sessionId) : EMPTY_STATE, [sessionId]),
         () => EMPTY_STATE
     )
 
-    useEffect(() => {
-        if (!api || !sessionId) {
-            return
+    useLayoutEffect(() => {
+        if (sessionId) {
+            activateMessageWindow(sessionId)
         }
-        void fetchLatestMessages(api, sessionId)
+    }, [sessionId])
+
+    useEffect(() => {
+        if (api && sessionId) {
+            void syncTailMessages(api, sessionId)
+        }
     }, [api, sessionId])
 
     const loadMore = useCallback(async () => {
-        if (!api || !sessionId) return
-        if (!state.hasMore || state.isLoadingMore) return
-        await fetchOlderMessages(api, sessionId)
+        if (!api || !sessionId || !state.hasMore || state.isLoadingMore) return false
+        return await fetchOlderMessages(api, sessionId)
     }, [api, sessionId, state.hasMore, state.isLoadingMore])
 
     const refetch = useCallback(async () => {
         if (!api || !sessionId) return
-        await fetchLatestMessages(api, sessionId)
+        await syncTailMessages(api, sessionId, { ensureAfterCurrent: true })
     }, [api, sessionId])
 
-    const flushPending = useCallback(async () => {
+    const setViewMode = useCallback((mode: MessageViewMode) => {
         if (!sessionId) return
-        const needsRefresh = flushPendingMessages(sessionId)
-        if (needsRefresh && api) {
-            await fetchLatestMessages(api, sessionId)
+        const previousMode = getMessageWindowState(sessionId).viewMode
+        setMessageViewMode(sessionId, mode)
+        if (mode === 'tail' && previousMode !== 'tail' && api) {
+            void syncTailMessages(api, sessionId, { ensureAfterCurrent: true })
         }
     }, [api, sessionId])
 
-    const setAtBottom = useCallback((atBottom: boolean) => {
-        if (!sessionId) return
-        setMessageWindowAtBottom(sessionId, atBottom)
-    }, [sessionId])
-
     return {
         messages: state.messages,
-        pendingMessages: state.pending,
         warning: state.warning,
-        isLoading: state.isLoading,
+        isSyncingTail: state.isSyncingTail,
         isLoadingMore: state.isLoadingMore,
         hasMore: state.hasMore,
-        pendingCount: state.pendingCount,
+        unseenCount: state.unseenCount,
         messagesVersion: state.messagesVersion,
+        historyVersion: state.historyVersion,
         loadMore,
         refetch,
-        flushPending,
-        setAtBottom,
+        setViewMode,
     }
 }

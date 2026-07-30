@@ -48,10 +48,9 @@ describe('UnifiedButton — routesToScratchlist visual state', () => {
         expect(btn.className).toContain('bg-amber-500')
     })
 
-    it('paints chat black + announces "Send" when routesToScratchlist=false even if scratchlist toggle conceptually on', () => {
-        // Caller computed routesToScratchlist=false because the payload
-        // would carry attachments or a pending schedule. The button must
-        // therefore look like a normal chat send.
+    it('paints chat black + announces "Send" when routesToScratchlist=false (e.g. pending schedule)', () => {
+        // Caller computed routesToScratchlist=false because a pending schedule
+        // forces chat fallback. The button must look like a normal chat send.
         renderInProviders(
             <UnifiedButton
                 canSend

@@ -157,13 +157,30 @@ export class RpcGateway {
         effort?: string,
         permissionMode?: PermissionMode,
         serviceTier?: string,
-        existingSessionId?: string
+        existingSessionId?: string,
+        collaborationMode?: CodexCollaborationMode
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
         try {
             const result = await this.machineRpc(
                 machineId,
                 RPC_METHODS.SpawnHappySession,
-                { type: 'spawn-in-directory', directory, agent, model, modelReasoningEffort, yolo, sessionType, worktreeName, resumeSessionId, effort, permissionMode, serviceTier, existingSessionId, sessionId: existingSessionId }
+                {
+                    type: 'spawn-in-directory',
+                    directory,
+                    agent,
+                    model,
+                    modelReasoningEffort,
+                    yolo,
+                    sessionType,
+                    worktreeName,
+                    resumeSessionId,
+                    effort,
+                    permissionMode,
+                    serviceTier,
+                    existingSessionId,
+                    sessionId: existingSessionId,
+                    collaborationMode
+                }
             )
             if (result && typeof result === 'object') {
                 const obj = result as Record<string, unknown>
@@ -292,10 +309,6 @@ export class RpcGateway {
             skills?: Array<{ name: string; description?: string }>
             error?: string
         }
-    }
-
-    async listCodexModelsForSession(sessionId: string): Promise<RpcListCodexModelsResponse> {
-        return await this.sessionRpc(sessionId, RPC_METHODS.ListCodexModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListCodexModelsResponse
     }
 
     async listCodexModelsForMachine(machineId: string): Promise<RpcListCodexModelsResponse> {

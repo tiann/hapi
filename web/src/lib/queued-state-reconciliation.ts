@@ -1,9 +1,9 @@
 import type { ApiClient } from '@/api/client'
 import {
-    fetchLatestMessages,
     getQueuedReconcileCandidateLocalIds,
     markMessagesConsumed,
     reconcileQueuedLocalIds,
+    syncTailMessages,
 } from './message-window-store'
 
 const QUEUED_STATE_BATCH_SIZE = 1000
@@ -12,7 +12,7 @@ export async function reconcileQueuedStateAfterConnect(
     api: ApiClient,
     sessionId: string
 ): Promise<void> {
-    await fetchLatestMessages(api, sessionId)
+    await syncTailMessages(api, sessionId, { ensureAfterCurrent: true })
     const candidateLocalIds = getQueuedReconcileCandidateLocalIds(sessionId)
     if (candidateLocalIds.length === 0) {
         return

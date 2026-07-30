@@ -10,13 +10,25 @@ import {
     unwrapRoleWrappedRecordEnvelope
 } from '@hapi/protocol/messages'
 import { isObject } from '@hapi/protocol'
-import type { QueuedStateResponse } from '@hapi/protocol/apiTypes'
+import type { MessagesResponse, QueuedStateResponse } from '@hapi/protocol/apiTypes'
 import type { Server } from 'socket.io'
 import { randomUUID } from 'node:crypto'
 import type { Store, CancelQueuedMessageResult } from '../store'
 import { EventPublisher } from './eventPublisher'
 
 type StoredMessageForDelivery = ReturnType<Store['messages']['getMessages']>[number]
+type MessagePosition = { at: number; seq: number }
+
+function messagePosition(message: StoredMessageForDelivery): MessagePosition {
+    return {
+        at: message.invokedAt ?? message.createdAt,
+        seq: message.seq
+    }
+}
+
+function comparePosition(a: MessagePosition, b: MessagePosition): number {
+    return a.at !== b.at ? a.at - b.at : a.seq - b.seq
+}
 
 function isWebVisibleStoredMessage(message: StoredMessageForDelivery): boolean {
     return !isRedundantGoalStatusEventContent(message.content)
@@ -139,25 +151,54 @@ export class MessageService {
 
     getMessagesPage(
         sessionId: string,
-        options: { limit: number; before?: { at: number; seq: number } | null }
-    ): {
-        messages: DecryptedMessage[]
-        page: {
+        options: {
             limit: number
-            nextBeforeSeq: number | null
-            nextBeforeAt: number | null
-            hasMore: boolean
+            before?: MessagePosition | null
+            after?: MessagePosition | null
+            until?: MessagePosition | null
+            epoch?: number | null
         }
-    } {
-        let before = options.before ?? undefined
-        let pageRows = this.store.messages.getMessagesByPosition(sessionId, options.limit, before)
+    ): MessagesResponse {
+        const epoch = this.store.messages.getMessageEpoch(sessionId)
+        if (options.after) {
+            if (options.epoch !== undefined && options.epoch !== null && options.epoch !== epoch) {
+                return this.getLatestOrBeforeMessagesPage(sessionId, options.limit, null, epoch, true)
+            }
+            return this.getAfterMessagesPage(
+                sessionId,
+                options.limit,
+                options.after,
+                options.until ?? null,
+                epoch
+            )
+        }
+        return this.getLatestOrBeforeMessagesPage(
+            sessionId,
+            options.limit,
+            options.before ?? null,
+            epoch,
+            false
+        )
+    }
+
+    private getLatestOrBeforeMessagesPage(
+        sessionId: string,
+        limit: number,
+        requestedBefore: MessagePosition | null,
+        epoch: number,
+        reset: boolean
+    ): MessagesResponse {
+        const direction = requestedBefore ? 'before' as const : 'latest' as const
+        const snapshotHead = this.store.messages.getNewestMessagePosition(sessionId)
+        let before = requestedBefore ?? undefined
+        let pageRows = this.store.messages.getMessagesByPosition(sessionId, limit, requestedBefore ?? undefined)
 
         // Latest-page request (no cursor): also include uninvoked local user messages
         // out-of-band, so refresh / secondary clients can still see queued rows even
         // when their position key (createdAt) places them outside the latest page.
         // The cursor stays anchored to pageRows so out-of-band rows don't affect
         // pagination of older pages.
-        let queuedRows = before === undefined
+        let queuedRows = requestedBefore === null
             ? this.store.messages.getUninvokedLocalMessages(sessionId)
             : []
 
@@ -190,7 +231,7 @@ export class MessageService {
 
         while (messages.length === 0 && hasMore && oldestSeq !== null && oldestPositionAt !== null) {
             before = { at: oldestPositionAt, seq: oldestSeq }
-            pageRows = this.store.messages.getMessagesByPosition(sessionId, options.limit, before)
+            pageRows = this.store.messages.getMessagesByPosition(sessionId, limit, before)
             queuedRows = []
 
             byId = new Map<string, typeof pageRows[number]>()
@@ -219,9 +260,75 @@ export class MessageService {
         return {
             messages,
             page: {
-                limit: options.limit,
+                direction,
+                limit,
+                epoch,
+                reset,
                 nextBeforeSeq: oldestSeq,
                 nextBeforeAt: oldestPositionAt,
+                nextAfterSeq: null,
+                nextAfterAt: null,
+                snapshotHeadSeq: snapshotHead?.seq ?? null,
+                snapshotHeadAt: snapshotHead?.at ?? null,
+                hasMore
+            }
+        }
+    }
+
+    private getAfterMessagesPage(
+        sessionId: string,
+        limit: number,
+        after: MessagePosition,
+        requestedUntil: MessagePosition | null,
+        epoch: number
+    ): MessagesResponse {
+        const currentHead = this.store.messages.getNewestMessagePosition(sessionId)
+        const snapshotHead = currentHead && requestedUntil
+            ? (comparePosition(requestedUntil, currentHead) <= 0 ? requestedUntil : currentHead)
+            : requestedUntil ?? currentHead
+
+        if (!snapshotHead || comparePosition(snapshotHead, after) <= 0) {
+            return {
+                messages: [],
+                page: {
+                    direction: 'after',
+                    limit,
+                    epoch,
+                    reset: false,
+                    nextBeforeSeq: null,
+                    nextBeforeAt: null,
+                    nextAfterSeq: after.seq,
+                    nextAfterAt: after.at,
+                    snapshotHeadSeq: snapshotHead?.seq ?? null,
+                    snapshotHeadAt: snapshotHead?.at ?? null,
+                    hasMore: false
+                }
+            }
+        }
+
+        const pageRows = this.store.messages.getMessagesAfterPosition(
+            sessionId,
+            limit,
+            after,
+            snapshotHead
+        )
+        const last = pageRows[pageRows.length - 1] ?? null
+        const nextAfter = last ? messagePosition(last) : snapshotHead
+        const hasMore = last !== null && comparePosition(nextAfter, snapshotHead) < 0
+
+        return {
+            messages: toVisibleDecryptedMessages(pageRows),
+            page: {
+                direction: 'after',
+                limit,
+                epoch,
+                reset: false,
+                nextBeforeSeq: null,
+                nextBeforeAt: null,
+                nextAfterSeq: nextAfter.seq,
+                nextAfterAt: nextAfter.at,
+                snapshotHeadSeq: snapshotHead.seq,
+                snapshotHeadAt: snapshotHead.at,
                 hasMore
             }
         }

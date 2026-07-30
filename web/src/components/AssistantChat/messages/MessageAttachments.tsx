@@ -56,7 +56,10 @@ export function MessageAttachments(props: { attachments: AttachmentMetadata[] })
     return (
         <div className="mt-2 flex flex-col gap-2">
             {images.length > 0 && (
-                <div className="flex flex-wrap gap-2">
+                <div
+                    className="hapi-share-media-grid flex flex-wrap gap-2"
+                    data-hapi-image-count={images.length}
+                >
                     {images.map(attachment => (
                         <ImageAttachment key={attachment.id} attachment={attachment} />
                     ))}

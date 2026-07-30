@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
     codexModelAdvertisesFastTier,
+    getEffectiveCodexServiceTier,
     getDisplayedCodexServiceTier,
     isFastServiceTier
 } from './codexFastMode'
@@ -45,12 +46,24 @@ describe('isFastServiceTier', () => {
     it('detects the fast tier regardless of casing/spacing', () => {
         expect(isFastServiceTier('fast')).toBe(true)
         expect(isFastServiceTier(' Fast ')).toBe(true)
+        expect(isFastServiceTier('priority')).toBe(true)
     })
 
     it('treats null/standard as not fast', () => {
         expect(isFastServiceTier(null)).toBe(false)
         expect(isFastServiceTier(undefined)).toBe(false)
         expect(isFastServiceTier('standard')).toBe(false)
+    })
+})
+
+describe('getEffectiveCodexServiceTier', () => {
+    it('uses the active model default only when the session has no override', () => {
+        const modelsWithDefault = models.map((model) => (
+            model.id === 'gpt-5.5' ? { ...model, defaultServiceTier: 'priority' } : model
+        ))
+
+        expect(getEffectiveCodexServiceTier(null, null, modelsWithDefault)).toBe('priority')
+        expect(getEffectiveCodexServiceTier('standard', null, modelsWithDefault)).toBe('standard')
     })
 })
 

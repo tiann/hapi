@@ -48,6 +48,7 @@ describe('getToolGroupActionKind', () => {
         expect(getToolGroupActionKind(makeToolBlock('read-1', 'Read'))).toBe('read')
         expect(getToolGroupActionKind(makeToolBlock('grep-1', 'Grep'))).toBe('search')
         expect(getToolGroupActionKind(makeToolBlock('bash-1', 'Bash'))).toBe('command')
+        expect(getToolGroupActionKind(makeToolBlock('shell-1', 'run_shell_command'))).toBe('command')
         expect(getToolGroupActionKind(makeToolBlock('edit-1', 'Edit'))).toBe('mutation')
     })
 })

@@ -14,7 +14,7 @@ export default function SettingsVoiceVoicesPage() {
     const { t } = useTranslation()
     const voice = useVoiceSettings()
     return (
-        <SettingsPageContent title={t('settings.voice.voice')} description={t('settings.voice.voices.description')}>
+        <SettingsPageContent description={t('settings.voice.voices.description')}>
             <SettingsSection>
                 <div role="radiogroup" aria-label={t('settings.voice.voice')} className="divide-y divide-[var(--app-divider)]">
                     <button type="button" role="radio" aria-checked={voice.voiceId === null} onClick={() => voice.setVoice(null)} className={`flex min-h-12 w-full items-center justify-between px-3 py-3 text-left ${voice.voiceId === null ? 'bg-[var(--app-subtle-bg)] text-[var(--app-link)]' : 'text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)]'}`}>

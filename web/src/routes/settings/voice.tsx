@@ -22,7 +22,7 @@ export default function SettingsVoicePage() {
     }
 
     return (
-        <SettingsPageContent title={t('settings.voice.title')} description={t('settings.voice.description')}>
+        <SettingsPageContent description={t('settings.voice.description')}>
             <SettingsSection title={t('settings.voice.connection.title')} description={t('settings.voice.group.hint')}>
                 {voice.configuredBackends.length > 1 && voice.backend ? (
                     <SettingsChoiceGroup
@@ -33,7 +33,7 @@ export default function SettingsVoicePage() {
                     />
                 ) : null}
                 <label className="flex min-h-12 items-center justify-between gap-3 px-3 py-3">
-                    <span className="text-[var(--app-fg)]">{t('settings.voice.language')}</span>
+                    <span className="text-sm font-medium text-[var(--app-fg)]">{t('settings.voice.language')}</span>
                     <select
                         value={voice.voiceLanguage ?? ''}
                         onChange={(event) => {

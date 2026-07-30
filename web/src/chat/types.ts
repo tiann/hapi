@@ -127,6 +127,12 @@ export type NormalizedMessage = ({
     localId: string | null
     createdAt: number
     isSidechain: boolean
+    // The tool_use id of the Agent/Task tool_use that spawned this sidechain
+    // message (SDK's parent_tool_use_id, preserved end-to-end). The tracer
+    // groups sidechain messages under their parent Agent card by this id
+    // directly, falling back to prompt exact-match only for older stored
+    // messages that predate this field.
+    parentToolUseId?: string | null
     meta?: unknown
     usage?: UsageData
     status?: MessageStatus

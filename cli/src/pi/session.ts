@@ -47,7 +47,7 @@ export class PiSession {
     rpcResolver: PiRpcResolver | null = null;
 
     // Startup ready gate (issue #1143). Pi's socket goes `active` (spawn success)
-    // before `pi --mode rpc` finishes `new_session`/`get_state`, so a prompt sent
+    // before `pi --mode rpc` returns its initial `get_state`, so a prompt sent
     // in that window reaches Pi before its session is initialized and wedges
     // (agent_start, then silence). Outbound sends that assume a live Pi session
     // are queued via runWhenReady() and drained FIFO once markReady() fires (on

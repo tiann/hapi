@@ -29,7 +29,7 @@ function createMockSession(): PiSession {
 // --- Ready gate + outbound buffer (Pi RPC ready-race, issue #1143) ---
 //
 // A prompt POSTed immediately after spawn used to be sent to Pi before
-// `new_session`/`get_state` finished, wedging the turn (agent_start then
+// Pi returned its initial `get_state`, wedging the turn (agent_start then
 // silence). runWhenReady buffers such sends until markReady() (fired when Pi's
 // get_state response lands), then drains them FIFO.
 

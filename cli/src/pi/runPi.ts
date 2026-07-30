@@ -74,7 +74,7 @@ export async function runPi(opts: {
 
     const transportArgs = ['--mode', 'rpc'];
     if (opts.resumeSessionId) {
-        transportArgs.push('--session-id', opts.resumeSessionId);
+        transportArgs.push('--session', opts.resumeSessionId);
     }
     const transport = new PiTransport({ command: 'pi', args: transportArgs, cwd: workingDirectory });
 
@@ -319,7 +319,7 @@ export async function runPi(opts: {
         const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
         // Gate the send behind Pi startup readiness. A prompt POSTed immediately
         // after spawn (supported handoff pattern — hapi-ping-peer, intake
-        // scripts) would otherwise reach Pi before new_session/get_state finish
+        // scripts) would otherwise reach Pi before its initial get_state finishes
         // and wedge the turn. runWhenReady delivers now if ready, else buffers
         // FIFO until the first get_state response drains it (issue #1143).
         // piIsStreaming is evaluated at delivery time so a message buffered
@@ -388,7 +388,8 @@ export async function runPi(opts: {
     readyFallback.unref?.();
     try {
         transport.start();
-        transport.send({ type: 'new_session' });
+        // Pi creates a fresh session (or resumes --session) before RPC mode
+        // starts. Sending new_session here races get_state and discards a resumed session.
         transport.send({ type: 'get_state' });
         transport.send({ type: 'get_available_models' });
         transport.send({ type: 'get_commands' });

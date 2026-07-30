@@ -18,6 +18,20 @@ export function toCursorAcpMode(mode: CursorPermissionMode | undefined): CursorA
     return 'agent';
 }
 
+/**
+ * Permission mode to use after the operator accepts a CreatePlan request.
+ * Plan/ask are read-only planning modes — leave them for an executable mode so
+ * "Yes" means continue the task, not "plan complete, stop".
+ */
+export function resolveCursorModeAfterPlanApproval(
+    mode: CursorPermissionMode | undefined
+): CursorPermissionMode {
+    if (mode === 'plan' || mode === 'ask' || mode === undefined) {
+        return 'default';
+    }
+    return mode;
+}
+
 /** True when HAPI permission mode should spawn/toggle Cursor Auto-review. */
 export function isCursorAutoReviewMode(mode: CursorPermissionMode | undefined): boolean {
     return mode === 'autoReview';

@@ -15,7 +15,7 @@ import { useViewportHeight } from '@/hooks/useViewportHeight'
 import { useVisibilityReporter } from '@/hooks/useVisibilityReporter'
 import { queryKeys } from '@/lib/query-keys'
 import { AppContextProvider } from '@/lib/app-context'
-import { clearMessageWindow, fetchLatestMessages } from '@/lib/message-window-store'
+import { clearMessageWindow, syncTailMessages } from '@/lib/message-window-store'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { useTranslation } from '@/lib/use-translation'
 import { VoiceProvider } from '@/lib/voice-context'
@@ -229,7 +229,7 @@ function AppInner() {
             queryClient.invalidateQueries({ queryKey: ['session'] })
         ]
         const refreshMessages = (selectedSessionId && api)
-            ? fetchLatestMessages(api, selectedSessionId)
+            ? syncTailMessages(api, selectedSessionId)
             : Promise.resolve()
         Promise.all([...invalidations, refreshMessages])
             .catch((error) => {
@@ -259,7 +259,7 @@ function AppInner() {
             return
         }
         clearMessageWindow(event.sessionId)
-        void fetchLatestMessages(api, event.sessionId)
+        void syncTailMessages(api, event.sessionId)
     }, [api, selectedSessionId])
 
     const handleSessionSseConnect = useCallback(() => {
@@ -331,6 +331,7 @@ function AppInner() {
         [selectedSessionId]
     )
     const sseEnabled = Boolean(api && token)
+    const showReconnectingBanner = sseDisconnected && !isSyncing
 
     const { subscriptionId: globalSubscriptionId } = useSSE({
         enabled: sseEnabled,
@@ -449,15 +450,18 @@ function AppInner() {
             <VoiceProvider>
                 <PwaUpdateBannerWithStatusOffset
                     isSyncing={isSyncing}
-                    isReconnecting={sseDisconnected && !isSyncing}
+                    isReconnecting={showReconnectingBanner}
                 />
                 <SyncingBanner isSyncing={isSyncing} />
                 <ReconnectingBanner
-                    isReconnecting={sseDisconnected && !isSyncing}
+                    isReconnecting={showReconnectingBanner}
                     reason={sseDisconnectReason}
                 />
                 <VoiceErrorBanner />
-                <OfflineBanner />
+                <OfflineBanner
+                    isHubConnected={globalSubscriptionId !== null}
+                    isReconnecting={showReconnectingBanner}
+                />
                 <div className="h-full min-h-0 flex flex-col">
                     <Outlet />
                 </div>

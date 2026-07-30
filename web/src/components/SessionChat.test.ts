@@ -133,22 +133,23 @@ describe('shouldAutoClearPendingSchedule', () => {
 /**
  * Unit tests for shouldRouteToScratchlist.
  *
- * Regression cover for upstream review on PR #798 (github-actions[bot]
- * [Major]): scratchlist-mode submissions used to silently drop
- * attachments and scheduledAt because the wrapper short-circuited to
- * scratchlist.add(text) regardless of payload. The fix is to fall
- * through to the regular chat send whenever the submission can't be
- * represented as a pure-text scratchlist entry.
+ * Regression cover for upstream review on PR #798 / #1205: scratchlist-mode
+ * submissions must fall through to chat when the payload cannot be parked
+ * (schedule set, or any attachment still on a normal CLI upload path).
  */
 describe('shouldRouteToScratchlist', () => {
-    function attachment(): AttachmentMetadata {
+    function attachment(path = '/tmp/attach-1.png'): AttachmentMetadata {
         return {
             id: 'attach-1',
             filename: 'attach-1.png',
             mimeType: 'image/png',
             size: 1024,
-            path: '/tmp/attach-1.png',
+            path,
         }
+    }
+
+    function hubAttachment(): AttachmentMetadata {
+        return attachment('hapi-hub:scratchlist/default/session-1/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee-a.png')
     }
 
     it('returns false when scratchlist mode is off, regardless of payload', () => {
@@ -163,9 +164,14 @@ describe('shouldRouteToScratchlist', () => {
         expect(shouldRouteToScratchlist(true, [], null)).toBe(true)
     })
 
-    it('returns false when scratchlist mode is on but attachments are present', () => {
+    it('returns true when every attachment is already hub-resident', () => {
+        expect(shouldRouteToScratchlist(true, [hubAttachment()], null)).toBe(true)
+        expect(shouldRouteToScratchlist(true, [hubAttachment(), hubAttachment()], null)).toBe(true)
+    })
+
+    it('returns false when any attachment still has a normal CLI path', () => {
         expect(shouldRouteToScratchlist(true, [attachment()], null)).toBe(false)
-        expect(shouldRouteToScratchlist(true, [attachment(), attachment()], null)).toBe(false)
+        expect(shouldRouteToScratchlist(true, [hubAttachment(), attachment()], null)).toBe(false)
     })
 
     it('returns false when scratchlist mode is on but a scheduled-send is set', () => {
@@ -174,7 +180,7 @@ describe('shouldRouteToScratchlist', () => {
     })
 
     it('returns false when both attachments and scheduledAt are set', () => {
-        expect(shouldRouteToScratchlist(true, [attachment()], Date.now() + 60_000)).toBe(false)
+        expect(shouldRouteToScratchlist(true, [hubAttachment()], Date.now() + 60_000)).toBe(false)
     })
 
     /**
@@ -313,16 +319,14 @@ describe('buildGoalStateMessages', () => {
             .toEqual(['local-immediate'])
     })
 
-    it('includes pending messages that are outside the visible timeline window', () => {
+    it('uses every canonical message even when the thread hides queued rows', () => {
         const now = 1_700_000_000_000
-        const visible = [
-            userMessage({ id: 'visible', createdAt: now - 10 })
-        ]
-        const pending = [
+        const messages = [
+            userMessage({ id: 'visible', createdAt: now - 10 }),
             userMessage({ id: 'pending', createdAt: now })
         ]
 
-        expect(buildGoalStateMessages(visible, pending).map((message) => message.id))
+        expect(buildGoalStateMessages(messages).map((message) => message.id))
             .toEqual(['visible', 'pending'])
     })
 

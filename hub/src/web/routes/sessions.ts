@@ -5,6 +5,9 @@ import {
     isPermissionModeAllowedForFlavor,
     RenameSessionRequestSchema,
     ResumeSessionRequestSchema,
+    SCRATCHLIST_MAX_ENTRIES,
+    ScratchlistEntryCreateRequestSchema,
+    ScratchlistEntryUpdateRequestSchema,
     SessionCollaborationModeRequestSchema,
     SessionEffortRequestSchema,
     SessionModelReasoningEffortRequestSchema,
@@ -21,6 +24,8 @@ import type { SlashCommand } from '@hapi/protocol/apiTypes'
 import { Hono, type Context } from 'hono'
 import type { SyncEngine, Session } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
+import { loadScratchlistAttachmentLimitsFromEnv } from '../../config/scratchlistAttachmentLimits'
+import { validateScratchlistAttachmentsForWrite, scratchlistSessionBytesBeforeForPut } from '../../scratchlistAttachments/validate'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
@@ -339,7 +344,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const lifecycleState = sessionResult.session.metadata?.lifecycleState
-        if (lifecycleState === 'archived') {
+        if (!sessionResult.session.active && lifecycleState === 'archived') {
             return c.json({ ok: true, alreadyArchived: true })
         }
 
@@ -695,6 +700,346 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
     })
 
+    /*
+     * Scratchlist v2 (tiann/hapi#893).
+     *
+     * Operator-private notes attached to a session. All four routes use
+     * the existing `requireSessionFromParam` guard so the same auth /
+     * namespace check applies as every other session-scoped route -
+     * scratchlist contents must NOT leak across namespaces, and a 403 /
+     * 404 is returned for sessions the caller cannot access.
+     *
+     * SSE: every successful mutation emits a `session-updated` patch
+     * carrying `scratchlistUpdatedAt` (handled in `SyncEngine`). The web
+     * client uses that as a cache-invalidation token to refetch GET.
+     */
+
+    app.get('/sessions/:id/scratchlist/limits', (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        return c.json({ limits: loadScratchlistAttachmentLimitsFromEnv() })
+    })
+
+    app.post('/sessions/:id/scratchlist/upload', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = UploadFileRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body' }, 400)
+        }
+
+        const namespace = c.get('namespace')
+        const result = await engine.uploadScratchlistAttachment(
+            sessionResult.sessionId,
+            namespace,
+            parsed.data.filename,
+            parsed.data.content,
+            parsed.data.mimeType
+        )
+        if (!result.success) {
+            const status = result.code === 'scratchlist_attachment_too_large' ? 413 : 400
+            return c.json({ success: false, error: result.error, code: result.code }, status)
+        }
+        return c.json({ success: true, attachment: result.attachment })
+    })
+
+    app.get('/sessions/:id/scratchlist/attachments/:attachmentId', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        const attachmentId = c.req.param('attachmentId')
+        if (!attachmentId) {
+            return c.json({ error: 'Missing attachmentId' }, 400)
+        }
+
+        const entries = engine.listScratchlistEntries(sessionResult.sessionId)
+        const match = entries
+            .flatMap((entry) => entry.attachments)
+            .find((att) => att.id === attachmentId)
+        if (!match) {
+            return c.json({ error: 'Attachment not found' }, 404)
+        }
+
+        const file = await engine.readScratchlistAttachment(match.path)
+        if (!file) {
+            return c.json({ error: 'Attachment file missing' }, 404)
+        }
+        return new Response(file.buffer, {
+            headers: {
+                'Content-Type': match.mimeType,
+                // Defense in depth: metadata may predate resolve-time canonicalize.
+                'Content-Disposition': `inline; filename="${match.filename.replace(/[\r\n\0"\\]/g, '_')}"`,
+            },
+        })
+    })
+
+    app.get('/sessions/:id/scratchlist', (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        const entries = engine.listScratchlistEntries(sessionResult.sessionId)
+        return c.json({ entries })
+    })
+
+    app.post('/sessions/:id/scratchlist', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = ScratchlistEntryCreateRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body', issues: parsed.error.issues }, 400)
+        }
+
+        // Idempotent-retry short-circuit (HAPI Bot, PR #896 review):
+        // when the caller supplies an explicit entryId AND that id
+        // already exists, return the canonical row with 200 BEFORE the
+        // cap check fires. Otherwise a session sitting at the
+        // 200-entry cap would 409 a duplicate POST that should be a
+        // no-op - which is exactly the path the localStorage migration
+        // retry uses after a partial failure.
+        if (parsed.data.entryId) {
+            const existing = engine.getScratchlistEntry(
+                sessionResult.sessionId,
+                parsed.data.entryId
+            )
+            if (existing) {
+                return c.json({ entry: existing }, 200)
+            }
+        }
+
+        // Server-side cap enforcement. Mirrors the web-side cap so a
+        // malicious / runaway client can't drive the table without
+        // bound. Bypassing the optimistic add path on the web client
+        // (e.g. direct REST call) hits this guard. Bumped only with the
+        // shared SCRATCHLIST_MAX_ENTRIES constant.
+        const currentCount = engine.countScratchlistEntries(sessionResult.sessionId)
+        if (currentCount >= SCRATCHLIST_MAX_ENTRIES) {
+            return c.json({
+                error: `Scratchlist is at its ${SCRATCHLIST_MAX_ENTRIES}-entry cap`,
+                code: 'scratchlist_at_cap'
+            }, 409)
+        }
+
+        const limits = loadScratchlistAttachmentLimitsFromEnv()
+        const namespace = c.get('namespace')
+        const checked = await engine.resolveScratchlistAttachmentsForSession(
+            sessionResult.sessionId,
+            namespace,
+            parsed.data.attachments
+        )
+        if (!checked.ok) {
+            return c.json({ error: checked.error, code: 'scratchlist_attachment_invalid' }, 400)
+        }
+        const diskBytes = await engine.sumScratchlistAttachmentBytesOnDisk(sessionResult.sessionId, namespace)
+        const entryBytes = checked.attachments.reduce((sum, att) => sum + att.size, 0)
+        // Files are already on disk from upload; don't double-count them.
+        const sessionBytesBefore = Math.max(0, diskBytes - entryBytes)
+        const attachmentValidation = validateScratchlistAttachmentsForWrite(
+            checked.attachments,
+            limits,
+            sessionBytesBefore
+        )
+        if (!attachmentValidation.ok) {
+            return c.json({ error: attachmentValidation.error, code: attachmentValidation.code }, 400)
+        }
+
+        const result = engine.createScratchlistEntry(
+            sessionResult.sessionId,
+            parsed.data.text.trim(),
+            {
+                entryId: parsed.data.entryId,
+                createdAt: parsed.data.createdAt,
+                attachments: checked.attachments,
+            }
+        )
+        if (result.outcome === 'session-not-found') {
+            return c.json({ error: 'Session not found' }, 404)
+        }
+        // `duplicate` (same entryId already exists) returns 200 with the
+        // canonical row so the migration path can retry idempotently.
+        // The web client treats 200-with-existing as success either way.
+        return c.json({ entry: result.entry }, result.outcome === 'created' ? 201 : 200)
+    })
+
+    app.put('/sessions/:id/scratchlist/:entryId', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const entryId = c.req.param('entryId')
+        if (!entryId) {
+            return c.json({ error: 'Missing entryId' }, 400)
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = ScratchlistEntryUpdateRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body', issues: parsed.error.issues }, 400)
+        }
+
+        const existing = engine.getScratchlistEntry(sessionResult.sessionId, entryId)
+        if (!existing) {
+            return c.json({ error: 'Scratchlist entry not found' }, 404)
+        }
+
+        const nextText = parsed.data.text !== undefined ? parsed.data.text.trim() : existing.text
+        const namespace = c.get('namespace')
+        let nextAttachments = existing.attachments
+        if (parsed.data.attachments !== undefined) {
+            const checked = await engine.resolveScratchlistAttachmentsForSession(
+                sessionResult.sessionId,
+                namespace,
+                parsed.data.attachments
+            )
+            if (!checked.ok) {
+                return c.json({ error: checked.error, code: 'scratchlist_attachment_invalid' }, 400)
+            }
+            nextAttachments = checked.attachments
+        }
+        if (nextText.trim().length === 0 && nextAttachments.length === 0) {
+            return c.json({
+                error: 'Scratchlist entry requires text or attachments',
+                code: 'scratchlist_entry_empty',
+            }, 400)
+        }
+        const limits = loadScratchlistAttachmentLimitsFromEnv()
+        const diskBytes = await engine.sumScratchlistAttachmentBytesOnDisk(sessionResult.sessionId, namespace)
+        const removedAttachments = existing.attachments.filter(
+            (old) => !nextAttachments.some((next) => next.id === old.id)
+        )
+        const sessionBytesBefore = scratchlistSessionBytesBeforeForPut(
+            diskBytes,
+            nextAttachments,
+            removedAttachments,
+        )
+        const attachmentValidation = validateScratchlistAttachmentsForWrite(
+            nextAttachments,
+            limits,
+            sessionBytesBefore
+        )
+        if (!attachmentValidation.ok) {
+            return c.json({ error: attachmentValidation.error, code: attachmentValidation.code }, 400)
+        }
+
+        const updated = engine.updateScratchlistEntry(
+            sessionResult.sessionId,
+            entryId,
+            {
+                text: nextText,
+                attachments: nextAttachments,
+            }
+        )
+        if (!updated) {
+            return c.json({ error: 'Scratchlist entry not found' }, 404)
+        }
+        if (removedAttachments.length > 0) {
+            const remainingIds = new Set(
+                engine
+                    .listScratchlistEntries(sessionResult.sessionId)
+                    .flatMap((entry) => entry.attachments.map((att) => att.id))
+            )
+            const orphaned = removedAttachments.filter((att) => !remainingIds.has(att.id))
+            if (orphaned.length > 0) {
+                void import('../../scratchlistAttachments/storage').then(({ deleteScratchlistAttachmentFiles, getHapiHomeDir }) =>
+                    deleteScratchlistAttachmentFiles(getHapiHomeDir(), orphaned)
+                )
+            }
+        }
+        return c.json({ entry: updated })
+    })
+
+    app.delete('/sessions/:id/scratchlist/attachments/:attachmentId', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        const attachmentId = c.req.param('attachmentId')
+        if (!attachmentId) {
+            return c.json({ error: 'Missing attachmentId' }, 400)
+        }
+
+        const entries = engine.listScratchlistEntries(sessionResult.sessionId)
+        const stillReferenced = entries.some((entry) =>
+            entry.attachments.some((att) => att.id === attachmentId)
+        )
+        if (stillReferenced) {
+            return c.json({
+                error: 'Attachment is still referenced by a scratchlist entry',
+                code: 'scratchlist_attachment_in_use',
+            }, 409)
+        }
+
+        const removed = await engine.deleteScratchlistAttachmentById(
+            sessionResult.sessionId,
+            c.get('namespace'),
+            attachmentId
+        )
+        if (!removed) {
+            return c.json({ error: 'Attachment not found' }, 404)
+        }
+        return c.json({ ok: true })
+    })
+
+    app.delete('/sessions/:id/scratchlist/:entryId', (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        const entryId = c.req.param('entryId')
+        if (!entryId) {
+            return c.json({ error: 'Missing entryId' }, 400)
+        }
+        const removed = engine.deleteScratchlistEntry(sessionResult.sessionId, entryId)
+        if (!removed) {
+            return c.json({ error: 'Scratchlist entry not found' }, 404)
+        }
+        return c.json({ ok: true })
+    })
+
     app.get('/sessions/:id/slash-commands', async (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {
@@ -763,36 +1108,6 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to list skills'
             })
-        }
-    })
-
-    app.get('/sessions/:id/codex-models', async (c) => {
-        const engine = requireSyncEngine(c, getSyncEngine)
-        if (engine instanceof Response) {
-            return engine
-        }
-
-        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
-        if (sessionResult instanceof Response) {
-            return sessionResult
-        }
-
-        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'codex') {
-            return c.json({
-                success: false,
-                error: 'Codex models are only available for Codex sessions'
-            }, 400)
-        }
-
-        try {
-            const result = await engine.listCodexModelsForSession(sessionResult.sessionId)
-            return c.json(result)
-        } catch (error) {
-            return c.json({
-                success: false,
-                error: error instanceof Error ? error.message : 'Failed to list Codex models'
-            }, 500)
         }
     })
 

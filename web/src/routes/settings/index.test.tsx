@@ -10,7 +10,8 @@ import SettingsVoicePage from './voice'
 import SettingsVoiceVoicesPage from './voice-voices'
 import SettingsVoiceAdvancedPage from './voice-advanced'
 
-const { navigate, setAppearance, setColorTheme, setFontScale, setTerminalFontSize, setComposerEnterBehavior, setVoice } = vi.hoisted(() => ({
+const { context, navigate, setAppearance, setColorTheme, setFontScale, setTerminalFontSize, setComposerEnterBehavior, setVoice } = vi.hoisted(() => ({
+    context: { token: '' },
     navigate: vi.fn(),
     setAppearance: vi.fn(),
     setColorTheme: vi.fn(),
@@ -126,6 +127,18 @@ vi.mock('@/hooks/useChatSurfaceColors', () => ({
     toCustomChatSurfaceColorPreference: (value: string) => `custom:${value}`,
 }))
 
+vi.mock('@/lib/app-context', () => ({
+    useAppContext: () => ({
+        api: {},
+        baseUrl: 'http://127.0.0.1:3006',
+        token: context.token,
+    }),
+}))
+
+vi.mock('@/components/settings/CompanionPairing', () => ({
+    CompanionPairing: () => <div>Companion pairing</div>,
+}))
+
 vi.mock('@/components/settings/VoiceAdvancedControls', () => ({
     VoiceRespondsControls: () => <div>Response length controls</div>,
     VoiceSoundsControls: () => <div>Sound controls</div>,
@@ -159,6 +172,7 @@ describe('responsive settings pages', () => {
     beforeEach(() => {
         vi.clearAllMocks()
         localStorage.clear()
+        context.token = `x.${btoa(JSON.stringify({ ns: 'default' }))}.x`
     })
 
     it('renders the mobile hub categories with current summaries', () => {
@@ -175,8 +189,16 @@ describe('responsive settings pages', () => {
         expect(navigate).toHaveBeenCalledWith({ to: '/settings/general' })
     })
 
+    it('hides Hub storage from tenant namespaces', () => {
+        context.token = `x.${btoa(JSON.stringify({ ns: 'tenant' }))}.x`
+        renderPage(<SettingsHubPage />)
+        expect(screen.queryByText('Hub database usage')).not.toBeInTheDocument()
+    })
+
     it('changes the application language inline', () => {
         renderPage(<SettingsGeneralPage />)
+        expect(screen.getByText('Companion')).toBeInTheDocument()
+        expect(screen.getByText('Companion pairing')).toBeInTheDocument()
         fireEvent.click(screen.getByRole('radio', { name: '简体中文' }))
         expect(localStorage.getItem('hapi-lang')).toBe('zh-CN')
     })
@@ -191,6 +213,15 @@ describe('responsive settings pages', () => {
         expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
     })
 
+    it('keeps the session status description visible with its choice group', () => {
+        renderPage(<SettingsDisplayPage />)
+
+        const description = screen.getByText('Shows why a session stopped: permission, input, background work, new activity, or a scheduled message (clock icon).')
+        const choices = screen.getByRole('radiogroup', { name: 'Session list status' })
+        expect(description.parentElement?.parentElement).toBe(choices.parentElement)
+        expect(description.compareDocumentPosition(choices) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    })
+
     it('keeps chat enum choices inline', () => {
         renderPage(<SettingsChatPage />)
         fireEvent.click(screen.getByRole('radio', { name: 'Insert newline' }))
@@ -200,6 +231,7 @@ describe('responsive settings pages', () => {
 
     it('renders About metadata on its own route page', () => {
         renderPage(<SettingsAboutPage />)
+        expect(screen.queryByText('Companion')).not.toBeInTheDocument()
         expect(screen.getByText('App Version')).toBeInTheDocument()
         expect(screen.getByText(String(__APP_VERSION__))).toBeInTheDocument()
         expect(screen.getByText('Protocol Version')).toBeInTheDocument()

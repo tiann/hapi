@@ -60,11 +60,21 @@ export class AcpStdioTransport {
     private notificationHandler: ((method: string, params: unknown) => void) | null = null;
     private stderrErrorHandler: ((error: AcpStderrError) => void) | null = null;
     private buffer = '';
+    private recentStderr = '';
+    private emittedModelRejection = false;
     private nextId = 1;
     private protocolError: Error | null = null;
     private guardReleased = false;
     private closed = false;
     private closeError: Error | null = null;
+    /** True after process 'exit'; blocks new writes until 'close' drains stderr. */
+    private exited = false;
+    private exitError: Error | null = null;
+
+    /** Rolling join window for stderr before close-time classification. */
+    private static readonly RECENT_STDERR_WINDOW = 8_000;
+    /** Max stderr attached to the close Error (prefer model-rejection head). */
+    private static readonly CLOSE_STDERR_CAP = 4_000;
 
     constructor(options: {
         command: string;
@@ -87,16 +97,63 @@ export class AcpStdioTransport {
 
         this.process.stderr.setEncoding('utf8');
         this.process.stderr.on('data', (chunk) => {
-            const text = chunk.toString().trim();
+            // Chunks are arbitrary byte slices — concatenate raw, do not inject
+            // separators (a mid-word split would otherwise break keyword match).
+            const raw = chunk.toString();
+            if (raw) {
+                const next = this.recentStderr + raw;
+                const matchIdx = next.search(/Cannot use this model:/i);
+                if (matchIdx >= 0) {
+                    // Pin from the rejection head so a long Available models catalog
+                    // cannot roll `Cannot use this model: <id>` out of the window.
+                    const modelStderr = next.slice(matchIdx);
+                    this.recentStderr = modelStderr.length > AcpStdioTransport.RECENT_STDERR_WINDOW
+                        ? modelStderr.slice(0, AcpStdioTransport.RECENT_STDERR_WINDOW)
+                        : modelStderr;
+                } else {
+                    this.recentStderr = next.length > AcpStdioTransport.RECENT_STDERR_WINDOW
+                        ? next.slice(-AcpStdioTransport.RECENT_STDERR_WINDOW)
+                        : next;
+                }
+            }
+            const text = raw.trim();
             logger.debug(`[ACP][stderr] ${text}`);
             this.parseStderrError(text);
+            // If this chunk alone missed a split keyword/id, retry against the window.
+            if (
+                text
+                && !/Cannot use this model:\s*\S/i.test(text)
+                && /Cannot use this model:\s*\S/i.test(this.recentStderr)
+            ) {
+                this.parseStderrError(this.stderrForCloseError() ?? this.recentStderr);
+            }
         });
 
+        // Block new stdin writes as soon as the process exits, but defer markClosed
+        // until 'close' so final stderr chunks can still enrich the failure.
         this.process.on('exit', (code, signal) => {
             this.releaseAgentCliGuard();
-            const message = `ACP process exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`;
+            this.exited = true;
+            this.exitError = new Error(
+                `ACP process exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`
+            );
+        });
+
+        // Use 'close' (not only 'exit') so final stderr chunks are drained before we
+        // classify the failure — Node may fire 'exit' before the last stderr 'data'.
+        this.process.on('close', (code, signal) => {
+            this.releaseAgentCliGuard();
+            const stderr = this.stderrForCloseError();
+            let message = `ACP process exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`;
+            if (stderr) {
+                message = `${message}. stderr: ${stderr}`;
+            }
             logger.debug(message);
-            this.markClosed(new Error(message));
+            const error = new Error(message);
+            if (stderr) {
+                (error as Error & { stderr?: string }).stderr = stderr;
+            }
+            this.markClosed(error);
         });
 
         this.process.on('error', (error) => {
@@ -126,8 +183,10 @@ export class AcpStdioTransport {
     static readonly DEFAULT_TIMEOUT_MS = 120_000;
 
     async sendRequest(method: string, params?: unknown, options?: { timeoutMs?: number }): Promise<unknown> {
-        if (this.closed) {
-            return Promise.reject(this.closeError ?? new Error('ACP transport is closed'));
+        if (this.closed || this.exited) {
+            return Promise.reject(
+                this.closeError ?? this.exitError ?? new Error('ACP transport is closed')
+            );
         }
 
         const id = this.nextId++;
@@ -173,7 +232,7 @@ export class AcpStdioTransport {
     }
 
     sendNotification(method: string, params?: unknown): void {
-        if (this.closed) {
+        if (this.closed || this.exited) {
             return;
         }
 
@@ -342,12 +401,52 @@ export class AcpStdioTransport {
         this.pending.clear();
     }
 
+    /**
+     * Prefer Cursor model-rejection text when present in the rolling stderr window.
+     * Cap from the match start so `Cannot use this model: <id>` survives long catalogs.
+     */
+    private stderrForCloseError(): string | null {
+        if (!this.recentStderr) {
+            return null;
+        }
+        const matchIdx = this.recentStderr.search(/Cannot use this model:/i);
+        const source = matchIdx >= 0
+            ? this.recentStderr.slice(matchIdx).trim()
+            : this.recentStderr.trim();
+        if (!source) {
+            return null;
+        }
+        return source.length > AcpStdioTransport.CLOSE_STDERR_CAP
+            ? source.slice(0, AcpStdioTransport.CLOSE_STDERR_CAP)
+            : source;
+    }
+
     private parseStderrError(text: string): void {
         if (!this.stderrErrorHandler) {
             return;
         }
 
         const lowerText = text.toLowerCase();
+
+        // Cursor rejects `--model` / config ids with this exact stderr shape.
+        // Require at least one non-space after the colon so a split before the
+        // model id does not emit a partial line and suppress the completed one.
+        // Pass the agent text through (including any Available models hint); do not
+        // invent a Gemini-style catalog here.
+        const modelRejection = text.match(/Cannot use this model:\s*\S[\s\S]*/i);
+        if (modelRejection) {
+            if (this.emittedModelRejection) {
+                return;
+            }
+            const message = modelRejection[0].trim();
+            this.emittedModelRejection = true;
+            this.stderrErrorHandler({
+                type: 'model_not_found',
+                message,
+                raw: message
+            });
+            return;
+        }
 
         // Rate limit errors (429)
         if (lowerText.includes('status 429') || lowerText.includes('ratelimitexceeded') || lowerText.includes('rate limit')) {

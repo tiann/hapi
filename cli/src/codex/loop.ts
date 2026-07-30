@@ -15,6 +15,7 @@ export interface EnhancedMode {
     permissionMode: PermissionMode;
     model?: string;
     collaborationMode: CodexCollaborationMode;
+    proactiveMultiAgent?: boolean;
     modelReasoningEffort?: ReasoningEffort;
     /**
      * Service tier override. `undefined` leaves it untouched (account default),

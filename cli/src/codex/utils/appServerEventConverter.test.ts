@@ -946,6 +946,20 @@ describe('AppServerEventConverter', () => {
             faster_model: 'gpt-5.4-mini'
         }]);
 
+        expect(converter.handleNotification('model/safetyBuffering/updated', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            showBufferingUi: false
+        })).toEqual([{
+            type: 'model_safety_buffering',
+            thread_id: 'thread-1',
+            turn_id: 'turn-1',
+            use_cases: [],
+            reasons: [],
+            show_buffering_ui: false,
+            faster_model: null
+        }]);
+
         expect(converter.handleNotification('model/rerouted', {
             threadId: 'thread-1',
             turnId: 'turn-1',

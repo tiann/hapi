@@ -8,7 +8,7 @@ import { getSessionListStatusModeOptions, useSessionListStatusMode } from '@/hoo
 import { useShowActiveSessionsOnly } from '@/hooks/useShowActiveSessionsOnly'
 import { MAX_SESSION_PREVIEW_LIMIT, MIN_SESSION_PREVIEW_LIMIT, normalizeSessionPreviewLimit, useSessionPreviewLimit } from '@/hooks/useSessionPreviewLimit'
 import { useThemeColors, type ThemeColorKeyId } from '@/hooks/useThemeColors'
-import { SettingsChoiceGroup, SettingsPageContent, SettingsRow, SettingsSection, SettingsSwitch } from '@/components/settings/SettingsPrimitives'
+import { SettingsChoiceGroup, SettingsFieldLabel, SettingsPageContent, SettingsRow, SettingsSection, SettingsSwitch } from '@/components/settings/SettingsPrimitives'
 
 function MinusIcon() {
     return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4" aria-hidden="true"><path d="M5 12h14" /></svg>
@@ -23,8 +23,8 @@ function ColorThemePicker() {
     const { colorTheme, setColorTheme } = useColorTheme()
 
     return (
-        <fieldset className="px-3 py-3">
-            <legend className="mb-2 text-[var(--app-fg)]">{t('settings.display.colorTheme')}</legend>
+        <div className="px-3 py-3">
+            <SettingsFieldLabel>{t('settings.display.colorTheme')}</SettingsFieldLabel>
             <div role="radiogroup" aria-label={t('settings.display.colorTheme')} className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 {getColorThemeOptions().map((option) => (
                     <ColorThemeOption
@@ -36,7 +36,7 @@ function ColorThemePicker() {
                     />
                 ))}
             </div>
-        </fieldset>
+        </div>
     )
 }
 
@@ -105,7 +105,7 @@ function ThemeColorControls() {
         <details open={hasAnyCustom} className="group">
             <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-3 text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)]">
                 <span>
-                    <span className="block">{t('settings.display.themeColors.title')}</span>
+                    <span className="block text-sm font-medium">{t('settings.display.themeColors.title')}</span>
                     <span className="mt-0.5 block text-xs text-[var(--app-hint)]">{t('settings.display.themeColors.description')}</span>
                 </span>
                 <span className="ml-3 text-sm text-[var(--app-hint)]">{hasAnyCustom ? t('settings.voice.advanced.customizedBadge') : t('settings.display.themeColors.expand')}</span>
@@ -137,10 +137,10 @@ export default function SettingsDisplayPage() {
     const { showActiveSessionsOnly, setShowActiveSessionsOnly } = useShowActiveSessionsOnly()
 
     return (
-        <SettingsPageContent title={t('settings.display.title')} description={t('settings.display.description')}>
+        <SettingsPageContent description={t('settings.display.description')}>
             <SettingsSection title={t('settings.display.appearance')}>
                 <SettingsChoiceGroup
-                    label={t('settings.display.appearance')}
+                    label={t('settings.display.appearanceMode')}
                     value={appearance}
                     columns={4}
                     options={getAppearanceOptions().map((option) => ({ value: option.value, label: t(option.labelKey) }))}
@@ -160,11 +160,11 @@ export default function SettingsDisplayPage() {
                 <SettingsSwitch label={t('settings.display.activeSessionsOnly')} description={t('settings.display.activeSessionsOnly.desc')} checked={showActiveSessionsOnly} onChange={setShowActiveSessionsOnly} />
                 <SettingsChoiceGroup
                     label={t('settings.display.sessionListStatus')}
+                    description={t('settings.display.sessionListStatus.detailedDescription')}
                     value={sessionListStatusMode}
                     options={getSessionListStatusModeOptions().map((option) => ({ value: option.value, label: t(option.labelKey) }))}
                     onChange={setSessionListStatusMode}
                 />
-                {sessionListStatusMode === 'detailed' ? <div className="px-3 pb-3 text-xs text-[var(--app-hint)]">{t('settings.display.sessionListStatus.detailedDescription')}</div> : null}
             </SettingsSection>
         </SettingsPageContent>
     )

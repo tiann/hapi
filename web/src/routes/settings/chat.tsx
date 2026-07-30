@@ -10,7 +10,7 @@ import {
     type ChatSurfaceColorPreference,
     type ChatSurfaceColorPreset,
 } from '@/hooks/useChatSurfaceColors'
-import { SettingsChoiceGroup, SettingsPageContent, SettingsSection } from '@/components/settings/SettingsPrimitives'
+import { SettingsChoiceGroup, SettingsFieldLabel, SettingsPageContent, SettingsSection } from '@/components/settings/SettingsPrimitives'
 import { ComposerToolbarLayoutControl } from '@/components/settings/ComposerToolbarLayoutControl'
 
 function ChatSurfaceColorControl(props: {
@@ -22,8 +22,8 @@ function ChatSurfaceColorControl(props: {
     const { t } = useTranslation()
     const pickerValue = getChatSurfaceColorPickerValue(props.preference)
     return (
-        <fieldset className="px-3 py-3">
-            <legend className="mb-2 text-[var(--app-fg)]">{props.label}</legend>
+        <div className="px-3 py-3">
+            <SettingsFieldLabel>{props.label}</SettingsFieldLabel>
             <div role="radiogroup" aria-label={props.label} className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 {getChatSurfaceColorPresetOptions().map((option) => {
                     const preference = toPresetChatSurfaceColorPreference(option.value)
@@ -40,7 +40,7 @@ function ChatSurfaceColorControl(props: {
                 {t('settings.chat.surfaceColor.custom')}
                 <input type="color" value={pickerValue} onChange={(event) => props.onCustomChange(event.target.value)} className="h-9 w-12 cursor-pointer border-0 bg-transparent p-0" />
             </label>
-        </fieldset>
+        </div>
     )
 }
 
@@ -50,7 +50,7 @@ export default function SettingsChatPage() {
     const { terminalToolDisplayMode, setTerminalToolDisplayMode } = useTerminalToolDisplayMode()
     const { toolGroupBackground, userMessageBackground, setToolGroupBackground, setUserMessageBackground } = useChatSurfaceColors()
     return (
-        <SettingsPageContent title={t('settings.chat.title')} description={t('settings.chat.description')}>
+        <SettingsPageContent description={t('settings.chat.description')}>
             <SettingsSection title={t('settings.chat.input')}>
                 <SettingsChoiceGroup
                     label={t('settings.chat.enterBehavior')}

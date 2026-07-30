@@ -1,3 +1,4 @@
+export * from './scratchlistAttachments'
 export * from './apiTypes'
 export * from './cursorCliSku'
 export * from './messages'

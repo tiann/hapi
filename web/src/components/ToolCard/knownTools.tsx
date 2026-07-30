@@ -19,6 +19,62 @@ import {
 const DEFAULT_ICON_CLASS = 'h-3.5 w-3.5'
 // Tool presentation registry for `hapi/web` (aligned with `hapi-app`).
 
+const COMMANDS_WITH_SUBCOMMAND = new Set(['git', 'bun', 'npm', 'pnpm', 'yarn', 'docker', 'systemctl', 'cargo', 'go'])
+const COMMAND_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/
+const AMBIGUOUS_SHELL_RE = /[;&|<>$`(){}\n\r]/
+
+export function formatTerminalCommandTitle(command: string | null): string | null {
+    if (!command || AMBIGUOUS_SHELL_RE.test(command)) return null
+
+    const parts = command.trim().split(/\s+/).filter(Boolean)
+    let index = 0
+    while (COMMAND_ASSIGNMENT_RE.test(parts[index] ?? '')) index += 1
+
+    if (parts[index] === 'env') {
+        index += 1
+        while (parts[index] === '-i' || parts[index] === '--ignore-environment' || COMMAND_ASSIGNMENT_RE.test(parts[index] ?? '')) index += 1
+    }
+    if (parts[index] === 'sudo') {
+        index += 1
+        while (parts[index] === '-n' || parts[index] === '--non-interactive' || parts[index] === '-E' || parts[index] === '--preserve-env') index += 1
+    }
+    if (parts[index]?.startsWith('-')) return null
+
+    const executable = parts[index] ? basename(parts[index]) : null
+    if (!executable) return null
+
+    const subcommand = parts[index + 1]?.startsWith('-') ? null : parts[index + 1]
+    if (!subcommand || !COMMANDS_WITH_SUBCOMMAND.has(executable)) return executable
+    if ((executable === 'bun' || executable === 'npm' || executable === 'pnpm' || executable === 'yarn') && subcommand === 'run') {
+        const script = parts[index + 2]
+        return script && !script.startsWith('-') ? `${executable} run ${script}` : `${executable} run`
+    }
+    if (executable === 'docker' && subcommand === 'compose') {
+        const action = parts[index + 2]
+        return action && !action.startsWith('-') ? `docker compose ${action}` : 'docker compose'
+    }
+    return `${executable} ${subcommand}`
+}
+
+function getTerminalCommand(input: unknown): string | null {
+    const command = getInputStringAny(input, ['command', 'cmd'])
+    if (command) return command
+    if (!isObject(input) || !Array.isArray(input.command)) return null
+    const parts = input.command.filter((part): part is string => typeof part === 'string')
+    return parts.length > 0 ? parts.join(' ') : null
+}
+
+function getTerminalTitle(opts: ToolOpts): string {
+    const command = getTerminalCommand(opts.input)
+    if (opts.description && opts.description !== command) return opts.description
+    return formatTerminalCommandTitle(command) ?? opts.description ?? 'Terminal'
+}
+
+function getTerminalSubtitle(opts: ToolOpts): string | null {
+    const command = getTerminalCommand(opts.input)
+    return command === getTerminalTitle(opts) ? null : command
+}
+
 export type ToolPresentation = {
     icon: ReactNode
     title: string
@@ -116,8 +172,8 @@ export const knownTools: Record<string, {
     },
     Bash: {
         icon: () => <TerminalIcon className={DEFAULT_ICON_CLASS} />,
-        title: (opts) => opts.description ?? 'Terminal',
-        subtitle: (opts) => getInputStringAny(opts.input, ['command', 'cmd']),
+        title: getTerminalTitle,
+        subtitle: getTerminalSubtitle,
         minimal: true
     },
     Glob: {
@@ -158,16 +214,9 @@ export const knownTools: Record<string, {
                     return resolveDisplayPath(parsed.name, opts.metadata)
                 }
             }
-            return opts.description ?? 'Terminal'
+            return getTerminalTitle(opts)
         },
-        subtitle: (opts) => {
-            const command = getInputStringAny(opts.input, ['command', 'cmd'])
-            if (command) return command
-            if (isObject(opts.input) && Array.isArray(opts.input.command)) {
-                return opts.input.command.filter((part) => typeof part === 'string').join(' ')
-            }
-            return null
-        },
+        subtitle: getTerminalSubtitle,
         minimal: (opts) => {
             const result = isObject(opts.result) ? opts.result : null
             const stdout = result && typeof result.stdout === 'string' ? result.stdout.trim() : ''
@@ -204,8 +253,14 @@ export const knownTools: Record<string, {
     },
     shell_command: {
         icon: () => <TerminalIcon className={DEFAULT_ICON_CLASS} />,
-        title: (opts) => opts.description ?? 'Terminal',
-        subtitle: (opts) => getInputStringAny(opts.input, ['command', 'cmd']),
+        title: getTerminalTitle,
+        subtitle: getTerminalSubtitle,
+        minimal: true
+    },
+    run_shell_command: {
+        icon: () => <TerminalIcon className={DEFAULT_ICON_CLASS} />,
+        title: getTerminalTitle,
+        subtitle: getTerminalSubtitle,
         minimal: true
     },
     Read: {
@@ -620,7 +675,7 @@ export function getToolPresentation(
     }
 
     return {
-        icon: <WrenchIcon className={DEFAULT_ICON_CLASS} />,
+        icon: <WrenchIcon className={`${DEFAULT_ICON_CLASS} translate-y-px`} />,
         title,
         subtitle: subtitle && subtitle !== title ? truncate(subtitle, 80) : null,
         minimal: true

@@ -791,12 +791,12 @@ export class AppServerEventConverter {
         if (method === 'model/safetyBuffering/updated') {
             const model = asString(paramsRecord.model);
             const showBufferingUi = asBoolean(paramsRecord.showBufferingUi ?? paramsRecord.show_buffering_ui);
-            if (!model || showBufferingUi === null) {
+            if (showBufferingUi === null || (showBufferingUi && !model)) {
                 return events;
             }
             events.push(scoped({
                 type: 'model_safety_buffering',
-                model,
+                ...(model ? { model } : {}),
                 use_cases: extractStringArray(paramsRecord.useCases ?? paramsRecord.use_cases),
                 reasons: extractStringArray(paramsRecord.reasons),
                 show_buffering_ui: showBufferingUi,

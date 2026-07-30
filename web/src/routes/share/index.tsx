@@ -10,6 +10,7 @@ import {
     type ShareTransferPayload,
 } from '@/lib/shareTransfer'
 import { setSharePendingTransfer } from '@/lib/sharePendingState'
+import { getSessionTitle } from '@/lib/sessionTitle'
 import type { SessionSummary } from '@/types/api'
 
 type LoadState =
@@ -27,13 +28,6 @@ function formatBytes(n: number): string {
     if (n < 1024) return `${n} B`
     if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
     return `${(n / (1024 * 1024)).toFixed(1)} MB`
-}
-
-function getSessionTitle(session: SessionSummary): string {
-    return session.metadata?.summary?.text
-        ?? session.metadata?.name
-        ?? session.metadata?.path
-        ?? session.id.slice(0, 8)
 }
 
 function SharePreview(props: { payload: ShareTransferPayload }) {

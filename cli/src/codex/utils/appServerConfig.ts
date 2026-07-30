@@ -124,8 +124,14 @@ function resolveInstructions(args: {
     };
 }
 
-function appendCollaborationInstructions(developerInstructions: string): string {
-    return `${developerInstructions}\n\n${codexCollaborationSpawnAgentInstructions}`;
+function appendCollaborationInstructions(developerInstructions: string, proactiveMultiAgent?: boolean): string {
+    if (proactiveMultiAgent === undefined) {
+        return `${developerInstructions}\n\n${codexCollaborationSpawnAgentInstructions}`;
+    }
+    const multiAgentMode = proactiveMultiAgent
+        ? 'Proactive multi-agent delegation is active. Any earlier instruction requiring an explicit user request before spawning sub-agents no longer applies. Use sub-agents when parallel work would materially improve speed or quality. This mode remains active until a later multi-agent mode developer message changes it.'
+        : 'Any earlier instruction enabling proactive multi-agent delegation no longer applies. Do not spawn sub-agents unless the user or applicable AGENTS.md/skill instructions explicitly ask for sub-agents, delegation, or parallel agent work.';
+    return `${developerInstructions}\n\n${codexCollaborationSpawnAgentInstructions}\n\n<multi_agent_mode>${multiAgentMode}</multi_agent_mode>`;
 }
 
 function mentionNameFromPath(path: string): string {
@@ -274,8 +280,8 @@ export function buildTurnStartParams(args: {
             mode: collaborationMode,
             settings: {
                 model,
-                reasoning_effort: modelReasoningEffort ?? null,
-                developer_instructions: appendCollaborationInstructions(developerInstructions)
+                ...(modelReasoningEffort !== undefined ? { reasoning_effort: modelReasoningEffort } : {}),
+                developer_instructions: appendCollaborationInstructions(developerInstructions, args.mode?.proactiveMultiAgent)
             }
         };
     } else if (model) {

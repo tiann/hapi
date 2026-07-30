@@ -1,0 +1,10 @@
+diff --git a/dist/core/scheduler.js b/dist/core/scheduler.js
+index a61a05417fca038339e8e80c2dee5ee2ea4ef211..05e10177ce4d69bac63d02fee06cd151ea0f62ba 100644
+--- a/dist/core/scheduler.js
++++ b/dist/core/scheduler.js
+@@ -1,4 +1,4 @@
+-const MAX_FLUSH_LIMIT = 50;
++const MAX_FLUSH_LIMIT = 2000;
+ let flushState = {
+     schedulers: new Set([]),
+     isScheduled: false,

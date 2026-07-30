@@ -10,6 +10,10 @@ import {
     getFirstMessages,
     getDeliverableMessagesAfter,
     getMessagesByPosition,
+    getMessagesAfterPosition,
+    getNewestMessagePosition,
+    getMessageEpoch,
+    bumpMessageEpoch,
     getLocalMessageStates,
     getUninvokedLocalMessages,
     getMatureScheduledMessages,
@@ -25,6 +29,7 @@ import {
     type CancelQueuedMessageResult,
     type LookupQueuedMessageResult,
     type LocalMessageState,
+    type MessagePosition,
 } from './messages'
 
 export class MessageStore {
@@ -64,6 +69,27 @@ export class MessageStore {
 
     getMessagesByPosition(sessionId: string, limit: number, before?: { at: number; seq: number }): StoredMessage[] {
         return getMessagesByPosition(this.db, sessionId, limit, before)
+    }
+
+    getMessagesAfterPosition(
+        sessionId: string,
+        limit: number,
+        after: MessagePosition,
+        until?: MessagePosition
+    ): StoredMessage[] {
+        return getMessagesAfterPosition(this.db, sessionId, limit, after, until)
+    }
+
+    getNewestMessagePosition(sessionId: string): MessagePosition | null {
+        return getNewestMessagePosition(this.db, sessionId)
+    }
+
+    getMessageEpoch(sessionId: string): number {
+        return getMessageEpoch(this.db, sessionId)
+    }
+
+    bumpMessageEpoch(sessionId: string): number {
+        return bumpMessageEpoch(this.db, sessionId)
     }
 
     getLocalMessageStates(sessionId: string, localIds: string[]): LocalMessageState[] {
@@ -106,8 +132,8 @@ export class MessageStore {
         return lookupQueuedMessage(this.db, sessionId, messageId)
     }
 
-    deleteQueuedMessageById(sessionId: string, messageId: string): void {
-        deleteQueuedMessageById(this.db, sessionId, messageId)
+    deleteQueuedMessageById(sessionId: string, messageId: string): boolean {
+        return deleteQueuedMessageById(this.db, sessionId, messageId)
     }
 
     markMessagesInvoked(sessionId: string, localIds: string[], invokedAt: number): void {

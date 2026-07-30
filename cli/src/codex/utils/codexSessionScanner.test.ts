@@ -59,6 +59,27 @@ describe('codexSessionScanner', () => {
         expect(events[0]?.type).toBe('event_msg');
     });
 
+    it('flushes an appended tail without waiting for the watcher', async () => {
+        await writeFile(
+            transcriptPath,
+            JSON.stringify({ type: 'session_meta', payload: { id: 'session-flush' } }) + '\n'
+        );
+
+        scanner = await createCodexSessionScanner({
+            transcriptPath,
+            onEvent: (event) => events.push(event)
+        });
+
+        await appendFile(
+            transcriptPath,
+            JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'final tail' } }) + '\n'
+        );
+        await scanner.flush();
+
+        expect(events).toHaveLength(1);
+        expect(events[0]?.payload).toEqual({ type: 'agent_message', message: 'final tail' });
+    });
+
     it('reads exactly the requested transcript byte range', async () => {
         const initial = 'existing transcript\n';
         const appended = 'new event\n';

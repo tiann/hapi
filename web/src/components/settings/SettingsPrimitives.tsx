@@ -1,5 +1,16 @@
 import type { ReactNode } from 'react'
 
+export function SettingsFieldLabel(props: { children: ReactNode; hidden?: boolean; description?: string }) {
+    if (props.hidden) return null
+    if (!props.description) return <div className="mb-2 text-sm font-medium text-[var(--app-fg)]">{props.children}</div>
+    return (
+        <div className="mb-2">
+            <div className="text-sm font-medium text-[var(--app-fg)]">{props.children}</div>
+            <div className="mt-0.5 text-xs leading-snug text-[var(--app-hint)]">{props.description}</div>
+        </div>
+    )
+}
+
 export function ChevronRightIcon(props: { className?: string }) {
     return (
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={props.className} aria-hidden="true">
@@ -16,12 +27,11 @@ export function CheckIcon(props: { className?: string }) {
     )
 }
 
-export function SettingsPageContent(props: { title: string; description?: string; children: ReactNode }) {
+export function SettingsPageContent(props: { description?: string; children: ReactNode }) {
     return (
         <div className="mx-auto w-full max-w-[720px] space-y-5 px-3 py-4 lg:px-6 lg:py-6">
             <div>
-                <h1 tabIndex={-1} className="hidden text-xl font-semibold text-[var(--app-fg)] outline-none lg:block">{props.title}</h1>
-                {props.description ? <p className="text-sm text-[var(--app-hint)] lg:mt-1">{props.description}</p> : null}
+                {props.description ? <p className="text-sm text-[var(--app-hint)]">{props.description}</p> : null}
             </div>
             {props.children}
         </div>
@@ -31,8 +41,8 @@ export function SettingsPageContent(props: { title: string; description?: string
 export function SettingsSection(props: { title?: string; description?: string; children: ReactNode }) {
     return (
         <section>
-            {props.title ? <h2 className="mb-1.5 px-1 text-xs font-semibold uppercase tracking-wide text-[var(--app-hint)]">{props.title}</h2> : null}
-            {props.description ? <p className="mb-2 px-1 text-sm text-[var(--app-hint)]">{props.description}</p> : null}
+            {props.title ? <h2 className="mb-2 text-base font-semibold text-[var(--app-fg)]">{props.title}</h2> : null}
+            {props.description ? <p className="mb-2 text-sm text-[var(--app-hint)]">{props.description}</p> : null}
             <div className="overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] shadow-sm divide-y divide-[var(--app-divider)]">
                 {props.children}
             </div>
@@ -44,7 +54,7 @@ export function SettingsRow(props: { label: string; description?: string; traili
     return (
         <div className="flex min-h-12 items-center justify-between gap-3 px-3 py-3">
             <div className="min-w-0">
-                <div className="text-[var(--app-fg)]">{props.label}</div>
+                <div className="text-sm font-medium text-[var(--app-fg)]">{props.label}</div>
                 {props.description ? <div className="mt-0.5 text-xs leading-snug text-[var(--app-hint)]">{props.description}</div> : null}
                 {props.children}
             </div>
@@ -67,6 +77,8 @@ export function SettingsSwitch(props: { label: string; description?: string; che
 
 export function SettingsChoiceGroup<T extends string | number>(props: {
     label: string
+    description?: string
+    hideLabel?: boolean
     value: T
     options: ReadonlyArray<{ value: T; label: string; description?: string }>
     onChange: (value: T) => void
@@ -74,8 +86,8 @@ export function SettingsChoiceGroup<T extends string | number>(props: {
 }) {
     const columns = props.columns === 5 ? 'grid-cols-5' : props.columns === 4 ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-2'
     return (
-        <fieldset className="px-3 py-3">
-            <legend className="mb-2 text-[var(--app-fg)]">{props.label}</legend>
+        <div className="px-3 py-3">
+            <SettingsFieldLabel hidden={props.hideLabel} description={props.description}>{props.label}</SettingsFieldLabel>
             <div role="radiogroup" aria-label={props.label} className={`grid ${columns} gap-2`}>
                 {props.options.map((option) => {
                     const selected = props.value === option.value
@@ -96,7 +108,7 @@ export function SettingsChoiceGroup<T extends string | number>(props: {
                     )
                 })}
             </div>
-        </fieldset>
+        </div>
     )
 }
 
@@ -104,7 +116,7 @@ export function SettingsLinkRow(props: { label: string; value?: string; descript
     return (
         <button type="button" onClick={props.onClick} className="flex min-h-12 w-full items-center gap-3 px-3 py-3 text-left transition-colors hover:bg-[var(--app-subtle-bg)]">
             <span className="min-w-0 flex-1">
-                <span className="block text-[var(--app-fg)]">{props.label}</span>
+                <span className="block text-sm font-medium text-[var(--app-fg)]">{props.label}</span>
                 {props.description ? <span className="mt-0.5 block text-xs text-[var(--app-hint)]">{props.description}</span> : null}
             </span>
             {props.value ? <span className="max-w-[45%] truncate text-sm text-[var(--app-hint)]">{props.value}</span> : null}

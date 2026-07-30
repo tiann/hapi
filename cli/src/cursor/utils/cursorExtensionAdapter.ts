@@ -21,13 +21,17 @@ type PermissionResponseMessage = {
 
 export type CursorExtensionMessageHandler = (message: AgentMessage) => void;
 
+/** Invoked when the operator accepts a CreatePlan request (Yes / Yes for session). */
+export type CursorCreatePlanAcceptedHandler = () => void;
+
 export class CursorExtensionAdapter {
     private readonly pending = new Map<string, PendingExtensionRequest>();
 
     constructor(
         private readonly session: ApiSessionClient,
         private readonly backend: AcpSdkBackend,
-        private readonly onMessage: CursorExtensionMessageHandler
+        private readonly onMessage: CursorExtensionMessageHandler,
+        private readonly onCreatePlanAccepted?: CursorCreatePlanAcceptedHandler
     ) {
         this.registerHandlers();
     }
@@ -103,19 +107,29 @@ export class CursorExtensionAdapter {
         const decision = response.decision ?? (response.approved ? 'approved' : 'denied');
         if (pending.tool === 'CursorAskQuestion') {
             if (decision === 'abort' || decision === 'denied') {
-                pending.respond({ outcome: 'cancelled' });
+                pending.respond(wrapOutcome({ outcome: 'cancelled' }));
             } else {
-                pending.respond({
+                pending.respond(wrapOutcome({
                     outcome: 'answered',
                     answers: formatQuestionAnswers(pending.arguments, response.answers)
-                });
+                }));
             }
         } else if (decision === 'abort') {
-            pending.respond({ outcome: 'cancelled' });
+            pending.respond(wrapOutcome({ outcome: 'cancelled' }));
         } else if (decision === 'denied') {
-            pending.respond({ outcome: 'rejected' });
+            pending.respond(wrapOutcome({ outcome: 'rejected' }));
         } else {
-            pending.respond({ outcome: 'accepted' });
+            // Accept first so Cursor unblocks, then hand off to execute (mode
+            // switch + continue prompt). Without the handoff, Yes ends the turn
+            // with "plan done" instead of continuing the user's task.
+            pending.respond(wrapOutcome({ outcome: 'accepted' }));
+            if (pending.tool === 'CursorCreatePlan') {
+                try {
+                    this.onCreatePlanAccepted?.();
+                } catch (error) {
+                    logger.warn('[cursor-acp] onCreatePlanAccepted failed', error);
+                }
+            }
         }
 
         const status = response.approved ? 'approved' : 'denied';
@@ -205,11 +219,7 @@ export class CursorExtensionAdapter {
         this.pending.clear();
 
         for (const [id, pending] of entries) {
-            pending.respond(
-                pending.tool === 'CursorAskQuestion'
-                    ? { outcome: 'cancelled' }
-                    : { outcome: 'cancelled' }
-            );
+            pending.respond(wrapOutcome({ outcome: 'cancelled' }));
 
             this.session.updateAgentState((currentState) => {
                 const requestEntry = currentState.requests?.[id];
@@ -233,6 +243,19 @@ export class CursorExtensionAdapter {
             });
         }
     }
+}
+
+/**
+ * Cursor's ACP blocking extension methods (`cursor/ask_question`,
+ * `cursor/create_plan`) expect the JSON-RPC result to nest the outcome under an
+ * `outcome` key, e.g. `{ outcome: { outcome: "accepted" } }`. Returning the
+ * outcome object flat (`{ outcome: "accepted" }`) makes Cursor read
+ * `response.outcome.outcome` as undefined and fall back to a cancellation, so an
+ * approved plan is relayed to the agent as `User cancelled`. See
+ * https://cursor.com/docs/cli/acp (CursorCreatePlanResponse / CursorAskQuestionResponse).
+ */
+function wrapOutcome<T extends { outcome: string }>(outcome: T): { outcome: T } {
+    return { outcome };
 }
 
 function extractToolCallId(params: unknown): string | null {

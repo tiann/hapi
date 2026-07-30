@@ -11,6 +11,8 @@ import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { createMessagesRoutes } from './messages'
 
+type GetMessagesPage = SyncEngine['getMessagesPage']
+
 // TS note: engine is cast to unknown→SyncEngine so test helpers don't need to
 // satisfy the full SyncEngine shape (only the subset the route under test uses).
 
@@ -21,6 +23,7 @@ import { createMessagesRoutes } from './messages'
 function createApp(opts: {
     active?: boolean
     sendMessage?: (sessionId: string, payload: unknown) => Promise<void>
+    getMessagesPage?: GetMessagesPage
     getQueuedState?: (sessionId: string, localIds: string[]) => {
         queuedLocalIds: string[]
         invokedLocalMessages: Array<{ localId: string; invokedAt: number }>
@@ -40,6 +43,22 @@ function createApp(opts: {
                 .map((localId) => ({ localId, invokedAt: 1_000 }))
         }
     })
+    const getMessagesPage = opts.getMessagesPage ?? (() => ({
+        messages: [],
+        page: {
+            direction: 'latest',
+            limit: 50,
+            epoch: 0,
+            reset: false,
+            nextBeforeSeq: null,
+            nextBeforeAt: null,
+            nextAfterSeq: null,
+            nextAfterAt: null,
+            snapshotHeadSeq: null,
+            snapshotHeadAt: null,
+            hasMore: false
+        }
+    }))
 
     const engine = {
         resolveSessionAccess: () => ({
@@ -50,7 +69,7 @@ function createApp(opts: {
         sendMessage,
         getQueuedState,
         cancelQueuedMessage: async () => ({ status: 'cancelled' }),
-        getMessagesPage: () => ({ messages: [], page: {} }),
+        getMessagesPage,
     } as unknown as SyncEngine
 
     const app = new Hono<WebAppEnv>()
@@ -62,6 +81,116 @@ function createApp(opts: {
 
     return { app, sentMessages, queuedStateCalls }
 }
+
+describe('GET /api/sessions/:id/messages', () => {
+    it('uses latest mode by default and returns the full page metadata', async () => {
+        const calls: Array<{ sessionId: string; options: Parameters<GetMessagesPage>[1] }> = []
+        const { app } = createApp({
+            getMessagesPage: (sessionId, options) => {
+                calls.push({ sessionId, options })
+                return {
+                    messages: [],
+                    page: {
+                        direction: 'latest',
+                        limit: options.limit,
+                        epoch: 4,
+                        reset: false,
+                        nextBeforeSeq: 10,
+                        nextBeforeAt: 1_000,
+                        nextAfterSeq: null,
+                        nextAfterAt: null,
+                        snapshotHeadSeq: 20,
+                        snapshotHeadAt: 2_000,
+                        hasMore: true
+                    }
+                }
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/messages')
+
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([{
+            sessionId: 'session-1',
+            options: { limit: 50, before: null, after: null, until: null, epoch: null }
+        }])
+        expect(await response.json()).toEqual({
+            messages: [],
+            page: {
+                direction: 'latest',
+                limit: 50,
+                epoch: 4,
+                reset: false,
+                nextBeforeSeq: 10,
+                nextBeforeAt: 1_000,
+                nextAfterSeq: null,
+                nextAfterAt: null,
+                snapshotHeadSeq: 20,
+                snapshotHeadAt: 2_000,
+                hasMore: true
+            }
+        })
+    })
+
+    it('forwards after, snapshot-head, epoch, and limit query parameters', async () => {
+        const calls: Array<{ sessionId: string; options: Parameters<GetMessagesPage>[1] }> = []
+        const { app } = createApp({
+            getMessagesPage: (sessionId, options) => {
+                calls.push({ sessionId, options })
+                return {
+                    messages: [],
+                    page: {
+                        direction: 'after',
+                        limit: options.limit,
+                        epoch: options.epoch ?? 0,
+                        reset: false,
+                        nextBeforeSeq: null,
+                        nextBeforeAt: null,
+                        nextAfterSeq: 11,
+                        nextAfterAt: 1_100,
+                        snapshotHeadSeq: 20,
+                        snapshotHeadAt: 2_000,
+                        hasMore: true
+                    }
+                }
+            }
+        })
+
+        const response = await app.request(
+            '/api/sessions/session-1/messages?afterAt=1000&afterSeq=10&untilAt=2000&untilSeq=20&epoch=3&limit=25'
+        )
+
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([{
+            sessionId: 'session-1',
+            options: {
+                limit: 25,
+                before: null,
+                after: { at: 1_000, seq: 10 },
+                until: { at: 2_000, seq: 20 },
+                epoch: 3
+            }
+        }])
+    })
+
+    it('rejects mixed directional cursors before calling the engine', async () => {
+        let called = false
+        const { app } = createApp({
+            getMessagesPage: () => {
+                called = true
+                throw new Error('must not be called')
+            }
+        })
+
+        const response = await app.request(
+            '/api/sessions/session-1/messages?beforeAt=1000&beforeSeq=10&afterAt=2000&afterSeq=20'
+        )
+
+        expect(response.status).toBe(400)
+        expect(await response.json()).toMatchObject({ error: 'Invalid query' })
+        expect(called).toBe(false)
+    })
+})
 
 // ---------------------------------------------------------------------------
 // #2 server-side scheduledAt upper bound

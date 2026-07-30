@@ -36,8 +36,10 @@ export function VoiceBackendSession(props: VoiceBackendSessionProps) {
             }
         }).catch((err: unknown) => {
             if (!cancelled) {
-                const msg = err instanceof Error ? err.message : 'Could not detect voice backend'
-                props.onStatusChange?.('error', msg)
+                // Detection runs on mount for every session, not in response to a user action,
+                // so it must not raise the global voice error banner. Leaving `backend` null
+                // keeps `onReadyChange` false, which disables the voice button.
+                console.error('Could not detect voice backend:', err)
             }
         })
         return () => {

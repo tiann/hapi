@@ -333,6 +333,57 @@ describe('normalizeDecryptedMessage', () => {
         })
     })
 
+    it('propagates parentToolUseId from a sidechain user output onto the normalized message (subagent trace grouping fix)', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'user',
+                    uuid: 'u-orphan-child',
+                    isSidechain: true,
+                    parentToolUseId: 'toolu_broken_agent',
+                    message: { content: 'orphaned subagent turn with no prompt-root' }
+                }
+            }
+        })
+
+        const normalized = normalizeDecryptedMessage(message)
+
+        expect(normalized).toMatchObject({
+            role: 'agent',
+            isSidechain: true,
+            parentToolUseId: 'toolu_broken_agent',
+        })
+    })
+
+    it('propagates parentToolUseId from a sidechain assistant output onto the normalized message (subagent trace grouping fix)', () => {
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'assistant',
+                    uuid: 'u-orphan-child-2',
+                    isSidechain: true,
+                    parentToolUseId: 'toolu_broken_agent',
+                    message: {
+                        role: 'assistant',
+                        content: [{ type: 'text', text: 'subagent thinking' }]
+                    }
+                }
+            }
+        })
+
+        const normalized = normalizeDecryptedMessage(message)
+
+        expect(normalized).toMatchObject({
+            role: 'agent',
+            isSidechain: true,
+            parentToolUseId: 'toolu_broken_agent',
+        })
+    })
+
     it('keeps "No response requested." text in normalized output (filtered later by reducer)', () => {
         const message = makeMessage({
             role: 'agent',

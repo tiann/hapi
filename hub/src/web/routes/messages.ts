@@ -28,7 +28,19 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const before = parsed.data.beforeAt !== undefined && parsed.data.beforeSeq !== undefined
             ? { at: parsed.data.beforeAt, seq: parsed.data.beforeSeq }
             : null
-        return c.json(engine.getMessagesPage(sessionId, { limit, before }))
+        const after = parsed.data.afterAt !== undefined && parsed.data.afterSeq !== undefined
+            ? { at: parsed.data.afterAt, seq: parsed.data.afterSeq }
+            : null
+        const until = parsed.data.untilAt !== undefined && parsed.data.untilSeq !== undefined
+            ? { at: parsed.data.untilAt, seq: parsed.data.untilSeq }
+            : null
+        return c.json(engine.getMessagesPage(sessionId, {
+            limit,
+            before,
+            after,
+            until,
+            epoch: parsed.data.epoch ?? null
+        }))
     })
 
     app.delete('/sessions/:id/messages/:messageId', async (c) => {

@@ -7,7 +7,7 @@ export default function SettingsVoiceAdvancedPage() {
     const { t } = useTranslation()
     const { backend } = useVoiceSettings()
     return (
-        <SettingsPageContent title={t('settings.voice.advanced.title')} description={t('settings.voice.advanced.hint')}>
+        <SettingsPageContent description={t('settings.voice.advanced.hint')}>
             <SettingsSection title={t('settings.voice.persona.title')}>
                 <VoicePersonaControls t={t} voiceBackend={backend} />
             </SettingsSection>

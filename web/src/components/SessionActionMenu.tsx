@@ -107,8 +107,8 @@ function ReopenIcon(props: { className?: string }) {
             strokeLinejoin="round"
             className={props.className}
         >
-            <path d="M3 12a9 9 0 1 0 3-6.7" />
-            <polyline points="3 4 3 10 9 10" />
+            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+            <path d="M3 3v5h5" />
         </svg>
     )
 }
@@ -127,10 +127,10 @@ function SyncIcon(props: { className?: string }) {
             strokeLinejoin="round"
             className={props.className}
         >
-            <path d="M3 12a9 9 0 0 1 15.5-6.2" />
-            <path d="M18 3v6h-6" />
-            <path d="M21 12a9 9 0 0 1-15.5 6.2" />
-            <path d="M6 21v-6h6" />
+            <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+            <path d="M21 3v5h-5" />
+            <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+            <path d="M3 21v-5h5" />
         </svg>
     )
 }

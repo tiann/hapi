@@ -1,4 +1,3 @@
-import { useOnlineStatus } from '@/hooks/useOnlineStatus'
 import { useTranslation } from '@/lib/use-translation'
 
 function getReasonLabel(reason: string, t: (key: string) => string): string {
@@ -25,11 +24,9 @@ export function ReconnectingBanner({
     reason?: string | null
 }) {
     const { t } = useTranslation()
-    const isOnline = useOnlineStatus()
     const reasonLabel = reason ? getReasonLabel(reason, t) : null
 
-    // Don't show if offline (OfflineBanner takes precedence) or if not reconnecting
-    if (!isReconnecting || !isOnline) {
+    if (!isReconnecting) {
         return null
     }
 

@@ -8,6 +8,7 @@
 type CodexModelCatalogEntry = {
     id: string
     isDefault: boolean
+    defaultServiceTier?: string | null
     serviceTiers?: string[]
 }
 
@@ -47,7 +48,15 @@ export function codexModelAdvertisesFastTier(
 }
 
 export function isFastServiceTier(serviceTier?: string | null): boolean {
-    return serviceTier?.trim().toLowerCase() === 'fast'
+    return /^(fast|priority)$/i.test(serviceTier?.trim() ?? '')
+}
+
+export function getEffectiveCodexServiceTier(
+    serviceTier: string | null | undefined,
+    sessionModel: string | null | undefined,
+    models: ReadonlyArray<CodexModelCatalogEntry>
+): string | null | undefined {
+    return serviceTier ?? findActiveModel(sessionModel, models)?.defaultServiceTier
 }
 
 /**

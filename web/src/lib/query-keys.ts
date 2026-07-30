@@ -3,6 +3,7 @@ export const queryKeys = {
     session: (sessionId: string) => ['session', sessionId] as const,
     messages: (sessionId: string) => ['messages', sessionId] as const,
     machines: ['machines'] as const,
+    sqliteStorage: ['sqlite-storage'] as const,
     machineCodexModels: (machineId: string) => ['machine-codex-models', machineId] as const,
     gitStatus: (sessionId: string) => ['git-status', sessionId] as const,
     sessionFiles: (sessionId: string, query: string) => ['session-files', sessionId, query] as const,
@@ -15,7 +16,6 @@ export const queryKeys = {
         staged ? 'staged' : 'unstaged'
     ] as const,
     slashCommands: (sessionId: string) => ['slash-commands', sessionId] as const,
-    sessionCodexModels: (sessionId: string) => ['session-codex-models', sessionId] as const,
     sessionCursorModels: (sessionId: string) => ['session-cursor-models', sessionId] as const,
     sessionCursorChatStore: (sessionId: string) => ['session-cursor-chat-store', sessionId] as const,
     sessionPiModels: (sessionId: string) => ['session-pi-models', sessionId] as const,
@@ -27,4 +27,5 @@ export const queryKeys = {
     sessionGrokModels: (sessionId: string) => ['session-grok-models', sessionId] as const,
     sessionGrokReasoningEffortOptions: (sessionId: string) => ['session-grok-reasoning-effort-options', sessionId] as const,
     skills: (sessionId: string) => ['skills', sessionId] as const,
+    scratchlist: (sessionId: string) => ['scratchlist', sessionId] as const,
 }

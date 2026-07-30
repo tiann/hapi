@@ -132,9 +132,9 @@ export function ComposerToolbarLayoutControl() {
     const selectedIndex = selectedItem ? selectedItems.indexOf(selectedItem) : -1
 
     return (
-        <div className="border-t border-[var(--app-divider)] px-3 py-3">
-            <div className="mb-3">
-                <h3 className="text-[var(--app-fg)]">{t('settings.chat.composerToolbar.title')}</h3>
+        <div className="border-t border-[var(--app-divider)] py-3">
+            <div className="mb-3 px-3">
+                <h3 className="text-sm font-medium text-[var(--app-fg)]">{t('settings.chat.composerToolbar.title')}</h3>
                 <p className="mt-0.5 text-xs text-[var(--app-hint)]">{t('settings.chat.composerToolbar.description')}</p>
             </div>
             <SettingsChoiceGroup
@@ -152,13 +152,13 @@ export function ComposerToolbarLayoutControl() {
 
             <div className="mt-3 flex items-center justify-between gap-3 px-3">
                 <div>
-                    <h4 className="text-[var(--app-fg)]">{t('settings.chat.composerToolbar.order')}</h4>
+                    <h4 className="text-sm font-medium text-[var(--app-fg)]">{t('settings.chat.composerToolbar.order')}</h4>
                     <p className="mt-0.5 text-xs text-[var(--app-hint)]">{t('settings.chat.composerToolbar.previewHint')}</p>
                 </div>
                 <button type="button" onClick={resetLayout} className="shrink-0 text-sm text-[var(--app-link)] hover:underline">{t('settings.chat.composerToolbar.reset')}</button>
             </div>
 
-            <div className="mt-2 rounded-[24px] bg-[var(--app-composer-bg,var(--app-subtle-bg))] px-3 pb-2 pt-3 shadow-sm ring-1 ring-[var(--app-border)]">
+            <div className="mx-3 mt-2 rounded-[24px] bg-[var(--app-composer-bg,var(--app-subtle-bg))] px-3 pb-2 pt-3 shadow-sm ring-1 ring-[var(--app-border)]">
                 <div className="mb-2 px-1 text-sm text-[var(--app-hint)]">{t('misc.typeAMessage')}</div>
                 <div className="flex items-center gap-1">
                     <div className="min-w-0 flex-1 overflow-x-auto">
@@ -174,7 +174,7 @@ export function ComposerToolbarLayoutControl() {
                 </div>
             </div>
             {selectedItem && selectedIndex >= 0 ? (
-                <div className="mt-2 flex items-center justify-between gap-2 rounded-lg bg-[var(--app-subtle-bg)] px-3 py-2 text-sm">
+                <div className="mx-3 mt-2 flex items-center justify-between gap-2 rounded-lg bg-[var(--app-subtle-bg)] px-3 py-2 text-sm">
                     <span className="min-w-0 truncate text-[var(--app-hint)]">{t(ITEM_LABEL_KEYS[selectedItem])}</span>
                     <span className="flex shrink-0 items-center gap-1">
                         <button

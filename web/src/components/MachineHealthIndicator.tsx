@@ -2,48 +2,11 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { HoverTooltip } from '@/components/HoverTooltip'
 import {
     MACHINE_HEALTH_BAR_FILL_CLASS,
-    MACHINE_HEALTH_CHIP_CLASS,
     type MachineHealthMetricPresentation,
     type MachineHealthPresentation
 } from '@/lib/machineHealth'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/use-translation'
-
-function HealthMeterBar(props: {
-    label: string
-    percent: number
-    tone: MachineHealthPresentation['overallTone']
-    layout: 'stack' | 'inline'
-    compact?: boolean
-}) {
-    const barWidthClass = props.compact ? 'w-8' : props.layout === 'inline' ? 'w-14' : 'w-11'
-    const labelWidthClass = props.compact ? 'w-5 text-[8px]' : 'w-6 text-[9px]'
-
-    return (
-        <div className="flex items-center gap-0.5 min-w-0">
-            <span className={cn('shrink-0 font-semibold uppercase tracking-wide text-[var(--app-hint)]', labelWidthClass)}>
-                {props.label}
-            </span>
-            <div
-                className={cn(
-                    'relative h-1.5 shrink-0 overflow-hidden rounded-full bg-[var(--app-border)]/80',
-                    barWidthClass
-                )}
-                aria-hidden="true"
-            >
-                <div
-                    className={cn('h-full rounded-full transition-[width]', MACHINE_HEALTH_BAR_FILL_CLASS[props.tone])}
-                    style={{ width: `${Math.max(4, Math.min(100, props.percent))}%` }}
-                />
-            </div>
-            {props.layout === 'inline' && !props.compact ? (
-                <span className="w-7 shrink-0 text-[10px] tabular-nums text-[var(--app-fg)]/80">
-                    {props.percent}%
-                </span>
-            ) : null}
-        </div>
-    )
-}
 
 function TooltipMetricStat(props: {
     metric: MachineHealthMetricPresentation
@@ -131,7 +94,7 @@ function MachineHealthHint() {
     )
 }
 
-function MachineHealthTooltipBody(props: {
+export function MachineHealthTooltipBody(props: {
     presentation: MachineHealthPresentation
 }) {
     const { t } = useTranslation()
@@ -173,96 +136,5 @@ function MachineHealthTooltipBody(props: {
                 ) : null}
             </span>
         </span>
-    )
-}
-
-export function MachineHealthIndicator(props: {
-    presentation: MachineHealthPresentation
-    className?: string
-    layout?: 'stack' | 'inline'
-    compact?: boolean
-    tooltipId?: string
-    revealOnParentFocusClass?: string
-}) {
-    const { t } = useTranslation()
-    const generatedTooltipId = useId()
-    const tooltipId = props.tooltipId ?? generatedTooltipId
-    const { presentation, layout = 'stack', compact = false } = props
-    const [clickOpen, setClickOpen] = useState(false)
-    const containerRef = useRef<HTMLSpanElement>(null)
-
-    useEffect(() => {
-        if (!clickOpen) return
-
-        const closeOnOutsidePointer = (event: PointerEvent) => {
-            if (!containerRef.current?.contains(event.target as Node)) {
-                setClickOpen(false)
-            }
-        }
-        document.addEventListener('pointerdown', closeOnOutsidePointer)
-        return () => document.removeEventListener('pointerdown', closeOnOutsidePointer)
-    }, [clickOpen])
-
-    const ariaLabel = presentation.metrics.length > 0
-        ? presentation.metrics
-            .map((metric) => t(`machine.health.aria.${metric.id}`, { n: metric.percent }))
-            .join('; ')
-        : t('machine.health.aria.unknown')
-
-    const chip = (
-        <button
-            type="button"
-            className={cn(
-                'inline-flex rounded-md border',
-                compact ? 'flex-row flex-nowrap items-center gap-x-1.5 px-1 py-0.5' : layout === 'inline'
-                    ? 'flex-row flex-wrap items-center gap-x-3 gap-y-1 px-1.5 py-1'
-                    : 'flex-col gap-0.5 px-1.5 py-1',
-                MACHINE_HEALTH_CHIP_CLASS[presentation.overallTone],
-                props.className
-            )}
-            aria-label={ariaLabel}
-            aria-describedby={tooltipId}
-            aria-expanded={clickOpen}
-            aria-controls={tooltipId}
-            onClick={(event) => {
-                event.stopPropagation()
-                if (clickOpen) {
-                    event.currentTarget.blur()
-                }
-                setClickOpen((open) => !open)
-            }}
-            onKeyDown={(event) => {
-                if (event.key === 'Escape') {
-                    setClickOpen(false)
-                }
-            }}
-        >
-            {presentation.metrics.map((metric) => (
-                <HealthMeterBar
-                    key={metric.id}
-                    label={metric.shortLabel}
-                    percent={metric.percent}
-                    tone={metric.tone}
-                    layout={layout}
-                    compact={compact}
-                />
-            ))}
-        </button>
-    )
-
-    return (
-        <HoverTooltip
-            id={tooltipId}
-            target={chip}
-            side="bottom"
-            align="end"
-            className="shrink-0"
-            tooltipClassName="pointer-events-auto before:absolute before:inset-x-0 before:-top-1 before:h-1 before:content-[''] px-3 py-2 min-w-[16rem]"
-            revealOnParentFocusClass={props.revealOnParentFocusClass}
-            open={clickOpen}
-            containerRef={containerRef}
-        >
-            <MachineHealthTooltipBody presentation={presentation} />
-        </HoverTooltip>
     )
 }

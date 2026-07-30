@@ -5,6 +5,8 @@ import { dirname } from 'node:path'
 import { MachineStore } from './machineStore'
 import { MessageStore } from './messageStore'
 import { PushStore } from './pushStore'
+import { FcmStore } from './fcmStore'
+import { ScratchlistStore } from './scratchlistStore'
 import { SessionStore } from './sessionStore'
 import { UserStore } from './userStore'
 
@@ -12,6 +14,8 @@ export type {
     StoredMachine,
     StoredMessage,
     StoredPushSubscription,
+    StoredFcmDevice,
+    StoredScratchlistEntry,
     StoredSession,
     StoredUser,
     VersionedUpdateResult
@@ -20,16 +24,21 @@ export type { CancelQueuedMessageResult, LookupQueuedMessageResult } from './mes
 export { MachineStore } from './machineStore'
 export { MessageStore } from './messageStore'
 export { PushStore } from './pushStore'
+export { FcmStore } from './fcmStore'
+export { ScratchlistStore } from './scratchlistStore'
 export { SessionStore } from './sessionStore'
 export { UserStore } from './userStore'
 
-const SCHEMA_VERSION: number = 10
+const SCHEMA_VERSION: number = 15
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
     'messages',
+    'message_epochs',
     'users',
-    'push_subscriptions'
+    'push_subscriptions',
+    'fcm_devices',
+    'session_scratchlist'
 ] as const
 
 export class Store {
@@ -42,6 +51,8 @@ export class Store {
     readonly messages: MessageStore
     readonly users: UserStore
     readonly push: PushStore
+    readonly fcm: FcmStore
+    readonly scratchlist: ScratchlistStore
 
     /**
      * Filesystem path of the underlying SQLite database, or ':memory:' for
@@ -92,6 +103,8 @@ export class Store {
         this.messages = new MessageStore(this.db)
         this.users = new UserStore(this.db)
         this.push = new PushStore(this.db)
+        this.fcm = new FcmStore(this.db)
+        this.scratchlist = new ScratchlistStore(this.db)
     }
 
     close(): void {
@@ -124,6 +137,11 @@ export class Store {
             7: () => this.migrateFromV7ToV8(),
             8: () => this.migrateFromV8ToV9(),
             9: () => this.migrateFromV9ToV10(),
+            10: () => this.migrateFromV10ToV11(),
+            11: () => this.migrateFromV11ToV12(),
+            12: () => this.migrateFromV12ToV13(),
+            13: () => this.migrateFromV13ToV14(),
+            14: () => this.migrateFromV14ToV15(),
         })
 
         if (currentVersion === 0) {
@@ -231,6 +249,12 @@ export class Store {
                 ON messages(scheduled_at)
                 WHERE scheduled_at IS NOT NULL AND invoked_at IS NULL;
 
+            CREATE TABLE IF NOT EXISTS message_epochs (
+                session_id TEXT PRIMARY KEY,
+                epoch INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 platform TEXT NOT NULL,
@@ -252,6 +276,32 @@ export class Store {
                 UNIQUE(namespace, endpoint)
             );
             CREATE INDEX IF NOT EXISTS idx_push_subscriptions_namespace ON push_subscriptions(namespace);
+
+            CREATE TABLE IF NOT EXISTS fcm_devices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                namespace TEXT NOT NULL,
+                token TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(namespace, device_id, platform)
+            );
+            CREATE INDEX IF NOT EXISTS idx_fcm_devices_namespace ON fcm_devices(namespace);
+            CREATE INDEX IF NOT EXISTS idx_fcm_devices_token ON fcm_devices(token);
+
+            CREATE TABLE IF NOT EXISTS session_scratchlist (
+                session_id TEXT NOT NULL,
+                entry_id TEXT NOT NULL,
+                text TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                attachments TEXT DEFAULT NULL,
+                PRIMARY KEY (session_id, entry_id),
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_scratchlist_session_created
+                ON session_scratchlist(session_id, created_at DESC);
         `)
     }
 
@@ -432,6 +482,86 @@ export class Store {
         if (columns.size === 0) return
         if (!columns.has('service_tier')) {
             this.db.exec('ALTER TABLE sessions ADD COLUMN service_tier TEXT')
+        }
+    }
+
+    private migrateFromV10ToV11(): void {
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS fcm_devices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                namespace TEXT NOT NULL,
+                token TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(namespace, device_id, platform)
+            );
+            CREATE INDEX IF NOT EXISTS idx_fcm_devices_namespace ON fcm_devices(namespace);
+            CREATE INDEX IF NOT EXISTS idx_fcm_devices_token ON fcm_devices(token);
+        `)
+    }
+
+    /**
+     * tiann/hapi#893 (scratchlist v2): introduce the per-session
+     * `session_scratchlist` typed table. Upstream main took V10→V11 for
+     * `fcm_devices`; scratchlist is V11→V12.
+     *
+     * Idempotent via `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT
+     * EXISTS`. Cascade-delete from `sessions(id)` handles delete-session
+     * cleanup. No data backfill: the web client's first-run migration
+     * pushes any existing `localStorage` entries up via REST.
+     *
+     * Rollback: `DROP TABLE session_scratchlist; PRAGMA user_version = 11;`
+     */
+    private migrateFromV11ToV12(): void {
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS session_scratchlist (
+                session_id TEXT NOT NULL,
+                entry_id TEXT NOT NULL,
+                text TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (session_id, entry_id),
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_scratchlist_session_created
+                ON session_scratchlist(session_id, created_at DESC);
+        `)
+    }
+
+    private migrateFromV12ToV13(): void {
+        // Two development branches previously used schema v12 for different
+        // tables. Reconcile both shapes before advancing the version.
+        this.migrateFromV11ToV12()
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS message_epochs (
+                session_id TEXT PRIMARY KEY,
+                epoch INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            )
+        `)
+    }
+
+    private migrateFromV13ToV14(): void {
+        // Repair v13 databases produced before the divergent v12 migrations
+        // were reconciled. Both underlying migrations are idempotent.
+        this.migrateFromV12ToV13()
+    }
+
+    /**
+     * tiann/hapi#921 (scratchlist v2.2): attachment metadata JSON column.
+     * Bytes live on hub filesystem under HAPI_HOME/scratchlist-attachments/.
+     * Upstream ladder: V11→V12 = session_scratchlist (#896); V12–V14 =
+     * message_epochs reconciliation; this step is V14→V15 for attachments.
+     *
+     * Rollback: `ALTER TABLE session_scratchlist DROP COLUMN attachments` is
+     * unsupported on older SQLite; rebuild DB or leave column unused.
+     */
+    private migrateFromV14ToV15(): void {
+        const columns = this.db.prepare('PRAGMA table_info(session_scratchlist)').all() as Array<{ name: string }>
+        if (!columns.some((col) => col.name === 'attachments')) {
+            this.db.exec(`ALTER TABLE session_scratchlist ADD COLUMN attachments TEXT DEFAULT NULL`)
         }
     }
 

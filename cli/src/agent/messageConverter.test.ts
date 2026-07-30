@@ -106,4 +106,10 @@ describe('convertAgentMessage', () => {
             }
         });
     });
+    it('returns null instead of echoing an unrecognized message shape', () => {
+        // Unreachable through the type system, but callers forward any non-null
+        // result straight into the chat stream — so the runtime contract has to
+        // be fail-closed.
+        expect(convertAgentMessage({ type: 'not_a_real_type' } as never)).toBeNull();
+    });
 });

@@ -45,7 +45,7 @@ function makeTool(id: string, name: string, input: unknown = {}): ToolCallBlock 
 function makeGroup(tools: ToolCallBlock[]): ToolGroupBlock {
     const read = tools.filter((tool) => tool.tool.name === 'Read').length
     const search = tools.filter((tool) => tool.tool.name === 'Grep' || tool.tool.name === 'Glob').length
-    const command = tools.filter((tool) => tool.tool.name === 'Bash' || tool.tool.name === 'CodexBash' || tool.tool.name === 'shell_command').length
+    const command = tools.filter((tool) => tool.tool.name === 'Bash' || tool.tool.name === 'CodexBash' || tool.tool.name === 'shell_command' || tool.tool.name === 'run_shell_command').length
     const mutation = tools.filter((tool) => tool.tool.name === 'Edit' || tool.tool.name === 'Write' || tool.tool.name === 'MultiEdit').length
     const web = tools.filter((tool) => tool.tool.name === 'WebFetch' || tool.tool.name === 'WebSearch').length
 
@@ -86,6 +86,10 @@ const tEn = makeTranslator(en as Dict)
 const tZh = makeTranslator(zhCN as Dict)
 
 describe('inferGroupedSummaryIntent', () => {
+    it('treats run_shell_command as a command intent', () => {
+        expect(inferGroupedSummaryIntent(makeTool('shell-1', 'run_shell_command', { command: 'bun test' }))).toBe('run-project-command')
+    })
+
     it('treats file inspection shell commands as inspect-files intent', () => {
         const tool = makeTool('shell-1', 'shell_command', { command: 'Get-ChildItem src -Recurse' })
         expect(inferGroupedSummaryIntent(tool)).toBe('inspect-files')

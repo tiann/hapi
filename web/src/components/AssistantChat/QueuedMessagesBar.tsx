@@ -71,8 +71,7 @@ function useQueuedMessages(sessionId: string): DecryptedMessage[] {
     // useSyncExternalStore guarantees a stable reference when the snapshot is
     // unchanged, so [state] as the dependency avoids unnecessary re-sorts.
     return useMemo(() => {
-        const allMessages = [...state.messages, ...state.pending]
-        return sortQueuedMessages(allMessages.filter(isQueuedForInvocation))
+        return sortQueuedMessages(state.messages.filter(isQueuedForInvocation))
     }, [state])
 }
 

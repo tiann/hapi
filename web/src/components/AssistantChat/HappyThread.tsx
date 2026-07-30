@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { ThreadPrimitive } from '@assistant-ui/react'
+import { ThreadPrimitive, useAssistantState } from '@assistant-ui/react'
 import type { ApiClient } from '@/api/client'
-import type { SessionMetadataSummary } from '@/types/api'
+import type { HappyRuntimeExtras } from '@/lib/assistant-runtime'
+import type { Session, SessionMetadataSummary } from '@/types/api'
 import type { ConversationOutlineItem } from '@/chat/outline'
 import { getConversationMessageAnchorId } from '@/chat/outline'
+import { formatMessageTimestampTitle, formatOutlineTimestamp } from '@/chat/presentation'
 import { HappyChatProvider } from '@/components/AssistantChat/context'
 import { HappyAssistantMessage } from '@/components/AssistantChat/messages/AssistantMessage'
 import { HappyUserMessage } from '@/components/AssistantChat/messages/UserMessage'
@@ -13,6 +15,10 @@ import { Spinner } from '@/components/Spinner'
 import { useTerminalToolDisplayMode } from '@/hooks/useTerminalToolDisplayMode'
 import { useTranslation } from '@/lib/use-translation'
 import { CloseIcon } from '@/components/icons'
+import { ShareTurnDialog } from '@/components/AssistantChat/ShareTurnDialog'
+import { formatCodexReasoningLabel, shouldShowCodexReasoningLabel } from '@/lib/codexStatusLabels'
+import { getSessionModelLabel } from '@/lib/sessionModelLabel'
+import { isFastServiceTier } from '@/components/AssistantChat/codexFastMode'
 
 type ScrollAnchor = {
     id: string
@@ -23,6 +29,57 @@ type PendingScrollRestore = {
     anchor: ScrollAnchor | null
     scrollTop: number
     scrollHeight: number
+    historyVersion: number
+}
+
+type ShareTurnState = {
+    id: number
+    snapshots: ShareTurnSnapshot[]
+    title: string
+} | null
+
+type ShareTurnSnapshot = {
+    html: string
+    text: string
+    role?: 'user' | 'assistant'
+}
+
+function findNearestMessageElement(content: HTMLElement, clientY?: number): HTMLElement | null {
+    const messages = Array.from(content.querySelectorAll('.happy-thread-messages > [id]'))
+        .filter((element): element is HTMLElement => element instanceof HTMLElement)
+    if (messages.length === 0) return null
+    if (typeof clientY !== 'number' || !Number.isFinite(clientY)) {
+        return messages[messages.length - 1] ?? null
+    }
+
+    let best: HTMLElement | null = null
+    let bestDistance = Number.POSITIVE_INFINITY
+    for (const message of messages) {
+        const rect = message.getBoundingClientRect()
+        const distance = clientY < rect.top
+            ? rect.top - clientY
+            : clientY > rect.bottom
+                ? clientY - rect.bottom
+                : 0
+        if (distance < bestDistance) {
+            best = message
+            bestDistance = distance
+        }
+    }
+    return best
+}
+
+export function prependMissingUserSnapshot(
+    snapshots: ShareTurnSnapshot[],
+    fallbackSnapshot?: ShareTurnSnapshot
+): ShareTurnSnapshot[] {
+    const hasUser = snapshots.some((snapshot) =>
+        snapshot.role === 'user' || snapshot.html.includes('data-hapi-message-role="user"')
+    )
+    if (hasUser || fallbackSnapshot?.role !== 'user' || fallbackSnapshot.text.trim().length === 0) {
+        return snapshots
+    }
+    return [fallbackSnapshot, ...snapshots]
 }
 
 const MESSAGE_ANCHOR_SELECTOR = '.happy-thread-messages > [id]'
@@ -30,6 +87,7 @@ const AUTO_SCROLL_RESUME_THRESHOLD_PX = 120
 const MANUAL_SCROLL_EPSILON_PX = 1
 const INITIAL_SCROLL_SETTLE_MS = 1800
 const INITIAL_SCROLL_SETTLE_DELAYS_MS = [0, 16, 50, 120, 250, 500, 900, 1400, 1800] as const
+const HISTORY_PRELOAD_MARGIN_PX = 200
 
 type ScrollIntent = {
     distanceFromBottom: number
@@ -90,6 +148,13 @@ export function restoreScrollAnchor(viewport: HTMLElement, anchor: ScrollAnchor)
     return true
 }
 
+export function hasAppliedHistoryVersion(
+    pendingHistoryVersion: number,
+    appliedHistoryVersion: number
+): boolean {
+    return appliedHistoryVersion > pendingHistoryVersion
+}
+
 export async function locateOutlineTargetMessage(options: LocateOutlineTargetOptions): Promise<HTMLElement | null> {
     const anchorId = getConversationMessageAnchorId(options.targetMessageId)
     let target = options.findTarget(anchorId)
@@ -101,6 +166,26 @@ export async function locateOutlineTargetMessage(options: LocateOutlineTargetOpt
         target = options.findTarget(anchorId)
     }
     return target
+}
+
+export function shouldLoadOlderForViewport(params: {
+    scrollHeight: number
+    clientHeight: number
+    viewportTop: number
+    sentinelTop: number
+    sentinelBottom: number
+    preloadMarginPx?: number
+}): boolean {
+    const preloadMarginPx = params.preloadMarginPx ?? HISTORY_PRELOAD_MARGIN_PX
+    if (params.scrollHeight <= params.clientHeight + 1) {
+        return true
+    }
+    return params.sentinelBottom >= params.viewportTop - preloadMarginPx
+        && params.sentinelTop <= params.viewportTop + preloadMarginPx
+}
+
+export function getHistoryCoverageRetryDelay(deadline: number, now: number): number {
+    return Math.max(0, deadline - now) + 16
 }
 
 function NewMessagesIndicator(props: { count: number; onClick: () => void }) {
@@ -156,7 +241,7 @@ export function ConversationOutlinePanel(props: {
     onSelect: (item: ConversationOutlineItem) => void
     onClose: () => void
 }) {
-    const { t } = useTranslation()
+    const { t, locale } = useTranslation()
     const [searchQuery, setSearchQuery] = useState('')
     const normalizedSearchQuery = searchQuery.trim().toLocaleLowerCase()
     const filteredItems = useMemo(() => {
@@ -218,15 +303,16 @@ export function ConversationOutlinePanel(props: {
                             )}
                         </Button>
                     ) : null}
-                    <button
+                    <Button
+                        variant="outline"
                         type="button"
                         onClick={props.onClose}
                         aria-label={t('button.close')}
                         title={t('button.close')}
-                        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                        className="h-9 w-9 shrink-0 px-0"
                     >
                         <CloseIcon className="h-4 w-4" />
-                    </button>
+                    </Button>
                 </div>
                 {normalizedSearchQuery.length > 0 ? (
                     <div className="mt-1.5 text-right text-xs text-[var(--app-hint)]" aria-live="polite">
@@ -250,21 +336,26 @@ export function ConversationOutlinePanel(props: {
                 ) : (
                     <div className="space-y-1">
                         {filteredItems.map((item) => {
+                            const createdAt = new Date(item.createdAt)
                             return (
                                 <button
                                     key={item.id}
                                     type="button"
                                     onClick={() => props.onSelect(item)}
-                                    className="group flex w-full min-w-0 items-start gap-2 rounded-md px-2 py-2 text-left transition-colors hover:bg-[var(--app-subtle-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                                    className="group block w-full min-w-0 rounded-md px-2 py-2 text-left transition-colors hover:bg-[var(--app-subtle-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
                                 >
-                                    <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-[var(--app-button)]" aria-hidden="true" />
-                                    <span className="min-w-0 flex-1">
-                                        <span className="block truncate text-[11px] font-medium uppercase text-[var(--app-hint)]">
-                                            {t('session.outline.kind.user')}
-                                        </span>
-                                        <span className="line-clamp-2 text-sm leading-snug text-[var(--app-fg)]">
-                                            {item.label}
-                                        </span>
+                                    <span className="flex min-w-0 items-center gap-2 text-[11px] font-medium tabular-nums text-[var(--app-hint)]">
+                                        <span className="h-2 w-2 shrink-0 rounded-full bg-[var(--app-button)]" aria-hidden="true" />
+                                        <time
+                                            dateTime={createdAt.toISOString()}
+                                            title={formatMessageTimestampTitle(createdAt)}
+                                            className="truncate"
+                                        >
+                                            {formatOutlineTimestamp(createdAt, locale)}
+                                        </time>
+                                    </span>
+                                    <span className="mt-0.5 line-clamp-2 pl-4 text-sm leading-snug text-[var(--app-fg)]">
+                                        {item.label}
                                     </span>
                                 </button>
                             )
@@ -278,22 +369,23 @@ export function ConversationOutlinePanel(props: {
 
 export function HappyThread(props: {
     api: ApiClient
+    session: Session
     sessionId: string
     metadata: SessionMetadataSummary | null
     disabled: boolean
     onRefresh: () => void
     onRetryMessage?: (localId: string) => void
-    onFlushPending: () => void
-    onAtBottomChange: (atBottom: boolean) => void
-    isLoadingMessages: boolean
+    onViewModeChange: (mode: 'tail' | 'history') => void
+    isSyncingTail: boolean
     messagesWarning: string | null
     hasMoreMessages: boolean
     isLoadingMoreMessages: boolean
-    onLoadMore: () => Promise<unknown>
-    pendingCount: number
+    onLoadMore: () => Promise<boolean>
+    unseenCount: number
     rawMessagesCount: number
     normalizedMessagesCount: number
     messagesVersion: number
+    historyVersion: number
     forceScrollToken: number
     outlineOpen: boolean
     outlineItems: readonly ConversationOutlineItem[]
@@ -302,25 +394,27 @@ export function HappyThread(props: {
 }) {
     const { t } = useTranslation()
     const { terminalToolDisplayMode } = useTerminalToolDisplayMode()
+    const runtimeExtras = useAssistantState(({ thread }) => thread.extras) as HappyRuntimeExtras | undefined
+    const appliedMessagesVersion = runtimeExtras?.messagesVersion ?? props.messagesVersion
+    const appliedHistoryVersion = runtimeExtras?.historyVersion ?? props.historyVersion
+    const appliedHistoryVersionRef = useRef(appliedHistoryVersion)
+    appliedHistoryVersionRef.current = appliedHistoryVersion
     const viewportRef = useRef<HTMLDivElement | null>(null)
     const contentRef = useRef<HTMLDivElement | null>(null)
+    const [shareTurn, setShareTurn] = useState<ShareTurnState>(null)
+    const shareTurnIdRef = useRef(0)
     const topSentinelRef = useRef<HTMLDivElement | null>(null)
     const loadLockRef = useRef(false)
     const pendingScrollRef = useRef<PendingScrollRestore | null>(null)
-    const prevLoadingMoreRef = useRef(false)
-    const loadStartedRef = useRef(false)
     const isLoadingMoreRef = useRef(props.isLoadingMoreMessages)
     const hasMoreMessagesRef = useRef(props.hasMoreMessages)
-    const isLoadingMessagesRef = useRef(props.isLoadingMessages)
-    const messagesVersionRef = useRef(props.messagesVersion)
+    const isSyncingTailRef = useRef(props.isSyncingTail)
     const onLoadMoreRef = useRef(props.onLoadMore)
-    const handleLoadMoreRef = useRef<() => void>(() => {})
     const pendingLoadPromiseRef = useRef<Promise<boolean> | null>(null)
     const pendingLoadResolveRef = useRef<((value: boolean) => void) | null>(null)
-    const pendingLoadBaselineRef = useRef<{ messagesVersion: number; hasMoreMessages: boolean } | null>(null)
+    const coverageRetryTimerRef = useRef<number | null>(null)
     const atBottomRef = useRef(true)
-    const onAtBottomChangeRef = useRef(props.onAtBottomChange)
-    const onFlushPendingRef = useRef(props.onFlushPending)
+    const onViewModeChangeRef = useRef(props.onViewModeChange)
     const forceScrollTokenRef = useRef(props.forceScrollToken)
     const lastScrollTopRef = useRef(0)
     const sessionIdRef = useRef(props.sessionId)
@@ -331,20 +425,14 @@ export function HappyThread(props: {
     // Smart scroll state: enabled only while the user is intentionally at the bottom.
     const autoScrollEnabledRef = useRef(true)
     useEffect(() => {
-        onAtBottomChangeRef.current = props.onAtBottomChange
-    }, [props.onAtBottomChange])
-    useEffect(() => {
-        onFlushPendingRef.current = props.onFlushPending
-    }, [props.onFlushPending])
+        onViewModeChangeRef.current = props.onViewModeChange
+    }, [props.onViewModeChange])
     useEffect(() => {
         hasMoreMessagesRef.current = props.hasMoreMessages
     }, [props.hasMoreMessages])
     useEffect(() => {
-        isLoadingMessagesRef.current = props.isLoadingMessages
-    }, [props.isLoadingMessages])
-    useEffect(() => {
-        messagesVersionRef.current = props.messagesVersion
-    }, [props.messagesVersion])
+        isSyncingTailRef.current = props.isSyncingTail
+    }, [props.isSyncingTail])
     useEffect(() => {
         onLoadMoreRef.current = props.onLoadMore
     }, [props.onLoadMore])
@@ -364,23 +452,18 @@ export function HappyThread(props: {
         initialScrollTimersRef.current = []
     }, [])
 
+    const clearCoverageRetryTimer = useCallback(() => {
+        if (coverageRetryTimerRef.current !== null) {
+            window.clearTimeout(coverageRetryTimerRef.current)
+            coverageRetryTimerRef.current = null
+        }
+    }, [])
+
     const settlePendingLoad = useCallback((result: boolean) => {
         const resolve = pendingLoadResolveRef.current
-        const baseline = pendingLoadBaselineRef.current
         pendingLoadResolveRef.current = null
         pendingLoadPromiseRef.current = null
-        pendingLoadBaselineRef.current = null
-        if (!resolve) {
-            return
-        }
-        if (!result || !baseline) {
-            resolve(result)
-            return
-        }
-        resolve(
-            messagesVersionRef.current !== baseline.messagesVersion
-            || hasMoreMessagesRef.current !== baseline.hasMoreMessages
-        )
+        resolve?.(result)
     }, [])
 
     // Track scroll position to toggle autoScroll (stable listener using refs)
@@ -402,10 +485,7 @@ export function HappyThread(props: {
                 return
             }
             atBottomRef.current = atBottom
-            onAtBottomChangeRef.current(atBottom)
-            if (atBottom) {
-                onFlushPendingRef.current()
-            }
+            onViewModeChangeRef.current(atBottom ? 'tail' : 'history')
         }
 
         const handleScroll = () => {
@@ -465,9 +545,8 @@ export function HappyThread(props: {
         autoScrollEnabledRef.current = true
         if (!atBottomRef.current) {
             atBottomRef.current = true
-            onAtBottomChangeRef.current(true)
+            onViewModeChangeRef.current('tail')
         }
-        onFlushPendingRef.current()
     }, [])
 
     // Reset state when session changes
@@ -475,21 +554,21 @@ export function HappyThread(props: {
         autoScrollEnabledRef.current = true
         lastScrollTopRef.current = viewportRef.current?.scrollTop ?? 0
         atBottomRef.current = true
-        onAtBottomChangeRef.current(true)
+        onViewModeChangeRef.current('tail')
         forceScrollTokenRef.current = props.forceScrollToken
         pendingScrollRef.current = null
         loadLockRef.current = false
-        loadStartedRef.current = false
         initialScrollSessionRef.current = null
         initialScrollDeadlineRef.current = 0
         clearInitialScrollTimers()
+        clearCoverageRetryTimer()
         settlePendingLoad(false)
-    }, [props.sessionId, clearInitialScrollTimers, settlePendingLoad])
+    }, [props.sessionId, clearInitialScrollTimers, clearCoverageRetryTimer, settlePendingLoad])
 
     useLayoutEffect(() => {
         if (
             initialScrollSessionRef.current === props.sessionId
-            || props.isLoadingMessages
+            || props.isSyncingTail
             || props.rawMessagesCount === 0
             || pendingScrollRef.current
         ) {
@@ -499,7 +578,7 @@ export function HappyThread(props: {
         initialScrollSessionRef.current = props.sessionId
         autoScrollEnabledRef.current = true
         atBottomRef.current = true
-        onAtBottomChangeRef.current(true)
+        onViewModeChangeRef.current('tail')
         scrollToBottomInstant()
 
         initialScrollDeadlineRef.current = Date.now() + INITIAL_SCROLL_SETTLE_MS
@@ -516,7 +595,7 @@ export function HappyThread(props: {
         }, delay))
     }, [
         props.sessionId,
-        props.isLoadingMessages,
+        props.isSyncingTail,
         props.rawMessagesCount,
         props.messagesVersion,
         scrollToBottomInstant,
@@ -526,9 +605,10 @@ export function HappyThread(props: {
     useEffect(() => {
         return () => {
             clearInitialScrollTimers()
+            clearCoverageRetryTimer()
             settlePendingLoad(false)
         }
-    }, [clearInitialScrollTimers, settlePendingLoad])
+    }, [clearInitialScrollTimers, clearCoverageRetryTimer, settlePendingLoad])
 
     useEffect(() => {
         if (forceScrollTokenRef.current === props.forceScrollToken) {
@@ -544,7 +624,7 @@ export function HappyThread(props: {
         }
         if (
             isInitialScrollSettling()
-            || isLoadingMessagesRef.current
+            || isSyncingTailRef.current
             || !hasMoreMessagesRef.current
             || isLoadingMoreRef.current
             || loadLockRef.current
@@ -558,50 +638,70 @@ export function HappyThread(props: {
         pendingScrollRef.current = {
             anchor: captureScrollAnchor(viewport),
             scrollTop: viewport.scrollTop,
-            scrollHeight: viewport.scrollHeight
+            scrollHeight: viewport.scrollHeight,
+            historyVersion: appliedHistoryVersionRef.current
         }
         autoScrollEnabledRef.current = false
         loadLockRef.current = true
-        loadStartedRef.current = false
-        pendingLoadBaselineRef.current = {
-            messagesVersion: messagesVersionRef.current,
-            hasMoreMessages: hasMoreMessagesRef.current
-        }
         const loadPromise = new Promise<boolean>((resolve) => {
             pendingLoadResolveRef.current = resolve
         })
         pendingLoadPromiseRef.current = loadPromise
-        try {
-            void onLoadMoreRef.current().catch((error) => {
+        void (async () => {
+            try {
+                const loaded = await onLoadMoreRef.current()
+                if (loaded) {
+                    return
+                }
+                pendingScrollRef.current = null
+                loadLockRef.current = false
+                settlePendingLoad(false)
+            } catch (error) {
                 pendingScrollRef.current = null
                 loadLockRef.current = false
                 settlePendingLoad(false)
                 console.error('Failed to load older messages:', error)
-            }).finally(() => {
-                if (!loadStartedRef.current && !isLoadingMoreRef.current) {
-                    if (pendingScrollRef.current) {
-                        pendingScrollRef.current = null
-                        loadLockRef.current = false
-                    }
-                    settlePendingLoad(true)
-                }
-            })
-        } catch (error) {
-            pendingScrollRef.current = null
-            loadLockRef.current = false
-            settlePendingLoad(false)
-            console.error('Failed to load older messages:', error)
-        }
+            }
+        })()
         return loadPromise
     }, [isInitialScrollSettling, settlePendingLoad])
+
+    const needsViewportCoverage = useCallback((): boolean => {
+        const viewport = viewportRef.current
+        const sentinel = topSentinelRef.current
+        if (!viewport || !sentinel) {
+            return false
+        }
+        const viewportRect = viewport.getBoundingClientRect()
+        const sentinelRect = sentinel.getBoundingClientRect()
+        return shouldLoadOlderForViewport({
+            scrollHeight: viewport.scrollHeight,
+            clientHeight: viewport.clientHeight,
+            viewportTop: viewportRect.top,
+            sentinelTop: sentinelRect.top,
+            sentinelBottom: sentinelRect.bottom
+        })
+    }, [])
+
+    const scheduleCoverageAfterSettling = useCallback(() => {
+        clearCoverageRetryTimer()
+        const delay = getHistoryCoverageRetryDelay(initialScrollDeadlineRef.current, Date.now())
+        coverageRetryTimerRef.current = window.setTimeout(() => {
+            coverageRetryTimerRef.current = null
+            if (needsViewportCoverage()) {
+                void loadOlderPreservingScroll()
+            }
+        }, delay)
+    }, [clearCoverageRetryTimer, loadOlderPreservingScroll, needsViewportCoverage])
 
     const loadOlderFromUserAction = useCallback((): Promise<boolean> => {
         // Initial settling protects the automatic top sentinel from racing the
         // first scroll-to-bottom pass. It must not swallow an explicit click.
         initialScrollDeadlineRef.current = 0
         clearInitialScrollTimers()
+        clearCoverageRetryTimer()
         return loadOlderPreservingScroll()
-    }, [clearInitialScrollTimers, loadOlderPreservingScroll])
+    }, [clearInitialScrollTimers, clearCoverageRetryTimer, loadOlderPreservingScroll])
 
     const handleOutlineSelect = useCallback(async (item: ConversationOutlineItem) => {
         const target = await locateOutlineTargetMessage({
@@ -619,15 +719,9 @@ export function HappyThread(props: {
     }, [loadOlderFromUserAction, props.onOutlineItemClick, props.onOutlineOpenChange])
 
     useEffect(() => {
-        handleLoadMoreRef.current = () => {
-            void loadOlderPreservingScroll()
-        }
-    }, [loadOlderPreservingScroll])
-
-    useEffect(() => {
         const sentinel = topSentinelRef.current
         const viewport = viewportRef.current
-        if (!sentinel || !viewport || !props.hasMoreMessages || props.isLoadingMessages) {
+        if (!sentinel || !viewport || !props.hasMoreMessages || props.isSyncingTail) {
             return
         }
         if (typeof IntersectionObserver === 'undefined') {
@@ -639,21 +733,46 @@ export function HappyThread(props: {
                 for (const entry of entries) {
                     if (entry.isIntersecting) {
                         if (isInitialScrollSettling()) {
+                            scheduleCoverageAfterSettling()
                             continue
                         }
-                        handleLoadMoreRef.current()
+                        void loadOlderPreservingScroll()
                     }
                 }
             },
             {
                 root: viewport,
-                rootMargin: '200px 0px 0px 0px'
+                rootMargin: `${HISTORY_PRELOAD_MARGIN_PX}px 0px 0px 0px`
             }
         )
 
         observer.observe(sentinel)
         return () => observer.disconnect()
-    }, [props.hasMoreMessages, props.isLoadingMessages, isInitialScrollSettling])
+    }, [
+        props.hasMoreMessages,
+        props.isSyncingTail,
+        isInitialScrollSettling,
+        loadOlderPreservingScroll,
+        scheduleCoverageAfterSettling
+    ])
+
+    useEffect(() => {
+        if (!props.hasMoreMessages || props.isSyncingTail) {
+            clearCoverageRetryTimer()
+            return
+        }
+        if (isInitialScrollSettling() && needsViewportCoverage()) {
+            scheduleCoverageAfterSettling()
+        }
+    }, [
+        props.hasMoreMessages,
+        props.isSyncingTail,
+        props.messagesVersion,
+        isInitialScrollSettling,
+        needsViewportCoverage,
+        scheduleCoverageAfterSettling,
+        clearCoverageRetryTimer
+    ])
 
     useEffect(() => {
         const content = contentRef.current
@@ -684,6 +803,9 @@ export function HappyThread(props: {
             return
         }
         if (pending) {
+            if (!hasAppliedHistoryVersion(pending.historyVersion, appliedHistoryVersion)) {
+                return
+            }
             const restoredByAnchor = pending.anchor ? restoreScrollAnchor(viewport, pending.anchor) : false
             if (!restoredByAnchor) {
                 const delta = viewport.scrollHeight - pending.scrollHeight
@@ -698,24 +820,77 @@ export function HappyThread(props: {
         if (atBottomRef.current && autoScrollEnabledRef.current) {
             scrollToBottomInstant()
         }
-    }, [props.messagesVersion, scrollToBottomInstant, settlePendingLoad])
+    }, [appliedMessagesVersion, appliedHistoryVersion, scrollToBottomInstant, settlePendingLoad])
 
     useEffect(() => {
         isLoadingMoreRef.current = props.isLoadingMoreMessages
-        if (props.isLoadingMoreMessages) {
-            loadStartedRef.current = true
-        }
-        if (prevLoadingMoreRef.current && !props.isLoadingMoreMessages) {
-            if (pendingScrollRef.current) {
-                pendingScrollRef.current = null
-                loadLockRef.current = false
-            }
-            settlePendingLoad(true)
-        }
-        prevLoadingMoreRef.current = props.isLoadingMoreMessages
-    }, [props.isLoadingMoreMessages, settlePendingLoad])
+    }, [props.isLoadingMoreMessages])
 
-    const showSkeleton = props.isLoadingMessages && props.rawMessagesCount === 0 && props.pendingCount === 0
+    const showSkeleton = props.isSyncingTail && props.rawMessagesCount === 0
+    const handleShareTurn = useCallback((
+        messageTarget: HTMLElement | string | null,
+        clientY?: number,
+        fallbackSnapshot?: ShareTurnSnapshot
+    ) => {
+        const content = contentRef.current
+        if (!content) return
+
+        let target: HTMLElement | null = typeof messageTarget === 'string'
+            ? document.getElementById(messageTarget)
+            : messageTarget
+        if (!(target instanceof HTMLElement) || !content.contains(target)) {
+            target = findNearestMessageElement(content, clientY)
+        }
+        if (!(target instanceof HTMLElement) || !content.contains(target)) {
+            setShareTurn({
+                id: ++shareTurnIdRef.current,
+                snapshots: fallbackSnapshot ? [fallbackSnapshot] : [],
+                title: props.metadata?.summary?.text ?? props.metadata?.name ?? props.metadata?.path ?? props.sessionId.slice(0, 8),
+            })
+            return
+        }
+
+        let start: Element | null = target
+        while (start?.previousElementSibling && start.getAttribute('data-hapi-message-role') !== 'user') {
+            start = start.previousElementSibling
+        }
+        if (!start || start.getAttribute('data-hapi-message-role') !== 'user') {
+            start = target
+        }
+
+        const snapshots: ShareTurnSnapshot[] = []
+        let current: Element | null = start
+        while (current instanceof HTMLElement) {
+            if (current !== start && current.getAttribute('data-hapi-message-role') === 'user') {
+                break
+            }
+            const role = current.getAttribute('data-hapi-message-role')
+            if (role === 'user' || role === 'assistant') {
+                snapshots.push({
+                    html: current.outerHTML,
+                    text: (current.innerText || current.textContent || '').trim()
+                })
+            }
+            current = current.nextElementSibling
+        }
+
+        if (snapshots.length === 0 && target instanceof HTMLElement) {
+            snapshots.push({
+                html: target.outerHTML,
+                text: (target.innerText || target.textContent || '').trim()
+            })
+        }
+        if (snapshots.length === 0 && fallbackSnapshot) {
+            snapshots.push(fallbackSnapshot)
+        }
+        const completeSnapshots = prependMissingUserSnapshot(snapshots, fallbackSnapshot)
+
+        setShareTurn({
+            id: ++shareTurnIdRef.current,
+            snapshots: completeSnapshots,
+            title: props.metadata?.summary?.text ?? props.metadata?.name ?? props.metadata?.path ?? props.sessionId.slice(0, 8),
+        })
+    }, [props.metadata, props.sessionId])
 
     return (
         <HappyChatProvider value={{
@@ -726,11 +901,30 @@ export function HappyThread(props: {
             disabled: props.disabled,
             onRefresh: props.onRefresh,
             onRetryMessage: props.onRetryMessage,
+            onShareTurn: handleShareTurn,
             hasMoreMessages: props.hasMoreMessages,
             isLoadingMoreMessages: props.isLoadingMoreMessages,
             loadOlderMessagesPreservingScroll: loadOlderFromUserAction
         }}>
             <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col relative">
+                {props.isSyncingTail && props.rawMessagesCount > 0 ? (
+                    <div
+                        role="status"
+                        className="pointer-events-none absolute right-3 top-3 z-20 flex items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-bg)]/90 px-2.5 py-1 text-xs text-[var(--app-hint)] shadow-sm backdrop-blur"
+                    >
+                        <Spinner size="sm" label={null} className="text-current" />
+                        <span>{t('misc.loadingMessages')}</span>
+                    </div>
+                ) : null}
+                {props.isLoadingMoreMessages && !props.isSyncingTail ? (
+                    <div
+                        role="status"
+                        className="pointer-events-none absolute left-1/2 top-3 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-bg)]/90 px-2.5 py-1 text-xs text-[var(--app-hint)] shadow-sm backdrop-blur"
+                    >
+                        <Spinner size="sm" label={null} className="text-current" />
+                        <span>{t('misc.loading')}</span>
+                    </div>
+                ) : null}
                 <ThreadPrimitive.Viewport
                     asChild
                     autoScroll={false}
@@ -751,35 +945,6 @@ export function HappyThread(props: {
                                         </div>
                                     ) : null}
 
-                                    {props.hasMoreMessages && !props.isLoadingMessages ? (
-                                        <div className="py-1 mb-2">
-                                            <div className="mx-auto w-fit">
-                                                <Button
-                                                    variant="outline"
-                                                    size="sm"
-                                                    onClick={() => {
-                                                        void loadOlderFromUserAction()
-                                                    }}
-                                                    disabled={props.isLoadingMoreMessages || props.isLoadingMessages}
-                                                    aria-busy={props.isLoadingMoreMessages}
-                                                    className="gap-1.5 text-xs opacity-80 hover:opacity-100"
-                                                >
-                                                    {props.isLoadingMoreMessages ? (
-                                                        <>
-                                                            <Spinner size="sm" label={null} className="text-current" />
-                                                            {t('misc.loading')}
-                                                        </>
-                                                    ) : (
-                                                        <>
-                                                            <span aria-hidden="true">↑</span>
-                                                            {t('misc.loadOlder')}
-                                                        </>
-                                                    )}
-                                                </Button>
-                                            </div>
-                                        </div>
-                                    ) : null}
-
                                     {import.meta.env.DEV && props.normalizedMessagesCount === 0 && props.rawMessagesCount > 0 ? (
                                         <div className="mb-2 rounded-md bg-amber-500/10 p-2 text-xs">
                                             Message normalization returned 0 items for {props.rawMessagesCount} messages (see `web/src/chat/normalize.ts`).
@@ -793,7 +958,7 @@ export function HappyThread(props: {
                         </div>
                     </div>
                 </ThreadPrimitive.Viewport>
-                <NewMessagesIndicator count={props.pendingCount} onClick={scrollToBottom} />
+                <NewMessagesIndicator count={props.unseenCount} onClick={scrollToBottom} />
                 {props.outlineOpen ? (
                     <>
                         <button
@@ -814,6 +979,23 @@ export function HappyThread(props: {
                         />
                     </>
                 ) : null}
+                <ShareTurnDialog
+                    key={shareTurn?.id ?? 'closed'}
+                    isOpen={shareTurn !== null}
+                    title={shareTurn?.title ?? ''}
+                    flavor={props.session.metadata?.flavor ?? null}
+                    modelLabel={(() => {
+                        const label = getSessionModelLabel(props.session)
+                        return label ? `${t(label.key)}: ${label.value}` : null
+                    })()}
+                    reasoningLabel={shouldShowCodexReasoningLabel(props.session.metadata?.flavor ?? null)
+                        ? formatCodexReasoningLabel(props.session.modelReasoningEffort)
+                        : null}
+                    showFastBadge={props.session.metadata?.flavor === 'codex' && isFastServiceTier(props.session.serviceTier)}
+                    worktreeBranch={props.session.metadata?.worktree?.branch ?? null}
+                    sourceSnapshots={shareTurn?.snapshots ?? []}
+                    onClose={() => setShareTurn(null)}
+                />
             </ThreadPrimitive.Root>
         </HappyChatProvider>
     )

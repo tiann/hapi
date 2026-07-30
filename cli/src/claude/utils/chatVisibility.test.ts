@@ -25,4 +25,8 @@ describe('isClaudeChatVisibleMessage', () => {
     it('hides rate_limit_event messages from chat delivery', () => {
         expect(isClaudeChatVisibleMessage({ type: 'rate_limit_event' } as any)).toBe(false)
     })
+
+    it('hides tool_progress heartbeat messages from chat delivery', () => {
+        expect(isClaudeChatVisibleMessage({ type: 'tool_progress' } as any)).toBe(false)
+    })
 })

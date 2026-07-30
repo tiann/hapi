@@ -34,6 +34,23 @@ function toStoredMachine(row: DbMachineRow): StoredMachine {
     }
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+// Rows created before the CLI reported full metadata (or by older versions)
+// would keep missing fields like `host` forever — get-or-create returns the
+// existing row untouched and every client hits it on startup. Merge incoming
+// machine-owned fields over the stored ones so registration doubles as a
+// refresh; hub-side fields the CLI never sends (e.g. displayName) survive.
+// Returns undefined when the merge would not change anything.
+export function mergeMachineMetadata(stored: unknown, incoming: unknown): Record<string, unknown> | undefined {
+    if (!isPlainObject(incoming)) return undefined
+    const base = isPlainObject(stored) ? stored : {}
+    const merged = { ...base, ...incoming }
+    return JSON.stringify(merged) === JSON.stringify(base) ? undefined : merged
+}
+
 export function getOrCreateMachine(
     db: Database,
     id: string,
@@ -46,6 +63,26 @@ export function getOrCreateMachine(
         const stored = toStoredMachine(existing)
         if (stored.namespace !== namespace) {
             throw new Error('Machine namespace mismatch')
+        }
+        const merged = mergeMachineMetadata(stored.metadata, metadata)
+        if (merged !== undefined) {
+            db.prepare(`
+                UPDATE machines
+                SET metadata = @metadata,
+                    metadata_version = metadata_version + 1,
+                    updated_at = @updated_at,
+                    seq = seq + 1
+                WHERE id = @id
+            `).run({
+                metadata: JSON.stringify(merged),
+                updated_at: Date.now(),
+                id
+            })
+            const row = getMachine(db, id)
+            if (!row) {
+                throw new Error('Failed to refresh machine metadata')
+            }
+            return row
         }
         return stored
     }

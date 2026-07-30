@@ -11,6 +11,7 @@ interface CodexSessionScannerOptions {
 }
 
 export interface CodexSessionScanner {
+    flush: () => Promise<void>;
     cleanup: () => Promise<void>;
     setTranscriptPath: (transcriptPath: string) => Promise<void>;
 }
@@ -20,6 +21,9 @@ export async function createCodexSessionScanner(opts: CodexSessionScannerOptions
     await scanner.start();
 
     return {
+        flush: async () => {
+            await scanner.flush();
+        },
         cleanup: async () => {
             await scanner.cleanup();
         },
