@@ -9,7 +9,7 @@ import { OpencodeDisplay } from '@/ui/ink/OpencodeDisplay';
 import type { OpencodeSession } from './session';
 import type { OpencodeMode, PermissionMode } from './types';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
-import { createOpencodeBackend } from './utils/opencodeBackend';
+import { allocateFreePort, createOpencodeBackend } from './utils/opencodeBackend';
 import { OpencodePermissionHandler } from './utils/permissionHandler';
 import { OPENCODE_NATIVE_TOOL_INSTRUCTION, PLAN_MODE_INSTRUCTION } from './utils/systemPrompt';
 import { resolveThoughtLevelEffort } from './thoughtLevelEffort';
@@ -21,6 +21,8 @@ type OpencodeRemoteLauncherOptions = {
 class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private readonly session: OpencodeSession;
     private backend: ReturnType<typeof createOpencodeBackend> | null = null;
+    /** Loopback base URL of the OpenCode ACP subprocess's internal HTTP API, set once the backend is spawned with an explicit --port/--hostname. */
+    private baseUrl: string | null = null;
     private permissionHandler: OpencodePermissionHandler | null = null;
     private happyServer: { stop: () => void } | null = null;
     private abortController = new AbortController();
@@ -62,8 +64,20 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         });
         this.happyServer = happyServer;
 
+        // Pre-select a loopback port for the ACP subprocess's internal HTTP
+        // API and pass it explicitly via --port/--hostname. opencode does not
+        // announce the bound port anywhere (stdout/stderr/ACP responses) when
+        // launched with --port 0, so HAPI must choose it up front to be able
+        // to reach that HTTP API later (e.g. for /compact — see
+        // opencodeCompactBridge.ts).
+        const hostname = '127.0.0.1';
+        const port = await allocateFreePort(hostname);
+        this.baseUrl = `http://${hostname}:${port}`;
+
         const backend = createOpencodeBackend({
-            cwd: session.path
+            cwd: session.path,
+            port,
+            hostname
         });
         this.backend = backend;
         registerAcpSessionTitleSync(backend, session.client);

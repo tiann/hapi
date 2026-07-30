@@ -16,6 +16,7 @@ const harness = vi.hoisted(() => ({
 }));
 
 vi.mock('./utils/opencodeBackend', () => ({
+    allocateFreePort: vi.fn(async () => 48273),
     createOpencodeBackend: vi.fn(() => ({
         initialize: vi.fn(async () => {}),
         newSession: vi.fn(async () => 'acp-session-1'),
@@ -203,6 +204,20 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         expect(JSON.stringify(harness.promptContents[0])).toContain('hapi_display_image');
         expect(JSON.stringify(harness.promptContents[0])).not.toContain('hapi_change_title');
         expect(JSON.stringify(harness.promptContents[1])).not.toContain('skill_lookup');
+    });
+
+    it('spawns the ACP backend with an explicit --port/--hostname from allocateFreePort', async () => {
+        const { session } = createSessionStub([
+            { message: 'first', mode: createMode() }
+        ]);
+
+        await opencodeRemoteLauncher(session as never);
+
+        const opencodeBackendModule = await import('./utils/opencodeBackend');
+        const factory = (opencodeBackendModule as unknown as { createOpencodeBackend: ReturnType<typeof vi.fn> }).createOpencodeBackend;
+        const lastCall = factory.mock.calls.at(-1)?.[0] as { cwd?: string; port?: number; hostname?: string };
+        expect(lastCall.port).toBe(48273);
+        expect(lastCall.hostname).toBe('127.0.0.1');
     });
 
     it('calls setModel with opencode flavor between turns when the queued model differs', async () => {
