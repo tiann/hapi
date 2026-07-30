@@ -282,6 +282,12 @@ export const SessionSchema = z.object({
     backgroundTaskCount: z.number().optional(),
     todos: TodosSchema.optional(),
     teamState: TeamStateSchema.optional(),
+    // Watermarks for structured SSE patches (PR #897). Dual EventSource
+    // connections can deliver todos/teamState out of order; caches reject
+    // stale patches with version <= these fields. Optional so older
+    // full-session payloads and hand-built Session literals stay valid.
+    todosUpdatedAt: z.number().optional(),
+    teamStateUpdatedAt: z.number().optional(),
     model: z.string().nullable().optional().default(null),
     modelReasoningEffort: z.string().nullable().optional().default(null),
     effort: z.string().nullable().optional().default(null),
@@ -306,6 +312,20 @@ const VersionedAgentStatePatchSchema = z.object({
     value: AgentStateSchema.nullable()
 })
 
+// Same dual-SSE race as metadata/agentState: global + session EventSources
+// have no shared order. Version = store `todos_updated_at` /
+// `team_state_updated_at` (message createdAt on write).
+const VersionedTodosPatchSchema = z.object({
+    version: z.number(),
+    value: TodosSchema
+})
+
+const VersionedTeamStatePatchSchema = z.object({
+    version: z.number(),
+    // `null` value = TeamDelete clear. Discriminator remains "key present".
+    value: TeamStateSchema.nullable()
+})
+
 export const SessionPatchSchema = z.object({
     active: z.boolean().optional(),
     thinking: z.boolean().optional(),
@@ -321,13 +341,8 @@ export const SessionPatchSchema = z.object({
     // way for downstream caches to reject stale patches.
     metadata: VersionedMetadataPatchSchema.optional(),
     agentState: VersionedAgentStatePatchSchema.optional(),
-    todos: TodosSchema.optional(),
-    // `null` is the clear signal (TeamDelete events drive
-    // applyTeamStateDelta to return null, which `setSessionTeamState`
-    // persists as a cleared row). The patch must distinguish "field
-    // absent" (don't touch teamState) from "field is null" (clear it);
-    // consumers use hasOwnProperty for the discriminator.
-    teamState: TeamStateSchema.nullable().optional(),
+    todos: VersionedTodosPatchSchema.optional(),
+    teamState: VersionedTeamStatePatchSchema.optional(),
     model: z.string().nullable().optional(),
     modelReasoningEffort: z.string().nullable().optional(),
     effort: z.string().nullable().optional(),

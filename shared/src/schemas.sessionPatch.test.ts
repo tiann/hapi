@@ -5,38 +5,49 @@ import { SessionPatchSchema } from './schemas';
 // `session-updated` events to the structured-patch path only when the event's
 // `data` parses as a SessionPatch — these tests pin the schema shape so a
 // future refactor that drops `.strict()`, the versioned (version, value)
-// metadata/agentState wrappers, or any of the new optional fields breaks the
-// build instead of silently re-introducing the refetch storm.
+// wrappers, or any of the new optional fields breaks the build instead of
+// silently re-introducing the refetch storm.
 describe('SessionPatchSchema structured patches (closes #884 follow-up)', () => {
-    it('parses a bare todos patch', () => {
+    it('parses a versioned todos patch', () => {
         const parsed = SessionPatchSchema.safeParse({
-            todos: [
-                { content: 'thing', status: 'pending' }
-            ]
-        });
-        expect(parsed.success).toBe(true);
-    });
-
-    it('parses a bare teamState patch', () => {
-        const parsed = SessionPatchSchema.safeParse({
-            teamState: {
-                teamName: 'crew',
-                members: [{ name: 'one' }]
+            todos: {
+                version: 10,
+                value: [{ content: 'thing', status: 'pending' }]
             }
         });
         expect(parsed.success).toBe(true);
     });
 
-    it('parses a teamState clear patch (null = TeamDelete clears the cached row)', () => {
-        // PR #897 review (HAPI Bot, 2026-06-13 Major): teamState must accept
-        // null on the wire so TeamDelete events propagate the clear instead
-        // of collapsing to an empty patch on JSON serialization. The hub
-        // emit-site sends { teamState: null }; the patch consumers
-        // hasOwnProperty-discriminate "absent" vs "null clear".
-        const parsed = SessionPatchSchema.safeParse({ teamState: null });
+    it('rejects bare todos without a version (dual-SSE watermark required)', () => {
+        const parsed = SessionPatchSchema.safeParse({
+            todos: [{ content: 'thing', status: 'pending' }]
+        });
+        expect(parsed.success).toBe(false);
+    });
+
+    it('parses a versioned teamState patch', () => {
+        const parsed = SessionPatchSchema.safeParse({
+            teamState: {
+                version: 11,
+                value: {
+                    teamName: 'crew',
+                    members: [{ name: 'one' }]
+                }
+            }
+        });
+        expect(parsed.success).toBe(true);
+    });
+
+    it('parses a teamState clear patch (null value = TeamDelete)', () => {
+        // PR #897 review (HAPI Bot, 2026-06-13 Major + 2026-07-30 Major):
+        // teamState travels as { version, value }; value null clears the
+        // cached row. Version gates dual-SSE reordering.
+        const parsed = SessionPatchSchema.safeParse({
+            teamState: { version: 12, value: null }
+        });
         expect(parsed.success).toBe(true);
         if (parsed.success) {
-            expect(parsed.data.teamState).toBeNull();
+            expect(parsed.data.teamState?.value).toBeNull();
         }
     });
 
@@ -66,7 +77,7 @@ describe('SessionPatchSchema structured patches (closes #884 follow-up)', () => 
 
     it('stays strict and rejects unknown keys (catches silent .strict() removal)', () => {
         const parsed = SessionPatchSchema.safeParse({
-            todos: [],
+            todos: { version: 1, value: [] },
             notARealField: true
         });
         expect(parsed.success).toBe(false);

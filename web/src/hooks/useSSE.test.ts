@@ -37,7 +37,7 @@ describe('canApplyVersionedSummaryPatch (PR #897 review, HAPI Bot 2026-07-23 Maj
         expect(canApplyVersionedSummaryPatch({ metadata: undefined, agentState: undefined }, false)).toBe(true)
     })
 
-    it('refuses metadata/agentState summary patches when detail version source is missing', () => {
+    it('refuses metadata/agentState/todos/teamState summary patches when detail version source is missing', () => {
         expect(
             canApplyVersionedSummaryPatch(
                 { metadata: { version: 1, value: null } },
@@ -50,12 +50,30 @@ describe('canApplyVersionedSummaryPatch (PR #897 review, HAPI Bot 2026-07-23 Maj
                 false
             )
         ).toBe(false)
+        expect(
+            canApplyVersionedSummaryPatch(
+                { todos: { version: 1, value: [] } },
+                false
+            )
+        ).toBe(false)
+        expect(
+            canApplyVersionedSummaryPatch(
+                { teamState: { version: 1, value: null } },
+                false
+            )
+        ).toBe(false)
     })
 
     it('allows versioned summary patches when detail is present', () => {
         expect(
             canApplyVersionedSummaryPatch(
                 { metadata: { version: 2, value: null } },
+                true
+            )
+        ).toBe(true)
+        expect(
+            canApplyVersionedSummaryPatch(
+                { todos: { version: 2, value: [] } },
                 true
             )
         ).toBe(true)

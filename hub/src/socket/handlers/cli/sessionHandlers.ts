@@ -142,7 +142,13 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
                 onWebappEvent?.({
                     type: 'session-updated',
                     sessionId: sid,
-                    data: { todos, updatedAt: stored?.updatedAt ?? msg.createdAt }
+                    data: {
+                        todos: {
+                            version: stored?.todosUpdatedAt ?? msg.createdAt,
+                            value: todos
+                        },
+                        updatedAt: stored?.updatedAt ?? msg.createdAt
+                    }
                 })
             }
         }
@@ -155,16 +161,19 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             const updated = store.sessions.setSessionTeamState(sid, newTeamState, msg.createdAt, session.namespace)
             if (updated) {
                 const stored = store.sessions.getSession(sid)
-                // Preserve null in the wire payload so TeamDelete events
-                // tell consumers "clear this" instead of collapsing to an
-                // empty patch on JSON serialization (`undefined` drops the
-                // key, leaving consumers to fall back to REST invalidation
-                // — the very storm path this PR closes). See SessionPatch
-                // schema comment for the `null` discriminator contract.
+                // Versioned clear: value null = TeamDelete. Consumers gate on
+                // version (store team_state_updated_at) so dual SSE cannot
+                // resurrect a deleted team from a lagged older event.
                 onWebappEvent?.({
                     type: 'session-updated',
                     sessionId: sid,
-                    data: { teamState: newTeamState, updatedAt: stored?.updatedAt ?? msg.createdAt }
+                    data: {
+                        teamState: {
+                            version: stored?.teamStateUpdatedAt ?? msg.createdAt,
+                            value: newTeamState
+                        },
+                        updatedAt: stored?.updatedAt ?? msg.createdAt
+                    }
                 })
             }
         }

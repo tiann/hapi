@@ -57,17 +57,22 @@ export function isNewerVersionedPatch(patchVersion: number, currentVersion: numb
 }
 
 /**
- * Versioned metadata/agentState summary patches need a detail-cache version
- * source. Without it, defaulting to version 0 would let a stale buffered SSE
- * patch overwrite a freshly refetched session list (and suppress list
- * invalidation because `patched` stayed true). Non-versioned fields (active,
- * todos, …) do not need this gate.
+ * Versioned metadata/agentState/todos/teamState summary patches need a
+ * detail-cache version source. Without it, defaulting to version 0 would let
+ * a stale buffered SSE patch overwrite a freshly refetched session list
+ * (and suppress list invalidation because `patched` stayed true).
+ * Non-versioned fields (active, …) do not need this gate.
  */
 export function canApplyVersionedSummaryPatch(
-    patch: Pick<SessionPatch, 'metadata' | 'agentState'>,
+    patch: Pick<SessionPatch, 'metadata' | 'agentState' | 'todos' | 'teamState'>,
     detailPresent: boolean
 ): boolean {
-    if (patch.metadata === undefined && patch.agentState === undefined) {
+    if (
+        patch.metadata === undefined
+        && patch.agentState === undefined
+        && patch.todos === undefined
+        && patch.teamState === undefined
+    ) {
         return true
     }
     return detailPresent
@@ -179,7 +184,12 @@ export function isRenderIrrelevantPatch(current: SessionSummary, next: SessionSu
         && current.pendingRequestKinds.length === next.pendingRequestKinds.length
         && current.pendingRequestKinds.every((kind, i) => kind === next.pendingRequestKinds[i])
         && current.pendingRequests.length === next.pendingRequests.length
-        && current.pendingRequests.every((req, i) => req.id === next.pendingRequests[i]?.id)
+        && current.pendingRequests.every((req, i) => {
+            const nextReq = next.pendingRequests[i]
+            return req.id === nextReq?.id
+                && req.kind === nextReq.kind
+                && req.tool === nextReq.tool
+        })
         && sameSessionSummaryMetadata(current.metadata, next.metadata)
 }
 
@@ -521,8 +531,9 @@ export function useSSE(options: {
                 }
                 const detailMetadataVersion = detailForVersion?.metadataVersion ?? 0
                 const detailAgentStateVersion = detailForVersion?.agentStateVersion ?? 0
-                if (patch.todos !== undefined) {
-                    nextSummary.todoProgress = computeTodoProgress(patch.todos)
+                const detailTodosUpdatedAt = detailForVersion?.todosUpdatedAt ?? 0
+                if (patch.todos !== undefined && patch.todos.version >= detailTodosUpdatedAt) {
+                    nextSummary.todoProgress = computeTodoProgress(patch.todos.value)
                 }
                 if (patch.agentState !== undefined && patch.agentState.version >= detailAgentStateVersion) {
                     nextSummary.pendingRequestsCount = computePendingRequestsCount(patch.agentState.value)
@@ -580,13 +591,13 @@ export function useSSE(options: {
                 if (patch.permissionMode !== undefined) nextSession.permissionMode = patch.permissionMode
                 if (patch.collaborationMode !== undefined) nextSession.collaborationMode = patch.collaborationMode
                 if (patch.backgroundTaskCount !== undefined) nextSession.backgroundTaskCount = patch.backgroundTaskCount
-                if (patch.todos !== undefined) nextSession.todos = patch.todos
-                // teamState uses `null` on the wire as the explicit clear
-                // signal (TeamDelete events). hasOwnProperty discriminates
-                // "field absent" vs "field is null"; null → undefined to
-                // match the cached Session.teamState shape.
-                if (Object.prototype.hasOwnProperty.call(patch, 'teamState')) {
-                    nextSession.teamState = patch.teamState ?? undefined
+                if (patch.todos !== undefined && isNewerVersionedPatch(patch.todos.version, nextSession.todosUpdatedAt ?? 0)) {
+                    nextSession.todos = patch.todos.value
+                    nextSession.todosUpdatedAt = patch.todos.version
+                }
+                if (patch.teamState !== undefined && isNewerVersionedPatch(patch.teamState.version, nextSession.teamStateUpdatedAt ?? 0)) {
+                    nextSession.teamState = patch.teamState.value ?? undefined
+                    nextSession.teamStateUpdatedAt = patch.teamState.version
                 }
                 // Versioned fields arrive as { version, value } — unwrap into
                 // the Session's flat metadata/metadataVersion pair (same for

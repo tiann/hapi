@@ -132,10 +132,13 @@ describe('cli session handlers', () => {
         expect(sessionUpdated).toBeDefined()
         if (!sessionUpdated || sessionUpdated.type !== 'session-updated') return
         expect(sessionUpdated.data).toMatchObject({
-            todos: [
-                { content: 'pending thing', status: 'pending' },
-                { content: 'done thing', status: 'completed' }
-            ]
+            todos: {
+                version: expect.any(Number),
+                value: [
+                    { content: 'pending thing', status: 'pending' },
+                    { content: 'done thing', status: 'completed' }
+                ]
+            }
         })
         expect(typeof (sessionUpdated.data as { updatedAt?: number }).updatedAt).toBe('number')
         expect((sessionUpdated.data as { updatedAt?: number }).updatedAt).toBeGreaterThan(0)
