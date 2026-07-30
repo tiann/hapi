@@ -57,4 +57,56 @@ test.describe('terminal wrap fidelity', () => {
             expect(row.gutter.width).toBeCloseTo(metrics.rows[0]!.gutter.width, 2)
         }
     })
+
+    test('exposes one visible preview trigger, share-safe toggles, and wrapping geometry in inline diff surfaces', async ({ page }) => {
+        await page.goto(fixtureUrl)
+
+        const preview = page.getByTestId('diff-preview')
+        const wrapToggle = preview.locator('[data-hapi-code-wrap-toggle="true"]')
+        await expect(wrapToggle).toHaveCount(1)
+        await expect(preview.locator('button button')).toHaveCount(0)
+        await expect(preview.getByRole('button', { name: /open diff for src\/mobile-terminal\.ts/i })).toHaveCount(1)
+        await expect(wrapToggle).toHaveAttribute('data-hapi-share-export-exclude', 'true')
+
+        await wrapToggle.click()
+        await expect(wrapToggle).toHaveAttribute('aria-pressed', 'true')
+        await expect(page.locator('[data-hapi-code-grid="true"]')).toHaveAttribute('style', /minmax\(0px, 1fr\)/)
+
+        const inline = page.getByTestId('diff-inline')
+        await expect(inline.locator('.whitespace-pre-wrap')).toHaveCount(2)
+        const inlineGeometry = await inline.evaluate((element) => {
+            const wrapped = element.querySelector<HTMLElement>('.whitespace-pre-wrap')!
+            const range = document.createRange()
+            range.selectNodeContents(wrapped)
+            const root = element.getBoundingClientRect()
+            const row = wrapped.parentElement!
+            return {
+                row: { clientWidth: row.clientWidth, scrollWidth: row.scrollWidth },
+                rootRight: root.right,
+                fragments: Array.from(range.getClientRects()).map((rect) => ({ right: rect.right, top: rect.top })),
+            }
+        })
+        await expect(inline.locator('.overflow-x-auto')).toHaveCount(0)
+        expect(inlineGeometry.row.scrollWidth).toBe(inlineGeometry.row.clientWidth)
+        expect(inlineGeometry.fragments.length).toBeGreaterThan(1)
+        expect(Math.max(...inlineGeometry.fragments.map((fragment) => fragment.right))).toBeLessThanOrEqual(inlineGeometry.rootRight + 1)
+
+        const codexDiff = page.getByTestId('toolcard-codex-diff')
+        await expect(codexDiff.locator('[role="button"] button')).toHaveCount(0)
+        const codexWrapToggle = codexDiff.locator('[data-hapi-code-wrap-toggle="true"]')
+        await expect(codexWrapToggle).toHaveCount(1)
+        await codexWrapToggle.click()
+        await expect(page.getByRole('dialog')).toHaveCount(0)
+        await codexWrapToggle.click()
+        await codexDiff.getByRole('button', { name: 'Open diff preview' }).click()
+        await expect(page.getByRole('dialog')).toBeVisible()
+        await page.getByRole('dialog').getByRole('button', { name: 'Close' }).click()
+
+        const previewTrigger = preview.getByRole('button', { name: /open diff for src\/mobile-terminal\.ts/i })
+        await previewTrigger.click()
+        const dialog = page.getByRole('dialog')
+        await expect(dialog.getByRole('button', { pressed: true })).toHaveCount(1)
+        await dialog.getByRole('button', { name: 'Close' }).click()
+        await expect(previewTrigger).toBeFocused()
+    })
 })

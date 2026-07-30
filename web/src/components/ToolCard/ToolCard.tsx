@@ -1,7 +1,7 @@
 import type { ChatBlock, ChatToolCall, ToolCallBlock } from '@/chat/types'
 import type { ApiClient } from '@/api/client'
 import type { SessionMetadataSummary } from '@/types/api'
-import { memo, useEffect, useMemo, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
+import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import { getClaudeModelLabel, isObject, safeStringify } from '@hapi/protocol'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { CodeBlock } from '@/components/CodeBlock'
@@ -430,6 +430,7 @@ function ToolCardInner(props: ToolCardProps) {
     const useCompactTerminalCard = shouldUseCompactTerminalToolCard(toolName, props.terminalToolDisplayMode)
     const showInline = shouldShowInlineToolCardBody(toolName, presentation.minimal, props.terminalToolDisplayMode)
     const CompactToolView = showInline ? getToolViewComponent(toolName) : null
+    const compactViewOwnsInteractions = toolName === 'CodexDiff'
     const ResultToolView = getToolResultViewComponent(toolName)
     const permission = props.block.tool.permission
     const isAskUserQuestion = isAskUserQuestionToolName(toolName)
@@ -447,15 +448,18 @@ function ToolCardInner(props: ToolCardProps) {
         : (subtitle ? 'mt-1' : 'mt-0')
     const stateColor = toolStatusColorClass(props.block.tool.state)
     const { suppressFocusRing, onTriggerPointerDown, onTriggerKeyDown, onTriggerBlur } = usePointerFocusRing()
+    const inlineDetailInvokerRef = useRef<HTMLElement | null>(null)
     const openDetails = () => setDetailsOpen(true)
     const openDetailsFromInlinePreview = (event: MouseEvent<HTMLElement>) => {
         if (isNestedInteractiveElement(event)) return
+        inlineDetailInvokerRef.current = event.currentTarget
         openDetails()
     }
     const openDetailsFromInlinePreviewKeyDown = (event: KeyboardEvent<HTMLElement>) => {
         if (isNestedInteractiveElement(event)) return
         if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault()
+            inlineDetailInvokerRef.current = event.currentTarget
             openDetails()
         }
     }
@@ -526,7 +530,18 @@ function ToolCardInner(props: ToolCardProps) {
                             {header}
                         </button>
                     </DialogTrigger>
-                    <DialogContent className="max-w-2xl" closeButtonClassName="top-2" aria-describedby={undefined}>
+                    <DialogContent
+                        className="max-w-2xl"
+                        closeButtonClassName="top-2"
+                        aria-describedby={undefined}
+                        onCloseAutoFocus={(event) => {
+                            const invoker = inlineDetailInvokerRef.current
+                            if (!invoker?.isConnected) return
+                            event.preventDefault()
+                            invoker.focus()
+                            inlineDetailInvokerRef.current = null
+                        }}
+                    >
                         <DialogHeader className="text-left">
                             <DialogTitle>{toolTitle}</DialogTitle>
                         </DialogHeader>
@@ -545,7 +560,11 @@ function ToolCardInner(props: ToolCardProps) {
 
                     {showInline ? (
                         CompactToolView ? (
-                            <div
+                            compactViewOwnsInteractions ? (
+                                <div className={cn(inlineBodySpacing, 'rounded-xl')}>
+                                    <CompactToolView block={props.block} metadata={props.metadata} surface="inline" />
+                                </div>
+                            ) : <div
                                 className={cn(
                                     inlineBodySpacing,
                                     'cursor-pointer rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]'

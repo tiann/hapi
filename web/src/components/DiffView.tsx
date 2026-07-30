@@ -4,6 +4,7 @@ import { useMemo } from 'react'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { usePointerFocusRing } from '@/hooks/usePointerFocusRing'
 import { useCodeWrap } from '@/hooks/useCodeWrap'
+import { WrapIcon } from '@/components/icons'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/use-translation'
 
@@ -39,6 +40,33 @@ function DiffStatBadge(props: { tone: 'added' | 'removed'; value: number }) {
         <span className={cn('inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium', className)}>
             {props.tone === 'added' ? '+' : '-'}{props.value}
         </span>
+    )
+}
+
+function DiffWrapToggle() {
+    const { t } = useTranslation()
+    const { codeWrap, setCodeWrap } = useCodeWrap()
+
+    return (
+        <button
+            type="button"
+            data-hapi-code-wrap-toggle="true"
+            data-hapi-wrap-enable-label={t('code.wrap.enable')}
+            data-hapi-wrap-disable-label={t('code.wrap.disable')}
+            data-hapi-share-export-exclude="true"
+            onClick={(event) => {
+                event.stopPropagation()
+                setCodeWrap(!codeWrap)
+            }}
+            className={cn(
+                'rounded-md p-1 transition-colors hover:bg-[var(--app-code-copy-hover-bg)] hover:text-[var(--app-fg)]',
+                codeWrap ? 'text-[var(--app-fg)]' : 'text-[var(--app-code-header-fg)]'
+            )}
+            title={t(codeWrap ? 'code.wrap.disable' : 'code.wrap.enable')}
+            aria-pressed={codeWrap}
+        >
+            <WrapIcon className="h-3.5 w-3.5" />
+        </button>
     )
 }
 
@@ -88,20 +116,20 @@ export function DiffView(props: {
 
     return (
         <Dialog>
-            <DialogTrigger asChild>
-                <button
-                    type="button"
-                    aria-label={props.filePath ? `Open diff for ${props.filePath}` : 'Open diff preview'}
-                    className={cn(
-                        'w-full text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]',
-                        suppressFocusRing && 'focus-visible:ring-0'
-                    )}
-                    onPointerDown={onTriggerPointerDown}
-                    onKeyDown={onTriggerKeyDown}
-                    onBlur={onTriggerBlur}
-                >
-                    <div className="overflow-hidden rounded-2xl bg-[var(--app-code-bg)] transition-colors">
-                        <div className="flex items-center justify-between gap-3 bg-[var(--app-code-header-bg)] px-3 py-2">
+            <div className="overflow-hidden rounded-2xl bg-[var(--app-code-bg)] transition-colors">
+                <div className="flex items-center gap-3 bg-[var(--app-code-header-bg)] px-3 py-2">
+                    <DialogTrigger asChild>
+                        <button
+                            type="button"
+                            aria-label={props.filePath ? `Open diff for ${props.filePath}` : 'Open diff preview'}
+                            className={cn(
+                                'flex min-w-0 flex-1 items-center justify-between gap-3 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]',
+                                suppressFocusRing && 'focus-visible:ring-0'
+                            )}
+                            onPointerDown={onTriggerPointerDown}
+                            onKeyDown={onTriggerKeyDown}
+                            onBlur={onTriggerBlur}
+                        >
                             <div className="min-w-0">
                                 <div className="truncate font-mono text-[11px] uppercase tracking-[0.08em] text-[var(--app-code-header-fg)]">
                                     {props.filePath ?? t('diff.title')}
@@ -115,20 +143,21 @@ export function DiffView(props: {
                                 <DiffStatBadge tone="removed" value={stats.deletions} />
                                 <span className="text-xs font-medium text-[var(--app-link)]">{t('diff.view')}</span>
                             </div>
-                        </div>
-                        <div className="max-h-40 overflow-hidden">
-                            <DiffInlineView
-                                oldString={props.oldString}
-                                newString={props.newString}
-                                additions={stats.additions}
-                                deletions={stats.deletions}
-                                showHeader={false}
-                                size={props.size}
-                            />
-                        </div>
-                    </div>
-                </button>
-            </DialogTrigger>
+                        </button>
+                    </DialogTrigger>
+                    <DiffWrapToggle />
+                </div>
+                <div className="max-h-40 overflow-hidden">
+                    <DiffInlineView
+                        oldString={props.oldString}
+                        newString={props.newString}
+                        additions={stats.additions}
+                        deletions={stats.deletions}
+                        showHeader={false}
+                        size={props.size}
+                    />
+                </div>
+            </div>
             <DialogContent className="max-w-5xl">
                 <DialogHeader>
                     <DialogTitle className="break-all">{title}</DialogTitle>
@@ -175,67 +204,69 @@ function DiffInlineView(props: {
     let oldLineNumber = 1
     let newLineNumber = 1
 
+    const body = (
+        <div
+            className={cn(
+                codeWrap ? '' : 'overflow-x-auto',
+                props.scrollY ? 'overflow-y-auto' : 'overflow-y-hidden'
+            )}
+            style={props.scrollY ? { maxHeight: props.maxHeight ?? 420 } : undefined}
+        >
+            <div className={cn(
+                'font-mono',
+                isComfortable ? 'text-sm leading-6' : 'text-xs',
+                codeWrap ? 'w-full' : 'w-max min-w-full'
+            )}>
+                {diff.map((part, i) => {
+                    const lines = splitDiffLines(part.value)
+
+                    return (
+                        <div key={i}>
+                            {lines.map((line, j) => {
+                                const prefix = part.added ? '+' : part.removed ? '-' : ' '
+                                const leftNumber = part.added ? '' : String(oldLineNumber++)
+                                const rightNumber = part.removed ? '' : String(newLineNumber++)
+                                const rowClass = cn(
+                                    'grid min-w-full gap-3',
+                                    isComfortable ? 'px-4' : 'px-3',
+                                    isComfortable ? 'py-0' : 'py-1.5',
+                                    part.added && 'bg-[var(--app-diff-added-bg)] text-[var(--app-diff-added-text)]',
+                                    part.removed && 'bg-[var(--app-diff-removed-bg)] text-[var(--app-diff-removed-text)]'
+                                )
+
+                                return (
+                                    <div key={j} className={rowClass} style={rowStyle}>
+                                        <div className={cn('text-left text-[var(--app-hint)]/80', isComfortable ? 'text-xs leading-6' : 'text-[10px]')}>{leftNumber}</div>
+                                        <div className={cn('text-left text-[var(--app-hint)]/80', isComfortable ? 'text-xs leading-6' : 'text-[10px]')}>{rightNumber}</div>
+                                        <div className={cn(
+                                            codeWrap ? 'min-w-0 whitespace-pre-wrap break-words' : 'whitespace-pre'
+                                        )}>
+                                            <span className="mr-2 inline-block w-3 text-[var(--app-hint)]/90">{prefix}</span>
+                                            <span>{line}</span>
+                                        </div>
+                                    </div>
+                                )
+                            })}
+                        </div>
+                    )
+                })}
+            </div>
+        </div>
+    )
+
     return (
         <div className={cn('overflow-hidden bg-[var(--app-code-bg)]', props.showHeader ? 'rounded-2xl' : 'rounded-none')}>
             {props.showHeader ? (
                 <div className="flex items-center justify-between gap-3 bg-[var(--app-code-header-bg)] px-3 py-2">
-                    <div className="min-w-0 truncate font-mono text-[11px] uppercase tracking-[0.08em] text-[var(--app-code-header-fg)]">
-                        {props.filePath ?? 'Diff'}
-                    </div>
+                    <div className="min-w-0 flex-1 truncate font-mono text-[11px] uppercase tracking-[0.08em] text-[var(--app-code-header-fg)]">{props.filePath ?? 'Diff'}</div>
                     <div className="flex shrink-0 items-center gap-1.5">
                         <DiffStatBadge tone="added" value={props.additions} />
                         <DiffStatBadge tone="removed" value={props.deletions} />
+                        <DiffWrapToggle />
                     </div>
                 </div>
             ) : null}
-
-            <div
-                className={cn(
-                    codeWrap ? '' : 'overflow-x-auto',
-                    props.scrollY ? 'overflow-y-auto' : 'overflow-y-hidden'
-                )}
-                style={props.scrollY ? { maxHeight: props.maxHeight ?? 420 } : undefined}
-            >
-                <div className={cn(
-                    'font-mono',
-                    isComfortable ? 'text-sm leading-6' : 'text-xs',
-                    codeWrap ? 'w-full' : 'w-max min-w-full'
-                )}>
-                    {diff.map((part, i) => {
-                        const lines = splitDiffLines(part.value)
-
-                        return (
-                            <div key={i}>
-                                {lines.map((line, j) => {
-                                    const prefix = part.added ? '+' : part.removed ? '-' : ' '
-                                    const leftNumber = part.added ? '' : String(oldLineNumber++)
-                                    const rightNumber = part.removed ? '' : String(newLineNumber++)
-                                    const rowClass = cn(
-                                        'grid min-w-full gap-3',
-                                        isComfortable ? 'px-4' : 'px-3',
-                                        isComfortable ? 'py-0' : 'py-1.5',
-                                        part.added && 'bg-[var(--app-diff-added-bg)] text-[var(--app-diff-added-text)]',
-                                        part.removed && 'bg-[var(--app-diff-removed-bg)] text-[var(--app-diff-removed-text)]'
-                                    )
-
-                                    return (
-                                        <div key={j} className={rowClass} style={rowStyle}>
-                                            <div className={cn('text-left text-[var(--app-hint)]/80', isComfortable ? 'text-xs leading-6' : 'text-[10px]')}>{leftNumber}</div>
-                                            <div className={cn('text-left text-[var(--app-hint)]/80', isComfortable ? 'text-xs leading-6' : 'text-[10px]')}>{rightNumber}</div>
-                                            <div className={cn(
-                                                codeWrap ? 'min-w-0 whitespace-pre-wrap break-words' : 'whitespace-pre'
-                                            )}>
-                                                <span className="mr-2 inline-block w-3 text-[var(--app-hint)]/90">{prefix}</span>
-                                                <span>{line}</span>
-                                            </div>
-                                        </div>
-                                    )
-                                })}
-                            </div>
-                        )
-                    })}
-                </div>
-            </div>
+            {body}
         </div>
     )
 }

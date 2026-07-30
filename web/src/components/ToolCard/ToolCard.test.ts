@@ -61,6 +61,10 @@ describe('ToolCard terminal display mode helpers', () => {
         expect(shouldShowInlineToolCardBody('Task', false, 'detailed')).toBe(false)
         expect(shouldShowInlineToolCardBody('Agent', false, 'detailed')).toBe(false)
         expect(shouldShowInlineToolCardBody('Read', true, 'detailed')).toBe(false)
+        expect(shouldShowInlineToolCardBody('Edit', true, 'detailed')).toBe(false)
+        expect(shouldShowInlineToolCardBody('MultiEdit', true, 'detailed')).toBe(false)
+        expect(shouldShowInlineToolCardBody('Write', true, 'detailed')).toBe(false)
+        expect(shouldShowInlineToolCardBody('CodexDiff', true, 'detailed')).toBe(false)
     })
 })
 

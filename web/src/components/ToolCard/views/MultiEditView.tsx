@@ -28,6 +28,7 @@ export function MultiEditView(props: ToolViewProps) {
                     key={idx}
                     oldString={edit.old_string}
                     newString={edit.new_string}
+                    variant="inline"
                 />
             ))}
             {edits.length > MAX_COMPACT_EDITS ? (

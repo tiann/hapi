@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { I18nProvider } from '@/lib/i18n-context'
 import { DiffView } from '@/components/DiffView'
 
@@ -73,7 +73,7 @@ describe('DiffView', () => {
         expect(row?.children[1]).toHaveClass('text-left')
     })
 
-    it('comfortable rows default to whitespace-pre (wrap off, no toggle button on DiffView)', () => {
+    it('comfortable rows default to whitespace-pre and expose a shared wrap toggle', () => {
         const { container } = render(
             <I18nProvider>
                 <DiffView
@@ -86,10 +86,43 @@ describe('DiffView', () => {
         )
 
         expect(container.querySelector('.whitespace-pre:not(.whitespace-pre-wrap)')).not.toBeNull()
-        // DiffView consumes the global wrap value but exposes no toggle
-        // button; assert by aria-pressed absence rather than a localized title.
-        expect(screen.queryByRole('button', { pressed: false })).toBeNull()
-        expect(screen.queryByRole('button', { pressed: true })).toBeNull()
+        const wrapToggle = screen.getByRole('button', { pressed: false })
+        fireEvent.click(wrapToggle)
+        expect(screen.getByRole('button', { pressed: true })).toBeInTheDocument()
+        expect(container.querySelector('.whitespace-pre-wrap')).not.toBeNull()
+    })
+
+    it('keeps the visible preview header trigger and wrap action as sibling buttons', () => {
+        const { container } = render(
+            <I18nProvider>
+                <DiffView oldString="before\n" newString="after\n" filePath="example.ts" />
+            </I18nProvider>
+        )
+
+        expect(container.querySelectorAll('[data-hapi-code-wrap-toggle="true"]')).toHaveLength(1)
+        expect(container.querySelectorAll('button button')).toHaveLength(0)
+        expect(container.querySelectorAll('button[aria-haspopup="dialog"]')).toHaveLength(1)
+        expect(screen.getByRole('button', { name: 'Open diff for example.ts' })).toContainElement(screen.getByText('View'))
+        const wrapToggle = container.querySelector('[data-hapi-code-wrap-toggle="true"]')!
+        expect(wrapToggle).toHaveAttribute('data-hapi-share-export-exclude', 'true')
+        expect(wrapToggle).toHaveAttribute('data-hapi-wrap-enable-label')
+        expect(wrapToggle).toHaveAttribute('data-hapi-wrap-disable-label')
+    })
+
+    it('renders the same toggle in the opened preview dialog and restores focus to its header trigger', async () => {
+        render(
+            <I18nProvider>
+                <DiffView oldString="before\n" newString="after\n" filePath="example.ts" />
+            </I18nProvider>
+        )
+
+        fireEvent.click(screen.getByRole('button', { name: 'Open diff for example.ts' }))
+        const dialog = screen.getByRole('dialog')
+        expect(within(dialog).getByRole('button', { pressed: false })).toBeInTheDocument()
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
+        await waitFor(() => {
+            expect(screen.getByRole('button', { name: 'Open diff for example.ts' })).toHaveFocus()
+        })
     })
 
     it('compact rows also follow the global wrap preference (previously hard-coded to wrap)', () => {
