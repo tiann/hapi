@@ -74,6 +74,24 @@ describe('toCodexBudgetState', () => {
         expect(creditsAxis?.valueText).toBe('246')
     })
 
+    it('stays amber when one window is capped and the other is near-cap while credits cover', () => {
+        // Bot Major 2026-07-30: excluding only 100% windows left a 99% sibling
+        // in pressure candidates and painted red before covering-amber.
+        const usage: CodexUsage = {
+            contextWindow: { usedTokens: 50_000, limitTokens: 258_400, percent: 20, updatedAt: 1 },
+            rateLimits: {
+                fiveHour: { usedPercent: 100, windowMinutes: 300 },
+                weekly: { usedPercent: 99, windowMinutes: 10080 }
+            },
+            credits: { hasCredits: true, unlimited: false, balance: '80.0000000000' },
+            limitId: 'premium'
+        }
+        const state = toCodexBudgetState(usage)
+        expect(state?.effective).toBe('amber')
+        expect(state?.effectiveReason).toContain('credits covering')
+        expect(state?.operationalAxisId).toBe('context')
+    })
+
     it('keeps worst active constraint red when credits cover a capped window but context is near full', () => {
         // Bot Major 2026-07-23: covering-amber must not short-circuit before
         // context (or any other non-covered axis) at >=95% can paint red.

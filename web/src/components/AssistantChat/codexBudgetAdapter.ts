@@ -129,14 +129,15 @@ function formatCreditsValue(credits: NonNullable<CodexUsage['credits']>): string
     return '-'
 }
 
-// Axes that still constrain the user. Covered subscription windows at 100%
-// are billing-fallback noise (credits are paying), and idle credits
-// (pressure 0) are not a constraint - exclude both from color + dominant.
+// Axes that still constrain the user. Covered subscription windows are
+// billing-fallback noise once credits are paying (any 5h/weekly pressure),
+// and idle credits (pressure 0) are not a constraint - exclude both from
+// color + dominant.
 function activePressureCandidates(axes: AgentBudgetAxis[]): AgentBudgetAxis[] {
     const creditsCovering = axes.some((axis) => axis.id === 'credits' && axis.covering === true)
     return axes.filter((axis) => {
         if (axis.id === 'credits' && axis.pressure === 0) return false
-        if (creditsCovering && (axis.id === 'fiveHour' || axis.id === 'weekly') && axis.pressure >= 100) {
+        if (creditsCovering && (axis.id === 'fiveHour' || axis.id === 'weekly')) {
             return false
         }
         return true
