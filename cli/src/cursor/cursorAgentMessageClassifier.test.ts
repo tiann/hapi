@@ -239,37 +239,41 @@ describe('classifyCursorAgentMessage', () => {
 describe('mapAcpStderrToFailure (structural stderr signal)', () => {
     it('maps rate_limit -> rate_limited (transient)', () => {
         const out = mapAcpStderrToFailure({ type: 'rate_limit', raw: 'status 429 ratelimitexceeded' })
-        expect(out.kind).toBe('rate_limited')
-        expect(out.transient).toBe(true)
-        expect(out.source).toBe('stderr')
-        expect(out.raw).toBe('status 429 ratelimitexceeded')
+        expect(out).not.toBeNull()
+        expect(out!.kind).toBe('rate_limited')
+        expect(out!.transient).toBe(true)
+        expect(out!.source).toBe('stderr')
+        expect(out!.raw).toBe('status 429 ratelimitexceeded')
     })
 
     it('maps quota_exceeded -> quota_exhausted (non-transient)', () => {
         const out = mapAcpStderrToFailure({ type: 'quota_exceeded', raw: 'resource exhausted' })
-        expect(out.kind).toBe('quota_exhausted')
-        expect(out.transient).toBe(false)
-        expect(out.source).toBe('stderr')
+        expect(out).not.toBeNull()
+        expect(out!.kind).toBe('quota_exhausted')
+        expect(out!.transient).toBe(false)
+        expect(out!.source).toBe('stderr')
     })
 
     it('maps authentication -> auth_failed (non-transient)', () => {
         const out = mapAcpStderrToFailure({ type: 'authentication', raw: 'status 401 unauthenticated' })
-        expect(out.kind).toBe('auth_failed')
-        expect(out.transient).toBe(false)
-        expect(out.source).toBe('stderr')
+        expect(out).not.toBeNull()
+        expect(out!.kind).toBe('auth_failed')
+        expect(out!.transient).toBe(false)
+        expect(out!.source).toBe('stderr')
     })
 
     it('maps model_not_found -> model_not_found (non-transient)', () => {
         const out = mapAcpStderrToFailure({ type: 'model_not_found', raw: 'status 404 model not found' })
-        expect(out.kind).toBe('model_not_found')
-        expect(out.transient).toBe(false)
+        expect(out).not.toBeNull()
+        expect(out!.kind).toBe('model_not_found')
+        expect(out!.transient).toBe(false)
     })
 
-    it('maps unknown -> unknown_stderr', () => {
+    it('ignores unknown stderr (status-only; do not promote to modelError)', () => {
+        // Transport emits type:unknown for any stderr containing error/failed/
+        // exception — too broad for urgent model-error alerts.
         const out = mapAcpStderrToFailure({ type: 'unknown', raw: 'unexpected exception in agent' })
-        expect(out.kind).toBe('unknown_stderr')
-        expect(out.transient).toBe(false)
-        expect(out.source).toBe('stderr')
+        expect(out).toBeNull()
     })
 })
 

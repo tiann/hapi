@@ -6,7 +6,6 @@ import { ACP_INDETERMINATE_SYMBOL } from '@/agent/backends/acp/AcpStdioTransport
 
 const harness = vi.hoisted(() => ({
     initializeError: null as Error | null,
-    initializeAttempts: 0,
     loadSessionError: null as Error | null,
     newSessionError: null as Error | null,
     failSetConfigOption: false,
@@ -31,7 +30,16 @@ const harness = vi.hoisted(() => ({
     releaseSetConfigOption: null as (() => void) | null,
     deferLoadSession: null as Promise<void> | null,
     releaseLoadSession: null as (() => void) | null,
-    stderrErrorHandler: null as ((error: { type: string; message: string; raw?: string }) => void) | null,
+    stderrErrorHandler: null as ((error: {
+        type: string
+        message: string
+        raw: string
+    }) => void) | null,
+    emitStderrOnPrompt: null as {
+        type: 'rate_limit' | 'model_not_found' | 'authentication' | 'quota_exceeded' | 'unknown'
+        message: string
+        raw: string
+    } | null,
     disconnectError: null as Error | null,
     overlayCleanup: null as ReturnType<typeof vi.fn> | null,
     agentActivityListener: null as ((thinking: boolean) => void) | null
@@ -54,15 +62,7 @@ vi.mock('./utils/cursorAcpBackend', () => ({
         harness.backendArgs = { command: 'agent', args };
         return {
             initialize: vi.fn(async () => {
-                harness.initializeAttempts += 1;
-                if (harness.initializeError && harness.initializeAttempts === 1) {
-                    harness.stderrErrorHandler?.({
-                        type: 'model_not_found',
-                        message: harness.initializeError.message,
-                        raw: harness.initializeError.message
-                    });
-                    throw harness.initializeError;
-                }
+                if (harness.initializeError) throw harness.initializeError;
             }),
             authenticateIfAvailable: vi.fn(async () => {}),
             supportsLoadSession: vi.fn(() => harness.supportsLoadSession),
@@ -144,6 +144,9 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                 for (const message of messages) onMessage?.(message);
                 const stderrError = harness.promptStderrErrors.shift();
                 if (stderrError) harness.stderrErrorHandler?.(stderrError);
+                if (harness.emitStderrOnPrompt && harness.stderrErrorHandler) {
+                    harness.stderrErrorHandler(harness.emitStderrOnPrompt);
+                }
                 if (harness.deferPrompt) await harness.deferPrompt;
                 const error = harness.promptErrors.shift();
                 if (error) throw error;
@@ -160,8 +163,8 @@ vi.mock('./utils/cursorAcpBackend', () => ({
             abortSoftSteers: vi.fn(),
             waitForResponseComplete: vi.fn(async () => {}),
             respondToPermission: vi.fn(async () => {}),
-            onStderrError: vi.fn((handler) => {
-                harness.stderrErrorHandler = handler ?? null;
+            onStderrError: vi.fn((handler: typeof harness.stderrErrorHandler) => {
+                harness.stderrErrorHandler = handler;
             }),
             setUsageUpdateListener: vi.fn(),
             setAgentActivityListener: vi.fn((listener: ((thinking: boolean) => void) | null) => {
@@ -228,7 +231,7 @@ import {
     writeSharedCursorModelsCache
 } from '@/modules/common/cursorModelsSharedCache';
 
-function makeSession(sessionId: string | null, closeQueue = true): CursorSession {
+function makeSession(sessionId: string | null, opts?: { keepQueueOpen?: boolean }): CursorSession {
     const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
     const client = makeClient();
 
@@ -247,7 +250,7 @@ function makeSession(sessionId: string | null, closeQueue = true): CursorSession
     });
 
     session.onSessionFoundWithProtocol = vi.fn();
-    if (closeQueue) {
+    if (!opts?.keepQueueOpen) {
         queue.close();
     }
 
@@ -281,7 +284,6 @@ function makeClient() {
 describe('cursorAcpRemoteLauncher', () => {
     beforeEach(() => {
         harness.initializeError = null;
-        harness.initializeAttempts = 0;
         harness.loadSessionError = null;
         harness.newSessionError = null;
         harness.failSetConfigOption = false;
@@ -306,6 +308,7 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.deferLoadSession = null;
         harness.releaseLoadSession = null;
         harness.stderrErrorHandler = null;
+        harness.emitStderrOnPrompt = null;
         harness.disconnectError = null;
         harness.overlayCleanup = null;
         harness.agentActivityListener = null;
@@ -1762,5 +1765,72 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(JSON.stringify(harness.prompts[0])).not.toContain('$name');
         expect(JSON.stringify(harness.prompts[1])).toContain('second');
         expect(JSON.stringify(harness.prompts[1])).not.toContain('skill_lookup');
+    });
+
+    it('keeps generic unknown stderr status-only and still emits ready', async () => {
+        // Bot Major: type:unknown comes from any stderr with error/failed/exception.
+        // Must not set turnHasModelError / suppress ready / write lastModelError.
+        harness.emitStderrOnPrompt = {
+            type: 'unknown',
+            message: 'Some plugin failed to load: exception during init',
+            raw: 'Some plugin failed to load: exception during init'
+        };
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+            sendAgentMessage: ReturnType<typeof vi.fn>
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        session.queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.promptCalls).toBe(1);
+        expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(false);
+        const wroteLastModelError = client.updateMetadata.mock.calls.some((call) => {
+            const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+            if (typeof updater !== 'function') return false;
+            return Boolean(updater({}).lastModelError);
+        });
+        expect(wroteLastModelError).toBe(false);
+    });
+
+    it('still records modelError for typed rate_limit stderr and suppresses ready', async () => {
+        harness.emitStderrOnPrompt = {
+            type: 'rate_limit',
+            message: 'Rate limit exceeded.',
+            raw: 'status 429 ratelimitexceeded'
+        };
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        session.queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError' && call[0]?.kind === 'rate_limited'
+        )).toBe(true);
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'ready'
+        )).toBe(false);
+        const wroteLastModelError = client.updateMetadata.mock.calls.some((call) => {
+            const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+            if (typeof updater !== 'function') return false;
+            const next = updater({});
+            return (next.lastModelError as { kind?: string } | undefined)?.kind === 'rate_limited';
+        });
+        expect(wroteLastModelError).toBe(true);
     });
 });
