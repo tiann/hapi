@@ -5,7 +5,7 @@ import type { EnhancedMode, PermissionMode } from './loop';
 import type { CodexCliOverrides } from './utils/codexCliOverrides';
 import type { LocalLaunchExitReason } from '@/agent/localLaunchPolicy';
 import type { Metadata, SessionModel, SessionModelReasoningEffort } from '@/api/types';
-import { normalizeCodexUsage } from './utils/codexUsage';
+import { normalizeCodexUsageUpdate } from './utils/codexUsage';
 
 type LocalLaunchFailure = {
     message: string;
@@ -146,14 +146,35 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
     };
 
     recordCodexUsage = (payload: unknown): void => {
-        const codexUsage = normalizeCodexUsage(payload);
-        if (!codexUsage) {
+        const update = normalizeCodexUsageUpdate(payload);
+        if (!update) {
             return;
         }
-        this.client.updateMetadata((metadata) => ({
-            ...metadata,
-            codexUsage
-        }));
+        const { usage, hasRateLimitSnapshot } = update;
+        this.client.updateMetadata((metadata) => {
+            const previous = metadata.codexUsage;
+            const merged = {
+                ...previous,
+                ...usage,
+                rateLimits: hasRateLimitSnapshot
+                    ? usage.rateLimits
+                    : previous?.rateLimits ?? usage.rateLimits
+            };
+            if (hasRateLimitSnapshot) {
+                if (usage.credits !== undefined) merged.credits = usage.credits;
+                else delete merged.credits;
+                if (usage.rateLimitReachedType !== undefined) merged.rateLimitReachedType = usage.rateLimitReachedType;
+                else delete merged.rateLimitReachedType;
+                if (usage.planType !== undefined) merged.planType = usage.planType;
+                else delete merged.planType;
+                if (usage.limitId !== undefined) merged.limitId = usage.limitId;
+                else delete merged.limitId;
+            }
+            return {
+                ...metadata,
+                codexUsage: merged
+            };
+        });
     };
 
     setCollaborationMode = (mode: EnhancedMode['collaborationMode']): void => {

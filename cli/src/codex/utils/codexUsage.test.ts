@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeCodexUsage } from './codexUsage';
+import { normalizeCodexUsage, normalizeCodexUsageUpdate } from './codexUsage';
 
 describe('normalizeCodexUsage', () => {
     it('parses app-server token usage with context and rate-limit buckets', () => {
@@ -241,5 +241,22 @@ describe('normalizeCodexUsage', () => {
             unlimited: true,
             balance: '0'
         });
+    });
+
+    it('marks rate-limit presence when the payload includes rate_limits (even null)', () => {
+        expect(normalizeCodexUsageUpdate({
+            info: {
+                model_context_window: 100_000,
+                total_token_usage: { total_tokens: 1000 }
+            },
+            rate_limits: null
+        })?.hasRateLimitSnapshot).toBe(true);
+
+        expect(normalizeCodexUsageUpdate({
+            info: {
+                model_context_window: 100_000,
+                total_token_usage: { total_tokens: 1000 }
+            }
+        })?.hasRateLimitSnapshot).toBe(false);
     });
 });

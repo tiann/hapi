@@ -51,4 +51,77 @@ describe('CodexSession.resetCodexThread', () => {
         expect(session.sessionId).toBeNull();
         expect(updateMetadata).toHaveBeenCalledOnce();
     });
+
+    it('merges partial usage updates without wiping prior rate limits', () => {
+        let metadata: Record<string, unknown> = {
+            path: '/tmp/project',
+            host: 'example',
+            flavor: 'codex',
+            codexUsage: {
+                contextWindow: { usedTokens: 10_000, limitTokens: 100_000, percent: 10, updatedAt: 1 },
+                rateLimits: {
+                    fiveHour: { usedPercent: 90, windowMinutes: 300, resetAt: 2 },
+                    weekly: { usedPercent: 40, windowMinutes: 10080, resetAt: 3 }
+                },
+                credits: { hasCredits: true, balance: '12' }
+            }
+        };
+        const updateMetadata = vi.fn((updater: (current: Record<string, unknown>) => Record<string, unknown>) => {
+            metadata = updater(metadata);
+        });
+
+        const session = new CodexSession({
+            api: {} as never,
+            client: {
+                keepAlive: vi.fn(),
+                updateMetadata,
+                sendAgentMessage: vi.fn(),
+                emitMessagesConsumed: vi.fn(),
+                sendSessionEvent: vi.fn()
+            } as never,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: 'thread-1',
+            messageQueue: new MessageQueue2<EnhancedMode>(() => 'default'),
+            onModeChange: () => undefined,
+            startedBy: 'terminal',
+            startingMode: 'remote'
+        });
+        sessions.push(session);
+
+        session.recordCodexUsage({
+            info: {
+                model_context_window: 100_000,
+                total_token_usage: { total_tokens: 25_000 }
+            }
+        });
+
+        expect(metadata.codexUsage).toMatchObject({
+            contextWindow: expect.objectContaining({ usedTokens: 25_000, limitTokens: 100_000 }),
+            rateLimits: {
+                fiveHour: { usedPercent: 90, windowMinutes: 300, resetAt: 2 },
+                weekly: { usedPercent: 40, windowMinutes: 10080, resetAt: 3 }
+            },
+            credits: { hasCredits: true, balance: '12' }
+        });
+
+        session.recordCodexUsage({
+            info: {
+                model_context_window: 100_000,
+                total_token_usage: { total_tokens: 30_000 }
+            },
+            rate_limits: {
+                primary: null,
+                secondary: null,
+                credits: { has_credits: false, balance: '0' }
+            }
+        });
+
+        expect(metadata.codexUsage).toMatchObject({
+            contextWindow: expect.objectContaining({ usedTokens: 30_000 }),
+            rateLimits: {},
+            credits: { hasCredits: false, balance: '0' }
+        });
+        expect((metadata.codexUsage as { rateLimits: Record<string, unknown> }).rateLimits.fiveHour).toBeUndefined();
+    });
 });
