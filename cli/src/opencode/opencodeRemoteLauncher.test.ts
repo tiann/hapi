@@ -12,7 +12,13 @@ const harness = vi.hoisted(() => ({
     events: [] as string[],
     setModelImpl: null as null | ((sessionId: string, modelId: string) => Promise<void>),
     setConfigOptionImpl: null as null | ((sessionId: string, configId: string, value: string) => Promise<void>),
-    thoughtLevelOption: null as null | { id: string; currentValue?: string; options: Array<{ value: string; name?: string }> }
+    thoughtLevelOption: null as null | { id: string; currentValue?: string; options: Array<{ value: string; name?: string }> },
+    // Lets a test take full manual control of when a given prompt() call
+    // resolves, instead of the fixed-one-tick setImmediate delay below —
+    // needed to deterministically test ordering against /compact without
+    // guessing tick counts.
+    promptImpl: null as null | (() => Promise<void>),
+    sessionModelsMetadata: undefined as undefined | { currentModelId: string; availableModels: unknown[] }
 }));
 
 vi.mock('./utils/opencodeBackend', () => ({
@@ -42,7 +48,11 @@ vi.mock('./utils/opencodeBackend', () => ({
             harness.promptContents.push(content);
             harness.events.push('prompt:start');
             harness.promptCount++;
-            await new Promise<void>((resolve) => setImmediate(resolve));
+            if (harness.promptImpl) {
+                await harness.promptImpl();
+            } else {
+                await new Promise<void>((resolve) => setImmediate(resolve));
+            }
             harness.events.push('prompt:end');
         }),
         cancelPrompt: vi.fn(async () => {}),
@@ -54,7 +64,7 @@ vi.mock('./utils/opencodeBackend', () => ({
         }),
         onPermissionRequest: vi.fn(),
         disconnect: vi.fn(async () => {}),
-        getSessionModelsMetadata: vi.fn(() => undefined),
+        getSessionModelsMetadata: vi.fn(() => harness.sessionModelsMetadata),
         getThoughtLevelConfigOption: vi.fn(() => harness.thoughtLevelOption ?? undefined)
     }))
 }));
@@ -77,6 +87,24 @@ vi.mock('./utils/permissionHandler', () => ({
 
 vi.mock('@/ui/ink/OpencodeDisplay', () => ({
     OpencodeDisplay: () => null
+}));
+
+const compactHarness = vi.hoisted(() => ({
+    calls: [] as Array<{ baseUrl: string; sessionId: string; providerId: string; modelId: string }>,
+    result: { ok: true } as { ok: true } | { ok: false; error: string }
+}));
+
+vi.mock('./utils/opencodeCompactBridge', () => ({
+    splitProviderModel: (combined: string | null | undefined) => {
+        if (!combined) return null;
+        const idx = combined.indexOf('/');
+        if (idx <= 0 || idx === combined.length - 1) return null;
+        return { providerId: combined.slice(0, idx), modelId: combined.slice(idx + 1) };
+    },
+    triggerOpencodeCompact: vi.fn(async (opts: { baseUrl: string; sessionId: string; providerId: string; modelId: string }) => {
+        compactHarness.calls.push(opts);
+        return compactHarness.result;
+    })
 }));
 
 vi.mock('@/ui/logger', () => ({
@@ -189,6 +217,169 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         harness.setModelImpl = null;
         harness.setConfigOptionImpl = null;
         harness.thoughtLevelOption = null;
+        compactHarness.calls = [];
+        compactHarness.result = { ok: true };
+        harness.promptImpl = null;
+        harness.sessionModelsMetadata = undefined;
+    });
+
+    it('waits for an in-flight prompt to finish before starting a compact call', async () => {
+        let resolvePrompt: (() => void) | null = null;
+        harness.promptImpl = () => new Promise<void>((resolve) => {
+            resolvePrompt = resolve;
+        });
+
+        const { session } = createSessionStub([
+            { message: 'first', mode: createMode('ollama/x') }
+        ]);
+
+        let capturedTrigger: (() => Promise<{ ok: true } | { ok: false; error: string }>) | null = null;
+        const launcherPromise = opencodeRemoteLauncher(session as never, {
+            onCompactTriggerReady: (trigger) => {
+                capturedTrigger = trigger;
+            }
+        });
+
+        // Deterministically wait until the prompt is confirmed in-flight
+        // (it will not resolve until we call resolvePrompt below).
+        while (!harness.events.includes('prompt:start')) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        expect(capturedTrigger).not.toBeNull();
+
+        const compactPromise = capturedTrigger!();
+        // Give the trigger several ticks to run ahead if it were (incorrectly)
+        // not serialized — it must still be queued behind the in-flight
+        // prompt via runExclusive, not calling the REST bridge yet.
+        for (let i = 0; i < 5; i++) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        expect(compactHarness.calls).toEqual([]);
+        expect(harness.events).toEqual(['prompt:start']);
+
+        resolvePrompt!();
+        await launcherPromise;
+        await compactPromise;
+
+        expect(harness.events).toEqual(['prompt:start', 'prompt:end']);
+        expect(compactHarness.calls.length).toBe(1);
+    });
+
+    it('blocks a new prompt from starting while a compact call is in progress', async () => {
+        // Compact fires before any turn has been dequeued, so
+        // currentBackendModel hasn't been seeded from a batch yet — the
+        // trigger needs getSessionModelsMetadata (seeded right after
+        // session/new) to resolve a provider/model pair.
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+
+        const { triggerOpencodeCompact } = await import('./utils/opencodeCompactBridge');
+        const triggerMock = triggerOpencodeCompact as unknown as ReturnType<typeof vi.fn>;
+        let resolveCompact: (() => void) | null = null;
+        triggerMock.mockImplementationOnce((opts: { baseUrl: string; sessionId: string; providerId: string; modelId: string }) => {
+            compactHarness.calls.push(opts);
+            return new Promise((resolve) => {
+                resolveCompact = () => resolve({ ok: true });
+            });
+        });
+
+        const { session } = createSessionStub([
+            { message: 'only', mode: createMode('ollama/x') }
+        ]);
+
+        // `onCompactTriggerReady` fires synchronously before the launcher's
+        // while-loop starts dequeuing. Invoking the trigger right inside that
+        // callback (rather than polling for it afterwards) guarantees its
+        // `runExclusive` call acquires the mutex before the main loop ever
+        // gets a chance to — otherwise which side "wins" the race to call
+        // `runExclusive` first would depend on unrelated scheduling details
+        // (e.g. whether the queue already has data buffered), not on the
+        // property this test is meant to verify.
+        let compactPromise: Promise<{ ok: true } | { ok: false; error: string }> | null = null;
+        const launcherPromise = opencodeRemoteLauncher(session as never, {
+            onCompactTriggerReady: (trigger) => {
+                compactPromise = trigger();
+            }
+        });
+
+        // Give the main loop plenty of ticks to (incorrectly) start the
+        // queued prompt if it weren't serialized behind the compact call.
+        for (let i = 0; i < 10; i++) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        expect(compactHarness.calls.length).toBe(1);
+        expect(harness.promptCount).toBe(0);
+        expect(harness.events).toEqual([]);
+
+        resolveCompact!();
+        await compactPromise;
+        await launcherPromise;
+
+        expect(harness.promptCount).toBe(1);
+        expect(harness.events).toEqual(['prompt:start', 'prompt:end']);
+    });
+
+    it('registers a compact trigger that posts to the REST bridge using the session baseUrl and current model', async () => {
+        const opencodeBackendModule = await import('./utils/opencodeBackend');
+        const factory = (opencodeBackendModule as unknown as { createOpencodeBackend: ReturnType<typeof vi.fn> }).createOpencodeBackend;
+        factory.mockImplementationOnce(() => ({
+            initialize: vi.fn(async () => {}),
+            newSession: vi.fn(async () => 'acp-session-1'),
+            loadSession: vi.fn(async () => 'acp-session-1'),
+            setModel: vi.fn(async () => {}),
+            prompt: vi.fn(async () => {}),
+            cancelPrompt: vi.fn(async () => {}),
+            respondToPermission: vi.fn(async () => {}),
+            onStderrError: vi.fn(),
+            setSessionInfoUpdateListener: vi.fn(),
+            refreshSessionInfo: vi.fn(async () => {}),
+            onPermissionRequest: vi.fn(),
+            disconnect: vi.fn(async () => {}),
+            getSessionModelsMetadata: vi.fn(() => ({
+                currentModelId: 'ollama/qwen3.6:35b-a3b-q8_0-mtp',
+                availableModels: []
+            }))
+        }));
+
+        const { session } = createSessionStub([
+            { message: 'first', mode: createMode() }
+        ]);
+
+        let capturedTrigger: (() => Promise<{ ok: true } | { ok: false; error: string }>) | null = null;
+        await opencodeRemoteLauncher(session as never, {
+            onCompactTriggerReady: (trigger) => {
+                capturedTrigger = trigger;
+            }
+        });
+
+        expect(capturedTrigger).not.toBeNull();
+        const result = await capturedTrigger!();
+        expect(result).toEqual({ ok: true });
+        expect(compactHarness.calls).toEqual([
+            {
+                baseUrl: 'http://127.0.0.1:48273',
+                sessionId: 'acp-session-1',
+                providerId: 'ollama',
+                modelId: 'qwen3.6:35b-a3b-q8_0-mtp'
+            }
+        ]);
+    });
+
+    it('compact trigger reports a clear failure when the session has no model metadata', async () => {
+        // Default harness mock's getSessionModelsMetadata returns undefined.
+        const { session } = createSessionStub([
+            { message: 'first', mode: createMode() }
+        ]);
+
+        let capturedTrigger: (() => Promise<{ ok: true } | { ok: false; error: string }>) | null = null;
+        await opencodeRemoteLauncher(session as never, {
+            onCompactTriggerReady: (trigger) => {
+                capturedTrigger = trigger;
+            }
+        });
+
+        const result = await capturedTrigger!();
+        expect(result.ok).toBe(false);
+        expect(compactHarness.calls).toEqual([]);
     });
 
     it('injects the skill lookup instruction only on the first prompt', async () => {

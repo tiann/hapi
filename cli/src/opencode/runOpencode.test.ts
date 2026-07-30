@@ -6,7 +6,8 @@ const mockOpencodeSession = vi.hoisted(() => ({
     setModelReasoningEffort: vi.fn(),
     pushKeepAlive: vi.fn(),
     thinking: false,
-    stopKeepAlive: vi.fn()
+    stopKeepAlive: vi.fn(),
+    onThinkingChange: vi.fn()
 }));
 
 const harness = vi.hoisted(() => ({
@@ -18,6 +19,7 @@ const harness = vi.hoisted(() => ({
         onUserMessage: vi.fn(),
         onCancelQueuedMessage: vi.fn(),
         sendAgentMessage: vi.fn(),
+        sendSessionEvent: vi.fn(),
         emitMessagesConsumed: vi.fn(),
         rpcHandlerManager: {
             registerHandler: vi.fn()
@@ -100,9 +102,11 @@ describe('runOpencode set-session-config handler', () => {
         mockOpencodeSession.setPermissionMode.mockReset();
         mockOpencodeSession.setModelReasoningEffort.mockReset();
         mockOpencodeSession.pushKeepAlive.mockReset();
+        mockOpencodeSession.onThinkingChange.mockReset();
         harness.session.onUserMessage.mockReset();
         harness.session.onCancelQueuedMessage.mockReset();
         harness.session.sendAgentMessage.mockReset();
+        harness.session.sendSessionEvent.mockReset();
         harness.session.emitMessagesConsumed.mockReset();
         harness.session.rpcHandlerManager.registerHandler.mockReset();
         harness.listSlashCommands.mockReset();
@@ -255,6 +259,121 @@ describe('runOpencode set-session-config handler', () => {
         );
         // The slash reply should still have gone out as a separate message.
         expect(harness.session.sendAgentMessage).toHaveBeenCalled();
+    });
+
+    it('triggers native compaction via the REST bridge and reports started/completed', async () => {
+        await runOpencode({});
+
+        const onCompactTriggerReady = harness.opencodeLoopArgs[0]?.onCompactTriggerReady as
+            ((trigger: () => Promise<{ ok: true } | { ok: false; error: string }>) => void) | undefined;
+        expect(onCompactTriggerReady).toBeDefined();
+        const trigger = vi.fn(async () => ({ ok: true as const }));
+        onCompactTriggerReady!(trigger);
+
+        const userMessageHandler = harness.session.onUserMessage.mock.calls[0]?.[0] as
+            ((msg: { content: { text: string; attachments?: unknown[] } }, localId?: string) => void)
+            | undefined;
+        expect(userMessageHandler).toBeDefined();
+
+        userMessageHandler!({ content: { text: '/compact' } }, 'local-compact');
+        // Drain microtasks across the async chain: listSlashCommands -> slash
+        // resolve -> await trigger().
+        for (let i = 0; i < 5; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+
+        expect(trigger).toHaveBeenCalledTimes(1);
+        expect(harness.session.emitMessagesConsumed).toHaveBeenCalledWith(
+            ['local-compact'],
+            { clearQueuedThinkingGrace: true }
+        );
+        // Compaction started/completed/failed go through sendSessionEvent
+        // (the status-line channel Claude/Codex already use for this), not
+        // sendAgentMessage (regular chat bubbles) — see the doc comment at
+        // the call site in runOpencode.ts.
+        const events = harness.session.sendSessionEvent.mock.calls.map((call) => (call[0] as { message: string }).message);
+        expect(events).toEqual(['Compaction started', 'Compaction completed']);
+    });
+
+    it('reports a Compaction failed message when the REST bridge fails', async () => {
+        await runOpencode({});
+
+        const onCompactTriggerReady = harness.opencodeLoopArgs[0]?.onCompactTriggerReady as
+            ((trigger: () => Promise<{ ok: true } | { ok: false; error: string }>) => void) | undefined;
+        const trigger = vi.fn(async () => ({ ok: false as const, error: 'boom' }));
+        onCompactTriggerReady!(trigger);
+
+        const userMessageHandler = harness.session.onUserMessage.mock.calls[0]?.[0] as
+            ((msg: { content: { text: string; attachments?: unknown[] } }, localId?: string) => void)
+            | undefined;
+        userMessageHandler!({ content: { text: '/compact' } }, 'local-compact-fail');
+        for (let i = 0; i < 5; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+
+        const events = harness.session.sendSessionEvent.mock.calls.map((call) => (call[0] as { message: string }).message);
+        expect(events).toEqual(['Compaction started', 'Compaction failed: boom']);
+    });
+
+    it('suppresses the Compaction completed message if the request is cancelled while the bridge call is in flight', async () => {
+        await runOpencode({});
+
+        const onCompactTriggerReady = harness.opencodeLoopArgs[0]?.onCompactTriggerReady as
+            ((trigger: () => Promise<{ ok: true } | { ok: false; error: string }>) => void) | undefined;
+        let resolveTrigger: (() => void) | null = null;
+        const trigger = vi.fn(() => new Promise<{ ok: true } | { ok: false; error: string }>((resolve) => {
+            resolveTrigger = () => resolve({ ok: true });
+        }));
+        onCompactTriggerReady!(trigger);
+
+        const userMessageHandler = harness.session.onUserMessage.mock.calls[0]?.[0] as
+            ((msg: { content: { text: string; attachments?: unknown[] } }, localId?: string) => void)
+            | undefined;
+        const cancelHandler = harness.session.onCancelQueuedMessage.mock.calls[0]?.[0] as
+            ((localId: string) => boolean) | undefined;
+        expect(userMessageHandler).toBeDefined();
+        expect(cancelHandler).toBeDefined();
+
+        userMessageHandler!({ content: { text: '/compact' } }, 'local-compact-cancel');
+        // Drain until the compact branch has called trigger() and is now
+        // suspended awaiting our controllable promise.
+        for (let i = 0; i < 5; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+        expect(trigger).toHaveBeenCalledTimes(1);
+
+        // The user cancels while the REST bridge call is still pending —
+        // `preparingLocalIds` still holds this localId at this point because
+        // the outer chain's `finally` cleanup only runs once the whole
+        // compact branch (including this await) settles.
+        expect(cancelHandler!('local-compact-cancel')).toBe(true);
+
+        resolveTrigger!();
+        for (let i = 0; i < 5; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+
+        const events = harness.session.sendSessionEvent.mock.calls.map((call) => (call[0] as { message: string }).message);
+        expect(events).toEqual(['Compaction started']);
+        // The suppressed result must not have leaked out as a regular chat
+        // message either.
+        expect(harness.session.sendAgentMessage).not.toHaveBeenCalled();
+    });
+
+    it('falls back to a not-yet-supported message for /compact when no bridge trigger is registered (e.g. local mode)', async () => {
+        await runOpencode({});
+        // Deliberately do not call onCompactTriggerReady.
+
+        const userMessageHandler = harness.session.onUserMessage.mock.calls[0]?.[0] as
+            ((msg: { content: { text: string; attachments?: unknown[] } }, localId?: string) => void)
+            | undefined;
+        userMessageHandler!({ content: { text: '/compact' } }, 'local-compact-none');
+        for (let i = 0; i < 5; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+
+        const messages = harness.session.sendAgentMessage.mock.calls.map((call) => (call[0] as { message: string }).message);
+        expect(messages).toEqual(['/compact is not yet supported in HAPI OpenCode sessions.']);
     });
 
     it('cancels a slash command that is cancelled before listSlashCommands resolves', async () => {

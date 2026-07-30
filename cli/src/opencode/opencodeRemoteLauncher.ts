@@ -10,12 +10,14 @@ import type { OpencodeSession } from './session';
 import type { OpencodeMode, PermissionMode } from './types';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { allocateFreePort, createOpencodeBackend } from './utils/opencodeBackend';
+import { splitProviderModel, triggerOpencodeCompact, type OpencodeCompactResult } from './utils/opencodeCompactBridge';
 import { OpencodePermissionHandler } from './utils/permissionHandler';
 import { OPENCODE_NATIVE_TOOL_INSTRUCTION, PLAN_MODE_INSTRUCTION } from './utils/systemPrompt';
 import { resolveThoughtLevelEffort } from './thoughtLevelEffort';
 
 type OpencodeRemoteLauncherOptions = {
     onReasoningEffortRollback?: (effort: string | null) => void;
+    onCompactTriggerReady?: (trigger: () => Promise<OpencodeCompactResult>) => void;
 };
 
 class OpencodeRemoteLauncher extends RemoteLauncherBase {
@@ -34,6 +36,16 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private defaultBackendEffort: string | null = null;
     private setModelSupported: boolean | undefined = undefined;
     private setEffortSupported: boolean | undefined = undefined;
+    // Serializes session/prompt and /compact against each other: both act on
+    // the same underlying OpenCode session, and firing them concurrently
+    // would let the REST /summarize call and an in-flight ACP session/prompt
+    // race on the same opencode session with no coordination on HAPI's side.
+    // `turnLock` is a promise chain — `runExclusive` reassigns it
+    // synchronously (no `await` in between reading the previous link and
+    // writing the new one), so two near-simultaneous callers still resolve
+    // into a well-defined FIFO order with no race window, unlike a
+    // check-then-set boolean/gate.
+    private turnLock: Promise<unknown> = Promise.resolve();
 
     constructor(
         session: OpencodeSession,
@@ -128,6 +140,31 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         const thoughtLevelOption = backend.getThoughtLevelConfigOption?.(acpSessionId);
         this.currentBackendEffort = thoughtLevelOption?.currentValue ?? null;
         this.defaultBackendEffort = this.currentBackendEffort;
+
+        // Let the caller (runOpencode.ts) drive native /compact: it needs a
+        // way to reach the ACP backend + internal HTTP baseUrl that only this
+        // launcher owns. The trigger re-reads current model metadata on every
+        // call (not just at registration time) so it reflects the latest
+        // inline model switch.
+        this.options.onCompactTriggerReady?.((): Promise<OpencodeCompactResult> => this.runExclusive(async () => {
+            if (!this.baseUrl) {
+                return { ok: false, error: 'OpenCode internal HTTP API base URL is not available.' };
+            }
+            const metadata = backend.getSessionModelsMetadata?.(acpSessionId);
+            const split = splitProviderModel(metadata?.currentModelId ?? this.currentBackendModel);
+            if (!split) {
+                return {
+                    ok: false,
+                    error: 'OpenCode model metadata is not available; cannot determine provider/model for compaction.'
+                };
+            }
+            return triggerOpencodeCompact({
+                baseUrl: this.baseUrl,
+                sessionId: acpSessionId,
+                providerId: split.providerId,
+                modelId: split.modelId
+            });
+        }));
 
         // Expose the cached models metadata via per-session RPC so the hub can
         // forward it to the web UI's model selector without round-tripping ACP.
@@ -303,9 +340,14 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             session.onThinkingChange(true);
 
             try {
-                await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
+                // Serialized against /compact via the same turnLock — see its
+                // doc comment. Without this, a /compact fired while this
+                // prompt is still generating would call the REST bridge and
+                // ACP session/prompt concurrently against the same OpenCode
+                // session with no coordination on HAPI's side.
+                await this.runExclusive(() => backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
                     this.handleAgentMessage(message);
-                });
+                }));
                 void backend.refreshSessionInfo(acpSessionId, session.path);
             } catch (error) {
                 logger.warn('[opencode-remote] prompt failed', error);
@@ -348,6 +390,25 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         this.session.setModelReasoningEffort(effort);
         this.session.pushKeepAlive();
         this.options.onReasoningEffortRollback?.(effort);
+    }
+
+    /**
+     * Runs `fn` only after every previously-submitted `runExclusive` call has
+     * settled, regardless of how close together they were submitted. The
+     * critical section here (reading `this.turnLock` and replacing it) is
+     * fully synchronous — no `await` in between — so even two callers
+     * invoked back-to-back in the same microtask turn still get a
+     * well-defined FIFO order instead of racing on a boolean flag.
+     */
+    private runExclusive<T>(fn: () => Promise<T>): Promise<T> {
+        const acquired = this.turnLock.then(fn, fn);
+        // Keep the chain alive even if `fn` rejected, so a failed prompt or
+        // failed compact doesn't permanently wedge future turns.
+        this.turnLock = acquired.then(
+            () => undefined,
+            () => undefined
+        );
+        return acquired;
     }
 
     private handleAgentMessage(message: AgentMessage): void {

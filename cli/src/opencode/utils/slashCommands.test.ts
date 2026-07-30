@@ -119,15 +119,19 @@ describe('resolveOpencodeSlashCommand', () => {
         }
     });
 
-    it('returns a not-yet-supported message for /clear and /compact', () => {
+    it('returns a not-yet-supported message for /clear', () => {
         expect(resolveOpencodeSlashCommand('/clear', state)).toEqual({
             kind: 'handled',
             message: '/clear is not yet supported in HAPI OpenCode sessions.'
         });
-        expect(resolveOpencodeSlashCommand('/compact', state)).toEqual({
-            kind: 'handled',
-            message: '/compact is not yet supported in HAPI OpenCode sessions.'
-        });
+    });
+
+    it('resolves /compact to a dedicated kind so the launcher can bridge to native compaction asynchronously', () => {
+        expect(resolveOpencodeSlashCommand('/compact', state)).toEqual({ kind: 'compact' });
+    });
+
+    it('resolves /compact the same way regardless of trailing arguments (compaction takes no arguments)', () => {
+        expect(resolveOpencodeSlashCommand('/compact now please', state)).toEqual({ kind: 'compact' });
     });
 
     it('expands custom OpenCode command prompts', () => {
@@ -163,6 +167,8 @@ describe('resolveOpencodeSlashCommand', () => {
             expect(help.message).toContain('Supported OpenCode slash commands');
             expect(help.message).toContain('/plan');
             expect(help.message).toContain('/permissions');
+            expect(help.message).toContain('/compact` — compact (summarize) the OpenCode session context (remote sessions only)');
+            expect(help.message).toContain('/clear` is not yet supported');
         }
     });
 

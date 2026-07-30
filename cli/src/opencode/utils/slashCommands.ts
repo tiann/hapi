@@ -18,6 +18,12 @@ const OPENCODE_INIT_PROMPT = [
 
 export type OpencodeSlashResolution =
     | { kind: 'passthrough' }
+    // /compact needs an async round trip to OpenCode's internal REST API
+    // (native AI compaction, can take 90s+) and a "Compaction
+    // started/completed/failed" event sequence, which doesn't fit the
+    // synchronous 'handled' shape below. The launcher (runOpencode.ts)
+    // intercepts this kind and drives that flow itself.
+    | { kind: 'compact' }
     | {
         kind: 'handled';
         message: string;
@@ -163,7 +169,11 @@ export function resolveOpencodeSlashCommand(
         };
     }
 
-    if (command === 'clear' || command === 'compact') {
+    if (command === 'compact') {
+        return { kind: 'compact' };
+    }
+
+    if (command === 'clear') {
         return {
             kind: 'handled',
             message: `/${command} is not yet supported in HAPI OpenCode sessions.`
@@ -193,11 +203,12 @@ export function resolveOpencodeSlashCommand(
                 '- `/plan off` — return to default permission mode',
                 '- `/default` — return to default permission mode',
                 '- `/init [extra]` — generate or refresh AGENTS.md for this project',
+                '- `/compact` — compact (summarize) the OpenCode session context (remote sessions only)',
                 '',
                 'Model, reasoning effort, and permission mode have dedicated buttons in the composer. ' +
                 'You can still type `/model`, `/reasoning`, or `/permissions` if you prefer.',
                 '',
-                '`/clear` and `/compact` are not yet supported in HAPI OpenCode sessions.',
+                '`/clear` is not yet supported in HAPI OpenCode sessions.',
                 '',
                 'Custom commands from `~/.config/opencode/command` or `.opencode/command` are expanded before sending.'
             ].join('\n')

@@ -16,6 +16,7 @@ import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import { listSlashCommands } from '@/modules/common/slashCommands';
 import { resolveOpencodeSlashCommand } from './utils/slashCommands';
+import type { OpencodeCompactResult } from './utils/opencodeCompactBridge';
 
 export async function runOpencode(opts: {
     startedBy?: 'runner' | 'terminal';
@@ -83,6 +84,11 @@ export async function runOpencode(opts: {
     }));
 
     const sessionWrapperRef: { current: OpencodeSession | null } = { current: null };
+    // Populated by opencodeRemoteLauncher once the ACP backend + internal
+    // HTTP baseUrl are available (remote mode only). Stays null in local
+    // mode, so /compact gracefully falls back to a not-yet-supported message
+    // there — see the `slash.kind === 'compact'` branch below.
+    const compactTriggerRef: { current: (() => Promise<OpencodeCompactResult>) | null } = { current: null };
     let currentPermissionMode: PermissionMode = opts.permissionMode ?? 'default';
     let sessionModel: string | null = initialModel;
     let sessionModelReasoningEffort: string | null = initialModelReasoningEffort;
@@ -166,6 +172,71 @@ export async function runOpencode(opts: {
                     model: sessionModel,
                     modelReasoningEffort: sessionModelReasoningEffort
                 });
+
+                if (slash.kind === 'compact') {
+                    // Ack the user's /compact message the same way the
+                    // synchronous 'handled' branch below does, before
+                    // starting the (potentially 90s+) REST round trip.
+                    if (localId) {
+                        session.emitMessagesConsumed([localId], { clearQueuedThinkingGrace: true });
+                    }
+                    const trigger = compactTriggerRef.current;
+                    if (!trigger) {
+                        session.sendAgentMessage({
+                            type: 'message',
+                            message: '/compact is not yet supported in HAPI OpenCode sessions.',
+                            id: randomUUID()
+                        });
+                        sessionWrapperRef.current?.onThinkingChange(false);
+                        return;
+                    }
+                    // Claude/Codex report compaction start/completion/failure
+                    // via sendSessionEvent (a dedicated status-line channel —
+                    // web/src/chat/presentation.ts renders it as a small
+                    // inline indicator, same as "Switched to local" or
+                    // Claude's automatic microcompaction notice), not as a
+                    // regular chat bubble. Match that so /compact doesn't
+                    // pile three permanent chat messages into the transcript
+                    // every time it's used.
+                    session.sendSessionEvent({
+                        type: 'message',
+                        message: 'Compaction started'
+                    });
+                    sessionWrapperRef.current?.onThinkingChange(true);
+                    try {
+                        const result = await trigger();
+                        // The compaction itself already happened server-side
+                        // by the time this resolves — there is no way to
+                        // cancel the in-flight REST call — but if the user
+                        // cancelled this message while we were waiting (up to
+                        // several minutes), don't surface a result for an
+                        // action they no longer expect a reply from. Same
+                        // race contract as other async event handling in this
+                        // chain: a cancel that lands before the async work
+                        // resolves suppresses the eventual UI update.
+                        if (wasCancelled()) {
+                            logger.debug('[opencode] /compact result suppressed: cancelled before it resolved');
+                            return;
+                        }
+                        session.sendSessionEvent({
+                            type: 'message',
+                            message: result.ok ? 'Compaction completed' : `Compaction failed: ${result.error}`
+                        });
+                    } catch (error) {
+                        if (wasCancelled()) {
+                            logger.debug('[opencode] /compact error suppressed: cancelled before it resolved');
+                            return;
+                        }
+                        const message = error instanceof Error ? error.message : String(error);
+                        session.sendSessionEvent({
+                            type: 'message',
+                            message: `Compaction failed: ${message}`
+                        });
+                    } finally {
+                        sessionWrapperRef.current?.onThinkingChange(false);
+                    }
+                    return;
+                }
 
                 if (slash.kind !== 'passthrough') {
                     if (slash.updates) {
@@ -292,6 +363,9 @@ export async function runOpencode(opts: {
             onSessionReady: (instance) => {
                 sessionWrapperRef.current = instance;
                 syncSessionMode();
+            },
+            onCompactTriggerReady: (trigger) => {
+                compactTriggerRef.current = trigger;
             }
         });
     } catch (error) {

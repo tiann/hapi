@@ -24,6 +24,7 @@ interface OpencodeLoopOptions {
     hookUrl: string;
     onSessionReady?: (session: OpencodeSession) => void;
     onReasoningEffortRollback?: (effort: string | null) => void;
+    onCompactTriggerReady?: (trigger: () => Promise<{ ok: true } | { ok: false; error: string }>) => void;
 }
 
 export async function opencodeLoop(opts: OpencodeLoopOptions): Promise<void> {
@@ -59,7 +60,8 @@ export async function opencodeLoop(opts: OpencodeLoopOptions): Promise<void> {
             hookUrl: opts.hookUrl
         }),
         runRemote: (instance) => opencodeRemoteLauncher(instance, {
-            onReasoningEffortRollback: opts.onReasoningEffortRollback
+            onReasoningEffortRollback: opts.onReasoningEffortRollback,
+            onCompactTriggerReady: opts.onCompactTriggerReady
         }),
         onSessionReady: opts.onSessionReady
     });
