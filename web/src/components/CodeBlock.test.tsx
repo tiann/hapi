@@ -104,6 +104,29 @@ describe('CodeBlock', () => {
         expect(screen.getByRole('button', { pressed: true })).toBeInTheDocument()
     })
 
+    it.each([1, 12, 123])('reserves the gutter padding outside the %i-digit number track', (lineCount) => {
+        const { container } = render(
+            <I18nProvider>
+                <CodeBlock code={Array.from({ length: lineCount }, (_, index) => `line ${index + 1}`).join('\n')} language="text" />
+            </I18nProvider>
+        )
+
+        const grid = container.querySelector('[data-hapi-code-grid="true"]') as HTMLElement
+        expect(grid.style.gridTemplateColumns).toBe('calc(3ch + 1.5rem) max-content')
+    })
+
+    it('uses the natural pre-wrap layout without hiding or shifting leading whitespace', () => {
+        window.localStorage.setItem('hapi-code-wrap', '1')
+        const source = ' \t  --format a-deliberately-long-terminal-argument'
+        const { container } = render(<I18nProvider><CodeBlock code={source} language="shellscript" /></I18nProvider>)
+        const codeCell = container.querySelector('[data-code-cell]') as HTMLElement
+
+        expect(codeCell.style.paddingLeft).toBe('')
+        expect(codeCell.style.tabSize).toBe('')
+        expect(codeCell.querySelector('[data-code-leading-indent]')).toBeNull()
+        expect(codeCell.textContent).toBe(source)
+    })
+
     it('renders the plain-text fallback as per-line rows when highlighting is unavailable', () => {
         const { container } = render(
             <I18nProvider>

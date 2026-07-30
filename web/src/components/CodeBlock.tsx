@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactNode } from 'react'
+import { type CSSProperties, type ReactNode } from 'react'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { useCodeWrap } from '@/hooks/useCodeWrap'
 import { useShikiHighlightedLines, splitCodeLines } from '@/lib/shiki'
@@ -9,6 +9,7 @@ const DEFAULT_COLLAPSE_LINE_THRESHOLD = 18
 const DEFAULT_COLLAPSE_CHAR_THRESHOLD = 1800
 const DEFAULT_COLLAPSED_HEIGHT = 260
 const DEFAULT_SCROLL_HEIGHT = 420
+const GUTTER_HORIZONTAL_PADDING_REM = 1.5
 
 function shouldCollapseCode(code: string, lineThreshold: number, charThreshold: number): boolean {
     if (code.length > charThreshold) return true
@@ -75,7 +76,7 @@ export function CodeBlock(props: {
     // (minmax(0,1fr)) so long lines wrap instead of overflowing; unwrapped it
     // grows to its content (max-content) inside the horizontal-scroll body.
     const codeGridStyle = {
-        gridTemplateColumns: `${lineNumberWidth}ch ${codeWrap ? 'minmax(0, 1fr)' : 'max-content'}`
+        gridTemplateColumns: `calc(${lineNumberWidth}ch + ${GUTTER_HORIZONTAL_PADDING_REM}rem) ${codeWrap ? 'minmax(0, 1fr)' : 'max-content'}`
     } satisfies CSSProperties
     const codeCellStyle = codeWrap
         ? { whiteSpace: 'pre-wrap' as const, wordBreak: 'break-word' as const }
