@@ -263,9 +263,9 @@ export class FcmNotificationChannel implements NotificationChannel {
         notification: ModelErrorNotification,
         ctx?: NotificationSendContext
     ): Promise<ModelErrorSendOutcome> {
-        if (!session.active) {
-            return 'unavailable'
-        }
+        // No active-session guard: NotificationHub only starts dispatch for
+        // active sessions, but a bounded backoff retry must still deliver if
+        // the session went inactive before the timer fired.
 
         const agentName = getAgentName(session)
         const sessionName = getSessionName(session)

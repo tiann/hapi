@@ -146,9 +146,8 @@ export class PushNotificationChannel implements NotificationChannel {
         notification: ModelErrorNotification,
         ctx?: NotificationSendContext
     ): Promise<ModelErrorSendOutcome> {
-        if (!session.active) {
-            return 'unavailable'
-        }
+        // No active-session guard: scheduled retries must still deliver after
+        // the session goes inactive (watermark + timer survive that transition).
 
         if (ctx?.nativeGate?.sent) {
             this.logBranch('model-error', session.namespace, 'defer-to-native', 'fcm-delivered-this-dispatch')

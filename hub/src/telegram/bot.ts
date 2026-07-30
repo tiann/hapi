@@ -276,9 +276,8 @@ export class HappyBot implements NotificationChannel {
         notification: ModelErrorNotification,
         _ctx?: NotificationSendContext
     ): Promise<ModelErrorSendOutcome> {
-        if (!session.active) {
-            return 'unavailable'
-        }
+        // No active-session guard: bounded retries must still reach Telegram
+        // if the session ended between the first attempt and the timer.
 
         const agentName = getAgentName(session)
         const sessionName = getSessionName(session)
