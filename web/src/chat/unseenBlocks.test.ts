@@ -181,8 +181,7 @@ describe('countUnseenBlocks', () => {
         expect(countUnseenBlocks(replaced, watermark)).toBe(0)
     })
 
-    it('counts consecutive independent blocks individually', () => {
-        const seed = [userMsg('u1', 'go', BASE_AT)]
+    it('counts consecutive independent blocks individually', () => {        const seed = [userMsg('u1', 'go', BASE_AT)]
         const watermark = createUnseenWatermark(visible(seed))
 
         const blocks = visible([
@@ -192,5 +191,21 @@ describe('countUnseenBlocks', () => {
             agentText('a2', 'second', BASE_AT + 3)
         ])
         expect(countUnseenBlocks(blocks, watermark)).toBe(3)
+    })
+
+    it('recognizes an optimistic block after the stored row replaces its id', () => {
+        // mergeMessages swaps an optimistic row for the stored one, which keeps
+        // localId but carries a new server id (lib/messages.ts), and the user
+        // block renders with the changing message id (reducerTimeline.ts). If the
+        // user scrolls up while their own message is still optimistic, the echo
+        // must not read as a brand new row.
+        const earlier = visible([userMsg('u0', 'earlier turn', BASE_AT)])
+        const optimistic = { ...earlier[0], id: 'local-1', localId: 'local-1' }
+        const watermark = createUnseenWatermark([...earlier, optimistic])
+
+        // The stored echo keeps localId but arrives under a server id. Anchoring
+        // must still land on it, not fall back to the block before it.
+        const stored = [...earlier, { ...optimistic, id: 'srv-1' }]
+        expect(countUnseenBlocks(stored, watermark)).toBe(0)
     })
 })

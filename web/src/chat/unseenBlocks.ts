@@ -4,17 +4,41 @@ import { isToolGroupBlock, type VisibleChatBlock } from '@/chat/toolGroups'
  * Snapshot of the blocks the user had already seen when they scrolled away
  * from the tail. Compared against the current blocks to answer "how much new
  * content is below me".
+ *
+ * Tracks localId alongside id because a block's id is not stable: an optimistic
+ * row is replaced by a stored row carrying the same localId under a new server
+ * id (mergeMessages in lib/messages.ts), and the rendered block uses the message
+ * id. Without localId, the user's own message would read as new content the
+ * moment its echo arrives.
  */
 export type UnseenWatermark = {
     ids: Set<string>
+    localIds: Set<string>
+}
+
+function getLocalId(block: VisibleChatBlock): string | null {
+    return 'localId' in block ? block.localId : null
 }
 
 export function createUnseenWatermark(blocks: readonly VisibleChatBlock[]): UnseenWatermark {
-    return { ids: new Set(blocks.map((block) => block.id)) }
+    const ids = new Set<string>()
+    const localIds = new Set<string>()
+    for (const block of blocks) {
+        ids.add(block.id)
+        const localId = getLocalId(block)
+        if (localId) {
+            localIds.add(localId)
+        }
+    }
+    return { ids, localIds }
 }
 
-function isKnownBlock(block: VisibleChatBlock, ids: Set<string>): boolean {
-    if (ids.has(block.id)) {
+function isKnownBlock(block: VisibleChatBlock, watermark: UnseenWatermark): boolean {
+    if (watermark.ids.has(block.id)) {
+        return true
+    }
+    const localId = getLocalId(block)
+    if (localId && watermark.localIds.has(localId)) {
         return true
     }
     // A lone tool-call renders under its own tool id until a second eligible
@@ -22,7 +46,7 @@ function isKnownBlock(block: VisibleChatBlock, ids: Set<string>): boolean {
     // `tool-group:<firstToolId>` (see createToolGroupId in toolGroups.ts).
     // Match on the member ids so that absorption doesn't look like new content.
     return isToolGroupBlock(block)
-        && (ids.has(block.firstToolId) || ids.has(block.lastToolId))
+        && (watermark.ids.has(block.firstToolId) || watermark.ids.has(block.lastToolId))
 }
 
 /**
@@ -51,7 +75,7 @@ export function countUnseenBlocks(
         return 0
     }
     for (let index = blocks.length - 1; index >= 0; index -= 1) {
-        if (isKnownBlock(blocks[index], watermark.ids)) {
+        if (isKnownBlock(blocks[index], watermark)) {
             return blocks.length - 1 - index
         }
     }
