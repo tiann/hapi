@@ -3,7 +3,8 @@ import {
     classifyAcpRpcRejection,
     classifyCursorAgentMessage,
     isCompletionClaim,
-    mapAcpStderrToFailure
+    mapAcpStderrToFailure,
+    rawSnippetForFailure
 } from './cursorAgentMessageClassifier'
 
 describe('classifyCursorAgentMessage', () => {
@@ -411,5 +412,31 @@ describe('isCompletionClaim', () => {
     })
     it('handles empty string', () => {
         expect(isCompletionClaim('')).toBe(false)
+    })
+})
+
+describe('rawSnippetForFailure', () => {
+    it('slices from Error: T marker when prose exceeds 400 chars', () => {
+        const prose = 'A'.repeat(450)
+        const failure = {
+            kind: 'canceled' as const,
+            transient: true,
+            raw: `${prose}\n\nError: T: [canceled] Operation aborted`,
+            source: 'text' as const
+        }
+        const snippet = rawSnippetForFailure(failure)
+        expect(snippet.startsWith('Error: T:')).toBe(true)
+        expect(snippet).toContain('[canceled]')
+        expect(snippet.length).toBeLessThanOrEqual(400)
+    })
+
+    it('keeps start-of-string for non-text sources', () => {
+        const failure = {
+            kind: 'rate_limited' as const,
+            transient: true,
+            raw: 'status 429 ratelimitexceeded',
+            source: 'stderr' as const
+        }
+        expect(rawSnippetForFailure(failure)).toBe('status 429 ratelimitexceeded')
     })
 })

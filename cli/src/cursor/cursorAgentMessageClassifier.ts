@@ -296,3 +296,16 @@ export function isCompletionClaim(text: string): boolean {
     const lower = text.trim().toLowerCase()
     return PRIOR_DONE_PREFIXES.some((prefix) => lower.startsWith(prefix))
 }
+
+const TEXT_ERROR_MARKER = /^[ \t]*(?:Error: (?:T|RetriableError):|Gemini prompt failed:)/im
+
+/**
+ * Prefer the matched error marker when slicing rawSnippet so "View raw error"
+ * shows the failure, not the preceding assistant prose when Error: T: is
+ * appended after a long response.
+ */
+export function rawSnippetForFailure(failure: CursorAgentStreamFailure, maxLen = 400): string {
+    const marker = failure.source === 'text' ? failure.raw.search(TEXT_ERROR_MARKER) : -1
+    const start = marker >= 0 ? marker : 0
+    return failure.raw.slice(start, start + maxLen)
+}

@@ -56,6 +56,7 @@ import {
     classifyCursorAgentMessage,
     isCompletionClaim,
     mapAcpStderrToFailure,
+    rawSnippetForFailure,
     type CursorAgentStreamFailure
 } from './cursorAgentMessageClassifier';
 
@@ -979,7 +980,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         const priorAssistantClaimsDone = (this.lastAssistantText !== null
             && isCompletionClaim(this.lastAssistantText))
             || (failure.source === 'text' && isCompletionClaim(failure.raw));
-        const rawSnippet = failure.raw.slice(0, 400);
+        const rawSnippet = rawSnippetForFailure(failure);
         const atTs = Date.now();
 
         logger.debug(
