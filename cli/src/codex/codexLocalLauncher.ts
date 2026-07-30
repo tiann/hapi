@@ -204,6 +204,8 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
             return;
         }
         const replayExistingHistory = session.shouldReplayTranscriptHistory();
+        let replayingUsage = replayExistingHistory;
+        let latestReplayUsage: unknown = null;
         const createdScanner = await createCodexSessionScanner({
             transcriptPath,
             // 中文注释：导入模式下允许 scanner 首次回放 transcript 全量内容，补齐 Codex 客户端里已有但 Hapi 还未看到的消息。
@@ -239,7 +241,11 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                 }
                 for (const message of converted?.messages ?? []) {
                     if (message.type === 'token_count') {
-                        session.recordCodexUsage(message);
+                        if (replayingUsage) {
+                            latestReplayUsage = message;
+                        } else {
+                            session.recordCodexUsage(message);
+                        }
                         session.sendAgentMessage(message);
                     } else if (message.type === 'proposed_plan') {
                         // Codex may complete the Plan item before emitting its final text preface.
@@ -286,6 +292,10 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                 }
             }
         });
+        replayingUsage = false;
+        if (latestReplayUsage) {
+            session.recordCodexUsage(latestReplayUsage);
+        }
         if (shuttingDown) {
             await drainAndCleanupScanner(createdScanner, replayExistingHistory);
             return;

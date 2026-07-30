@@ -259,4 +259,30 @@ describe('normalizeCodexUsage', () => {
             }
         })?.hasRateLimitSnapshot).toBe(false);
     });
+
+    it('accepts rate-limits-only / null snapshots so clears still apply', () => {
+        expect(normalizeCodexUsageUpdate({
+            info: { rate_limits: null }
+        })).toEqual({
+            usage: { rateLimits: {} },
+            hasRateLimitSnapshot: true
+        });
+
+        expect(normalizeCodexUsageUpdate({
+            info: {
+                rate_limits: {
+                    primary: { used_percent: 55, window_minutes: 300 },
+                    secondary: { used_percent: 12, window_minutes: 10080 }
+                }
+            }
+        })).toEqual({
+            usage: {
+                rateLimits: {
+                    fiveHour: { usedPercent: 55, windowMinutes: 300 },
+                    weekly: { usedPercent: 12, windowMinutes: 10080 }
+                }
+            },
+            hasRateLimitSnapshot: true
+        });
+    });
 });
