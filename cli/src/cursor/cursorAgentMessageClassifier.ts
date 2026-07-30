@@ -174,11 +174,16 @@ export function classifyCursorAgentMessage(text: string): CursorAgentStreamFailu
  *
  * Accepts a minimal shape of AcpStderrError so this module stays decoupled
  * from the transport package.
+ *
+ * Returns null for `unknown`: ACP stderr is logging (`Clients MAY capture,
+ * forward, or ignore`), and the transport emits `unknown` for any line
+ * containing "error"/"failed"/"exception". Promoting those would false-alarm
+ * model-error banners on unrelated agent/runtime logs. Typed kinds only.
  */
 export function mapAcpStderrToFailure(error: {
     type: 'rate_limit' | 'model_not_found' | 'authentication' | 'quota_exceeded' | 'unknown'
     raw: string
-}): CursorAgentStreamFailure {
+}): CursorAgentStreamFailure | null {
     switch (error.type) {
         case 'rate_limit':
             return { kind: 'rate_limited', transient: true, raw: error.raw, source: 'stderr' }
@@ -190,7 +195,7 @@ export function mapAcpStderrToFailure(error: {
             return { kind: 'quota_exhausted', transient: false, raw: error.raw, source: 'stderr' }
         case 'unknown':
         default:
-            return { kind: 'unknown_stderr', transient: false, raw: error.raw, source: 'stderr' }
+            return null
     }
 }
 

@@ -487,9 +487,13 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             messageBuffer.addMessage(error.message, 'status');
             // STRUCTURAL signal: route typed stderr into the modelError pipeline
             // (rate_limited / quota_exhausted / auth_failed / model_not_found)
-            // without text matching. Wired here so connect/load remap retries
-            // keep the same stderr → modelError path as mid-session turns.
-            this.recordModelError(mapAcpStderrToFailure(error));
+            // without text matching. Generic `unknown` stderr stays status-only —
+            // ACP treats stderr as logging, and the transport labels any
+            // "error"/"failed"/"exception" line as unknown.
+            const failure = mapAcpStderrToFailure(error);
+            if (failure) {
+                this.recordModelError(failure);
+            }
         });
     }
 
