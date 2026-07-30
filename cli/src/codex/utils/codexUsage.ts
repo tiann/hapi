@@ -207,6 +207,51 @@ export function normalizeCodexUsageUpdate(value: unknown, options: NormalizerOpt
     return null;
 }
 
+export type ReplayUsageSample = {
+    index: number;
+    payload: unknown;
+};
+
+export type ReplayUsageAccumulator = {
+    index: number;
+    latestTokens: ReplayUsageSample | null;
+    latestRateLimits: ReplayUsageSample | null;
+};
+
+export function createReplayUsageAccumulator(): ReplayUsageAccumulator {
+    return {
+        index: 0,
+        latestTokens: null,
+        latestRateLimits: null
+    };
+}
+
+/** Track latest token-bearing and rate-limit-bearing replay samples separately. */
+export function noteReplayUsageSample(accumulator: ReplayUsageAccumulator, payload: unknown): void {
+    const update = normalizeCodexUsageUpdate(payload);
+    if (!update) {
+        return;
+    }
+    const sample: ReplayUsageSample = { index: accumulator.index++, payload };
+    if (update.usage.contextWindow || update.usage.totalTokenUsage || update.usage.lastTokenUsage) {
+        accumulator.latestTokens = sample;
+    }
+    if (update.hasRateLimitSnapshot) {
+        accumulator.latestRateLimits = sample;
+    }
+}
+
+/** At most two payloads, ordered by original replay index so merges apply correctly. */
+export function orderedReplayUsagePayloads(accumulator: ReplayUsageAccumulator): unknown[] {
+    return [...new Map(
+        [accumulator.latestTokens, accumulator.latestRateLimits]
+            .filter((item): item is ReplayUsageSample => item !== null)
+            .map((item) => [item.index, item] as const)
+    ).values()]
+        .sort((a, b) => a.index - b.index)
+        .map((item) => item.payload);
+}
+
 export function normalizeCodexUsage(value: unknown, options: NormalizerOptions = {}): CodexUsage | null {
     const now = options.now ?? Date.now();
     const record = unwrapUsagePayload(value);

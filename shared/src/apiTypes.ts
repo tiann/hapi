@@ -584,6 +584,16 @@ export const SpawnSessionRequestSchema = z.object({
     collaborationMode: CodexCollaborationModeSchema.optional(),
     copilotAgentMode: CopilotAgentModeSchema.optional(),
     startingMode: z.enum(['remote', 'pty']).optional()
+}).superRefine((data, ctx) => {
+    // Public machine-spawn only validates Codex transcript workspace roots.
+    // Hub-driven session resume for other flavors uses RPC, not this schema.
+    if (data.resumeSessionId && data.agent !== 'codex') {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['resumeSessionId'],
+            message: 'resumeSessionId is only supported for Codex machine spawns'
+        })
+    }
 })
 
 export type SpawnSessionRequest = z.infer<typeof SpawnSessionRequestSchema>
