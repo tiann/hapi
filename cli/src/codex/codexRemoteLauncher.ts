@@ -369,6 +369,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             return;
         }
 
+        let replayingHistory = true;
+        let latestReplayUsage: unknown = null;
         const scanner = await createCodexSessionScanner({
             transcriptPath,
             replayExistingHistory: true,
@@ -386,13 +388,23 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     if (eventThreadId && eventThreadId !== threadId) {
                         continue;
                     }
+                    // Initial replay can emit one token_count per historical turn.
+                    // Keep only the latest snapshot, then record once after create returns.
+                    if (replayingHistory) {
+                        latestReplayUsage = message;
+                        continue;
+                    }
                     this.session.recordCodexUsage(message);
                 }
             }
         });
+        replayingHistory = false;
         if (this.shuttingDown || this.usageScannerThreadId !== threadId) {
             await scanner.cleanup();
             return;
+        }
+        if (latestReplayUsage) {
+            this.session.recordCodexUsage(latestReplayUsage);
         }
         this.usageScanner = scanner;
     }

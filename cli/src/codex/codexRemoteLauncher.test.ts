@@ -55,6 +55,7 @@ const harness = vi.hoisted(() => ({
     scannerStarts: [] as Array<{ transcriptPath: string | null; replayExistingHistory?: boolean }>,
     scannerCleanups: 0,
     scannerEvents: [] as Array<(event: unknown) => void>,
+    scannerReplayOnCreate: [] as unknown[],
     startTurnMessages: [] as string[],
     failResumeThreadIds: [] as string[],
     nextThreadSystemErrorMessage: null as string | null,
@@ -1111,6 +1112,11 @@ vi.mock('./utils/codexSessionScanner', () => ({
             transcriptPath: opts.transcriptPath,
             replayExistingHistory: opts.replayExistingHistory
         });
+        if (opts.replayExistingHistory) {
+            for (const event of harness.scannerReplayOnCreate) {
+                opts.onEvent(event);
+            }
+        }
         harness.scannerEvents.push(opts.onEvent);
         return {
             cleanup: async () => {
@@ -1515,6 +1521,7 @@ describe('codexRemoteLauncher', () => {
         harness.scannerStarts = [];
         harness.scannerCleanups = 0;
         harness.scannerEvents = [];
+        harness.scannerReplayOnCreate = [];
     });
 
     it('finishes a turn and emits ready when task lifecycle events include turn_id', async () => {
@@ -3491,5 +3498,47 @@ describe('codexRemoteLauncher', () => {
             message: 'transcript duplicate'
         }));
         expect(harness.scannerCleanups).toBe(1);
+    });
+
+    it('records only the latest token_count from initial transcript replay', async () => {
+        harness.transcriptPathByThreadId.set('thread-1', '/tmp/codex-thread-1.jsonl');
+        harness.scannerReplayOnCreate = [
+            {
+                type: 'event_msg',
+                payload: {
+                    type: 'token_count',
+                    info: { total_token_usage: { total_tokens: 1000 } }
+                }
+            },
+            {
+                type: 'event_msg',
+                payload: {
+                    type: 'token_count',
+                    info: { total_token_usage: { total_tokens: 42000 }, model_context_window: 128000 }
+                }
+            },
+            {
+                type: 'event_msg',
+                thread_id: 'child-thread',
+                payload: {
+                    type: 'token_count',
+                    scope_role: 'child',
+                    info: { total_token_usage: { total_tokens: 999 } }
+                }
+            }
+        ];
+        const { session, usagePayloads } = createSessionStub();
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(usagePayloads).toHaveLength(1);
+        expect(usagePayloads[0]).toMatchObject({
+            type: 'token_count',
+            info: {
+                total_token_usage: { total_tokens: 42000 },
+                model_context_window: 128000
+            }
+        });
     });
 });

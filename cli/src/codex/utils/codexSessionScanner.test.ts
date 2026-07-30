@@ -32,31 +32,33 @@ describe('codexSessionScanner', () => {
         }
     });
 
-    it('emits only new events after startup', async () => {
+    it('preserves top-level thread ids through parse and replay', async () => {
         await writeFile(
             transcriptPath,
             [
-                JSON.stringify({ type: 'session_meta', payload: { id: 'session-123' } }),
-                JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'old' } })
+                JSON.stringify({ type: 'session_meta', payload: { id: 'session-thread' } }),
+                JSON.stringify({
+                    type: 'event_msg',
+                    thread_id: 'parent-thread',
+                    payload: {
+                        type: 'token_count',
+                        info: { total_token_usage: { total_tokens: 42 } }
+                    }
+                })
             ].join('\n') + '\n'
         );
 
         scanner = await createCodexSessionScanner({
             transcriptPath,
+            replayExistingHistory: true,
             onEvent: (event) => events.push(event)
         });
 
-        await wait(300);
-        expect(events).toHaveLength(0);
-
-        await appendFile(
-            transcriptPath,
-            JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'new' } }) + '\n'
-        );
-
-        await wait(700);
-        expect(events).toHaveLength(1);
-        expect(events[0]?.type).toBe('event_msg');
+        expect(events).toContainEqual(expect.objectContaining({
+            type: 'event_msg',
+            thread_id: 'parent-thread',
+            payload: expect.objectContaining({ type: 'token_count' })
+        }));
     });
 
     it('flushes an appended tail without waiting for the watcher', async () => {

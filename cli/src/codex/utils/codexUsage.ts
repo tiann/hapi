@@ -37,7 +37,7 @@ function normalizeTokenUsage(value: unknown): CodexTokenUsage | undefined {
     const outputTokens = firstNumber(record, ['output_tokens', 'outputTokens']) ?? 0;
     const reasoningOutputTokens = firstNumber(record, ['reasoning_output_tokens', 'reasoningOutputTokens']) ?? 0;
     const totalTokens = firstNumber(record, ['total_tokens', 'totalTokens'])
-        ?? inputTokens + cachedInputTokens + outputTokens + reasoningOutputTokens;
+        ?? inputTokens + outputTokens;
 
     if (inputTokens === 0 && cachedInputTokens === 0 && outputTokens === 0 && reasoningOutputTokens === 0 && totalTokens === 0) {
         return undefined;

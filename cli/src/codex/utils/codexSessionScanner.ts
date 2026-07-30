@@ -260,7 +260,13 @@ function parseCodexSessionEvent(value: unknown): CodexSessionEvent | null {
     return {
         timestamp: typeof record.timestamp === 'string' ? record.timestamp : undefined,
         type: record.type,
-        payload: record.payload
+        payload: record.payload,
+        ...(typeof record.thread_id === 'string' && record.thread_id.length > 0
+            ? { thread_id: record.thread_id }
+            : {}),
+        ...(typeof record.threadId === 'string' && record.threadId.length > 0
+            ? { threadId: record.threadId }
+            : {})
     };
 }
 
