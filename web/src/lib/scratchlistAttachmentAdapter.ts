@@ -43,14 +43,33 @@ export function hubAttachmentFromRestoredDraft(
     }
 }
 
-export function createScratchlistAttachmentAdapter(api: ApiClient, sessionId: string): AttachmentAdapter {
+export type ScratchlistAttachmentAdapter = AttachmentAdapter & {
+    /**
+     * After a successful park, `clearAttachments()` still calls `remove()`.
+     * Mark those chip ids so remove skips hub/chat deletes (blobs now live
+     * on the scratchlist entry).
+     */
+    releaseWithoutDelete(ids: Iterable<string>): void
+}
+
+export function createScratchlistAttachmentAdapter(
+    api: ApiClient,
+    sessionId: string,
+): ScratchlistAttachmentAdapter {
     const cancelledAttachmentIds = new Set<string>()
+    const releasedWithoutDeleteIds = new Set<string>()
 
     return {
         // assistant-ui uses the exact "*" sentinel for an allow-all adapter.
         // "*/*" is forwarded to MIME matching and rejects every file before
         // this adapter's add() method can run.
         accept: '*',
+
+        releaseWithoutDelete(ids: Iterable<string>): void {
+            for (const id of ids) {
+                releasedWithoutDeleteIds.add(id)
+            }
+        },
 
         async *add({ file }): AsyncGenerator<PendingAttachment> {
             const contentType = file.type || 'application/octet-stream'
@@ -166,6 +185,9 @@ export function createScratchlistAttachmentAdapter(api: ApiClient, sessionId: st
         },
 
         async remove(attachment: Attachment): Promise<void> {
+            if (releasedWithoutDeleteIds.delete(attachment.id)) {
+                return
+            }
             cancelledAttachmentIds.add(attachment.id)
             const pending = attachment as PendingScratchlistAttachment
             const hubId = pending.hubAttachment?.id

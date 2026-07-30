@@ -368,4 +368,32 @@ describe('createScratchlistAttachmentAdapter.send migrates chat-path chips (#122
             path: '/tmp/hapi-blobs/x.png',
         } as never)).rejects.toThrow(/quota|Failed to migrate/i)
     })
+
+    it('releaseWithoutDelete makes remove a no-op so clearAttachments keeps parked hubs', async () => {
+        const deleteScratchlistAttachment = vi.fn()
+        const deleteUploadFile = vi.fn()
+        const api = { deleteScratchlistAttachment, deleteUploadFile } as never
+        const adapter = createScratchlistAttachmentAdapter(api, 'session-1')
+        const pending = {
+            id: 'composer-hub-1',
+            type: 'file' as const,
+            name: 'a.png',
+            contentType: 'image/png',
+            status: { type: 'requires-action' as const, reason: 'composer-send' as const },
+            path: 'hapi-hub:scratchlist/default/session-1/hub-1-a.png',
+            hubAttachment: {
+                id: 'hub-1',
+                filename: 'a.png',
+                mimeType: 'image/png',
+                size: 1,
+                path: 'hapi-hub:scratchlist/default/session-1/hub-1-a.png',
+            },
+        }
+
+        adapter.releaseWithoutDelete([pending.id])
+        await adapter.remove(pending as never)
+
+        expect(deleteScratchlistAttachment).not.toHaveBeenCalled()
+        expect(deleteUploadFile).not.toHaveBeenCalled()
+    })
 })

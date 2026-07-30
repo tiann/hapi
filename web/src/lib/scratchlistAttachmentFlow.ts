@@ -63,20 +63,93 @@ export async function finalizeMigratedScratchlistParkCleanup(
 }
 
 /**
+ * Pending composer chip shape used when parking *before* assistant-ui
+ * `composer.send()` empties the UI (#1226 follow-up Major).
+ */
+export type PendingParkAttachment = {
+    id: string
+    name: string
+    contentType?: string
+    file?: File
+    path?: string
+    hubAttachment?: ScratchlistAttachmentMetadata
+    previewUrl?: string
+}
+
+/**
+ * Build hub park metadata from live composer chips without clearing them.
+ * Chat-path items are migrated into hub storage and stamped with
+ * `migratedFromPath`; the original chat upload is left in place until
+ * `finalizeMigratedScratchlistParkCleanup(accepted=true)`.
+ */
+export async function prepareScratchlistParkAttachments(
+    api: ApiClient,
+    sessionId: string,
+    pending: readonly PendingParkAttachment[],
+): Promise<ParkAttachmentMetadata[]> {
+    const prepared: ParkAttachmentMetadata[] = []
+    const createdHubIds: string[] = []
+    try {
+        for (const chip of pending) {
+            if (chip.hubAttachment) {
+                prepared.push({
+                    ...chip.hubAttachment,
+                    previewUrl: chip.previewUrl,
+                })
+                continue
+            }
+            const file = chip.file
+            if (!file) {
+                throw new Error(`Cannot park attachment ${chip.name} without file bytes`)
+            }
+            const contentType = chip.contentType || file.type || 'application/octet-stream'
+            const content = await blobToBase64(file)
+            const result = await api.uploadScratchlistAttachment(
+                sessionId,
+                chip.name,
+                content,
+                contentType,
+            )
+            if (!result.success || !result.attachment) {
+                throw new Error(
+                    result.error ?? `Failed to migrate attachment ${chip.name}`
+                )
+            }
+            createdHubIds.push(result.attachment.id)
+            const migratedFromPath =
+                chip.path && !isHubScratchlistAttachmentPath(chip.path)
+                    ? chip.path
+                    : undefined
+            prepared.push({
+                ...result.attachment,
+                previewUrl: chip.previewUrl,
+                ...(migratedFromPath ? { migratedFromPath } : {}),
+            })
+        }
+        return prepared
+    } catch (error) {
+        await Promise.allSettled(
+            createdHubIds.map((id) => api.deleteScratchlistAttachment(sessionId, id))
+        )
+        throw error
+    }
+}
+
+/**
  * Re-upload chat-path attachments into hub scratchlist storage (#1226).
  *
- * `readContentBase64` supplies bytes for each chat-path item (typically from
- * the pending File still held by the composer adapter). Hub-resident items
- * are passed through unchanged. On failure, newly created hub blobs are
- * deleted so a partial migrate does not leak quota.
+ * Does **not** delete the original chat upload — callers must run
+ * `finalizeMigratedScratchlistParkCleanup` after the park attempt so a
+ * rejected add can retry from the chat path. On failure, newly created
+ * hub blobs are deleted so a partial migrate does not leak quota.
  */
 export async function migrateChatPathAttachmentsToScratchlist(
     api: ApiClient,
     sessionId: string,
     attachments: AttachmentMetadata[],
     readContentBase64: (attachment: AttachmentMetadata) => Promise<string>
-): Promise<AttachmentMetadata[]> {
-    const migrated: AttachmentMetadata[] = []
+): Promise<ParkAttachmentMetadata[]> {
+    const migrated: ParkAttachmentMetadata[] = []
     const createdHubIds: string[] = []
     try {
         for (const attachment of attachments) {
@@ -97,10 +170,10 @@ export async function migrateChatPathAttachmentsToScratchlist(
                 )
             }
             createdHubIds.push(result.attachment.id)
-            await api.deleteUploadFile(sessionId, attachment.path).catch(() => {})
             migrated.push({
                 ...result.attachment,
                 previewUrl: attachment.previewUrl,
+                migratedFromPath: attachment.path,
             })
         }
         return migrated

@@ -4,6 +4,7 @@ import {
     attachmentsNeedScratchlistMigration,
     finalizeMigratedScratchlistParkCleanup,
     migrateChatPathAttachmentsToScratchlist,
+    prepareScratchlistParkAttachments,
     type ParkAttachmentMetadata,
 } from './scratchlistAttachmentFlow'
 
@@ -77,10 +78,11 @@ describe('migrateChatPathAttachmentsToScratchlist (#1226)', () => {
             contentBase64,
             'image/png',
         )
-        expect(deleteUploadFile).toHaveBeenCalledWith('session-1', chat.path)
+        // Chat-path delete is deferred until park succeeds.
+        expect(deleteUploadFile).not.toHaveBeenCalled()
         expect(result).toEqual([
             hub,
-            { ...migrated, previewUrl: chat.previewUrl },
+            { ...migrated, previewUrl: chat.previewUrl, migratedFromPath: chat.path },
         ])
     })
 
@@ -111,6 +113,86 @@ describe('migrateChatPathAttachmentsToScratchlist (#1226)', () => {
             [chatAttachment('/tmp/a.png'), chatAttachment('/tmp/b.png')],
             async () => 'YmFzZTY0',
         )).rejects.toThrow(/too big|Failed to migrate/i)
+
+        expect(deleteScratchlistAttachment).toHaveBeenCalledWith('session-1', 'hub-ok')
+    })
+})
+
+describe('prepareScratchlistParkAttachments (#1226)', () => {
+    it('passes hub chips through and migrates chat-path chips without deleting the chat upload', async () => {
+        const hubMeta = {
+            id: 'hub-1',
+            filename: 'hub.png',
+            mimeType: 'image/png',
+            size: 2,
+            path: 'hapi-hub:scratchlist/default/session-1/hub-1-hub.png',
+        }
+        const migrated = {
+            id: 'hub-new',
+            filename: 'chat.png',
+            mimeType: 'image/png',
+            size: 1,
+            path: 'hapi-hub:scratchlist/default/session-1/hub-new-chat.png',
+        }
+        const uploadScratchlistAttachment = vi.fn().mockResolvedValue({
+            success: true,
+            attachment: migrated,
+        })
+        const deleteUploadFile = vi.fn()
+        const api = { uploadScratchlistAttachment, deleteUploadFile } as never
+        const chatFile = new File([new Uint8Array([1])], 'chat.png', { type: 'image/png' })
+
+        const result = await prepareScratchlistParkAttachments(api, 'session-1', [
+            {
+                id: 'chip-hub',
+                name: 'hub.png',
+                contentType: 'image/png',
+                hubAttachment: hubMeta,
+                previewUrl: 'data:image/png;base64,hub',
+            },
+            {
+                id: 'chip-chat',
+                name: 'chat.png',
+                contentType: 'image/png',
+                file: chatFile,
+                path: '/tmp/hapi-blobs/chat.png',
+                previewUrl: 'data:image/png;base64,chat',
+            },
+        ])
+
+        expect(uploadScratchlistAttachment).toHaveBeenCalledTimes(1)
+        expect(deleteUploadFile).not.toHaveBeenCalled()
+        expect(result).toEqual([
+            { ...hubMeta, previewUrl: 'data:image/png;base64,hub' },
+            {
+                ...migrated,
+                previewUrl: 'data:image/png;base64,chat',
+                migratedFromPath: '/tmp/hapi-blobs/chat.png',
+            },
+        ])
+    })
+
+    it('rolls back hub blobs when a later chip fails to migrate', async () => {
+        const uploadScratchlistAttachment = vi.fn()
+            .mockResolvedValueOnce({
+                success: true,
+                attachment: {
+                    id: 'hub-ok',
+                    filename: 'a.png',
+                    mimeType: 'image/png',
+                    size: 1,
+                    path: 'hapi-hub:scratchlist/default/session-1/hub-ok-a.png',
+                },
+            })
+            .mockResolvedValueOnce({ success: false, error: 'quota' })
+        const deleteScratchlistAttachment = vi.fn().mockResolvedValue(undefined)
+        const api = { uploadScratchlistAttachment, deleteScratchlistAttachment } as never
+        const file = new File([new Uint8Array([1])], 'a.png', { type: 'image/png' })
+
+        await expect(prepareScratchlistParkAttachments(api, 'session-1', [
+            { id: '1', name: 'a.png', contentType: 'image/png', file, path: '/tmp/a.png' },
+            { id: '2', name: 'b.png', contentType: 'image/png', file, path: '/tmp/b.png' },
+        ])).rejects.toThrow(/quota|Failed to migrate/i)
 
         expect(deleteScratchlistAttachment).toHaveBeenCalledWith('session-1', 'hub-ok')
     })

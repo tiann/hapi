@@ -260,6 +260,15 @@ export function HappyComposer(props: {
     scratchlistMode?: boolean
     scratchlistCount?: number
     onScratchlistToggle?: () => void
+    /**
+     * Park from a live composer snapshot without going through
+     * `composer.send()` (assistant-ui empties text/chips before onNew).
+     * Return true only when the entry was accepted so we can clear.
+     */
+    onParkScratchlist?: (
+        text: string,
+        pending: readonly import('@assistant-ui/react').Attachment[],
+    ) => Promise<boolean>
     // Set when the most recent send failed (4xx/5xx/network).  The composer
     // restores the original text once per `sendError.id` and renders an
     // inline error affordance until the user dismisses or starts editing.
@@ -843,8 +852,27 @@ export function HappyComposer(props: {
         ? undefined
         : handleUserClearSchedule
 
-    /** Flush rich chips → `[title](/sessions/<id>)` into composer.text, then send. */
-    const flushAndSend = useCallback(() => {
+    const handleSend = useCallback(async () => {
+        // Scratchlist parks must not go through assistant-ui's send(): it
+        // empties text/chips before onNew, so a rejected add cannot restore
+        // retryable composer state (#1226 Major).
+        if (
+            props.scratchlistMode
+            && pendingSchedule == null
+            && props.onParkScratchlist
+        ) {
+            if (!canSend) return
+            const state = api.composer().getState()
+            const accepted = await props.onParkScratchlist(
+                state.text,
+                state.attachments,
+            )
+            if (!accepted) return
+            api.composer().setText('')
+            await api.composer().clearAttachments()
+            return
+        }
+        // Flush rich chips → `[title](/sessions/<id>)` into composer.text, then send.
         if (richMentionsEnabled && richInputRef.current) {
             richInputRef.current.flushSerializedText()
         }
@@ -860,7 +888,31 @@ export function HappyComposer(props: {
             userAttachmentGeneration: userAttachmentGenerationRef.current,
         }
         api.composer().send()
-    }, [api, attachments, onSuppressSendErrorRestore, richMentionsEnabled, sendError])
+        // SessionChat owns clearing the schedule — it clears only after awaiting
+        // the send hook's accepted result, which covers both pre-mutation guards
+        // and async inactive-session resume failure. Clearing here unconditionally
+        // would race ahead of that check and drop the user's schedule on every
+        // rejected send path.
+        //
+        // The inline send-error affordance is intentionally NOT cleared here:
+        // the route-level state (`onSuccess`/`onError` in router.tsx) replaces
+        // or clears it based on the actual mutation result, so the user keeps
+        // the error context while the new attempt is in flight.
+    }, [
+        api,
+        attachments,
+        canSend,
+        onSuppressSendErrorRestore,
+        pendingSchedule,
+        props.onParkScratchlist,
+        props.scratchlistMode,
+        richMentionsEnabled,
+        sendError,
+    ])
+
+    const flushAndSend = useCallback(() => {
+        void handleSend()
+    }, [handleSend])
 
     const handleKeyDown = useCallback((e: ReactKeyboardEvent<HTMLTextAreaElement | HTMLDivElement>) => {
         const key = e.key
@@ -956,7 +1008,7 @@ export function HappyComposer(props: {
         permissionMode,
         permissionModes,
         canSend,
-        api,
+        handleSend,
         haptic,
         composerEnterBehavior,
         richMentionsEnabled,
@@ -1121,20 +1173,6 @@ export function HappyComposer(props: {
     )
     const showAbortButton = true
     const voiceEnabled = Boolean(effectiveVoiceToggle)
-
-    const handleSend = useCallback(() => {
-        flushAndSend()
-        // SessionChat owns clearing the schedule — it clears only after awaiting
-        // the send hook's accepted result, which covers both pre-mutation guards
-        // and async inactive-session resume failure. Clearing here unconditionally
-        // would race ahead of that check and drop the user's schedule on every
-        // rejected send path.
-        //
-        // The inline send-error affordance is intentionally NOT cleared here:
-        // the route-level state (`onSuccess`/`onError` in router.tsx) replaces
-        // or clears it based on the actual mutation result, so the user keeps
-        // the error context while the new attempt is in flight.
-    }, [flushAndSend])
 
     // Pi: selected model info for UI labels and thinking level filtering
     const piModelLabel = agentFlavor === 'pi'
