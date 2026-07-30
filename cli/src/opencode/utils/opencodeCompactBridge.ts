@@ -10,6 +10,15 @@ export type CompactionSummaryResult =
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
 /**
+ * `RequestInit` extended with Bun's non-standard `timeout` fetch option
+ * (absent from `bun-types` / the standard fetch typings — see the
+ * `triggerOpencodeCompact` doc comment for why it's needed). Narrower than
+ * `Record<string, unknown>` so the cast below can't silently accept an
+ * unrelated typo'd option name.
+ */
+type BunFetchInit = RequestInit & { timeout?: false };
+
+/**
  * Splits an ACP-reported combined model id (e.g. `"ollama/qwen3.6:35b-a3b-q8_0-mtp"`)
  * into the separate `providerId`/`modelId` pair required by OpenCode's internal
  * `POST /session/:id/summarize` payload. Only the first `/` is treated as the
@@ -39,9 +48,18 @@ export function splitProviderModel(combined: string | null | undefined): { provi
  * streams `agent_thought_chunk` ACP notifications while the model works).
  *
  * `providerID`/`modelID` are required by the endpoint (400 if omitted).
- * The response can legitimately take 90s+ to arrive for reasoning models —
- * no client-side timeout/AbortSignal is applied here, mirroring how
+ * The response can legitimately take several minutes to arrive for slow
+ * models — no AbortSignal is applied here, mirroring how
  * `AcpSdkBackend.prompt()` uses `timeoutMs: Infinity` for `session/prompt`.
+ *
+ * Omitting an AbortSignal is NOT enough under Bun: Bun's global `fetch()`
+ * hardcodes its own idle timeout (~5 minutes) that fires independently of
+ * any signal (verified 2026-07-30 via isolated E2E against SER8 — a real
+ * ~250s compaction call was killed client-side with "The operation timed
+ * out" even with no signal attached; see upstream report
+ * oven-sh/bun#16682). The only documented workaround is the non-standard
+ * `timeout: false` fetch option Bun itself recognizes (absent from the
+ * standard `RequestInit` typings, hence the cast below).
  */
 export async function triggerOpencodeCompact(opts: {
     baseUrl: string;
@@ -54,11 +72,14 @@ export async function triggerOpencodeCompact(opts: {
     const url = `${opts.baseUrl}/session/${encodeURIComponent(opts.sessionId)}/summarize`;
 
     try {
-        const response = await fetchFn(url, {
+        const init: BunFetchInit = {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ providerID: opts.providerId, modelID: opts.modelId })
-        });
+            body: JSON.stringify({ providerID: opts.providerId, modelID: opts.modelId }),
+            // Bun-specific: disables Bun's hardcoded ~5min fetch timeout.
+            timeout: false
+        };
+        const response = await fetchFn(url, init as RequestInit);
 
         if (!response.ok) {
             const text = await response.text().catch(() => '');

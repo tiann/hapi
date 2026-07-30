@@ -44,6 +44,13 @@ describe('triggerOpencodeCompact', () => {
             // take 90s+ (verified against SER8, 2026-07-30), so callers must
             // not impose a short client-side timeout.
             expect(init?.signal).toBeUndefined();
+            // Bun's global fetch() hardcodes a 5-minute idle timeout that
+            // fires even with no AbortSignal at all (verified via isolated
+            // E2E against SER8, 2026-07-30 — a real ~250s compaction call
+            // failed with "The operation timed out"; see oven-sh/bun#16682).
+            // The only documented workaround is this Bun-specific,
+            // non-standard `timeout: false` fetch option.
+            expect((init as unknown as { timeout?: boolean })?.timeout).toBe(false);
             return new Response(null, { status: 204 });
         });
 
