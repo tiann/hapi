@@ -49,17 +49,23 @@ export function splitProviderModel(combined: string | null | undefined): { provi
  *
  * `providerID`/`modelID` are required by the endpoint (400 if omitted).
  * The response can legitimately take several minutes to arrive for slow
- * models — no AbortSignal is applied here, mirroring how
+ * models, so by default no deadline is applied here, mirroring how
  * `AcpSdkBackend.prompt()` uses `timeoutMs: Infinity` for `session/prompt`.
+ * Callers that need to interrupt an in-flight call (e.g. the launcher's
+ * Stop/switch-to-local handler, which otherwise has no way to unblock a
+ * dequeued /compact that's actively waiting on this request) can pass
+ * `signal` — this is a caller-driven abort, not a deadline, so it's
+ * orthogonal to the Bun timeout workaround below (both can be set at once).
  *
- * Omitting an AbortSignal is NOT enough under Bun: Bun's global `fetch()`
- * hardcodes its own idle timeout (~5 minutes) that fires independently of
- * any signal (verified 2026-07-30 via isolated E2E against SER8 — a real
- * ~250s compaction call was killed client-side with "The operation timed
- * out" even with no signal attached; see upstream report
- * oven-sh/bun#16682). The only documented workaround is the non-standard
- * `timeout: false` fetch option Bun itself recognizes (absent from the
- * standard `RequestInit` typings, hence the cast below).
+ * Omitting the `timeout: false` option below is NOT enough under Bun: Bun's
+ * global `fetch()` hardcodes its own idle timeout (~5 minutes) that fires
+ * independently of any AbortSignal (verified 2026-07-30 via isolated E2E
+ * against SER8 — a real ~250s compaction call was killed client-side with
+ * "The operation timed out" even with no signal attached; see upstream
+ * report oven-sh/bun#16682). The only documented workaround is the
+ * non-standard `timeout: false` fetch option Bun itself recognizes (absent
+ * from the standard `RequestInit` typings, hence the cast below) — kept
+ * unconditionally regardless of whether a caller also passes `signal`.
  */
 export async function triggerOpencodeCompact(opts: {
     baseUrl: string;
@@ -67,6 +73,7 @@ export async function triggerOpencodeCompact(opts: {
     providerId: string;
     modelId: string;
     fetchImpl?: FetchLike;
+    signal?: AbortSignal;
 }): Promise<OpencodeCompactResult> {
     const fetchFn: FetchLike = opts.fetchImpl ?? fetch;
     const url = `${opts.baseUrl}/session/${encodeURIComponent(opts.sessionId)}/summarize`;
@@ -77,7 +84,8 @@ export async function triggerOpencodeCompact(opts: {
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ providerID: opts.providerId, modelID: opts.modelId }),
             // Bun-specific: disables Bun's hardcoded ~5min fetch timeout.
-            timeout: false
+            timeout: false,
+            signal: opts.signal
         };
         const response = await fetchFn(url, init as RequestInit);
 

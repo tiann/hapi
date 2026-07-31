@@ -42,6 +42,15 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private permissionHandler: OpencodePermissionHandler | null = null;
     private happyServer: { stop: () => void } | null = null;
     private abortController = new AbortController();
+    // Set only while runCompactOperation() has a triggerOpencodeCompact()
+    // REST call in flight (null otherwise). Unlike `abortController` above
+    // (which governs the dequeue loop's wait-for-next-message signal),
+    // `handleAbort()` needs this to actually interrupt that HTTP call —
+    // without it, Stop/switch-to-local has no way to unblock a dequeued
+    // /compact whose REST call is deliberately unbounded (see
+    // triggerOpencodeCompact's doc comment) and the launcher stays wedged
+    // until it eventually settles on its own.
+    private compactAbortController: AbortController | null = null;
     private displayPermissionMode: PermissionMode | null = null;
     private instructionsSent = false;
     private currentBackendModel: string | null = null;
@@ -412,77 +421,109 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
      * pre-redesign behavior where this was a single `wasCancelled()` check
      * after one combined async trigger(). "Compaction started" itself is
      * never suppressed (it wasn't before either).
+     *
+     * Separately, `this.compactAbortController` (set for the duration of
+     * this call, see its field doc comment) covers a different case:
+     * Stop/switch-to-local firing *while the REST call is actually in
+     * flight*, which `isLocalIdCancelled` cannot — that mechanism only ever
+     * observes a cancel for this item's *queue message*, and by this point
+     * the item has already been dequeued. `isCancelled()` below checks both,
+     * so either kind of cancellation suppresses the eventual result the same
+     * way.
      */
     private async runCompactOperation(acpSessionId: string, localId?: string): Promise<void> {
         const session = this.session;
         session.sendSessionEvent({ type: 'message', message: '📦 Compaction started' });
 
-        const isCancelled = (): boolean => (localId ? (this.options.isLocalIdCancelled?.(localId) ?? false) : false);
+        const compactAbortController = new AbortController();
+        this.compactAbortController = compactAbortController;
 
-        const backend = this.backend;
-        const baseUrl = this.baseUrl;
-        if (!baseUrl || !backend) {
-            if (!isCancelled()) {
-                session.sendSessionEvent({
-                    type: 'message',
-                    message: '📦 Compaction failed: OpenCode internal HTTP API base URL is not available.'
-                });
+        try {
+            const isCancelled = (): boolean =>
+                (localId ? (this.options.isLocalIdCancelled?.(localId) ?? false) : false)
+                || compactAbortController.signal.aborted;
+
+            const backend = this.backend;
+            const baseUrl = this.baseUrl;
+            if (!baseUrl || !backend) {
+                if (!isCancelled()) {
+                    session.sendSessionEvent({
+                        type: 'message',
+                        message: '📦 Compaction failed: OpenCode internal HTTP API base URL is not available.'
+                    });
+                }
+                return;
             }
-            return;
-        }
 
-        const metadata = backend.getSessionModelsMetadata?.(acpSessionId);
-        const split = splitProviderModel(metadata?.currentModelId ?? this.currentBackendModel);
-        if (!split) {
-            if (!isCancelled()) {
-                session.sendSessionEvent({
-                    type: 'message',
-                    message: '📦 Compaction failed: OpenCode model metadata is not available; cannot determine provider/model for compaction.'
-                });
+            const metadata = backend.getSessionModelsMetadata?.(acpSessionId);
+            const split = splitProviderModel(metadata?.currentModelId ?? this.currentBackendModel);
+            if (!split) {
+                if (!isCancelled()) {
+                    session.sendSessionEvent({
+                        type: 'message',
+                        message: '📦 Compaction failed: OpenCode model metadata is not available; cannot determine provider/model for compaction.'
+                    });
+                }
+                return;
             }
-            return;
-        }
 
-        // Suppressed: OpenCode keeps streaming session/update notifications
-        // (agent_thought_chunk etc.) over the ACP transport while this raw
-        // HTTP call runs — with no prompt() turn in flight to own them, they
-        // would otherwise leak into the previous turn's still-installed
-        // onUpdate and render as a duplicate assistant message alongside the
-        // explicit summary we show below (from fetchCompactionSummary).
-        // See AcpSdkBackend.suppressUpdatesDuring's doc comment.
-        const result = await backend.suppressUpdatesDuring(() => triggerOpencodeCompact({
-            baseUrl,
-            sessionId: acpSessionId,
-            providerId: split.providerId,
-            modelId: split.modelId
-        }));
-        if (!result.ok) {
-            if (!isCancelled()) {
-                session.sendSessionEvent({ type: 'message', message: `📦 Compaction failed: ${result.error}` });
-            } else {
-                logger.debug('[opencode-remote] /compact failure suppressed: cancelled before it resolved');
+            // Suppressed: OpenCode keeps streaming session/update notifications
+            // (agent_thought_chunk etc.) over the ACP transport while this raw
+            // HTTP call runs — with no prompt() turn in flight to own them, they
+            // would otherwise leak into the previous turn's still-installed
+            // onUpdate and render as a duplicate assistant message alongside the
+            // explicit summary we show below (from fetchCompactionSummary).
+            // See AcpSdkBackend.suppressUpdatesDuring's doc comment.
+            //
+            // `signal` lets handleAbort() interrupt this specific call (see
+            // compactAbortController's field doc comment) — triggerOpencodeCompact
+            // otherwise has no deadline by design, since a real compaction can
+            // legitimately take minutes.
+            const result = await backend.suppressUpdatesDuring(() => triggerOpencodeCompact({
+                baseUrl,
+                sessionId: acpSessionId,
+                providerId: split.providerId,
+                modelId: split.modelId,
+                signal: compactAbortController.signal
+            }));
+            if (!result.ok) {
+                if (!isCancelled()) {
+                    session.sendSessionEvent({ type: 'message', message: `📦 Compaction failed: ${result.error}` });
+                } else {
+                    logger.debug('[opencode-remote] /compact failure suppressed: cancelled or aborted before it resolved');
+                }
+                return;
             }
-            return;
-        }
 
-        // Best-effort: fetch the actual summary text OpenCode generated
-        // before the final cancellation check, so a cancel landing anywhere
-        // during this whole operation (REST call or summary lookup)
-        // suppresses "Compaction completed" and the Reasoning block
-        // together — this mirrors the pre-redesign behavior, where both were
-        // produced by one combined async step checked once.
-        const summary = await fetchCompactionSummary({ baseUrl, sessionId: acpSessionId });
+            // Best-effort: fetch the actual summary text OpenCode generated
+            // before the final cancellation check, so a cancel landing anywhere
+            // during this whole operation (REST call or summary lookup)
+            // suppresses "Compaction completed" and the Reasoning block
+            // together — this mirrors the pre-redesign behavior, where both were
+            // produced by one combined async step checked once.
+            const summary = await fetchCompactionSummary({ baseUrl, sessionId: acpSessionId });
 
-        if (isCancelled()) {
-            logger.debug('[opencode-remote] /compact result suppressed: cancelled before it resolved');
-            return;
-        }
+            if (isCancelled()) {
+                logger.debug('[opencode-remote] /compact result suppressed: cancelled or aborted before it resolved');
+                return;
+            }
 
-        session.sendSessionEvent({ type: 'message', message: '📦 Compaction completed' });
-        if (summary.found) {
-            const converted = convertAgentMessage({ type: 'reasoning', text: summary.text, id: randomUUID() });
-            if (converted) {
-                session.sendAgentMessage(converted);
+            session.sendSessionEvent({ type: 'message', message: '📦 Compaction completed' });
+            if (summary.found) {
+                const converted = convertAgentMessage({ type: 'reasoning', text: summary.text, id: randomUUID() });
+                if (converted) {
+                    session.sendAgentMessage(converted);
+                }
+            }
+        } finally {
+            // Defensive: only clear if this is still the controller we set —
+            // mirrors the same "don't clobber a newer value" guard as
+            // AcpSdkBackend.suppressUpdatesDuring's restore. In practice this
+            // is always still the same instance, since compact runs
+            // serialized through the single dequeue loop (never concurrently
+            // with another runCompactOperation call).
+            if (this.compactAbortController === compactAbortController) {
+                this.compactAbortController = null;
             }
         }
     }
@@ -535,6 +576,13 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async handleAbort(): Promise<void> {
+        // Interrupt an in-flight /compact REST call first (see
+        // compactAbortController's field doc comment) — without this, Stop
+        // (and switch-to-local, which also routes through here) would stay
+        // blocked on runCompactOperation() for as long as that unbounded
+        // request takes, since cancelPrompt() below only affects ACP
+        // prompt() turns and has no effect on this raw HTTP call.
+        this.compactAbortController?.abort();
         const backend = this.backend;
         if (backend && this.session.sessionId) {
             await backend.cancelPrompt(this.session.sessionId);

@@ -119,6 +119,50 @@ describe('triggerOpencodeCompact', () => {
 
         expect(fetchImpl).toHaveBeenCalledTimes(1);
     });
+
+    it('forwards an AbortSignal to fetch when provided, so a caller can interrupt an in-flight request', async () => {
+        const controller = new AbortController();
+        const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+            expect(init?.signal).toBe(controller.signal);
+            return new Response(null, { status: 204 });
+        });
+
+        const result = await triggerOpencodeCompact({
+            baseUrl: 'http://127.0.0.1:48273',
+            sessionId: 'ses_abc',
+            providerId: 'ollama',
+            modelId: 'qwen3.6:35b-a3b-q8_0-mtp',
+            fetchImpl,
+            signal: controller.signal
+        });
+
+        expect(result).toEqual({ ok: true });
+    });
+
+    it('resolves with a structured failure (not a hang or uncaught rejection) when the signal aborts mid-request', async () => {
+        const controller = new AbortController();
+        // Mirrors how a real fetch() rejects on abort: the promise only
+        // settles once the signal actually fires, not before.
+        const fetchImpl = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => {
+                reject(new DOMException('The operation was aborted.', 'AbortError'));
+            });
+        }));
+
+        const resultPromise = triggerOpencodeCompact({
+            baseUrl: 'http://127.0.0.1:48273',
+            sessionId: 'ses_abc',
+            providerId: 'ollama',
+            modelId: 'qwen3.6:35b-a3b-q8_0-mtp',
+            fetchImpl,
+            signal: controller.signal
+        });
+
+        controller.abort();
+        const result = await resultPromise;
+
+        expect(result.ok).toBe(false);
+    });
 });
 
 describe('fetchCompactionSummary', () => {

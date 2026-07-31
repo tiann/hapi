@@ -103,10 +103,15 @@ vi.mock('@/ui/ink/OpencodeDisplay', () => ({
 }));
 
 const compactHarness = vi.hoisted(() => ({
-    calls: [] as Array<{ baseUrl: string; sessionId: string; providerId: string; modelId: string }>,
+    calls: [] as Array<{ baseUrl: string; sessionId: string; providerId: string; modelId: string; signal?: AbortSignal }>,
     result: { ok: true } as { ok: true } | { ok: false; error: string },
     summaryCalls: [] as Array<{ baseUrl: string; sessionId: string }>,
-    summaryResult: { found: false } as { found: true; text: string } | { found: false }
+    summaryResult: { found: false } as { found: true; text: string } | { found: false },
+    // Lets a test simulate a REST call that only settles once its signal is
+    // aborted (mirroring how a real fetch() behaves under AbortSignal) —
+    // needed to test that handleAbort() actually unblocks an in-flight
+    // /compact instead of the default immediate-resolve behavior below.
+    triggerImpl: null as null | ((opts: { baseUrl: string; sessionId: string; providerId: string; modelId: string; signal?: AbortSignal }) => Promise<{ ok: true } | { ok: false; error: string }>)
 }));
 
 vi.mock('./utils/opencodeCompactBridge', () => ({
@@ -116,8 +121,11 @@ vi.mock('./utils/opencodeCompactBridge', () => ({
         if (idx <= 0 || idx === combined.length - 1) return null;
         return { providerId: combined.slice(0, idx), modelId: combined.slice(idx + 1) };
     },
-    triggerOpencodeCompact: vi.fn(async (opts: { baseUrl: string; sessionId: string; providerId: string; modelId: string }) => {
+    triggerOpencodeCompact: vi.fn(async (opts: { baseUrl: string; sessionId: string; providerId: string; modelId: string; signal?: AbortSignal }) => {
         compactHarness.calls.push(opts);
+        if (compactHarness.triggerImpl) {
+            return compactHarness.triggerImpl(opts);
+        }
         return compactHarness.result;
     }),
     fetchCompactionSummary: vi.fn(async (opts: { baseUrl: string; sessionId: string }) => {
@@ -259,6 +267,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         compactHarness.result = { ok: true };
         compactHarness.summaryCalls = [];
         compactHarness.summaryResult = { found: false };
+        compactHarness.triggerImpl = null;
         harness.promptImpl = null;
         harness.sessionModelsMetadata = undefined;
     });
@@ -490,7 +499,8 @@ describe('opencodeRemoteLauncher inline model switch', () => {
                 baseUrl: 'http://127.0.0.1:48273',
                 sessionId: 'acp-session-1',
                 providerId: 'ollama',
-                modelId: 'qwen3.6:35b-a3b-q8_0-mtp'
+                modelId: 'qwen3.6:35b-a3b-q8_0-mtp',
+                signal: expect.any(AbortSignal)
             }
         ]);
         const messages = sessionEvents.filter((event) => event.type === 'message').map((event) => event.message);
@@ -502,6 +512,68 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         // a duplicate assistant message (see AcpSdkBackend.suppressUpdatesDuring).
         const backendInstance = factory.mock.results[0]?.value as { suppressUpdatesDuring: ReturnType<typeof vi.fn> };
         expect(backendInstance.suppressUpdatesDuring).toHaveBeenCalledTimes(1);
+    });
+
+    it('switch-to-local (which reuses handleAbort()) interrupts an in-flight /compact REST call instead of blocking on it until it settles on its own', async () => {
+        // Reproduces the exact bug a PR reviewer bot reported: triggerOpencodeCompact
+        // is awaited with no way to interrupt it, so Stop/switch-to-local had
+        // to wait out the REST call (which is deliberately unbounded — see
+        // its doc comment) before the launcher could do anything else. Here
+        // the mock REST call only ever settles if its AbortSignal fires,
+        // exactly like a real fetch() under AbortSignal — so if handleAbort()
+        // (invoked here via the 'switch' RPC, which routes through it before
+        // exiting remote mode) doesn't actually abort it, this test times out.
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        let capturedSignal: AbortSignal | undefined;
+        // Mirrors the real triggerOpencodeCompact's contract (never rejects
+        // — an aborted fetch() is caught internally and turned into a
+        // structured `{ ok: false }`), just driven by a signal instead of a
+        // real network call.
+        compactHarness.triggerImpl = (opts) => new Promise((resolve) => {
+            capturedSignal = opts.signal;
+            opts.signal?.addEventListener('abort', () => {
+                resolve({ ok: false, error: 'The operation was aborted.' });
+            });
+        });
+
+        const { session, sessionEvents, rpcHandlers } = createSessionStub([
+            { message: '', mode: createCompactMode('ollama/x') }
+        ]);
+
+        const launcherPromise = opencodeRemoteLauncher(session as never, {
+            onCompactAvailabilityChange: () => {}
+        });
+
+        // Wait until the compact REST call is actually in flight.
+        while (compactHarness.calls.length === 0) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        expect(capturedSignal?.aborted).toBe(false);
+
+        const switchHandler = rpcHandlers.get('switch') as (() => Promise<void>) | undefined;
+        expect(switchHandler).toBeDefined();
+
+        // Racing against a short timeout is the actual assertion: without
+        // the fix, this promise (and therefore the whole launcher) never
+        // settles, since the mock REST call above only resolves on abort.
+        await Promise.race([
+            switchHandler!(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('switch handler (handleAbort) did not return in time')), 2000))
+        ]);
+        expect(capturedSignal?.aborted).toBe(true);
+
+        // The interrupted operation must not surface a stale result.
+        const messages = sessionEvents.filter((event) => event.type === 'message').map((event) => event.message);
+        expect(messages).toEqual(['📦 Compaction started']);
+
+        // The launcher must actually be able to leave remote mode — 'switch'
+        // sets shouldExit before calling handleAbort(), so once that
+        // interruption unblocks runCompactOperation(), the main loop should
+        // exit on its own without any further input.
+        await Promise.race([
+            launcherPromise,
+            new Promise((_, reject) => setTimeout(() => reject(new Error('launcher did not exit remote mode in time')), 2000))
+        ]);
     });
 
     it('sends the fetched compaction summary as a reasoning-type agent message', async () => {
@@ -629,7 +701,8 @@ describe('opencodeRemoteLauncher inline model switch', () => {
                 baseUrl: 'http://127.0.0.1:48273',
                 sessionId: 'acp-session-1',
                 providerId: 'ollama',
-                modelId: 'switched'
+                modelId: 'switched',
+                signal: expect.any(AbortSignal)
             }
         ]);
     });
