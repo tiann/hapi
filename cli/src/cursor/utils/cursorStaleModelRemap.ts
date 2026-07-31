@@ -74,3 +74,13 @@ export function tryRemapCursorSpawnModelFromError(
 
     return null;
 }
+
+/** Retry stderr remap on the original legacy wire when cache pre-resolution picked a stale SKU. */
+export function tryRemapCursorSpawnModelFromConnectError(
+    resolvedSpawnModel: string | null | undefined,
+    requestedSpawnModel: string | null | undefined,
+    ...sources: Array<string | null | undefined>
+): string | null {
+    return tryRemapCursorSpawnModelFromError(resolvedSpawnModel, ...sources)
+        ?? tryRemapCursorSpawnModelFromError(requestedSpawnModel, ...sources);
+}

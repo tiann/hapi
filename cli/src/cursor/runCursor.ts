@@ -98,9 +98,10 @@ export async function runCursor(opts: {
     };
 
     session.onUserMessage((message, localId) => {
+        const queuedModel = sessionWrapperRef.current?.getModel() ?? currentModel;
         const enhancedMode: EnhancedMode = {
             permissionMode: currentPermissionMode ?? 'default',
-            model: currentModel
+            model: queuedModel
         };
         const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
         enqueueCursorUserMessage(messageQueue, formattedText, enhancedMode, localId);

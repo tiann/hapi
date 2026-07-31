@@ -5,6 +5,7 @@ import {
 } from '@/modules/common/cursorModelsSharedCache';
 import {
     resolveCursorSpawnModel,
+    tryRemapCursorSpawnModelFromConnectError,
     tryRemapCursorSpawnModelFromError
 } from './cursorStaleModelRemap';
 
@@ -41,5 +42,26 @@ describe('cursorStaleModelRemap', () => {
             'Cannot use this model: grok-4.5[fast=false]. Available models: cursor-grok-4.5-medium Tip: agent --list-models'
         );
         expect(remapped).toBe('cursor-grok-4.5-medium');
+    });
+
+    it('falls back to the legacy wire when a cached SKU is rejected', () => {
+        writeSharedCursorModelsCache({
+            success: true,
+            availableModels: [{ modelId: 'cursor-grok-4.5-medium' }],
+            currentModelId: 'cursor-grok-4.5-medium',
+            cliModelSkus: [{ modelId: 'cursor-grok-4.5-medium' }],
+        });
+
+        const spawnModel = resolveCursorSpawnModel('grok-4.5[fast=false]');
+        expect(spawnModel).toBe('cursor-grok-4.5-medium');
+
+        const stderr = 'Cannot use this model: cursor-grok-4.5-medium. Available models: cursor-grok-4.5-high';
+        expect(
+            tryRemapCursorSpawnModelFromConnectError(
+                spawnModel,
+                'grok-4.5[fast=false]',
+                stderr
+            )
+        ).toBe('cursor-grok-4.5-high');
     });
 });

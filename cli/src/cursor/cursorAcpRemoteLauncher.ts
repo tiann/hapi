@@ -35,7 +35,7 @@ import type { AcpSdkBackend } from '@/agent/backends/acp';
 import { registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
 import {
     resolveCursorSpawnModel,
-    tryRemapCursorSpawnModelFromError
+    tryRemapCursorSpawnModelFromConnectError
 } from './utils/cursorStaleModelRemap';
 class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CursorSession;
@@ -83,7 +83,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         const autoReview = isCursorAutoReviewMode(session.getPermissionMode() as PermissionMode);
         this.spawnedWithAutoReview = autoReview;
 
-        let spawnModel = resolveCursorSpawnModel(session.model);
+        const requestedSpawnModel = session.model;
+        let spawnModel = resolveCursorSpawnModel(requestedSpawnModel);
         let backend: AcpSdkBackend | null = null;
         let recentStderrHint: string | null = null;
 
@@ -122,9 +123,11 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 await backend.initialize();
                 break;
             } catch (error) {
-                const remapped = tryRemapCursorSpawnModelFromError(
+                const errMsg = error instanceof Error ? error.message : String(error);
+                const remapped = tryRemapCursorSpawnModelFromConnectError(
                     spawnModel,
-                    error instanceof Error ? error.message : String(error),
+                    requestedSpawnModel,
+                    errMsg,
                     recentStderrHint
                 );
                 await backend.disconnect();
@@ -136,7 +139,6 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     continue;
                 }
 
-                const errMsg = error instanceof Error ? error.message : String(error);
                 const modelRejection = extractCannotUseThisModelMessage(errMsg)
                     ?? extractCannotUseThisModelMessage(recentStderrHint);
                 if (modelRejection) {
@@ -197,9 +199,11 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     });
                     break;
                 } catch (error) {
-                    const remapped = tryRemapCursorSpawnModelFromError(
+                    const errMsg = error instanceof Error ? error.message : String(error);
+                    const remapped = tryRemapCursorSpawnModelFromConnectError(
                         spawnModel,
-                        error instanceof Error ? error.message : String(error),
+                        requestedSpawnModel,
+                        errMsg,
                         recentStderrHint
                     );
                     if (remapped && loadAttempt === 0) {
