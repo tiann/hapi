@@ -877,6 +877,12 @@ export function HappyComposer(props: {
         : handleUserClearSchedule
 
     const handleSend = useCallback(async () => {
+        // Rich chips must be serialized into composer.text before any send or
+        // scratchlist park snapshot (RichComposerInput contract).
+        if (richMentionsEnabled && richInputRef.current) {
+            richInputRef.current.flushSerializedText()
+        }
+
         // Scratchlist parks must not go through assistant-ui's send(): it
         // empties text/chips before onNew, so a rejected add cannot restore
         // retryable composer state (#1226 Major).
@@ -907,10 +913,6 @@ export function HappyComposer(props: {
                 setIsParkingScratchlist(false)
             }
             return
-        }
-        // Flush rich chips → `[title](/sessions/<id>)` into composer.text, then send.
-        if (richMentionsEnabled && richInputRef.current) {
-            richInputRef.current.flushSerializedText()
         }
         // A retry intentionally clears composer state synchronously. It is
         // neither a replacement draft nor a dismissal: route onSuccess/onError
