@@ -3,8 +3,19 @@ import {
     cursorCliSkuBaseId,
     findBestCliSkuForAcpWire,
     isCursorAcpWireModelId,
-    matchCliSkuToAcpWireId
+    matchCliSkuToAcpWireId,
+    parseCursorAvailableModelsFromRejection,
+    remapStaleCursorModelId
 } from './cursorCliSku';
+
+const cursorGrokCatalog = [
+    { modelId: 'cursor-grok-4.5-low' },
+    { modelId: 'cursor-grok-4.5-medium' },
+    { modelId: 'cursor-grok-4.5-high' },
+    { modelId: 'cursor-grok-4.5-low-fast' },
+    { modelId: 'cursor-grok-4.5-medium-fast' },
+    { modelId: 'cursor-grok-4.5-high-fast' },
+];
 
 describe('cursorCliSkuBaseId', () => {
     it('strips effort/speed suffixes from CLI skus', () => {
@@ -42,6 +53,46 @@ describe('matchCliSkuToAcpWireId', () => {
         expect(matchCliSkuToAcpWireId('composer-2.5', [{ modelId: 'composer-2.5[fast=true]' }])).toBe(
             'composer-2.5[fast=true]'
         );
+    });
+
+    it('remaps stale grok ACP wires onto live cursor-grok CLI skus', () => {
+        expect(matchCliSkuToAcpWireId('grok-4.5[fast=false]', cursorGrokCatalog)).toBe(
+            'cursor-grok-4.5-medium'
+        );
+        expect(matchCliSkuToAcpWireId('grok-4.5[fast=true]', cursorGrokCatalog)).toBe(
+            'cursor-grok-4.5-medium-fast'
+        );
+    });
+});
+
+describe('remapStaleCursorModelId', () => {
+    it('returns exact catalog matches unchanged', () => {
+        expect(remapStaleCursorModelId('cursor-grok-4.5-medium', cursorGrokCatalog)).toBe(
+            'cursor-grok-4.5-medium'
+        );
+    });
+
+    it('maps legacy grok wires using fast hints', () => {
+        expect(remapStaleCursorModelId('grok-4.5[fast=false]', cursorGrokCatalog)).toBe(
+            'cursor-grok-4.5-medium'
+        );
+        expect(remapStaleCursorModelId('grok-4.5[fast=true]', cursorGrokCatalog)).toBe(
+            'cursor-grok-4.5-medium-fast'
+        );
+    });
+
+    it('returns null when no catalog candidate matches', () => {
+        expect(remapStaleCursorModelId('grok-4.5[fast=false]', [{ modelId: 'composer-2.5' }])).toBeNull();
+    });
+});
+
+describe('parseCursorAvailableModelsFromRejection', () => {
+    it('parses comma-separated ids from stderr', () => {
+        expect(
+            parseCursorAvailableModelsFromRejection(
+                'Cannot use this model: grok-4.5[fast=true]. Available models: auto, cursor-grok-4.5-high-fast, composer-2.5'
+            )
+        ).toEqual(['cursor-grok-4.5-high-fast', 'composer-2.5']);
     });
 });
 

@@ -4,6 +4,7 @@ import type { EnhancedMode } from './loop';
 
 const harness = vi.hoisted(() => ({
     initializeError: null as Error | null,
+    initializeAttempts: 0,
     loadSessionError: null as Error | null,
     supportsLoadSession: true,
     loadSessionCalled: false,
@@ -35,7 +36,10 @@ vi.mock('./utils/cursorAcpBackend', () => ({
         harness.backendArgs = { command: 'agent', args };
         return {
             initialize: vi.fn(async () => {
-                if (harness.initializeError) throw harness.initializeError;
+                harness.initializeAttempts += 1;
+                if (harness.initializeError && harness.initializeAttempts === 1) {
+                    throw harness.initializeError;
+                }
             }),
             authenticateIfAvailable: vi.fn(async () => {}),
             supportsLoadSession: vi.fn(() => harness.supportsLoadSession),
@@ -181,6 +185,7 @@ function makeClient() {
 describe('cursorAcpRemoteLauncher', () => {
     beforeEach(() => {
         harness.initializeError = null;
+        harness.initializeAttempts = 0;
         harness.loadSessionError = null;
         harness.supportsLoadSession = true;
         harness.loadSessionCalled = false;
@@ -278,6 +283,51 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(harness.loadSessionCalled).toBe(true);
         expect(harness.newSessionCalled).toBe(false);
         expect(legacyLauncher).not.toHaveBeenCalled();
+    });
+
+    it('remaps stale spawn model and retries initialize once on model rejection', async () => {
+        harness.initializeError = new Error(
+            'ACP process exited (code=1, signal=null). stderr: Cannot use this model: grok-4.5[fast=false]. Available models: auto, cursor-grok-4.5-medium, cursor-grok-4.5-medium-fast'
+        );
+
+        const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
+        const keepAlive = vi.fn();
+        const client = {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            keepAlive,
+            emitSessionReady: vi.fn()
+        } as unknown as ApiSessionClient;
+
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default',
+            model: 'grok-4.5[fast=false]'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('hold-open', { permissionMode: 'default' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.initializeAttempts).toBe(2));
+        await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+
+        expect(harness.backendArgs?.args).toContain('cursor-grok-4.5-medium');
+        expect(keepAlive).toHaveBeenCalled();
+
+        queue.close();
+        await runPromise;
     });
 
     it('surfaces Cursor model rejection from session/load instead of claiming legacy protocol', async () => {

@@ -1,5 +1,5 @@
 import type { CursorPermissionMode } from '@hapi/protocol/types';
-import { cursorCliSkuBaseId, cursorModelBaseId, matchCliSkuToAcpWireId } from '@hapi/protocol';
+import { cursorCliSkuBaseId, cursorModelBaseId, matchCliSkuToAcpWireId, resolveCursorLegacyModelBase } from '@hapi/protocol';
 import type { AcpSdkBackend } from '@/agent/backends/acp';
 import { logger } from '@/ui/logger';
 
@@ -98,6 +98,10 @@ type ParameterizedCursorModelResult = ApplyCursorAcpModelResult | 'unsupported' 
 export function wireIdForCursorSessionState(requested: string, resolved: string): string {
     const trimmed = requested.trim();
     if (trimmed.includes('[')) {
+        const legacyBase = resolveCursorLegacyModelBase(cursorModelBaseId(trimmed));
+        if (legacyBase !== cursorModelBaseId(trimmed)) {
+            return resolved;
+        }
         return trimmed;
     }
     return resolved;

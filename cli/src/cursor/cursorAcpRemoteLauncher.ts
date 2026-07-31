@@ -33,6 +33,10 @@ import { buildCursorModelsSeedPayload, seedCursorModelsCache } from '@/modules/c
 import { readSharedCursorModelsCache } from '@/modules/common/cursorModelsSharedCache';
 import type { AcpSdkBackend } from '@/agent/backends/acp';
 import { registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
+import {
+    resolveCursorSpawnModel,
+    tryRemapCursorSpawnModelFromError
+} from './utils/cursorStaleModelRemap';
 class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CursorSession;
     private backend: ReturnType<typeof createCursorAcpBackend> | null = null;
@@ -78,41 +82,76 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
         const autoReview = isCursorAutoReviewMode(session.getPermissionMode() as PermissionMode);
         this.spawnedWithAutoReview = autoReview;
-        const backend = createCursorAcpBackend({
-            cwd: session.path,
-            model: session.model,
-            autoReview,
-            worktree: session.cursorWorktree,
-            addDirs: session.cursorAddDirs
-        });
-        this.backend = backend;
-        registerAcpSessionTitleSync(backend, session.client);
-        this.recordCursorNativeWorktreeMetadata();
 
-        backend.setUsageUpdateListener((message) => this.handleAgentMessage(message));
-
+        let spawnModel = resolveCursorSpawnModel(session.model);
+        let backend: AcpSdkBackend | null = null;
         let recentStderrHint: string | null = null;
-        backend.onStderrError((error) => {
-            logger.debug('[cursor-acp] stderr error', error);
-            recentStderrHint = error.raw || error.message;
-            const converted = convertAgentMessage({ type: 'error', message: error.message });
-            if (converted) {
-                session.sendAgentMessage(converted);
-            }
-            messageBuffer.addMessage(error.message, 'status');
-        });
 
-        try {
-            await backend.initialize();
-        } catch (error) {
-            const errMsg = error instanceof Error ? error.message : String(error);
-            const modelRejection = extractCannotUseThisModelMessage(errMsg)
-                ?? extractCannotUseThisModelMessage(recentStderrHint);
-            if (modelRejection) {
-                const fullMsg = classifyCursorAcpLoadError(error, {
-                    recentStderr: recentStderrHint,
-                    action: 'start'
-                });
+        for (let connectAttempt = 0; connectAttempt < 2; connectAttempt += 1) {
+            if (spawnModel && spawnModel !== session.model) {
+                session.setModel(spawnModel);
+                session.pushKeepAlive();
+                this.messageBuffer.addMessage(`[MODEL:${spawnModel}]`, 'system');
+            }
+
+            backend = createCursorAcpBackend({
+                cwd: session.path,
+                model: spawnModel,
+                autoReview,
+                worktree: session.cursorWorktree,
+                addDirs: session.cursorAddDirs
+            });
+            this.backend = backend;
+            registerAcpSessionTitleSync(backend, session.client);
+            this.recordCursorNativeWorktreeMetadata();
+
+            backend.setUsageUpdateListener((message) => this.handleAgentMessage(message));
+
+            recentStderrHint = null;
+            backend.onStderrError((error) => {
+                logger.debug('[cursor-acp] stderr error', error);
+                recentStderrHint = error.raw || error.message;
+                const converted = convertAgentMessage({ type: 'error', message: error.message });
+                if (converted) {
+                    session.sendAgentMessage(converted);
+                }
+                messageBuffer.addMessage(error.message, 'status');
+            });
+
+            try {
+                await backend.initialize();
+                break;
+            } catch (error) {
+                const remapped = tryRemapCursorSpawnModelFromError(
+                    spawnModel,
+                    error instanceof Error ? error.message : String(error),
+                    recentStderrHint
+                );
+                await backend.disconnect();
+                this.backend = null;
+
+                if (remapped && connectAttempt === 0) {
+                    logger.info(`[cursor-acp] Remapping stale spawn model ${spawnModel} → ${remapped}`);
+                    spawnModel = remapped;
+                    continue;
+                }
+
+                const errMsg = error instanceof Error ? error.message : String(error);
+                const modelRejection = extractCannotUseThisModelMessage(errMsg)
+                    ?? extractCannotUseThisModelMessage(recentStderrHint);
+                if (modelRejection) {
+                    const fullMsg = classifyCursorAcpLoadError(error, {
+                        recentStderr: recentStderrHint,
+                        action: 'start'
+                    });
+                    const converted = convertAgentMessage({ type: 'error', message: fullMsg });
+                    if (converted) {
+                        session.sendAgentMessage(converted);
+                    }
+                    messageBuffer.addMessage(fullMsg, 'status');
+                    throw new Error(fullMsg);
+                }
+                const fullMsg = `${CURSOR_ACP_REQUIRED_MESSAGE} (${errMsg})`;
                 const converted = convertAgentMessage({ type: 'error', message: fullMsg });
                 if (converted) {
                     session.sendAgentMessage(converted);
@@ -120,13 +159,10 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 messageBuffer.addMessage(fullMsg, 'status');
                 throw new Error(fullMsg);
             }
-            const fullMsg = `${CURSOR_ACP_REQUIRED_MESSAGE} (${errMsg})`;
-            const converted = convertAgentMessage({ type: 'error', message: fullMsg });
-            if (converted) {
-                session.sendAgentMessage(converted);
-            }
-            messageBuffer.addMessage(fullMsg, 'status');
-            throw new Error(fullMsg);
+        }
+
+        if (!backend) {
+            throw new Error(CURSOR_ACP_REQUIRED_MESSAGE);
         }
 
         await backend.authenticateIfAvailable('cursor_login');
@@ -148,30 +184,85 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
         const resumeSessionId = session.sessionId;
         const mcpServerList = toAcpMcpServers(mcpServers);
-        let acpSessionId: string;
+        let acpSessionId: string | undefined;
 
-        if (resumeSessionId && backend.supportsLoadSession()) {
-            // Register pending cursorSessionId before awaiting session/load (Zed PR #54431).
-            session.onSessionFoundWithProtocol(resumeSessionId, 'acp');
-            try {
-                acpSessionId = await backend.loadSession({
-                    sessionId: resumeSessionId,
+        for (let loadAttempt = 0; loadAttempt < 2; loadAttempt += 1) {
+            if (resumeSessionId && backend.supportsLoadSession()) {
+                session.onSessionFoundWithProtocol(resumeSessionId, 'acp');
+                try {
+                    acpSessionId = await backend.loadSession({
+                        sessionId: resumeSessionId,
+                        cwd: session.path,
+                        mcpServers: mcpServerList
+                    });
+                    break;
+                } catch (error) {
+                    const remapped = tryRemapCursorSpawnModelFromError(
+                        spawnModel,
+                        error instanceof Error ? error.message : String(error),
+                        recentStderrHint
+                    );
+                    if (remapped && loadAttempt === 0) {
+                        logger.info(`[cursor-acp] Remapping stale resume model ${spawnModel} → ${remapped}`);
+                        spawnModel = remapped;
+                        session.setModel(remapped);
+                        session.pushKeepAlive();
+                        this.messageBuffer.addMessage(`[MODEL:${remapped}]`, 'system');
+                        await backend.disconnect();
+                        backend = createCursorAcpBackend({
+                            cwd: session.path,
+                            model: spawnModel,
+                            autoReview,
+                            worktree: session.cursorWorktree,
+                            addDirs: session.cursorAddDirs
+                        });
+                        this.backend = backend;
+                        registerAcpSessionTitleSync(backend, session.client);
+                        backend.setUsageUpdateListener((message) => this.handleAgentMessage(message));
+                        recentStderrHint = null;
+                        backend.onStderrError((error) => {
+                            logger.debug('[cursor-acp] stderr error', error);
+                            recentStderrHint = error.raw || error.message;
+                            const converted = convertAgentMessage({ type: 'error', message: error.message });
+                            if (converted) {
+                                session.sendAgentMessage(converted);
+                            }
+                            messageBuffer.addMessage(error.message, 'status');
+                        });
+                        await backend.initialize();
+                        await backend.authenticateIfAvailable('cursor_login');
+                        this.extensionAdapter = new CursorExtensionAdapter(
+                            session.client,
+                            backend,
+                            (message) => this.handleAgentMessage(message),
+                            () => this.handleCreatePlanAccepted()
+                        );
+                        this.permissionAdapter = new PermissionAdapter(
+                            session.client,
+                            backend,
+                            () => session.getPermissionMode(),
+                            (response) => this.extensionAdapter!.handlePermissionResponse(response)
+                        );
+                        continue;
+                    }
+
+                    logger.warn('[cursor-acp] session/load failed', formatAcpLoadError(error));
+                    throw new Error(classifyCursorAcpLoadError(error, { recentStderr: recentStderrHint }));
+                }
+            } else if (resumeSessionId) {
+                throw new Error(
+                    'Cursor ACP session/load is not supported by this agent build. Start a new Cursor session.'
+                );
+            } else {
+                acpSessionId = await backend.newSession({
                     cwd: session.path,
                     mcpServers: mcpServerList
                 });
-            } catch (error) {
-                logger.warn('[cursor-acp] session/load failed', formatAcpLoadError(error));
-                throw new Error(classifyCursorAcpLoadError(error, { recentStderr: recentStderrHint }));
+                break;
             }
-        } else if (resumeSessionId) {
-            throw new Error(
-                'Cursor ACP session/load is not supported by this agent build. Start a new Cursor session.'
-            );
-        } else {
-            acpSessionId = await backend.newSession({
-                cwd: session.path,
-                mcpServers: mcpServerList
-            });
+        }
+        if (!acpSessionId) {
+            throw new Error('Failed to establish Cursor ACP session');
         }
         this.acpSessionId = acpSessionId;
 

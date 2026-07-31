@@ -129,6 +129,15 @@ describe('wireIdForCursorSessionState', () => {
         ).toBe('composer-2.5[fast=false]');
     });
 
+    it('stores remapped catalog ids when a legacy wire base was upgraded', () => {
+        expect(
+            wireIdForCursorSessionState(
+                'grok-4.5[fast=false]',
+                'cursor-grok-4.5-medium'
+            )
+        ).toBe('cursor-grok-4.5-medium');
+    });
+
     it('uses resolved wire id for base-only requests', () => {
         expect(
             wireIdForCursorSessionState('composer-2.5', 'composer-2.5[fast=true]')

@@ -1,0 +1,37 @@
+import { afterEach, describe, expect, it } from 'vitest';
+import {
+    _resetSharedCursorModelsCacheForTests,
+    writeSharedCursorModelsCache
+} from '@/modules/common/cursorModelsSharedCache';
+import {
+    resolveCursorSpawnModel,
+    tryRemapCursorSpawnModelFromError
+} from './cursorStaleModelRemap';
+
+describe('cursorStaleModelRemap', () => {
+    afterEach(() => {
+        _resetSharedCursorModelsCacheForTests();
+    });
+
+    it('pre-spawns with a remapped model when shared cache has cursor-grok skus', () => {
+        writeSharedCursorModelsCache({
+            success: true,
+            availableModels: [{ modelId: 'cursor-grok-4.5-medium' }],
+            currentModelId: 'cursor-grok-4.5-medium',
+            cliModelSkus: [
+                { modelId: 'cursor-grok-4.5-medium' },
+                { modelId: 'cursor-grok-4.5-medium-fast' },
+            ]
+        });
+
+        expect(resolveCursorSpawnModel('grok-4.5[fast=false]')).toBe('cursor-grok-4.5-medium');
+    });
+
+    it('remaps once from stderr Available models on model_not_found', () => {
+        const remapped = tryRemapCursorSpawnModelFromError(
+            'grok-4.5[fast=true]',
+            'ACP process exited (code=1, signal=null). stderr: Cannot use this model: grok-4.5[fast=true]. Available models: auto, cursor-grok-4.5-high-fast'
+        );
+        expect(remapped).toBe('cursor-grok-4.5-high-fast');
+    });
+});
