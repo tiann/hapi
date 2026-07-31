@@ -637,6 +637,9 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         syncFromValue(value)
     }, [value, syncFromValue])
 
+    const onFocusRef = useRef(onFocus)
+    onFocusRef.current = onFocus
+
     useEffect(() => {
         if (!autoFocus || disabled) return
         const root = rootRef.current
@@ -646,6 +649,18 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         } catch {
             root.focus()
         }
+        // Programmatic focus is not guaranteed to fire a DOM focus event in
+        // every engine (notably Playwright headless). Notify the parent so
+        // FUE / other first-focus hooks still run.
+        onFocusRef.current?.(
+            {
+                type: 'focus',
+                target: root,
+                currentTarget: root,
+                preventDefault() {},
+                stopPropagation() {},
+            } as ReactFocusEvent<HTMLDivElement>
+        )
     }, [autoFocus, disabled])
 
     useImperativeHandle(ref, () => ({
