@@ -94,6 +94,15 @@ describe('remapStaleCursorModelId', () => {
             ])
         ).toBe('cursor-grok-4.5-medium');
     });
+
+    it('prefers any fast SKU over slow medium when medium-fast is absent', () => {
+        expect(
+            remapStaleCursorModelId('grok-4.5[fast=true]', [
+                { modelId: 'cursor-grok-4.5-medium' },
+                { modelId: 'cursor-grok-4.5-high-fast' },
+            ])
+        ).toBe('cursor-grok-4.5-high-fast');
+    });
 });
 
 describe('parseCursorAvailableModelsFromRejection', () => {

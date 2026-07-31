@@ -207,9 +207,15 @@ function pickBestCatalogSku(
     }
 
     const pseudoWire = pseudoWireFromSku(requestedSku);
-    let best = candidates[0].modelId;
+    const requestedFast = inferSkuParamHints(requestedSku).fast;
+    const sameSpeed = candidates.filter(
+        (entry) => inferSkuParamHints(entry.modelId).fast === requestedFast
+    );
+    const rankedCandidates = sameSpeed.length > 0 ? sameSpeed : candidates;
+
+    let best = rankedCandidates[0].modelId;
     let bestScore = Number.NEGATIVE_INFINITY;
-    for (const entry of candidates) {
+    for (const entry of rankedCandidates) {
         const score = scoreWireAgainstSku(entry.modelId, pseudoWire);
         if (score > bestScore) {
             bestScore = score;
