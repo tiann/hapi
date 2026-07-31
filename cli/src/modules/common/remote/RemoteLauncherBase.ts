@@ -1,7 +1,7 @@
 import { render } from 'ink';
 import type { ReactElement } from 'react';
 import { MessageBuffer } from '@/ui/ink/messageBuffer';
-import { restoreTerminalState } from '@/ui/terminalState';
+import { resetTerminalInputModes, restoreTerminalState } from '@/ui/terminalState';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 
 export type RemoteLauncherExitReason = 'switch' | 'exit';
@@ -52,6 +52,7 @@ export abstract class RemoteLauncherBase {
 
     protected setupTerminal(handlers: RemoteLauncherTerminalHandlers): void {
         if (this.hasTTY) {
+            resetTerminalInputModes();
             console.clear();
             this.inkInstance = render(this.createDisplay({
                 messageBuffer: this.messageBuffer,

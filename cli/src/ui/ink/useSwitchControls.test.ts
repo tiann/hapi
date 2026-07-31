@@ -191,7 +191,7 @@ describe('useSwitchControls', () => {
         await triggerInput(' ', {});
         expect(latestState?.confirmationMode).toBe('switch');
 
-        await triggerInput('\u001b[1:3u', {});
+        await triggerInput('[1;1:3u', {});
         expect(latestState?.confirmationMode).toBe('switch');
         expect(latestState?.actionInProgress).toBe(null);
     });
@@ -200,16 +200,16 @@ describe('useSwitchControls', () => {
         const onSwitch = vi.fn();
         await mount({ onSwitch });
 
-        await triggerInput('\u001b[32u', {});
+        await triggerInput('[32u', {});
         expect(latestState?.confirmationMode).toBe('switch');
     });
 
-    it('accepts CSI u space sequences with modifiers', async () => {
+    it('does not treat modified CSI u space sequences as a switch request', async () => {
         const onSwitch = vi.fn();
         await mount({ onSwitch });
 
-        await triggerInput('\u001b[32;2u', {});
-        expect(latestState?.confirmationMode).toBe('switch');
+        await triggerInput('[32;2u', {});
+        expect(latestState?.confirmationMode).toBe(null);
     });
 
     it('ignores CSI u key-release space sequences', async () => {
@@ -219,7 +219,7 @@ describe('useSwitchControls', () => {
         await triggerInput(' ', {});
         expect(latestState?.confirmationMode).toBe('switch');
 
-        await triggerInput('\u001b[32;2:3u', {});
+        await triggerInput('[32;2:3u', {});
         expect(latestState?.confirmationMode).toBe('switch');
         expect(onSwitch).not.toHaveBeenCalled();
     });
@@ -239,7 +239,7 @@ describe('useSwitchControls', () => {
         await triggerInput(' ', {});
         expect(latestState?.confirmationMode).toBe('switch');
 
-        await triggerInput('', { sequence: '\u001b[1:3u' });
+        await triggerInput('', { sequence: '[1;1:3u' });
         expect(latestState?.confirmationMode).toBe('switch');
     });
 
@@ -247,9 +247,34 @@ describe('useSwitchControls', () => {
         const onSwitch = vi.fn();
         await mount({ onSwitch });
 
-        await triggerInput('\u001b[3:3u', {});
+        await triggerInput('[3;1:3u', {});
         expect(onSwitch).not.toHaveBeenCalled();
         expect(latestState?.confirmationMode).toBe(null);
+    });
+
+    it('confirms exit when Ctrl-C uses CSI u encoding', async () => {
+        const onExit = vi.fn();
+        await mount({ onExit });
+
+        await triggerInput('[99;5u', {});
+        expect(latestState?.confirmationMode).toBe('exit');
+
+        await triggerInputWithTimers('[99;5u', {}, 100);
+        expect(latestState?.actionInProgress).toBe('exiting');
+        expect(onExit).toHaveBeenCalledOnce();
+    });
+
+    it('does not clear confirmation for focus or mouse reporting', async () => {
+        const onSwitch = vi.fn();
+        await mount({ onSwitch });
+
+        await triggerInput(' ', {});
+        expect(latestState?.confirmationMode).toBe('switch');
+
+        await triggerInput('[I', {});
+        await triggerInput('[<35;10;5M', {});
+        expect(latestState?.confirmationMode).toBe('switch');
+        expect(onSwitch).not.toHaveBeenCalled();
     });
 
     it('clears confirmation after timeout', async () => {

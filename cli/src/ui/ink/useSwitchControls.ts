@@ -7,6 +7,44 @@ type ExtendedKey = Key & {
     name?: string;
 };
 
+type ParsedEscapeKey = {
+    code: number;
+    mods: number;
+    event: number;
+};
+
+const ESC = '\u001b';
+
+function parseCsiU(sequence: string): ParsedEscapeKey | null {
+    const match = /^\[(\d+)(?::\d+)*(?:;(\d+)(?::(\d+))?)?u$/.exec(sequence);
+    if (!match) {
+        return null;
+    }
+
+    return {
+        code: Number(match[1]),
+        mods: match[2] ? Number(match[2]) : 1,
+        event: match[3] ? Number(match[3]) : 1
+    };
+}
+
+function parseModifyOtherKeys(sequence: string): ParsedEscapeKey | null {
+    const match = /^\[27;(\d+);(\d+)~$/.exec(sequence);
+    if (!match) {
+        return null;
+    }
+
+    return {
+        code: Number(match[2]),
+        mods: Number(match[1]),
+        event: 1
+    };
+}
+
+function isEscapeSequence(input: string): boolean {
+    return input.startsWith(ESC) || /^\[[?<>=]?[\d;:]*[A-Za-z~]$/.test(input);
+}
+
 export type ConfirmationMode = 'exit' | 'switch' | null;
 export type ActionInProgress = 'exiting' | 'switching' | null;
 
@@ -62,7 +100,15 @@ export function useSwitchControls(opts: {
             return;
         }
 
-        if (key.ctrl && input === 'c') {
+        const keySequence = readKeyString(key, 'sequence');
+        const keyName = readKeyString(key, 'name');
+        const sequence = keySequence ?? input;
+        const parsedEscapeKey = parseCsiU(sequence) ?? parseModifyOtherKeys(sequence);
+        const isCsiUCtrlC = parsedEscapeKey?.code === 99
+            && Boolean((parsedEscapeKey.mods - 1) & 4)
+            && parsedEscapeKey.event !== 3;
+
+        if ((key.ctrl && input === 'c') || isCsiUCtrlC) {
             if (!onExit) {
                 if (confirmationMode) {
                     resetConfirmation();
@@ -85,19 +131,12 @@ export function useSwitchControls(opts: {
             return;
         }
 
-        const keySequence = readKeyString(key, 'sequence');
-        const keyName = readKeyString(key, 'name');
-        const sequence = keySequence ?? input;
-        const sequenceString = typeof sequence === 'string' ? sequence : '';
-        const isKeyRelease = sequenceString.length > 0
-            && /^\u001b\[[0-9;]*:3u$/.test(sequenceString);
-        const csiUMatch = sequenceString.length > 0
-            ? sequenceString.match(/^\u001b\[(\d+)(?:;(\d+))?u$/)
-            : null;
-        const csiUCodepoint = csiUMatch ? Number(csiUMatch[1]) : null;
-        const isCsiUSpace = csiUCodepoint === 32;
-        const isSpace = Boolean(onSwitch) && !isKeyRelease && (input === ' ' || keyName === 'space' || isCsiUSpace);
-        const hasPrintableInput = typeof input === 'string' && input.length > 0;
+        const isKeyRelease = parsedEscapeKey?.event === 3;
+        const isCsiUSpace = parsedEscapeKey?.code === 32
+            && parsedEscapeKey.mods <= 1
+            && !isKeyRelease;
+        const isSpace = Boolean(onSwitch) && (input === ' ' || keyName === 'space' || isCsiUSpace);
+        const hasPrintableInput = input.length > 0 && !isEscapeSequence(input);
 
         if (isSpace) {
             if (confirmationMode === 'switch') {
