@@ -7,6 +7,7 @@ import {
     insertSegmentsInComposerSegments,
     insertSessionMentionInComposerSegments,
     isRichComposerMentionsEnabled,
+    resolveComposerPlaceholderKey,
     mirrorComposerSegments,
     parseComposerSegments,
     serializeComposerSegments,
@@ -221,6 +222,29 @@ describe('isRichComposerMentionsEnabled', () => {
         expect(isRichComposerMentionsEnabled()).toBe(false)
         window.history.replaceState({}, '', `${window.location.pathname}?richMentions=1`)
         expect(isRichComposerMentionsEnabled()).toBe(true)
+    })
+})
+
+describe('resolveComposerPlaceholderKey', () => {
+    it('prefers continue hint over mention copy', () => {
+        expect(resolveComposerPlaceholderKey({
+            richMentionsEnabled: true,
+            showContinueHint: true,
+        })).toBe('misc.typeMessage')
+    })
+
+    it('uses mention-aware placeholder when rich composer is on', () => {
+        expect(resolveComposerPlaceholderKey({
+            richMentionsEnabled: true,
+            showContinueHint: false,
+        })).toBe('misc.typeAMessageWithMentions')
+    })
+
+    it('keeps generic placeholder when rich composer is killed', () => {
+        expect(resolveComposerPlaceholderKey({
+            richMentionsEnabled: false,
+            showContinueHint: false,
+        })).toBe('misc.typeAMessage')
     })
 })
 

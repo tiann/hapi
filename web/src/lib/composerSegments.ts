@@ -303,3 +303,16 @@ export function isRichComposerMentionsEnabled(): boolean {
     if (import.meta.env.VITE_RICH_COMPOSER_MENTIONS === 'false') return false
     return true
 }
+
+/**
+ * Composer empty-state placeholder i18n key.
+ * Continue-hint outranks mention hint; mention copy only when rich composer is on.
+ */
+export function resolveComposerPlaceholderKey(opts: {
+    richMentionsEnabled: boolean
+    showContinueHint: boolean
+}): 'misc.typeMessage' | 'misc.typeAMessageWithMentions' | 'misc.typeAMessage' {
+    if (opts.showContinueHint) return 'misc.typeMessage'
+    if (opts.richMentionsEnabled) return 'misc.typeAMessageWithMentions'
+    return 'misc.typeAMessage'
+}

@@ -7,6 +7,7 @@ import {
     useRef,
     useState,
     type ClipboardEvent as ReactClipboardEvent,
+    type FocusEvent as ReactFocusEvent,
     type FormEvent as ReactFormEvent,
     type KeyboardEvent as ReactKeyboardEvent,
     type PointerEvent as ReactPointerEvent,
@@ -72,6 +73,7 @@ type Props = {
     onMirrorChange: (state: { text: string; selection: ComposerSelection }) => void
     onKeyDown?: (e: ReactKeyboardEvent<HTMLDivElement>) => void
     onPaste?: (e: ReactClipboardEvent<HTMLDivElement>) => void
+    onFocus?: (e: ReactFocusEvent<HTMLDivElement>) => void
     onEdit?: () => void
     /** Live session meta for chip hover / aria-label (from useSessions). */
     resolveSessionMentionTooltip?: ResolveSessionMentionTooltip
@@ -577,6 +579,7 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         onMirrorChange,
         onKeyDown,
         onPaste,
+        onFocus,
         onEdit,
         resolveSessionMentionTooltip,
     },
@@ -932,6 +935,7 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
                 data-testid="rich-composer-input"
                 className={`${className ?? ''}${disabled ? ' cursor-not-allowed opacity-50' : ''}`}
                 onInput={handleInput}
+                onFocus={onFocus}
                 onKeyDown={handleKeyDown}
                 onPointerOver={handlePointerOver}
                 onPointerLeave={handlePointerLeave}
