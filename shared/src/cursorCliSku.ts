@@ -316,7 +316,7 @@ export function matchCliSkuToAcpWireId(
         (entry) => isCursorAcpWireModelId(entry.modelId) && cursorModelBaseId(entry.modelId) === skuBase
     );
     if (wires.length === 0) {
-        return pickBestCatalogSku(trimmed, available);
+        return null;
     }
     if (wires.length === 1) {
         return wires[0].modelId;

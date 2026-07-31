@@ -63,6 +63,10 @@ describe('matchCliSkuToAcpWireId', () => {
             'cursor-grok-4.5-medium-fast'
         );
     });
+
+    it('rejects unavailable explicit SKU variants when no ACP wires exist', () => {
+        expect(matchCliSkuToAcpWireId('gpt-5.5-high', [{ modelId: 'gpt-5.5-medium' }])).toBeNull();
+    });
 });
 
 describe('remapStaleCursorModelId', () => {
