@@ -144,6 +144,18 @@ export function useRichComposerBridge(
 
 const defaultSuggestionHandler = async (): Promise<Suggestion[]> => []
 
+/** True when composer text/attachment ids match a pre-park snapshot. */
+export function composerParkSnapshotUnchanged(
+    snapshot: { text: string; attachments: readonly { id: string }[] },
+    current: { text: string; attachments: readonly { id: string }[] },
+): boolean {
+    return current.text === snapshot.text
+        && current.attachments.length === snapshot.attachments.length
+        && current.attachments.every(
+            (attachment, index) => attachment.id === snapshot.attachments[index]?.id,
+        )
+}
+
 export function ModelEffortSettingsSection(props: {
     agentFlavor?: string | null
     options: Array<{ value: string; label: string }>
@@ -270,6 +282,8 @@ export function HappyComposer(props: {
         text: string,
         pending: readonly import('@assistant-ui/react').Attachment[],
     ) => Promise<boolean>
+    /** Parent disables DragDropZone / scratchlist promote while park is in flight. */
+    onScratchlistParkingChange?: (parking: boolean) => void
     // Set when the most recent send failed (4xx/5xx/network).  The composer
     // restores the original text once per `sendError.id` and renders an
     // inline error affordance until the user dismisses or starts editing.
@@ -385,6 +399,11 @@ export function HappyComposer(props: {
 
     const [isParkingScratchlist, setIsParkingScratchlist] = useState(false)
     const parkInFlightRef = useRef(false)
+    const onScratchlistParkingChange = props.onScratchlistParkingChange
+
+    useEffect(() => {
+        onScratchlistParkingChange?.(isParkingScratchlist)
+    }, [isParkingScratchlist, onScratchlistParkingChange])
 
     const controlsDisabled = disabled || (!active && !allowSendWhenInactive) || threadIsDisabled || isParkingScratchlist
     const trimmed = composerText.trim()
@@ -869,12 +888,16 @@ export function HappyComposer(props: {
             parkInFlightRef.current = true
             setIsParkingScratchlist(true)
             try {
-                const state = api.composer().getState()
+                const snapshot = api.composer().getState()
                 const accepted = await props.onParkScratchlist(
-                    state.text,
-                    state.attachments,
+                    snapshot.text,
+                    snapshot.attachments,
                 )
                 if (!accepted) return
+                const current = api.composer().getState()
+                if (!composerParkSnapshotUnchanged(snapshot, current)) {
+                    return
+                }
                 api.composer().setText('')
                 await api.composer().clearAttachments()
             } finally {

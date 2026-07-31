@@ -560,6 +560,7 @@ function SessionChatInner(props: SessionChatProps) {
         }
     }, [allSessions, t])
     const [scratchlistMode, setScratchlistMode] = useState(false)
+    const [isScratchlistParking, setIsScratchlistParking] = useState(false)
     // Mode resets across sessions implicitly: SessionChat is keyed by
     // session.id at the public-export boundary, so a session switch
     // remounts SessionChatInner from scratch and `scratchlistMode`
@@ -1476,7 +1477,7 @@ function SessionChatInner(props: SessionChatProps) {
 
             <AssistantRuntimeProvider runtime={runtime}>
                 <ShareSeedConsumer sessionId={props.session.id} sessionActive={props.session.active} />
-                <DragDropZone disabled={sessionInactive || props.isSending || pendingSchedule != null}>
+                <DragDropZone disabled={sessionInactive || props.isSending || pendingSchedule != null || isScratchlistParking}>
 
                     <HappyThread
                         // Key with prefix: different components under the same session
@@ -1552,7 +1553,7 @@ function SessionChatInner(props: SessionChatProps) {
                                     onDelete={scratchlist.remove}
                                     onSend={props.onSend}
                                     onExitScratchlistMode={() => setScratchlistMode(false)}
-                                    disabled={props.isSending}
+                                    disabled={props.isSending || isScratchlistParking}
                                 />
                             ) : null}
                             <QueuedMessagesBar
@@ -1720,6 +1721,7 @@ function SessionChatInner(props: SessionChatProps) {
                         scratchlistCount={scratchlist.entries.length}
                         onScratchlistToggle={handleScratchlistToggle}
                         onParkScratchlist={onParkScratchlist}
+                        onScratchlistParkingChange={setIsScratchlistParking}
                         sendError={props.sendError ?? null}
                         onClearSendError={props.onClearSendError}
                         onSuppressSendErrorRestore={props.onSuppressSendErrorRestore}
