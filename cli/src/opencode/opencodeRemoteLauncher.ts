@@ -56,6 +56,31 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     // deliberately unbounded (see triggerOpencodeCompact's doc comment) and
     // the launcher stays wedged until it eventually settles on its own.
     private compactAbortController: AbortController | null = null;
+    // True from the moment handleAbort() observes a compact operation in
+    // flight until the dequeue loop creates the next one. A 6th PR-review
+    // round found that unconditionally aborting `compactAbortController` on
+    // *plain* Stop (not just switch/exit) broke a core invariant this
+    // feature's whole redesign (see the FIFO-queue comment on the dequeue
+    // loop) depends on: compact and a prompt must never touch the same
+    // OpenCode session at once. Aborting only unblocks the *client's* fetch
+    // — `session/update` notifications are a separate channel from that
+    // HTTP request's lifecycle (see AcpSdkBackend.suppressUpdatesDuring's
+    // doc comment), so the agent can still be compacting server-side well
+    // after the client gives up, and the quiet-drain there (bounded at
+    // ~1.2s) is not a real guarantee that a multi-minute server-side
+    // compaction has actually finished. If the dequeue loop moved on to a
+    // prompt as soon as the client-side abort settled, that prompt could
+    // run concurrently with a compaction still touching the same session.
+    //
+    // The fix: plain Stop only sets this flag (suppressing the eventual
+    // result) and leaves `compactAbortController` alone, so
+    // runCompactOperation()'s own awaits keep blocking the dequeue loop
+    // until the *real* HTTP response arrives — i.e. until the server
+    // actually finishes. Switch-to-local/exit still abort the controller for
+    // real (see handleAbort's `leavingRemote` parameter) because cleanup()
+    // is about to disconnect the whole ACP subprocess regardless, so there's
+    // no session left to protect.
+    private compactResultSuppressed = false;
     private displayPermissionMode: PermissionMode | null = null;
     private instructionsSent = false;
     private currentBackendModel: string | null = null;
@@ -199,7 +224,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         this.applyDisplayMode(session.getPermissionMode() as PermissionMode);
 
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
-            onAbort: () => this.handleAbort(),
+            // Explicit `false`: plain Stop stays in this remote session, so
+            // an in-flight compact must not be aborted client-side — see
+            // handleAbort's `leavingRemote` doc comment.
+            onAbort: () => this.handleAbort(false),
             onSwitch: () => this.handleSwitchRequest()
         });
 
@@ -232,6 +260,12 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             const compactAbortController = isCompactBatch ? new AbortController() : null;
             if (compactAbortController) {
                 this.compactAbortController = compactAbortController;
+                // Reset here (as early as the controller itself — see its
+                // sibling field's doc comment for why that timing matters)
+                // rather than inside runCompactOperation(), so a plain Stop
+                // landing during the model/effort switch below already has
+                // something to suppress.
+                this.compactResultSuppressed = false;
             }
 
             // Inline model change via ACP RPC (session/set_model — see ACP SDK
@@ -462,13 +496,19 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
      * after one combined async trigger(). "Compaction started" itself is
      * never suppressed (it wasn't before either).
      *
-     * Separately, `compactAbortController` covers a different case:
-     * Stop/switch-to-local firing *while the REST call is actually in
-     * flight*, which `isLocalIdCancelled` cannot — that mechanism only ever
-     * observes a cancel for this item's *queue message*, and by this point
-     * the item has already been dequeued. `isCancelled()` below checks both,
-     * so either kind of cancellation suppresses the eventual result the same
-     * way.
+     * Separately, `compactAbortController`/`compactResultSuppressed` cover a
+     * different case: Stop/switch-to-local firing *while the REST call is
+     * actually in flight*, which `isLocalIdCancelled` cannot — that
+     * mechanism only ever observes a cancel for this item's *queue message*,
+     * and by this point the item has already been dequeued. `isCancelled()`
+     * below checks all three, so any kind of cancellation suppresses the
+     * eventual result the same way — but only switch/exit (`leavingRemote`
+     * in handleAbort()) actually aborts `compactAbortController.signal`; a
+     * plain Stop sets `compactResultSuppressed` alone and deliberately
+     * leaves the signal un-aborted, so this function's own awaits below keep
+     * blocking the dequeue loop until the operation *really* finishes
+     * server-side — see `compactResultSuppressed`'s field doc comment for
+     * why that invariant matters.
      *
      * `compactAbortController` is created by the caller (the dequeue loop),
      * not here, and passed in — deliberately, before the loop's model/effort
@@ -490,7 +530,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         try {
             const isCancelled = (): boolean =>
                 (localId ? (this.options.isLocalIdCancelled?.(localId) ?? false) : false)
-                || compactAbortController.signal.aborted;
+                || compactAbortController.signal.aborted
+                || this.compactResultSuppressed;
 
             const backend = this.backend;
             const baseUrl = this.baseUrl;
@@ -628,36 +669,77 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
-    private async handleAbort(): Promise<void> {
-        // Interrupt an in-flight /compact REST call first (see
-        // compactAbortController's field doc comment) — without this, Stop
-        // (and switch-to-local, which also routes through here) would stay
-        // blocked on runCompactOperation() for as long as that unbounded
-        // request takes, since cancelPrompt() below only affects ACP
-        // prompt() turns and has no effect on this raw HTTP call.
-        this.compactAbortController?.abort();
+    /**
+     * `leavingRemote` distinguishes plain Stop (`false`, the default — stays
+     * in the same remote session) from switch-to-local/exit (`true` — the
+     * session is being torn down). A 6th PR-review round rejected an earlier
+     * fix (always aborting `compactAbortController` here) because it broke
+     * this feature's core invariant: compact and a prompt must never touch
+     * the same OpenCode session concurrently (see
+     * `compactResultSuppressed`'s field doc comment for the full
+     * reasoning). Plain Stop now only suppresses the eventual result and
+     * leaves the compact operation's REST call running for real — the
+     * dequeue loop stays blocked on it until the server actually finishes,
+     * exactly as it does for an un-aborted turn. Switch/exit still abort it
+     * for real: `cleanup()` disconnects the whole ACP subprocess right
+     * after, so there is no shared-session invariant left to protect and
+     * responsiveness (fixed in an earlier round) matters more.
+     */
+    private async handleAbort(leavingRemote = false): Promise<void> {
+        // A hostile-review sweep found that a plain Stop during an in-flight
+        // compact — which deliberately leaves the operation running for real
+        // (see compactResultSuppressed's doc comment) — still unconditionally
+        // flipped `thinking` off and reported "Turn aborted" below, telling
+        // the user the turn had stopped while the dequeue loop was actually
+        // still blocked inside runCompactOperation() for however long the
+        // real server-side compaction takes (potentially minutes). Track
+        // that specific case so the messaging stays honest: nothing has
+        // actually stopped yet from the user's perspective, and the dequeue
+        // loop's own `finally` (once runCompactOperation() genuinely
+        // returns) remains the sole source of truth for when this turn is
+        // done.
+        const compactAbortController = this.compactAbortController;
+        if (compactAbortController) {
+            this.compactResultSuppressed = true;
+            if (leavingRemote) {
+                compactAbortController.abort();
+            }
+        }
         const backend = this.backend;
         if (backend && this.session.sessionId) {
             await backend.cancelPrompt(this.session.sessionId);
         }
         await this.permissionHandler?.cancelAll('User aborted');
         this.session.queue.reset();
-        this.session.onThinkingChange(false);
         this.abortController.abort();
         this.abortController = new AbortController();
-        this.messageBuffer.addMessage('Turn aborted', 'status');
+        // Re-checked here (not a snapshot taken above, before the awaits)
+        // in case a concurrent leavingRemote=true call for the same
+        // compact interleaved with this one and already aborted it — RPC
+        // dispatch doesn't serialize handleAbort() calls against each
+        // other, so a Stop immediately followed by a switch-to-local can
+        // genuinely overlap. Without this, the (now-stale) plain-Stop
+        // continuation could append its "still waiting" message after the
+        // switch's "Turn aborted" already ran, showing the two in a
+        // confusing order.
+        if (compactAbortController && !leavingRemote && !compactAbortController.signal.aborted) {
+            this.messageBuffer.addMessage('Stop requested — waiting for the in-progress compaction to finish on the server', 'status');
+        } else {
+            this.session.onThinkingChange(false);
+            this.messageBuffer.addMessage('Turn aborted', 'status');
+        }
     }
 
     private async handleExitFromUi(): Promise<void> {
-        await this.requestExit('exit', () => this.handleAbort());
+        await this.requestExit('exit', () => this.handleAbort(true));
     }
 
     private async handleSwitchFromUi(): Promise<void> {
-        await this.requestExit('switch', () => this.handleAbort());
+        await this.requestExit('switch', () => this.handleAbort(true));
     }
 
     private async handleSwitchRequest(): Promise<void> {
-        await this.requestExit('switch', () => this.handleAbort());
+        await this.requestExit('switch', () => this.handleAbort(true));
     }
 }
 

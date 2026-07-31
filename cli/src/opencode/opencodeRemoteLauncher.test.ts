@@ -776,6 +776,95 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         expect(messages).toEqual(['📦 Compaction started', '📦 Compaction completed']);
     });
 
+    it('a plain Stop during an in-flight compact does not unblock the dequeue loop until the operation actually settles server-side, and suppresses the eventual result', async () => {
+        // Reproduces the exact scenario a 6th PR-review round reported (and
+        // that an earlier round's fix — always aborting compactAbortController
+        // on any abort — was rejected for): Stop only interrupts the
+        // *client's* HTTP request. The OpenCode server can still be
+        // compacting the same session well after that, since session/update
+        // notifications are a separate channel from that HTTP request's
+        // lifecycle (see AcpSdkBackend.suppressUpdatesDuring's doc comment).
+        // If the dequeue loop moved on to the next queued prompt as soon as
+        // the client gave up, that prompt could run concurrently with a
+        // compaction still touching the same session — breaking the "compact
+        // and prompt never touch the session at once" invariant this
+        // feature's whole queue-based redesign depends on. This mock's
+        // triggerImpl only ever settles when the test explicitly resolves
+        // it (standing in for "the server is still working"), never when
+        // the client-side signal aborts — so if the fix regressed back to
+        // unconditionally aborting on plain Stop, this test would hang/time
+        // out rather than merely assert wrong.
+        // (handleAbort()'s existing session.queue.reset() call clears any
+        // still-queued items regardless of leavingRemote, so this
+        // deliberately doesn't rely on a prompt queued behind the compact
+        // surviving Stop — that's an orthogonal, pre-existing behavior.
+        // Instead it uses the dequeue loop's 'ready' session event — only
+        // ever sent from the loop's own finally block, once
+        // runCompactOperation() actually returns — as the direct signal that
+        // the loop advanced past this operation.)
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        let resolveServerSideCompaction: (() => void) | null = null;
+        let capturedSignal: AbortSignal | undefined;
+        compactHarness.triggerImpl = (opts) => {
+            capturedSignal = opts.signal;
+            return new Promise((resolve) => {
+                resolveServerSideCompaction = () => resolve({ ok: true });
+                // Mirrors real triggerOpencodeCompact/fetch() semantics: an
+                // aborted signal settles the call too (as a failure) — this
+                // is what makes the test meaningfully distinguish "plain
+                // Stop leaves the signal alone" from "plain Stop aborts it",
+                // rather than both cases merely hanging identically.
+                opts.signal?.addEventListener('abort', () => resolve({ ok: false, error: 'aborted' }));
+            });
+        };
+
+        const { session, sessionEvents, rpcHandlers } = createSessionStub([
+            { message: '', mode: createCompactMode('ollama/x') }
+        ]);
+
+        const launcherPromise = opencodeRemoteLauncher(session as never, {
+            onCompactAvailabilityChange: () => {}
+        });
+
+        while (compactHarness.calls.length === 0) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+
+        const abortHandler = rpcHandlers.get('abort') as (() => Promise<void>) | undefined;
+        expect(abortHandler).toBeDefined();
+        await abortHandler!();
+
+        // Plain Stop must NOT abort the client-side signal.
+        expect(capturedSignal?.aborted).toBe(false);
+
+        // Several ticks pass — the loop must still be blocked inside
+        // runCompactOperation(): no 'ready' event yet, and `thinking` must
+        // stay true — nothing has actually stopped yet from the user's
+        // perspective, so flipping it false here (as handleAbort used to,
+        // unconditionally) would misleadingly suggest otherwise while the
+        // server keeps compacting for real.
+        for (let i = 0; i < 10; i++) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        expect(sessionEvents.some((event) => event.type === 'ready')).toBe(false);
+        expect(session.thinking).toBe(true);
+
+        // The server genuinely finishes now.
+        resolveServerSideCompaction!();
+
+        while (!sessionEvents.some((event) => event.type === 'ready')) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+
+        // The result must be suppressed — no stale "Compaction completed"
+        // for an action the user already asked to abort.
+        const messages = sessionEvents.filter((event) => event.type === 'message').map((event) => event.message);
+        expect(messages).toEqual(['📦 Compaction started']);
+
+        session.queue.close();
+        await launcherPromise;
+    });
+
     it('does not look up a summary when the compact REST call itself failed', async () => {
         harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
         const { triggerOpencodeCompact } = await import('./utils/opencodeCompactBridge');
@@ -837,7 +926,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         ]);
     });
 
-    it('an abort firing during the inline model switch that precedes a compact batch still interrupts that compact once it runs, instead of the abort landing on a not-yet-created controller', async () => {
+    it('a switch-to-local firing during the inline model switch that precedes a compact batch still interrupts that compact once it runs, instead of the abort landing on a not-yet-created controller', async () => {
         // Reproduces a hostile-review whole-feature-sweep finding: the
         // dequeue loop applies the inline model/effort switch to every batch
         // (including operation:'compact' ones) *before* branching into
@@ -849,6 +938,14 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         // resolved and runCompactOperation() created a *fresh* controller,
         // all memory of the abort was gone — the unbounded compact REST call
         // then ran to completion uninterrupted.
+        //
+        // Uses 'switch' (not plain 'abort'/Stop) since a later round split
+        // handleAbort()'s behavior: only switch-to-local/exit
+        // (leavingRemote=true) actually aborts compactAbortController.signal
+        // — plain Stop now only suppresses the result and deliberately
+        // leaves the signal alone (see compactResultSuppressed's doc
+        // comment). The controller-must-already-exist regression this test
+        // protects against still applies identically to switch/exit.
         harness.sessionModelsMetadata = { currentModelId: 'ollama/launch-default', availableModels: [] };
         let resolveSetModel: (() => void) | null = null;
         harness.setModelImpl = () => new Promise<void>((resolve) => {
@@ -878,9 +975,9 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         }
         expect(compactHarness.calls).toEqual([]);
 
-        const abortHandler = rpcHandlers.get('abort') as (() => Promise<void>) | undefined;
-        expect(abortHandler).toBeDefined();
-        await abortHandler!();
+        const switchHandler = rpcHandlers.get('switch') as (() => Promise<void>) | undefined;
+        expect(switchHandler).toBeDefined();
+        await switchHandler!();
 
         // Release the switch; the loop now proceeds into the compact batch.
         // (Cast re-widens the type: TS narrows `resolveSetModel` to `never`
@@ -893,8 +990,8 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             await new Promise<void>((resolve) => setImmediate(resolve));
         }
 
-        // The controller the abort acted on during the switch must be the
-        // SAME one threaded into the compact REST call — not a fresh,
+        // The controller the switch acted on during the model switch must be
+        // the SAME one threaded into the compact REST call — not a fresh,
         // never-aborted one created after the fact.
         expect(capturedSignal?.aborted).toBe(true);
 
