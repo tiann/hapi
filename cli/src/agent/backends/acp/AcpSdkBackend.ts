@@ -634,6 +634,21 @@ export class AcpSdkBackend implements AgentBackend {
      * never overlap with a real prompt() turn, but if `disconnect()` or a
      * new `prompt()` did run concurrently and changed `messageHandler`
      * during `fn`, this avoids clobbering whatever it set.
+     *
+     * Restoring the handler waits for the same quiet-drain `prompt()` already
+     * uses before installing a *new* handler for the next turn (see its
+     * `PRE_PROMPT_UPDATE_QUIET_PERIOD_MS`/`_DRAIN_TIMEOUT_MS` call) — the
+     * same class of race, just on the way back in instead of the way out.
+     * Aborting `fn()` client-side (e.g. OpenCode's compact bridge aborting
+     * its HTTP call) does not necessarily stop the agent from continuing the
+     * operation server-side: `session/update` is a separate notification
+     * channel from that HTTP request's lifecycle (confirmed while building
+     * the /compact bridge — see runCompactOperation's doc comment). Without
+     * this wait, late notifications from a still-running server-side
+     * operation would immediately leak into whichever handler gets restored
+     * (or into a brand new one prompt() installs right after) the instant
+     * `fn()` returns. `messageHandler` stays null (suppression still in
+     * effect) for the whole drain, so nothing leaks during it either.
      */
     async suppressUpdatesDuring<T>(fn: () => Promise<T>): Promise<T> {
         const previousHandler = this.messageHandler;
@@ -641,6 +656,10 @@ export class AcpSdkBackend implements AgentBackend {
         try {
             return await fn();
         } finally {
+            await this.waitForSessionUpdateQuiet(
+                AcpSdkBackend.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS,
+                AcpSdkBackend.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS
+            );
             if (this.messageHandler === null) {
                 this.messageHandler = previousHandler;
             }

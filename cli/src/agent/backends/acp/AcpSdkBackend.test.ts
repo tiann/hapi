@@ -1148,6 +1148,13 @@ describe('AcpSdkBackend', () => {
         // whatever messageHandler is still installed from the last prompt()
         // turn — rendering the same content a second time alongside the
         // compact bridge's own explicit summary message.
+        //
+        // Fast quiet-drain timing so this test doesn't pay the real
+        // (production) 200ms/1200ms PRE_PROMPT_* delay suppressUpdatesDuring
+        // now waits through before restoring the handler.
+        backendStatics.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS = 5;
+        backendStatics.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS = 50;
+
         const backend = new AcpSdkBackend({ command: 'opencode' });
         const backendInternal = backend as unknown as {
             transport: {
@@ -1190,6 +1197,76 @@ describe('AcpSdkBackend', () => {
         // The previous turn's handler must be back in place afterward so
         // ordinary straggler-forwarding (covered elsewhere) is unaffected.
         expect(backendInternal.messageHandler).toBe(handlerBeforeSuppression);
+        emitPlanUpdate();
+        expect(turn1.some((m) => m.type === 'plan')).toBe(true);
+    });
+
+    it('waits for a quiet period (reusing the same drain prompt() uses before swapping handlers) before restoring the handler after suppressUpdatesDuring, so a late server-side straggler from an already-aborted operation cannot leak', async () => {
+        // Reproduces a hostile-review finding: aborting the client-side HTTP
+        // call (e.g. compactAbortController) does not mean the OpenCode
+        // server actually stopped the operation — session/update is a
+        // separate notification channel from that HTTP request's lifecycle.
+        // If suppressUpdatesDuring restored the handler the instant `fn`
+        // resolved, a straggler notification arriving moments later (while
+        // the server is still winding the operation down) would leak
+        // straight into the restored handler.
+        backendStatics.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS = 30;
+        backendStatics.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS = 300;
+
+        const backend = new AcpSdkBackend({ command: 'opencode' });
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequest: (...args: unknown[]) => Promise<unknown>;
+                close: () => Promise<void>;
+            } | null;
+            handleSessionUpdate: (params: unknown) => void;
+            messageHandler: unknown;
+        };
+        backendInternal.transport = {
+            sendRequest: async () => ({ stopReason: 'end_turn' }),
+            close: async () => {}
+        };
+
+        const turn1: AgentMessage[] = [];
+        await backend.prompt('session-1', [{ type: 'text', text: 'hi' }], (m) => turn1.push(m));
+
+        const emitPlanUpdate = () => backendInternal.handleSessionUpdate({
+            sessionId: 'session-1',
+            update: {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.plan,
+                entries: [{ content: 'late server-side straggler', priority: 'medium', status: 'pending' }]
+            }
+        });
+
+        const handlerBeforeSuppression = backendInternal.messageHandler;
+
+        const suppressPromise = backend.suppressUpdatesDuring(async () => {
+            // Client gives up almost immediately (mirrors compactAbortController
+            // firing), but the server keeps streaming for a little longer —
+            // one update right away, one more 15ms later.
+            emitPlanUpdate();
+            setTimeout(emitPlanUpdate, 15);
+            return 'aborted-early';
+        });
+
+        // Sampled while suppressUpdatesDuring's own returned promise is
+        // still pending (fn already resolved, but the quiet-drain in its
+        // `finally` has not) — this is what actually proves restoration is
+        // *deferred*, not merely eventually correct.
+        await sleep(20);
+        const handlerDuringDrainWindow = backendInternal.messageHandler;
+
+        const result = await suppressPromise;
+
+        expect(result).toBe('aborted-early');
+        expect(handlerDuringDrainWindow).toBeNull();
+        // Neither the immediate update nor the +15ms straggler leaked —
+        // messageHandler was null (suppressed) for both.
+        expect(turn1.some((m) => m.type === 'plan')).toBe(false);
+
+        expect(backendInternal.messageHandler).toBe(handlerBeforeSuppression);
+
+        // Normal forwarding resumes once actually restored.
         emitPlanUpdate();
         expect(turn1.some((m) => m.type === 'plan')).toBe(true);
     });
