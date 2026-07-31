@@ -34,6 +34,42 @@ type OpencodeRemoteLauncherOptions = {
     isLocalIdCancelled?: (localId: string) => boolean;
 };
 
+export type AbortStatusDecision = {
+    message: string;
+    shouldClearThinking: boolean;
+};
+
+/**
+ * Pure decision logic for handleAbort()'s final step: which status message
+ * to show, and whether `thinking` should be cleared. Extracted out of the
+ * method itself (which calls this with freshly re-read state, not a
+ * snapshot from before its awaits — see the call site) so it's unit
+ * testable without needing to observe `MessageBuffer`/Ink rendering, which
+ * this file's test harness (`opencodeRemoteLauncher.test.ts`) has no
+ * infrastructure for.
+ *
+ * A compact operation left deliberately running after a plain Stop (see
+ * `compactResultSuppressed`'s field doc comment on the class) is the one
+ * case where nothing has actually stopped yet — Stop alone cannot leave
+ * this remote session, only switch-to-local/exit can, so the message says
+ * so explicitly rather than leaving the user wondering why the UI still
+ * looks busy.
+ */
+export function selectAbortStatusMessage(opts: {
+    hasCompactInFlight: boolean;
+    leavingRemote: boolean;
+    compactAborted: boolean;
+}): AbortStatusDecision {
+    const compactStillWaiting = opts.hasCompactInFlight && !opts.leavingRemote && !opts.compactAborted;
+    if (compactStillWaiting) {
+        return {
+            message: 'Stop requested — waiting for the in-progress compaction to finish on the server. Switch to local or exit to leave immediately.',
+            shouldClearThinking: false
+        };
+    }
+    return { message: 'Turn aborted', shouldClearThinking: true };
+}
+
 class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private readonly session: OpencodeSession;
     private backend: ReturnType<typeof createOpencodeBackend> | null = null;
@@ -713,21 +749,23 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         this.session.queue.reset();
         this.abortController.abort();
         this.abortController = new AbortController();
-        // Re-checked here (not a snapshot taken above, before the awaits)
-        // in case a concurrent leavingRemote=true call for the same
-        // compact interleaved with this one and already aborted it — RPC
-        // dispatch doesn't serialize handleAbort() calls against each
-        // other, so a Stop immediately followed by a switch-to-local can
-        // genuinely overlap. Without this, the (now-stale) plain-Stop
-        // continuation could append its "still waiting" message after the
-        // switch's "Turn aborted" already ran, showing the two in a
-        // confusing order.
-        if (compactAbortController && !leavingRemote && !compactAbortController.signal.aborted) {
-            this.messageBuffer.addMessage('Stop requested — waiting for the in-progress compaction to finish on the server', 'status');
-        } else {
+        // Re-read here (not the snapshot taken above, before the awaits) in
+        // case a concurrent leavingRemote=true call for the same compact
+        // interleaved with this one and already aborted it — RPC dispatch
+        // doesn't serialize handleAbort() calls against each other, so a
+        // Stop immediately followed by a switch-to-local can genuinely
+        // overlap. Without this, the (now-stale) plain-Stop continuation
+        // could append its "still waiting" message after the switch's
+        // "Turn aborted" already ran, showing the two in a confusing order.
+        const decision = selectAbortStatusMessage({
+            hasCompactInFlight: compactAbortController !== null,
+            leavingRemote,
+            compactAborted: compactAbortController?.signal.aborted ?? false
+        });
+        if (decision.shouldClearThinking) {
             this.session.onThinkingChange(false);
-            this.messageBuffer.addMessage('Turn aborted', 'status');
         }
+        this.messageBuffer.addMessage(decision.message, 'status');
     }
 
     private async handleExitFromUi(): Promise<void> {

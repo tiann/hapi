@@ -156,7 +156,7 @@ vi.mock('@/ui/logger', () => ({
     }
 }));
 
-import { opencodeRemoteLauncher } from './opencodeRemoteLauncher';
+import { opencodeRemoteLauncher, selectAbortStatusMessage } from './opencodeRemoteLauncher';
 
 function createMode(model?: string): OpencodeMode {
     return {
@@ -1030,6 +1030,66 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         expect(capturedSignals[1].aborted).toBe(false);
     });
 
+    it('does not leak compactResultSuppressed into a later compact operation — a Stop-suppressed compact #1 does not silence a normally-completed compact #2', async () => {
+        // Companion to the controller-freshness test above: compactAbortController
+        // isn't the only piece of per-operation state runCompactOperation()
+        // reads — compactResultSuppressed (set by a plain Stop, see
+        // handleAbort()'s doc comment) must also be scoped to the operation
+        // that was actually Stopped, not linger and silence an unrelated
+        // later compact that completes normally.
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        let resolveFirstCompaction: (() => void) | null = null;
+        compactHarness.triggerImpl = (opts) => {
+            const callIndex = compactHarness.calls.length;
+            if (callIndex === 1) {
+                // First call: hangs until the test explicitly resolves it,
+                // standing in for "the server is still compacting" — same
+                // pattern as the plain-Stop-blocking test above.
+                return new Promise((resolve) => {
+                    resolveFirstCompaction = () => resolve({ ok: true });
+                });
+            }
+            return Promise.resolve({ ok: true });
+        };
+
+        // compact #2 is deliberately pushed *after* Stop below, not
+        // upfront: handleAbort() unconditionally calls session.queue.reset(),
+        // which would otherwise clear it before it's ever dequeued (an
+        // orthogonal, pre-existing behavior — see the plain-Stop-blocking
+        // test above's comment on the same point).
+        const { session, sessionEvents, rpcHandlers } = createSessionStub([], { keepOpen: true });
+        session.queue.pushIsolated('', createCompactMode('ollama/x'), 'compact-1');
+
+        const launcherPromise = opencodeRemoteLauncher(session as never, { onCompactAvailabilityChange: () => {} });
+
+        while (compactHarness.calls.length === 0) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+
+        const abortHandler = rpcHandlers.get('abort') as (() => Promise<void>) | undefined;
+        expect(abortHandler).toBeDefined();
+        await abortHandler!();
+
+        session.queue.pushIsolated('', createCompactMode('ollama/x'), 'compact-2');
+        session.queue.close();
+
+        // Compact #1 genuinely finishes now — its result must stay suppressed.
+        resolveFirstCompaction!();
+
+        // Wait for compact #2 to actually run and finish too.
+        while (compactHarness.calls.length < 2) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        await launcherPromise;
+
+        const messages = sessionEvents.filter((event) => event.type === 'message').map((event) => event.message);
+        expect(messages).toEqual([
+            '📦 Compaction started', // compact #1
+            '📦 Compaction started', // compact #2
+            '📦 Compaction completed' // compact #2's result, NOT suppressed by #1's Stop
+        ]);
+    });
+
     it('injects the skill lookup instruction only on the first prompt', async () => {
         const { session } = createSessionStub([
             { message: 'first', mode: createMode() },
@@ -1406,5 +1466,71 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             'prompt:start',
             'prompt:end'
         ]);
+    });
+});
+
+describe('selectAbortStatusMessage', () => {
+    // Pure-logic unit tests for handleAbort()'s final decision, extracted
+    // specifically because opencodeRemoteLauncher.test.ts's harness has no
+    // way to observe MessageBuffer/Ink content — the launcher instance
+    // itself is never exposed to tests, only the session stub and the exit
+    // reason. These exercise the exact same decision handleAbort() makes,
+    // driven by re-read (not snapshotted) state, without needing any of
+    // that launcher/Ink machinery.
+
+    it('a plain Stop with a compact still running (not yet aborted) reports the waiting message and does not clear thinking', () => {
+        const decision = selectAbortStatusMessage({
+            hasCompactInFlight: true,
+            leavingRemote: false,
+            compactAborted: false
+        });
+
+        expect(decision.shouldClearThinking).toBe(false);
+        // Must actually tell the user how to leave, not just that they're stuck.
+        expect(decision.message).toContain('waiting for the in-progress compaction');
+        expect(decision.message.toLowerCase()).toMatch(/switch|exit/);
+    });
+
+    it('switch-to-local/exit (leavingRemote=true) with a compact in flight reports "Turn aborted" and clears thinking, even before the abort() call is reflected in the signal', () => {
+        // Mirrors handleAbort()'s actual call: it reads leavingRemote
+        // directly (not compactAborted) to decide this branch, since the
+        // real call chain always aborts the controller synchronously before
+        // reaching this decision when leavingRemote is true — this input
+        // combination (leavingRemote=true, compactAborted=false) simply
+        // proves the decision doesn't depend on compactAborted once
+        // leavingRemote is true.
+        const decision = selectAbortStatusMessage({
+            hasCompactInFlight: true,
+            leavingRemote: true,
+            compactAborted: false
+        });
+
+        expect(decision).toEqual({ message: 'Turn aborted', shouldClearThinking: true });
+    });
+
+    it('no compact in flight reports "Turn aborted" regardless of leavingRemote', () => {
+        expect(selectAbortStatusMessage({ hasCompactInFlight: false, leavingRemote: false, compactAborted: false }))
+            .toEqual({ message: 'Turn aborted', shouldClearThinking: true });
+        expect(selectAbortStatusMessage({ hasCompactInFlight: false, leavingRemote: true, compactAborted: false }))
+            .toEqual({ message: 'Turn aborted', shouldClearThinking: true });
+    });
+
+    it('a compact already aborted by an interleaved leavingRemote=true call reports "Turn aborted" for a subsequent plain-Stop continuation reading the re-checked state — this is the RPC-overlap message-ordering fix', () => {
+        // Reproduces the exact scenario the previous round's fix addressed:
+        // Stop's continuation resumes (leavingRemote=false, as originally
+        // called) *after* an interleaved switch-to-local call already
+        // aborted the same controller. Re-reading `compactAborted` (true
+        // here) rather than trusting a stale "was it aborted when I
+        // started" snapshot is what makes this resolve to "Turn aborted"
+        // instead of a now-inaccurate "still waiting" message that would
+        // appear confusingly after switch's own "Turn aborted" already
+        // printed.
+        const decision = selectAbortStatusMessage({
+            hasCompactInFlight: true,
+            leavingRemote: false,
+            compactAborted: true
+        });
+
+        expect(decision).toEqual({ message: 'Turn aborted', shouldClearThinking: true });
     });
 });
