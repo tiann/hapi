@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fetchCompactionSummary, splitProviderModel, triggerOpencodeCompact } from './opencodeCompactBridge';
 
+// `signal` is a required field (see OpencodeCompactCallOpts's doc comment) —
+// most tests below don't exercise abort behavior at all, so this is a
+// signal that's simply never aborted, just satisfying the type.
+const noSignal = new AbortController().signal;
+
 describe('splitProviderModel', () => {
     it('splits a combined "provider/model" wire id on the first slash', () => {
         expect(splitProviderModel('ollama/qwen3.6:35b-a3b-q8_0-mtp')).toEqual({
@@ -40,16 +45,19 @@ describe('triggerOpencodeCompact', () => {
                 providerID: 'ollama',
                 modelID: 'qwen3.6:35b-a3b-q8_0-mtp'
             });
-            // No AbortSignal should be attached — the request may legitimately
-            // take 90s+ (verified against SER8, 2026-07-30), so callers must
-            // not impose a short client-side timeout.
-            expect(init?.signal).toBeUndefined();
+            // `signal` is always attached now (required — see
+            // OpencodeCompactCallOpts), but it must not act as a deadline on
+            // its own: the caller here never aborts it, so the request must
+            // run to completion regardless of how long it legitimately takes
+            // (90s+ verified against SER8, 2026-07-30).
+            expect(init?.signal).toBe(noSignal);
             // Bun's global fetch() hardcodes a 5-minute idle timeout that
             // fires even with no AbortSignal at all (verified via isolated
             // E2E against SER8, 2026-07-30 — a real ~250s compaction call
             // failed with "The operation timed out"; see oven-sh/bun#16682).
             // The only documented workaround is this Bun-specific,
-            // non-standard `timeout: false` fetch option.
+            // non-standard `timeout: false` fetch option — needed regardless
+            // of whether the caller's own `signal` ever fires.
             expect((init as unknown as { timeout?: boolean })?.timeout).toBe(false);
             return new Response(null, { status: 204 });
         });
@@ -59,7 +67,8 @@ describe('triggerOpencodeCompact', () => {
             sessionId: 'ses_abc',
             providerId: 'ollama',
             modelId: 'qwen3.6:35b-a3b-q8_0-mtp',
-            fetchImpl
+            fetchImpl,
+            signal: noSignal
         });
 
         expect(result).toEqual({ ok: true });
@@ -77,7 +86,8 @@ describe('triggerOpencodeCompact', () => {
             sessionId: 'ses_abc',
             providerId: 'ollama',
             modelId: 'qwen3.6:35b-a3b-q8_0-mtp',
-            fetchImpl
+            fetchImpl,
+            signal: noSignal
         });
 
         expect(result.ok).toBe(false);
@@ -97,7 +107,8 @@ describe('triggerOpencodeCompact', () => {
             sessionId: 'ses_abc',
             providerId: 'ollama',
             modelId: 'qwen3.6:35b-a3b-q8_0-mtp',
-            fetchImpl
+            fetchImpl,
+            signal: noSignal
         });
 
         expect(result).toEqual({ ok: false, error: 'ECONNREFUSED' });
@@ -114,7 +125,8 @@ describe('triggerOpencodeCompact', () => {
             sessionId: 'ses with space',
             providerId: 'ollama',
             modelId: 'model-x',
-            fetchImpl
+            fetchImpl,
+            signal: noSignal
         });
 
         expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -188,7 +200,8 @@ describe('fetchCompactionSummary', () => {
         const result = await fetchCompactionSummary({
             baseUrl: 'http://127.0.0.1:48273',
             sessionId: 'ses_abc',
-            fetchImpl
+            fetchImpl,
+            signal: noSignal
         });
 
         expect(result).toEqual({ found: true, text: '## Objective\n- Did the thing' });
@@ -203,7 +216,8 @@ describe('fetchCompactionSummary', () => {
         const result = await fetchCompactionSummary({
             baseUrl: 'http://127.0.0.1:48273',
             sessionId: 'ses_abc',
-            fetchImpl
+            fetchImpl,
+            signal: noSignal
         });
 
         expect(result).toEqual({ found: true, text: 'summary via positional match' });
@@ -222,7 +236,8 @@ describe('fetchCompactionSummary', () => {
         const result = await fetchCompactionSummary({
             baseUrl: 'http://127.0.0.1:48273',
             sessionId: 'ses_abc',
-            fetchImpl
+            fetchImpl,
+            signal: noSignal
         });
 
         expect(result).toEqual({ found: false });
@@ -244,7 +259,8 @@ describe('fetchCompactionSummary', () => {
         const result = await fetchCompactionSummary({
             baseUrl: 'http://127.0.0.1:48273',
             sessionId: 'ses_abc',
-            fetchImpl
+            fetchImpl,
+            signal: noSignal
         });
 
         expect(result).toEqual({ found: true, text: '## Objective\n- Did the thing' });
@@ -259,7 +275,8 @@ describe('fetchCompactionSummary', () => {
         const result = await fetchCompactionSummary({
             baseUrl: 'http://127.0.0.1:48273',
             sessionId: 'ses_abc',
-            fetchImpl
+            fetchImpl,
+            signal: noSignal
         });
 
         expect(result).toEqual({ found: false });
@@ -273,7 +290,8 @@ describe('fetchCompactionSummary', () => {
         const result = await fetchCompactionSummary({
             baseUrl: 'http://127.0.0.1:48273',
             sessionId: 'ses_abc',
-            fetchImpl
+            fetchImpl,
+            signal: noSignal
         });
 
         expect(result).toEqual({ found: false });
@@ -288,7 +306,8 @@ describe('fetchCompactionSummary', () => {
         const result = await fetchCompactionSummary({
             baseUrl: 'http://127.0.0.1:48273',
             sessionId: 'ses_abc',
-            fetchImpl
+            fetchImpl,
+            signal: noSignal
         });
 
         expect(result).toEqual({ found: false });
@@ -300,7 +319,8 @@ describe('fetchCompactionSummary', () => {
         const result = await fetchCompactionSummary({
             baseUrl: 'http://127.0.0.1:48273',
             sessionId: 'ses_abc',
-            fetchImpl
+            fetchImpl,
+            signal: noSignal
         });
 
         expect(result).toEqual({ found: false });
@@ -312,7 +332,8 @@ describe('fetchCompactionSummary', () => {
         const result = await fetchCompactionSummary({
             baseUrl: 'http://127.0.0.1:48273',
             sessionId: 'ses_abc',
-            fetchImpl
+            fetchImpl,
+            signal: noSignal
         });
 
         expect(result).toEqual({ found: false });
@@ -326,7 +347,8 @@ describe('fetchCompactionSummary', () => {
         const result = await fetchCompactionSummary({
             baseUrl: 'http://127.0.0.1:48273',
             sessionId: 'ses_abc',
-            fetchImpl
+            fetchImpl,
+            signal: noSignal
         });
 
         expect(result).toEqual({ found: false });
@@ -344,9 +366,53 @@ describe('fetchCompactionSummary', () => {
         const result = await fetchCompactionSummary({
             baseUrl: 'http://127.0.0.1:48273',
             sessionId: 'ses_abc',
-            fetchImpl
+            fetchImpl,
+            signal: noSignal
         });
 
         expect(result).toEqual({ found: true, text: 'second summary' });
+    });
+
+    it('forwards an AbortSignal to fetch when provided, so a caller can interrupt an in-flight request', async () => {
+        const controller = new AbortController();
+        const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+            expect(init?.signal).toBe(controller.signal);
+            return new Response(JSON.stringify([]), { status: 200 });
+        });
+
+        await fetchCompactionSummary({
+            baseUrl: 'http://127.0.0.1:48273',
+            sessionId: 'ses_abc',
+            fetchImpl,
+            signal: controller.signal
+        });
+
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+    });
+
+    it('resolves with found:false (not a hang or uncaught rejection) when the signal aborts mid-request', async () => {
+        // Reproduces the exact gap a PR-review round found: the POST
+        // (triggerOpencodeCompact) had a signal wired through in an earlier
+        // round, but this GET — which runs right after it inside
+        // runCompactOperation() — did not, so Stop/switch-to-local could
+        // still block on this call even after that fix.
+        const controller = new AbortController();
+        const fetchImpl = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => {
+                reject(new DOMException('The operation was aborted.', 'AbortError'));
+            });
+        }));
+
+        const resultPromise = fetchCompactionSummary({
+            baseUrl: 'http://127.0.0.1:48273',
+            sessionId: 'ses_abc',
+            fetchImpl,
+            signal: controller.signal
+        });
+
+        controller.abort();
+        const result = await resultPromise;
+
+        expect(result).toEqual({ found: false });
     });
 });

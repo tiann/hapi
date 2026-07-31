@@ -381,6 +381,24 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
+    /**
+     * /compact must stop being offered the instant remote mode starts
+     * leaving — not merely by the time it's actually torn down, and
+     * critically not only on the *next* local-mode entry (the previous
+     * mechanism, in loop.ts's `runLocal:` callback). That gap between "a
+     * switch/exit was requested" and "the next runLocal() call reset this"
+     * is exactly the window a PR-review round found: a /compact slash
+     * command arriving in it still queues normally (runOpencode.ts's
+     * `compactSupported` flag hadn't flipped yet), and since local mode
+     * immediately hands back to remote when it finds a non-empty queue, that
+     * queued compact can end up running anyway — despite the user having
+     * already asked to leave remote mode. See onLeavingRemote()'s doc
+     * comment on RemoteLauncherBase for exactly when this fires.
+     */
+    protected onLeavingRemote(): void {
+        this.options.onCompactAvailabilityChange?.(false);
+    }
+
     protected async cleanup(): Promise<void> {
         this.clearAbortHandlers(this.session.client.rpcHandlerManager);
 
@@ -500,8 +518,12 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             // during this whole operation (REST call or summary lookup)
             // suppresses "Compaction completed" and the Reasoning block
             // together — this mirrors the pre-redesign behavior, where both were
-            // produced by one combined async step checked once.
-            const summary = await fetchCompactionSummary({ baseUrl, sessionId: acpSessionId });
+            // produced by one combined async step checked once. `signal` is
+            // required on this call (see OpencodeCompactCallOpts) for exactly
+            // the reason a prior PR-review round flagged as missing here: the
+            // POST above being interruptible isn't enough on its own if this
+            // GET can still block Stop/switch-to-local for as long as it takes.
+            const summary = await fetchCompactionSummary({ baseUrl, sessionId: acpSessionId, signal: compactAbortController.signal });
 
             if (isCancelled()) {
                 logger.debug('[opencode-remote] /compact result suppressed: cancelled or aborted before it resolved');

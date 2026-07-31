@@ -61,20 +61,22 @@ export async function opencodeLoop(opts: OpencodeLoopOptions): Promise<void> {
         session,
         startingMode: opts.startingMode,
         logTag: 'opencode-loop',
-        runLocal: (instance) => {
-            // /compact only exists in remote mode (it needs the ACP backend +
-            // internal HTTP baseUrl that only opencodeRemoteLauncher owns).
-            // Reset availability on every entry into local mode — including
-            // a remote->local handoff mid-session — so a stale "available"
-            // flag from the just-disposed remote launcher can't survive the
-            // switch and let /compact try to run against state that no
-            // longer exists.
-            opts.onCompactAvailabilityChange?.(false);
-            return opencodeLocalLauncher(instance, {
-                hookServer: opts.hookServer,
-                hookUrl: opts.hookUrl
-            });
-        },
+        // /compact only exists in remote mode (it needs the ACP backend +
+        // internal HTTP baseUrl that only opencodeRemoteLauncher owns).
+        // Availability is reset to false as part of *leaving* remote mode,
+        // not on *entering* local mode — see OpencodeRemoteLauncher's
+        // onLeavingRemote() override — so it's already false by the time
+        // runLocal below ever runs; no reset needed here. That decoupling is
+        // deliberate: resetting on local-entry left a window between "a
+        // switch/exit was requested" and "the next runLocal() call actually
+        // happened" where availability was still stale-true, which a
+        // PR-review round found could let a /compact queued in that window
+        // run anyway once local mode bounced straight back to remote to
+        // drain a non-empty queue.
+        runLocal: (instance) => opencodeLocalLauncher(instance, {
+            hookServer: opts.hookServer,
+            hookUrl: opts.hookUrl
+        }),
         runRemote: (instance) => opencodeRemoteLauncher(instance, {
             onReasoningEffortRollback: opts.onReasoningEffortRollback,
             onCompactAvailabilityChange: opts.onCompactAvailabilityChange,

@@ -19,6 +19,30 @@ export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 type BunFetchInit = RequestInit & { timeout?: false };
 
 /**
+ * Every OpenCode-side HTTP call `runCompactOperation()` in
+ * opencodeRemoteLauncher.ts makes on behalf of a single /compact operation
+ * must extend this — `signal` is **required**, not optional. That launcher
+ * owns exactly one `AbortController` for the operation's whole lifecycle
+ * (`compactAbortController`, aborted by `handleAbort()` on Stop/switch/exit)
+ * and threads its `.signal` through every step so a user-initiated
+ * interruption actually reaches whichever HTTP call happens to be in flight
+ * at the time.
+ *
+ * This was previously opt-in (`signal?: AbortSignal`) on each function
+ * individually, which is exactly how a real regression happened: a second
+ * PR-review round later found that `triggerOpencodeCompact` (the POST) had
+ * been wired up but `fetchCompactionSummary` (the GET that runs right
+ * after it) had not, because nothing forced it. Making `signal` a required
+ * field of a shared base type means the compiler — not code review — is
+ * what catches a future third HTTP step added here without it.
+ */
+export type OpencodeCompactCallOpts = {
+    baseUrl: string;
+    sessionId: string;
+    signal: AbortSignal;
+};
+
+/**
  * Splits an ACP-reported combined model id (e.g. `"ollama/qwen3.6:35b-a3b-q8_0-mtp"`)
  * into the separate `providerId`/`modelId` pair required by OpenCode's internal
  * `POST /session/:id/summarize` payload. Only the first `/` is treated as the
@@ -51,11 +75,9 @@ export function splitProviderModel(combined: string | null | undefined): { provi
  * The response can legitimately take several minutes to arrive for slow
  * models, so by default no deadline is applied here, mirroring how
  * `AcpSdkBackend.prompt()` uses `timeoutMs: Infinity` for `session/prompt`.
- * Callers that need to interrupt an in-flight call (e.g. the launcher's
- * Stop/switch-to-local handler, which otherwise has no way to unblock a
- * dequeued /compact that's actively waiting on this request) can pass
- * `signal` — this is a caller-driven abort, not a deadline, so it's
- * orthogonal to the Bun timeout workaround below (both can be set at once).
+ * `signal` (required — see `OpencodeCompactCallOpts`) is a caller-driven
+ * abort, not a deadline, so it's orthogonal to the Bun timeout workaround
+ * below (both apply at once).
  *
  * Omitting the `timeout: false` option below is NOT enough under Bun: Bun's
  * global `fetch()` hardcodes its own idle timeout (~5 minutes) that fires
@@ -65,15 +87,12 @@ export function splitProviderModel(combined: string | null | undefined): { provi
  * report oven-sh/bun#16682). The only documented workaround is the
  * non-standard `timeout: false` fetch option Bun itself recognizes (absent
  * from the standard `RequestInit` typings, hence the cast below) — kept
- * unconditionally regardless of whether a caller also passes `signal`.
+ * unconditionally regardless of `signal` also being set.
  */
-export async function triggerOpencodeCompact(opts: {
-    baseUrl: string;
-    sessionId: string;
+export async function triggerOpencodeCompact(opts: OpencodeCompactCallOpts & {
     providerId: string;
     modelId: string;
     fetchImpl?: FetchLike;
-    signal?: AbortSignal;
 }): Promise<OpencodeCompactResult> {
     const fetchFn: FetchLike = opts.fetchImpl ?? fetch;
     const url = `${opts.baseUrl}/session/${encodeURIComponent(opts.sessionId)}/summarize`;
@@ -154,20 +173,19 @@ function extractTextPart(entry: OpencodeMessageEntry | undefined): string | null
  * compacted more than once, only the most recent marker is considered.
  *
  * Never throws — any failure (network error, unexpected response shape, no
- * marker found, no text part found) resolves to `{ found: false }` so the
- * caller can silently skip showing the summary rather than surfacing an
- * error for what is a purely cosmetic enhancement.
+ * marker found, no text part found, or `signal` — see `OpencodeCompactCallOpts`
+ * — firing mid-request) resolves to `{ found: false }` so the caller can
+ * silently skip showing the summary rather than surfacing an error for what
+ * is a purely cosmetic enhancement.
  */
-export async function fetchCompactionSummary(opts: {
-    baseUrl: string;
-    sessionId: string;
+export async function fetchCompactionSummary(opts: OpencodeCompactCallOpts & {
     fetchImpl?: FetchLike;
 }): Promise<CompactionSummaryResult> {
     const fetchFn: FetchLike = opts.fetchImpl ?? fetch;
     const url = `${opts.baseUrl}/session/${encodeURIComponent(opts.sessionId)}/message`;
 
     try {
-        const response = await fetchFn(url, { method: 'GET' });
+        const response = await fetchFn(url, { method: 'GET', signal: opts.signal });
         if (!response.ok) return { found: false };
 
         const data: unknown = await response.json().catch(() => null);

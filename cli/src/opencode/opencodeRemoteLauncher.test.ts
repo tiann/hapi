@@ -18,7 +18,11 @@ const harness = vi.hoisted(() => ({
     // needed to deterministically test ordering against /compact without
     // guessing tick counts.
     promptImpl: null as null | (() => Promise<void>),
-    sessionModelsMetadata: undefined as undefined | { currentModelId: string; availableModels: unknown[] }
+    sessionModelsMetadata: undefined as undefined | { currentModelId: string; availableModels: unknown[] },
+    // Lets a test hold handleAbort()'s cancelPrompt() call pending, so it
+    // can assert something happened *before* handleAbort()'s async teardown
+    // finished rather than merely by the time it eventually settles.
+    cancelPromptImpl: null as null | (() => Promise<void>)
 }));
 
 vi.mock('./utils/opencodeBackend', () => ({
@@ -63,7 +67,11 @@ vi.mock('./utils/opencodeBackend', () => ({
             }
             harness.events.push('prompt:end');
         }),
-        cancelPrompt: vi.fn(async () => {}),
+        cancelPrompt: vi.fn(async () => {
+            if (harness.cancelPromptImpl) {
+                await harness.cancelPromptImpl();
+            }
+        }),
         respondToPermission: vi.fn(async () => {}),
         onStderrError: vi.fn(),
         setSessionInfoUpdateListener: vi.fn(),
@@ -105,13 +113,16 @@ vi.mock('@/ui/ink/OpencodeDisplay', () => ({
 const compactHarness = vi.hoisted(() => ({
     calls: [] as Array<{ baseUrl: string; sessionId: string; providerId: string; modelId: string; signal?: AbortSignal }>,
     result: { ok: true } as { ok: true } | { ok: false; error: string },
-    summaryCalls: [] as Array<{ baseUrl: string; sessionId: string }>,
+    summaryCalls: [] as Array<{ baseUrl: string; sessionId: string; signal?: AbortSignal }>,
     summaryResult: { found: false } as { found: true; text: string } | { found: false },
     // Lets a test simulate a REST call that only settles once its signal is
     // aborted (mirroring how a real fetch() behaves under AbortSignal) —
     // needed to test that handleAbort() actually unblocks an in-flight
     // /compact instead of the default immediate-resolve behavior below.
-    triggerImpl: null as null | ((opts: { baseUrl: string; sessionId: string; providerId: string; modelId: string; signal?: AbortSignal }) => Promise<{ ok: true } | { ok: false; error: string }>)
+    triggerImpl: null as null | ((opts: { baseUrl: string; sessionId: string; providerId: string; modelId: string; signal?: AbortSignal }) => Promise<{ ok: true } | { ok: false; error: string }>),
+    // Same idea, for the GET that runs right after a successful POST — this
+    // is what a PR-review round found was missing a signal entirely.
+    summaryImpl: null as null | ((opts: { baseUrl: string; sessionId: string; signal?: AbortSignal }) => Promise<{ found: true; text: string } | { found: false }>)
 }));
 
 vi.mock('./utils/opencodeCompactBridge', () => ({
@@ -128,8 +139,11 @@ vi.mock('./utils/opencodeCompactBridge', () => ({
         }
         return compactHarness.result;
     }),
-    fetchCompactionSummary: vi.fn(async (opts: { baseUrl: string; sessionId: string }) => {
+    fetchCompactionSummary: vi.fn(async (opts: { baseUrl: string; sessionId: string; signal?: AbortSignal }) => {
         compactHarness.summaryCalls.push(opts);
+        if (compactHarness.summaryImpl) {
+            return compactHarness.summaryImpl(opts);
+        }
         return compactHarness.summaryResult;
     })
 }));
@@ -268,8 +282,10 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         compactHarness.summaryCalls = [];
         compactHarness.summaryResult = { found: false };
         compactHarness.triggerImpl = null;
+        compactHarness.summaryImpl = null;
         harness.promptImpl = null;
         harness.sessionModelsMetadata = undefined;
+        harness.cancelPromptImpl = null;
     });
 
     it('processes a queued /compact operation only after an earlier queued prompt has finished', async () => {
@@ -576,6 +592,120 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         ]);
     });
 
+    it('switch-to-local also interrupts an in-flight fetchCompactionSummary GET (not just the triggerOpencodeCompact POST)', async () => {
+        // Reproduces a second PR-review round's finding: the fix above only
+        // wired the abort signal through triggerOpencodeCompact (the POST).
+        // fetchCompactionSummary (the GET runCompactOperation() calls right
+        // after a successful POST) still had no way to be interrupted, so
+        // Stop/switch-to-local could still block for as long as *that* call
+        // took even after the POST-side fix landed. Here the POST resolves
+        // immediately (ok:true) and the GET is the one that only settles on
+        // abort.
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        let capturedSignal: AbortSignal | undefined;
+        compactHarness.summaryImpl = (opts) => new Promise((resolve) => {
+            capturedSignal = opts.signal;
+            opts.signal?.addEventListener('abort', () => {
+                resolve({ found: false });
+            });
+        });
+
+        const { session, sessionEvents, rpcHandlers } = createSessionStub([
+            { message: '', mode: createCompactMode('ollama/x') }
+        ]);
+
+        const launcherPromise = opencodeRemoteLauncher(session as never, {
+            onCompactAvailabilityChange: () => {}
+        });
+
+        // Wait until the summary GET is actually in flight (i.e. the POST
+        // already resolved successfully).
+        while (compactHarness.summaryCalls.length === 0) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        expect(capturedSignal?.aborted).toBe(false);
+
+        const switchHandler = rpcHandlers.get('switch') as (() => Promise<void>) | undefined;
+        expect(switchHandler).toBeDefined();
+
+        await Promise.race([
+            switchHandler!(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('switch handler (handleAbort) did not return in time')), 2000))
+        ]);
+        expect(capturedSignal?.aborted).toBe(true);
+
+        // No stale "Compaction completed" for an interrupted GET.
+        const messages = sessionEvents.filter((event) => event.type === 'message').map((event) => event.message);
+        expect(messages).toEqual(['📦 Compaction started']);
+
+        await Promise.race([
+            launcherPromise,
+            new Promise((_, reject) => setTimeout(() => reject(new Error('launcher did not exit remote mode in time')), 2000))
+        ]);
+    });
+
+    it('flips /compact availability to false synchronously the instant switch-to-local begins, before handleAbort()\'s async teardown (e.g. cancelPrompt) finishes', async () => {
+        // Reproduces a fourth PR-review round's finding: availability used
+        // to only reset on the *next* local-mode entry (loop.ts's
+        // `runLocal:` callback), leaving a window between "switch was
+        // requested" and "local mode actually started running" where
+        // availability was still stale-true. A /compact slash command
+        // arriving in that window would still queue normally
+        // (runOpencode.ts's `compactSupported` flag hadn't flipped yet) —
+        // and since local mode immediately hands back to remote when it
+        // finds a non-empty queue, that queued compact could end up running
+        // anyway despite the user having already asked to leave remote mode.
+        //
+        // cancelPrompt() is held pending here specifically so the assertion
+        // below happens *during* handleAbort()'s async teardown, not merely
+        // by the time the whole thing eventually settles — proving
+        // availability flips at the earliest possible synchronous point
+        // (requestExit()'s onLeavingRemote() call), not somewhere later in
+        // the same unwind.
+        let resolveCancelPrompt: (() => void) | null = null;
+        harness.cancelPromptImpl = () => new Promise<void>((resolve) => {
+            resolveCancelPrompt = resolve;
+        });
+
+        const availabilityEvents: boolean[] = [];
+        const { session, rpcHandlers } = createSessionStub([], { keepOpen: true });
+
+        const launcherPromise = opencodeRemoteLauncher(session as never, {
+            onCompactAvailabilityChange: (available) => availabilityEvents.push(available)
+        });
+
+        // Wait until remote signals /compact is available (backend ready,
+        // dequeue loop now idle waiting on the empty queue).
+        while (!availabilityEvents.includes(true)) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        expect(availabilityEvents).toEqual([true]);
+
+        const switchHandler = rpcHandlers.get('switch') as (() => Promise<void>) | undefined;
+        expect(switchHandler).toBeDefined();
+
+        const switchPromise = switchHandler!();
+
+        // Let the synchronous prefix of the switch/requestExit/handleAbort
+        // call chain run, then check availability *before* releasing the
+        // held cancelPrompt() — i.e. before handleAbort() can possibly have
+        // finished.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(resolveCancelPrompt).not.toBeNull();
+        expect(availabilityEvents).toEqual([true, false]);
+
+        resolveCancelPrompt!();
+        session.queue.close();
+        await Promise.race([
+            switchPromise,
+            new Promise((_, reject) => setTimeout(() => reject(new Error('switch handler did not settle in time')), 2000))
+        ]);
+        await Promise.race([
+            launcherPromise,
+            new Promise((_, reject) => setTimeout(() => reject(new Error('launcher did not exit remote mode in time')), 2000))
+        ]);
+    });
+
     it('sends the fetched compaction summary as a reasoning-type agent message', async () => {
         compactHarness.summaryResult = { found: true, text: '## Objective\n- Did the thing' };
         harness.sessionModelsMetadata = { currentModelId: 'ollama/qwen3.6:35b-a3b-q8_0-mtp', availableModels: [] };
@@ -587,7 +717,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         await opencodeRemoteLauncher(session as never);
 
         expect(compactHarness.summaryCalls).toEqual([
-            { baseUrl: 'http://127.0.0.1:48273', sessionId: 'acp-session-1' }
+            { baseUrl: 'http://127.0.0.1:48273', sessionId: 'acp-session-1', signal: expect.any(AbortSignal) }
         ]);
         expect(sentAgentMessages).toEqual([
             { type: 'reasoning', message: '## Objective\n- Did the thing', id: expect.any(String) }
