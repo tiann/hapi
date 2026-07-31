@@ -90,12 +90,17 @@ export async function runOpencode(opts: {
 
     const sessionWrapperRef: { current: OpencodeSession | null } = { current: null };
     // Set by opencodeRemoteLauncher once the ACP backend + internal HTTP
-    // baseUrl are available (remote mode only), and reset to false whenever
-    // this session leaves remote mode (see loop.ts's `runLocal:` — covers
-    // both starting in local mode and a remote->local handoff mid-session).
-    // While false, /compact falls back to a not-yet-supported message
-    // instead of being queued — see the `slash.kind === 'compact'` branch
-    // below.
+    // baseUrl are actually ready (remote mode only), and reset to false as
+    // early as possible whenever this session leaves remote mode
+    // (OpencodeRemoteLauncher's onLeavingRemote() override — see its doc
+    // comment on RemoteLauncherBase for exactly when that fires). While
+    // false, the `slash.kind === 'compact'` branch below decides between two
+    // different outcomes depending on `sessionWrapperRef.current?.mode`: a
+    // genuinely local-mode session gets an immediate not-yet-supported
+    // reply, but a session that is already in remote mode and just hasn't
+    // finished ACP initialize+session load/new yet gets queued exactly like
+    // a prompt — see that branch for why treating "not ready yet" the same
+    // as "will never be available" there was itself a bug.
     let compactSupported = false;
     let currentPermissionMode: PermissionMode = opts.permissionMode ?? 'default';
     let sessionModel: string | null = initialModel;
@@ -228,7 +233,30 @@ export async function runOpencode(opts: {
                 });
 
                 if (slash.kind === 'compact') {
-                    if (!compactSupported) {
+                    // `compactSupported` alone conflates two different
+                    // situations: a genuinely local-mode session (compact
+                    // fundamentally can't run — there's no ACP backend to
+                    // run it against) versus a session that's already in
+                    // remote mode but hasn't finished ACP initialize +
+                    // session load/new yet (onCompactAvailabilityChange(true)
+                    // hasn't fired *yet*, but will shortly). A hostile-review
+                    // sweep found the old code treated both the same way —
+                    // an immediate not-yet-supported reply — even though a
+                    // regular prompt sent in that exact same startup window
+                    // queues normally and just waits.
+                    //
+                    // `sessionWrapperRef.current?.mode` (not the `session`
+                    // variable in this closure, which is the lower-level
+                    // ApiSessionClient without a `mode` field) is the actual
+                    // OpencodeSession instance's mode — 'local' | 'remote',
+                    // synced synchronously by onModeChange before either
+                    // launcher starts (see AgentSessionBase) — and is what
+                    // distinguishes the two cases. It's set moments after
+                    // this handler is registered (see sessionWrapperRef's
+                    // declaration comment); `undefined` (not yet set) falls
+                    // through to the safe not-yet-supported default below,
+                    // same as genuinely local mode.
+                    if (!compactSupported && sessionWrapperRef.current?.mode !== 'remote') {
                         if (localId) {
                             session.emitMessagesConsumed([localId], { clearQueuedThinkingGrace: true });
                         }

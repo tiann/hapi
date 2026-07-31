@@ -7,7 +7,16 @@ const mockOpencodeSession = vi.hoisted(() => ({
     pushKeepAlive: vi.fn(),
     thinking: false,
     stopKeepAlive: vi.fn(),
-    onThinkingChange: vi.fn()
+    onThinkingChange: vi.fn(),
+    // Mirrors AgentSessionBase's own `mode` field ('local' | 'remote',
+    // flipped synchronously by onModeChange before either launcher
+    // starts/finishes) — settable per test to simulate a session that
+    // started in remote mode and is still initializing (ACP backend not
+    // ready yet, so onCompactAvailabilityChange(true) hasn't fired), as
+    // opposed to a genuinely local-mode session. This becomes
+    // sessionWrapperRef.current in runOpencode.ts via the mocked
+    // opencodeLoop's onSessionReady callback below.
+    mode: 'local' as 'local' | 'remote'
 }));
 
 const harness = vi.hoisted(() => ({
@@ -103,6 +112,7 @@ describe('runOpencode set-session-config handler', () => {
         mockOpencodeSession.setModelReasoningEffort.mockReset();
         mockOpencodeSession.pushKeepAlive.mockReset();
         mockOpencodeSession.onThinkingChange.mockReset();
+        mockOpencodeSession.mode = 'local';
         harness.session.onUserMessage.mockReset();
         harness.session.onCancelQueuedMessage.mockReset();
         harness.session.sendAgentMessage.mockReset();
@@ -314,6 +324,48 @@ describe('runOpencode set-session-config handler', () => {
         ]);
         expect(harness.session.sendSessionEvent).not.toHaveBeenCalled();
         expect(harness.session.sendAgentMessage).not.toHaveBeenCalled();
+    });
+
+    it('queues /compact like a prompt while a remote-mode session is still initializing (ACP backend not ready yet), instead of rejecting it as not-yet-supported', async () => {
+        // Reproduces a hostile-review finding: compactSupported alone
+        // conflates "genuinely local mode" with "remote mode, but ACP
+        // initialize + session load/new hasn't finished yet" — a regular
+        // prompt sent in that exact same startup window queues normally and
+        // just waits, but /compact used to get an immediate not-yet-supported
+        // reply instead, even though the session is (or is about to be) in
+        // remote mode. sessionWrapperRef.current?.mode (mocked here via
+        // mockOpencodeSession.mode, delivered through onSessionReady) is what
+        // now distinguishes the two — deliberately never call
+        // onCompactAvailabilityChange(true) here, since the whole point is
+        // that this must queue even while it's still false.
+        mockOpencodeSession.mode = 'remote';
+        await runOpencode({});
+
+        const messageQueue = harness.opencodeLoopArgs[0]?.messageQueue as
+            { queue: Array<{ message: string; mode: { operation?: string }; localId?: string; isolate?: boolean }> };
+
+        const userMessageHandler = harness.session.onUserMessage.mock.calls[0]?.[0] as
+            ((msg: { content: { text: string; attachments?: unknown[] } }, localId?: string) => void)
+            | undefined;
+        expect(userMessageHandler).toBeDefined();
+
+        userMessageHandler!({ content: { text: '/compact' } }, 'local-compact-pending');
+        for (let i = 0; i < 5; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+
+        // Must not get the not-yet-supported reply.
+        expect(harness.session.sendAgentMessage).not.toHaveBeenCalled();
+        // Must be queued exactly like the compactSupported===true case above.
+        expect(messageQueue.queue).toEqual([
+            {
+                message: '',
+                mode: expect.objectContaining({ operation: 'compact' }),
+                modeHash: expect.any(String),
+                localId: 'local-compact-pending',
+                isolate: true
+            }
+        ]);
     });
 
     it('falls back to a not-yet-supported message for /compact when compact is not available (e.g. local mode)', async () => {
