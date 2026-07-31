@@ -1002,6 +1002,76 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         ]);
     });
 
+    it('a plain Stop firing during the inline model switch that precedes a compact batch prevents that compact from ever starting once the switch finishes, instead of unconditionally launching it anyway', async () => {
+        // Reproduces a 7th PR-review round finding: compactAbortController
+        // is created before the model/effort switch specifically so a
+        // Stop/switch/exit landing during that switch has something to act
+        // on (see its field doc comment). But a plain Stop only sets
+        // compactResultSuppressed — that flag suppresses the eventual
+        // RESULT of a request that's already in flight (see
+        // runCompactOperation()'s isCancelled()), it does not stop
+        // runCompactOperation() itself from being called in the first
+        // place. Once the switch resolved, the dequeue loop used to call
+        // runCompactOperation() unconditionally regardless — so a compact
+        // cancelled *before* its REST request was ever sent would still
+        // start a brand new one the instant the switch finished, blocking
+        // the dequeue loop for however long that takes despite the user
+        // having already cancelled before anything went out. Round 6's
+        // "wait for a request that's actually in flight to really finish"
+        // invariant only makes sense once a request has actually been sent
+        // — there's nothing server-side to wait for here.
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/launch-default', availableModels: [] };
+        let resolveSetModel: (() => void) | null = null;
+        harness.setModelImpl = () => new Promise<void>((resolve) => {
+            resolveSetModel = resolve;
+        });
+
+        const { session, rpcHandlers, sessionEvents } = createSessionStub([
+            { message: '', mode: createCompactMode('ollama/switched') }
+        ]);
+
+        const launcherPromise = opencodeRemoteLauncher(session as never, {
+            onCompactAvailabilityChange: () => {}
+        });
+
+        // Wait until the model switch is actually in flight.
+        while (harness.setModelArgs.length === 0) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        expect(compactHarness.calls).toEqual([]);
+
+        const abortHandler = rpcHandlers.get('abort') as (() => Promise<void>) | undefined;
+        expect(abortHandler).toBeDefined();
+        await abortHandler!();
+
+        // Release the switch — the loop now decides what to do with the
+        // compact batch. (Cast re-widens the type: see the sibling test
+        // above for why TS narrows this to `never` otherwise.)
+        (resolveSetModel as (() => void) | null)?.();
+
+        // Give the loop several ticks to (incorrectly) start the compact
+        // anyway, if the fix weren't in place.
+        for (let i = 0; i < 10; i++) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+
+        expect(compactHarness.calls).toEqual([]);
+        // No "Compaction started/completed/failed" at all — the operation
+        // never actually began.
+        const messages = sessionEvents.filter((event) => event.type === 'message').map((event) => event.message);
+        expect(messages).toEqual([]);
+
+        // The loop went back to waiting on the (now-empty) queue after
+        // skipping the cancelled compact — close it so the launcher can
+        // exit, same as every other test in this file that reaches the
+        // dequeue loop's steady state.
+        session.queue.close();
+        await Promise.race([
+            launcherPromise,
+            new Promise((_, reject) => setTimeout(() => reject(new Error('launcher did not exit in time')), 2000))
+        ]);
+    });
+
     it('creates a fresh compactAbortController for each sequential compact operation — no leak or cross-clearing between them', async () => {
         // Backs up the "still same controller" guard in runCompactOperation()'s
         // finally block (which only clears this.compactAbortController if it's

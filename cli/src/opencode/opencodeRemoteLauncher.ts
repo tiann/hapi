@@ -422,6 +422,50 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 // via pushIsolated), so its own localId is exactly
                 // batch.items[0]?.localId.
                 const compactLocalId = batch.items[0]?.localId;
+
+                // A 7th PR-review round found that a plain Stop landing
+                // *during the model/effort switch above* — before this
+                // compact's REST request has ever actually been sent — was
+                // silently ignored here. Plain Stop's handleAbort(false) only
+                // sets `compactResultSuppressed = true`; it deliberately
+                // leaves compactAbortController.signal alone (see that
+                // field's doc comment — Round 6 needs the real HTTP request
+                // to keep running so the dequeue loop can wait for genuine
+                // server-side completion). But that logic assumed a request
+                // was already in flight to wait for. Here, mid-switch, none
+                // has been sent yet — so this branch used to call
+                // runCompactOperation() unconditionally once the switch
+                // resolved anyway, starting a brand new REST request the
+                // instant a cancelled compact's turn came up and blocking
+                // the dequeue loop for however long that takes.
+                //
+                // The fix is narrow on purpose: skip starting the operation
+                // only when a plain Stop landed (compactResultSuppressed)
+                // AND the controller was never actually aborted. If the
+                // controller WAS aborted, that means switch/exit's
+                // handleAbort(true) ran instead — and Round 5's test
+                // (below) established that runCompactOperation() must still
+                // be called in that case, threading the pre-aborted signal
+                // through so the fetch call rejects immediately without any
+                // network I/O, rather than being skipped here. Likewise,
+                // isLocalIdCancelled is deliberately NOT consulted here —
+                // it stays solely inside runCompactOperation()'s own
+                // isCancelled(), which fires after "📦 Compaction started"
+                // has already been sent, preserving the established
+                // invariant that "Compaction started" is never suppressed,
+                // only the eventual result is.
+                const suppressedWithoutRealAbort =
+                    this.compactResultSuppressed && !compactAbortController.signal.aborted;
+                if (suppressedWithoutRealAbort) {
+                    if (this.compactAbortController === compactAbortController) {
+                        this.compactAbortController = null;
+                    }
+                    if (session.queue.size() === 0 && !this.shouldExit) {
+                        sendReady();
+                    }
+                    continue;
+                }
+
                 session.onThinkingChange(true);
                 try {
                     await this.runCompactOperation(acpSessionId, compactAbortController, compactLocalId);
