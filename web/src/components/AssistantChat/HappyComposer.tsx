@@ -427,8 +427,20 @@ export function HappyComposer(props: {
     // Kill-switch only (?richMentions=0 / localStorage=0 / VITE=false). Mount-time
     // read — hard reload required, so no per-keystroke localStorage/URL parse.
     const [richMentionsEnabled] = useState(() => isRichComposerMentionsEnabled())
-    const richComposerFue = useFue('rich-composer-mentions')
+    const {
+        status: richComposerFueStatus,
+        engage: engageRichComposerFue,
+        dismiss: dismissRichComposerFue,
+    } = useFue('rich-composer-mentions')
     const prevControlledByUser = useRef(controlledByUser)
+
+    // Composer itself is the affordance: open the FUE callout once the rich
+    // path is live. Relying on DOM focus alone is flaky (programmatic
+    // autofocus / Playwright headless often skip the focus event).
+    useEffect(() => {
+        if (!richMentionsEnabled) return
+        engageRichComposerFue()
+    }, [richMentionsEnabled, engageRichComposerFue])
 
     const recordUserEdit = useCallback(() => {
         userEditGenerationRef.current += 1
@@ -1700,14 +1712,14 @@ export function HappyComposer(props: {
                                         onMirrorChange={handleRichMirrorChange}
                                         onKeyDown={handleKeyDown}
                                         onPaste={handlePaste}
-                                        onFocus={() => richComposerFue.engage()}
+                                        onFocus={() => engageRichComposerFue()}
                                         resolveSessionMentionTooltip={resolveSessionMentionTooltip}
                                         onEdit={handleRichEdit}
                                         className={editorClassName}
                                     />
-                                    {richComposerFue.status !== 'acknowledged' ? (
+                                    {richComposerFueStatus !== 'acknowledged' ? (
                                         <FueDot
-                                            pulsing={richComposerFue.status === 'unseen'}
+                                            pulsing={richComposerFueStatus === 'unseen'}
                                             ariaLabel={t('fue.newFeatureDot')}
                                         />
                                     ) : null}
@@ -1753,11 +1765,11 @@ export function HappyComposer(props: {
                                 />
                             )}
                         </div>
-                        {richMentionsEnabled && richComposerFue.status === 'engaging' ? (
+                        {richMentionsEnabled && richComposerFueStatus === 'engaging' ? (
                             <FueCallout
                                 title={t('richComposer.fueTitle')}
                                 body={t('richComposer.fueBody')}
-                                onDismiss={richComposerFue.dismiss}
+                                onDismiss={dismissRichComposerFue}
                                 dismissLabel={t('fue.gotIt')}
                                 closeAriaLabel={t('fue.closeAriaLabel')}
                                 anchorRef={richComposerFueAnchorRef}
