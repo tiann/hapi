@@ -932,7 +932,7 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
             {(!value || value.length === 0) && placeholder ? (
                 <div
                     aria-hidden
-                    className="pointer-events-none absolute inset-0 text-base leading-snug text-[var(--app-hint)]"
+                    className="pointer-events-none absolute inset-0 overflow-hidden text-ellipsis whitespace-nowrap text-base leading-snug text-[var(--app-hint)]"
                 >
                     {placeholder}
                 </div>

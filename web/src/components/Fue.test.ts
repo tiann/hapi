@@ -68,4 +68,17 @@ describe('computeFueCalloutPlacement', () => {
         expect(result.placement).toBe('above')
         expect(result.top).toBeGreaterThanOrEqual(8)
     })
+
+    it('uses measured panelHeight so taller callouts clear the anchor', () => {
+        const result = computeFueCalloutPlacement({
+            anchor: { top: 700, left: 100, right: 132, bottom: 732 },
+            panelWidth: 288,
+            panelHeight: 180,
+            viewport: VIEWPORT,
+            gap: 8,
+        })
+        expect(result.placement).toBe('above')
+        // top = anchor.top - gap - panelHeight = 700 - 8 - 180 = 512
+        expect(result.top).toBe(512)
+    })
 })

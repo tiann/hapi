@@ -1,5 +1,5 @@
 import type { CSSProperties, ReactNode, RefObject } from 'react'
-import { useEffect, useLayoutEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 
 /**
@@ -112,6 +112,7 @@ export function FueCallout(props: {
     style?: CSSProperties
 }) {
     const panelWidth = props.width ?? 256
+    const panelRef = useRef<HTMLDivElement>(null)
     const [pos, setPos] = useState<{
         top: number
         left: number
@@ -127,9 +128,11 @@ export function FueCallout(props: {
         return () => window.removeEventListener('keydown', onKey)
     }, [props])
 
-    // Position once the anchor is mounted; re-position on viewport changes.
-    // useLayoutEffect so first paint already has correct position
-    // (avoids a flash at 0,0).
+    // Position once the anchor is mounted; re-position on viewport / panel size
+    // changes. useLayoutEffect so first paint already has correct position
+    // (avoids a flash at 0,0). Measure the real panel height — multi-line FUE
+    // bodies are taller than the old 96px estimate and would overlap the
+    // composer if we kept the hard-code.
     useLayoutEffect(() => {
         const anchor = props.anchorRef.current
         if (!anchor) return
@@ -139,9 +142,8 @@ export function FueCallout(props: {
             if (!a) return
             const rect = a.getBoundingClientRect()
             const vp = window.visualViewport
-            // Estimate panel height before render — close enough for clamping;
-            // the actual layout adapts via Tailwind classes anyway.
-            const panelHeight = 96
+            const measured = panelRef.current?.getBoundingClientRect().height ?? 0
+            const panelHeight = measured > 0 ? measured : 96
             setPos(
                 computeFueCalloutPlacement({
                     anchor: rect,
@@ -157,22 +159,30 @@ export function FueCallout(props: {
             )
         }
         measure()
+        const panel = panelRef.current
+        const resizeObserver =
+            typeof ResizeObserver !== 'undefined' && panel
+                ? new ResizeObserver(() => measure())
+                : null
+        if (panel && resizeObserver) resizeObserver.observe(panel)
         window.addEventListener('resize', measure, { passive: true })
         window.addEventListener('scroll', measure, { passive: true, capture: true })
         window.visualViewport?.addEventListener('resize', measure, { passive: true })
         window.visualViewport?.addEventListener('scroll', measure, { passive: true })
         return () => {
+            resizeObserver?.disconnect()
             window.removeEventListener('resize', measure)
             window.removeEventListener('scroll', measure, true)
             window.visualViewport?.removeEventListener('resize', measure)
             window.visualViewport?.removeEventListener('scroll', measure)
         }
-    }, [props.anchorRef, panelWidth])
+    }, [props.anchorRef, panelWidth, props.title, props.body])
 
     if (typeof document === 'undefined') return null
 
     const node = (
         <div
+            ref={panelRef}
             role="dialog"
             aria-label={props.title}
             style={
@@ -184,7 +194,7 @@ export function FueCallout(props: {
                           width: panelWidth,
                           ...props.style,
                       }
-                    : { position: 'fixed', visibility: 'hidden' }
+                    : { position: 'fixed', visibility: 'hidden', width: panelWidth }
             }
             // Solid theme-aware bg + solid amber border. The badge-warning CSS
             // vars are alpha 0.2 (designed to layer over chat content); using
