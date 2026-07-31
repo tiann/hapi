@@ -34,4 +34,12 @@ describe('cursorStaleModelRemap', () => {
         );
         expect(remapped).toBe('cursor-grok-4.5-high-fast');
     });
+
+    it('remaps from stderr when Tip text follows on the same line', () => {
+        const remapped = tryRemapCursorSpawnModelFromError(
+            'grok-4.5[fast=false]',
+            'Cannot use this model: grok-4.5[fast=false]. Available models: cursor-grok-4.5-medium Tip: agent --list-models'
+        );
+        expect(remapped).toBe('cursor-grok-4.5-medium');
+    });
 });

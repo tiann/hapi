@@ -84,6 +84,16 @@ describe('remapStaleCursorModelId', () => {
     it('returns null when no catalog candidate matches', () => {
         expect(remapStaleCursorModelId('grok-4.5[fast=false]', [{ modelId: 'composer-2.5' }])).toBeNull();
     });
+
+    it('remaps when cache still lists the stale legacy wire alongside live CLI skus', () => {
+        expect(
+            remapStaleCursorModelId('grok-4.5[fast=false]', [
+                { modelId: 'grok-4.5[fast=false]' },
+                { modelId: 'cursor-grok-4.5-medium' },
+                { modelId: 'cursor-grok-4.5-medium-fast' },
+            ])
+        ).toBe('cursor-grok-4.5-medium');
+    });
 });
 
 describe('parseCursorAvailableModelsFromRejection', () => {
@@ -93,6 +103,22 @@ describe('parseCursorAvailableModelsFromRejection', () => {
                 'Cannot use this model: grok-4.5[fast=true]. Available models: auto, cursor-grok-4.5-high-fast, composer-2.5'
             )
         ).toEqual(['cursor-grok-4.5-high-fast', 'composer-2.5']);
+    });
+
+    it('stops at Tip text on the same line as Available models', () => {
+        expect(
+            parseCursorAvailableModelsFromRejection(
+                'Cannot use this model: grok-4.5[fast=true]. Available models: cursor-grok-4.5-medium Tip: run agent --list-models'
+            )
+        ).toEqual(['cursor-grok-4.5-medium']);
+    });
+
+    it('does not consume following lines after Available models', () => {
+        expect(
+            parseCursorAvailableModelsFromRejection(
+                'Cannot use this model: grok-4.5[fast=true]. Available models: cursor-grok-4.5-high-fast\nTip: use --list-models for full catalog'
+            )
+        ).toEqual(['cursor-grok-4.5-high-fast']);
     });
 });
 

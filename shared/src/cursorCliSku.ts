@@ -221,15 +221,21 @@ function pickBestCatalogSku(
 
 /** Parse model ids from Cursor `Cannot use this model` stderr (Available models: …). */
 export function parseCursorAvailableModelsFromRejection(text: string): string[] {
-    const match = text.match(/Available models:\s*([\s\S]*)/i);
+    const match = text.match(/Available models:\s*([^\n]*)/i);
     if (!match) {
         return [];
     }
 
-    return match[1]
+    let catalog = match[1].trim();
+    const tipIdx = catalog.search(/\s+Tip:/i);
+    if (tipIdx !== -1) {
+        catalog = catalog.slice(0, tipIdx).trim();
+    }
+
+    return catalog
         .split(',')
         .map((part) => part.trim())
-        .filter((part) => part.length > 0 && part.toLowerCase() !== 'auto' && !part.toLowerCase().startsWith('tip:'));
+        .filter((part) => part.length > 0 && part.toLowerCase() !== 'auto');
 }
 
 /**
@@ -245,7 +251,10 @@ export function remapStaleCursorModelId(
         return null;
     }
 
-    if (available.some((entry) => entry.modelId === trimmed)) {
+    const exact = available.find((entry) => entry.modelId === trimmed);
+    const legacyWire = isCursorAcpWireModelId(trimmed)
+        && resolveCursorLegacyModelBase(cursorModelBaseId(trimmed)) !== cursorModelBaseId(trimmed);
+    if (exact && !legacyWire) {
         return trimmed;
     }
 
