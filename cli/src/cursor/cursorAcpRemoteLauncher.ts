@@ -32,6 +32,7 @@ import { cursorPassThroughStatusMessage, parseCursorSpecialCommand } from './cur
 import { buildCursorModelsSeedPayload, seedCursorModelsCache } from '@/modules/common/cursorModels';
 import { readSharedCursorModelsCache } from '@/modules/common/cursorModelsSharedCache';
 import type { AcpSdkBackend } from '@/agent/backends/acp';
+import type { AcpStderrError } from '@/agent/backends/acp/AcpStdioTransport';
 import { registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
 import {
     resolveCursorSpawnModel,
@@ -109,14 +110,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             backend.setUsageUpdateListener((message) => this.handleAgentMessage(message));
 
             recentStderrHint = null;
-            backend.onStderrError((error) => {
-                logger.debug('[cursor-acp] stderr error', error);
-                recentStderrHint = error.raw || error.message;
-                const converted = convertAgentMessage({ type: 'error', message: error.message });
-                if (converted) {
-                    session.sendAgentMessage(converted);
-                }
-                messageBuffer.addMessage(error.message, 'status');
+            this.wireStderrErrorListener(backend, (hint) => {
+                recentStderrHint = hint;
             });
 
             try {
@@ -224,14 +219,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                         registerAcpSessionTitleSync(backend, session.client);
                         backend.setUsageUpdateListener((message) => this.handleAgentMessage(message));
                         recentStderrHint = null;
-                        backend.onStderrError((error) => {
-                            logger.debug('[cursor-acp] stderr error', error);
-                            recentStderrHint = error.raw || error.message;
-                            const converted = convertAgentMessage({ type: 'error', message: error.message });
-                            if (converted) {
-                                session.sendAgentMessage(converted);
-                            }
-                            messageBuffer.addMessage(error.message, 'status');
+                        this.wireStderrErrorListener(backend, (hint) => {
+                            recentStderrHint = hint;
                         });
                         await backend.initialize();
                         await backend.authenticateIfAvailable('cursor_login');
@@ -416,6 +405,27 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         }
 
         setCursorAcpModelsSnapshot(null);
+    }
+
+    private wireStderrErrorListener(
+        backend: AcpSdkBackend,
+        onHint: (hint: string | null) => void
+    ): void {
+        const session = this.session;
+        const messageBuffer = this.messageBuffer;
+        backend.onStderrError((error: AcpStderrError) => {
+            logger.debug('[cursor-acp] stderr error', error);
+            const hint = error.raw || error.message;
+            onHint(hint);
+            if (error.type === 'model_not_found' && extractCannotUseThisModelMessage(hint)) {
+                return;
+            }
+            const converted = convertAgentMessage({ type: 'error', message: error.message });
+            if (converted) {
+                session.sendAgentMessage(converted);
+            }
+            messageBuffer.addMessage(error.message, 'status');
+        });
     }
 
     private handleCreatePlanAccepted(): void {

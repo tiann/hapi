@@ -16,7 +16,8 @@ const harness = vi.hoisted(() => ({
     deferSetConfigOption: null as Promise<void> | null,
     releaseSetConfigOption: null as (() => void) | null,
     deferLoadSession: null as Promise<void> | null,
-    releaseLoadSession: null as (() => void) | null
+    releaseLoadSession: null as (() => void) | null,
+    stderrErrorHandler: null as ((error: { type: string; message: string; raw?: string }) => void) | null
 }));
 
 const legacyLauncher = vi.hoisted(() => vi.fn());
@@ -38,6 +39,11 @@ vi.mock('./utils/cursorAcpBackend', () => ({
             initialize: vi.fn(async () => {
                 harness.initializeAttempts += 1;
                 if (harness.initializeError && harness.initializeAttempts === 1) {
+                    harness.stderrErrorHandler?.({
+                        type: 'model_not_found',
+                        message: harness.initializeError.message,
+                        raw: harness.initializeError.message
+                    });
                     throw harness.initializeError;
                 }
             }),
@@ -100,7 +106,9 @@ vi.mock('./utils/cursorAcpBackend', () => ({
             }),
             cancelPrompt: vi.fn(async () => {}),
             respondToPermission: vi.fn(async () => {}),
-            onStderrError: vi.fn(),
+            onStderrError: vi.fn((handler) => {
+                harness.stderrErrorHandler = handler ?? null;
+            }),
             setUsageUpdateListener: vi.fn(),
             setSessionInfoUpdateListener: vi.fn(),
             refreshSessionInfo: vi.fn(async () => {}),
@@ -197,6 +205,7 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.releaseSetConfigOption = null;
         harness.deferLoadSession = null;
         harness.releaseLoadSession = null;
+        harness.stderrErrorHandler = null;
         legacyLauncher.mockClear();
         process.stdin.isTTY = false;
         process.stdout.isTTY = false;
@@ -325,6 +334,11 @@ describe('cursorAcpRemoteLauncher', () => {
 
         expect(harness.backendArgs?.args).toContain('cursor-grok-4.5-medium');
         expect(keepAlive).toHaveBeenCalled();
+        expect(
+            (client.sendAgentMessage as ReturnType<typeof vi.fn>).mock.calls.some((call) =>
+                JSON.stringify(call[0]).includes('Cannot use this model')
+            )
+        ).toBe(false);
 
         queue.close();
         await runPromise;
