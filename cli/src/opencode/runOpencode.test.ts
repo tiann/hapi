@@ -30,6 +30,10 @@ const harness = vi.hoisted(() => ({
         sendAgentMessage: vi.fn(),
         sendSessionEvent: vi.fn(),
         emitMessagesConsumed: vi.fn(),
+        // Needed for createModeChangeHandler(session) (real, unmocked) to
+        // run without throwing when a test invokes the real onModeChange
+        // wrapper passed to opencodeLoop.
+        updateAgentState: vi.fn(),
         rpcHandlerManager: {
             registerHandler: vi.fn()
         }
@@ -118,6 +122,7 @@ describe('runOpencode set-session-config handler', () => {
         harness.session.sendAgentMessage.mockReset();
         harness.session.sendSessionEvent.mockReset();
         harness.session.emitMessagesConsumed.mockReset();
+        harness.session.updateAgentState.mockReset();
         harness.session.rpcHandlerManager.registerHandler.mockReset();
         harness.listSlashCommands.mockReset();
         harness.listSlashCommands.mockResolvedValue([]);
@@ -393,6 +398,19 @@ describe('runOpencode set-session-config handler', () => {
     it('stops queuing /compact once availability is reset to false (e.g. a remote->local handoff mid-session)', async () => {
         await runOpencode({});
 
+        // Faithful to real production timing: session.mode stays 'remote'
+        // throughout the whole teardown window (onLeavingRemote firing
+        // synchronously as the very first action of requestExit(), long
+        // before runMainLoop() actually returns and mode flips back to
+        // 'local') — see AgentSessionBase.onModeChange and
+        // OpencodeRemoteLauncher.onLeavingRemote's doc comments. A hostile
+        // review found that omitting this from the mock let a real
+        // regression slip through: the mode-based /compact queuing fix
+        // for the *startup* window (mode:'remote' but not yet ready) also
+        // accidentally re-opened queuing during *this* teardown window,
+        // since both look identical if you only check `mode !== 'remote'`.
+        mockOpencodeSession.mode = 'remote';
+
         const onCompactAvailabilityChange = harness.opencodeLoopArgs[0]?.onCompactAvailabilityChange as
             ((available: boolean) => void) | undefined;
         onCompactAvailabilityChange!(true);
@@ -411,6 +429,79 @@ describe('runOpencode set-session-config handler', () => {
 
         const messageQueue = harness.opencodeLoopArgs[0]?.messageQueue as { queue: unknown[] };
         expect(messageQueue.queue).toEqual([]);
+    });
+
+    it('resumes queuing /compact once a torn-down session re-enters remote mode (compactTeardownInProgress resets on the next remote entry)', async () => {
+        // Locks in the other half of compactTeardownInProgress's contract:
+        // it must not get stuck true forever after one teardown, or every
+        // later remote re-entry's startup window (the case the "queues
+        // /compact like a prompt while..." test above covers) would
+        // incorrectly reject /compact too.
+        //
+        // Round 2 of the review-cycle that produced this test found the
+        // first version didn't actually discriminate the fix: it left
+        // `mockOpencodeSession.mode` at 'remote' throughout, so the gate's
+        // `mode !== 'remote'` clause was permanently false and the test
+        // would have passed identically even if compactTeardownInProgress
+        // never reset (or didn't exist at all). Faithfully modeling the
+        // real local interlude between the two remote attempts — mode
+        // actually flips to 'local' once the first remote launcher's
+        // runMainLoop() fully unwinds, per AgentSessionBase.onModeChange —
+        // is what makes this test sensitive to the reset specifically.
+        mockOpencodeSession.mode = 'remote';
+
+        await runOpencode({});
+
+        const onCompactAvailabilityChange = harness.opencodeLoopArgs[0]?.onCompactAvailabilityChange as
+            ((available: boolean) => void) | undefined;
+        const onModeChange = harness.opencodeLoopArgs[0]?.onModeChange as
+            ((mode: 'local' | 'remote') => void) | undefined;
+        expect(onModeChange).toBeDefined();
+
+        const messageQueue = harness.opencodeLoopArgs[0]?.messageQueue as
+            { queue: Array<{ message: string; mode: { operation?: string }; localId?: string; isolate?: boolean }> };
+        const userMessageHandler = harness.session.onUserMessage.mock.calls[0]?.[0] as
+            ((msg: { content: { text: string; attachments?: unknown[] } }, localId?: string) => void)
+            | undefined;
+
+        // First remote attempt becomes ready, then tears down.
+        onCompactAvailabilityChange!(true);
+        onCompactAvailabilityChange!(false);
+
+        // Local interlude — mode genuinely flips to 'local' here in
+        // production. Sanity-check /compact is still correctly rejected
+        // during it (proves the interlude is real, not cosmetic).
+        mockOpencodeSession.mode = 'local';
+        userMessageHandler!({ content: { text: '/compact' } }, 'local-compact-interlude');
+        for (let i = 0; i < 5; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+        expect(harness.session.sendAgentMessage).toHaveBeenCalledTimes(1);
+        expect(messageQueue.queue).toEqual([]);
+
+        // The next remote attempt begins: mode flips back to 'remote' and
+        // onModeChange fires on that exact transition — this is what
+        // compactTeardownInProgress's reset actually depends on.
+        mockOpencodeSession.mode = 'remote';
+        onModeChange!('remote');
+
+        userMessageHandler!({ content: { text: '/compact' } }, 'local-compact-reentry');
+        for (let i = 0; i < 5; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+
+        // Still only the one not-yet-supported reply from the interlude
+        // above — the re-entry /compact must queue, not get a second reply.
+        expect(harness.session.sendAgentMessage).toHaveBeenCalledTimes(1);
+        expect(messageQueue.queue).toEqual([
+            {
+                message: '',
+                mode: expect.objectContaining({ operation: 'compact' }),
+                modeHash: expect.any(String),
+                localId: 'local-compact-reentry',
+                isolate: true
+            }
+        ]);
     });
 
     it('cancels a slash command that is cancelled before listSlashCommands resolves', async () => {

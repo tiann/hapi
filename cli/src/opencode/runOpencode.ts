@@ -94,14 +94,28 @@ export async function runOpencode(opts: {
     // early as possible whenever this session leaves remote mode
     // (OpencodeRemoteLauncher's onLeavingRemote() override — see its doc
     // comment on RemoteLauncherBase for exactly when that fires). While
-    // false, the `slash.kind === 'compact'` branch below decides between two
-    // different outcomes depending on `sessionWrapperRef.current?.mode`: a
-    // genuinely local-mode session gets an immediate not-yet-supported
-    // reply, but a session that is already in remote mode and just hasn't
-    // finished ACP initialize+session load/new yet gets queued exactly like
-    // a prompt — see that branch for why treating "not ready yet" the same
-    // as "will never be available" there was itself a bug.
+    // false, the `slash.kind === 'compact'` branch below must tell apart two
+    // situations that both look like "compactSupported is false, mode is
+    // 'remote'": a session that just entered remote mode and hasn't finished
+    // ACP initialize+session load/new yet (should queue /compact like a
+    // prompt), versus a session whose remote launcher is already tearing
+    // down (onLeavingRemote fired, `mode` hasn't flipped back to 'local' yet
+    // because that only happens once the whole launcher unwinds — see
+    // AgentSessionBase.onModeChange). `compactTeardownInProgress` below is
+    // what distinguishes them — a hostile-review sweep found that gating on
+    // `mode` alone (added to fix the first case) silently re-opened the
+    // second: it let /compact queue during the exact teardown window
+    // onLeavingRemote exists to protect, since `mode` stays 'remote'
+    // throughout it.
     let compactSupported = false;
+    // True from the moment onCompactAvailabilityChange(false) fires (which,
+    // per onLeavingRemote's contract, only ever happens because remote mode
+    // is being left — never because remote just started) until this session
+    // next re-enters remote mode (see the wrapped `onModeChange` below).
+    // Only meaningful while `sessionWrapperRef.current?.mode === 'remote'`;
+    // harmless/stale otherwise since the mode check alone already rejects a
+    // genuinely local-mode session regardless of this flag's value.
+    let compactTeardownInProgress = false;
     let currentPermissionMode: PermissionMode = opts.permissionMode ?? 'default';
     let sessionModel: string | null = initialModel;
     let sessionModelReasoningEffort: string | null = initialModelReasoningEffort;
@@ -250,13 +264,22 @@ export async function runOpencode(opts: {
                     // ApiSessionClient without a `mode` field) is the actual
                     // OpencodeSession instance's mode — 'local' | 'remote',
                     // synced synchronously by onModeChange before either
-                    // launcher starts (see AgentSessionBase) — and is what
-                    // distinguishes the two cases. It's set moments after
-                    // this handler is registered (see sessionWrapperRef's
-                    // declaration comment); `undefined` (not yet set) falls
-                    // through to the safe not-yet-supported default below,
-                    // same as genuinely local mode.
-                    if (!compactSupported && sessionWrapperRef.current?.mode !== 'remote') {
+                    // launcher starts (see AgentSessionBase). `undefined`
+                    // (not yet set) falls through to the safe
+                    // not-yet-supported default below, same as genuinely
+                    // local mode.
+                    //
+                    // `mode !== 'remote'` alone isn't enough, though:
+                    // `mode` stays 'remote' for the *entire* teardown
+                    // window too (it only flips back to 'local' once the
+                    // whole remote launcher has fully unwound), so without
+                    // also checking `compactTeardownInProgress`, this would
+                    // re-open queuing during exactly the window
+                    // onLeavingRemote() exists to protect — a hostile-review
+                    // sweep found this the first time this branch checked
+                    // `mode` alone (see compactTeardownInProgress's
+                    // declaration comment for the full distinction).
+                    if (!compactSupported && (sessionWrapperRef.current?.mode !== 'remote' || compactTeardownInProgress)) {
                         if (localId) {
                             session.emitMessagesConsumed([localId], { clearQueuedThinkingGrace: true });
                         }
@@ -421,6 +444,7 @@ export async function runOpencode(opts: {
     });
 
     let crashed = false;
+    const notifyHubModeChange = createModeChangeHandler(session);
 
     try {
         await opencodeLoop({
@@ -436,7 +460,19 @@ export async function runOpencode(opts: {
             resumeSessionId: opts.resumeSessionId,
             hookServer,
             hookUrl,
-            onModeChange: createModeChangeHandler(session),
+            onModeChange: (mode) => {
+                if (mode === 'remote') {
+                    // A fresh remote entry is beginning (first-ever, or a
+                    // local interlude ending) — whatever the previous
+                    // remote attempt's teardown state was, it no longer
+                    // applies. (The very first entry into remote mode,
+                    // when `startingMode` is already 'remote', never calls
+                    // onModeChange at all — see loopBase.ts — but this
+                    // flag's initial `false` already covers that case.)
+                    compactTeardownInProgress = false;
+                }
+                notifyHubModeChange(mode);
+            },
             onReasoningEffortRollback: (effort) => {
                 sessionModelReasoningEffort = effort;
             },
@@ -446,6 +482,14 @@ export async function runOpencode(opts: {
             },
             onCompactAvailabilityChange: (available) => {
                 compactSupported = available;
+                if (!available) {
+                    // onCompactAvailabilityChange(false) only ever fires
+                    // from OpencodeRemoteLauncher's onLeavingRemote() (the
+                    // old reset-on-next-local-entry was removed — see its
+                    // declaration comment) — so reaching here always means
+                    // "leaving remote", never "not ready yet".
+                    compactTeardownInProgress = true;
+                }
             },
             isLocalIdCancelled: (localId) => cancelledDequeuedLocalIds.delete(localId)
         });
