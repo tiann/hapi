@@ -35,8 +35,12 @@ export function attachmentsNeedScratchlistMigration(
     return (attachments ?? []).some((att) => !isHubScratchlistAttachmentPath(att.path))
 }
 
+/** Result of a scratchlist park attempt from HappyComposer. */
+export type ScratchlistParkResult =
+    | false
+    | { beforeClear: () => Promise<void> }
+
 /**
- * After a scratchlist park attempt for migrated chat-path chips:
  * - accepted: drop the original chat uploads (hub blobs are on the entry)
  * - rejected: drop the orphan hub blobs so retry can re-migrate from chat paths
  */

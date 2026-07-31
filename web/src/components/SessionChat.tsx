@@ -56,6 +56,7 @@ import {
     rehydrateScratchlistAttachmentsToComposer,
     stageScratchlistAttachmentsForComposeSend,
     type PendingParkAttachment,
+    type ScratchlistParkResult,
 } from '@/lib/scratchlistAttachmentFlow'
 import type { ScratchlistEntry } from '@/lib/scratchlist'
 import { isHubScratchlistAttachmentPath } from '@hapi/protocol'
@@ -630,7 +631,7 @@ function SessionChatInner(props: SessionChatProps) {
         async (
             text: string,
             pending: readonly PendingParkAttachment[],
-        ): Promise<boolean> => {
+        ): Promise<ScratchlistParkResult> => {
             let prepared
             try {
                 prepared = await prepareScratchlistParkAttachments(
@@ -642,18 +643,28 @@ function SessionChatInner(props: SessionChatProps) {
                 return false
             }
             const accepted = await scratchlist.add(text, prepared)
-            await finalizeMigratedScratchlistParkCleanup(
-                props.api,
-                props.session.id,
-                prepared,
-                accepted,
-            )
-            if (accepted) {
-                scratchlistAdapterRef.current?.releaseWithoutDelete(
-                    pending.map((chip) => chip.id),
+            if (!accepted) {
+                await finalizeMigratedScratchlistParkCleanup(
+                    props.api,
+                    props.session.id,
+                    prepared,
+                    false,
                 )
+                return false
             }
-            return accepted
+            return {
+                beforeClear: async () => {
+                    await finalizeMigratedScratchlistParkCleanup(
+                        props.api,
+                        props.session.id,
+                        prepared,
+                        true,
+                    )
+                    scratchlistAdapterRef.current?.releaseWithoutDelete(
+                        pending.map((chip) => chip.id),
+                    )
+                },
+            }
         },
         [props.api, props.session.id, scratchlist],
     )

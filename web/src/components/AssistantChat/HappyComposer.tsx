@@ -39,6 +39,7 @@ import { ComposerButtons } from '@/components/AssistantChat/ComposerButtons'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { AttachmentItem } from '@/components/AssistantChat/AttachmentItem'
 import { ComposerParkingContext } from '@/components/AssistantChat/composerParkingContext'
+import type { ScratchlistParkResult } from '@/lib/scratchlistAttachmentFlow'
 import { useTranslation } from '@/lib/use-translation'
 import { getModelOptionsForFlavor, getNextModelForFlavor } from './modelOptions'
 import { getClaudeComposerEffortOptions } from './claudeEffortOptions'
@@ -281,7 +282,7 @@ export function HappyComposer(props: {
     onParkScratchlist?: (
         text: string,
         pending: readonly import('@assistant-ui/react').Attachment[],
-    ) => Promise<boolean>
+    ) => Promise<ScratchlistParkResult>
     /** Parent disables DragDropZone / scratchlist promote while park is in flight. */
     onScratchlistParkingChange?: (parking: boolean) => void
     // Set when the most recent send failed (4xx/5xx/network).  The composer
@@ -889,15 +890,16 @@ export function HappyComposer(props: {
             setIsParkingScratchlist(true)
             try {
                 const snapshot = api.composer().getState()
-                const accepted = await props.onParkScratchlist(
+                const parkResult = await props.onParkScratchlist(
                     snapshot.text,
                     snapshot.attachments,
                 )
-                if (!accepted) return
+                if (!parkResult) return
                 const current = api.composer().getState()
                 if (!composerParkSnapshotUnchanged(snapshot, current)) {
                     return
                 }
+                await parkResult.beforeClear()
                 api.composer().setText('')
                 await api.composer().clearAttachments()
             } finally {
