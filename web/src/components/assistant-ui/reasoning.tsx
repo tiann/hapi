@@ -96,7 +96,7 @@ export const ReasoningGroup: FC<PropsWithChildren> = ({ children }) => {
                     isOpen ? 'max-h-[5000px] opacity-100' : 'max-h-0 opacity-0'
                 )}
             >
-                <div className="max-h-[60vh] overflow-y-auto overscroll-contain border-t border-[var(--app-divider)] px-3.5 py-3">
+                <div className="max-h-[60vh] overflow-y-auto border-t border-[var(--app-divider)] px-3.5 py-3">
                     {children}
                 </div>
             </div>
