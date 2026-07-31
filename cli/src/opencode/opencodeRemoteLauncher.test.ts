@@ -837,6 +837,102 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         ]);
     });
 
+    it('an abort firing during the inline model switch that precedes a compact batch still interrupts that compact once it runs, instead of the abort landing on a not-yet-created controller', async () => {
+        // Reproduces a hostile-review whole-feature-sweep finding: the
+        // dequeue loop applies the inline model/effort switch to every batch
+        // (including operation:'compact' ones) *before* branching into
+        // runCompactOperation() — which is where compactAbortController used
+        // to get created. backend.setModel()/setConfigOption() are real
+        // async ACP round-trips that yield to the event loop, so an abort
+        // firing in that window used to hit a still-null
+        // compactAbortController (a no-op), and by the time the switch
+        // resolved and runCompactOperation() created a *fresh* controller,
+        // all memory of the abort was gone — the unbounded compact REST call
+        // then ran to completion uninterrupted.
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/launch-default', availableModels: [] };
+        let resolveSetModel: (() => void) | null = null;
+        harness.setModelImpl = () => new Promise<void>((resolve) => {
+            resolveSetModel = resolve;
+        });
+
+        let capturedSignal: AbortSignal | undefined;
+        compactHarness.triggerImpl = (opts) => {
+            capturedSignal = opts.signal;
+            return Promise.resolve({ ok: true });
+        };
+
+        const { session, rpcHandlers } = createSessionStub([
+            { message: '', mode: createCompactMode('ollama/switched') }
+        ]);
+
+        const launcherPromise = opencodeRemoteLauncher(session as never, {
+            onCompactAvailabilityChange: () => {}
+        });
+
+        // Wait until the model switch is actually in flight. setModelArgs is
+        // pushed synchronously before setModelImpl() is awaited (see the
+        // base mock above), so by the time this is non-empty, resolveSetModel
+        // is already assigned too.
+        while (harness.setModelArgs.length === 0) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        expect(compactHarness.calls).toEqual([]);
+
+        const abortHandler = rpcHandlers.get('abort') as (() => Promise<void>) | undefined;
+        expect(abortHandler).toBeDefined();
+        await abortHandler!();
+
+        // Release the switch; the loop now proceeds into the compact batch.
+        // (Cast re-widens the type: TS narrows `resolveSetModel` to `never`
+        // here otherwise, since its only visible assignment is inside the
+        // nested Promise executor above and TS's control-flow analysis
+        // doesn't account for that closure running before this point.)
+        (resolveSetModel as (() => void) | null)?.();
+
+        while (compactHarness.calls.length === 0) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+
+        // The controller the abort acted on during the switch must be the
+        // SAME one threaded into the compact REST call — not a fresh,
+        // never-aborted one created after the fact.
+        expect(capturedSignal?.aborted).toBe(true);
+
+        session.queue.close();
+        await Promise.race([
+            launcherPromise,
+            new Promise((_, reject) => setTimeout(() => reject(new Error('launcher did not exit in time')), 2000))
+        ]);
+    });
+
+    it('creates a fresh compactAbortController for each sequential compact operation — no leak or cross-clearing between them', async () => {
+        // Backs up the "still same controller" guard in runCompactOperation()'s
+        // finally block (which only clears this.compactAbortController if it's
+        // still the instance this call created) with an executable check, not
+        // just the code comment's claim that two runCompactOperation calls can
+        // never overlap. Two isolated /compact items dequeued back-to-back
+        // must each get their own independent controller.
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        const capturedSignals: AbortSignal[] = [];
+        compactHarness.triggerImpl = (opts) => {
+            capturedSignals.push(opts.signal!);
+            return Promise.resolve({ ok: true });
+        };
+
+        const { session } = createSessionStub([], { keepOpen: true });
+        session.queue.pushIsolated('', createCompactMode('ollama/x'), 'compact-1');
+        session.queue.pushIsolated('', createCompactMode('ollama/x'), 'compact-2');
+        session.queue.close();
+
+        await opencodeRemoteLauncher(session as never, { onCompactAvailabilityChange: () => {} });
+
+        expect(capturedSignals.length).toBe(2);
+        expect(capturedSignals[0]).not.toBe(capturedSignals[1]);
+        // Neither should be left in an aborted state by the other's cleanup.
+        expect(capturedSignals[0].aborted).toBe(false);
+        expect(capturedSignals[1].aborted).toBe(false);
+    });
+
     it('injects the skill lookup instruction only on the first prompt', async () => {
         const { session } = createSessionStub([
             { message: 'first', mode: createMode() },

@@ -42,14 +42,19 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private permissionHandler: OpencodePermissionHandler | null = null;
     private happyServer: { stop: () => void } | null = null;
     private abortController = new AbortController();
-    // Set only while runCompactOperation() has a triggerOpencodeCompact()
-    // REST call in flight (null otherwise). Unlike `abortController` above
-    // (which governs the dequeue loop's wait-for-next-message signal),
-    // `handleAbort()` needs this to actually interrupt that HTTP call —
-    // without it, Stop/switch-to-local has no way to unblock a dequeued
-    // /compact whose REST call is deliberately unbounded (see
-    // triggerOpencodeCompact's doc comment) and the launcher stays wedged
-    // until it eventually settles on its own.
+    // Set by the dequeue loop as soon as a batch is identified as a
+    // `operation:'compact'` one — deliberately *before* that batch's inline
+    // model/effort switch runs, not only once runCompactOperation()'s
+    // triggerOpencodeCompact() REST call actually starts (a hostile-review
+    // sweep found that creating it any later left a window during that
+    // switch — a real async ACP round-trip — where an abort had nothing to
+    // act on yet). Null whenever no compact batch is in flight. Unlike
+    // `abortController` above (which governs the dequeue loop's
+    // wait-for-next-message signal), `handleAbort()` needs this to actually
+    // interrupt the compact's HTTP call(s) — without it, Stop/switch-to-local
+    // has no way to unblock a dequeued /compact whose REST call is
+    // deliberately unbounded (see triggerOpencodeCompact's doc comment) and
+    // the launcher stays wedged until it eventually settles on its own.
     private compactAbortController: AbortController | null = null;
     private displayPermissionMode: PermissionMode | null = null;
     private instructionsSent = false;
@@ -212,6 +217,23 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 break;
             }
 
+            // Created here — before the model/effort switch below — rather
+            // than inside runCompactOperation(), so it already exists for
+            // handleAbort() to act on during that switch. backend.setModel()/
+            // setConfigOption() are real async ACP round-trips that yield to
+            // the event loop; a hostile-review whole-feature sweep found
+            // that an abort landing in that window used to hit a still-null
+            // compactAbortController (a no-op) and then get silently
+            // forgotten once runCompactOperation() created a *fresh*
+            // controller afterward — the compact's unbounded REST call would
+            // then run to completion with no way to interrupt it, despite
+            // the user having already pressed Stop/switch/exit.
+            const isCompactBatch = batch.mode.operation === 'compact';
+            const compactAbortController = isCompactBatch ? new AbortController() : null;
+            if (compactAbortController) {
+                this.compactAbortController = compactAbortController;
+            }
+
             // Inline model change via ACP RPC (session/set_model — see ACP SDK
             // schema `x-method: session/set_model`). Mirrors the Gemini pattern
             // from PR #543: if the running OpenCode build does not implement the
@@ -325,14 +347,14 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             // model/effort switch above already ran for this batch just like
             // any other, so compaction runs under whatever model this batch
             // resolved to.
-            if (batch.mode.operation === 'compact') {
+            if (isCompactBatch && compactAbortController) {
                 // A compact batch is always a single isolated item (pushed
                 // via pushIsolated), so its own localId is exactly
                 // batch.items[0]?.localId.
                 const compactLocalId = batch.items[0]?.localId;
                 session.onThinkingChange(true);
                 try {
-                    await this.runCompactOperation(acpSessionId, compactLocalId);
+                    await this.runCompactOperation(acpSessionId, compactAbortController, compactLocalId);
                 } finally {
                     session.onThinkingChange(false);
                     if (session.queue.size() === 0 && !this.shouldExit) {
@@ -440,21 +462,30 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
      * after one combined async trigger(). "Compaction started" itself is
      * never suppressed (it wasn't before either).
      *
-     * Separately, `this.compactAbortController` (set for the duration of
-     * this call, see its field doc comment) covers a different case:
+     * Separately, `compactAbortController` covers a different case:
      * Stop/switch-to-local firing *while the REST call is actually in
      * flight*, which `isLocalIdCancelled` cannot — that mechanism only ever
      * observes a cancel for this item's *queue message*, and by this point
      * the item has already been dequeued. `isCancelled()` below checks both,
      * so either kind of cancellation suppresses the eventual result the same
      * way.
+     *
+     * `compactAbortController` is created by the caller (the dequeue loop),
+     * not here, and passed in — deliberately, before the loop's model/effort
+     * switch for this batch runs, not after. A hostile-review whole-feature
+     * sweep found that creating it in here (i.e. only once this function was
+     * actually entered) left a window during that switch — a real async ACP
+     * round-trip — where an abort had nothing to act on yet (`this
+     * .compactAbortController` was still null) and was silently lost by the
+     * time this function created a *fresh* controller afterward.
      */
-    private async runCompactOperation(acpSessionId: string, localId?: string): Promise<void> {
+    private async runCompactOperation(
+        acpSessionId: string,
+        compactAbortController: AbortController,
+        localId?: string
+    ): Promise<void> {
         const session = this.session;
         session.sendSessionEvent({ type: 'message', message: '📦 Compaction started' });
-
-        const compactAbortController = new AbortController();
-        this.compactAbortController = compactAbortController;
 
         try {
             const isCancelled = (): boolean =>

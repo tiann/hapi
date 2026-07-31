@@ -33,8 +33,11 @@ type BunFetchInit = RequestInit & { timeout?: false };
  * PR-review round later found that `triggerOpencodeCompact` (the POST) had
  * been wired up but `fetchCompactionSummary` (the GET that runs right
  * after it) had not, because nothing forced it. Making `signal` a required
- * field of a shared base type means the compiler — not code review — is
- * what catches a future third HTTP step added here without it.
+ * field of a shared base type means the compiler catches a future third
+ * HTTP step *implemented as a function in this file* without one — it can't
+ * stop someone from bypassing this file entirely with an inline `fetch()`
+ * call in `runCompactOperation()`, so this is a guardrail for the pattern
+ * this file establishes, not an architectural boundary enforced repo-wide.
  */
 export type OpencodeCompactCallOpts = {
     baseUrl: string;
