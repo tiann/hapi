@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { buildCliArgs } from '@/runner/run';
+import { parseRemoteAgentCommandOptions } from '@/commands/agentCommandOptions';
+import { OPENCODE_PERMISSION_MODES } from '@hapi/protocol/modes';
 
 const mockOpencodeSession = vi.hoisted(() => ({
     setModel: vi.fn(),
@@ -21,10 +24,14 @@ const mockOpencodeSession = vi.hoisted(() => ({
 
 const harness = vi.hoisted(() => ({
     bootstrapArgs: [] as Array<Record<string, unknown>>,
+    bootstrapExistingArgs: [] as Array<Record<string, unknown>>,
     opencodeLoopArgs: [] as Array<Record<string, unknown>>,
     opencodeLoopError: null as Error | null,
+    triggerClear: false,
+    clearOpenCodeSession: vi.fn(async () => 'fresh-session'),
     listSlashCommands: vi.fn(async (..._args: unknown[]) => [] as Array<unknown>),
     session: {
+        sessionId: 'source-session',
         onUserMessage: vi.fn(),
         onCancelQueuedMessage: vi.fn(),
         sendAgentMessage: vi.fn(),
@@ -44,7 +51,14 @@ vi.mock('@/agent/sessionFactory', () => ({
     bootstrapSession: vi.fn(async (options: Record<string, unknown>) => {
         harness.bootstrapArgs.push(options);
         return {
-            api: {},
+            api: { clearOpenCodeSession: harness.clearOpenCodeSession },
+            session: harness.session
+        };
+    }),
+    bootstrapExistingSession: vi.fn(async (options: Record<string, unknown>) => {
+        harness.bootstrapExistingArgs.push(options);
+        return {
+            api: { clearOpenCodeSession: harness.clearOpenCodeSession },
             session: harness.session
         };
     })
@@ -60,6 +74,10 @@ vi.mock('./loop', () => ({
         if (onSessionReady) {
             onSessionReady(mockOpencodeSession);
         }
+        if (harness.triggerClear) {
+            const onClearRequested = options.onClearRequested as (() => void) | undefined;
+            onClearRequested?.();
+        }
     })
 }));
 
@@ -69,6 +87,7 @@ vi.mock('@/claude/registerKillSessionHandler', () => ({
 
 const lifecycleMock = vi.hoisted(() => ({
     registerProcessHandlers: vi.fn(),
+    cleanup: vi.fn(async () => {}),
     cleanupAndExit: vi.fn(async () => {}),
     markCrash: vi.fn(),
     setExitCode: vi.fn(),
@@ -109,8 +128,12 @@ import { runOpencode } from './runOpencode';
 describe('runOpencode set-session-config handler', () => {
     beforeEach(() => {
         harness.bootstrapArgs.length = 0;
+        harness.bootstrapExistingArgs.length = 0;
         harness.opencodeLoopArgs.length = 0;
         harness.opencodeLoopError = null;
+        harness.triggerClear = false;
+        harness.clearOpenCodeSession.mockReset();
+        harness.clearOpenCodeSession.mockResolvedValue('fresh-session');
         mockOpencodeSession.setModel.mockReset();
         mockOpencodeSession.setPermissionMode.mockReset();
         mockOpencodeSession.setModelReasoningEffort.mockReset();
@@ -127,6 +150,7 @@ describe('runOpencode set-session-config handler', () => {
         harness.listSlashCommands.mockReset();
         harness.listSlashCommands.mockResolvedValue([]);
         lifecycleMock.registerProcessHandlers.mockClear();
+        lifecycleMock.cleanup.mockClear();
         lifecycleMock.cleanupAndExit.mockClear();
         lifecycleMock.markCrash.mockClear();
         lifecycleMock.setExitCode.mockClear();
@@ -142,6 +166,24 @@ describe('runOpencode set-session-config handler', () => {
         expect(configHandler).toBeDefined();
         return configHandler![1] as (payload: unknown) => Promise<unknown>;
     }
+
+    it('carries the runner preallocated id from CLI args through parse into bootstrapExistingSession', async () => {
+        const runnerArgs = buildCliArgs('opencode', {
+            directory: '/tmp/project',
+            existingSessionId: 'preallocated-hapi-id'
+        });
+        const parsed = parseRemoteAgentCommandOptions(runnerArgs.slice(1), OPENCODE_PERMISSION_MODES);
+
+        await runOpencode({ ...parsed, workingDirectory: '/tmp/project' });
+
+        expect(harness.bootstrapArgs).toEqual([]);
+        expect(harness.bootstrapExistingArgs).toEqual([{
+            sessionId: 'preallocated-hapi-id',
+            flavor: 'opencode',
+            startedBy: 'runner',
+            workingDirectory: '/tmp/project'
+        }]);
+    });
 
     it('rejects plan mode for local OpenCode startup', async () => {
         await expect(runOpencode({ permissionMode: 'plan' })).rejects.toThrow(
@@ -329,6 +371,118 @@ describe('runOpencode set-session-config handler', () => {
         ]);
         expect(harness.session.sendSessionEvent).not.toHaveBeenCalled();
         expect(harness.session.sendAgentMessage).not.toHaveBeenCalled();
+    });
+
+    it('queues runner-backed /clear as its own FIFO operation without acknowledging it early', async () => {
+        await runOpencode({ startedBy: 'runner' });
+
+        const messageQueue = harness.opencodeLoopArgs[0]?.messageQueue as
+            { queue: Array<{ message: string; mode: { operation?: string }; localId?: string; isolate?: boolean }> };
+        const userMessageHandler = harness.session.onUserMessage.mock.calls[0]?.[0] as
+            ((msg: { content: { text: string; attachments?: unknown[] } }, localId?: string) => void)
+            | undefined;
+
+        userMessageHandler!({ content: { text: '/clear' } }, 'local-clear');
+        for (let i = 0; i < 5; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+
+        expect(messageQueue.queue).toEqual([
+            {
+                message: '',
+                mode: expect.objectContaining({ operation: 'clear' }),
+                modeHash: expect.any(String),
+                localId: 'local-clear',
+                isolate: true
+            }
+        ]);
+        expect(harness.session.emitMessagesConsumed).not.toHaveBeenCalled();
+    });
+
+    it('latches the first accepted /clear so a queued follow-up prompt is explicitly rejected rather than delivered to the archived source', async () => {
+        let resolveCommands: ((commands: Array<unknown>) => void) | undefined;
+        harness.listSlashCommands.mockImplementationOnce(() => new Promise((resolve) => {
+            resolveCommands = resolve;
+        }));
+        await runOpencode({ startedBy: 'runner' });
+
+        const messageQueue = harness.opencodeLoopArgs[0]?.messageQueue as
+            { queue: Array<{ mode: { operation?: string }; localId?: string }> };
+        const userMessageHandler = harness.session.onUserMessage.mock.calls[0]?.[0] as
+            ((msg: { content: { text: string; attachments?: unknown[] } }, localId?: string) => void);
+
+        userMessageHandler({ content: { text: '/clear' } }, 'first-clear');
+        userMessageHandler({ content: { text: 'must not reach the source session' } }, 'follow-up');
+        await Promise.resolve();
+        resolveCommands?.([]);
+        for (let i = 0; i < 5; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+
+        expect(messageQueue.queue).toEqual([expect.objectContaining({
+            mode: expect.objectContaining({ operation: 'clear' }),
+            localId: 'first-clear'
+        })]);
+        expect(harness.session.emitMessagesConsumed).toHaveBeenCalledWith(
+            ['follow-up'],
+            { clearQueuedThinkingGrace: true }
+        );
+        expect(harness.session.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            message: expect.stringContaining('fresh OpenCode session is opening')
+        }));
+    });
+
+    it('archives the source before asking the hub to spawn the fresh OpenCode process', async () => {
+        harness.triggerClear = true;
+        const order: string[] = [];
+        lifecycleMock.cleanup.mockImplementationOnce(async () => { order.push('cleanup'); });
+        harness.clearOpenCodeSession.mockImplementationOnce(async () => {
+            order.push('spawn');
+            return 'fresh-session';
+        });
+        const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+        try {
+            await runOpencode({ startedBy: 'runner' });
+        } finally {
+            exit.mockRestore();
+        }
+
+        expect(lifecycleMock.setArchiveReason).toHaveBeenCalledWith('Cleared by /clear');
+        expect(lifecycleMock.setSessionEndReason).toHaveBeenCalledWith('cleared');
+        expect(harness.clearOpenCodeSession).toHaveBeenCalledWith('source-session');
+        expect(order).toEqual(['cleanup', 'spawn']);
+    });
+
+    it('surfaces a fresh-session handoff failure instead of exiting cleanly after archival', async () => {
+        harness.triggerClear = true;
+        harness.clearOpenCodeSession.mockRejectedValueOnce(new Error('replacement link failed'));
+        const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+        try {
+            await expect(runOpencode({ startedBy: 'runner' })).rejects.toThrow('replacement link failed');
+        } finally {
+            exit.mockRestore();
+        }
+
+        expect(lifecycleMock.cleanup).toHaveBeenCalled();
+        expect(exit).not.toHaveBeenCalled();
+    });
+
+    it('keeps terminal-backed /clear explicit rather than archiving a session with no runner machine', async () => {
+        await runOpencode({ startedBy: 'terminal' });
+        const userMessageHandler = harness.session.onUserMessage.mock.calls[0]?.[0] as
+            ((msg: { content: { text: string; attachments?: unknown[] } }, localId?: string) => void)
+            | undefined;
+
+        userMessageHandler!({ content: { text: '/clear' } }, 'local-terminal-clear');
+        for (let i = 0; i < 5; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+
+        expect(harness.session.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            message: '/clear is available only for runner-backed OpenCode sessions.'
+        }));
     });
 
     it('queues /compact like a prompt while a remote-mode session is still initializing (ACP backend not ready yet), instead of rejecting it as not-yet-supported', async () => {

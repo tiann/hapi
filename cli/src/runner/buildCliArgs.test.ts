@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildCliArgs } from './run'
+import { buildCliArgs, createSpawnDeduplicator } from './run'
 
 describe('buildCliArgs', () => {
     it('adds --permission-mode for valid permission mode', () => {
@@ -136,6 +136,17 @@ describe('buildCliArgs', () => {
 
 
 
+    it('passes the preallocated HAPI id to OpenCode without resuming its native session', () => {
+        const args = buildCliArgs('opencode', {
+            directory: '/tmp',
+            existingSessionId: 'fresh-hapi-session',
+        })
+
+        expect(args).toContain('--existing-session-id')
+        expect(args).toContain('fresh-hapi-session')
+        expect(args).not.toContain('--resume')
+    })
+
     it('does not pass existing session id flag to agents that do not reuse HAPI rows', () => {
         const args = buildCliArgs('claude', {
             directory: '/tmp',
@@ -265,5 +276,86 @@ describe('buildCliArgs', () => {
             '--effort', 'low',
             '--permission-mode', 'plan'
         ])
+    })
+})
+
+
+describe('createSpawnDeduplicator', () => {
+    it('shares an in-flight spawn and its successful result while the child is alive', async () => {
+        let calls = 0
+        let resolveSpawn: ((result: { type: 'success'; sessionId: string }) => void) | undefined
+        const dedupe = createSpawnDeduplicator(async () => {
+            calls += 1
+            return await new Promise<{ type: 'success'; sessionId: string }>((resolve) => {
+                resolveSpawn = resolve
+            })
+        })
+
+        const first = dedupe({ directory: '/tmp', existingSessionId: 'fresh-hapi-session' })
+        const concurrentRetry = dedupe({ directory: '/tmp', existingSessionId: 'fresh-hapi-session' })
+        expect(calls).toBe(1)
+        resolveSpawn?.({ type: 'success', sessionId: 'fresh-hapi-session' })
+        await expect(first).resolves.toEqual({ type: 'success', sessionId: 'fresh-hapi-session' })
+        await expect(concurrentRetry).resolves.toEqual({ type: 'success', sessionId: 'fresh-hapi-session' })
+
+        await expect(dedupe({ directory: '/tmp', existingSessionId: 'fresh-hapi-session' })).resolves.toEqual({
+            type: 'success', sessionId: 'fresh-hapi-session'
+        })
+        expect(calls).toBe(1)
+    })
+
+    it('retries immediately when spawning fails before a child PID is registered', async () => {
+        let calls = 0
+        const dedupe = createSpawnDeduplicator(async () => {
+            calls += 1
+            return { type: 'error' as const, errorMessage: 'Failed to spawn HAPI process - no PID returned' }
+        })
+
+        const options = { directory: '/tmp', existingSessionId: 'fresh-hapi-session' }
+        await expect(dedupe(options)).resolves.toEqual({ type: 'error', errorMessage: 'Failed to spawn HAPI process - no PID returned' })
+        await expect(dedupe(options)).resolves.toEqual({ type: 'error', errorMessage: 'Failed to spawn HAPI process - no PID returned' })
+
+        expect(calls).toBe(2)
+    })
+
+    it('keeps a timed-out child deduped until the runner observes its exit', async () => {
+        let calls = 0
+        let dedupe!: ReturnType<typeof createSpawnDeduplicator>
+        dedupe = createSpawnDeduplicator(async (options) => {
+            calls += 1
+            dedupe.markChildAlive(options.existingSessionId!)
+            return { type: 'error' as const, errorMessage: 'Session webhook timeout' }
+        })
+
+        const options = { directory: '/tmp', existingSessionId: 'fresh-hapi-session' }
+        await expect(dedupe(options)).resolves.toEqual({ type: 'error', errorMessage: 'Session webhook timeout' })
+        await expect(dedupe(options)).resolves.toEqual({ type: 'error', errorMessage: 'Session webhook timeout' })
+        expect(calls).toBe(1)
+
+        dedupe.onChildExited('fresh-hapi-session')
+        await expect(dedupe(options)).resolves.toEqual({ type: 'error', errorMessage: 'Session webhook timeout' })
+        expect(calls).toBe(2)
+    })
+
+    it('keeps a stopped child deduped until the runner observes its exit', async () => {
+        let calls = 0
+        let dedupe!: ReturnType<typeof createSpawnDeduplicator>
+        dedupe = createSpawnDeduplicator(async (options) => {
+            calls += 1
+            dedupe.markChildAlive(options.existingSessionId!)
+            return { type: 'success' as const, sessionId: 'fresh-hapi-session' }
+        })
+
+        const options = { directory: '/tmp', existingSessionId: 'fresh-hapi-session' }
+        await expect(dedupe(options)).resolves.toEqual({ type: 'success', sessionId: 'fresh-hapi-session' })
+
+        // stopSession() has only requested termination; the child can still be alive.
+        dedupe.markChildStopping('fresh-hapi-session')
+        await expect(dedupe(options)).resolves.toEqual({ type: 'success', sessionId: 'fresh-hapi-session' })
+        expect(calls).toBe(1)
+
+        dedupe.onChildExited('fresh-hapi-session')
+        await expect(dedupe(options)).resolves.toEqual({ type: 'success', sessionId: 'fresh-hapi-session' })
+        expect(calls).toBe(2)
     })
 })

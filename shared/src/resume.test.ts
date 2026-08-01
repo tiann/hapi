@@ -45,6 +45,7 @@ describe('resume schemas', () => {
 
     it('accepts handoff as a session end reason', () => {
         expect(SessionEndReasonSchema.parse('handoff')).toBe('handoff')
+        expect(SessionEndReasonSchema.parse('cleared')).toBe('cleared')
     })
 
     it('accepts handoff in session-ended sync events', () => {
@@ -55,6 +56,14 @@ describe('resume schemas', () => {
         })
 
         expect(parsed.success).toBe(true)
+    })
+
+    it('accepts cleared in session-ended sync events', () => {
+        expect(SyncEventSchema.parse({
+            type: 'session-ended',
+            sessionId: 'session-1',
+            reason: 'cleared'
+        })).toMatchObject({ reason: 'cleared' })
     })
 
     it('requires invokedAt in messages-consumed sync events', () => {

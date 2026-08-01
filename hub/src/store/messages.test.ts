@@ -434,3 +434,24 @@ describe('countFutureScheduledLocalMessages', () => {
         expect(nextAt.get(sessionB.id)).toBeUndefined()
     })
 })
+
+
+describe('moveUninvokedScheduledMessages', () => {
+    it('atomically moves only pending scheduled rows to the replacement session', () => {
+        const store = makeStore()
+        const source = makeSession(store, 'scheduled-source')
+        const replacement = makeSession(store, 'scheduled-replacement')
+        const now = Date.now()
+        const scheduled = store.messages.addMessage(source.id, { text: 'later' }, 'scheduled-local', now + 60_000)
+        store.messages.addMessage(source.id, { text: 'ordinary queued' }, 'ordinary-local')
+
+        expect(store.messages.moveUninvokedScheduledMessages(source.id, replacement.id)).toBe(1)
+        expect(store.messages.getAllMessages(source.id).map((message) => message.id)).not.toContain(scheduled.id)
+        expect(store.messages.getAllMessages(replacement.id)).toEqual([
+            expect.objectContaining({ id: scheduled.id, localId: 'scheduled-local', scheduledAt: now + 60_000, invokedAt: null })
+        ])
+        expect(store.messages.getUninvokedLocalMessages(source.id)).toEqual([
+            expect.objectContaining({ localId: 'ordinary-local', scheduledAt: null })
+        ])
+    })
+})

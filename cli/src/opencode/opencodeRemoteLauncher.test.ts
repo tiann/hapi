@@ -29,7 +29,8 @@ const harness = vi.hoisted(() => ({
     // registered once initialization finishes), so that race can only be
     // reproduced via the terminal UI's onExit/onSwitchToLocal callbacks,
     // not rpcHandlers.
-    newSessionImpl: null as null | (() => Promise<string>)
+    newSessionImpl: null as null | (() => Promise<string>),
+    disconnectImpl: null as null | (() => Promise<void>)
 }));
 
 // Captures the RemoteLauncherDisplayContext (including onExit/
@@ -108,7 +109,11 @@ vi.mock('./utils/opencodeBackend', () => ({
             harness.refreshSessionInfoCalls.push({ sessionId, cwd });
         }),
         onPermissionRequest: vi.fn(),
-        disconnect: vi.fn(async () => {}),
+        disconnect: vi.fn(async () => {
+            if (harness.disconnectImpl) {
+                await harness.disconnectImpl();
+            }
+        }),
         getSessionModelsMetadata: vi.fn(() => harness.sessionModelsMetadata),
         getThoughtLevelConfigOption: vi.fn(() => harness.thoughtLevelOption ?? undefined),
         // Real AcpSdkBackend.suppressUpdatesDuring swaps out the message
@@ -300,6 +305,13 @@ function createCompactMode(model?: string): OpencodeMode {
     };
 }
 
+function createClearMode(): OpencodeMode {
+    return {
+        permissionMode: 'default' as PermissionMode,
+        operation: 'clear'
+    };
+}
+
 describe('opencodeRemoteLauncher inline model switch', () => {
     afterEach(() => {
         harness.setModelArgs = [];
@@ -322,7 +334,82 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         harness.sessionModelsMetadata = undefined;
         harness.cancelPromptImpl = null;
         harness.newSessionImpl = null;
+        harness.disconnectImpl = null;
         inkHarness.lastRenderProps = null;
+    });
+
+    it('reaches /clear only after the earlier prompt settles, without starting another OpenCode turn', async () => {
+        let resolvePrompt: (() => void) | null = null;
+        harness.promptImpl = () => new Promise<void>((resolve) => {
+            resolvePrompt = resolve;
+        });
+        const onClearRequested = vi.fn();
+        const { session } = createSessionStub([
+            { message: 'before-clear', mode: createMode() },
+            { message: '', mode: createClearMode() }
+        ]);
+
+        const launcherPromise = opencodeRemoteLauncher(session as never, { onClearRequested });
+        while (!harness.events.includes('prompt:start')) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        expect(onClearRequested).not.toHaveBeenCalled();
+
+        resolvePrompt!();
+        await launcherPromise;
+
+        expect(harness.events).toEqual(['prompt:start', 'prompt:end']);
+        expect(harness.promptCount).toBe(1);
+        expect(onClearRequested).toHaveBeenCalledTimes(1);
+        // The sibling compact test below intentionally inspects its first
+        // factory result; do not leave this test's backend instance behind.
+        const backendModule = await import('./utils/opencodeBackend');
+        (backendModule.createOpencodeBackend as unknown as ReturnType<typeof vi.fn>).mockClear();
+    });
+
+    it('does not request a replacement if native OpenCode cleanup fails', async () => {
+        harness.disconnectImpl = async () => {
+            throw new Error('disconnect failed');
+        };
+        const onClearRequested = vi.fn();
+        const { session } = createSessionStub([
+            { message: '', mode: createClearMode() }
+        ]);
+
+        await expect(opencodeRemoteLauncher(session as never, { onClearRequested })).rejects.toThrow('disconnect failed');
+        expect(onClearRequested).not.toHaveBeenCalled();
+        const backendModule = await import('./utils/opencodeBackend');
+        (backendModule.createOpencodeBackend as unknown as ReturnType<typeof vi.fn>).mockClear();
+    });
+
+    it('reaches /clear only after an in-flight /compact has completed', async () => {
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        let resolveCompact: (() => void) | null = null;
+        compactHarness.triggerImpl = () => new Promise((resolve) => {
+            resolveCompact = () => resolve({ ok: true });
+        });
+        const onClearRequested = vi.fn();
+        const { session } = createSessionStub([
+            { message: '', mode: createCompactMode('ollama/x') },
+            { message: '', mode: createClearMode() }
+        ]);
+
+        const launcherPromise = opencodeRemoteLauncher(session as never, {
+            onCompactAvailabilityChange: () => {},
+            onClearRequested
+        });
+        while (compactHarness.calls.length === 0) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        expect(onClearRequested).not.toHaveBeenCalled();
+
+        resolveCompact!();
+        await launcherPromise;
+
+        expect(compactHarness.calls).toHaveLength(1);
+        expect(onClearRequested).toHaveBeenCalledTimes(1);
+        const backendModule = await import('./utils/opencodeBackend');
+        (backendModule.createOpencodeBackend as unknown as ReturnType<typeof vi.fn>).mockClear();
     });
 
     it('processes a queued /compact operation only after an earlier queued prompt has finished', async () => {
@@ -533,7 +620,11 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             setSessionInfoUpdateListener: vi.fn(),
             refreshSessionInfo: vi.fn(async () => {}),
             onPermissionRequest: vi.fn(),
-            disconnect: vi.fn(async () => {}),
+            disconnect: vi.fn(async () => {
+            if (harness.disconnectImpl) {
+                await harness.disconnectImpl();
+            }
+        }),
             getSessionModelsMetadata: vi.fn(() => ({
                 currentModelId: 'ollama/qwen3.6:35b-a3b-q8_0-mtp',
                 availableModels: []
@@ -1600,7 +1691,11 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             setSessionInfoUpdateListener: vi.fn(),
             refreshSessionInfo: vi.fn(async () => {}),
             onPermissionRequest: vi.fn(),
-            disconnect: vi.fn(async () => {}),
+            disconnect: vi.fn(async () => {
+            if (harness.disconnectImpl) {
+                await harness.disconnectImpl();
+            }
+        }),
             getSessionModelsMetadata: vi.fn((sessionId: string) => {
                 if (sessionId === 'acp-session-1') {
                     return { availableModels: fixtureModels, currentModelId: 'ollama/exaone:4.5-33b-q8' };

@@ -106,6 +106,21 @@ describe('API extra headers integration', () => {
         })
     })
 
+    it('uses the CLI REST bridge to request a fresh OpenCode session after source cleanup', async () => {
+        axiosPostMock.mockResolvedValue({ data: { ok: true, sessionId: 'fresh-session' } })
+
+        const client = await ApiClient.create()
+        await expect(client.clearOpenCodeSession('source-session')).resolves.toBe('fresh-session')
+
+        expect(axiosPostMock).toHaveBeenCalledWith(
+            'https://hapi.example.com/cli/sessions/source-session/clear-opencode',
+            {},
+            expect.objectContaining({
+                headers: expect.objectContaining({ Authorization: 'Bearer cli-token' })
+            })
+        )
+    })
+
     it('adds extra headers to socket transport options', () => {
         configuration._setExtraHeaders({
             Cookie: 'CF_Authorization=token'

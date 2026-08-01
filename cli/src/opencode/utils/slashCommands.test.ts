@@ -119,11 +119,8 @@ describe('resolveOpencodeSlashCommand', () => {
         }
     });
 
-    it('returns a not-yet-supported message for /clear', () => {
-        expect(resolveOpencodeSlashCommand('/clear', state)).toEqual({
-            kind: 'handled',
-            message: '/clear is not yet supported in HAPI OpenCode sessions.'
-        });
+    it('resolves builtin /clear to the dedicated fresh-session operation', () => {
+        expect(resolveOpencodeSlashCommand('/clear', state)).toEqual({ kind: 'clear' });
     });
 
     it('resolves /compact to a dedicated kind so the launcher can bridge to native compaction asynchronously', () => {
@@ -168,7 +165,7 @@ describe('resolveOpencodeSlashCommand', () => {
             expect(help.message).toContain('/plan');
             expect(help.message).toContain('/permissions');
             expect(help.message).toContain('/compact` — compact (summarize) the OpenCode session context (remote sessions only)');
-            expect(help.message).toContain('/clear` is not yet supported');
+            expect(help.message).toContain('/clear` — archive this HAPI session and open a fresh OpenCode session');
         }
     });
 
