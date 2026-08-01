@@ -447,16 +447,33 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 // (below) established that runCompactOperation() must still
                 // be called in that case, threading the pre-aborted signal
                 // through so the fetch call rejects immediately without any
-                // network I/O, rather than being skipped here. Likewise,
-                // isLocalIdCancelled is deliberately NOT consulted here —
-                // it stays solely inside runCompactOperation()'s own
-                // isCancelled(), which fires after "📦 Compaction started"
-                // has already been sent, preserving the established
-                // invariant that "Compaction started" is never suppressed,
-                // only the eventual result is.
-                const suppressedWithoutRealAbort =
-                    this.compactResultSuppressed && !compactAbortController.signal.aborted;
-                if (suppressedWithoutRealAbort) {
+                // network I/O, rather than being skipped here.
+                //
+                // An 8th PR-review round found this same reasoning also
+                // applies to isLocalIdCancelled, which round 7 had
+                // deliberately left out of this check (see runOpencode.ts's
+                // preparingLocalIds/cancelledBeforeEnqueue doc comment for
+                // the full mechanism): the localId-keyed cancel Set it reads
+                // can *only* ever be populated during the brief network
+                // round trip between the CLI emitting the /compact item's
+                // "invoked" ack and the hub recording it — never while a
+                // compact REST call is actually running. So if
+                // isLocalIdCancelled(compactLocalId) is already true here,
+                // that unconditionally means this compact was cancelled
+                // before its REST request was ever sent, exactly like the
+                // compactResultSuppressed case above — there's no
+                // in-flight server-side work to preserve by starting the
+                // operation anyway. (isLocalIdCancelled is a delete-and-
+                // return, one-shot callback, so checking it here consumes
+                // the same entry runCompactOperation()'s own isCancelled()
+                // would otherwise have consumed — it isn't checked twice.)
+                const compactCancelledByLocalId = compactLocalId
+                    ? (this.options.isLocalIdCancelled?.(compactLocalId) ?? false)
+                    : false;
+                const cancelledBeforeStart =
+                    (this.compactResultSuppressed && !compactAbortController.signal.aborted)
+                    || compactCancelledByLocalId;
+                if (cancelledBeforeStart) {
                     if (this.compactAbortController === compactAbortController) {
                         this.compactAbortController = null;
                     }

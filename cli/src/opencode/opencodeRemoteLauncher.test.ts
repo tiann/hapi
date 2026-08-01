@@ -724,11 +724,19 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         ]);
     });
 
-    it('suppresses the Compaction completed result if the item is cancelled after being dequeued', async () => {
-        // A /compact item's REST call can run for minutes, well past the
-        // point messageQueue.cancelByLocalId (runOpencode.ts) could still
-        // catch it — isLocalIdCancelled is how the launcher finds out a
-        // cancel landed while it was running.
+    it('never starts the compact at all if isLocalIdCancelled already reports the item cancelled the moment it is dequeued', async () => {
+        // isLocalIdCancelled's backing Set (runOpencode.ts's
+        // cancelledBeforeEnqueue) can only ever be populated during the
+        // brief network round trip between the CLI emitting a queued
+        // /compact item's "invoked" ack and the hub recording it — never
+        // while the compact REST call is actually running (see that file's
+        // doc comment for the full mechanism). So by the time the dequeue
+        // loop gets here, a true result unconditionally means this compact
+        // was cancelled before its REST request was ever sent — an 8th
+        // PR-review round found the pre-start check round 7 added for
+        // compactResultSuppressed needed the same treatment here: skip
+        // starting the operation entirely rather than sending "📦
+        // Compaction started" for a request that's about to be thrown away.
         harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
         const isLocalIdCancelled = vi.fn((id: string) => id === 'compact-1');
 
@@ -739,17 +747,19 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         await opencodeRemoteLauncher(session as never, { isLocalIdCancelled });
 
         expect(isLocalIdCancelled).toHaveBeenCalledWith('compact-1');
+        expect(compactHarness.calls).toEqual([]);
         const messages = sessionEvents.filter((event) => event.type === 'message').map((event) => event.message);
-        // "Compaction started" is never suppressed (it wasn't before this
-        // redesign either) — only the eventual result is.
-        expect(messages).toEqual(['📦 Compaction started']);
+        expect(messages).toEqual([]);
         expect(sentAgentMessages).toEqual([]);
     });
 
-    it('suppresses a Compaction failed result too if the item is cancelled after being dequeued', async () => {
+    it('never starts the compact (not even the REST bridge call itself) if isLocalIdCancelled already reports the item cancelled the moment it is dequeued, regardless of localId', async () => {
+        // Sibling of the test above using an unconditional isLocalIdCancelled
+        // (vs. one keyed to a specific id) — doesn't mock triggerOpencodeCompact
+        // at all, since the whole point is that it must never be called; doing
+        // so also avoids leaking a mockImplementationOnce() that would never
+        // get consumed (skip means it's never invoked) into a later test.
         harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
-        const { triggerOpencodeCompact } = await import('./utils/opencodeCompactBridge');
-        (triggerOpencodeCompact as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => ({ ok: false, error: 'boom' }));
         const isLocalIdCancelled = vi.fn(() => true);
 
         const { session, sessionEvents } = createSessionStub([
@@ -758,8 +768,9 @@ describe('opencodeRemoteLauncher inline model switch', () => {
 
         await opencodeRemoteLauncher(session as never, { isLocalIdCancelled });
 
+        expect(compactHarness.calls).toEqual([]);
         const messages = sessionEvents.filter((event) => event.type === 'message').map((event) => event.message);
-        expect(messages).toEqual(['📦 Compaction started']);
+        expect(messages).toEqual([]);
     });
 
     it('does not suppress the result when isLocalIdCancelled reports false', async () => {
