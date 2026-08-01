@@ -178,6 +178,23 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         return c.json({ ok: true })
     })
 
+    app.post('/sessions/:id/clear-opencode', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ error: 'Not ready' }, 503)
+        }
+
+        const result = await engine.clearOpenCodeSession(c.req.param('id'), c.get('namespace'))
+        if (result.type === 'error') {
+            const status = result.code === 'access_denied' ? 403
+                : result.code === 'session_not_found' ? 404
+                    : result.code === 'clear_unavailable' ? 409
+                        : 500
+            return c.json({ error: result.message, code: result.code }, status)
+        }
+        return c.json({ ok: true, sessionId: result.sessionId })
+    })
+
     app.get('/sessions/:id', (c) => {
         const engine = getSyncEngine()
         if (!engine) {

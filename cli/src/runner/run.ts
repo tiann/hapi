@@ -28,6 +28,64 @@ import { resolveWorkspaceRoots } from '@/utils/workspaceRoot';
 import { hashRunnerCliApiToken, hashRunnerExtraHeaders } from './runnerIdentity';
 import { scheduleCursorModelsPrewarm } from '@/modules/common/cursorModelsPrewarm';
 
+/**
+ * Deduplicates a preallocated HAPI-row spawn only while its child is alive.
+ * A lost acknowledgement can retry safely, but a later resume after that
+ * child exits must be allowed to start a new child for the same HAPI row.
+ */
+export type SpawnDeduplicator = ((options: SpawnSessionOptions) => Promise<SpawnSessionResult>) & {
+  markChildAlive: (existingSessionId: string) => void
+  markChildStopping: (existingSessionId: string) => void
+  onChildExited: (existingSessionId: string) => void
+}
+
+export function createSpawnDeduplicator(
+  spawnOnce: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>
+): SpawnDeduplicator {
+  const completedOrInFlight = new Map<string, Promise<SpawnSessionResult>>();
+  const childState = new Map<string, 'alive' | 'stopping'>();
+
+  const dedupe = async (options: SpawnSessionOptions): Promise<SpawnSessionResult> => {
+    const key = options.existingSessionId;
+    if (!key) {
+      return await spawnOnce(options);
+    }
+    const existing = completedOrInFlight.get(key);
+    if (existing) {
+      return await existing;
+    }
+
+    const task = spawnOnce(options);
+    completedOrInFlight.set(key, task);
+    task.then((result) => {
+      // A failure before a PID exists can retry immediately. Once startRunner
+      // has registered a child PID, keep its result until exit/stale detection
+      // confirms that the child is gone.
+      if (result.type !== 'success' && !childState.has(key) && completedOrInFlight.get(key) === task) {
+        completedOrInFlight.delete(key);
+      }
+    }, () => {
+      if (!childState.has(key) && completedOrInFlight.get(key) === task) {
+        completedOrInFlight.delete(key);
+      }
+    });
+    return await task;
+  };
+  dedupe.markChildAlive = (existingSessionId: string) => {
+    childState.set(existingSessionId, 'alive');
+  };
+  dedupe.markChildStopping = (existingSessionId: string) => {
+    if (childState.has(existingSessionId)) {
+      childState.set(existingSessionId, 'stopping');
+    }
+  };
+  dedupe.onChildExited = (existingSessionId: string) => {
+    childState.delete(existingSessionId);
+    completedOrInFlight.delete(existingSessionId);
+  };
+  return dedupe;
+}
+
 export async function startRunner(options: { workspaceRoots?: string[] } = {}): Promise<void> {
   // We don't have cleanup function at the time of server construction
   // Control flow is:
@@ -196,6 +254,9 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     // Session spawning awaiter system
     const pidToAwaiter = new Map<number, (session: TrackedSession) => void>();
     const pidToErrorAwaiter = new Map<number, (errorMessage: string) => void>();
+    // existingSessionId identifies the HAPI row, not a permanent spawn request.
+    // Keep the dedupe entry only while this runner still owns the child PID.
+    const existingSessionIdByChildPid = new Map<number, string>();
     type SpawnFailureDetails = {
       message: string
       pid?: number
@@ -282,7 +343,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     };
 
     // Spawn a new session (sessionId reserved for future --resume functionality)
-    const spawnSession = async (options: SpawnSessionOptions): Promise<SpawnSessionResult> => {
+    let spawnSession!: SpawnDeduplicator;
+    const spawnSessionOnce = async (options: SpawnSessionOptions): Promise<SpawnSessionResult> => {
       logger.debugLargeJson('[RUNNER RUN] Spawning session', options);
 
       const { directory, sessionId, machineId, approvedNewDirectoryCreation = true } = options;
@@ -486,6 +548,10 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         happyProcess.removeListener('error', captureSpawnErrorBeforePidCheck);
 
         const pid = happyProcess.pid;
+        if (options.existingSessionId) {
+          existingSessionIdByChildPid.set(pid, options.existingSessionId);
+          spawnSession.markChildAlive(options.existingSessionId);
+        }
         logger.debug(`[RUNNER RUN] Spawned process with PID ${pid}`);
         let observedExitCode: number | null = null;
         let observedExitSignal: NodeJS.Signals | null = null;
@@ -551,7 +617,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             pidToAwaiter.delete(pid);
             errorAwaiter(buildWebhookFailureMessage('process-error-before-webhook'));
           }
-          onChildExited(pid);
+          // A process error is not proof that a PID-owning child has exited.
+          // The exit handler or heartbeat stale check releases its dedupe key.
         });
 
         // Wait for webhook to populate session with happySessionId
@@ -647,6 +714,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       }
     };
 
+    spawnSession = createSpawnDeduplicator(spawnSessionOnce);
+
     // Stop a session by sessionId or PID fallback
     const stopSession = (sessionId: string): boolean => {
       logger.debug(`[RUNNER RUN] Attempting to stop session ${sessionId}`);
@@ -673,6 +742,12 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             }
           }
 
+          // A stop request starts termination but does not prove that a detached
+          // child is gone. Keep its HAPI-row dedupe key until exit/stale detection.
+          const existingSessionId = existingSessionIdByChildPid.get(pid);
+          if (existingSessionId) {
+            spawnSession.markChildStopping(existingSessionId);
+          }
           pidToTrackedSession.delete(pid);
           logger.debug(`[RUNNER RUN] Removed session ${sessionId} from tracking`);
           return true;
@@ -686,6 +761,11 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     // Handle child process exit
     const onChildExited = (pid: number) => {
       logger.debug(`[RUNNER RUN] Removing exited process PID ${pid} from tracking`);
+      const existingSessionId = existingSessionIdByChildPid.get(pid);
+      if (existingSessionId) {
+        spawnSession.onChildExited(existingSessionId);
+        existingSessionIdByChildPid.delete(pid);
+      }
       pidToTrackedSession.delete(pid);
       pidToAwaiter.delete(pid);
       pidToErrorAwaiter.delete(pid);
@@ -877,10 +957,14 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       }
 
       // Prune stale sessions
-      for (const [pid, _] of pidToTrackedSession.entries()) {
+      const pidsToCheck = new Set([
+        ...pidToTrackedSession.keys(),
+        ...existingSessionIdByChildPid.keys()
+      ]);
+      for (const pid of pidsToCheck) {
         if (!isProcessAlive(pid)) {
           logger.debug(`[RUNNER RUN] Removing stale session with PID ${pid} (process no longer exists)`);
-          pidToTrackedSession.delete(pid);
+          onChildExited(pid);
         }
       }
 
@@ -1118,7 +1202,7 @@ export function buildCliArgs(
   // Codex import/resume (#1088) and Cursor ACP remote resume (#991) both reuse
   // the original HAPI row via --existing-session-id so the hub does not depend
   // on session-ready over a remote socket before merge.
-  if (agent === 'codex' || agent === 'cursor') {
+  if (agent === 'codex' || agent === 'cursor' || agent === 'opencode') {
     const existingSessionId = options.existingSessionId ?? options.sessionId;
     if (existingSessionId) {
       args.push('--existing-session-id', existingSessionId);

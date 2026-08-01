@@ -63,6 +63,12 @@ export type CreateMachineResponse = z.infer<typeof CreateMachineResponseSchema>
 export const GetSessionResponseSchema = CreateSessionResponseSchema
 export type GetSessionResponse = CreateSessionResponse
 
+export const ClearOpencodeSessionResponseSchema = z.object({
+    ok: z.literal(true),
+    sessionId: z.string()
+})
+export type ClearOpencodeSessionResponse = z.infer<typeof ClearOpencodeSessionResponseSchema>
+
 export type AuthResponse = {
     token: string
     user: {

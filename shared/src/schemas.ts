@@ -3,7 +3,7 @@ import { CODEX_COLLABORATION_MODES, PERMISSION_MODES } from './modes'
 
 export const PermissionModeSchema = z.enum(PERMISSION_MODES)
 export const CodexCollaborationModeSchema = z.enum(CODEX_COLLABORATION_MODES)
-export const SessionEndReasonSchema = z.enum(['completed', 'terminated', 'error', 'handoff'])
+export const SessionEndReasonSchema = z.enum(['completed', 'terminated', 'error', 'handoff', 'cleared'])
 export type SessionEndReason = z.infer<typeof SessionEndReasonSchema>
 
 const MetadataSummarySchema = z.object({
@@ -14,6 +14,16 @@ const MetadataSummarySchema = z.object({
 const SessionCapabilitiesSchema = z.object({
     terminal: z.boolean().optional()
 })
+
+// Written to an archived OpenCode source before the runner is asked to spawn.
+// The stable replacement id makes retrying a lost RPC acknowledgement safe.
+export const OpencodeClearOperationSchema = z.object({
+    replacementSessionId: z.string(),
+    state: z.enum(['pending', 'failed', 'completed']),
+    updatedAt: z.number(),
+    error: z.string().optional()
+})
+export type OpencodeClearOperation = z.infer<typeof OpencodeClearOperationSchema>
 
 export const WorktreeMetadataSchema = z.object({
     basePath: z.string(),
@@ -66,6 +76,11 @@ export const MetadataSchema = z.object({
     lifecycleStateSince: z.number().optional(),
     archivedBy: z.string().optional(),
     archiveReason: z.string().optional(),
+    // Set only after a completed fresh-session clear. The source row remains
+    // archived; web clients use this durable link to follow the replacement.
+    supersededBySessionId: z.string().optional(),
+    // Durable in-progress state for runner-backed OpenCode /clear.
+    opencodeClearOperation: OpencodeClearOperationSchema.optional(),
     preferredPermissionMode: PermissionModeSchema.optional(),
     flavor: z.string().nullish(),
     capabilities: SessionCapabilitiesSchema.optional(),

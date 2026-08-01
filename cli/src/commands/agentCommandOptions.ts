@@ -8,6 +8,7 @@ export type RemoteAgentCommandOptions<TPermissionMode extends PermissionMode> = 
     effort?: string
     modelReasoningEffort?: string
     resumeSessionId?: string
+    existingSessionId?: string
 }
 
 export function parseRemoteAgentCommandOptions<TPermissionMode extends PermissionMode>(
@@ -37,6 +38,12 @@ export function parseRemoteAgentCommandOptions<TPermissionMode extends Permissio
             hasExplicitPermissionMode = true
         } else if (arg === '--yolo' && !hasExplicitPermissionMode) {
             options.permissionMode = 'yolo' as TPermissionMode
+        } else if (arg === '--existing-session-id') {
+            const sessionId = args[++i]
+            if (!sessionId || sessionId.startsWith('-')) {
+                throw new Error('Missing --existing-session-id value')
+            }
+            options.existingSessionId = sessionId
         } else if (arg === '--resume') {
             const sessionId = args[++i]
             if (!sessionId) {

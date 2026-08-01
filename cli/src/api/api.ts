@@ -1,8 +1,9 @@
 import axios from 'axios'
-import type { AgentState, CreateMachineResponse, CreateSessionResponse, RunnerState, Machine, MachineMetadata, Metadata, Session } from '@/api/types'
+import type { AgentState, ClearOpencodeSessionResponse, CreateMachineResponse, CreateSessionResponse, RunnerState, Machine, MachineMetadata, Metadata, Session } from '@/api/types'
 import type { LocalResumeTarget, ResumableSession } from '@hapi/protocol'
 import {
     AgentStateSchema,
+    ClearOpencodeSessionResponseSchema,
     CreateMachineResponseSchema,
     CreateSessionResponseSchema,
     GetSessionResponseSchema,
@@ -270,6 +271,22 @@ export class ApiClient {
         if (!parsed.success || !parsed.data.ok) {
             throw apiValidationError('Invalid /cli/sessions/:id/handoff-local response', response)
         }
+    }
+
+    async clearOpenCodeSession(sessionId: string): Promise<string> {
+        const response = await axios.post<ClearOpencodeSessionResponse>(
+            `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(sessionId)}/clear-opencode`,
+            {},
+            {
+                headers: this.authHeaders(),
+                timeout: 60_000
+            }
+        )
+        const parsed = ClearOpencodeSessionResponseSchema.safeParse(response.data)
+        if (!parsed.success) {
+            throw apiValidationError('Invalid /cli/sessions/:id/clear-opencode response', response)
+        }
+        return parsed.data.sessionId
     }
 
     sessionSyncClient(session: Session, options?: ApiSessionClientOptions): ApiSessionClient {

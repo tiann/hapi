@@ -16,7 +16,7 @@ export interface OpencodeMode {
     // calling `backend.prompt()`, which keeps /compact from "cutting in
     // line" ahead of prompts that were already queued when it arrived.
     // `undefined` for normal prompts.
-    operation?: 'compact';
+    operation?: 'compact' | 'clear';
 }
 
 export type OpencodeHookEvent = {

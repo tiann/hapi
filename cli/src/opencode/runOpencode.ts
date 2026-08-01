@@ -108,6 +108,11 @@ export async function runOpencode(opts: {
     // onLeavingRemote exists to protect, since `mode` stays 'remote'
     // throughout it.
     let compactSupported = false;
+    let clearRequested = false;
+    // Once a runner-backed /clear is accepted, this source session is on a
+    // one-way transition. Later inbound messages must receive an explicit
+    // rejection instead of entering the queue that will be archived.
+    let clearTransitionLatched = false;
     // True from the moment onCompactAvailabilityChange(false) fires (which,
     // per onLeavingRemote's contract, only ever happens because remote mode
     // is being left — never because remote just started) until this session
@@ -236,6 +241,18 @@ export async function runOpencode(opts: {
             };
             try {
                 if (wasCancelled()) return;
+                if (clearTransitionLatched) {
+                    if (localId) {
+                        session.emitMessagesConsumed([localId], { clearQueuedThinkingGrace: true });
+                    }
+                    session.sendAgentMessage({
+                        type: 'message',
+                        message: 'A fresh OpenCode session is opening. Please send this message after the session redirects.',
+                        id: randomUUID()
+                    });
+                    sessionWrapperRef.current?.onThinkingChange(false);
+                    return;
+                }
                 let text = message.content.text;
                 const commands = await listSlashCommands('opencode', workingDirectory).catch(() => []);
                 if (wasCancelled()) return;
@@ -245,6 +262,29 @@ export async function runOpencode(opts: {
                     model: sessionModel,
                     modelReasoningEffort: sessionModelReasoningEffort
                 });
+
+                if (slash.kind === 'clear') {
+                    if (startedBy !== 'runner') {
+                        if (localId) {
+                            session.emitMessagesConsumed([localId], { clearQueuedThinkingGrace: true });
+                        }
+                        session.sendAgentMessage({
+                            type: 'message',
+                            message: '/clear is available only for runner-backed OpenCode sessions.',
+                            id: randomUUID()
+                        });
+                        sessionWrapperRef.current?.onThinkingChange(false);
+                        return;
+                    }
+                    // Latch before enqueueing. userMessageChain serializes later
+                    // messages behind this resolver, including the async
+                    // listSlashCommands race, so they take the rejection path.
+                    clearTransitionLatched = true;
+                    // A clear is isolated but retains its FIFO position:
+                    // older prompts and native /compact work finish first.
+                    messageQueue.pushIsolated('', { ...buildMode(), operation: 'clear' }, localId);
+                    return;
+                }
 
                 if (slash.kind === 'compact') {
                     // `compactSupported` alone conflates two different
@@ -491,6 +531,9 @@ export async function runOpencode(opts: {
                     compactTeardownInProgress = true;
                 }
             },
+            onClearRequested: () => {
+                clearRequested = true;
+            },
             isLocalIdCancelled: (localId) => cancelledDequeuedLocalIds.delete(localId)
         });
     } catch (error) {
@@ -499,13 +542,34 @@ export async function runOpencode(opts: {
         logger.debug('[opencode] Loop error:', error);
     } finally {
         const localFailure = sessionWrapperRef.current?.localLaunchFailure;
-        if (localFailure?.exitReason === 'exit') {
+        if (clearRequested) {
+            lifecycle.setArchiveReason('Cleared by /clear');
+            lifecycle.setSessionEndReason('cleared');
+        } else if (localFailure?.exitReason === 'exit') {
             lifecycle.setExitCode(1);
             lifecycle.setArchiveReason(`Local launch failed: ${localFailure.message.slice(0, 200)}`);
             lifecycle.setSessionEndReason('error');
         } else if (!crashed) {
             lifecycle.setSessionEndReason('completed');
         }
-        await lifecycle.cleanupAndExit();
+        if (!clearRequested) {
+            await lifecycle.cleanupAndExit();
+            return;
+        }
+
+        // cleanup() sends session-end and waits for the socket's ordered ping
+        // acknowledgement. Only after that hub-observed inactive boundary may
+        // the fresh HAPI/OpenCode process be spawned.
+        await lifecycle.cleanup();
+        try {
+            await api.clearOpenCodeSession(session.sessionId);
+        } catch (error) {
+            // The source has already archived, but the hub retains the durable
+            // retry operation. Do not turn that recoverable failure into a
+            // misleading clean exit; the runner must report it as an error.
+            logger.debug('[opencode] Fresh-session clear spawn failed', error);
+            throw error;
+        }
+        process.exit(0);
     }
 }

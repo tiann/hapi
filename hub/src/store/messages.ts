@@ -641,6 +641,45 @@ export function markMessagesInvoked(
     ).run(invokedAt, sessionId, ...localIds).changes
 }
 
+/**
+ * Reassign only uninvoked scheduled rows when an archived OpenCode session
+ * is replaced by /clear. The transaction preserves ids/localIds so the normal
+ * scheduled-message ack path continues on the replacement session.
+ */
+export function moveUninvokedScheduledMessages(
+    db: Database,
+    fromSessionId: string,
+    toSessionId: string
+): number {
+    if (fromSessionId === toSessionId) return 0
+
+    const rows = db.prepare(`
+        SELECT id FROM messages
+        WHERE session_id = ?
+          AND scheduled_at IS NOT NULL
+          AND invoked_at IS NULL
+        ORDER BY seq ASC
+    `).all(fromSessionId) as Array<{ id: string }>
+    if (rows.length === 0) return 0
+
+    try {
+        db.exec('BEGIN')
+        let nextSeq = getMaxSeq(db, toSessionId)
+        const update = db.prepare('UPDATE messages SET session_id = ?, seq = ? WHERE id = ?')
+        for (const row of rows) {
+            nextSeq += 1
+            update.run(toSessionId, nextSeq, row.id)
+        }
+        bumpMessageEpoch(db, fromSessionId)
+        bumpMessageEpoch(db, toSessionId)
+        db.exec('COMMIT')
+        return rows.length
+    } catch (error) {
+        db.exec('ROLLBACK')
+        throw error
+    }
+}
+
 export function mergeSessionMessages(
     db: Database,
     fromSessionId: string,

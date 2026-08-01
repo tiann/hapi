@@ -6,6 +6,7 @@ import {
     RunnerStateSchema
 } from '@hapi/protocol/schemas'
 import {
+    ClearOpencodeSessionResponseSchema,
     CliMessagesResponseSchema,
     CreateMachineResponseSchema,
     CreateSessionResponseSchema,
@@ -13,6 +14,7 @@ import {
     LocalHandoffResponseSchema,
     LocalResumeTargetResponseSchema,
     ResumableSessionsResponseSchema,
+    type ClearOpencodeSessionResponse,
     type CliMessagesResponse,
     type CreateMachineResponse,
     type CreateSessionResponse,
@@ -45,6 +47,7 @@ export type SessionEffort = string | null
 export { AgentStateSchema, AttachmentMetadataSchema, MachineMetadataSchema, MetadataSchema, RunnerStateSchema }
 
 export {
+    ClearOpencodeSessionResponseSchema,
     CliMessagesResponseSchema,
     CreateMachineResponseSchema,
     CreateSessionResponseSchema,
@@ -55,6 +58,7 @@ export {
 }
 
 export type {
+    ClearOpencodeSessionResponse,
     CliMessagesResponse,
     CreateMachineResponse,
     CreateSessionResponse,
