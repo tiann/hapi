@@ -499,6 +499,31 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     if (this.compactAbortController === compactAbortController) {
                         this.compactAbortController = null;
                     }
+                    // A 10th PR-review round found this skip path never
+                    // calls session.onThinkingChange(true) (that's the
+                    // whole point of skipping) but also never told the hub
+                    // this queued item is done, leaving the web UI spinner
+                    // stuck: markMessageQueued's 15s "queued thinking"
+                    // grace (hub/src/sync/sessionCache.ts) keeps thinking
+                    // pinned true regardless of keepalives until either the
+                    // grace expires or a messages-consumed ack with
+                    // `clearQueuedThinkingGrace` arrives. Same situation,
+                    // same fix, as the synchronous slash.kind === 'handled'
+                    // path in runOpencode.ts (e.g. /model — see its
+                    // `clearQueuedThinkingGrace` comment there): ack with
+                    // the grace-clearing flag, then push an immediate
+                    // thinking=false keepalive so the spinner clears
+                    // without waiting on the grace. (This is on top of, not
+                    // instead of, the queue's own unflagged
+                    // onBatchConsumed ack — a second ack for an
+                    // already-invoked localId is a no-op on the hub's
+                    // first-write-wins queued-message protocol, and
+                    // clearQueuedThinkingGrace itself is keyed by session,
+                    // not by localId, so it's idempotent too.)
+                    if (compactLocalId) {
+                        session.client.emitMessagesConsumed([compactLocalId], { clearQueuedThinkingGrace: true });
+                    }
+                    session.onThinkingChange(false);
                     if (session.queue.size() === 0 && !this.shouldExit) {
                         sendReady();
                     }

@@ -240,6 +240,8 @@ function createSessionStub(
     const rpcHandlers = new Map<string, (params: unknown) => unknown>();
     const setModelReasoningEffort = vi.fn();
     const pushKeepAlive = vi.fn();
+    const emitMessagesConsumedCalls: Array<{ localIds: string[]; options?: { clearQueuedThinkingGrace?: boolean } }> = [];
+    const thinkingChangeCalls: boolean[] = [];
 
     const client = {
         rpcHandlerManager: {
@@ -252,6 +254,9 @@ function createSessionStub(
         sendUserMessage(_text: string) {},
         sendSessionEvent(event: { type: string; [key: string]: unknown }) {
             sessionEvents.push(event);
+        },
+        emitMessagesConsumed(localIds: string[], options?: { clearQueuedThinkingGrace?: boolean }) {
+            emitMessagesConsumedCalls.push({ localIds, options });
         }
     };
 
@@ -270,6 +275,7 @@ function createSessionStub(
         pushKeepAlive,
         onThinkingChange(thinking: boolean) {
             session.thinking = thinking;
+            thinkingChangeCalls.push(thinking);
         },
         onSessionFound(id: string) {
             session.sessionId = id;
@@ -283,7 +289,7 @@ function createSessionStub(
         sendUserMessage(_text: string) {}
     };
 
-    return { session, sessionEvents, sentAgentMessages, rpcHandlers, setModelReasoningEffort, pushKeepAlive };
+    return { session, sessionEvents, sentAgentMessages, rpcHandlers, setModelReasoningEffort, pushKeepAlive, emitMessagesConsumedCalls, thinkingChangeCalls };
 }
 
 function createCompactMode(model?: string): OpencodeMode {
@@ -862,10 +868,17 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         // compactResultSuppressed needed the same treatment here: skip
         // starting the operation entirely rather than sending "📦
         // Compaction started" for a request that's about to be thrown away.
+        //
+        // A 10th PR-review round found this skip path also never told the
+        // hub the queued item was done — session.onThinkingChange(true) is
+        // never called here (that's the whole point of skipping), so
+        // without an explicit clearQueuedThinkingGrace ack + a final
+        // thinking=false keepalive, the web UI spinner could sit stuck for
+        // the hub's full 15s queued-thinking grace window.
         harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
         const isLocalIdCancelled = vi.fn((id: string) => id === 'compact-1');
 
-        const { session, sessionEvents, sentAgentMessages } = createSessionStub([
+        const { session, sessionEvents, sentAgentMessages, emitMessagesConsumedCalls, thinkingChangeCalls } = createSessionStub([
             { message: '', mode: createCompactMode('ollama/x'), localId: 'compact-1' }
         ]);
 
@@ -876,6 +889,10 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         const messages = sessionEvents.filter((event) => event.type === 'message').map((event) => event.message);
         expect(messages).toEqual([]);
         expect(sentAgentMessages).toEqual([]);
+        expect(emitMessagesConsumedCalls).toEqual([
+            { localIds: ['compact-1'], options: { clearQueuedThinkingGrace: true } }
+        ]);
+        expect(thinkingChangeCalls).toEqual([false]);
     });
 
     it('never starts the compact (not even the REST bridge call itself) if isLocalIdCancelled already reports the item cancelled the moment it is dequeued, regardless of localId', async () => {
@@ -1156,14 +1173,18 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         // "wait for a request that's actually in flight to really finish"
         // invariant only makes sense once a request has actually been sent
         // — there's nothing server-side to wait for here.
+        //
+        // A 10th PR-review round found this skip path also never told the
+        // hub the queued item was done — same fix, same assertions, as the
+        // isLocalIdCancelled sibling test above.
         harness.sessionModelsMetadata = { currentModelId: 'ollama/launch-default', availableModels: [] };
         let resolveSetModel: (() => void) | null = null;
         harness.setModelImpl = () => new Promise<void>((resolve) => {
             resolveSetModel = resolve;
         });
 
-        const { session, rpcHandlers, sessionEvents } = createSessionStub([
-            { message: '', mode: createCompactMode('ollama/switched') }
+        const { session, rpcHandlers, sessionEvents, emitMessagesConsumedCalls, thinkingChangeCalls } = createSessionStub([
+            { message: '', mode: createCompactMode('ollama/switched'), localId: 'compact-switch-1' }
         ]);
 
         const launcherPromise = opencodeRemoteLauncher(session as never, {
@@ -1196,6 +1217,10 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         // never actually began.
         const messages = sessionEvents.filter((event) => event.type === 'message').map((event) => event.message);
         expect(messages).toEqual([]);
+        expect(emitMessagesConsumedCalls).toEqual([
+            { localIds: ['compact-switch-1'], options: { clearQueuedThinkingGrace: true } }
+        ]);
+        expect(thinkingChangeCalls).toEqual([false]);
 
         // The loop went back to waiting on the (now-empty) queue after
         // skipping the cancelled compact — close it so the launcher can
