@@ -3,6 +3,9 @@
  * Captures available tools and slash commands from Claude SDK initialization
  */
 
+import { mkdirSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { query } from './query'
 import type { SDKSystemMessage } from './types'
 import { logger } from '@/ui/logger'
@@ -11,6 +14,16 @@ export interface SDKMetadata {
     tools?: string[]
     slashCommands?: string[]
 }
+
+/**
+ * Dedicated working directory for the metadata extraction query.
+ * Claude Code writes a session jsonl under ~/.claude/projects/<cwd-slug>/
+ * as soon as the process starts, before we can abort it. Running the
+ * extraction in the user's project directory therefore pollutes their
+ * Claude session history with empty 'hello' sessions (#250). A temp
+ * directory keeps those artifacts out of the user's projects.
+ */
+const metadataExtractionCwd = join(tmpdir(), 'hapi-sdk-metadata')
 
 /**
  * Extract SDK metadata by running a minimal query and capturing the init message
@@ -23,11 +36,15 @@ export async function extractSDKMetadata(): Promise<SDKMetadata> {
         logger.debug('[metadataExtractor] Starting SDK metadata extraction')
         
         // Run SDK with minimal tools allowed
+        // cwd must be outside the user's project so the session jsonl Claude
+        // Code writes on startup does not pollute their session history
+        mkdirSync(metadataExtractionCwd, { recursive: true })
         const sdkQuery = query({
             prompt: 'hello',
             options: {
                 allowedTools: ['Bash(echo)'],
                 maxTurns: 1,
+                cwd: metadataExtractionCwd,
                 abort: abortController.signal
             }
         })
