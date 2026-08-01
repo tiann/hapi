@@ -224,7 +224,29 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         // run now that the ACP backend + internal HTTP baseUrl exist. The
         // dequeue loop below (not an externally-invoked trigger) is what
         // executes it, in its actual FIFO queue position.
-        this.options.onCompactAvailabilityChange?.(true);
+        //
+        // A 9th PR-review round found a race here: a terminal
+        // switch-to-local/exit can land *during* the newSession/loadSession
+        // await above (setupTerminal() wires up onExit/onSwitchToLocal
+        // before runMainLoop() even starts, so this is reachable well
+        // before setupAbortHandlers() below registers the RPC
+        // 'abort'/'switch' handlers). RemoteLauncherBase.requestExit()
+        // already fired onLeavingRemote() (availability(false)) and set
+        // `this.shouldExit = true` synchronously for that switch/exit,
+        // before awaiting its handler — but this line used to run
+        // regardless once initialization finished, resurrecting
+        // availability(true) even though the session is already on its way
+        // out. runOpencode.ts's compactSupported/compactTeardownInProgress
+        // gate treats compactSupported flipping true as reason enough to
+        // ignore compactTeardownInProgress entirely (see that gate's doc
+        // comment), so this stray true could let a /compact arriving right
+        // after slip into the queue mid-teardown. Checking `shouldExit`
+        // here — the same flag requestExit() already set — keeps
+        // availability from ever un-flipping once a switch/exit is
+        // underway.
+        if (!this.shouldExit) {
+            this.options.onCompactAvailabilityChange?.(true);
+        }
 
         // Expose the cached models metadata via per-session RPC so the hub can
         // forward it to the web UI's model selector without round-tripping ACP.

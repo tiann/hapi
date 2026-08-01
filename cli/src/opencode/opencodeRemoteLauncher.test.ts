@@ -22,14 +22,43 @@ const harness = vi.hoisted(() => ({
     // Lets a test hold handleAbort()'s cancelPrompt() call pending, so it
     // can assert something happened *before* handleAbort()'s async teardown
     // finished rather than merely by the time it eventually settles.
-    cancelPromptImpl: null as null | (() => Promise<void>)
+    cancelPromptImpl: null as null | (() => Promise<void>),
+    // Lets a test hold backend.newSession() pending, to simulate a
+    // terminal switch-to-local/exit landing during session initialization
+    // — before RPC 'abort'/'switch' handlers even exist (they're only
+    // registered once initialization finishes), so that race can only be
+    // reproduced via the terminal UI's onExit/onSwitchToLocal callbacks,
+    // not rpcHandlers.
+    newSessionImpl: null as null | (() => Promise<string>)
+}));
+
+// Captures the RemoteLauncherDisplayContext (including onExit/
+// onSwitchToLocal) that RemoteLauncherBase.setupTerminal() passes to
+// OpencodeDisplay via ink's render() — but only when `hasTTY` is true, since
+// setupTerminal() gates the real render() call on it. None of the other
+// tests in this file force isTTY, so this mock is inert for them (render()
+// is simply never called) and this hoisted state stays untouched.
+const inkHarness = vi.hoisted(() => ({
+    lastRenderProps: null as null | { onExit?: () => void | Promise<void>; onSwitchToLocal?: () => void | Promise<void> }
+}));
+
+vi.mock('ink', () => ({
+    render: vi.fn((element: { props?: { onExit?: () => void | Promise<void>; onSwitchToLocal?: () => void | Promise<void> } }) => {
+        inkHarness.lastRenderProps = element.props ?? null;
+        return { unmount: () => {} };
+    })
 }));
 
 vi.mock('./utils/opencodeBackend', () => ({
     allocateFreePort: vi.fn(async () => 48273),
     createOpencodeBackend: vi.fn(() => ({
         initialize: vi.fn(async () => {}),
-        newSession: vi.fn(async () => 'acp-session-1'),
+        newSession: vi.fn(async () => {
+            if (harness.newSessionImpl) {
+                return harness.newSessionImpl();
+            }
+            return 'acp-session-1';
+        }),
         loadSession: vi.fn(async () => 'acp-session-1'),
         setModel: vi.fn(async (sessionId: string, modelId: string, opts?: { flavor?: string }) => {
             harness.events.push(`setModel:${modelId}`);
@@ -286,6 +315,8 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         harness.promptImpl = null;
         harness.sessionModelsMetadata = undefined;
         harness.cancelPromptImpl = null;
+        harness.newSessionImpl = null;
+        inkHarness.lastRenderProps = null;
     });
 
     it('processes a queued /compact operation only after an earlier queued prompt has finished', async () => {
@@ -704,6 +735,100 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             launcherPromise,
             new Promise((_, reject) => setTimeout(() => reject(new Error('launcher did not exit remote mode in time')), 2000))
         ]);
+    });
+
+    it('never emits a trailing /compact availability(true) if a terminal switch-to-local/exit already ran while session initialization (newSession) was still pending', async () => {
+        // A 9th PR-review round found the mirror-image bug to the test
+        // above: onCompactAvailabilityChange(true) (right after
+        // newSession/loadSession resolves) fires unconditionally — with no
+        // way to know a switch/exit already happened *during* that pending
+        // ACP round trip. That race can only be reached via the terminal
+        // UI's onExit/onSwitchToLocal callbacks (wired up by
+        // setupTerminal() before runMainLoop() even starts) — the RPC
+        // 'abort'/'switch' handlers below don't exist yet at this point in
+        // the sequence (setupAbortHandlers() only runs after
+        // newSession/loadSession resolve), so they can't be used to
+        // reproduce this specific window.
+        //
+        // requestExit() sets `this.shouldExit = true` synchronously, before
+        // awaiting its handler (see RemoteLauncherBase.requestExit) — so by
+        // the time the pending newSession() resolves and this code reaches
+        // `onCompactAvailabilityChange?.(true)`, `this.shouldExit` already
+        // reflects the switch/exit that happened in between. The bug: that
+        // line used to fire regardless, resurrecting availability (and
+        // transitively runOpencode.ts's compactSupported) even though the
+        // session is on its way out — see that gate's compactTeardownInProgress
+        // comment for why compactSupported flipping true makes it get
+        // ignored entirely.
+        let resolveNewSession: ((id: string) => void) | null = null;
+        harness.newSessionImpl = () => new Promise<string>((resolve) => {
+            resolveNewSession = resolve;
+        });
+
+        const originalStdoutIsTTY = process.stdout.isTTY;
+        const originalStdinIsTTY = process.stdin.isTTY;
+        Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true });
+        Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: true });
+        const originalSetRawMode = (process.stdin as unknown as { setRawMode?: (mode: boolean) => void }).setRawMode;
+        const setRawModeStub = vi.fn();
+        Object.defineProperty(process.stdin, 'setRawMode', { configurable: true, value: setRawModeStub });
+
+        try {
+            const availabilityEvents: boolean[] = [];
+            const { session } = createSessionStub([], { keepOpen: true });
+
+            const launcherPromise = opencodeRemoteLauncher(session as never, {
+                onCompactAvailabilityChange: (available) => availabilityEvents.push(available)
+            });
+
+            // setupTerminal() runs synchronously as the very first thing
+            // start() does, before runMainLoop() (and hence before the
+            // pending newSession()) gets a chance to run — so by the time
+            // control returns here, ink's render() (mocked above) has
+            // already captured onExit/onSwitchToLocal.
+            expect(inkHarness.lastRenderProps?.onSwitchToLocal).toBeDefined();
+            expect(resolveNewSession).toBeNull();
+            expect(availabilityEvents).toEqual([]);
+
+            await inkHarness.lastRenderProps!.onSwitchToLocal!();
+            // requestExit()'s onLeavingRemote() fires synchronously — but
+            // availability was never true yet, so this is the only event
+            // so far.
+            expect(availabilityEvents).toEqual([false]);
+
+            // Now let the previously-pending newSession() resolve.
+            resolveNewSession!('acp-session-late');
+
+            for (let i = 0; i < 10; i++) {
+                await new Promise<void>((resolve) => setImmediate(resolve));
+            }
+
+            // The fix: no trailing `true` ever gets appended once the
+            // previously-pending newSession() resolves.
+            expect(availabilityEvents).not.toContain(true);
+
+            session.queue.close();
+            await Promise.race([
+                launcherPromise,
+                new Promise((_, reject) => setTimeout(() => reject(new Error('launcher did not exit remote mode in time')), 2000))
+            ]);
+
+            // Final check once the launcher has actually settled — still no
+            // `true` anywhere, regardless of how many times the (idempotent,
+            // by design — see onLeavingRemote's doc comment) backstop in
+            // start()'s finally re-fired `false` along the way.
+            expect(availabilityEvents).not.toContain(true);
+            expect(availabilityEvents.length).toBeGreaterThan(0);
+            expect(availabilityEvents.every((value) => value === false)).toBe(true);
+        } finally {
+            Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: originalStdoutIsTTY });
+            Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: originalStdinIsTTY });
+            if (originalSetRawMode) {
+                Object.defineProperty(process.stdin, 'setRawMode', { configurable: true, value: originalSetRawMode });
+            } else {
+                delete (process.stdin as unknown as { setRawMode?: unknown }).setRawMode;
+            }
+        }
     });
 
     it('sends the fetched compaction summary as a reasoning-type agent message', async () => {
