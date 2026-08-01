@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { resetTerminalInputModes, restoreTerminalState } from './terminalState';
 
-const resetSequence = '\x1b[<u\x1b[=0;1u\x1b[>4;0m\x1b[?1004l\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l';
+const resetSequence = '\x1b[=0;1u\x1b[>4;0m\x1b[?1004l\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l';
 
 describe('terminal input state', () => {
     const originalStdoutIsTTY = process.stdout.isTTY;

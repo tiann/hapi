@@ -1,5 +1,4 @@
 const RESET_INPUT_MODES = [
-    '\x1b[<u',
     '\x1b[=0;1u',
     '\x1b[>4;0m',
     '\x1b[?1004l',
