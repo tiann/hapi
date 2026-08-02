@@ -2,31 +2,23 @@
  * Tests for agy readiness / trust / auth-failure markers.
  *
  * Bug context (feat/agy-pty-mode):
- *  - AGY_PROMPT_MARKERS was ['for shortcuts'], but agy removed that hint
- *    text — promptSeen never became true → auth-settle loop ran to the 12 s
- *    deadline → sawAuthFailureScreen=true (from the transient "not signed in"
- *    banner) → launcher treated it as auth failure → 8 re-spawns → gave up.
+ *  - The signed-in startup banner appears before agy's input box is usable.
+ *    Treating it as ready let HAPI dequeue and type the first message while agy
+ *    could still discard input.
  *  - 'not signed in' was in authFailureMarkers: during sign-in agy transiently
  *    shows "You are currently not signed in. ⣷ Signing in..." which false-
  *    positived the auth-failure path even though auth succeeded a moment later.
- *  - agy 1.1.0 regressions (this fix):
- *      • the banner version moved to 1.1.0, so the hard-coded 'Antigravity CLI
- *        1.0' prompt marker stopped matching → readiness only resolved via the
- *        20 s startup hard-cap, and the create request timed out at the gateway
- *        while the session finished spawning in the background. The marker is
- *        now a version-agnostic RegExp (/Antigravity CLI \d/).
- *      • agy added a first-run folder-trust prompt ("Do you trust the contents
+ *  - agy added a first-run folder-trust prompt ("Do you trust the contents
  *        of this project?") that --dangerously-skip-permissions does NOT bypass,
  *        so agy blocked at the dialog in any untrusted cwd. AGY_TRUST_MARKERS
  *        now lets runAgentPty auto-approve it.
  *
  * Markers:
- *  - promptMarkers: /Antigravity CLI \d/ (matches the signed-in banner for any
- *    version; does not match the pre-auth "Antigravity CLI." welcome line).
+ *  - promptMarkers: '? for shortcuts' (verified interactive input footer).
  *  - trustMarkers: 'Do you trust the contents' (folder-trust dialog).
  *  - authFailureMarkers: only 'Select login method' (real OAuth menu), NOT the
  *    transient 'not signed in' banner.
- *  - idleMarkers: empty (agy has no idle hint text).
+ *  - idleMarkers: the same footer, used again after each agent run.
  *  - idleReadyMs: >= 1000 ms so the signed-in banner render completes before the
  *    first message is submitted.
  */
@@ -56,31 +48,21 @@ function argsFor(partial: Partial<AgyPtyOpts>): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// 1. Prompt markers — must match the signed-in banner for ANY agy version
+// 1. Prompt markers — must match the verified interactive input footer
 // ---------------------------------------------------------------------------
 describe('AGY_PROMPT_MARKERS', () => {
-    it('does NOT contain the removed "for shortcuts" hint text', () => {
-        expect(AGY_PROMPT_MARKERS).not.toContain('for shortcuts')
+    it('uses the verified input prompt footer', () => {
+        expect(AGY_PROMPT_MARKERS).toContain('? for shortcuts')
     })
 
-    it('matches the agy 1.1.0 signed-in banner (the version that broke the old pin)', () => {
+    it('does NOT treat the signed-in banner as an interactive prompt', () => {
         const banner = [
-            '▄▀▀▄        Antigravity CLI 1.1.0',
+            '▄▀▀▄        Antigravity CLI 1.1.8',
             '            lupinogle@gmail.com',
             '            Gemini 3.1 Pro (Low)',
             '            ~',
         ].join('\n')
-        expect(anyMarkerMatches(AGY_PROMPT_MARKERS, banner)).toBe(true)
-    })
-
-    it('still matches an older 1.0.8 banner (backward compatible)', () => {
-        const banner = '▄▀▀▄        Antigravity CLI 1.0.8'
-        expect(anyMarkerMatches(AGY_PROMPT_MARKERS, banner)).toBe(true)
-    })
-
-    it('matches a hypothetical future major version (version-agnostic)', () => {
-        const banner = '▄▀▀▄        Antigravity CLI 2.0.0'
-        expect(anyMarkerMatches(AGY_PROMPT_MARKERS, banner)).toBe(true)
+        expect(anyMarkerMatches(AGY_PROMPT_MARKERS, banner)).toBe(false)
     })
 
     it('does NOT match the transient pre-auth "not signed in" welcome line', () => {
@@ -143,15 +125,11 @@ describe('AGY_AUTH_FAILURE_MARKERS', () => {
 })
 
 // ---------------------------------------------------------------------------
-// 3. Idle markers — should be empty for agy 1.0.8 (no idle hint text)
+// 3. Idle markers — AGY 1.1.5 restored the input-prompt footer
 // ---------------------------------------------------------------------------
 describe('AGY_IDLE_MARKERS', () => {
-    it('is empty (agy 1.0.8 has no idle hint text)', () => {
-        expect(AGY_IDLE_MARKERS).toHaveLength(0)
-    })
-
-    it('does NOT contain "for shortcuts"', () => {
-        expect(AGY_IDLE_MARKERS).not.toContain('for shortcuts')
+    it('uses the verified input prompt footer as the agent-run completion marker', () => {
+        expect(AGY_IDLE_MARKERS).toContain('? for shortcuts')
     })
 })
 

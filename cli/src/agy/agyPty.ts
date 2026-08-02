@@ -20,9 +20,16 @@ export type AgyPtyOpts = {
     onReady: () => void
     onMessage: (data: string) => void
     onThinkingChange?: (thinking: boolean) => void
+    onMessageSubmitted?: (message: string) => void | Promise<void>
+    onBeforeAgentRunStart?: () => void | Promise<void>
+    onAgentRunCompleted?: () => void | Promise<void>
     onExit?: (code: number | null) => void
     onAuthFailure?: () => void
-    registerControls?: (controls: { resize: (cols: number, rows: number) => void; sendKeys: (data: string) => void }) => void
+    registerControls?: (controls: {
+        resize: (cols: number, rows: number) => void
+        sendKeys: (data: string) => void
+        invalidateInputReady: () => void
+    }) => void
     /**
      * Additional workspace containing HAPI's .agents/hooks.json. The actual
      * project cwd and the user's HOME remain unchanged.
@@ -50,20 +57,11 @@ export function buildAgyPtyArgs(opts: AgyPtyOpts): string[] {
     return args
 }
 
-// agy no longer shows the "? for shortcuts" hint text that earlier versions
-// rendered at the idle prompt. The reliable signal that auth has completed and
-// the TUI is ready is the signed-in startup banner it always prints:
-//   "▄▀▀▄        Antigravity CLI 1.1.0"
-// Match the version generically (`Antigravity CLI <digit>`) rather than a
-// hard-coded version: the banner carries whatever agy version is installed, so
-// pinning "1.0"/"1.1" silently breaks readiness detection on the next agy
-// upgrade — a stale "1.0" pin stopped matching once agy shipped 1.1.0, which is
-// exactly the regression this guards against. The `\d` also keeps this from
-// matching the transient pre-auth "Welcome to the Antigravity CLI. You are
-// currently not signed in." line (no digit after "CLI"), so HAPI doesn't send
-// the first message during the "Signing in…" handshake (keystrokes are silently
-// dropped there). AGY_IDLE_READY_MS gives the TUI time to finish painting.
-export const AGY_PROMPT_MARKERS: (string | RegExp)[] = [/Antigravity CLI \d/]
+// AGY 1.1.8 uses this footer for its input screen. The signed-in banner appears
+// earlier while the TUI can still discard input, so it is deliberately not a
+// readiness signal. The footer is only a candidate: a forced resize redraw below
+// proves that it belongs to the current screen before HAPI dequeues.
+export const AGY_PROMPT_MARKERS: (string | RegExp)[] = ['? for shortcuts']
 
 // agy shows a first-run folder-trust prompt in a directory it hasn't seen
 // before ("Do you trust the contents of this project?", default highlight
@@ -88,10 +86,10 @@ export const AGY_TRUST_MARKERS = ['Do you trust the contents']
 // settled caused false-positive re-spawns even when authentication succeeded.
 export const AGY_AUTH_FAILURE_MARKERS = ['Select login method']
 
-// agy 1.0.8 has no idle hint text at the input prompt (the "? for shortcuts"
-// footer was removed). Idle markers are empty; thinking state for agy is
-// driven solely by message-submit (setThinking(true)) and the silence watchdog.
-export const AGY_IDLE_MARKERS: string[] = []
+// AGY 1.1.5 renders this only at the real input prompt. Unlike the silence
+// watchdog's approximate thinking=false signal, its reappearance after a
+// Generating frame is an explicit user-message agent-run boundary.
+export const AGY_IDLE_MARKERS = ['? for shortcuts']
 
 // agy animates a "Generating..." spinner continuously while it works — it does
 // NOT sit silent mid-turn. This busy marker flags thinking=true AND, crucially,
@@ -101,9 +99,8 @@ export const AGY_IDLE_MARKERS: string[] = []
 // never clear and the chat would sit "busy" forever.
 export const AGY_BUSY_MARKERS = ['Generating']
 
-// After the signed-in banner appears, give the TUI 1 500 ms to finish
-// painting the input box before the first message is written. A shorter
-// window risks sending keystrokes before stdin is fully wired up.
+// After the input footer appears, give the TUI time to finish painting before
+// the first message is written.
 export const AGY_IDLE_READY_MS = 1500
 
 // agy authenticates consumer accounts via the gnome login keyring ONLY (the file
@@ -136,6 +133,9 @@ export async function agyPty(opts: AgyPtyOpts): Promise<void> {
         extraEnv: buildAgyPtyExtraEnv(opts),
         unsetEnv: agySshEnvKeys(),
         promptMarkers: AGY_PROMPT_MARKERS,
+        requirePromptMarker: true,
+        inputReadyTimeoutMs: 30000,
+        verifyPromptAfterResize: true,
         trustMarkers: AGY_TRUST_MARKERS,
         authFailureMarkers: AGY_AUTH_FAILURE_MARKERS,
         busyMarkers: AGY_BUSY_MARKERS,
@@ -147,6 +147,9 @@ export async function agyPty(opts: AgyPtyOpts): Promise<void> {
         onReady: opts.onReady,
         onMessage: opts.onMessage,
         onThinkingChange: opts.onThinkingChange,
+        onMessageSubmitted: opts.onMessageSubmitted,
+        onBeforeAgentRunStart: opts.onBeforeAgentRunStart,
+        onAgentRunCompleted: opts.onAgentRunCompleted,
         onExit: opts.onExit,
         onAuthFailure: opts.onAuthFailure,
         registerControls: opts.registerControls,

@@ -8,9 +8,8 @@ import { logger } from "@/lib"
  * PTY. All flavor-specific behavior is supplied via options:
  *  - `command` / `args` / `cwd` / `envVars` / `extraEnv` — how to spawn
  *  - `promptMarkers` — strings that indicate the agent's input prompt has
- *    rendered. When provided, input-ready is gated on seeing one of them (e.g.
- *    claude's ink TUI). When omitted, falls back to an output-idle heuristic
- *    (e.g. agy, which has no detectable prompt marker).
+ *    rendered. When provided, input-ready is gated on seeing one of them.
+ *    When omitted, falls back to an output-idle heuristic.
  *
  * The driver handles the parts every PTY agent shares: spawn lifecycle,
  * waiting until the agent is ready before sending the first message, echo-
@@ -42,6 +41,20 @@ export type RunAgentPtyOpts = {
      * break readiness detection).
      */
     promptMarkers?: (string | RegExp)[]
+    /**
+     * Fail startup when no prompt marker appears instead of proceeding after the
+     * readiness timeout. After startup, wait indefinitely for each fresh prompt
+     * before dequeuing so a long-running turn cannot strand a queued message.
+     */
+    requirePromptMarker?: boolean
+    /** Startup prompt deadline in milliseconds. Default 20000. */
+    inputReadyTimeoutMs?: number
+    /**
+     * Before declaring startup ready, force a PTY resize and require the prompt
+     * marker to be redrawn. This distinguishes the current input screen from a
+     * stale marker without writing anything into the editor.
+     */
+    verifyPromptAfterResize?: boolean
     /**
      * Output substrings that indicate a trust/safety prompt the agent shows on
      * first run in a folder (e.g. claude's "Is this a project you trust?").
@@ -107,13 +120,26 @@ export type RunAgentPtyOpts = {
      * it). This hook guarantees the submit already happened.
      */
     onMessageSubmitted?: (message: string) => void | Promise<void>
+    /** Called at the serialized boundary immediately before a queued message starts a new agent run. */
+    onBeforeAgentRunStart?: () => void | Promise<void>
+    /**
+     * Fired once after a submitted agent run has shown a busy marker and then
+     * returned to an explicit idle prompt marker. The next queued message is
+     * not submitted until this promise settles.
+     */
+    onAgentRunCompleted?: () => void | Promise<void>
     /**
      * Called once the PTY is spawned with controls for the live terminal. The
      * agent-terminal viewer uses `resize` to repaint the TUI on (re)subscribe so
      * the current screen is shown instead of a stale/black buffer replay. Controls
      * become no-ops after the process exits.
      */
-    registerControls?: (controls: { resize: (cols: number, rows: number) => void; sendKeys: (data: string) => void }) => void
+    registerControls?: (controls: {
+        resize: (cols: number, rows: number) => void
+        sendKeys: (data: string) => void
+        /** Mark the current prompt consumed by an out-of-band TUI interaction. */
+        invalidateInputReady: () => void
+    }) => void
 }
 
 export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
@@ -142,6 +168,8 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
     const manager = new AgentPtyManager()
     const signal = opts.signal
     const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
+    let currentCols = 80
+    let currentRows = 24
 
     // Match an output chunk against a marker: substring for strings, `.test()`
     // for RegExps. RegExp markers must be non-global (a `g` flag makes `.test()`
@@ -153,6 +181,7 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
 
     const markers = opts.promptMarkers ?? []
     const hasMarkers = markers.length > 0
+    const requirePromptMarker = opts.requirePromptMarker ?? false
     const trustMarkers = opts.trustMarkers ?? []
     const authFailureMarkers = opts.authFailureMarkers ?? []
     const idleReadyMs = opts.idleReadyMs ?? (hasMarkers ? 500 : 1000)
@@ -170,6 +199,11 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
     let sawAuthFailureScreen = false
     // Whether the first-run trust/safety prompt has been auto-approved.
     let trustHandled = false
+    // PTY output may split a footer anywhere, including inside the marker text.
+    // Keep a small rolling tail and reset it at each busy/submit boundary so an
+    // old idle footer cannot make a later turn look ready.
+    const PROMPT_BUFFER_SIZE = 4096
+    let promptBuffer = ''
 
     // Working/idle state derived from busy/idle markers, reported only on change.
     const busyMarkers = opts.busyMarkers ?? []
@@ -188,6 +222,17 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
     // clearing and no silence watchdog.
     const IDLE_SILENCE_MS = 3000
     let idleWatchdog: ReturnType<typeof setTimeout> | null = null
+    let agentRunActive = false
+    let agentRunSawBusyMarker = false
+    let agentRunBoundaryTask: Promise<void> = Promise.resolve()
+    const completeAgentRun = (): void => {
+        if (!agentRunActive || !agentRunSawBusyMarker) return
+        agentRunActive = false
+        agentRunSawBusyMarker = false
+        agentRunBoundaryTask = Promise.resolve(opts.onAgentRunCompleted?.()).catch((error) => {
+            logger.debug(`${debugPrefix} onAgentRunCompleted failed`, error)
+        })
+    }
     const disarmIdleWatchdog = (): void => {
         if (idleWatchdog) { clearTimeout(idleWatchdog); idleWatchdog = null }
     }
@@ -219,11 +264,11 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
 
     // Wait until the agent's TUI is ready to receive input. Marker-based agents
     // require both the prompt marker AND settled output; markerless agents use
-    // idle alone. A longer-idle fallback prevents hanging if a marker never
-    // matches (UI change).
-    const waitForInputReady = async (timeoutMs = 20000): Promise<void> => {
+    // idle alone. Legacy callers retain the bounded fallback; strict callers
+    // fail startup closed and wait without a deadline between normal turns.
+    const waitForInputReady = async (timeoutMs?: number): Promise<void> => {
         const start = Date.now()
-        while (Date.now() - start < timeoutMs) {
+        while (timeoutMs === undefined || Date.now() - start < timeoutMs) {
             if (signal?.aborted || !manager.isRunning) return
             const idle = Date.now() - lastOutputAt
             if (hasMarkers) {
@@ -233,6 +278,24 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
             }
             if (sawOutput && idle >= 3000) return
             await sleep(80)
+        }
+        if (requirePromptMarker) {
+            throw new Error(`${opts.command} PTY did not reach an interactive prompt before timeout`)
+        }
+    }
+
+    const verifyPromptAfterResize = async (): Promise<void> => {
+        inputReady = false
+        promptBuffer = ''
+        const verificationCols = currentCols > 1 ? currentCols - 1 : currentCols + 1
+        try {
+            manager.resize(verificationCols, currentRows)
+            await waitForInputReady(idleReadyMs + 1500)
+        } finally {
+            // External terminal resizes may arrive while verification is in
+            // flight. Restore the latest tracked size, not a hard-coded default
+            // or the now-stale snapshot.
+            if (manager.isRunning) manager.resize(currentCols, currentRows)
         }
     }
 
@@ -286,6 +349,7 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
             onData: (data) => {
                 sawOutput = true
                 lastOutputAt = Date.now()
+                promptBuffer = (promptBuffer + data).slice(-PROMPT_BUFFER_SIZE)
                 // Auto-approve the first-run trust/safety prompt (Enter = default
                 // "Yes"). Do this BEFORE prompt detection so the trust screen
                 // isn't mistaken for the input prompt — otherwise the first user
@@ -294,7 +358,7 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
                     trustHandled = true
                     logger.debug(`${debugPrefix} trust prompt detected; auto-approving with Enter`)
                     manager.write('\r')
-                } else if (hasMarkers && !promptSeen && anyMarker(data, markers)) {
+                } else if (hasMarkers && !promptSeen && anyMarker(promptBuffer, markers)) {
                     promptSeen = true
                 }
                 // Note the login-menu screen if we see it before the prompt. We do
@@ -310,10 +374,15 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
                 // marker (spinner/"esc to interrupt") wins when both appear in a
                 // chunk; chunks with neither leave the state unchanged.
                 if (busyMarkers.length > 0 && anyMarker(data, busyMarkers)) {
+                    if (agentRunActive) agentRunSawBusyMarker = true
                     setThinking(true)
                     inputReady = false
-                } else if (idleMarkers.length > 0 && anyMarker(data, idleMarkers)) {
+                    promptBuffer = ''
+                } else if (idleMarkers.length > 0 && anyMarker(promptBuffer, idleMarkers)) {
                     setThinking(false)
+                    inputReady = true
+                    completeAgentRun()
+                    promptBuffer = ''
                 } else if (thinking) {
                     // Still producing output (e.g. streaming response text with no
                     // footer marker in this chunk) — keep the silence watchdog at bay.
@@ -345,6 +414,8 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
             resize: (cols: number, rows: number) => {
                 if (!manager.isRunning) return
                 if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 1 || rows < 1) return
+                currentCols = cols
+                currentRows = rows
                 manager.resize(cols, rows)
             },
             // Inject raw keystrokes into the live TUI — used to drive in-place
@@ -353,7 +424,11 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
             sendKeys: (data: string) => {
                 if (!manager.isRunning || !data) return
                 manager.write(data)
-            }
+            },
+            invalidateInputReady: () => {
+                inputReady = false
+                promptBuffer = ''
+            },
         })
 
         // For auth-gated agents (agy): give the keyring auth handshake time to
@@ -380,7 +455,10 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
         // Wait until the prompt is actually usable BEFORE any message arrives, so
         // the first user message is processed immediately instead of being
         // consumed as the spawn trigger.
-        await waitForInputReady()
+        await waitForInputReady(opts.inputReadyTimeoutMs ?? 20000)
+        if (opts.verifyPromptAfterResize && manager.isRunning && !signal?.aborted) {
+            await verifyPromptAfterResize()
+        }
 
         // A successful spawn() does not mean the agent reached a working prompt:
         // it can spawn and then exit before rendering one (bad config, invalid
@@ -403,6 +481,15 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
                 break
             }
 
+            // In strict mode, do not remove a message from the queue until a
+            // fresh interactive prompt exists. Between turns there is no fixed
+            // deadline: a legitimate long agent run must not terminate HAPI.
+            if (requirePromptMarker) {
+                await waitForInputReady()
+                await agentRunBoundaryTask
+                if (!manager.isRunning || signal?.aborted) break
+            }
+
             const next = await opts.nextMessage()
             if (!next) {
                 logger.debug(`${debugPrefix} No more input; waiting for process to finish`)
@@ -422,12 +509,27 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
 
             // Queue semantics: wait until output goes idle (agent back at the
             // prompt) before sending the next queued message.
-            await waitForInputReady()
+            if (!requirePromptMarker) {
+                await waitForInputReady(20000)
+                await agentRunBoundaryTask
+            }
             if (!manager.isRunning || signal?.aborted) {
                 break
             }
 
             if (process.env.DEBUG_PTY) logger.debug(`${debugPrefix} write(loop): ${next.message}`)
+            // The prompt is now consumed; the next queued message must wait for a
+            // fresh prompt/idle marker rather than this same just-cleared one.
+            await opts.onBeforeAgentRunStart?.()
+            if (!manager.isRunning || signal?.aborted) break
+            if (requirePromptMarker) {
+                await waitForInputReady()
+                if (!manager.isRunning || signal?.aborted) break
+            }
+            inputReady = false
+            promptBuffer = ''
+            agentRunActive = true
+            agentRunSawBusyMarker = false
             await submitMessage(next.message)
             // The message has now been written to the PTY; let a caller verify it
             // actually landed (and repair it) without racing this submit path.

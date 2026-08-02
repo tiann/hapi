@@ -1,9 +1,9 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useIsMutating, useQueryClient } from '@tanstack/react-query'
 import type { Session } from '@/types/api'
 import type { ApiClient } from '@/api/client'
 import { isTelegramApp } from '@/hooks/useTelegram'
-import { useSessionActions } from '@/hooks/mutations/useSessionActions'
+import { sessionModelMutationKey, useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { SessionExportDialog } from '@/components/SessionExportDialog'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
@@ -123,6 +123,16 @@ function MoreVerticalIcon(props: { className?: string }) {
     )
 }
 
+function ModelChangingStatus() {
+    const { t } = useTranslation()
+    return (
+        <span data-testid="session-header-model-changing" className="inline-flex items-center gap-1" title={t('session.modelChange.pendingTooltip')}>
+            <span aria-hidden="true" className="h-2.5 w-2.5 shrink-0 animate-spin rounded-full border border-current border-r-transparent" />
+            <span>{t('session.modelChange.pending')}</span>
+        </span>
+    )
+}
+
 export function SessionHeader(props: {
     session: Session
     serviceTier?: string | null
@@ -147,6 +157,10 @@ export function SessionHeader(props: {
     const worktreeBranch = session.metadata?.worktree?.branch?.trim() || null
     const { preferences: headerMetadata } = useSessionHeaderMetadata()
     const modelLabel = getSessionModelLabel(session)
+    const isModelChanging = useIsMutating({
+        mutationKey: sessionModelMutationKey(session.id),
+        exact: true,
+    }) > 0
     const agentFlavor = session.metadata?.flavor ?? null
     const agentLabel = agentFlavor?.trim() || null
     const reasoningEffort = getReasoningEffortForFlavor(
@@ -328,7 +342,7 @@ export function SessionHeader(props: {
                                         {agentLabel}
                                     </span>
                                 ) : null}
-                                {mobileSecondary === 'model' && modelLabel ? <span className="truncate">{headerMetadata.showLabels ? `${t(modelLabel.key)}: ` : ''}{modelLabel.value}</span> : null}
+                                {mobileSecondary === 'model' && modelLabel ? <span className="inline-flex truncate items-center gap-1.5">{headerMetadata.showLabels ? `${t(modelLabel.key)}: ` : ''}{modelLabel.value}{isModelChanging ? <ModelChangingStatus /> : null}</span> : null}
                                 {mobileSecondary === 'reasoning' && reasoningLabel ? <span className="truncate">{reasoningLabel}</span> : null}
                                 {mobileSecondary === 'machine' && machineLabel ? <span className="truncate">{headerMetadata.showLabels ? `${t('session.item.machine')}: ` : ''}{machineLabel}</span> : null}
                                 {mobileSecondary === 'lastActive' && ageLabel ? <span className="truncate" title={ageAbsolute ?? undefined}>{ageLabel}</span> : null}
@@ -356,8 +370,9 @@ export function SessionHeader(props: {
                                 </span>
                             ) : null}
                             {headerMetadata.model && modelLabel ? (
-                                <span>
-                                    {headerMetadata.showLabels ? `${t(modelLabel.key)}: ` : ''}{modelLabel.value}
+                                <span className="inline-flex items-center gap-1.5">
+                                    <span>{headerMetadata.showLabels ? `${t(modelLabel.key)}: ` : ''}{modelLabel.value}</span>
+                                    {isModelChanging ? <ModelChangingStatus /> : null}
                                 </span>
                             ) : null}
                             {headerMetadata.reasoning && reasoningLabel ? (

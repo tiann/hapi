@@ -28,6 +28,7 @@ export type AgentSessionBaseOptions<Mode> = {
     effort?: SessionEffort;
     serviceTier?: string | null;
     collaborationMode?: SessionCollaborationMode;
+    acknowledgeMessagesOnDequeue?: boolean;
 };
 
 export class AgentSessionBase<Mode> {
@@ -73,7 +74,9 @@ export class AgentSessionBase<Mode> {
         this.serviceTier = opts.serviceTier;
         this.collaborationMode = opts.collaborationMode;
 
-        this.queue.onBatchConsumed = (localIds) => this.client.emitMessagesConsumed(localIds);
+        this.queue.onBatchConsumed = opts.acknowledgeMessagesOnDequeue === false
+            ? null
+            : (localIds) => this.client.emitMessagesConsumed(localIds);
 
         this.client.keepAlive(this.thinking, this.mode, this.getKeepAliveRuntime());
         this.keepAliveInterval = setInterval(() => {

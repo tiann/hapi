@@ -15,6 +15,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AgyPermissionHandler } from './utils/agyPermissionHandler'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
+import { userRequestMatches } from './agyPtyLauncher'
 
 const harness = vi.hoisted(() => ({
     scannerOnNewSession: vi.fn(),
@@ -24,41 +25,78 @@ const harness = vi.hoisted(() => ({
     scannerBrainUuid: null as string | null,
     foundCallbacks: [] as Array<(sessionId: string) => void>,
     removedCallbacks: [] as Array<(sessionId: string) => void>,
-    exitReason: 'exit' as string | null,
+    exitReason: null as string | null,
     sendKeys: vi.fn(),
     abortHandler: null as (() => void | Promise<void>) | null,
     switchHandler: null as (() => void | Promise<void>) | null,
+    liveModelHandler: null as ((model: string | null) => Promise<void>) | null,
+    afterNextMessage: null as null | ((opts: any, next: unknown) => void | Promise<void>),
 }))
 
 let ptyOptsCaptured: any = null
 vi.mock('./agyPty', () => ({
     agyPty: vi.fn(async (opts: any) => {
         ptyOptsCaptured = opts
-        opts.registerControls?.({ sendKeys: harness.sendKeys })
+        opts.registerControls?.({ sendKeys: harness.sendKeys, invalidateInputReady: vi.fn() })
         opts.onReady?.()
-        await opts.nextMessage()
+        const next = await opts.nextMessage()
+        await harness.afterNextMessage?.(opts, next)
     }),
 }))
 
-vi.mock('./utils/agySessionScanner', () => ({
-    createAgySessionScanner: vi.fn(async (opts: Record<string, unknown>) => {
-        harness.scannerOpts = opts
-        return {
-            cleanup: async () => { harness.scannerCleanupCalls += 1 },
-            setSessionMessageText: harness.scannerSetSessionMessageText,
-            getBrainUuid: () => harness.scannerBrainUuid,
-            onNewSession: harness.scannerOnNewSession,
-        }
-    }),
-}))
+vi.mock('./utils/agySessionScanner', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('./utils/agySessionScanner')>()
+    return {
+        extractBodyText: actual.extractBodyText,
+        createAgySessionScanner: vi.fn(async (opts: Record<string, unknown>) => {
+            harness.scannerOpts = opts
+            return {
+                cleanup: async () => { harness.scannerCleanupCalls += 1 },
+                setSessionMessageText: harness.scannerSetSessionMessageText,
+                getBrainUuid: () => harness.scannerBrainUuid,
+                onNewSession: harness.scannerOnNewSession,
+            }
+        }),
+    }
+})
 
 vi.mock('@/ui/ink/RemoteModeDisplay', () => ({
     RemoteModeDisplay: () => null,
 }))
 
 vi.mock('@/ui/logger', () => ({
-    logger: { debug: vi.fn() },
+    logger: { debug: vi.fn(), warn: vi.fn() },
 }))
+
+describe('userRequestMatches', () => {
+    it('requires an exact text-only request', () => {
+        expect(userRequestMatches('hello', '<USER_REQUEST>\nhello\n</USER_REQUEST>')).toBe(true)
+        expect(userRequestMatches('hello', '<USER_REQUEST>\nhello extra\n</USER_REQUEST>')).toBe(false)
+    })
+
+    it('uses an exact body fallback for attachments and fails closed for attachment-only input', () => {
+        expect(userRequestMatches(
+            '@/tmp/image.png\n\ninspect this',
+            '<USER_REQUEST>\n@/tmp/image.png\ninspect this\n</USER_REQUEST>',
+        )).toBe(true)
+        expect(userRequestMatches(
+            '@/tmp/a.png @/tmp/b.png\n\ninspect this',
+            '<USER_REQUEST>\n@/tmp/b.png @/tmp/a.png\ninspect this\n</USER_REQUEST>',
+        )).toBe(true)
+        expect(userRequestMatches(
+            '@/tmp/image.png\n\ninspect this',
+            '<USER_REQUEST>\n@/tmp/other.png\ninspect this\n</USER_REQUEST>',
+        )).toBe(false)
+        expect(userRequestMatches(
+            '@/tmp/image.png\n\ninspect this',
+            '<USER_REQUEST>\nunrelated instructions\ninspect this\n</USER_REQUEST>',
+        )).toBe(false)
+        expect(userRequestMatches(
+            '@/tmp/image.png\n\n',
+            '<USER_REQUEST>\n@/tmp/image.png\n</USER_REQUEST>',
+        )).toBe(false)
+    })
+})
 
 vi.mock('@/modules/common/remote/RemoteLauncherBase', () => ({
     RemoteLauncherBase: class {
@@ -128,6 +166,7 @@ function createSessionStub(opts?: { agyPermissionHandler?: Record<string, unknow
             hookToken: undefined,
             agyPermissionHandler,
             getModel: () => null,
+            setLiveModelHandler: (handler: ((model: string | null) => Promise<void>) | null) => { harness.liveModelHandler = handler },
             onThinkingChange: vi.fn(),
             setKillHandler: (_h: () => void) => {},
             onSessionFound: vi.fn(),
@@ -139,6 +178,8 @@ function createSessionStub(opts?: { agyPermissionHandler?: Record<string, unknow
             client: {
                 sendAgySessionMessage: vi.fn(),
                 sendSessionEvent: vi.fn(),
+                emitSessionReady: vi.fn(),
+                emitMessagesConsumed: vi.fn(),
                 resetAgentTerminal: vi.fn(),
                 setAgentTerminalControls: vi.fn(),
                 emitAgentTerminalOutput: vi.fn(),
@@ -157,11 +198,131 @@ describe('agyPtyLauncher session-found wiring (brain UUID -> scanner)', () => {
         harness.scannerBrainUuid = null
         harness.foundCallbacks = []
         harness.removedCallbacks = []
-        harness.exitReason = 'exit'
+        harness.exitReason = null
         harness.sendKeys.mockClear()
         harness.abortHandler = null
         harness.switchHandler = null
+        harness.liveModelHandler = null
+        harness.afterNextMessage = null
         ptyOptsCaptured = null
+    })
+
+    it('emits the hub session-ready signal when the AGY PTY becomes usable', async () => {
+        const { session } = createSessionStub()
+
+        await agyPtyLauncher(session as never)
+
+        expect(session.client.emitSessionReady).toHaveBeenCalledTimes(1)
+        expect(session.client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' })
+    })
+
+    it('changes the live AGY model only after the picker and completion markers are observed', async () => {
+        const { session } = createSessionStub()
+        const msgPromise = deferred<{ message: string } | null>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+
+        const launcherPromise = agyPtyLauncher(session as never)
+        await tick(20)
+        expect(harness.liveModelHandler).not.toBeNull()
+
+        const applied = harness.liveModelHandler!('gemini-3.6-flash-low')
+        await tick(10)
+        expect(harness.sendKeys).toHaveBeenCalledWith('/model\r')
+
+        ptyOptsCaptured.onMessage('\u001b[2JSwitch Model\n  Gemini 3.6 Flash\n> Gemini 3.5 Flash             (current)')
+        await tick(10)
+        expect(harness.sendKeys).toHaveBeenCalledWith(`\u001b[A${'\u001b[D'.repeat(3)}`)
+
+        ptyOptsCaptured.onMessage('Model set to Gemini 3.6 Flash (Low)')
+        await expect(applied).resolves.toBeUndefined()
+
+        harness.exitReason = 'exit'
+        msgPromise.resolve(null)
+        await launcherPromise
+        expect(harness.liveModelHandler).toBeNull()
+    })
+
+    it('waits for the current agent run to complete before changing the model', async () => {
+        const { session } = createSessionStub()
+        const msgPromise = deferred<{ message: string } | null>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+        const launcherPromise = agyPtyLauncher(session as never)
+        await tick(20)
+        ptyOptsCaptured.onMessageSubmitted?.('current turn')
+        ptyOptsCaptured.onMessage('⣾ Generating...')
+        const applied = harness.liveModelHandler!('gemini-3.5-flash-low')
+        await tick(10)
+        expect(harness.sendKeys).not.toHaveBeenCalledWith('/model\r')
+
+        const completion = ptyOptsCaptured.onAgentRunCompleted?.()
+        await tick(10)
+        expect(harness.sendKeys).toHaveBeenCalledWith('/model\r')
+        ptyOptsCaptured.onMessage('Switch Model\n> Gemini 3.5 Flash             (current)')
+        await tick(10)
+        ptyOptsCaptured.onMessage('Model set to Gemini 3.5 Flash (Low)')
+        await completion
+        await expect(applied).resolves.toBeUndefined()
+
+        harness.exitReason = 'exit'
+        msgPromise.resolve(null)
+        await launcherPromise
+    })
+
+    it('does not race a model picker with a queued agent run reserved for submission', async () => {
+        const { session } = createSessionStub()
+        const msgPromise = deferred<{ message: string } | null>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+        const launcherPromise = agyPtyLauncher(session as never)
+        await tick(20)
+
+        await ptyOptsCaptured.onBeforeAgentRunStart?.()
+        const applied = harness.liveModelHandler!('gemini-3.5-flash-low')
+        await tick(10)
+        expect(harness.sendKeys).not.toHaveBeenCalledWith('/model\r')
+
+        ptyOptsCaptured.onMessageSubmitted?.('queued turn')
+        const completion = ptyOptsCaptured.onAgentRunCompleted?.()
+        await tick(10)
+        expect(harness.sendKeys).toHaveBeenCalledWith('/model\r')
+        ptyOptsCaptured.onMessage('Switch Model\n> Gemini 3.5 Flash             (current)')
+        await tick(10)
+        ptyOptsCaptured.onMessage('Model set to Gemini 3.5 Flash (Low)')
+        await completion
+        await applied
+
+        harness.exitReason = 'exit'
+        msgPromise.resolve(null)
+        await launcherPromise
+    })
+
+    it('waits for a model picker that started while the message queue was idle', async () => {
+        const { session } = createSessionStub()
+        const msgPromise = deferred<{ message: string } | null>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+        const launcherPromise = agyPtyLauncher(session as never)
+        await tick(20)
+
+        const applied = harness.liveModelHandler!('gemini-3.5-flash-low')
+        await tick(10)
+        expect(harness.sendKeys).toHaveBeenCalledWith('/model\r')
+
+        let boundaryReached = false
+        const boundary = ptyOptsCaptured.onBeforeAgentRunStart?.().then(() => {
+            boundaryReached = true
+        })
+        await tick(10)
+        expect(boundaryReached).toBe(false)
+
+        ptyOptsCaptured.onMessage('Switch Model\n> Gemini 3.5 Flash             (current)')
+        await tick(10)
+        ptyOptsCaptured.onMessage('Model set to Gemini 3.5 Flash (Low)')
+        await boundary
+        await applied
+        expect(boundaryReached).toBe(true)
+
+        harness.exitReason = 'exit'
+        msgPromise.resolve(null)
+        await launcherPromise
     })
 
     it('registers a session-found callback that notifies the scanner when the hook discovers the brain UUID', async () => {
@@ -241,6 +402,90 @@ describe('agyPtyLauncher session-found wiring (brain UUID -> scanner)', () => {
 
         await expect(agyPtyLauncher(session as never)).resolves.toBe('exit')
         expect(harness.scannerSetSessionMessageText).toHaveBeenCalledWith('hello agy')
+    })
+
+    it('acknowledges a dequeued web message only after a matching USER_INPUT is observed', async () => {
+        const { session } = createSessionStub()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockResolvedValueOnce({
+            message: 'hello agy',
+            mode: 'default',
+            isolate: false,
+            hash: 'default',
+            items: [{ message: 'hello agy', localId: 'local-1' }],
+        } as never)
+        harness.afterNextMessage = async (opts) => {
+            await opts.onMessageSubmitted?.('hello agy')
+            expect(session.client.emitMessagesConsumed).not.toHaveBeenCalled()
+
+            const onEntry = harness.scannerOpts!.onEntry as (entry: unknown) => void
+            onEntry({
+                type: 'USER_INPUT',
+                step_index: 10,
+                content: '<USER_REQUEST>\nhello agy\n</USER_REQUEST>',
+            })
+        }
+
+        await agyPtyLauncher(session as never)
+
+        expect(session.client.emitMessagesConsumed).toHaveBeenCalledTimes(1)
+        expect(session.client.emitMessagesConsumed).toHaveBeenCalledWith(['local-1'])
+    })
+
+    it('keeps a mismatched web message unacknowledged without blocking the next queued message', async () => {
+        const { session } = createSessionStub()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString)
+            .mockResolvedValueOnce({
+                message: 'web message',
+                mode: 'default',
+                isolate: false,
+                hash: 'default',
+                items: [{ message: 'web message', localId: 'local-2' }],
+            } as never)
+            .mockResolvedValueOnce({ message: 'following message', items: [] } as never)
+        harness.afterNextMessage = async (opts) => {
+            await opts.onMessageSubmitted?.('web message')
+            const onEntry = harness.scannerOpts!.onEntry as (entry: unknown) => void
+            onEntry({
+                type: 'USER_INPUT',
+                step_index: 11,
+                content: '<USER_REQUEST>\ndirect terminal message\n</USER_REQUEST>',
+            })
+            await expect(opts.nextMessage()).resolves.toMatchObject({ message: 'following message' })
+        }
+
+        await agyPtyLauncher(session as never)
+
+        expect(session.client.emitMessagesConsumed).not.toHaveBeenCalled()
+    })
+
+    it('ends the launcher instead of respawning when PTY exits with an unconfirmed web delivery', async () => {
+        harness.exitReason = null
+        const { session } = createSessionStub()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockResolvedValueOnce({
+            message: 'unconfirmed',
+            mode: 'default',
+            isolate: false,
+            hash: 'default',
+            items: [{ message: 'unconfirmed', localId: 'local-exit' }],
+        } as never)
+        harness.afterNextMessage = async (opts) => {
+            await opts.onMessageSubmitted?.('unconfirmed')
+            const blockedNext = opts.nextMessage()
+            let settled = false
+            void blockedNext.then(() => { settled = true })
+            await tick()
+            expect(settled).toBe(false)
+            opts.onExit?.(1)
+            await expect(blockedNext).resolves.toBeNull()
+        }
+
+        await agyPtyLauncher(session as never)
+
+        expect(session.client.emitMessagesConsumed).not.toHaveBeenCalled()
+        expect(session.client.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'agy PTY exited before delivery could be confirmed',
+        })
     })
 
     it('pairs a planner tool_call with the following action entry so the tool card has input', async () => {
@@ -547,6 +792,7 @@ describe('agyPtyLauncher ask_question safety: invalidate stale pending questions
                 hookToken: undefined,
                 agyPermissionHandler: handler,
                 getModel: () => null,
+                setLiveModelHandler: (liveHandler: ((model: string | null) => Promise<void>) | null) => { harness.liveModelHandler = liveHandler },
                 onThinkingChange: vi.fn(),
                 setKillHandler: (_h: () => void) => {},
                 onSessionFound: vi.fn(),

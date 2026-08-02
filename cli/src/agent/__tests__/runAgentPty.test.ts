@@ -136,6 +136,38 @@ describe('runAgentPty', () => {
         await promise
     })
 
+    it('awaits agent-run completion work before submitting the next queued message', async () => {
+        const completion = deferred<void>()
+        const nextMessage = vi.fn()
+            .mockResolvedValueOnce({ message: 'first' })
+            .mockResolvedValueOnce({ message: 'second' })
+            .mockResolvedValueOnce(null)
+        const onAgentRunCompleted = vi.fn(() => completion.promise)
+        const promise = runAgentPty(makeOpts({
+            promptMarkers: ['READY'],
+            busyMarkers: ['Generating'],
+            idleMarkers: ['? for shortcuts'],
+            nextMessage,
+            onAgentRunCompleted,
+        }))
+
+        harness.triggerData('READY')
+        await tick(220)
+        expect(harness.m.write).toHaveBeenCalledWith('first')
+        harness.triggerData('Generating...')
+        harness.triggerData('? for shortcuts')
+        await tick(20)
+        expect(onAgentRunCompleted).toHaveBeenCalledTimes(1)
+        expect(harness.m.write).not.toHaveBeenCalledWith('second')
+
+        completion.resolve()
+        await tick(220)
+        expect(harness.m.write).toHaveBeenCalledWith('second')
+        harness.triggerData('Generating...')
+        harness.triggerData('? for shortcuts')
+        await promise
+    })
+
     it('rejects (and never calls onReady) if the PTY exits before becoming ready', async () => {
         // Spawn succeeds, but the agent exits before rendering a usable prompt
         // (bad config, invalid args, auth failure). This must be treated as a
@@ -277,6 +309,203 @@ describe('runAgentPty', () => {
         await tick(120)
         expect(onReady).toHaveBeenCalled()
         msg.resolve(null)
+        await promise
+    })
+
+    it('fails closed without dequeuing when a required prompt marker never appears', async () => {
+        const nextMessage = vi.fn()
+        const onReady = vi.fn()
+        const promise = runAgentPty(makeOpts({
+            command: 'agy',
+            promptMarkers: ['? for shortcuts'],
+            requirePromptMarker: true,
+            inputReadyTimeoutMs: 100,
+            nextMessage,
+            onReady,
+        }))
+
+        harness.triggerData('▄▀▀▄        Antigravity CLI 1.1.8')
+
+        await expect(promise).rejects.toThrow('agy PTY did not reach an interactive prompt')
+        expect(onReady).not.toHaveBeenCalled()
+        expect(nextMessage).not.toHaveBeenCalled()
+    })
+
+    it('recognizes a required prompt marker fragmented across output chunks', async () => {
+        const msg = deferred<{ message: string } | null>()
+        const nextMessage = vi.fn(() => msg.promise)
+        const onReady = vi.fn()
+        const promise = runAgentPty(makeOpts({
+            promptMarkers: ['? for shortcuts'],
+            requirePromptMarker: true,
+            inputReadyTimeoutMs: 3000,
+            idleReadyMs: 20,
+            nextMessage,
+            onReady,
+        }))
+
+        harness.triggerData('\x1b[2K? for sh')
+        await tick(20)
+        expect(onReady).not.toHaveBeenCalled()
+        expect(nextMessage).not.toHaveBeenCalled()
+        harness.triggerData('ortcuts\x1b[0m')
+        await tick(120)
+
+        expect(onReady).toHaveBeenCalledTimes(1)
+        expect(nextMessage).toHaveBeenCalledTimes(1)
+        msg.resolve(null)
+        await promise
+    })
+
+    it('does not dequeue when resize does not redraw a fresh prompt', async () => {
+        const nextMessage = vi.fn()
+        const onReady = vi.fn()
+        const promise = runAgentPty(makeOpts({
+            command: 'agy',
+            promptMarkers: ['? for shortcuts'],
+            idleMarkers: ['? for shortcuts'],
+            requirePromptMarker: true,
+            verifyPromptAfterResize: true,
+            inputReadyTimeoutMs: 500,
+            idleReadyMs: 20,
+            nextMessage,
+            onReady,
+        }))
+
+        harness.triggerData('? for shortcuts')
+
+        await expect(promise).rejects.toThrow('agy PTY did not reach an interactive prompt')
+        expect(harness.m.resize).toHaveBeenCalledWith(79, 24)
+        expect(harness.m.resize).toHaveBeenCalledWith(80, 24)
+        expect(onReady).not.toHaveBeenCalled()
+        expect(nextMessage).not.toHaveBeenCalled()
+    })
+
+    it('accepts a fragmented fresh prompt redrawn after resize', async () => {
+        const msg = deferred<{ message: string } | null>()
+        const nextMessage = vi.fn(() => msg.promise)
+        const promise = runAgentPty(makeOpts({
+            promptMarkers: ['? for shortcuts'],
+            idleMarkers: ['? for shortcuts'],
+            requirePromptMarker: true,
+            verifyPromptAfterResize: true,
+            inputReadyTimeoutMs: 500,
+            idleReadyMs: 20,
+            nextMessage,
+        }))
+
+        harness.triggerData('? for shortcuts')
+        await tick(120)
+        expect(harness.m.resize).toHaveBeenCalledWith(79, 24)
+        harness.triggerData('? for sh')
+        harness.triggerData('ortcuts')
+        await tick(120)
+        expect(nextMessage).toHaveBeenCalledTimes(1)
+        expect(harness.m.write).not.toHaveBeenCalledWith(expect.stringContaining('hapi-ready-'))
+        msg.resolve(null)
+        await promise
+    })
+
+    it('restores the latest external terminal size after readiness verification', async () => {
+        const msg = deferred<{ message: string } | null>()
+        let controls!: { resize: (cols: number, rows: number) => void }
+        const promise = runAgentPty(makeOpts({
+            promptMarkers: ['? for shortcuts'],
+            idleMarkers: ['? for shortcuts'],
+            requirePromptMarker: true,
+            verifyPromptAfterResize: true,
+            inputReadyTimeoutMs: 500,
+            idleReadyMs: 20,
+            nextMessage: () => msg.promise,
+            registerControls: (registered) => { controls = registered },
+        }))
+
+        harness.triggerData('? for shortcuts')
+        await tick(120)
+        controls.resize(120, 40)
+        harness.triggerData('? for shortcuts')
+        await tick(120)
+
+        expect(harness.m.resize.mock.calls.at(-1)).toEqual([120, 40])
+        msg.resolve(null)
+        await promise
+    })
+
+    it('does not dequeue the next strict-mode message until the prompt returns', async () => {
+        const first = deferred<{ message: string } | null>()
+        const second = deferred<{ message: string } | null>()
+        const nextMessage = vi.fn()
+            .mockImplementationOnce(() => first.promise)
+            .mockImplementationOnce(() => second.promise)
+        const promise = runAgentPty(makeOpts({
+            promptMarkers: ['? for shortcuts'],
+            idleMarkers: ['? for shortcuts'],
+            busyMarkers: ['Generating'],
+            requirePromptMarker: true,
+            inputReadyTimeoutMs: 500,
+            idleReadyMs: 20,
+            nextMessage,
+        }))
+
+        harness.triggerData('? for shortcuts')
+        await tick(120)
+        first.resolve({ message: 'first' })
+        await tick(300)
+        expect(harness.m.write).toHaveBeenCalledWith('first')
+
+        harness.triggerData('Generating...')
+        await tick(120)
+        expect(nextMessage).toHaveBeenCalledTimes(1)
+
+        harness.triggerData('? for sh')
+        await tick(80)
+        expect(nextMessage).toHaveBeenCalledTimes(1)
+        harness.triggerData('ortcuts')
+        await tick(120)
+        expect(nextMessage).toHaveBeenCalledTimes(2)
+        second.resolve(null)
+        await promise
+    })
+
+    it('revalidates the prompt after an out-of-band PTY interaction', async () => {
+        const queued = deferred<{ message: string } | null>()
+        const done = deferred<{ message: string } | null>()
+        let invalidateInputReady!: () => void
+        const nextMessage = vi.fn()
+            .mockImplementationOnce(() => queued.promise)
+            .mockImplementationOnce(() => done.promise)
+        const onBeforeAgentRunStart = vi.fn(async () => {
+            invalidateInputReady()
+            harness.triggerData('Model set to Gemini 3.5 Flash (Low)')
+        })
+        const promise = runAgentPty(makeOpts({
+            promptMarkers: ['? for shortcuts'],
+            idleMarkers: ['? for shortcuts'],
+            requirePromptMarker: true,
+            inputReadyTimeoutMs: 500,
+            idleReadyMs: 20,
+            nextMessage,
+            onBeforeAgentRunStart,
+            registerControls: (controls) => {
+                invalidateInputReady = controls.invalidateInputReady
+            },
+        }))
+
+        harness.triggerData('? for shortcuts')
+        await tick(120)
+        queued.resolve({ message: 'after picker' })
+        await tick(120)
+        expect(onBeforeAgentRunStart).toHaveBeenCalledTimes(1)
+        expect(harness.m.write).not.toHaveBeenCalledWith('after picker')
+
+        harness.triggerData('? for sh')
+        harness.triggerData('ortcuts')
+        await tick(300)
+        expect(harness.m.write).toHaveBeenCalledWith('after picker')
+
+        harness.triggerData('? for shortcuts')
+        await tick(120)
+        done.resolve(null)
         await promise
     })
 

@@ -130,6 +130,8 @@ export default {
   'session.item.agent': 'agent',
   'session.item.model': 'model',
   'session.item.machine': 'machine',
+  'session.modelChange.pending': 'Changing…',
+  'session.modelChange.pendingTooltip': 'The model will change when the current task finishes.',
   'session.item.worktree': 'worktree',
   'session.item.pending': 'pending',
   'session.item.thinking': 'thinking',

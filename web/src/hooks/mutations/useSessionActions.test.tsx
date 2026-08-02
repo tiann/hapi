@@ -96,3 +96,46 @@ describe('useSessionActions - reopenSession', () => {
         })
     })
 })
+
+describe('useSessionActions - setModel', () => {
+    it('stays pending until the refreshed session detail is available', async () => {
+        let releaseSessionRefresh!: () => void
+        const sessionRefresh = new Promise<void>((resolve) => {
+            releaseSessionRefresh = resolve
+        })
+        const queryClient = new QueryClient({
+            defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+        })
+        const invalidate = vi.spyOn(queryClient, 'invalidateQueries').mockImplementation(async (filters) => {
+            if (JSON.stringify(filters?.queryKey) === JSON.stringify(['session', 'session-A'])) {
+                await sessionRefresh
+            }
+        })
+        const api = {
+            setModel: vi.fn(async () => undefined),
+        } as unknown as ApiClient
+        const wrapper = ({ children }: { children: ReactNode }) => (
+            <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        )
+        const { result } = renderHook(
+            () => useSessionActions(api, 'session-A', 'agy'),
+            { wrapper },
+        )
+
+        let settled = false
+        const change = result.current.setModel('gemini-3.5-flash-low').then(() => {
+            settled = true
+        })
+
+        await waitFor(() => expect(api.setModel).toHaveBeenCalled())
+        expect(result.current.isPending).toBe(true)
+        expect(settled).toBe(false)
+
+        releaseSessionRefresh()
+        await act(async () => await change)
+
+        expect(settled).toBe(true)
+        await waitFor(() => expect(result.current.isPending).toBe(false))
+        expect(invalidate).toHaveBeenCalledWith({ queryKey: ['session', 'session-A'] })
+    })
+})

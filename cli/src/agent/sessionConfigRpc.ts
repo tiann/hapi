@@ -18,8 +18,8 @@ type RegisterSessionConfigRpcOptions<TPermissionMode extends PermissionMode = Pe
     modelReasoningEffortMode?: 'nullable' | 'ignore' | 'reject'
     effortMode?: 'nullable' | 'ignore' | 'reject'
     appliedFallback?: () => Record<string, unknown>
-    onApply: (config: SessionConfigState<TPermissionMode>) => void
-    onAfterApply?: () => void
+    onApply: (config: SessionConfigState<TPermissionMode>) => void | Promise<void>
+    onAfterApply?: () => void | Promise<void>
 }
 
 export function resolveSessionConfigPermissionMode<TPermissionMode extends PermissionMode>(
@@ -110,8 +110,8 @@ export function registerSessionConfigRpc<TPermissionMode extends PermissionMode>
             }
         }
 
-        onApply(next)
-        onAfterApply?.()
+        await onApply(next)
+        await onAfterApply?.()
 
         return {
             applied: Object.keys(applied).length > 0

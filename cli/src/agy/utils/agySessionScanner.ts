@@ -327,7 +327,7 @@ function generateKey(entry: AgyTranscriptEntry): string {
 // just the typed body text. Returns '' when the text is nothing BUT an
 // attachment prefix (no body to isolate), and the original text unchanged when
 // no such prefix is present (plain text-only messages).
-function extractBodyText(text: string): string {
+export function extractBodyText(text: string): string {
     const separatorIndex = text.indexOf('\n\n')
     if (separatorIndex === -1) return text
     const prefix = text.slice(0, separatorIndex)

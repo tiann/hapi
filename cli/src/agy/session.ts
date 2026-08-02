@@ -12,6 +12,7 @@ type LocalLaunchFailure = {
 };
 
 export class AgySession extends AgentSessionBase<AgyMode> {
+    private liveModelHandler: ((model: SessionModel) => Promise<void>) | null = null;
     readonly startedBy: 'runner' | 'terminal';
     /** Additional workspace carrying HAPI hooks without modifying HOME or the project. */
     readonly hookCarrierDir: string | undefined;
@@ -63,7 +64,8 @@ export class AgySession extends AgentSessionBase<AgyMode> {
             }),
             permissionMode: opts.permissionMode,
             model: opts.model,
-            effort: opts.effort
+            effort: opts.effort,
+            acknowledgeMessagesOnDequeue: false
         });
 
         this.startedBy = opts.startedBy;
@@ -82,6 +84,15 @@ export class AgySession extends AgentSessionBase<AgyMode> {
 
     setModel = (model: SessionModel): void => {
         this.model = model;
+    };
+
+    setLiveModelHandler = (handler: ((model: SessionModel) => Promise<void>) | null): void => {
+        this.liveModelHandler = handler;
+    };
+
+    applyLiveModel = async (model: SessionModel): Promise<void> => {
+        if (!this.liveModelHandler) throw new Error('AGY PTY is not ready for a live model change');
+        await this.liveModelHandler(model);
     };
 
     setEffort = (effort: SessionEffort): void => {

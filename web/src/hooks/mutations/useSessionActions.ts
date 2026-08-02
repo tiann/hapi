@@ -7,6 +7,8 @@ import { queryKeys } from '@/lib/query-keys'
 import { clearMessageWindow } from '@/lib/message-window-store'
 import { isKnownFlavor } from '@hapi/protocol'
 
+export const sessionModelMutationKey = (sessionId: string) => ['session-model', sessionId] as const
+
 export function useSessionActions(
     api: ApiClient | null,
     sessionId: string | null,
@@ -146,17 +148,16 @@ export function useSessionActions(
     })
 
     const modelMutation = useMutation({
+        mutationKey: sessionModelMutationKey(sessionId ?? ''),
         mutationFn: async (model: { provider: string; modelId: string } | string | null) => {
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')
             }
             await api.setModel(sessionId, model)
         },
-        onSuccess: () => {
-            void (async () => {
-                await invalidateSession()
-                await invalidateCursorModels()
-            })()
+        onSuccess: async () => {
+            await invalidateSession()
+            await invalidateCursorModels()
         },
     })
 

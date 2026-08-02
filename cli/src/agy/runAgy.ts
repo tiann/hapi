@@ -216,7 +216,12 @@ export async function runAgy(opts: {
         rpcHandlerManager: session.rpcHandlerManager,
         flavor: 'agy',
         modelMode: 'nullable',
-        onApply: (config) => {
+        onApply: async (config) => {
+            if (config.model !== undefined && config.model !== sessionModel) {
+                const sessionInstance = sessionWrapperRef.current;
+                if (!sessionInstance) throw new Error('AGY PTY is not ready for a live model change');
+                await sessionInstance.applyLiveModel(config.model);
+            }
             if (config.permissionMode !== undefined) {
                 currentPermissionMode = config.permissionMode;
             }

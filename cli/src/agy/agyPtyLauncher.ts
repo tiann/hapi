@@ -2,10 +2,11 @@ import React from "react"
 import { AgySession } from "./session"
 import { RemoteModeDisplay } from "@/ui/ink/RemoteModeDisplay"
 import { agyPty } from "./agyPty"
-import { createAgySessionScanner } from "./utils/agySessionScanner"
+import { createAgySessionScanner, extractBodyText } from "./utils/agySessionScanner"
 import type { AgyToolCall } from "./utils/agyTranscriptTypes"
 import { isAgyAskQuestionToolCall, buildCanonicalAskUserQuestionInput, type AgyAskQuestionQuestion } from "./utils/agyAskQuestion"
 import { buildAgyQuestionKeys } from "./utils/agyQuestionKeys"
+import { buildAgyModelNavigationKeys, buildAgyModelPickerTarget, findAgyCurrentModelRow } from './utils/agyModelKeys'
 import { logger } from "@/ui/logger"
 import {
     RemoteLauncherBase,
@@ -19,6 +20,55 @@ import {
 // real tool actions in the same planner batch get mis-labeled.
 const AGY_NON_TOOL_ACTION_TYPES = new Set(['ERROR_MESSAGE', 'SYSTEM_MESSAGE'])
 
+type PendingWebDelivery = {
+    message: string
+    localIds: string[]
+    submitted: boolean
+    observedBeforeSubmit: string | null
+}
+
+function extractUserRequest(content: string): string | null {
+    const open = '<USER_REQUEST>'
+    const close = '</USER_REQUEST>'
+    const start = content.indexOf(open)
+    if (start === -1) return null
+    const contentStart = start + open.length
+    const end = content.indexOf(close, contentStart)
+    if (end === -1) return null
+    let request = content.slice(contentStart, end)
+    if (request.startsWith('\n')) request = request.slice(1)
+    if (request.endsWith('\n')) request = request.slice(0, -1)
+    return request
+}
+
+function parseAttachmentMessage(text: string, separator: '\n\n' | '\n'): {
+    paths: string[]
+    body: string
+} | null {
+    const separatorIndex = text.indexOf(separator)
+    if (separatorIndex === -1) return null
+    const prefix = text.slice(0, separatorIndex)
+    if (!/^@\S+( @\S+)*$/.test(prefix)) return null
+    return {
+        paths: prefix.split(' ').sort(),
+        body: text.slice(separatorIndex + separator.length),
+    }
+}
+
+export function userRequestMatches(message: string, content: string): boolean {
+    const request = extractUserRequest(content)
+    if (request === null) return false
+    if (request === message) return true
+    const body = extractBodyText(message)
+    if (!body || body === message) return false
+    const sentAttachment = parseAttachmentMessage(message, '\n\n')
+    const observedAttachment = parseAttachmentMessage(request, '\n')
+    if (!sentAttachment || !observedAttachment) return false
+    return sentAttachment.body === observedAttachment.body
+        && sentAttachment.paths.length === observedAttachment.paths.length
+        && sentAttachment.paths.every((path, index) => path === observedAttachment.paths[index])
+}
+
 class AgyPtyLauncher extends RemoteLauncherBase {
     private readonly session: AgySession
     private scanner: any = null
@@ -29,12 +79,75 @@ class AgyPtyLauncher extends RemoteLauncherBase {
     // Persisted here so re-spawns (crash recovery) resume the same conversation.
     private agySessionId: string | null = null
     // Live PTY controls (raw keystroke injection) for turn-interrupt
-    private ptyControls: { sendKeys: (data: string) => void } | null = null
+    private ptyControls: { sendKeys: (data: string) => void; invalidateInputReady: () => void } | null = null
+    private agentRunInProgress = false
+    private agentRunReserved = false
+    private ptyGeneration = 0
+    private pendingModelChange: {
+        model: string | null
+        generation: number
+        resolve: () => void
+        reject: (error: Error) => void
+    } | null = null
+    private interactionTail: Promise<void> = Promise.resolve()
+    private outputWaiter: { expected: string; resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> } | null = null
+    private recentOutput = ''
     // Tool calls (name + args) from the most recent PLANNER_RESPONSE, awaiting
     // pairing with the action entries that follow it. agy splits a tool
     // invocation (on the planner step) from its result (the action entry), so
     // this FIFO lets each action entry recover its input for the chat tool card.
     private pendingAgyToolCalls: AgyToolCall[] = []
+    private pendingWebDelivery: PendingWebDelivery | null = null
+    private pendingWebDeliveryResolved: (() => void) | null = null
+
+    private waitForPendingWebDelivery(signal: AbortSignal): Promise<void> {
+        if (!this.pendingWebDelivery) return Promise.resolve()
+        return new Promise((resolve) => {
+            const finish = () => {
+                signal.removeEventListener('abort', finish)
+                if (this.pendingWebDeliveryResolved === finish) this.pendingWebDeliveryResolved = null
+                resolve()
+            }
+            this.pendingWebDeliveryResolved = finish
+            signal.addEventListener('abort', finish, { once: true })
+        })
+    }
+
+    private finishPendingWebDelivery(): void {
+        this.pendingWebDelivery = null
+        const resolve = this.pendingWebDeliveryResolved
+        this.pendingWebDeliveryResolved = null
+        resolve?.()
+    }
+
+    private observeUserInput(content: string): void {
+        const pending = this.pendingWebDelivery
+        if (!pending) return
+        if (!pending.submitted) {
+            pending.observedBeforeSubmit = content
+            return
+        }
+        if (!userRequestMatches(pending.message, content)) {
+            logger.warn('[agy-pty]: USER_INPUT did not match the pending web message; leaving it unacknowledged and continuing the queue')
+            this.session.client.sendSessionEvent({
+                type: 'message',
+                message: 'agy could not confirm delivery of the previous web message; it remains unacknowledged'
+            })
+            this.finishPendingWebDelivery()
+            return
+        }
+        this.session.client.emitMessagesConsumed(pending.localIds)
+        this.finishPendingWebDelivery()
+    }
+
+    private markWebDeliverySubmitted(): void {
+        const pending = this.pendingWebDelivery
+        if (!pending) return
+        pending.submitted = true
+        const observed = pending.observedBeforeSubmit
+        pending.observedBeforeSubmit = null
+        if (observed !== null) this.observeUserInput(observed)
+    }
 
     protected getCurrentSessionId(): string | null {
         return this.session.sessionId
@@ -111,12 +224,104 @@ class AgyPtyLauncher extends RemoteLauncherBase {
             .then((answers) => {
                 const keys = buildAgyQuestionKeys(questions, answers)
                 if (keys) {
-                    this.ptyControls?.sendKeys(keys)
+                    void this.enqueuePtyInteraction(async () => { this.ptyControls?.sendKeys(keys) })
                 }
             })
             .catch((err) => {
                 logger.debug('[agy-pty]: ask_question pending request failed/canceled', { err })
             })
+    }
+
+    private enqueuePtyInteraction(task: () => Promise<void>): Promise<void> {
+        const result = this.interactionTail.then(async () => {
+            this.ptyControls?.invalidateInputReady()
+            await task()
+        })
+        this.interactionTail = result.catch(() => {})
+        return result
+    }
+
+    private waitForOutput(expected: string, timeoutMs = 5000): Promise<void> {
+        if (this.outputWaiter) return Promise.reject(new Error('Another AGY output watcher is active'))
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                if (this.outputWaiter?.expected === expected) this.outputWaiter = null
+                reject(new Error(`Timed out waiting for AGY output: ${expected}`))
+            }, timeoutMs)
+            this.outputWaiter = { expected, resolve, reject, timer }
+        })
+    }
+
+    private feedOutput(chunk: string): void {
+        const waiter = this.outputWaiter
+        const clean = chunk.replace(/\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/g, '')
+        this.recentOutput = `${this.recentOutput}${clean}`.slice(-2048)
+        if (!waiter || !this.recentOutput.includes(waiter.expected)) return
+        clearTimeout(waiter.timer)
+        this.outputWaiter = null
+        waiter.resolve()
+    }
+
+    private applyLiveModelNow(model: string | null, generation: number): Promise<void> {
+        const target = buildAgyModelPickerTarget(model)
+        return this.enqueuePtyInteraction(async () => {
+            const controls = this.ptyControls
+            if (!controls) throw new Error('AGY PTY is not ready for a live model change')
+            if (generation !== this.ptyGeneration) throw new Error('AGY PTY restarted before the live model change')
+
+            this.recentOutput = ''
+            try {
+                const pickerReady = this.waitForOutput('(current)')
+                controls.sendKeys('/model\r')
+                await pickerReady
+
+                const currentRow = findAgyCurrentModelRow(stripTerminalControlSequences(this.recentOutput))
+                if (currentRow === null) throw new Error('AGY model picker did not identify the current model')
+
+                this.recentOutput = ''
+                const applied = this.waitForOutput(`Model set to ${target.label}`)
+                controls.sendKeys(buildAgyModelNavigationKeys(target, currentRow))
+                controls.sendKeys('\r')
+                await applied
+            } catch (error) {
+                controls.sendKeys('\x1b')
+                throw error
+            }
+        })
+    }
+
+    private applyLiveModel(model: string | null): Promise<void> {
+        const generation = this.ptyGeneration
+        // Validate synchronously before accepting a request for the boundary.
+        buildAgyModelPickerTarget(model)
+        if (!this.agentRunInProgress && !this.agentRunReserved) return this.applyLiveModelNow(model, generation)
+        return new Promise((resolve, reject) => {
+            this.pendingModelChange?.reject(new Error('Live AGY model change was superseded by a newer request'))
+            this.pendingModelChange = { model, generation, resolve, reject }
+        })
+    }
+
+    private async applyPendingModelChange(): Promise<void> {
+        const pending = this.pendingModelChange
+        if (!pending) return
+        this.pendingModelChange = null
+        try {
+            await this.applyLiveModelNow(pending.model, pending.generation)
+            pending.resolve()
+        } catch (error) {
+            pending.reject(error instanceof Error ? error : new Error(String(error)))
+        }
+    }
+
+    private async completeAgentRun(): Promise<void> {
+        this.agentRunInProgress = false
+        await this.applyPendingModelChange()
+    }
+
+    private rejectPendingModelChange(reason: string): void {
+        const pending = this.pendingModelChange
+        this.pendingModelChange = null
+        pending?.reject(new Error(reason))
     }
 
     private async handleSwitchRequest(): Promise<void> {
@@ -163,8 +368,21 @@ class AgyPtyLauncher extends RemoteLauncherBase {
                 hookToken: this.session.hookToken,
                 signal,
                 nextMessage: async () => {
+                    await this.waitForPendingWebDelivery(signal)
+                    if (signal.aborted || this.exitReason) return null
                     const msg = await this.session.queue.waitForMessagesAndGetAsString(signal)
                     if (!msg) return null
+                    const localIds = (msg.items ?? [])
+                        .map((item) => item.localId)
+                        .filter((localId): localId is string => Boolean(localId))
+                    if (localIds.length > 0) {
+                        this.pendingWebDelivery = {
+                            message: msg.message,
+                            localIds,
+                            submitted: false,
+                            observedBeforeSubmit: null,
+                        }
+                    }
                     if (!this.firstMessageSent) {
                         this.firstMessageSent = true
                         if (!this.agySessionId) {
@@ -174,6 +392,7 @@ class AgyPtyLauncher extends RemoteLauncherBase {
                     return { message: msg.message }
                 },
                 registerControls: (controls) => {
+                    this.ptyGeneration += 1
                     this.ptyControls = controls
                     this.session.client.resetAgentTerminal()
                     this.session.client.setAgentTerminalControls(controls)
@@ -185,9 +404,11 @@ class AgyPtyLauncher extends RemoteLauncherBase {
                 onReady: () => {
                     reachedReady = true
                     logger.debug('[agy-pty]: agy PTY ready')
+                    this.session.client.emitSessionReady()
                     this.session.client.sendSessionEvent({ type: 'ready' })
                 },
                 onMessage: (data: string) => {
+                    this.feedOutput(data)
                     if (process.env.DEBUG_PTY) {
                         logger.debug(`[agy-pty:onMessage] received ${data.length} bytes`)
                     }
@@ -204,9 +425,29 @@ class AgyPtyLauncher extends RemoteLauncherBase {
                 onThinkingChange: (thinking: boolean) => {
                     this.session.onThinkingChange(thinking)
                 },
+                onMessageSubmitted: () => {
+                    this.markWebDeliverySubmitted()
+                    this.agentRunReserved = false
+                    this.agentRunInProgress = true
+                },
+                onBeforeAgentRunStart: async () => {
+                    // Reserve the boundary synchronously. A model request that
+                    // arrives after completion but before submit is deferred to
+                    // the new run instead of racing raw keys with its prompt.
+                    this.agentRunReserved = true
+                    // A live picker may already have started while nextMessage()
+                    // was blocked. Let it finish before typing the queued prompt.
+                    await this.interactionTail
+                    await this.applyPendingModelChange()
+                },
+                onAgentRunCompleted: () => this.completeAgentRun(),
                 onExit: (code: number | null) => {
                     logger.debug(`[agy-pty]: agy PTY exited with code ${code}`)
                     this.ptyControls = null
+                    this.ptyGeneration += 1
+                    this.agentRunInProgress = false
+                    this.agentRunReserved = false
+                    this.rejectPendingModelChange('AGY PTY ended before the live model change')
                     // Finding F1 (hostile-review): a respawn (runRespawnLoop)
                     // establishes a brand-new PTY/selector — Phase 0 measured
                     // that `agy --conversation <uuid>` resume does NOT restore
@@ -218,6 +459,15 @@ class AgyPtyLauncher extends RemoteLauncherBase {
                     // closes that window and also resolves the web's question
                     // card instead of leaving it pending forever.
                     this.session.agyPermissionHandler?.cancelPendingQuestions('agy PTY exited while a question was pending')
+                    if (this.pendingWebDelivery) {
+                        this.exitReason = 'exit'
+                        this.pendingWebDeliveryResolved?.()
+                        this.session.client.sendSessionEvent({
+                            type: 'message',
+                            message: 'agy PTY exited before delivery could be confirmed'
+                        })
+                        return
+                    }
                     if (authFailedThisRound) return
                     this.session.client.sendSessionEvent({
                         type: 'message',
@@ -258,7 +508,10 @@ class AgyPtyLauncher extends RemoteLauncherBase {
                 }
             },
             onEntry: (entry) => {
-                if (entry.type === 'USER_INPUT') return
+                if (entry.type === 'USER_INPUT') {
+                    this.observeUserInput(entry.content ?? '')
+                    return
+                }
                 const hasText = (entry.content ?? '').trim().length > 0
                 const hasToolCalls = (entry.tool_calls?.length ?? 0) > 0
                 if (!hasText && !hasToolCalls) return
@@ -325,6 +578,7 @@ class AgyPtyLauncher extends RemoteLauncherBase {
             this.scanner?.onNewSession(uuid)
         }
         session.addSessionFoundCallback(handleSessionFound)
+        session.setLiveModelHandler((model) => this.applyLiveModel(model))
 
         try {
             this.firstMessageSent = false
@@ -352,6 +606,12 @@ class AgyPtyLauncher extends RemoteLauncherBase {
                 }
             })
         } finally {
+            session.setLiveModelHandler(null)
+            if (this.outputWaiter) {
+                clearTimeout(this.outputWaiter.timer)
+                this.outputWaiter.reject(new Error('AGY PTY ended during a live model change'))
+                this.outputWaiter = null
+            }
             session.client.setAgentTerminalControls(null)
             session.removeSessionFoundCallback(handleSessionFound)
             if (this.scanner) {

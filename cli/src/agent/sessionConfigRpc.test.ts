@@ -54,6 +54,23 @@ describe('sessionConfigRpc', () => {
         expect(onApply).toHaveBeenCalledWith({ model: null })
     })
 
+    it('does not acknowledge or run onAfterApply until asynchronous apply succeeds', async () => {
+        const harness = createRpcHarness()
+        const onAfterApply = vi.fn()
+        const onApply = vi.fn(async () => { throw new Error('live model switch failed') })
+
+        registerSessionConfigRpc({
+            rpcHandlerManager: harness.rpcHandlerManager,
+            flavor: 'agy',
+            modelMode: 'nullable',
+            onApply,
+            onAfterApply
+        })
+
+        await expect(harness.getHandler()({ model: 'gemini-3.5-flash-low' })).rejects.toThrow('live model switch failed')
+        expect(onAfterApply).not.toHaveBeenCalled()
+    })
+
     it('ignores model config for agents that do not support model changes when configured to ignore', async () => {
         const harness = createRpcHarness()
         const onApply = vi.fn()
