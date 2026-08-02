@@ -497,6 +497,25 @@ describe('runOpencode set-session-config handler', () => {
         expect(exit).not.toHaveBeenCalled();
     });
 
+    it('retries a transient clear handoff failure before exiting the archived source', async () => {
+        harness.triggerClear = true;
+        const transient = Object.assign(new Error('connection reset'), { code: 'ECONNRESET' });
+        harness.clearOpenCodeSession
+            .mockRejectedValueOnce(transient)
+            .mockResolvedValueOnce('fresh-session');
+        const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+        try {
+            await runOpencode({ startedBy: 'runner' });
+            expect(harness.clearOpenCodeSession).toHaveBeenCalledTimes(2);
+            expect(harness.clearOpenCodeSession).toHaveBeenNthCalledWith(1, 'source-session');
+            expect(harness.clearOpenCodeSession).toHaveBeenNthCalledWith(2, 'source-session');
+            expect(exit).toHaveBeenCalledWith(0);
+        } finally {
+            exit.mockRestore();
+        }
+    });
+
     it('keeps terminal-backed /clear explicit rather than archiving a session with no runner machine', async () => {
         await runOpencode({ startedBy: 'terminal' });
         const userMessageHandler = harness.session.onUserMessage.mock.calls[0]?.[0] as

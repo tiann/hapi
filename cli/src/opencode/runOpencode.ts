@@ -16,6 +16,8 @@ import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import { listSlashCommands } from '@/modules/common/slashCommands';
 import { resolveOpencodeSlashCommand } from './utils/slashCommands';
+import { isRetryableConnectionError } from '@/utils/errorUtils';
+import { withRetry } from '@/utils/time';
 
 export async function runOpencode(opts: {
     startedBy?: 'runner' | 'terminal';
@@ -568,7 +570,19 @@ export async function runOpencode(opts: {
         // the fresh HAPI/OpenCode process be spawned.
         await lifecycle.cleanup();
         try {
-            await api.clearOpenCodeSession(session.sessionId);
+            await withRetry(
+                () => api.clearOpenCodeSession(session.sessionId),
+                {
+                    maxAttempts: 5,
+                    minDelay: 500,
+                    maxDelay: 5_000,
+                    shouldRetry: isRetryableConnectionError,
+                    onRetry: (error, attempt, nextDelayMs) => {
+                        const message = error instanceof Error ? error.message : String(error);
+                        logger.debug(`[opencode] Fresh-session clear handoff failed (attempt ${attempt}), retrying in ${nextDelayMs}ms: ${message}`);
+                    }
+                }
+            );
         } catch (error) {
             // The source has already archived, but the hub retains the durable
             // retry operation. Do not turn that recoverable failure into a
