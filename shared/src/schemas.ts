@@ -166,7 +166,9 @@ export const MetadataSchema = z.object({
         atTs: z.number(),
         priorAssistantClaimsDone: z.boolean(),
         retriedAndFailed: z.boolean().optional(),
-        acknowledgedAt: z.number().optional()
+        acknowledgedAt: z.number().optional(),
+        /** Hub-owned: successful push/FCM/Telegram delivery watermark. */
+        notifiedAt: z.number().optional()
     }).optional()
 })
 

@@ -576,6 +576,55 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
         expect(metadata?.lastModelError?.acknowledgedAt).toBe(1_700_000_000_222)
     })
 
+    it('preserves lastModelError.notifiedAt against stale CLI rewrite of same atTs', () => {
+        const store = makeStore()
+        const atTs = 1_700_000_000_333
+        const session = store.sessions.getOrCreateSession(
+            'cursor-model-error-notified-survives',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                cursorSessionId: 'notify-uuid',
+                lastModelError: {
+                    kind: 'rate_limited',
+                    transient: true,
+                    rawSnippet: 'Error: T: [resource_exhausted]',
+                    atTs,
+                    priorAssistantClaimsDone: false,
+                    notifiedAt: 1_700_000_000_444
+                }
+            },
+            null,
+            'default'
+        )
+
+        store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                cursorSessionId: 'notify-uuid',
+                lastModelError: {
+                    kind: 'rate_limited',
+                    transient: true,
+                    rawSnippet: 'Error: T: [resource_exhausted]',
+                    atTs,
+                    priorAssistantClaimsDone: false
+                }
+            },
+            session.metadataVersion,
+            'default'
+        )
+
+        const metadata = getMetadata(store, session.id) as {
+            lastModelError?: { atTs?: number; notifiedAt?: number }
+        } | null
+        expect(metadata?.lastModelError?.atTs).toBe(atTs)
+        expect(metadata?.lastModelError?.notifiedAt).toBe(1_700_000_000_444)
+    })
+
     it('does not invent path or host when prior had none', () => {
         const store = makeStore()
         // create with minimal raw metadata (path is technically required by

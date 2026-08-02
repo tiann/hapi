@@ -1709,6 +1709,10 @@ async uploadScratchlistAttachment(
         await this.sessionCache.acknowledgeModelError(sessionId, atTs)
     }
 
+    async markModelErrorNotified(sessionId: string, atTs: number): Promise<void> {
+        await this.sessionCache.markModelErrorNotified(sessionId, atTs)
+    }
+
     async deleteSession(sessionId: string): Promise<void> {
         await this.sessionCache.deleteSession(sessionId)
     }

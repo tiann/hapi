@@ -908,6 +908,50 @@ export class SessionCache {
     }
 
     /**
+     * Persist delivery watermark on lastModelError so hub restarts do not
+     * re-page the same unacknowledged atTs (in-memory Map alone is lost).
+     * No-ops when the error changed under us — a newer atTs owns the page.
+     */
+    async markModelErrorNotified(sessionId: string, atTs: number): Promise<void> {
+        const session = this.sessions.get(sessionId)
+        if (!session) {
+            return
+        }
+
+        const currentMetadata = session.metadata ?? { path: '', host: '' }
+        const currentError = currentMetadata.lastModelError
+        if (!currentError || currentError.atTs !== atTs) {
+            return
+        }
+        if (typeof currentError.notifiedAt === 'number') {
+            return
+        }
+
+        const newMetadata = {
+            ...currentMetadata,
+            lastModelError: {
+                ...currentError,
+                notifiedAt: Date.now()
+            }
+        }
+
+        const result = this.store.sessions.updateSessionMetadata(
+            sessionId,
+            newMetadata,
+            session.metadataVersion,
+            session.namespace,
+            { touchUpdatedAt: false }
+        )
+
+        if (result.result === 'error' || result.result === 'version-mismatch') {
+            // Best-effort: in-memory watermark still covers this process.
+            return
+        }
+
+        this.refreshSession(sessionId)
+    }
+
+    /**
      * Clear archive-related metadata on an archived session so it can be resumed.
      * - Removes `lifecycleState`, `archivedBy`, `archiveReason`, and stamps
      *   `lifecycleStateSince` so subsequent CLI lifecycle writes still win on time.

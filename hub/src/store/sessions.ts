@@ -128,30 +128,37 @@ function preserveCursorProtocolPair(
 }
 
 /**
- * Web ack sets acknowledgedAt on the hub copy; the CLI's local snapshot may
- * still hold the same lastModelError without that field. A later ordinary
- * CLI metadata write would otherwise overwrite the ack and resurrect the
- * banner. When atTs matches and prior was acknowledged, keep acknowledgedAt.
+ * Hub-owned fields on lastModelError (ack + delivery watermark) must survive
+ * stale CLI metadata rewrites of the same atTs. Web ack / NotificationHub
+ * write these on the hub copy; the CLI's local snapshot often lacks them.
  */
-function preserveModelErrorAcknowledgement(
+function preserveModelErrorHubFields(
     prior: Record<string, unknown>,
     next: Record<string, unknown>,
     merged: Record<string, unknown> | null
 ): Record<string, unknown> | null {
     const oldError = isPlainObject(prior.lastModelError) ? prior.lastModelError : null
     const newError = isPlainObject(next.lastModelError) ? next.lastModelError : null
-    if (
-        !oldError
-        || !newError
-        || oldError.atTs !== newError.atTs
-        || typeof oldError.acknowledgedAt !== 'number'
-        || newError.acknowledgedAt !== undefined
-    ) {
+    if (!oldError || !newError || oldError.atTs !== newError.atTs) {
+        return merged
+    }
+
+    const preserved: Record<string, unknown> = { ...newError }
+    let changed = false
+    if (typeof oldError.acknowledgedAt === 'number' && newError.acknowledgedAt === undefined) {
+        preserved.acknowledgedAt = oldError.acknowledgedAt
+        changed = true
+    }
+    if (typeof oldError.notifiedAt === 'number' && newError.notifiedAt === undefined) {
+        preserved.notifiedAt = oldError.notifiedAt
+        changed = true
+    }
+    if (!changed) {
         return merged
     }
 
     const result = merged ?? { ...next }
-    result.lastModelError = { ...newError, acknowledgedAt: oldError.acknowledgedAt }
+    result.lastModelError = preserved
     return result
 }
 
@@ -165,7 +172,7 @@ export function mergeSessionMetadata(prior: unknown, next: unknown): unknown {
     merged = carryForwardIfMissing(prior, next, merged, SIMPLE_RESUME_TOKENS)
     merged = carryForwardIfMissing(prior, next, merged, ALERT_STATE_FIELDS)
     merged = preserveCursorProtocolPair(prior, next, merged)
-    merged = preserveModelErrorAcknowledgement(prior, next, merged)
+    merged = preserveModelErrorHubFields(prior, next, merged)
     return merged ?? next
 }
 
