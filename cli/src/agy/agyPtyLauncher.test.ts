@@ -919,6 +919,8 @@ describe('agyPtyLauncher ask_question safety: invalidate stale pending questions
                 client: {
                     sendAgySessionMessage: vi.fn(),
                     sendSessionEvent: vi.fn(),
+                    emitSessionReady: vi.fn(),
+                    emitMessagesConsumed: vi.fn(),
                     resetAgentTerminal: vi.fn(),
                     setAgentTerminalControls: vi.fn(),
                     emitAgentTerminalOutput: vi.fn(),
@@ -1016,6 +1018,87 @@ describe('agyPtyLauncher ask_question safety: invalidate stale pending questions
         // question, so nothing types a stray answer into whatever the
         // interrupt left on screen.
         expect(harness.sendKeys).not.toHaveBeenCalled()
+
+        harness.exitReason = 'exit'
+        msgPromise.resolve(null)
+        await launcherPromise
+    })
+
+    it('drops an answered question queued behind another interaction when the turn is aborted', async () => {
+        harness.exitReason = null
+        const { session, handler, respondAsWeb } = createRealHandlerSessionStub()
+        const registerSpy = vi.spyOn(handler, 'registerQuestionRequest')
+        const msgPromise = deferred<{ message: string } | null>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+
+        const launcherPromise = agyPtyLauncher(session as never)
+        await tick(20)
+
+        const modelChange = harness.liveModelHandler!('gemini-3.5-flash-low')
+        await tick(10)
+        expect(harness.sendKeys).toHaveBeenCalledWith('/model\r')
+
+        const onEntry = harness.scannerOpts!.onEntry as (e: unknown) => void
+        onEntry({
+            type: 'PLANNER_RESPONSE',
+            step_index: 42,
+            content: '',
+            tool_calls: [{ name: 'ask_question', args: { questions: [{ question: 'Pick', options: ['A', 'B'], is_multi_select: false }] } }]
+        })
+        await tick(5)
+        const [toolUseId] = registerSpy.mock.calls[0]
+        await respondAsWeb({ id: toolUseId, approved: true, answers: { '0': ['B'] } })
+        await tick(5)
+
+        await harness.abortHandler!()
+        harness.sendKeys.mockClear()
+        ptyOptsCaptured.onMessage('Switch Model\n> Gemini 3.5 Flash             (current)')
+        await tick(5)
+        ptyOptsCaptured.onMessage('Model set to Gemini 3.5 Flash (Low)')
+        await modelChange
+        await tick(10)
+
+        expect(harness.sendKeys).not.toHaveBeenCalledWith('2')
+
+        harness.exitReason = 'exit'
+        msgPromise.resolve(null)
+        await launcherPromise
+    })
+
+    it('drops an answered question queued behind another interaction after PTY exit and respawn', async () => {
+        harness.exitReason = null
+        const { session, handler, respondAsWeb } = createRealHandlerSessionStub()
+        const registerSpy = vi.spyOn(handler, 'registerQuestionRequest')
+        const msgPromise = deferred<{ message: string } | null>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+
+        const launcherPromise = agyPtyLauncher(session as never)
+        await tick(20)
+
+        const modelChange = harness.liveModelHandler!('gemini-3.5-flash-low')
+        await tick(10)
+        const onEntry = harness.scannerOpts!.onEntry as (e: unknown) => void
+        onEntry({
+            type: 'PLANNER_RESPONSE',
+            step_index: 43,
+            content: '',
+            tool_calls: [{ name: 'ask_question', args: { questions: [{ question: 'Pick', options: ['A', 'B'], is_multi_select: false }] } }]
+        })
+        await tick(5)
+        const [toolUseId] = registerSpy.mock.calls[0]
+        await respondAsWeb({ id: toolUseId, approved: true, answers: { '0': ['B'] } })
+        await tick(5)
+
+        ptyOptsCaptured.onExit(1)
+        const respawnedSendKeys = vi.fn()
+        ptyOptsCaptured.registerControls?.({ sendKeys: respawnedSendKeys })
+        ptyOptsCaptured.onMessage('Switch Model\n> Gemini 3.5 Flash             (current)')
+        await tick(5)
+        ptyOptsCaptured.onMessage('Model set to Gemini 3.5 Flash (Low)')
+        await modelChange.catch(() => {})
+        await tick(10)
+
+        expect(respawnedSendKeys).not.toHaveBeenCalled()
 
         harness.exitReason = 'exit'
         msgPromise.resolve(null)

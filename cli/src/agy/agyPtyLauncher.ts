@@ -129,6 +129,7 @@ class AgyPtyLauncher extends RemoteLauncherBase {
     private agentRunInProgress = false
     private agentRunReserved = false
     private ptyGeneration = 0
+    private questionInteractionEpoch = 0
     private pendingModelChange: {
         model: string | null
         generation: number
@@ -225,6 +226,7 @@ class AgyPtyLauncher extends RemoteLauncherBase {
 
     private async handleAbortRequest(): Promise<void> {
         logger.debug('[agy-pty]: handleAbortRequest (interrupt)')
+        this.questionInteractionEpoch += 1
         // Finding F1 (hostile-review): the interrupt kills the in-flight turn
         // but leaves any pending ask_question request unresolved. Phase 0
         // measured that agy has no way to recover the answered-selector state
@@ -271,11 +273,15 @@ class AgyPtyLauncher extends RemoteLauncherBase {
             : `local:${stepIndex ?? 'unknown'}:ask${callIndex}:${Date.now()}`
 
         const questions: AgyAskQuestionQuestion[] = canonical.questions
+        const interactionEpoch = this.questionInteractionEpoch
         handler.registerQuestionRequest(toolUseId, canonical)
             .then((answers) => {
                 const keys = buildAgyQuestionKeys(questions, answers)
                 if (keys) {
-                    void this.enqueuePtyInteraction(async () => { this.ptyControls?.sendKeys(keys) })
+                    void this.enqueuePtyInteraction(async () => {
+                        if (interactionEpoch !== this.questionInteractionEpoch) return
+                        this.ptyControls?.sendKeys(keys)
+                    })
                 }
             })
             .catch((err) => {
@@ -473,6 +479,7 @@ class AgyPtyLauncher extends RemoteLauncherBase {
                     return { message: msg.message }
                 },
                 registerControls: (controls) => {
+                    this.questionInteractionEpoch += 1
                     this.ptyGeneration += 1
                     this.ptyControls = controls
                     this.session.client.resetAgentTerminal()
@@ -531,6 +538,7 @@ class AgyPtyLauncher extends RemoteLauncherBase {
                 onAgentRunCompleted: () => this.completeAgentRun(),
                 onExit: (code: number | null) => {
                     logger.debug(`[agy-pty]: agy PTY exited with code ${code}`)
+                    this.questionInteractionEpoch += 1
                     this.ptyControls = null
                     this.ptyGeneration += 1
                     this.agentRunInProgress = false
