@@ -181,6 +181,26 @@ describe('listLocalCodexSessionSummaries', () => {
         rmSync(root, { recursive: true, force: true })
     })
 
+    it('ignores UUIDs in parent directories when matching requested ids by filename', () => {
+        const parentUuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+        const sessionUuid = '11111111-2222-3333-4444-555555555555'
+        const root = mkdtempSync(join(tmpdir(), `codex-${parentUuid}-`))
+        process.env.CODEX_HOME = root
+        const sessionsDir = join(root, 'sessions', '2026', '06', '27')
+        mkdirSync(sessionsDir, { recursive: true })
+
+        writeFileSync(join(sessionsDir, `${sessionUuid}.jsonl`), [
+            JSON.stringify({ type: 'session_meta', payload: { id: sessionUuid, cwd: '/tmp/project' } }),
+            JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'wanted' }] } })
+        ].join('\n'))
+
+        const sessions = listLocalCodexSessionsWithMessagesByIds(new Set([sessionUuid]))
+        expect(sessions.map((session) => session.id)).toEqual([sessionUuid])
+        expect(sessions[0]?.messages).toHaveLength(1)
+
+        rmSync(root, { recursive: true, force: true })
+    })
+
     it('dedupes requested-id matches to the newest transcript by modifiedAt', () => {
         const root = mkdtempSync(join(tmpdir(), 'codex-home-'))
         process.env.CODEX_HOME = root

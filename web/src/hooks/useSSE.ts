@@ -516,6 +516,7 @@ export function useSSE(options: {
                     ?? metadata.grokSessionId
                     ?? metadata.cursorSessionId
                     ?? metadata.kimiSessionId
+                    ?? metadata.piSessionId
                     ?? undefined,
                 lifecycleState: metadata.lifecycleState
             } : null
