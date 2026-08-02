@@ -165,7 +165,7 @@ const PATTERNS: Pattern[] = [
 function stripMarkdownFences(text: string): string {
     const visible: string[] = []
     let fence: { char: '`' | '~'; length: number; buffered: string[] } | null = null
-    for (const line of text.split('\n')) {
+    for (const line of text.split(/\r?\n/)) {
         const match = line.match(/^[ \t]{0,3}(`{3,}|~{3,})/)
         if (!match) {
             if (fence) {

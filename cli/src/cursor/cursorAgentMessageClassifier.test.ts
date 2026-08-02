@@ -162,6 +162,13 @@ describe('classifyCursorAgentMessage', () => {
             'Error: T: [resource_exhausted] capacity exceeded\n' +
             '```\n'
         expect(classifyCursorAgentMessage(fakeCloser)).toBeNull()
+
+        // CRLF closers must still close (otherwise fenced Error: T: leaks).
+        const crlfFence =
+            '```\r\n' +
+            'Error: T: [resource_exhausted] capacity exceeded\r\n' +
+            '```\r\n'
+        expect(classifyCursorAgentMessage(crlfFence)).toBeNull()
     })
 
     it('still classifies real Gemini errors when they ARE the message body', () => {
