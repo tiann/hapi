@@ -19,7 +19,7 @@ const SessionCapabilitiesSchema = z.object({
 // The stable replacement id makes retrying a lost RPC acknowledgement safe.
 export const OpencodeClearOperationSchema = z.object({
     replacementSessionId: z.string(),
-    state: z.enum(['reserved', 'finalizing', 'pending', 'failed', 'completed', 'aborted']),
+    state: z.enum(['reserved', 'cleanup-confirmed', 'finalizing', 'pending', 'failed', 'completed', 'aborted']),
     updatedAt: z.number(),
     error: z.string().optional()
 })

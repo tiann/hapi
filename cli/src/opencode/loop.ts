@@ -26,7 +26,7 @@ interface OpencodeLoopOptions {
     onReasoningEffortRollback?: (effort: string | null) => void;
     onCompactAvailabilityChange?: (available: boolean) => void;
     onClearRequested?: () => Promise<void>;
-    onClearCleanupComplete?: () => void;
+    onClearCleanupComplete?: () => Promise<void>;
     onClearCleanupFailed?: () => Promise<void>;
     // Consumes (delete-and-return) whether the given localId was cancelled
     // after already being dequeued — needed because a queued /compact can

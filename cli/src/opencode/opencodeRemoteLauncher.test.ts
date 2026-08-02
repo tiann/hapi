@@ -344,7 +344,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             resolvePrompt = resolve;
         });
         const onClearRequested = vi.fn();
-        const onClearCleanupComplete = vi.fn();
+        const onClearCleanupComplete = vi.fn(async () => {});
         const { session } = createSessionStub([
             { message: 'before-clear', mode: createMode() },
             { message: '', mode: createClearMode() }
@@ -374,7 +374,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             throw new Error('disconnect failed');
         };
         const onClearRequested = vi.fn();
-        const onClearCleanupComplete = vi.fn();
+        const onClearCleanupComplete = vi.fn(async () => {});
         const onClearCleanupFailed = vi.fn(async () => {});
         const { session } = createSessionStub([
             { message: '', mode: createClearMode() }

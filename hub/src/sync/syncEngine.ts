@@ -777,7 +777,7 @@ async uploadScratchlistAttachment(
     private async reconcileOpenCodeClears(): Promise<void> {
         for (let session of this.sessionCache.getSessions()) {
             const operation = session.metadata?.opencodeClearOperation
-            if (session.active || !operation || operation.state === 'completed' || operation.state === 'aborted') continue
+            if (session.active || !operation || !['cleanup-confirmed', 'finalizing', 'failed'].includes(operation.state)) continue
             if (session.metadata?.lifecycleState !== 'archived' || session.metadata.archiveReason !== 'Cleared by /clear') {
                 const result = this.store.sessions.updateSessionMetadata(session.id, {
                     ...session.metadata,
@@ -1204,8 +1204,10 @@ async uploadScratchlistAttachment(
             return { type: 'error', message: 'Session is not an active runner-backed OpenCode session', code: 'clear_unavailable' }
         }
         const existing = metadata.opencodeClearOperation
-        const operation = existing ?? { replacementSessionId: randomUUID(), state: 'reserved' as const, updatedAt: Date.now() }
-        if (!existing && !this.persistClearOperation(sessionId, namespace, operation)) {
+        const operation = !existing || existing.state === 'aborted'
+            ? { replacementSessionId: randomUUID(), state: 'reserved' as const, updatedAt: Date.now() }
+            : existing
+        if (operation !== existing && !this.persistClearOperation(sessionId, namespace, operation)) {
             return { type: 'error', message: 'Could not persist the OpenCode clear reservation', code: 'replacement_link_failed' }
         }
         const replacementMetadata = { ...metadata }
@@ -1234,6 +1236,17 @@ async uploadScratchlistAttachment(
             return { type: 'error', message: 'Could not abort clear reservation', code: 'replacement_link_failed' }
         }
         return { type: 'success', sessionId }
+    }
+
+    confirmOpenCodeClearCleanup(sessionId: string, namespace: string): ClearOpencodeSessionResult {
+        const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
+        if (!access.ok) return { type: 'error', message: 'Session not found', code: access.reason === 'access-denied' ? 'access_denied' : 'session_not_found' }
+        const operation = access.session.metadata?.opencodeClearOperation
+        if (!operation || operation.state === 'aborted') return { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
+        if (!this.persistClearOperation(sessionId, namespace, { ...operation, state: 'cleanup-confirmed', updatedAt: Date.now(), error: undefined })) {
+            return { type: 'error', message: 'Could not confirm native cleanup', code: 'replacement_link_failed' }
+        }
+        return { type: 'success', sessionId: operation.replacementSessionId }
     }
 
     private async clearOpenCodeSessionOnce(sessionId: string, namespace: string): Promise<ClearOpencodeSessionResult> {
@@ -1312,6 +1325,9 @@ async uploadScratchlistAttachment(
         }
 
         if (operation.state === 'reserved') {
+            return { type: 'error', message: 'Native OpenCode cleanup is not confirmed', code: 'clear_unavailable' }
+        }
+        if (operation.state === 'cleanup-confirmed') {
             operation = { ...operation, state: 'finalizing', updatedAt: Date.now() }
             if (!this.persistClearOperation(sessionId, namespace, operation)) {
                 return { type: 'error', message: 'Could not finalize the OpenCode clear reservation', code: 'replacement_link_failed' }
@@ -1430,7 +1446,7 @@ async uploadScratchlistAttachment(
                 return latest.metadata.supersededBySessionId === operation.replacementSessionId
             }
             const existing = latest.metadata.opencodeClearOperation
-            if (existing && existing.replacementSessionId !== operation.replacementSessionId) return false
+            if (existing && existing.replacementSessionId !== operation.replacementSessionId && existing.state !== 'aborted') return false
             const result = this.store.sessions.updateSessionMetadata(
                 sessionId,
                 { ...latest.metadata, opencodeClearOperation: operation },
@@ -1879,7 +1895,7 @@ async uploadScratchlistAttachment(
         const metadata = session.metadata
         return metadata?.flavor === 'opencode'
             && (metadata.archiveReason === 'Cleared by /clear'
-                || metadata.opencodeClearOperation !== undefined
+                || (metadata.opencodeClearOperation !== undefined && metadata.opencodeClearOperation.state !== 'aborted')
                 || metadata.supersededBySessionId !== undefined)
     }
 

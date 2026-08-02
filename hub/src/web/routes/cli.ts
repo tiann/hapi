@@ -214,6 +214,14 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         return c.json({ ok: true, sessionId: result.sessionId })
     })
 
+    app.post('/sessions/:id/clear-opencode/confirm-cleanup', (c) => {
+        const engine = getSyncEngine()
+        if (!engine) return c.json({ error: 'Not ready' }, 503)
+        const result = engine.confirmOpenCodeClearCleanup(c.req.param('id'), c.get('namespace'))
+        if (result.type === 'error') return c.json({ error: result.message, code: result.code }, 409)
+        return c.json({ ok: true, sessionId: result.sessionId })
+    })
+
     app.get('/sessions/:id', (c) => {
         const engine = getSyncEngine()
         if (!engine) {

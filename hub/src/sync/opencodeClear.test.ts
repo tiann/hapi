@@ -34,6 +34,27 @@ function setSpawn(engine: SyncEngine, spawnSession: ReturnType<typeof mock>) {
 }
 
 describe('SyncEngine.clearOpenCodeSession', () => {
+    it.each(['resume', 'reopen'] as const)('allows %s after a failed native cleanup aborts clear', async (action) => {
+        const { store, engine } = createEngine()
+        try {
+            const source = engine.getOrCreateSession(`abort-${action}`, {
+                path: '/tmp/project', host: 'host', machineId: 'machine-1', flavor: 'opencode', startedBy: 'runner'
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: source.id, time: Date.now() })
+            expect(engine.reserveOpenCodeClearSession(source.id, 'default')).toMatchObject({ type: 'success' })
+            expect(engine.abortOpenCodeClearSession(source.id, 'default')).toMatchObject({ type: 'success' })
+            const abortedMetadata = engine.getSessionByNamespace(source.id, 'default')!.metadata!
+            engine.handleSessionEnd({ sid: source.id, time: Date.now(), reason: 'error' })
+            const ended = store.sessions.getSessionByNamespace(source.id, 'default')!
+            store.sessions.updateSessionMetadata(source.id, abortedMetadata, ended.metadataVersion, 'default')
+            ;(engine as unknown as { sessionCache: { refreshSession(id: string): unknown } }).sessionCache.refreshSession(source.id)
+            setSpawn(engine, mock(async () => ({ type: 'success' as const, sessionId: source.id })))
+            const result = action === 'resume'
+                ? await engine.resumeSession(source.id, 'default')
+                : await engine.reopenSession(source.id, 'default')
+            expect(result).not.toMatchObject({ type: 'error', code: 'resume_unavailable' })
+        } finally { engine.stop() }
+    })
     it('durably reserves a replacement while the source is active and reuses it after archival', async () => {
         const { store, engine } = createEngine()
         try {
@@ -47,9 +68,11 @@ describe('SyncEngine.clearOpenCodeSession', () => {
             expect(engine.getSessionByNamespace(source.id, 'default')?.metadata?.opencodeClearOperation).toMatchObject({
                 replacementSessionId: reserved.sessionId, state: 'reserved'
             })
+            expect(engine.confirmOpenCodeClearCleanup(source.id, 'default')).toMatchObject({ type: 'success' })
+            const metadataBeforeEnd = engine.getSessionByNamespace(source.id, 'default')!.metadata!
             engine.handleSessionEnd({ sid: source.id, time: Date.now(), reason: 'cleared' })
-            const latest = store.sessions.getSessionByNamespace(source.id, 'default')!
-            store.sessions.updateSessionMetadata(source.id, { ...(latest.metadata as Record<string, unknown>), lifecycleState: 'archived', archiveReason: 'Cleared by /clear' }, latest.metadataVersion, 'default')
+            const storedAfterEnd = store.sessions.getSessionByNamespace(source.id, 'default')!
+            store.sessions.updateSessionMetadata(source.id, { ...metadataBeforeEnd, lifecycleState: 'archived', archiveReason: 'Cleared by /clear' }, storedAfterEnd.metadataVersion, 'default')
             ;(engine as unknown as { sessionCache: { refreshSession(id: string): unknown } }).sessionCache.refreshSession(source.id)
             const spawnSession = mock(async (...args: unknown[]) => ({ type: 'success' as const, sessionId: args[12] as string }))
             setSpawn(engine, spawnSession)
@@ -73,7 +96,7 @@ describe('SyncEngine.clearOpenCodeSession', () => {
         } finally { engine.stop() }
     })
 
-    it('recovers an inactive reserved clear even when the CLI died before writing archive metadata', async () => {
+    it('recovers cleanup-confirmed clear when the CLI dies before writing archive metadata', async () => {
         const { engine } = createEngine()
         try {
             const source = engine.getOrCreateSession('crashed-clear-source', {
@@ -82,6 +105,7 @@ describe('SyncEngine.clearOpenCodeSession', () => {
             engine.handleSessionAlive({ sid: source.id, time: Date.now() })
             const reserved = engine.reserveOpenCodeClearSession(source.id, 'default')
             if (reserved.type !== 'success') throw new Error('reservation failed')
+            expect(engine.confirmOpenCodeClearCleanup(source.id, 'default')).toMatchObject({ type: 'success' })
             engine.handleSessionEnd({ sid: source.id, time: Date.now(), reason: 'error' })
             const spawnSession = mock(async (...args: unknown[]) => ({ type: 'success' as const, sessionId: args[12] as string }))
             setSpawn(engine, spawnSession)
@@ -90,6 +114,27 @@ describe('SyncEngine.clearOpenCodeSession', () => {
                 lifecycleState: 'archived', archiveReason: 'Cleared by /clear', supersededBySessionId: reserved.sessionId
             })
             expect(spawnSession).toHaveBeenCalledTimes(1)
+        } finally { engine.stop() }
+    })
+
+    it('does not reconcile a reservation without durable native-cleanup proof', async () => {
+        const { store, engine } = createEngine()
+        try {
+            const source = engine.getOrCreateSession('unconfirmed-clear-source', {
+                path: '/tmp/project', host: 'host', machineId: 'machine-1', flavor: 'opencode', startedBy: 'runner'
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: source.id, time: Date.now() })
+            expect(engine.reserveOpenCodeClearSession(source.id, 'default')).toMatchObject({ type: 'success' })
+            const reservedMetadata = engine.getSessionByNamespace(source.id, 'default')!.metadata!
+            engine.handleSessionEnd({ sid: source.id, time: Date.now(), reason: 'error' })
+            const ended = store.sessions.getSessionByNamespace(source.id, 'default')!
+            store.sessions.updateSessionMetadata(source.id, reservedMetadata, ended.metadataVersion, 'default')
+            ;(engine as unknown as { sessionCache: { refreshSession(id: string): unknown } }).sessionCache.refreshSession(source.id)
+            const spawnSession = mock(async () => ({ type: 'success' as const, sessionId: 'must-not-spawn' }))
+            setSpawn(engine, spawnSession)
+            await (engine as unknown as { reconcileOpenCodeClears(): Promise<void> }).reconcileOpenCodeClears()
+            expect(spawnSession).not.toHaveBeenCalled()
+            expect(engine.getSessionByNamespace(source.id, 'default')?.metadata?.opencodeClearOperation?.state).toBe('reserved')
         } finally { engine.stop() }
     })
 
@@ -107,6 +152,30 @@ describe('SyncEngine.clearOpenCodeSession', () => {
             expect(engine.abortOpenCodeClearSession(source.id, 'default')).toEqual({ type: 'success', sessionId: source.id })
             expect(store.messages.getAllMessages(source.id).map((m) => m.localId)).toEqual(['held'])
             expect(engine.getSessionByNamespace(source.id, 'default')?.metadata?.opencodeClearOperation?.state).toBe('aborted')
+            engine.handleSessionEnd({ sid: source.id, time: Date.now(), reason: 'error' })
+            expect((engine as unknown as { isOpenCodeClearSource(session: unknown): boolean }).isOpenCodeClearSource(
+                engine.getSessionByNamespace(source.id, 'default')!
+            )).toBe(false)
+        } finally { engine.stop() }
+    })
+
+    it('re-reserves an aborted operation with a fresh durable identity', () => {
+        const { engine } = createEngine()
+        try {
+            const source = engine.getOrCreateSession('retry-clear-source', {
+                path: '/tmp/project', host: 'host', machineId: 'machine-1', flavor: 'opencode', startedBy: 'runner'
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: source.id, time: Date.now() })
+            const first = engine.reserveOpenCodeClearSession(source.id, 'default')
+            if (first.type !== 'success') throw new Error('reservation failed')
+            expect(engine.abortOpenCodeClearSession(source.id, 'default')).toMatchObject({ type: 'success' })
+            const second = engine.reserveOpenCodeClearSession(source.id, 'default')
+            expect(second).toMatchObject({ type: 'success', sessionId: expect.any(String) })
+            if (second.type !== 'success') throw new Error('re-reservation failed')
+            expect(second.sessionId).not.toBe(first.sessionId)
+            expect(engine.getSessionByNamespace(source.id, 'default')?.metadata?.opencodeClearOperation).toMatchObject({
+                replacementSessionId: second.sessionId, state: 'reserved'
+            })
         } finally { engine.stop() }
     })
     it.each(['resume', 'reopen'] as const)('blocks %s of an archived clear source before spawning', async (action) => {

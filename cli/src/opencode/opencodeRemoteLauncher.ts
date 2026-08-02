@@ -36,7 +36,7 @@ type OpencodeRemoteLauncherOptions = {
     // launcher has disconnected its OpenCode backend. The caller then performs
     // the source lifecycle cleanup before requesting the fresh process.
     onClearRequested?: () => Promise<void>;
-    onClearCleanupComplete?: () => void;
+    onClearCleanupComplete?: () => Promise<void>;
     onClearCleanupFailed?: () => Promise<void>;
 };
 
@@ -645,7 +645,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         }
 
         if (this.clearRequested) {
-            this.options.onClearCleanupComplete?.();
+            await this.options.onClearCleanupComplete?.();
         }
 
         // Signal the runner only after the native backend is gone. If an

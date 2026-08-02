@@ -28,8 +28,11 @@ const harness = vi.hoisted(() => ({
     opencodeLoopArgs: [] as Array<Record<string, unknown>>,
     opencodeLoopError: null as Error | null,
     triggerClear: false,
+    triggerCleanupFailure: false,
     clearOpenCodeSession: vi.fn(async () => 'fresh-session'),
     reserveOpenCodeClearSession: vi.fn(async () => 'fresh-session'),
+    confirmOpenCodeClearCleanup: vi.fn(async () => 'fresh-session'),
+    abortOpenCodeClearSession: vi.fn(async () => 'source-session'),
     listSlashCommands: vi.fn(async (..._args: unknown[]) => [] as Array<unknown>),
     session: {
         sessionId: 'source-session',
@@ -52,14 +55,14 @@ vi.mock('@/agent/sessionFactory', () => ({
     bootstrapSession: vi.fn(async (options: Record<string, unknown>) => {
         harness.bootstrapArgs.push(options);
         return {
-            api: { clearOpenCodeSession: harness.clearOpenCodeSession, reserveOpenCodeClearSession: harness.reserveOpenCodeClearSession },
+            api: { clearOpenCodeSession: harness.clearOpenCodeSession, reserveOpenCodeClearSession: harness.reserveOpenCodeClearSession, confirmOpenCodeClearCleanup: harness.confirmOpenCodeClearCleanup, abortOpenCodeClearSession: harness.abortOpenCodeClearSession },
             session: harness.session
         };
     }),
     bootstrapExistingSession: vi.fn(async (options: Record<string, unknown>) => {
         harness.bootstrapExistingArgs.push(options);
         return {
-            api: { clearOpenCodeSession: harness.clearOpenCodeSession, reserveOpenCodeClearSession: harness.reserveOpenCodeClearSession },
+            api: { clearOpenCodeSession: harness.clearOpenCodeSession, reserveOpenCodeClearSession: harness.reserveOpenCodeClearSession, confirmOpenCodeClearCleanup: harness.confirmOpenCodeClearCleanup, abortOpenCodeClearSession: harness.abortOpenCodeClearSession },
             session: harness.session
         };
     })
@@ -78,8 +81,13 @@ vi.mock('./loop', () => ({
         if (harness.triggerClear) {
             const onClearRequested = options.onClearRequested as (() => void) | undefined;
             await onClearRequested?.();
-            const onClearCleanupComplete = options.onClearCleanupComplete as (() => void) | undefined;
-            onClearCleanupComplete?.();
+            const onClearCleanupComplete = options.onClearCleanupComplete as (() => Promise<void>) | undefined;
+            await onClearCleanupComplete?.();
+        }
+        if (harness.triggerCleanupFailure) {
+            await (options.onClearRequested as (() => Promise<void>))();
+            await (options.onClearCleanupFailed as (() => Promise<void>))();
+            throw new Error('disconnect failed');
         }
     })
 }));
@@ -136,10 +144,13 @@ describe('runOpencode set-session-config handler', () => {
         harness.opencodeLoopArgs.length = 0;
         harness.opencodeLoopError = null;
         harness.triggerClear = false;
+        harness.triggerCleanupFailure = false;
         harness.clearOpenCodeSession.mockReset();
         harness.clearOpenCodeSession.mockResolvedValue('fresh-session');
         harness.reserveOpenCodeClearSession.mockReset();
         harness.reserveOpenCodeClearSession.mockResolvedValue('fresh-session');
+        harness.abortOpenCodeClearSession.mockReset();
+        harness.abortOpenCodeClearSession.mockResolvedValue('source-session');
         mockOpencodeSession.setModel.mockReset();
         mockOpencodeSession.setPermissionMode.mockReset();
         mockOpencodeSession.setModelReasoningEffort.mockReset();
@@ -544,6 +555,22 @@ describe('runOpencode set-session-config handler', () => {
 
         expect(lifecycleMock.cleanupConfirmed).toHaveBeenCalled();
         expect(exit).not.toHaveBeenCalled();
+    });
+
+    it('retries a transient abort notification before releasing cleanup-failure ownership', async () => {
+        vi.useFakeTimers();
+        harness.triggerCleanupFailure = true;
+        const transient = Object.assign(new Error('connection reset'), { code: 'ECONNRESET' });
+        harness.abortOpenCodeClearSession.mockRejectedValueOnce(transient).mockResolvedValueOnce('source-session');
+        try {
+            const run = runOpencode({ startedBy: 'runner' });
+            await vi.runAllTimersAsync();
+            await run;
+            expect(harness.abortOpenCodeClearSession).toHaveBeenCalledTimes(2);
+            expect(harness.clearOpenCodeSession).not.toHaveBeenCalled();
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it('keeps retry ownership beyond the old finite budget until the archived-source handoff succeeds', async () => {

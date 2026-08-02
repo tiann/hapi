@@ -550,11 +550,16 @@ export async function runOpencode(opts: {
             onClearRequested: async () => {
                 await api.reserveOpenCodeClearSession(session.sessionId);
             },
-            onClearCleanupComplete: () => {
+            onClearCleanupComplete: async () => {
+                await withRetry(() => api.confirmOpenCodeClearCleanup(session.sessionId), {
+                    minDelay: 500, maxDelay: 30_000, shouldRetry: isRetryableConnectionError
+                });
                 clearRequested = true;
             },
             onClearCleanupFailed: async () => {
-                await api.abortOpenCodeClearSession(session.sessionId);
+                await withRetry(() => api.abortOpenCodeClearSession(session.sessionId), {
+                    minDelay: 500, maxDelay: 30_000, shouldRetry: isRetryableConnectionError
+                });
             },
             isLocalIdCancelled: (localId) => cancelledDequeuedLocalIds.delete(localId)
         });

@@ -309,6 +309,16 @@ export class ApiClient {
         return parsed.data.sessionId
     }
 
+    async confirmOpenCodeClearCleanup(sessionId: string): Promise<string> {
+        const response = await axios.post<ClearOpencodeSessionResponse>(
+            `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(sessionId)}/clear-opencode/confirm-cleanup`, {},
+            { headers: this.authHeaders(), timeout: 60_000 }
+        )
+        const parsed = ClearOpencodeSessionResponseSchema.safeParse(response.data)
+        if (!parsed.success) throw apiValidationError('Invalid clear cleanup confirmation response', response)
+        return parsed.data.sessionId
+    }
+
     sessionSyncClient(session: Session, options?: ApiSessionClientOptions): ApiSessionClient {
         return new ApiSessionClient(this.token, session, options)
     }
