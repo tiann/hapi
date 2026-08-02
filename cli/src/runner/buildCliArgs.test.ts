@@ -218,6 +218,19 @@ describe('buildCliArgs', () => {
         expect(args[0]).toBe('pi')
     })
 
+    it('reuses the original HAPI row for Pi native resume', () => {
+        const args = buildCliArgs('pi', {
+            directory: '/tmp',
+            resumeSessionId: 'pi-native-session-1',
+            existingSessionId: 'hapi-session-pi-1',
+        })
+
+        expect(args).toContain('--session-id')
+        expect(args).toContain('pi-native-session-1')
+        expect(args).toContain('--existing-session-id')
+        expect(args).toContain('hapi-session-pi-1')
+    })
+
     it('still passes --resume for claude when resumeSessionId is provided', () => {
         // Guard against accidentally swallowing claude's --resume when
         // the pi branch was added.

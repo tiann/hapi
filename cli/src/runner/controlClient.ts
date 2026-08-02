@@ -96,9 +96,11 @@ export async function listRunnerSessions(): Promise<any[]> {
   return result.children || [];
 }
 
-export async function stopRunnerSession(sessionId: string): Promise<boolean> {
+export async function stopRunnerSession(sessionId: string): Promise<'stopped' | 'already_gone' | 'still_alive'> {
   const result = await runnerPost('/stop-session', { sessionId });
-  return result.success || false;
+  return result.status === 'stopped' || result.status === 'already_gone' || result.status === 'still_alive'
+    ? result.status
+    : 'still_alive';
 }
 
 export async function spawnRunnerSession(directory: string, sessionId?: string): Promise<any> {

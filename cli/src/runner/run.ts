@@ -648,7 +648,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     };
 
     // Stop a session by sessionId or PID fallback
-    const stopSession = (sessionId: string): boolean => {
+    const stopSession = async (sessionId: string): Promise<'stopped' | 'already_gone' | 'still_alive'> => {
       logger.debug(`[RUNNER RUN] Attempting to stop session ${sessionId}`);
 
       // Try to find by sessionId first
@@ -658,7 +658,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
           if (session.startedBy === 'runner' && session.childProcess) {
             try {
-              void killProcessByChildProcess(session.childProcess);
+              await killProcessByChildProcess(session.childProcess);
               logger.debug(`[RUNNER RUN] Requested termination for runner-spawned session ${sessionId}`);
             } catch (error) {
               logger.debug(`[RUNNER RUN] Failed to kill session ${sessionId}:`, error);
@@ -666,21 +666,29 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           } else {
             // For externally started sessions, try to kill by PID
             try {
-              void killProcess(pid);
+              await killProcess(pid);
               logger.debug(`[RUNNER RUN] Requested termination for external session PID ${pid}`);
             } catch (error) {
               logger.debug(`[RUNNER RUN] Failed to kill external session PID ${pid}:`, error);
             }
           }
 
+          const deadline = Date.now() + 5_000;
+          while (isProcessAlive(pid) && Date.now() < deadline) {
+            await new Promise(resolve => setTimeout(resolve, 50));
+          }
+          if (isProcessAlive(pid)) {
+            logger.debug(`[RUNNER RUN] Session ${sessionId} process ${pid} is still alive after stop request`);
+            return 'still_alive';
+          }
           pidToTrackedSession.delete(pid);
-          logger.debug(`[RUNNER RUN] Removed session ${sessionId} from tracking`);
-          return true;
+          logger.debug(`[RUNNER RUN] Removed terminated session ${sessionId} from tracking`);
+          return 'stopped';
         }
       }
 
       logger.debug(`[RUNNER RUN] Session ${sessionId} not found`);
-      return false;
+      return 'already_gone';
     };
 
     // Handle child process exit
@@ -757,7 +765,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       status: 'offline',
       pid: process.pid,
       httpPort: controlPort,
-      startedAt: Date.now()
+      startedAt: Date.now(),
+      capabilities: { piExistingSessionResume: true }
     };
 
     // Create API client
@@ -1115,10 +1124,10 @@ export function buildCliArgs(
     }
   }
   args.push('--hapi-starting-mode', 'remote', '--started-by', 'runner');
-  // Codex import/resume (#1088) and Cursor ACP remote resume (#991) both reuse
-  // the original HAPI row via --existing-session-id so the hub does not depend
-  // on session-ready over a remote socket before merge.
-  if (agent === 'codex' || agent === 'cursor') {
+  // Codex, Cursor ACP, and Pi native resume reuse the original HAPI row via
+  // --existing-session-id. Pi is reported successful only after the hub sees
+  // its validated native get_state/session-ready signal.
+  if (agent === 'codex' || agent === 'cursor' || agent === 'pi') {
     const existingSessionId = options.existingSessionId ?? options.sessionId;
     if (existingSessionId) {
       args.push('--existing-session-id', existingSessionId);

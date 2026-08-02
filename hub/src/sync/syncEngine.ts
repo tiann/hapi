@@ -46,6 +46,8 @@ import {
 } from './rpcGateway'
 import { SessionCache } from './sessionCache'
 
+type PiResumeAttempt = NonNullable<NonNullable<Session['metadata']>['piResumeAttempt']>
+
 export type { Session, SyncEvent } from '@hapi/protocol/types'
 export type { Machine } from './machineCache'
 export type { SyncEventListener } from './eventPublisher'
@@ -72,7 +74,7 @@ export type {
 
 export type ResumeSessionResult =
     | { type: 'success'; sessionId: string }
-    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'resume_unavailable' | 'resume_failed' }
+    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'resume_unavailable' | 'resume_failed'; rollbackSafe?: boolean }
 
 export type ReopenSessionResult =
     | { type: 'success'; sessionId: string; resumed: boolean; cursorSessionProtocol?: 'acp' | 'stream-json' }
@@ -147,8 +149,14 @@ export class SyncEngine {
     private readonly messageService: MessageService
     private readonly rpcGateway: RpcGateway
     private inactivityTimer: NodeJS.Timeout | null = null
-    /** Sessions that emitted `session-ready` (Cursor ACP load/newSession complete). */
+    /** Sessions that emitted `session-ready` (Cursor ACP or validated Pi get_state). */
     private readonly sessionReadyIds = new Set<string>()
+    /** Original Pi rows with a native resume currently in flight. */
+    private readonly piResumeInFlightIds = new Set<string>()
+    /** Pi rows whose runner child could not be confirmed terminated. */
+    private readonly piResumeQuarantinedIds = new Set<string>()
+    /** Unexpected version-skew temp child -> original row whose retry is blocked until child ends. */
+    private readonly piUnexpectedTempOriginalIds = new Map<string, string>()
     /** Serialize scratchlist uploads per session so disk-byte caps cannot race. */
     private readonly scratchlistUploadTails = new Map<string, Promise<unknown>>()
 
@@ -402,6 +410,15 @@ export class SyncEngine {
 
     handleSessionReady(payload: { sid: string; time: number }): void {
         this.sessionReadyIds.add(payload.sid)
+        const session = this.sessionCache.getSession(payload.sid)
+        if (session?.metadata?.piResumeAttempt) {
+            void this.writePiResumeAttempt(payload.sid, session.namespace, null)
+                .then(() => {
+                    this.piResumeQuarantinedIds.delete(payload.sid)
+                    this.triggerDedupIfNeeded(payload.sid)
+                })
+                .catch(() => {})
+        }
         this.triggerDedupIfNeeded(payload.sid)
     }
 
@@ -411,9 +428,14 @@ export class SyncEngine {
 
     handleSessionEnd(payload: { sid: string; time: number; reason?: 'completed' | 'terminated' | 'error' }): void {
         const before = this.sessionCache.getSession(payload.sid)
+        const ownsPiAttempt = before?.metadata?.piResumeAttempt !== undefined
+        const isPiAttemptChild = this.sessionCache.getSessions().some(
+            (session) => session.metadata?.piResumeAttempt?.childSessionId === payload.sid
+        )
+        const restorePiArchive = ownsPiAttempt && !this.sessionReadyIds.has(payload.sid)
         const isCursorAcp = before?.metadata?.flavor === 'cursor'
             && before.metadata.cursorSessionProtocol === 'acp'
-        const shouldRetryDedup = !isCursorAcp || this.sessionReadyIds.has(payload.sid)
+        const shouldRetryDedup = !ownsPiAttempt && !isPiAttemptChild && (!isCursorAcp || this.sessionReadyIds.has(payload.sid))
 
         this.sessionCache.handleSessionEnd(payload)
         this.eventPublisher.emit({
@@ -428,6 +450,11 @@ export class SyncEngine {
             this.triggerDedupIfNeeded(payload.sid)
         }
         this.sessionReadyIds.delete(payload.sid)
+        this.piResumeQuarantinedIds.delete(payload.sid)
+        this.piUnexpectedTempOriginalIds.delete(payload.sid)
+        if (ownsPiAttempt || isPiAttemptChild) {
+            void this.clearPiAttemptForEndedSession(payload.sid, restorePiArchive)
+        }
     }
 
     handleBackgroundTaskDelta(sessionId: string, delta: { started: number; completed: number }): void {
@@ -1539,6 +1566,35 @@ async uploadScratchlistAttachment(
             return { type: 'error', message: 'No machine online', code: 'no_machine_online' }
         }
 
+        if (flavor === 'pi' && resumeToken && targetMachine.runnerState?.capabilities?.piExistingSessionResume !== true) {
+            return { type: 'error', message: 'Pi resume requires an upgraded runner', code: 'resume_failed' }
+        }
+
+        const requiresPiNativeReady = flavor === 'pi' && resumeToken !== undefined
+        if (requiresPiNativeReady) {
+            if (this.isPiResumeBlocked(access.sessionId)) {
+                return { type: 'error', message: 'Pi resume is already in progress', code: 'resume_failed' }
+            }
+            this.piResumeInFlightIds.add(access.sessionId)
+            this.sessionReadyIds.delete(access.sessionId)
+            try {
+                await this.writePiResumeAttempt(access.sessionId, namespace, {
+                    state: 'resuming',
+                    machineId: targetMachine.id,
+                    startedAt: Date.now(),
+                    archiveSnapshot: {
+                        lifecycleState: metadata.lifecycleState,
+                        lifecycleStateSince: metadata.lifecycleStateSince,
+                        archivedBy: metadata.archivedBy,
+                        archiveReason: metadata.archiveReason,
+                    },
+                })
+            } catch {
+                this.piResumeInFlightIds.delete(access.sessionId)
+                return { type: 'error', message: 'Failed to record Pi resume attempt', code: 'resume_failed' }
+            }
+        }
+
         if (flavor === 'cursor' && resumeToken) {
             try {
                 const chatStatus = await this.rpcGateway.getCursorChatStoreStatus(
@@ -1569,65 +1625,119 @@ async uploadScratchlistAttachment(
             : opts?.permissionMode
                 ?? session.permissionMode
                 ?? metadataPermissionMode
-        const spawnResult = await this.rpcGateway.spawnSession(
-            targetMachine.id,
-            directory,
-            flavor,
-            session.model ?? undefined,
-            session.modelReasoningEffort ?? undefined,
-            undefined,
-            undefined,
-            undefined,
-            resumeToken,
-            session.effort ?? undefined,
-            preferredPermissionMode,
-            session.serviceTier ?? undefined,
-            access.sessionId,
-            session.collaborationMode ?? undefined
-        )
+        let piResumeSucceeded = false
+        try {
+            const spawnResult = await this.rpcGateway.spawnSession(
+                targetMachine.id,
+                directory,
+                flavor,
+                session.model ?? undefined,
+                session.modelReasoningEffort ?? undefined,
+                undefined,
+                undefined,
+                undefined,
+                resumeToken,
+                session.effort ?? undefined,
+                preferredPermissionMode,
+                session.serviceTier ?? undefined,
+                access.sessionId,
+                session.collaborationMode ?? undefined
+            )
 
-        if (spawnResult.type !== 'success') {
-            return { type: 'error', message: spawnResult.message, code: 'resume_failed' }
-        }
-
-        const becameActive = await this.waitForSessionActive(spawnResult.sessionId)
-        if (!becameActive) {
-            return { type: 'error', message: 'Session failed to become active', code: 'resume_failed' }
-        }
-
-        // permissionMode is passed to spawnSession above; do not call set-session-config here.
-        // session-alive can arrive before the CLI registers that RPC handler, which caused resume_failed.
-
-        const needsReadyBeforeMerge = spawnResult.sessionId !== access.sessionId
-            && flavor === 'cursor'
-            && metadata.cursorSessionProtocol === 'acp'
-        if (needsReadyBeforeMerge) {
-            const readyResult = await this.waitForSessionReady(spawnResult.sessionId)
-            if (readyResult !== 'ready') {
-                const message = readyResult === 'ended'
-                    ? 'Session ended before Cursor ACP load completed'
-                    : 'Session failed to become ready'
-                return { type: 'error', message, code: 'resume_failed' }
+            if (spawnResult.type !== 'success') {
+                return { type: 'error', message: spawnResult.message, code: 'resume_failed' }
             }
-        }
 
-        if (spawnResult.sessionId !== access.sessionId) {
-            // The old session may have already been merged by the automatic dedup path
-            // (triggered when the spawned CLI sets its agent session ID in metadata).
-            // Only attempt the explicit merge if the old session still exists.
-            const oldSession = this.sessionCache.getSessionByNamespace(access.sessionId, namespace)
-            if (oldSession) {
-                try {
-                    await this.sessionCache.mergeSessions(access.sessionId, spawnResult.sessionId, namespace)
-                } catch (error) {
-                    const message = error instanceof Error ? error.message : 'Failed to merge resumed session'
+            if (requiresPiNativeReady && spawnResult.sessionId !== access.sessionId) {
+                const removed = await this.terminateUnexpectedPiTemp(
+                    targetMachine.id,
+                    spawnResult.sessionId,
+                    access.sessionId,
+                    namespace
+                )
+                return {
+                    type: 'error',
+                    message: removed
+                        ? 'Pi runner created an unexpected session; upgrade the runner and retry'
+                        : 'Pi runner created an unexpected live session; upgrade the runner and retry',
+                    code: 'resume_failed'
+                }
+            }
+
+            const becameActive = await this.waitForSessionActive(spawnResult.sessionId)
+            if (!becameActive) {
+                if (requiresPiNativeReady) {
+                    const inactive = await this.terminateInPlacePiResume(
+                        targetMachine.id,
+                        access.sessionId,
+                        namespace
+                    )
+                    if (!inactive) {
+                        await this.quarantinePiResume(access.sessionId, namespace, targetMachine.id)
+                        return { type: 'error', message: 'Pi resume failed and the child is still active', code: 'resume_failed', rollbackSafe: false }
+                    }
+                }
+                return { type: 'error', message: 'Session failed to become active', code: 'resume_failed' }
+            }
+
+            const needsReadyBeforeSuccess = requiresPiNativeReady
+                || (
+                    spawnResult.sessionId !== access.sessionId
+                    && flavor === 'cursor'
+                    && metadata.cursorSessionProtocol === 'acp'
+                )
+            if (needsReadyBeforeSuccess) {
+                const readyResult = await this.waitForSessionReady(spawnResult.sessionId)
+                if (readyResult !== 'ready') {
+                    if (requiresPiNativeReady && readyResult !== 'ended') {
+                        const inactive = await this.terminateInPlacePiResume(
+                            targetMachine.id,
+                            access.sessionId,
+                            namespace
+                        )
+                        if (!inactive) {
+                            await this.quarantinePiResume(access.sessionId, namespace, targetMachine.id)
+                            return { type: 'error', message: 'Pi native resume timed out and the child is still active', code: 'resume_failed', rollbackSafe: false }
+                        }
+                    }
+                    const message = flavor === 'pi'
+                        ? readyResult === 'ended'
+                            ? 'Pi session ended before native resume completed'
+                            : 'Pi session failed to become native-ready'
+                        : readyResult === 'ended'
+                            ? 'Session ended before Cursor ACP load completed'
+                            : 'Session failed to become ready'
                     return { type: 'error', message, code: 'resume_failed' }
                 }
             }
-        }
 
-        this.sessionCache.markSessionActive(spawnResult.sessionId)
-        return { type: 'success', sessionId: spawnResult.sessionId }
+            if (spawnResult.sessionId !== access.sessionId) {
+                const oldSession = this.sessionCache.getSessionByNamespace(access.sessionId, namespace)
+                if (oldSession) {
+                    try {
+                        await this.sessionCache.mergeSessions(access.sessionId, spawnResult.sessionId, namespace)
+                    } catch (error) {
+                        const message = error instanceof Error ? error.message : 'Failed to merge resumed session'
+                        return { type: 'error', message, code: 'resume_failed' }
+                    }
+                }
+            }
+
+            this.sessionCache.markSessionActive(spawnResult.sessionId)
+            piResumeSucceeded = true
+            if (requiresPiNativeReady) await this.writePiResumeAttempt(access.sessionId, namespace, null)
+            return { type: 'success', sessionId: spawnResult.sessionId }
+        } finally {
+            if (requiresPiNativeReady) {
+                this.piResumeInFlightIds.delete(access.sessionId)
+                if (!piResumeSucceeded && this.sessionCache.getSession(access.sessionId)?.metadata?.piResumeAttempt?.state === 'resuming') {
+                    await this.writePiResumeAttempt(access.sessionId, namespace, null, true).catch(() => {})
+                }
+                if (piResumeSucceeded) {
+                    this.triggerDedupIfNeeded(access.sessionId)
+                }
+            }
+        }
     }
 
     /**
@@ -1664,6 +1774,23 @@ async uploadScratchlistAttachment(
         const session = access.session
         const metadata = session.metadata
 
+        if (metadata?.flavor === 'pi' && this.isPiResumeBlocked(access.sessionId)) {
+            if (session.active) {
+                return { type: 'error', message: 'Pi resume is already in progress', code: 'resume_failed' }
+            }
+            if (metadata.piResumeAttempt && !this.piResumeInFlightIds.has(access.sessionId)) {
+                const reconciled = await this.reconcilePersistedPiResumeAttempt(session)
+                return {
+                    type: 'error',
+                    message: reconciled
+                        ? 'Previous Pi resume attempt was cleaned up; retry'
+                        : 'Pi resume is already in progress',
+                    code: 'resume_failed'
+                }
+            }
+            return { type: 'error', message: 'Pi resume is already in progress', code: 'resume_failed' }
+        }
+
         if (session.active) {
             return { type: 'success', sessionId: access.sessionId, resumed: false }
         }
@@ -1689,24 +1816,30 @@ async uploadScratchlistAttachment(
                 lifecycleStateSince: metadata.lifecycleStateSince
             }
 
-            let applied: { cursorSessionProtocol?: 'acp' | 'stream-json' }
-            try {
-                applied = await this.sessionCache.clearSessionArchiveMetadata(access.sessionId)
-            } catch (error) {
-                const message = error instanceof Error ? error.message : 'Failed to clear archive metadata'
-                return { type: 'error', message, code: 'metadata_conflict' }
+            let applied: { cursorSessionProtocol?: 'acp' | 'stream-json' } = {}
+            // Pi reuses the original HAPI row. Keep its archive snapshot persisted
+            // until the CLI successfully bootstraps that row as running; this avoids
+            // an inactive, non-archived gap if the Hub restarts before spawn.
+            if (metadata.flavor !== 'pi') {
+                try {
+                    applied = await this.sessionCache.clearSessionArchiveMetadata(access.sessionId)
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : 'Failed to clear archive metadata'
+                    return { type: 'error', message, code: 'metadata_conflict' }
+                }
             }
 
             const resumeResult = await this.resumeSession(access.sessionId, namespace)
             if (resumeResult.type === 'error') {
-                // Resume failed - put the archive flags back so the row stays archived in the UI
-                // and the operator can retry. Best-effort: a concurrent metadata write that
-                // succeeded between clear and restore (e.g. an unrelated rename) wins, in
-                // which case we surface the original resume error rather than masking it.
-                try {
-                    await this.sessionCache.restoreSessionArchiveMetadata(access.sessionId, archiveSnapshot)
-                } catch {
-                    // Swallow restore failures - the resume error is the more important signal.
+                // Never restore archived metadata over a live Pi child. A live
+                // row blocks retry by itself and must remain visible as active.
+                const current = this.sessionCache.getSessionByNamespace(access.sessionId, namespace)
+                if (resumeResult.rollbackSafe !== false && !current?.active) {
+                    try {
+                        await this.sessionCache.restoreSessionArchiveMetadata(access.sessionId, archiveSnapshot)
+                    } catch {
+                        // Swallow restore failures - the resume error is the more important signal.
+                    }
                 }
                 return resumeResult
             }
@@ -1928,6 +2061,9 @@ async uploadScratchlistAttachment(
     }
 
     private canRunCursorDedup(session: Session): boolean {
+        if (this.piResumeInFlightIds.has(session.id) || this.piResumeQuarantinedIds.has(session.id)) return false
+        if (session.metadata?.piResumeAttempt) return false
+        if (this.sessionCache.getSessions().some((candidate) => candidate.metadata?.piResumeAttempt?.childSessionId === session.id)) return false
         if (session.metadata?.flavor !== 'cursor') {
             return true
         }
@@ -1935,6 +2071,173 @@ async uploadScratchlistAttachment(
             return true
         }
         return this.sessionReadyIds.has(session.id)
+    }
+
+    private async terminateInPlacePiResume(
+        machineId: string,
+        sessionId: string,
+        namespace: string
+    ): Promise<boolean> {
+        const existingAttempt = this.sessionCache.getSession(sessionId)?.metadata?.piResumeAttempt
+        await this.writePiResumeAttempt(sessionId, namespace, {
+            ...existingAttempt,
+            state: 'terminating',
+            machineId,
+            startedAt: Date.now(),
+        })
+        let status: 'stopped' | 'already_gone' | 'still_alive'
+        try {
+            status = await this.rpcGateway.stopRunnerSession(machineId, sessionId)
+        } catch {
+            status = 'still_alive'
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        const session = this.sessionCache.refreshSession(sessionId) ?? this.sessionCache.getSession(sessionId)
+        const attemptClearedByEnd = session?.metadata?.piResumeAttempt === undefined
+        if (status === 'still_alive') {
+            if (attemptClearedByEnd) return true
+            return false
+        }
+        if (session?.active) this.handleSessionEnd({ sid: sessionId, time: Date.now(), reason: 'error' })
+        await this.writePiResumeAttempt(sessionId, namespace, null, true).catch(() => {})
+        return true
+    }
+
+    private async terminateUnexpectedPiTemp(
+        machineId: string,
+        sessionId: string,
+        originalSessionId: string,
+        namespace: string
+    ): Promise<boolean> {
+        this.piUnexpectedTempOriginalIds.set(sessionId, originalSessionId)
+        const existingAttempt = this.sessionCache.getSession(originalSessionId)?.metadata?.piResumeAttempt
+        await this.writePiResumeAttempt(originalSessionId, namespace, {
+            ...existingAttempt,
+            state: 'terminating',
+            machineId,
+            startedAt: Date.now(),
+            childSessionId: sessionId,
+        })
+        let status: 'stopped' | 'already_gone' | 'still_alive'
+        try {
+            status = await this.rpcGateway.stopRunnerSession(machineId, sessionId)
+        } catch {
+            status = 'still_alive'
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        const session = this.sessionCache.refreshSession(sessionId) ?? this.sessionCache.getSession(sessionId)
+        const original = this.sessionCache.refreshSession(originalSessionId) ?? this.sessionCache.getSession(originalSessionId)
+        const attemptClearedByEnd = original?.metadata?.piResumeAttempt === undefined
+        if (status === 'still_alive' && !attemptClearedByEnd) {
+            await this.writePiResumeAttempt(originalSessionId, namespace, {
+                ...existingAttempt,
+                state: 'quarantined',
+                machineId,
+                startedAt: Date.now(),
+                childSessionId: sessionId,
+            })
+            return false
+        }
+        if (session?.active) this.handleSessionEnd({ sid: sessionId, time: Date.now(), reason: 'error' })
+        const remaining = this.sessionCache.getSession(sessionId)
+        if (remaining && !remaining.active) await this.sessionCache.deleteSession(sessionId)
+        this.piUnexpectedTempOriginalIds.delete(sessionId)
+        await this.writePiResumeAttempt(originalSessionId, namespace, null, true).catch(() => {})
+        return true
+    }
+
+    private async quarantinePiResume(sessionId: string, namespace: string, machineId: string): Promise<void> {
+        this.piResumeQuarantinedIds.add(sessionId)
+        const existingAttempt = this.sessionCache.getSession(sessionId)?.metadata?.piResumeAttempt
+        await this.writePiResumeAttempt(sessionId, namespace, {
+            ...existingAttempt,
+            state: 'quarantined',
+            machineId,
+            startedAt: Date.now(),
+        })
+    }
+
+    private isPiResumeBlocked(sessionId: string): boolean {
+        const metadataAttempt = this.sessionCache.getSession(sessionId)?.metadata?.piResumeAttempt
+        return this.piResumeInFlightIds.has(sessionId)
+            || this.piResumeQuarantinedIds.has(sessionId)
+            || metadataAttempt !== undefined
+            || [...this.piUnexpectedTempOriginalIds.values()].includes(sessionId)
+    }
+
+    private async writePiResumeAttempt(
+        sessionId: string,
+        namespace: string,
+        attempt: PiResumeAttempt | null,
+        restoreArchive = false
+    ): Promise<void> {
+        for (let i = 0; i < 5; i += 1) {
+            const current = this.sessionCache.getSessionByNamespace(sessionId, namespace) ?? this.sessionCache.refreshSession(sessionId)
+            if (!current?.metadata) return
+            const next = { ...current.metadata }
+            if (attempt) next.piResumeAttempt = attempt
+            else {
+                const snapshot = current.metadata.piResumeAttempt?.archiveSnapshot
+                delete next.piResumeAttempt
+                if (restoreArchive && snapshot) {
+                    if (snapshot.lifecycleState === undefined) delete next.lifecycleState
+                    else next.lifecycleState = snapshot.lifecycleState
+                    if (snapshot.lifecycleStateSince === undefined) delete next.lifecycleStateSince
+                    else next.lifecycleStateSince = snapshot.lifecycleStateSince
+                    if (snapshot.archivedBy === undefined) delete next.archivedBy
+                    else next.archivedBy = snapshot.archivedBy
+                    if (snapshot.archiveReason === undefined) delete next.archiveReason
+                    else next.archiveReason = snapshot.archiveReason
+                }
+            }
+            const result = this.store.sessions.updateSessionMetadata(sessionId, next, current.metadataVersion, namespace, { touchUpdatedAt: false })
+            if (result.result === 'success') {
+                this.sessionCache.refreshSession(sessionId)
+                return
+            }
+            if (result.result !== 'version-mismatch') throw new Error('Failed to update Pi resume attempt')
+            this.sessionCache.refreshSession(sessionId)
+        }
+        throw new Error('Pi resume attempt metadata was modified concurrently')
+    }
+
+    private async clearPiAttemptForEndedSession(endedSessionId: string, restoreArchive: boolean): Promise<void> {
+        const ended = this.sessionCache.getSession(endedSessionId)
+        if (ended?.metadata?.piResumeAttempt) {
+            await this.writePiResumeAttempt(endedSessionId, ended.namespace, null, restoreArchive).catch(() => {})
+            return
+        }
+        for (const session of this.sessionCache.getSessions()) {
+            if (session.metadata?.piResumeAttempt?.childSessionId === endedSessionId) {
+                await this.writePiResumeAttempt(session.id, session.namespace, null, true).catch(() => {})
+            }
+        }
+    }
+
+    private async reconcilePersistedPiResumeAttempt(session: Session): Promise<boolean> {
+        const attempt = session.metadata?.piResumeAttempt
+        if (!attempt) return true
+        const childSessionId = attempt.childSessionId ?? session.id
+        let status: 'stopped' | 'already_gone' | 'still_alive'
+        try {
+            status = await this.rpcGateway.stopRunnerSession(attempt.machineId, childSessionId)
+        } catch {
+            return false
+        }
+        if (status === 'still_alive') return false
+
+        const child = this.sessionCache.getSession(childSessionId)
+        if (child?.active) this.handleSessionEnd({ sid: childSessionId, time: Date.now(), reason: 'error' })
+        if (childSessionId !== session.id) {
+            const remaining = this.sessionCache.getSession(childSessionId)
+            if (remaining && !remaining.active) await this.sessionCache.deleteSession(childSessionId)
+        }
+        await this.writePiResumeAttempt(session.id, session.namespace, null, true)
+        this.piResumeQuarantinedIds.delete(session.id)
+        this.piUnexpectedTempOriginalIds.delete(childSessionId)
+        return true
     }
 
     private triggerDedupIfNeeded(sessionId: string): void {

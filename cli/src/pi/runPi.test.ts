@@ -70,6 +70,7 @@ vi.mock('./piTransport', () => ({
 }));
 
 import { buildPiCommandInventory, formatPiUserMessage, rewritePiSkillPrompt, runPi } from './runPi';
+import { bootstrapExistingSession } from '@/agent/sessionFactory';
 
 describe('Pi command namespaces', () => {
     const commands = [
@@ -145,5 +146,21 @@ describe('runPi startup', () => {
             { type: 'get_available_models' },
             { type: 'get_commands' },
         ]);
+    });
+
+    it('bootstraps the existing HAPI row for runner native resume', async () => {
+        await runPi({
+            workingDirectory: '/work',
+            existingSessionId: 'hapi-session-pi-1',
+            resumeSessionId: 'pi-session-1',
+            startedBy: 'runner',
+        });
+
+        expect(bootstrapExistingSession).toHaveBeenCalledWith({
+            sessionId: 'hapi-session-pi-1',
+            flavor: 'pi',
+            startedBy: 'runner',
+            workingDirectory: '/work',
+        });
     });
 });

@@ -140,6 +140,13 @@ export class RpcGateway {
         await this.sessionRpc(sessionId, RPC_METHODS.KillSession, {})
     }
 
+    async stopRunnerSession(machineId: string, sessionId: string): Promise<'stopped' | 'already_gone' | 'still_alive'> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.StopSession, { sessionId })
+        const status = result && typeof result === 'object' ? (result as { status?: unknown }).status : undefined
+        if (status === 'stopped' || status === 'already_gone' || status === 'still_alive') return status
+        throw new Error('Unexpected stop-session response')
+    }
+
     async handoffSessionToLocal(sessionId: string): Promise<void> {
         await this.sessionRpc(sessionId, RPC_METHODS.HandoffLocal, {})
     }

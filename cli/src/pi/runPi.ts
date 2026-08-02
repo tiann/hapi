@@ -120,6 +120,7 @@ export async function runPi(opts: {
         startedBy,
         startingMode,
         model: opts.model,
+        expectedNativeSessionId: opts.resumeSessionId,
     });
 
     const transportArgs = ['--mode', 'rpc'];
@@ -151,6 +152,19 @@ export async function runPi(opts: {
         if (cleanupInitiated) return;
         cleanupInitiated = true;
         await lifecycle.cleanupAndExit();
+    };
+
+    // Install the completion hook before transport.start(). Pi can synchronously
+    // report an invalid --session during the first get_state send; installing it
+    // later would leave runPi awaiting a promise that can no longer be resolved.
+    let resolveCleanupCompletion!: () => void;
+    const cleanupCompletion = new Promise<void>((resolve) => {
+        resolveCleanupCompletion = resolve;
+    });
+    const originalCleanupAndExit = lifecycle.cleanupAndExit.bind(lifecycle);
+    lifecycle.cleanupAndExit = async (codeOverride?: number) => {
+        resolveCleanupCompletion();
+        await originalCleanupAndExit(codeOverride);
     };
 
     // Pending user-message localIds in FIFO order
@@ -200,7 +214,19 @@ export async function runPi(opts: {
         }
     }
 
-    wireTransportEvents(transport, piSession, pendingLocalIds);
+    wireTransportEvents(transport, piSession, pendingLocalIds, {
+        onStartupFailure: (error) => {
+            // A wrapper socket can already be active while Pi rejects --session.
+            // End this process immediately so the hub's Pi-ready wait fails and
+            // an archived HAPI row is restored rather than shown as reopened.
+            logger.debug(`[pi] Native startup failed: ${error.message}`);
+            lifecycle.markCrash(error);
+            lifecycle.setExitCode(1);
+            lifecycle.setArchiveReason(error.message.slice(0, 200));
+            lifecycle.setSessionEndReason('error');
+            void safeCleanup();
+        },
+    });
 
     // --- Session config RPC ---
     //
@@ -474,14 +500,8 @@ export async function runPi(opts: {
             })();
         }
 
-        // Block until cleanup is triggered by error/close handler
-        await new Promise<void>((resolve) => {
-            const origCleanup = lifecycle.cleanupAndExit.bind(lifecycle);
-            lifecycle.cleanupAndExit = async (codeOverride?: number) => {
-                resolve();
-                await origCleanup(codeOverride);
-            };
-        });
+        // Block until cleanup is triggered by error/close handler.
+        await cleanupCompletion;
     } catch (error) {
         crashed = true;
         lifecycle.markCrash(error);
