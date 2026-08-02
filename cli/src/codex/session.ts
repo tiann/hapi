@@ -123,12 +123,28 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
             // MetadataSchema parses `string().optional()`, so the
             // post-merge persisted blob carries no key.
             //
-            // `codexUsage` is NOT a carry-forward field, so omit/delete is
-            // enough to drop the prior thread's context/budget snapshot
-            // (otherwise the web keeps rendering stale usage after /clear
-            // until the next token_count).
+            // Drop thread-local context/token totals after /clear, but keep
+            // account-scoped rate-limit / credit fields. Those are not reset by
+            // starting a replacement thread and may not be re-emitted soon.
+            const previousUsage = metadata.codexUsage;
             const updated: Record<string, unknown> = { ...metadata, codexSessionId: null };
-            delete updated.codexUsage;
+            if (previousUsage) {
+                const accountUsage: Record<string, unknown> = {};
+                if (previousUsage.rateLimits !== undefined) accountUsage.rateLimits = previousUsage.rateLimits;
+                if (previousUsage.credits !== undefined) accountUsage.credits = previousUsage.credits;
+                if (previousUsage.rateLimitReachedType !== undefined) {
+                    accountUsage.rateLimitReachedType = previousUsage.rateLimitReachedType;
+                }
+                if (previousUsage.planType !== undefined) accountUsage.planType = previousUsage.planType;
+                if (previousUsage.limitId !== undefined) accountUsage.limitId = previousUsage.limitId;
+                if (Object.keys(accountUsage).length > 0) {
+                    updated.codexUsage = accountUsage;
+                } else {
+                    delete updated.codexUsage;
+                }
+            } else {
+                delete updated.codexUsage;
+            }
             return updated as unknown as Metadata;
         });
     }

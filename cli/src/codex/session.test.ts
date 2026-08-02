@@ -12,7 +12,65 @@ describe('CodexSession.resetCodexThread', () => {
         }
     });
 
-    it('clears codexSessionId and drops stale codexUsage from metadata', () => {
+    it('clears codexSessionId and drops thread-local usage while keeping account limits', () => {
+        const updateMetadata = vi.fn((updater: (metadata: Record<string, unknown>) => Record<string, unknown>) => {
+            const next = updater({
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'codex',
+                codexSessionId: 'thread-old',
+                codexUsage: {
+                    contextWindow: { usedTokens: 99_000, limitTokens: 100_000, percent: 99, updatedAt: 1 },
+                    totalTokenUsage: { totalTokens: 99_000 },
+                    rateLimits: {
+                        fiveHour: { usedPercent: 100, windowMinutes: 300, resetAt: 2 }
+                    },
+                    credits: { hasCredits: false, balance: '0' },
+                    rateLimitReachedType: 'primary',
+                    planType: 'plus',
+                    limitId: 'premium'
+                }
+            });
+            expect(next.codexSessionId).toBeNull();
+            expect(next.codexUsage).toEqual({
+                rateLimits: {
+                    fiveHour: { usedPercent: 100, windowMinutes: 300, resetAt: 2 }
+                },
+                credits: { hasCredits: false, balance: '0' },
+                rateLimitReachedType: 'primary',
+                planType: 'plus',
+                limitId: 'premium'
+            });
+            expect(next.codexUsage).not.toHaveProperty('contextWindow');
+            expect(next.codexUsage).not.toHaveProperty('totalTokenUsage');
+        });
+
+        const session = new CodexSession({
+            api: {} as never,
+            client: {
+                keepAlive: vi.fn(),
+                updateMetadata,
+                sendAgentMessage: vi.fn(),
+                emitMessagesConsumed: vi.fn(),
+                sendSessionEvent: vi.fn()
+            } as never,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: 'thread-old',
+            messageQueue: new MessageQueue2<EnhancedMode>(() => 'default'),
+            onModeChange: () => undefined,
+            startedBy: 'terminal',
+            startingMode: 'remote'
+        });
+        sessions.push(session);
+
+        session.resetCodexThread();
+
+        expect(session.sessionId).toBeNull();
+        expect(updateMetadata).toHaveBeenCalledOnce();
+    });
+
+    it('drops codexUsage entirely on /clear when only thread-local fields were present', () => {
         const updateMetadata = vi.fn((updater: (metadata: Record<string, unknown>) => Record<string, unknown>) => {
             const next = updater({
                 path: '/tmp/project',
@@ -47,8 +105,6 @@ describe('CodexSession.resetCodexThread', () => {
         sessions.push(session);
 
         session.resetCodexThread();
-
-        expect(session.sessionId).toBeNull();
         expect(updateMetadata).toHaveBeenCalledOnce();
     });
 
