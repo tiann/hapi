@@ -13,6 +13,15 @@ export interface Suggestion {
 
 type SuggestionHandler = (query: string) => Promise<Suggestion[]>
 
+interface SuggestionInput {
+    query: string | null
+    handler: SuggestionHandler
+    clampSelection: boolean
+    autoSelectFirst: boolean
+    allowEmptyQuery: boolean
+    version: number
+}
+
 interface SuggestionOptions {
     clampSelection?: boolean   // Legacy option; matching suggestion keys are always preserved before clamping
     autoSelectFirst?: boolean  // If true, automatically select first item when suggestions appear
@@ -67,10 +76,8 @@ class ValueSync<T> {
 }
 
 interface SuggestionRequest {
-    query: string | null
-    handler: SuggestionHandler
+    input: SuggestionInput
     generation: number
-    inputVersion: number
 }
 
 /**
@@ -89,7 +96,7 @@ export function useActiveSuggestions(
         allowEmptyQuery = false
     } = options
 
-    const latestInputRef = useRef({
+    const latestInputRef = useRef<SuggestionInput>({
         query,
         handler,
         clampSelection,
@@ -124,9 +131,11 @@ export function useActiveSuggestions(
     const [state, setState] = useState<{
         suggestions: Suggestion[]
         selected: number
+        input: SuggestionInput | null
     }>({
         suggestions: [],
-        selected: -1
+        selected: -1,
+        input: null
     })
 
     const moveUp = useCallback(() => {
@@ -168,14 +177,15 @@ export function useActiveSuggestions(
     }, [wrapAround])
 
     const clear = useCallback(() => {
-        setState({ suggestions: [], selected: -1 })
+        setState({ suggestions: [], selected: -1, input: null })
     }, [])
 
     const syncRef = useRef<ValueSync<SuggestionRequest> | null>(null)
     const generationRef = useRef(0)
 
     useEffect(() => {
-        const sync = new ValueSync<SuggestionRequest>(async ({ query: nextQuery, handler: requestHandler, generation, inputVersion }) => {
+        const sync = new ValueSync<SuggestionRequest>(async ({ input, generation }) => {
+            const { query: nextQuery, handler: requestHandler } = input
             if (nextQuery === null || (!allowEmptyQuery && nextQuery === '')) return
 
             const suggestions = await requestHandler(nextQuery)
@@ -183,7 +193,7 @@ export function useActiveSuggestions(
             const isCurrentRequest = () => {
                 const latest = latestInputRef.current
                 return generation === generationRef.current
-                    && inputVersion === latest.version
+                    && input.version === latest.version
                     && nextQuery === latest.query
             }
 
@@ -200,7 +210,7 @@ export function useActiveSuggestions(
                     const newIndex = suggestions.findIndex(s => s.key === previousKey)
                     if (newIndex !== -1) {
                         // Preserve the user's logical selection across a refreshed or reordered list.
-                        return { suggestions, selected: newIndex }
+                        return { suggestions, selected: newIndex, input }
                     }
                 }
 
@@ -209,7 +219,8 @@ export function useActiveSuggestions(
                 const clampedSelection = Math.min(prev.selected, suggestions.length - 1)
                 return {
                     suggestions,
-                    selected: clampedSelection < 0 && suggestions.length > 0 && autoSelectFirst ? 0 : clampedSelection
+                    selected: clampedSelection < 0 && suggestions.length > 0 && autoSelectFirst ? 0 : clampedSelection,
+                    input
                 }
             })
         })
@@ -229,15 +240,31 @@ export function useActiveSuggestions(
         const generation = ++generationRef.current
         const latestInput = latestInputRef.current
         syncRef.current?.setValue({
-            query,
-            handler: latestInput.handler,
+            input: latestInput,
             generation,
-            inputVersion: latestInput.version,
         })
     }, [query, handler, clampSelection, autoSelectFirst, allowEmptyQuery])
 
-    // If no query return empty suggestions
-    if (query === null || (!allowEmptyQuery && query === '')) {
+    const latestInput = latestInputRef.current
+    const currentInputVersion = latestInput.query === query
+        && latestInput.handler === handler
+        && latestInput.clampSelection === clampSelection
+        && latestInput.autoSelectFirst === autoSelectFirst
+        && latestInput.allowEmptyQuery === allowEmptyQuery
+        ? latestInput.version
+        : latestInput.version + 1
+
+    const stateMatchesInput = state.input !== null
+        && state.input.query === query
+        && state.input.handler === handler
+        && state.input.clampSelection === clampSelection
+        && state.input.autoSelectFirst === autoSelectFirst
+        && state.input.allowEmptyQuery === allowEmptyQuery
+        && state.input.version === currentInputVersion
+
+    // Hide published suggestions as soon as a new input renders. Keep the old state
+    // internally so the replacement result can still preserve selection by key.
+    if (query === null || (!allowEmptyQuery && query === '') || !stateMatchesInput) {
         return [[], -1, moveUp, moveDown, clear] as const
     }
 
