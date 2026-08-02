@@ -72,6 +72,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private cursorMcpOverlay: CursorMcpOverlayHandle | null = null;
     private lastAssistantText: string | null = null;
     private turnHasModelError = false;
+    /** True while backend.prompt() is in flight — lets stderr model_not_found
+     *  surface as modelError during a turn without breaking setup/load remap. */
+    private promptInFlight = false;
 
     constructor(session: CursorSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
@@ -397,6 +400,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             this.turnHasModelError = false;
             this.lastAssistantText = null;
 
+            this.promptInFlight = true;
             try {
                 await backend.prompt(acpSessionId, promptContent, (message) => {
                     this.handleAgentMessage(message);
@@ -422,6 +426,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     this.recordModelError(failure);
                 }
             } finally {
+                this.promptInFlight = false;
                 session.onThinkingChange(false);
                 await this.permissionAdapter?.cancelAll('Prompt finished');
                 await this.extensionAdapter?.cancelAll('Prompt finished');
@@ -478,7 +483,15 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             logger.debug('[cursor-acp] stderr error', error);
             const hint = error.raw || error.message;
             onHint(hint);
+            // Setup/load remap consumes "Cannot use this model" stderr without
+            // promoting to modelError. During an active prompt, the same
+            // signature must become model_not_found (mapper would otherwise
+            // be unreachable behind this early return).
+            const failure = mapAcpStderrToFailure(error);
             if (error.type === 'model_not_found' && extractCannotUseThisModelMessage(hint)) {
+                if (this.promptInFlight && failure) {
+                    this.recordModelError(failure);
+                }
                 return;
             }
             const converted = convertAgentMessage({ type: 'error', message: error.message });
@@ -491,7 +504,6 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             // without text matching. Generic `unknown` stderr stays status-only —
             // ACP treats stderr as logging, and the transport labels any
             // "error"/"failed"/"exception" line as unknown.
-            const failure = mapAcpStderrToFailure(error);
             if (failure) {
                 this.recordModelError(failure);
             }

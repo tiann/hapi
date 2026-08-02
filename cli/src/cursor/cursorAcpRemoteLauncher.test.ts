@@ -973,6 +973,31 @@ describe('cursorAcpRemoteLauncher', () => {
         )).toBe(false);
     });
 
+    it('records modelError for model_not_found stderr during prompt and suppresses ready', async () => {
+        harness.emitStderrOnPrompt = {
+            type: 'model_not_found',
+            message: 'Cannot use this model: cursor-bad-id. Available models: auto',
+            raw: 'Cannot use this model: cursor-bad-id. Available models: auto'
+        };
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            sendSessionEvent: ReturnType<typeof vi.fn>
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        session.queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError' && call[0]?.kind === 'model_not_found'
+        )).toBe(true);
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'ready'
+        )).toBe(false);
+    });
+
     it('still records modelError for typed rate_limit stderr and suppresses ready', async () => {
         harness.emitStderrOnPrompt = {
             type: 'rate_limit',

@@ -119,6 +119,23 @@ describe('classifyCursorAgentMessage', () => {
         ).toBeNull()
     })
 
+    it('ignores Error: T: / RetriableError examples inside markdown fences', () => {
+        const fencedQuota =
+            'Here is what the wire looks like:\n' +
+            '```\n' +
+            'Error: T: [resource_exhausted] capacity exceeded\n' +
+            '```\n' +
+            'Do not treat that quote as a live failure.'
+        expect(classifyCursorAgentMessage(fencedQuota)).toBeNull()
+
+        const fencedRetriable =
+            'Example:\n' +
+            '~~~\n' +
+            'Error: RetriableError: Connection stalled after 30s\n' +
+            '~~~\n'
+        expect(classifyCursorAgentMessage(fencedRetriable)).toBeNull()
+    })
+
     it('still classifies real Gemini errors when they ARE the message body', () => {
         // Whitespace prefix is OK (trimStart handles it) but prose prefix is not.
         expect(
