@@ -185,7 +185,7 @@ export function SessionRowSummary(props: {
                             title={attentionLabel ?? undefined}
                             aria-label={attentionLabel ?? undefined}
                         />
-                    ) : s.active ? (
+                    ) : s.active && (s.backgroundTaskCount ?? 0) > 0 ? (
                         <span
                             className="inline-flex shrink-0 items-center gap-1 text-[var(--app-badge-success-text)]"
                             title={t('session.item.running')}
@@ -193,6 +193,26 @@ export function SessionRowSummary(props: {
                             <span className="h-1.5 w-1.5 rounded-full bg-current animate-pulse" aria-hidden="true" />
                             {!inRunningSection ? (
                                 <span className="text-[11px] font-medium leading-none">{t('session.item.running')}</span>
+                            ) : null}
+                        </span>
+                    ) : s.active && (s.pendingRequestsCount ?? 0) > 0 ? (
+                        <span
+                            className="inline-flex shrink-0 items-center gap-1 text-[var(--app-badge-warning-text)]"
+                            title={t('session.item.pending')}
+                        >
+                            <span className="h-1.5 w-1.5 rounded-full bg-current animate-pulse" aria-hidden="true" />
+                            {!inRunningSection ? (
+                                <span className="text-[11px] font-medium leading-none">{t('session.item.pending')}</span>
+                            ) : null}
+                        </span>
+                    ) : s.active ? (
+                        <span
+                            className="inline-flex shrink-0 items-center gap-1 text-[var(--app-hint)]"
+                            title={t('session.item.idle')}
+                        >
+                            <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden="true" />
+                            {!inRunningSection ? (
+                                <span className="text-[11px] font-medium leading-none">{t('session.item.idle')}</span>
                             ) : null}
                         </span>
                     ) : attention && nestedTooltips && attentionId ? (
