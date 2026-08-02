@@ -210,58 +210,81 @@ function getLatestCodexUserMessage(lines: string[]): string | null {
     return null
 }
 
+function noteCodexSummaryFieldsFromLine(
+    line: string,
+    state: { changedTitle: string | null; lastUserMessage: string | null }
+): void {
+    if (!line.trim()) return
+    try {
+        const record = asRecord(JSON.parse(line))
+        if (!record) return
+        if (state.changedTitle === null) {
+            const title = extractCodexChangedTitle(record)
+            if (title) state.changedTitle = title
+        }
+        if (state.lastUserMessage === null && record.type === 'response_item') {
+            const payload = asRecord(record.payload)
+            if (payload?.type === 'message' && payload.role === 'user') {
+                const text = extractCodexText(payload.content)
+                if (text && !shouldIgnoreSyntheticUserMessage(text)) {
+                    state.lastUserMessage = truncateText(text, 140)
+                }
+            }
+        }
+    } catch {
+        // ignore malformed transcript lines
+    }
+}
+
 /** Walk the transcript from EOF toward BOF in fixed chunks until both fields resolve. */
 function scanCodexSummaryFieldsBackward(
     filePath: string,
     chunkBytes: number
 ): { changedTitle: string | null; lastUserMessage: string | null } {
-    let changedTitle: string | null = null
-    let lastUserMessage: string | null = null
+    const state = { changedTitle: null as string | null, lastUserMessage: null as string | null }
     let fd: number | undefined
     try {
         const size = statSync(filePath).size
-        if (size <= 0) return { changedTitle: null, lastUserMessage: null }
+        if (size <= 0) return state
 
         fd = openSync(filePath, 'r')
         let position = size
-        let incompletePrefix = ''
+        // Keep the unfinished leading line as raw bytes so UTF-8 code points can
+        // straddle chunk boundaries without being decoded to replacement chars.
+        let incompletePrefix = Buffer.alloc(0)
         const chunkSize = Math.max(1, chunkBytes)
 
-        while (position > 0 && (changedTitle === null || lastUserMessage === null)) {
+        while (position > 0 && (state.changedTitle === null || state.lastUserMessage === null)) {
             const length = Math.min(position, chunkSize)
             position -= length
             const buffer = Buffer.alloc(length)
             const bytesRead = readSync(fd, buffer, 0, length, position)
-            const chunkText = buffer.subarray(0, bytesRead).toString('utf-8') + incompletePrefix
-            const lines = chunkText.split(/\r?\n/)
-            incompletePrefix = position > 0 ? (lines.shift() ?? '') : ''
+            const combined = Buffer.concat([buffer.subarray(0, bytesRead), incompletePrefix])
 
-            for (let index = lines.length - 1; index >= 0; index -= 1) {
-                const line = lines[index]
-                if (!line?.trim()) continue
-                try {
-                    const record = asRecord(JSON.parse(line))
-                    if (!record) continue
-                    if (changedTitle === null) {
-                        const title = extractCodexChangedTitle(record)
-                        if (title) changedTitle = title
-                    }
-                    if (lastUserMessage === null && record.type === 'response_item') {
-                        const payload = asRecord(record.payload)
-                        if (payload?.type === 'message' && payload.role === 'user') {
-                            const text = extractCodexText(payload.content)
-                            if (text && !shouldIgnoreSyntheticUserMessage(text)) {
-                                lastUserMessage = truncateText(text, 140)
-                            }
-                        }
-                    }
-                    if (changedTitle !== null && lastUserMessage !== null) break
-                } catch {
+            let complete = combined
+            if (position > 0) {
+                const firstNewline = combined.indexOf(0x0a)
+                if (firstNewline < 0) {
+                    incompletePrefix = combined
                     continue
                 }
+                incompletePrefix = combined.subarray(0, firstNewline)
+                complete = combined.subarray(firstNewline + 1)
+            } else {
+                incompletePrefix = Buffer.alloc(0)
+            }
+
+            const lines = complete.toString('utf8').split(/\r?\n/)
+            for (let index = lines.length - 1; index >= 0; index -= 1) {
+                noteCodexSummaryFieldsFromLine(lines[index] ?? '', state)
+                if (state.changedTitle !== null && state.lastUserMessage !== null) break
             }
         }
-        return { changedTitle, lastUserMessage }
+
+        if (incompletePrefix.length > 0 && (state.changedTitle === null || state.lastUserMessage === null)) {
+            noteCodexSummaryFieldsFromLine(incompletePrefix.toString('utf8'), state)
+        }
+        return state
     } catch {
         return { changedTitle: null, lastUserMessage: null }
     } finally {

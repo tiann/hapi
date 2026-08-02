@@ -338,4 +338,61 @@ describe('listLocalCodexSessionSummaries', () => {
 
         rmSync(root, { recursive: true, force: true })
     })
+
+    it('preserves CJK title text when a UTF-8 code point straddles the reverse-scan chunk boundary', () => {
+        const root = mkdtempSync(join(tmpdir(), 'codex-home-'))
+        process.env.CODEX_HOME = root
+        const sessionsDir = join(root, 'sessions', '2026', '06', '27')
+        mkdirSync(sessionsDir, { recursive: true })
+
+        const chunkBytes = 256 * 1024
+        const title = '预算标题'
+        const titleLine = JSON.stringify({
+            type: 'event_msg',
+            payload: {
+                type: 'mcp_tool_call_end',
+                invocation: {
+                    tool: 'change_title',
+                    arguments: { title }
+                }
+            }
+        })
+        const userLine = JSON.stringify({
+            type: 'response_item',
+            payload: {
+                type: 'message',
+                role: 'user',
+                content: [{ type: 'input_text', text: 'cjk boundary prompt' }]
+            }
+        })
+        const metaLine = JSON.stringify({
+            type: 'session_meta',
+            payload: { id: 'cjk-session-id', cwd: '/tmp/project' }
+        })
+        const titleUtf8 = Buffer.from(title, 'utf8')
+        // Split inside the final CJK code point (3 bytes) across the chunk boundary.
+        const splitOffsetInTitle = titleUtf8.length - 1
+        const beforeTitle = Buffer.from(`${metaLine}\n`, 'utf8')
+        const titleLineBuf = Buffer.from(`${titleLine}\n`, 'utf8')
+        const userLineBuf = Buffer.from(`${userLine}\n`, 'utf8')
+        const titleCharStartInLine = titleLineBuf.indexOf(titleUtf8)
+        expect(titleCharStartInLine).toBeGreaterThanOrEqual(0)
+        const splitAt = beforeTitle.length + titleCharStartInLine + splitOffsetInTitle
+        const prefix = Buffer.concat([beforeTitle, titleLineBuf, userLineBuf])
+        expect(splitAt).toBeLessThan(prefix.length)
+        const fillerLen = chunkBytes - (prefix.length - splitAt)
+        expect(fillerLen).toBeGreaterThan(0)
+        // ASCII filler only - no trailing newline - so size - chunkBytes lands mid-codepoint.
+        const filler = Buffer.alloc(fillerLen, 0x61)
+        const filePath = join(sessionsDir, 'cjk.jsonl')
+        writeFileSync(filePath, Buffer.concat([prefix, filler]))
+        expect(statSync(filePath).size - chunkBytes).toBe(splitAt)
+
+        const sessions = listLocalCodexSessionSummaries()
+        expect(sessions).toHaveLength(1)
+        expect(sessions[0]?.title).toBe(title)
+        expect(sessions[0]?.lastUserMessage).toBe('cjk boundary prompt')
+
+        rmSync(root, { recursive: true, force: true })
+    })
 })
