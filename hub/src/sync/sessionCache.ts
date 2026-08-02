@@ -1236,24 +1236,25 @@ export class SessionCache {
             this.emitScratchlistChanged(oldSessionId)
         }
 
-        const mergedMetadata = this.mergeSessionMetadata(oldStored.metadata, newStored.metadata)
-        if (mergedMetadata !== null && mergedMetadata !== newStored.metadata) {
-            for (let attempt = 0; attempt < 2; attempt += 1) {
-                const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
-                if (!latest) break
-                const result = this.store.sessions.updateSessionMetadata(
-                    newSessionId,
-                    mergedMetadata,
-                    latest.metadataVersion,
-                    namespace,
-                    { touchUpdatedAt: false }
-                )
-                if (result.result === 'success') {
-                    break
-                }
-                if (result.result === 'error') {
-                    break
-                }
+        // Recompute merge against the live target row each attempt — a newer
+        // lastModelError (or other field) can land on newSessionId between the
+        // initial read and this write (version-mismatch retry).
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
+            if (!latest) break
+            const mergedMetadata = this.mergeSessionMetadata(oldStored.metadata, latest.metadata)
+            if (mergedMetadata === null || mergedMetadata === latest.metadata) {
+                break
+            }
+            const result = this.store.sessions.updateSessionMetadata(
+                newSessionId,
+                mergedMetadata,
+                latest.metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+            if (result.result === 'success' || result.result === 'error') {
+                break
             }
         }
 
