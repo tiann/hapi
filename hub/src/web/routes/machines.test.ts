@@ -134,6 +134,52 @@ describe('machines routes', () => {
         expect(captured![12]).toBeUndefined()
     })
 
+    it('defaults AGY machine spawns to PTY mode', async () => {
+        const machine = createMachine()
+        let captured: unknown[] | null = null
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            spawnSession: async (...args: unknown[]) => {
+                captured = args
+                return { type: 'success', sessionId: 's-agy' }
+            }
+        } as unknown as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/machines/machine-1/spawn', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ directory: '/tmp/x', agent: 'agy' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(captured![13]).toBe('pty')
+    })
+
+    it('rejects an explicit remote AGY machine spawn', async () => {
+        const machine = createMachine()
+        const spawnSession = () => { throw new Error('must not spawn') }
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            spawnSession,
+        } as unknown as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/machines/machine-1/spawn', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ directory: '/tmp/x', agent: 'agy', startingMode: 'remote' })
+        })
+
+        expect(response.status).toBe(400)
+    })
+
     it('returns 400 when /opencode-models is called without cwd', async () => {
         const machine = createMachine()
         const engine = {

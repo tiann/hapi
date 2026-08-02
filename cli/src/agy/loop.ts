@@ -33,7 +33,8 @@ export async function agyLoop(opts: AgyLoopOptions): Promise<void> {
     const logPath = logger.getLogPath();
     const startedBy = opts.startedBy ?? 'terminal';
     const startingMode = opts.startingMode ?? 'pty';
-    const sessionMode: 'local' | 'remote' = startingMode === 'pty' ? 'remote' : startingMode;
+    if (startingMode !== 'pty') throw new Error('AGY only supports PTY mode')
+    const sessionMode: 'local' | 'remote' = 'remote';
 
     const session = new AgySession({
         api: opts.api,
@@ -63,7 +64,7 @@ export async function agyLoop(opts: AgyLoopOptions): Promise<void> {
 
     await runLocalRemoteSession({
         session,
-        startingMode: opts.startingMode,
+        startingMode,
         logTag: 'agy-loop',
         runLocal: async (s) => {
             logger.debug('[agy-loop] Local mode not supported; switching to PTY');
