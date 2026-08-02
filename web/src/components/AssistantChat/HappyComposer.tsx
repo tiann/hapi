@@ -406,7 +406,7 @@ export function HappyComposer(props: {
             previewUrl: upload.previewUrl,
         }]
     })
-    useComposerDraft(
+    const draftHydration = useComposerDraft(
         sessionId,
         composerText,
         attachmentDrafts,
@@ -441,6 +441,17 @@ export function HappyComposer(props: {
         // user interaction has happened there. Treat that as an implicit guard;
         // any edit, schedule interaction, or newly observed attachment makes
         // the error terminally unsafe just like the explicit snapshot path.
+        if (!guard) {
+            // The implicit guard is only for a keyed remount. Wait until the
+            // session-keyed draft hydration has conclusively run: its RAF may
+            // still restore a persisted replacement after this effect.
+            if (draftHydration.sessionId !== sessionId || !draftHydration.complete) return
+            if (draftHydration.restoredAny) {
+                restoredErrorIdRef.current = sendError.id
+                onClearSendError?.()
+                return
+            }
+        }
         const interactionChanged = guard
             ? userEditGenerationRef.current !== guard.userEditGeneration
                 || userScheduleGenerationRef.current !== guard.userScheduleGeneration
@@ -479,7 +490,7 @@ export function HappyComposer(props: {
         if (sendError.scheduledAt !== null && onScheduleProp) {
             onScheduleProp({ type: 'absolute', ms: sendError.scheduledAt })
         }
-    }, [sendError, api, attachments, composerText, onClearSendError, onScheduleProp, pendingSchedule])
+    }, [sendError, api, attachments, composerText, draftHydration, onClearSendError, onScheduleProp, pendingSchedule, sessionId])
 
     // A successful automatic restore keeps its inline error visible so the
     // operator understands why the draft returned. If another path replaces
