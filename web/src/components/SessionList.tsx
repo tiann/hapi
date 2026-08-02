@@ -764,9 +764,10 @@ function SessionItem(props: {
     api: ApiClient | null
     selected?: boolean
     showDetailedStatus?: boolean
+    inRunningSection?: boolean
 }) {
     const { t } = useTranslation()
-    const { session: s, onSelect, showPath = true, api, selected = false, showDetailedStatus = false } = props
+    const { session: s, onSelect, showPath = true, api, selected = false, showDetailedStatus = false, inRunningSection = false } = props
     const { haptic } = usePlatform()
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
@@ -859,6 +860,7 @@ function SessionItem(props: {
                     nestedTooltips
                     attentionTooltipId={attentionId}
                     scheduleTooltipId={scheduleId}
+                    inRunningSection={inRunningSection}
                 />
             </button>
 
@@ -1066,8 +1068,14 @@ export function SessionList(props: {
             : visibleSessions.filter(session => (session.metadata?.machineId ?? UNKNOWN_MACHINE_ID) === activeMachineFilter),
         [visibleSessions, activeMachineFilter]
     )
+    const runningSessions = useMemo(
+        () => machineFilteredSessions
+            .filter((session) => session.active)
+            .sort((a, b) => b.updatedAt - a.updatedAt),
+        [machineFilteredSessions]
+    )
     const groups = useMemo(
-        () => groupSessionsByDirectory(machineFilteredSessions),
+        () => groupSessionsByDirectory(machineFilteredSessions.filter((session) => !session.active)),
         [machineFilteredSessions]
     )
     const [collapseOverrides, setCollapseOverrides] = useState<Map<string, boolean>>(
@@ -1393,12 +1401,41 @@ export function SessionList(props: {
                     />
                 ) : null}
 
-                {props.sessions.length > 0 && (isFiltering || activeMachineFilter !== null) && groups.length === 0 ? (
+                {props.sessions.length > 0 && (isFiltering || activeMachineFilter !== null) && groups.length === 0 && runningSessions.length === 0 ? (
                     <div className="px-4 py-8 text-center text-sm text-[var(--app-hint)]">
                         {t('sessions.search.noResults')}
                     </div>
                 ) : null}
 
+                {runningSessions.length > 0 ? (
+                    <div key="running-section">
+                        <div className="group/running flex min-w-0 w-full select-none items-center gap-2 rounded-lg py-1.5 pl-2 pr-2">
+                            <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center" aria-hidden="true">
+                                <span className="h-1.5 w-1.5 rounded-full bg-[var(--app-badge-success-text)] animate-pulse" />
+                            </span>
+                            <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                                {t('sessions.runningSection')}
+                            </span>
+                            <span className="shrink-0 text-[11px] tabular-nums text-[var(--app-hint)]">
+                                ({runningSessions.length})
+                            </span>
+                        </div>
+                        <div className="flex flex-col gap-0.5 ml-3 pl-1 py-1">
+                            {runningSessions.map((s) => (
+                                <SessionItem
+                                    key={s.id}
+                                    session={s}
+                                    onSelect={props.onSelect}
+                                    showPath={false}
+                                    api={api}
+                                    selected={s.id === selectedSessionId}
+                                    showDetailedStatus={showDetailedStatus}
+                                    inRunningSection
+                                />
+                            ))}
+                        </div>
+                    </div>
+                ) : null}
                 {groups.map((group) => {
                     const isCollapsed = isGroupCollapsed(group)
                     const visibleGroupSessions = getVisibleGroupSessions(group)

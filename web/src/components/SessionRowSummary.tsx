@@ -111,6 +111,8 @@ export function SessionRowSummary(props: {
     attentionTooltipId?: string
     scheduleTooltipId?: string
     className?: string
+    /** Rows inside the pinned "in progress" section skip the text label (dot only). */
+    inRunningSection?: boolean
 }) {
     const {
         session: s,
@@ -121,6 +123,7 @@ export function SessionRowSummary(props: {
         attentionTooltipId: attentionTooltipIdProp,
         scheduleTooltipId: scheduleTooltipIdProp,
         className,
+        inRunningSection = false,
     } = props
     const { t } = useTranslation()
     const sessionName = getSessionTitle(s)
@@ -136,6 +139,8 @@ export function SessionRowSummary(props: {
         [s, selected, showDetailedStatus]
     )
     const attentionLabel = attention ? getAttentionLabel(attention, t) : null
+    const urgentAttention = attention !== null
+        && (attention.kind === 'permission' || attention.kind === 'input')
     const scheduledLabel = s.futureScheduledMessageCount > 1
         ? t('session.item.scheduledMessages', { count: s.futureScheduledMessageCount })
         : t('session.item.scheduledMessage')
@@ -160,7 +165,30 @@ export function SessionRowSummary(props: {
                         {sessionName}
                     </div>
                     {s.active && s.thinking ? (
-                        <LoaderIcon className="h-3.5 w-3.5 shrink-0 animate-spin-slow text-[var(--app-hint)]" />
+                        <LoaderIcon className="h-3.5 w-3.5 shrink-0 animate-spin-slow text-[var(--app-badge-success-text)]" />
+                    ) : urgentAttention && nestedTooltips && attentionId ? (
+                        <SessionAttentionIndicator
+                            attention={attention}
+                            summary={s}
+                            label={attentionLabel ?? ''}
+                            tooltipId={attentionId}
+                        />
+                    ) : urgentAttention ? (
+                        <span
+                            className={`inline-flex h-2 w-2 shrink-0 rounded-full ${ATTENTION_DOT_CLASS[attention.kind]}`}
+                            title={attentionLabel ?? undefined}
+                            aria-label={attentionLabel ?? undefined}
+                        />
+                    ) : s.active ? (
+                        <span
+                            className="inline-flex shrink-0 items-center gap-1 text-[var(--app-badge-success-text)]"
+                            title={t('session.item.running')}
+                        >
+                            <span className="h-1.5 w-1.5 rounded-full bg-current animate-pulse" aria-hidden="true" />
+                            {!inRunningSection ? (
+                                <span className="text-[11px] font-medium leading-none">{t('session.item.running')}</span>
+                            ) : null}
+                        </span>
                     ) : attention && nestedTooltips && attentionId ? (
                         <SessionAttentionIndicator
                             attention={attention}
