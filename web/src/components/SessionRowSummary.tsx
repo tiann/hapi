@@ -113,6 +113,8 @@ export function SessionRowSummary(props: {
     className?: string
     /** Rows inside the pinned "in progress" section skip the text label (dot only). */
     inRunningSection?: boolean
+    /** Short project name shown under the title (pinned "in progress" rows). */
+    projectLabel?: string
 }) {
     const {
         session: s,
@@ -124,6 +126,7 @@ export function SessionRowSummary(props: {
         scheduleTooltipId: scheduleTooltipIdProp,
         className,
         inRunningSection = false,
+        projectLabel,
     } = props
     const { t } = useTranslation()
     const sessionName = getSessionTitle(s)
@@ -242,7 +245,11 @@ export function SessionRowSummary(props: {
                     ) : null}
                 </div>
             </div>
-            {showPath || worktreeLabel ? (
+            {projectLabel ? (
+                <div className="truncate text-xs text-[var(--app-hint)]" title={projectLabel}>
+                    {projectLabel}
+                </div>
+            ) : showPath || worktreeLabel ? (
                 <div
                     className="truncate text-xs text-[var(--app-hint)]"
                     title={worktreeLabel
