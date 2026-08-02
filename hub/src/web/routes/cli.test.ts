@@ -117,6 +117,22 @@ describe('cli resume routes', () => {
 })
 
 describe('cli OpenCode clear route', () => {
+    it.each(['confirm-cleanup', 'abort'] as const)('maps transient %s persistence failure to retryable 500', async (action) => {
+        const failure = () => ({
+            type: 'error' as const,
+            code: 'replacement_link_failed' as const,
+            message: 'metadata write failed'
+        })
+        const app = createApp(action === 'confirm-cleanup'
+            ? { confirmOpenCodeClearCleanup: failure } as never
+            : { abortOpenCodeClearSession: failure } as never)
+        const response = await app.request(`/cli/sessions/source-session/clear-opencode/${action}`, {
+            method: 'POST', headers: authHeaders()
+        })
+        expect(response.status).toBe(500)
+        expect(await response.json()).toMatchObject({ code: 'replacement_link_failed' })
+    })
+
     it('durably reserves through the namespace-scoped engine route', async () => {
         const reserveOpenCodeClearSession = mock(() => ({ type: 'success' as const, sessionId: 'reserved-session' }))
         const app = createApp({ reserveOpenCodeClearSession } as never)

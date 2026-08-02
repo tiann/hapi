@@ -56,6 +56,13 @@ function resolveMachineForNamespace(
     return { ok: false, status: 404, error: 'Machine not found' }
 }
 
+function clearErrorStatus(code: string): 403 | 404 | 409 | 500 {
+    return code === 'access_denied' ? 403
+        : code === 'session_not_found' ? 404
+            : code === 'clear_unavailable' ? 409
+                : 500
+}
+
 export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<CliEnv> {
     const app = new Hono<CliEnv>()
 
@@ -210,7 +217,7 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         const engine = getSyncEngine()
         if (!engine) return c.json({ error: 'Not ready' }, 503)
         const result = engine.abortOpenCodeClearSession(c.req.param('id'), c.get('namespace'))
-        if (result.type === 'error') return c.json({ error: result.message, code: result.code }, 409)
+        if (result.type === 'error') return c.json({ error: result.message, code: result.code }, clearErrorStatus(result.code))
         return c.json({ ok: true, sessionId: result.sessionId })
     })
 
@@ -218,7 +225,7 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         const engine = getSyncEngine()
         if (!engine) return c.json({ error: 'Not ready' }, 503)
         const result = engine.confirmOpenCodeClearCleanup(c.req.param('id'), c.get('namespace'))
-        if (result.type === 'error') return c.json({ error: result.message, code: result.code }, 409)
+        if (result.type === 'error') return c.json({ error: result.message, code: result.code }, clearErrorStatus(result.code))
         return c.json({ ok: true, sessionId: result.sessionId })
     })
 
