@@ -1272,4 +1272,86 @@ describe('AcpSdkBackend', () => {
         emitPlanUpdate();
         expect(turn1.some((m) => m.type === 'plan')).toBe(true);
     });
+
+    it('does not let compact thought/text chunks escape through the next prompt pre-swap drain, while preserving the new prompt response', async () => {
+        // The reported duplicate was not emitted during /compact itself. In
+        // the pre-suppression implementation those chunks stayed in the old
+        // handler and prompt()'s next pre-swap drain emitted them as an
+        // ordinary assistant reply. This drives that exact backend path.
+        backendStatics.UPDATE_QUIET_PERIOD_MS = 1;
+        backendStatics.UPDATE_DRAIN_TIMEOUT_MS = 20;
+        backendStatics.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS = 1;
+        backendStatics.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS = 20;
+        backendStatics.LATE_FLUSH_INTERVAL_MS = 1;
+        backendStatics.LATE_FLUSH_QUIET_PERIOD_MS = 1;
+        backendStatics.LATE_FLUSH_WINDOW_MS = 20;
+
+        const backend = new AcpSdkBackend({ command: 'opencode' });
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequest: (method: string, params: unknown, options?: unknown) => Promise<unknown>;
+                close: () => Promise<void>;
+            } | null;
+            handleSessionUpdate: (params: unknown) => void;
+        };
+        let promptRequestCount = 0;
+        backendInternal.transport = {
+            sendRequest: async (method) => {
+                if (method === 'session/prompt') {
+                    promptRequestCount += 1;
+                    if (promptRequestCount === 2) {
+                        backendInternal.handleSessionUpdate({
+                            sessionId: 'session-1',
+                            update: {
+                                sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentThoughtChunk,
+                                content: { type: 'text', text: 'new prompt thought' }
+                            }
+                        });
+                        backendInternal.handleSessionUpdate({
+                            sessionId: 'session-1',
+                            update: {
+                                sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+                                content: { type: 'text', text: 'new prompt answer' }
+                            }
+                        });
+                    }
+                    return { stopReason: 'end_turn' };
+                }
+                return null;
+            },
+            close: async () => {}
+        };
+
+        const previousTurn: AgentMessage[] = [];
+        await backend.prompt('session-1', [{ type: 'text', text: 'before compact' }], (message) => previousTurn.push(message));
+
+        await backend.suppressUpdatesDuring(async () => {
+            backendInternal.handleSessionUpdate({
+                sessionId: 'session-1',
+                update: {
+                    sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentThoughtChunk,
+                    content: { type: 'text', text: 'compact-only thought' }
+                }
+            });
+            backendInternal.handleSessionUpdate({
+                sessionId: 'session-1',
+                update: {
+                    sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+                    content: { type: 'text', text: 'compact-only summary' }
+                }
+            });
+        });
+
+        const nextTurn: AgentMessage[] = [];
+        await backend.prompt('session-1', [{ type: 'text', text: 'after compact' }], (message) => nextTurn.push(message));
+
+        expect(previousTurn).toEqual([
+            { type: 'turn_complete', stopReason: 'end_turn' }
+        ]);
+        expect(nextTurn).toEqual([
+            { type: 'reasoning', text: 'new prompt thought' },
+            { type: 'text', text: 'new prompt answer' },
+            { type: 'turn_complete', stopReason: 'end_turn' }
+        ]);
+    });
 });

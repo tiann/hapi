@@ -2,9 +2,14 @@ export type OpencodeCompactResult =
     | { ok: true; summaryText?: string }
     | { ok: false; error: string };
 
-export type CompactionSummaryResult =
-    | { found: true; text: string }
-    | { found: false };
+export type CompactionResult =
+    | { status: 'success'; text: string }
+    | { status: 'failed'; reason: string }
+    | { status: 'unverified'; reason: string };
+
+export type CompactionMarkerSnapshot = {
+    markerIds: string[];
+};
 
 /** Minimal fetch-shaped function signature, kept narrower than `typeof fetch` so tests can pass a plain `vi.fn()` without matching runtime-specific extras (e.g. Bun's `fetch.preconnect`). */
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
@@ -31,7 +36,7 @@ type BunFetchInit = RequestInit & { timeout?: false };
  * This was previously opt-in (`signal?: AbortSignal`) on each function
  * individually, which is exactly how a real regression happened: a second
  * PR-review round later found that `triggerOpencodeCompact` (the POST) had
- * been wired up but `fetchCompactionSummary` (the GET that runs right
+ * been wired up but the result-verification GET (which runs right
  * after it) had not, because nothing forced it. Making `signal` a required
  * field of a shared base type means the compiler catches a future third
  * HTTP step *implemented as a function in this file* without one — it can't
@@ -128,9 +133,16 @@ export async function triggerOpencodeCompact(opts: OpencodeCompactCallOpts & {
     }
 }
 
-type OpencodeMessagePart = { type?: unknown; text?: unknown };
+type OpencodeMessagePart = { type?: unknown; text?: unknown; auto?: unknown };
 type OpencodeMessageEntry = {
-    info?: { id?: unknown; role?: unknown; parentID?: unknown; summary?: unknown };
+    info?: {
+        id?: unknown;
+        role?: unknown;
+        parentID?: unknown;
+        summary?: unknown;
+        finish?: unknown;
+        error?: unknown;
+    };
     parts?: unknown;
 };
 
@@ -138,16 +150,7 @@ function isObjectRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null;
 }
 
-/**
- * Only an assistant message is a plausible summary carrier — without this
- * check, an unrelated adjacent/linked entry that happens to carry a `text`
- * part (e.g. another user message) could silently surface as the "summary",
- * bypassing the safe "not found -> skip" fallback this function exists to
- * provide. `info.summary === true` (observed on the real compaction
- * response) is a stronger corroborating signal when present, but role is the
- * one check we always enforce.
- */
-function isAssistantSummaryCandidate(entry: OpencodeMessageEntry | undefined): boolean {
+function isAssistant(entry: OpencodeMessageEntry | undefined): boolean {
     return entry?.info?.role === 'assistant';
 }
 
@@ -160,62 +163,121 @@ function extractTextPart(entry: OpencodeMessageEntry | undefined): string | null
     return texts.length > 0 ? texts.join('') : null;
 }
 
-/**
- * After a successful `triggerOpencodeCompact`, OpenCode's session history
- * contains a `{"type":"compaction"}` marker message (role `user`, no text)
- * followed by an assistant message whose `text` part holds the actual
- * summary OpenCode generated (verified 2026-07-30 via isolated E2E: parts
- * were `['step-start','reasoning','text','step-finish']`). This fetches the
- * message list and extracts that text so HAPI can show it as a "Reasoning"
- * block instead of leaving the summary invisible.
- *
- * Looks for the assistant message via its `parentID` pointing at the marker
- * first (robust to the API returning messages in an order other than
- * creation order), falling back to simple positional adjacency (the very
- * next array entry) if no `parentID` link is present. If a session has been
- * compacted more than once, only the most recent marker is considered.
- *
- * Never throws — any failure (network error, unexpected response shape, no
- * marker found, no text part found, or `signal` — see `OpencodeCompactCallOpts`
- * — firing mid-request) resolves to `{ found: false }` so the caller can
- * silently skip showing the summary rather than surfacing an error for what
- * is a purely cosmetic enhancement.
- */
-export async function fetchCompactionSummary(opts: OpencodeCompactCallOpts & {
-    fetchImpl?: FetchLike;
-}): Promise<CompactionSummaryResult> {
+function isManualCompactionMarker(entry: OpencodeMessageEntry): boolean {
+    return Array.isArray(entry.parts)
+        && entry.parts.some((part) => isObjectRecord(part) && part.type === 'compaction' && part.auto === false);
+}
+
+function getManualCompactionMarkerIds(entries: OpencodeMessageEntry[]): string[] | null {
+    const markerIds: string[] = [];
+    for (const entry of entries) {
+        if (!isManualCompactionMarker(entry)) continue;
+        if (typeof entry.info?.id !== 'string') return null;
+        markerIds.push(entry.info.id);
+    }
+    return markerIds;
+}
+
+function isTerminal(entry: OpencodeMessageEntry): boolean {
+    // OpenCode/provider finish strings are not an enum HAPI owns. Any
+    // nonblank string is terminal evidence; an allowlist would reject valid
+    // provider-specific values such as the observed `unknown` finish.
+    return typeof entry.info?.finish === 'string' && entry.info.finish.trim().length > 0;
+}
+
+function safeErrorReason(value: unknown): string | null {
+    if (value === undefined || value === null) return null;
+    // OpenCode persists provider failures as `{ name, data: { message, ... } }`.
+    // Read only that scalar message: serializing error/data would risk exposing
+    // request headers, provider metadata, or other sensitive fields.
+    const message = typeof value === 'string'
+        ? value
+        : isObjectRecord(value) && isObjectRecord(value.data) && typeof value.data.message === 'string'
+            ? value.data.message
+            : null;
+    if (!message) return 'OpenCode reported a compaction error.';
+    const normalized = message.trim().replace(/\s+/g, ' ');
+    return normalized ? normalized.slice(0, 200) : 'OpenCode reported a compaction error.';
+}
+
+async function fetchSessionMessages(opts: OpencodeCompactCallOpts & { fetchImpl?: FetchLike }): Promise<OpencodeMessageEntry[] | null> {
     const fetchFn: FetchLike = opts.fetchImpl ?? fetch;
     const url = `${opts.baseUrl}/session/${encodeURIComponent(opts.sessionId)}/message`;
-
     try {
         const response = await fetchFn(url, { method: 'GET', signal: opts.signal });
-        if (!response.ok) return { found: false };
-
+        if (!response.ok) return null;
         const data: unknown = await response.json().catch(() => null);
-        if (!Array.isArray(data)) return { found: false };
-        const entries = data as OpencodeMessageEntry[];
-
-        let markerIndex = -1;
-        for (let i = entries.length - 1; i >= 0; i--) {
-            const parts = entries[i]?.parts;
-            if (Array.isArray(parts) && parts.some((part) => isObjectRecord(part) && part.type === 'compaction')) {
-                markerIndex = i;
-                break;
-            }
-        }
-        if (markerIndex === -1) return { found: false };
-
-        const markerId = entries[markerIndex]?.info?.id;
-        const byParentId = typeof markerId === 'string'
-            ? entries.find((entry) => entry.info?.parentID === markerId && isAssistantSummaryCandidate(entry))
-            : undefined;
-
-        const positionalCandidate = entries[markerIndex + 1];
-        const byPosition = isAssistantSummaryCandidate(positionalCandidate) ? positionalCandidate : undefined;
-
-        const text = extractTextPart(byParentId) ?? extractTextPart(byPosition);
-        return text !== null ? { found: true, text } : { found: false };
+        return Array.isArray(data) ? data as OpencodeMessageEntry[] : null;
     } catch {
-        return { found: false };
+        return null;
     }
+}
+
+/**
+ * Captures manual compaction markers before the summarize POST. The
+ * post-request verifier uses this boundary instead of selecting the newest
+ * marker, which would misattribute an older or later manual compaction.
+ */
+export async function captureCompactionMarkerSnapshot(opts: OpencodeCompactCallOpts & {
+    fetchImpl?: FetchLike;
+}): Promise<CompactionMarkerSnapshot | null> {
+    const entries = await fetchSessionMessages(opts);
+    if (!entries) return null;
+    const markerIds = getManualCompactionMarkerIds(entries);
+    return markerIds ? { markerIds } : null;
+}
+
+/**
+ * Resolves only the persisted assistant result associated with this exact
+ * summarize request. HTTP 200 merely proves the endpoint returned; it is not
+ * success evidence. Unknown shapes, absent association, and non-terminal
+ * messages remain unverified rather than becoming a false completion.
+ */
+export async function fetchCompactionResult(opts: OpencodeCompactCallOpts & {
+    markerIdsBefore: readonly string[] | null;
+    fetchImpl?: FetchLike;
+}): Promise<CompactionResult> {
+    if (!opts.markerIdsBefore) {
+        return { status: 'unverified', reason: 'Compaction result could not be verified.' };
+    }
+
+    const entries = await fetchSessionMessages(opts);
+    if (!entries) {
+        return { status: 'unverified', reason: 'Compaction result could not be verified.' };
+    }
+
+    const markerIds = getManualCompactionMarkerIds(entries);
+    if (!markerIds) {
+        return { status: 'unverified', reason: 'Compaction result could not be verified.' };
+    }
+
+    const before = new Set(opts.markerIdsBefore);
+    const newMarkerIds = markerIds.filter((markerId) => !before.has(markerId));
+    if (newMarkerIds.length !== 1) {
+        return { status: 'unverified', reason: 'Compaction result could not be verified.' };
+    }
+
+    const linkedResults = entries.filter((entry) =>
+        isAssistant(entry) && entry.info?.parentID === newMarkerIds[0]
+    );
+    if (linkedResults.length !== 1) {
+        return { status: 'unverified', reason: 'Compaction result could not be verified.' };
+    }
+
+    const result = linkedResults[0]!;
+    const error = safeErrorReason(result.info?.error);
+    if (error) {
+        return { status: 'failed', reason: error };
+    }
+
+    const text = extractTextPart(result);
+    if (isTerminal(result) && (!text || text.trim().length === 0)) {
+        return { status: 'failed', reason: 'OpenCode returned an empty compaction summary.' };
+    }
+
+    if (result.info?.summary === true && isTerminal(result) && text && text.trim().length > 0) {
+        return { status: 'success', text };
+    }
+
+    return { status: 'unverified', reason: 'Compaction result could not be verified.' };
 }

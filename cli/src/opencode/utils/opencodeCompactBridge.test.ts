@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fetchCompactionSummary, splitProviderModel, triggerOpencodeCompact } from './opencodeCompactBridge';
+import { captureCompactionMarkerSnapshot, fetchCompactionResult, splitProviderModel, triggerOpencodeCompact } from './opencodeCompactBridge';
 
 // `signal` is a required field (see OpencodeCompactCallOpts's doc comment) —
 // most tests below don't exercise abort behavior at all, so this is a
@@ -177,242 +177,179 @@ describe('triggerOpencodeCompact', () => {
     });
 });
 
-describe('fetchCompactionSummary', () => {
-    it('extracts the text part of the assistant message that follows the compaction marker (matched via parentID)', async () => {
-        const fetchImpl = vi.fn(async (url: string) => {
+const marker = (id: string) => ({
+    info: { id, role: 'user' },
+    parts: [{ type: 'compaction', auto: false }]
+});
+
+const summary = (id: string, parentID: string, overrides: Record<string, unknown> = {}, text: string | null = '## Objective\n- Did the thing') => ({
+    info: { id, role: 'assistant', parentID, summary: true, finish: 'provider-terminal', ...overrides },
+    parts: text === null ? [{ type: 'step-start' }, { type: 'step-finish' }] : [{ type: 'text', text }]
+});
+
+describe('captureCompactionMarkerSnapshot', () => {
+    it('records only pre-existing manual marker IDs before POST so a later result cannot reuse them', async () => {
+        const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
             expect(url).toBe('http://127.0.0.1:48273/session/ses_abc/message');
-            return new Response(JSON.stringify([
-                { info: { id: 'msg_1', role: 'user' }, parts: [{ id: 'prt_1', type: 'text', text: 'hello' }] },
-                { info: { id: 'msg_2', role: 'assistant' }, parts: [{ id: 'prt_2', type: 'text', text: 'hi there' }] },
-                { info: { id: 'msg_3', role: 'user' }, parts: [{ id: 'prt_3', type: 'compaction', auto: false }] },
-                {
-                    info: { id: 'msg_4', role: 'assistant', parentID: 'msg_3', summary: true },
-                    parts: [
-                        { id: 'prt_4a', type: 'step-start' },
-                        { id: 'prt_4b', type: 'reasoning', text: 'thinking about the summary' },
-                        { id: 'prt_4c', type: 'text', text: '## Objective\n- Did the thing' },
-                        { id: 'prt_4d', type: 'step-finish' }
-                    ]
-                }
-            ]), { status: 200 });
+            expect(init).toMatchObject({ method: 'GET', signal: noSignal });
+            return new Response(JSON.stringify([marker('old-marker')]), { status: 200 });
         });
 
-        const result = await fetchCompactionSummary({
+        await expect(captureCompactionMarkerSnapshot({
+            baseUrl: 'http://127.0.0.1:48273', sessionId: 'ses_abc', fetchImpl, signal: noSignal
+        })).resolves.toEqual({ markerIds: ['old-marker'] });
+    });
+});
+
+describe('fetchCompactionResult', () => {
+    const options = (messages: unknown[]) => ({
+        baseUrl: 'http://127.0.0.1:48273',
+        sessionId: 'ses_abc',
+        markerIdsBefore: ['old-marker'],
+        fetchImpl: vi.fn(async () => new Response(JSON.stringify(messages), { status: 200 })),
+        signal: noSignal
+    });
+
+    it('succeeds only for the new marker\'s exactly parent-linked terminal summary with nonblank text', async () => {
+        const result = await fetchCompactionResult(options([
+            marker('old-marker'),
+            summary('old-summary', 'old-marker', {}, 'old summary'),
+            marker('this-request-marker'),
+            summary('this-request-summary', 'this-request-marker')
+        ]));
+
+        expect(result).toEqual({ status: 'success', text: '## Objective\n- Did the thing' });
+    });
+
+    it('does not guess between two post-snapshot manual markers', async () => {
+        const result = await fetchCompactionResult(options([
+            marker('old-marker'),
+            marker('this-request-marker'),
+            summary('this-request-summary', 'this-request-marker'),
+            marker('later-manual-marker'),
+            summary('later-summary', 'later-manual-marker', {}, 'later summary')
+        ]));
+
+        expect(result).toEqual({ status: 'unverified', reason: 'Compaction result could not be verified.' });
+    });
+
+    it('does not fall back to adjacent text when the new marker has no exact parent-linked assistant result', async () => {
+        const result = await fetchCompactionResult(options([
+            marker('old-marker'),
+            marker('this-request-marker'),
+            summary('unrelated-summary', 'another-marker')
+        ]));
+
+        expect(result).toEqual({ status: 'unverified', reason: 'Compaction result could not be verified.' });
+    });
+
+    it('keeps a malformed result GET unverified', async () => {
+        const result = await fetchCompactionResult({
             baseUrl: 'http://127.0.0.1:48273',
             sessionId: 'ses_abc',
-            fetchImpl,
+            markerIdsBefore: ['old-marker'],
+            fetchImpl: vi.fn(async () => new Response('not json', { status: 200 })),
             signal: noSignal
         });
 
-        expect(result).toEqual({ found: true, text: '## Objective\n- Did the thing' });
+        expect(result).toEqual({ status: 'unverified', reason: 'Compaction result could not be verified.' });
     });
 
-    it('falls back to positional adjacency when the assistant message has no parentID', async () => {
-        const fetchImpl = vi.fn(async () => new Response(JSON.stringify([
-            { info: { id: 'msg_3', role: 'user' }, parts: [{ id: 'prt_3', type: 'compaction', auto: false }] },
-            { info: { id: 'msg_4', role: 'assistant' }, parts: [{ id: 'prt_4', type: 'text', text: 'summary via positional match' }] }
-        ]), { status: 200 }));
+    it('classifies the observed HTTP-200, finish-unknown, empty linked summary as failed', async () => {
+        const result = await fetchCompactionResult(options([
+            marker('old-marker'),
+            marker('this-request-marker'),
+            summary('this-request-summary', 'this-request-marker', {
+                finish: 'unknown',
+                tokens: { input: 0, output: 0, reasoning: 0 }
+            }, null)
+        ]));
 
-        const result = await fetchCompactionSummary({
-            baseUrl: 'http://127.0.0.1:48273',
-            sessionId: 'ses_abc',
-            fetchImpl,
-            signal: noSignal
-        });
-
-        expect(result).toEqual({ found: true, text: 'summary via positional match' });
+        expect(result).toEqual({ status: 'failed', reason: 'OpenCode returned an empty compaction summary.' });
     });
 
-    it('rejects a parentID/positional match whose role is not assistant, even if it happens to carry a text part', async () => {
-        // Both the parentID-linked entry AND the positionally-adjacent entry
-        // have a `type:'text'` part here, but neither is role:'assistant' —
-        // the safe fallback (found:false) must win rather than surfacing
-        // whatever unrelated text these entries happen to carry.
-        const fetchImpl = vi.fn(async () => new Response(JSON.stringify([
-            { info: { id: 'msg_3', role: 'user' }, parts: [{ id: 'prt_3', type: 'compaction', auto: false }] },
-            { info: { id: 'msg_4', role: 'user', parentID: 'msg_3' }, parts: [{ id: 'prt_4', type: 'text', text: 'not actually a summary' }] }
-        ]), { status: 200 }));
+    it('does not use a finish allowlist when terminal evidence and a valid summary are present', async () => {
+        const result = await fetchCompactionResult(options([
+            marker('old-marker'),
+            marker('this-request-marker'),
+            summary('this-request-summary', 'this-request-marker', { finish: 'provider-specific-finish' })
+        ]));
 
-        const result = await fetchCompactionSummary({
-            baseUrl: 'http://127.0.0.1:48273',
-            sessionId: 'ses_abc',
-            fetchImpl,
-            signal: noSignal
-        });
-
-        expect(result).toEqual({ found: false });
+        expect(result).toEqual({ status: 'success', text: '## Objective\n- Did the thing' });
     });
 
-    it('concatenates multiple text parts in order instead of only taking the first', async () => {
-        const fetchImpl = vi.fn(async () => new Response(JSON.stringify([
-            { info: { id: 'msg_3', role: 'user' }, parts: [{ id: 'prt_3', type: 'compaction', auto: false }] },
+    it('concatenates every text part from the exact linked summary', async () => {
+        const result = await fetchCompactionResult(options([
+            marker('old-marker'),
+            marker('this-request-marker'),
             {
-                info: { id: 'msg_4', role: 'assistant', parentID: 'msg_3' },
+                info: {
+                    id: 'this-request-summary',
+                    role: 'assistant',
+                    parentID: 'this-request-marker',
+                    summary: true,
+                    finish: 'provider-terminal'
+                },
                 parts: [
-                    { id: 'prt_4a', type: 'text', text: '## Objective\n' },
-                    { id: 'prt_4b', type: 'step-finish' },
-                    { id: 'prt_4c', type: 'text', text: '- Did the thing' }
+                    { type: 'text', text: '## Objective\n' },
+                    { type: 'step-finish' },
+                    { type: 'text', text: '- Did the thing' }
                 ]
             }
-        ]), { status: 200 }));
+        ]));
 
-        const result = await fetchCompactionSummary({
-            baseUrl: 'http://127.0.0.1:48273',
-            sessionId: 'ses_abc',
-            fetchImpl,
-            signal: noSignal
-        });
-
-        expect(result).toEqual({ found: true, text: '## Objective\n- Did the thing' });
+        expect(result).toEqual({ status: 'success', text: '## Objective\n- Did the thing' });
     });
 
-    it('returns found:false when no compaction marker exists', async () => {
-        const fetchImpl = vi.fn(async () => new Response(JSON.stringify([
-            { info: { id: 'msg_1', role: 'user' }, parts: [{ id: 'prt_1', type: 'text', text: 'hello' }] },
-            { info: { id: 'msg_2', role: 'assistant' }, parts: [{ id: 'prt_2', type: 'text', text: 'hi' }] }
-        ]), { status: 200 }));
+    it('keeps an associated but non-terminal result unverified instead of treating token-less text as a failure', async () => {
+        const result = await fetchCompactionResult(options([
+            marker('old-marker'),
+            marker('this-request-marker'),
+            summary('this-request-summary', 'this-request-marker', { finish: undefined }, '')
+        ]));
 
-        const result = await fetchCompactionSummary({
-            baseUrl: 'http://127.0.0.1:48273',
-            sessionId: 'ses_abc',
-            fetchImpl,
-            signal: noSignal
-        });
-
-        expect(result).toEqual({ found: false });
+        expect(result).toEqual({ status: 'unverified', reason: 'Compaction result could not be verified.' });
     });
 
-    it('returns found:false when the marker is the last message (no following assistant message yet)', async () => {
-        const fetchImpl = vi.fn(async () => new Response(JSON.stringify([
-            { info: { id: 'msg_3', role: 'user' }, parts: [{ id: 'prt_3', type: 'compaction', auto: false }] }
-        ]), { status: 200 }));
+    it('uses OpenCode APIError.data.message as a normalized, truncated safe failure reason without serializing metadata', async () => {
+        const providerMessage = ` provider\n unavailable  ${'x'.repeat(220)} `;
+        const result = await fetchCompactionResult(options([
+            marker('old-marker'),
+            marker('this-request-marker'),
+            summary('this-request-summary', 'this-request-marker', {
+                error: {
+                    name: 'APIError',
+                    data: {
+                        message: providerMessage,
+                        apiKey: 'super-secret-api-key',
+                        requestHeaders: { authorization: 'Bearer super-secret-token' }
+                    }
+                }
+            }, null)
+        ]));
 
-        const result = await fetchCompactionSummary({
-            baseUrl: 'http://127.0.0.1:48273',
-            sessionId: 'ses_abc',
-            fetchImpl,
-            signal: noSignal
-        });
-
-        expect(result).toEqual({ found: false });
+        expect(result).toEqual({ status: 'failed', reason: `provider unavailable ${'x'.repeat(179)}` });
+        expect((result as { reason: string }).reason).not.toContain('super-secret');
     });
 
-    it('returns found:false when the following assistant message has no text part', async () => {
-        const fetchImpl = vi.fn(async () => new Response(JSON.stringify([
-            { info: { id: 'msg_3', role: 'user' }, parts: [{ id: 'prt_3', type: 'compaction', auto: false }] },
-            { info: { id: 'msg_4', role: 'assistant', parentID: 'msg_3' }, parts: [{ id: 'prt_4', type: 'step-finish' }] }
-        ]), { status: 200 }));
-
-        const result = await fetchCompactionSummary({
-            baseUrl: 'http://127.0.0.1:48273',
-            sessionId: 'ses_abc',
-            fetchImpl,
-            signal: noSignal
-        });
-
-        expect(result).toEqual({ found: false });
-    });
-
-    it('returns found:false on a non-ok response', async () => {
-        const fetchImpl = vi.fn(async () => new Response(null, { status: 500 }));
-
-        const result = await fetchCompactionSummary({
-            baseUrl: 'http://127.0.0.1:48273',
-            sessionId: 'ses_abc',
-            fetchImpl,
-            signal: noSignal
-        });
-
-        expect(result).toEqual({ found: false });
-    });
-
-    it('returns found:false when the response is not valid JSON / not an array', async () => {
-        const fetchImpl = vi.fn(async () => new Response('not json', { status: 200 }));
-
-        const result = await fetchCompactionSummary({
-            baseUrl: 'http://127.0.0.1:48273',
-            sessionId: 'ses_abc',
-            fetchImpl,
-            signal: noSignal
-        });
-
-        expect(result).toEqual({ found: false });
-    });
-
-    it('returns found:false when the network call throws', async () => {
-        const fetchImpl = vi.fn(async () => {
-            throw new Error('ECONNREFUSED');
-        });
-
-        const result = await fetchCompactionSummary({
-            baseUrl: 'http://127.0.0.1:48273',
-            sessionId: 'ses_abc',
-            fetchImpl,
-            signal: noSignal
-        });
-
-        expect(result).toEqual({ found: false });
-    });
-
-    it('picks the LAST compaction marker when there are multiple (a session may be compacted more than once)', async () => {
-        const fetchImpl = vi.fn(async () => new Response(JSON.stringify([
-            { info: { id: 'msg_1', role: 'user' }, parts: [{ id: 'prt_1', type: 'compaction', auto: false }] },
-            { info: { id: 'msg_2', role: 'assistant', parentID: 'msg_1' }, parts: [{ id: 'prt_2', type: 'text', text: 'first summary' }] },
-            { info: { id: 'msg_3', role: 'user' }, parts: [{ id: 'prt_3', type: 'text', text: 'more chat' }] },
-            { info: { id: 'msg_4', role: 'user' }, parts: [{ id: 'prt_4', type: 'compaction', auto: false }] },
-            { info: { id: 'msg_5', role: 'assistant', parentID: 'msg_4' }, parts: [{ id: 'prt_5', type: 'text', text: 'second summary' }] }
-        ]), { status: 200 }));
-
-        const result = await fetchCompactionSummary({
-            baseUrl: 'http://127.0.0.1:48273',
-            sessionId: 'ses_abc',
-            fetchImpl,
-            signal: noSignal
-        });
-
-        expect(result).toEqual({ found: true, text: 'second summary' });
-    });
-
-    it('forwards an AbortSignal to fetch when provided, so a caller can interrupt an in-flight request', async () => {
-        const controller = new AbortController();
-        const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
-            expect(init?.signal).toBe(controller.signal);
-            return new Response(JSON.stringify([]), { status: 200 });
-        });
-
-        await fetchCompactionSummary({
-            baseUrl: 'http://127.0.0.1:48273',
-            sessionId: 'ses_abc',
-            fetchImpl,
-            signal: controller.signal
-        });
-
-        expect(fetchImpl).toHaveBeenCalledTimes(1);
-    });
-
-    it('resolves with found:false (not a hang or uncaught rejection) when the signal aborts mid-request', async () => {
-        // Reproduces the exact gap a PR-review round found: the POST
-        // (triggerOpencodeCompact) had a signal wired through in an earlier
-        // round, but this GET — which runs right after it inside
-        // runCompactOperation() — did not, so Stop/switch-to-local could
-        // still block on this call even after that fix.
+    it('returns unverified when the semantic-result GET is aborted', async () => {
         const controller = new AbortController();
         const fetchImpl = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
-            init?.signal?.addEventListener('abort', () => {
-                reject(new DOMException('The operation was aborted.', 'AbortError'));
-            });
+            expect(init?.signal).toBe(controller.signal);
+            init?.signal?.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')));
         }));
 
-        const resultPromise = fetchCompactionSummary({
+        const resultPromise = fetchCompactionResult({
             baseUrl: 'http://127.0.0.1:48273',
             sessionId: 'ses_abc',
+            markerIdsBefore: ['old-marker'],
             fetchImpl,
             signal: controller.signal
         });
-
         controller.abort();
-        const result = await resultPromise;
 
-        expect(result).toEqual({ found: false });
+        await expect(resultPromise).resolves.toEqual({
+            status: 'unverified', reason: 'Compaction result could not be verified.'
+        });
     });
 });
