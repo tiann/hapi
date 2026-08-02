@@ -158,9 +158,22 @@ const PATTERNS: Pattern[] = [
  * this path runs and are not subject to false positives from prose that
  * happens to match the pattern shape.
  */
+/** Drop markdown fenced regions so quoted Error: T: examples are not classified. */
+function stripMarkdownFences(text: string): string {
+    let fenced = false
+    return text.split('\n').filter((line) => {
+        if (/^[ \t]*(?:```|~~~)/.test(line)) {
+            fenced = !fenced
+            return false
+        }
+        return !fenced
+    }).join('\n')
+}
+
 export function classifyCursorAgentMessage(text: string): CursorAgentStreamFailure | null {
+    const candidate = stripMarkdownFences(text)
     for (const pattern of PATTERNS) {
-        if (pattern.test(text)) {
+        if (pattern.test(candidate)) {
             return { kind: pattern.kind, transient: pattern.transient, raw: text, source: 'text' }
         }
     }

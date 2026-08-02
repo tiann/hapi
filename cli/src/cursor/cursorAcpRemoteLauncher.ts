@@ -92,6 +92,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private userAbortRequested = false;
     private lastAssistantText: string | null = null;
     private turnHasModelError = false;
+    /** True while backend.prompt() is in flight — lets stderr model_not_found
+     *  surface as modelError during a turn without breaking setup/load remap. */
+    private promptInFlight = false;
 
     constructor(session: CursorSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
@@ -644,6 +647,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             session.client.updateAgentState?.((state) => ({ ...state, steeringActive: true }));
             this.activePromptModeHash = batch.hash;
 
+            this.promptInFlight = true;
             try {
                 this.promptInFlight = true;
                 this.userAbortRequested = false;
@@ -798,7 +802,15 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 }
                 return;
             }
+            // Setup/load remap consumes "Cannot use this model" stderr without
+            // promoting to modelError. During an active prompt, the same
+            // signature must become model_not_found (mapper would otherwise
+            // be unreachable behind this early return).
+            const failure = mapAcpStderrToFailure(error);
             if (error.type === 'model_not_found' && extractCannotUseThisModelMessage(hint)) {
+                if (this.promptInFlight && failure) {
+                    this.recordModelError(failure);
+                }
                 return;
             }
             const converted = convertAgentMessage({ type: 'error', message: error.message });
@@ -811,7 +823,6 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             // without text matching. Generic `unknown` stderr stays status-only —
             // ACP treats stderr as logging, and the transport labels any
             // "error"/"failed"/"exception" line as unknown.
-            const failure = mapAcpStderrToFailure(error);
             if (failure) {
                 this.recordModelError(failure);
             }
