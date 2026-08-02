@@ -157,6 +157,16 @@ export class NotificationHub {
             this.clearModelErrorRetry(session.id)
             return
         }
+        // Durable watermark (survives hub restart). Seed the in-memory map
+        // so concurrent session-updated storms stay quiet in this process.
+        if (typeof lastModelError.notifiedAt === 'number') {
+            const prior = this.lastModelErrorNotifiedAt.get(session.id) ?? 0
+            if (lastModelError.atTs > prior) {
+                this.lastModelErrorNotifiedAt.set(session.id, lastModelError.atTs)
+            }
+            this.clearModelErrorRetry(session.id)
+            return
+        }
         const lastNotifiedAt = this.lastModelErrorNotifiedAt.get(session.id) ?? 0
         if (lastModelError.atTs <= lastNotifiedAt) {
             return
@@ -177,10 +187,19 @@ export class NotificationHub {
             atTs
         }
 
-        void this.notifyModelError(session, notification).then((completed) => {
-            if (!completed && this.lastModelErrorNotifiedAt.get(session.id) === atTs) {
-                this.scheduleModelErrorRetry(session.id, atTs)
+        void this.notifyModelError(session, notification).then(async (completed) => {
+            if (this.lastModelErrorNotifiedAt.get(session.id) !== atTs) {
+                return
             }
+            if (completed) {
+                try {
+                    await this.syncEngine.markModelErrorNotified(session.id, atTs)
+                } catch (error) {
+                    console.error('[NotificationHub] Failed to persist model-error notifiedAt:', error)
+                }
+                return
+            }
+            this.scheduleModelErrorRetry(session.id, atTs)
         }).catch((error) => {
             console.error('[NotificationHub] Failed to send model-error notification:', error)
             if (this.lastModelErrorNotifiedAt.get(session.id) === atTs) {
@@ -243,6 +262,11 @@ export class NotificationHub {
             }
             if (completed) {
                 this.modelErrorRetryAttempts.delete(sessionId)
+                try {
+                    await this.syncEngine.markModelErrorNotified(sessionId, atTs)
+                } catch (error) {
+                    console.error('[NotificationHub] Failed to persist model-error notifiedAt:', error)
+                }
                 return
             }
             this.scheduleModelErrorRetry(sessionId, atTs)

@@ -14,6 +14,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 class FakeSyncEngine {
     private readonly listeners: Set<SyncEventListener> = new Set()
     private readonly sessions: Map<string, Session> = new Map()
+    readonly modelErrorNotifiedMarks: Array<{ sessionId: string; atTs: number }> = []
 
     subscribe(listener: SyncEventListener): () => void {
         this.listeners.add(listener)
@@ -26,6 +27,25 @@ class FakeSyncEngine {
 
     setSession(session: Session): void {
         this.sessions.set(session.id, session)
+    }
+
+    async markModelErrorNotified(sessionId: string, atTs: number): Promise<void> {
+        this.modelErrorNotifiedMarks.push({ sessionId, atTs })
+        const session = this.sessions.get(sessionId)
+        const err = session?.metadata?.lastModelError
+        if (!session || !err || err.atTs !== atTs) {
+            return
+        }
+        this.sessions.set(sessionId, {
+            ...session,
+            metadata: {
+                ...session.metadata!,
+                lastModelError: {
+                    ...err,
+                    notifiedAt: Date.now()
+                }
+            }
+        })
     }
 
     emit(event: SyncEvent): void {
@@ -356,6 +376,42 @@ describe('NotificationHub', () => {
         expect(channel.modelErrors[1]?.notification.atTs).toBe(2000)
 
         hub.stop()
+    })
+
+    it('persists notifiedAt after successful delivery and skips after hub restart', async () => {
+        const engine = new FakeSyncEngine()
+        const channel = new StubChannel()
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [channel])
+
+        const session = createSession({
+            metadata: {
+                lastModelError: {
+                    kind: 'quota_exhausted',
+                    transient: false,
+                    rawSnippet: 'Error: T: [resource_exhausted]',
+                    atTs: 4000,
+                    priorAssistantClaimsDone: false
+                }
+            } as Session['metadata']
+        })
+        engine.setSession(session)
+        engine.emit({ type: 'session-updated', sessionId: session.id })
+        await sleep(10)
+
+        expect(channel.modelErrors).toHaveLength(1)
+        expect(engine.modelErrorNotifiedMarks).toEqual([{ sessionId: session.id, atTs: 4000 }])
+        expect(engine.getSession(session.id)?.metadata?.lastModelError?.notifiedAt).toEqual(
+            expect.any(Number)
+        )
+        hub.stop()
+
+        // Fresh hub = lost in-memory watermark; durable notifiedAt must gate.
+        const channel2 = new StubChannel()
+        const hub2 = new NotificationHub(engine as unknown as SyncEngine, [channel2])
+        engine.emit({ type: 'session-updated', sessionId: session.id })
+        await sleep(10)
+        expect(channel2.modelErrors).toHaveLength(0)
+        hub2.stop()
     })
 
     it('does not fire model-error for already-acknowledged errors', async () => {

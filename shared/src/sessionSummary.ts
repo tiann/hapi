@@ -51,6 +51,7 @@ export type SessionSummaryMetadata = {
         priorAssistantClaimsDone: boolean
         retriedAndFailed?: boolean
         acknowledgedAt?: number
+        notifiedAt?: number
     }
 }
 
