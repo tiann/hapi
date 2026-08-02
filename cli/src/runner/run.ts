@@ -14,7 +14,7 @@ import { getEnvironmentInfo } from '@/ui/doctor';
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
 import { writeRunnerState, RunnerLocallyPersistedState, readRunnerState, acquireRunnerLock, releaseRunnerLock } from '@/persistence';
 import { getCliArgs } from '@/utils/cliArgs';
-import { getProcessStartMarker, isProcessAlive, isWindows, killProcess, killProcessByChildProcess } from '@/utils/process';
+import { getProcessStartMarker, isProcessAlive, isWindows, killProcess, killProcessByChildProcess, killProcessTreeByPid } from '@/utils/process';
 import { PERMISSION_MODES } from '@hapi/protocol/modes';
 import { withRetry } from '@/utils/time';
 import { isRetryableConnectionError } from '@/utils/errorUtils';
@@ -840,18 +840,30 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       // Webhook timeout can remove the normal TrackedSession before the process
       // actually exits. Retain the requested HAPI ID -> PID relation so Hub can
       // still terminate that exact generation by HAPI ID.
-      const fallbackPids = new Set([...pidToRequestedSessionId.keys(), ...pidToConfirmedSessionId.keys()]);
+      const fallbackPids = new Set([
+        ...pidToRequestedSessionId.keys(),
+        ...pidToConfirmedSessionId.keys(),
+        ...persistedResumeProcesses.keys(),
+      ]);
       for (const pid of fallbackPids) {
-        const requestedSessionId = pidToRequestedSessionId.get(pid);
-        const confirmedSessionId = pidToConfirmedSessionId.get(pid);
+        const persisted = persistedResumeProcesses.get(pid);
+        const requestedSessionId = pidToRequestedSessionId.get(pid) ?? persisted?.requestedSessionId;
+        const confirmedSessionId = pidToConfirmedSessionId.get(pid) ?? persisted?.confirmedSessionId;
         if (requestedSessionId !== sessionId && confirmedSessionId !== sessionId) continue;
         if (isProcessAlive(pid)) {
-          await killProcess(pid);
-          const deadline = Date.now() + 5_000;
-          while (isProcessAlive(pid) && Date.now() < deadline) {
-            await new Promise(resolve => setTimeout(resolve, 50));
+          if (!persisted) return 'still_alive';
+          const currentMarker = getProcessStartMarker(pid);
+          if (currentMarker === null) return 'still_alive';
+          if (currentMarker !== persisted.processStartMarker) {
+            persistedResumeProcesses.delete(pid);
+            persistResumeProcesses();
+            pidToRequestedSessionId.delete(pid);
+            pidToConfirmedSessionId.delete(pid);
+            if (requestedSessionId) rememberVerifiedExit(requestedSessionId);
+            if (confirmedSessionId) rememberVerifiedExit(confirmedSessionId);
+            return 'already_gone';
           }
-          if (isProcessAlive(pid)) return 'still_alive';
+          if (!(await killProcessTreeByPid(pid))) return 'still_alive';
           if (requestedSessionId) rememberVerifiedExit(requestedSessionId);
           if (confirmedSessionId) rememberVerifiedExit(confirmedSessionId);
           rememberVerifiedExit(`PID-${pid}`);

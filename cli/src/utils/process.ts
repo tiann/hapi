@@ -165,7 +165,14 @@ async function killProcessTree(pid: number, force: boolean): Promise<boolean> {
     await waitForProcessToDie(p, force);
   }
 
-  return true;
+  return pids.every((candidate) => !isProcessAlive(candidate));
+}
+
+/** Kill a PID and all descendants, verifying the complete tree is gone. */
+export async function killProcessTreeByPid(pid: number, force: boolean = false): Promise<boolean> {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  if (isWindows()) return killProcess(pid, force);
+  return killProcessTree(pid, force);
 }
 
 /**
@@ -211,5 +218,5 @@ export async function killProcessByChildProcess(
   }
 
   // Kill entire process tree on Unix to prevent orphan processes
-  return killProcessTree(pid, force);
+  return killProcessTreeByPid(pid, force);
 }
