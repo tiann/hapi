@@ -117,11 +117,23 @@ export function usePushNotifications(api: ApiClient | null) {
             // mismatch via the key recorded at subscribe time and recreate it.
             let subscription = existing
             if (existing && readStoredVapidKey() !== publicKey) {
+                const staleEndpoint = existing.endpoint
                 try {
                     await existing.unsubscribe()
                 } catch {
                     // Ignore unsubscribe failures — subscribe() below still
                     // issues a fresh subscription with the current key.
+                }
+                // Prune the obsolete endpoint from the hub so it stops
+                // receiving failed sends (VapidPkHashMismatch) for a
+                // subscription that can no longer be reached.
+                if (staleEndpoint) {
+                    try {
+                        await api.unsubscribePushNotifications({ endpoint: staleEndpoint })
+                    } catch {
+                        // Best-effort cleanup — a stale hub registration is
+                        // harmless beyond repeated failed sends until pruned.
+                    }
                 }
                 subscription = null
             }
