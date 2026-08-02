@@ -2,7 +2,12 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, utimesSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { archiveLocalCodexSession, listLocalCodexSessionSummaries, listLocalCodexSessionsWithMessagesByIds } from './codexSessions'
+import {
+    archiveLocalCodexSession,
+    findCodexSessionFile,
+    listLocalCodexSessionSummaries,
+    listLocalCodexSessionsWithMessagesByIds
+} from './codexSessions'
 
 describe('archiveLocalCodexSession', () => {
     const originalCodexHome = process.env.CODEX_HOME
@@ -354,6 +359,48 @@ describe('listLocalCodexSessionSummaries', () => {
         expect(sessions).toHaveLength(1)
         expect(sessions[0]?.title).toBe('middle title')
         expect(sessions[0]?.lastUserMessage).toBe('prompt before long filler')
+
+        rmSync(root, { recursive: true, force: true })
+    })
+
+    it('resolves transcript paths without reverse-scanning titles on large files', () => {
+        const root = mkdtempSync(join(tmpdir(), 'codex-home-'))
+        process.env.CODEX_HOME = root
+        const sessionsDir = join(root, 'sessions', '2026', '06', '27')
+        mkdirSync(sessionsDir, { recursive: true })
+
+        const sessionId = 'lookup-session-id'
+        const fillerLine = JSON.stringify({
+            type: 'response_item',
+            payload: {
+                type: 'message',
+                role: 'assistant',
+                content: [{ type: 'output_text', text: 'z'.repeat(4000) }]
+            }
+        })
+        // No change_title event: a full reverse scan would walk to BOF.
+        const lines = [
+            JSON.stringify({
+                type: 'session_meta',
+                payload: { id: sessionId, cwd: '/tmp/project' }
+            }),
+            JSON.stringify({
+                type: 'response_item',
+                payload: {
+                    type: 'message',
+                    role: 'user',
+                    content: [{ type: 'input_text', text: 'only head prompt' }]
+                }
+            }),
+            ...Array.from({ length: 80 }, () => fillerLine)
+        ]
+        const filePath = join(sessionsDir, `${sessionId}.jsonl`)
+        writeFileSync(filePath, lines.join('\n') + '\n')
+        expect(statSync(filePath).size).toBeGreaterThan(256 * 1024)
+
+        const started = performance.now()
+        expect(findCodexSessionFile(sessionId)).toBe(filePath)
+        expect(performance.now() - started).toBeLessThan(250)
 
         rmSync(root, { recursive: true, force: true })
     })
