@@ -20,6 +20,8 @@ export interface Settings {
     listenPort?: number
     publicUrl?: string
     corsOrigins?: string[]
+    /** Custom model names offered in the Claude model picker (e.g. DeepSeek via ANTHROPIC_BASE_URL). */
+    customClaudeModels?: string[]
 }
 
 export function getSettingsFile(dataDir: string): string {
