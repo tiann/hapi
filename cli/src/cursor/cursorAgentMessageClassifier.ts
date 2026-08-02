@@ -158,15 +158,23 @@ const PATTERNS: Pattern[] = [
  * this path runs and are not subject to false positives from prose that
  * happens to match the pattern shape.
  */
-/** Drop markdown fenced regions so quoted Error: T: examples are not classified. */
+/** Drop markdown fenced regions so quoted Error: T: examples are not classified.
+ *  Tracks opener char + length so a ```` outer fence is not closed by inner ```. */
 function stripMarkdownFences(text: string): string {
-    let fenced = false
+    let fence: { char: '`' | '~'; length: number } | null = null
     return text.split('\n').filter((line) => {
-        if (/^[ \t]*(?:```|~~~)/.test(line)) {
-            fenced = !fenced
-            return false
+        const match = line.match(/^[ \t]{0,3}(`{3,}|~{3,})/)
+        if (!match) {
+            return fence === null
         }
-        return !fenced
+        const marker = match[1]!
+        const char = marker[0]! as '`' | '~'
+        if (!fence) {
+            fence = { char, length: marker.length }
+        } else if (char === fence.char && marker.length >= fence.length) {
+            fence = null
+        }
+        return false
     }).join('\n')
 }
 
