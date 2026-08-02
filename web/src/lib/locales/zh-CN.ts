@@ -135,6 +135,7 @@ export default {
   'session.item.pending': '待处理',
   'session.item.thinking': '思考中',
   'session.item.running': '运行中',
+  'session.item.idle': '空闲',
   'session.item.permission': '需要权限',
   'session.item.needsInput': '需要输入',
   'session.item.background': '后台任务运行中',

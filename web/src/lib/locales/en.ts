@@ -135,6 +135,7 @@ export default {
   'session.item.pending': 'pending',
   'session.item.thinking': 'thinking',
   'session.item.running': 'Running',
+  'session.item.idle': 'Idle',
   'session.item.permission': 'Permission required',
   'session.item.needsInput': 'Needs input',
   'session.item.background': 'Background tasks running',

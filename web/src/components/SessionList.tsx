@@ -41,6 +41,12 @@ type SessionGroup = {
     hasActiveSession: boolean
 }
 
+const RUNNING_BUCKETS = [
+    { key: 'working', labelKey: 'session.item.running', colorClass: 'text-[var(--app-badge-success-text)]', pulse: true },
+    { key: 'pending', labelKey: 'session.item.pending', colorClass: 'text-[var(--app-badge-warning-text)]', pulse: true },
+    { key: 'idle', labelKey: 'session.item.idle', colorClass: 'text-[var(--app-hint)]', pulse: false },
+] as const
+
 export type SessionTimeRange = {
     start: number | null
     end: number | null
@@ -1072,12 +1078,33 @@ export function SessionList(props: {
             : visibleSessions.filter(session => (session.metadata?.machineId ?? UNKNOWN_MACHINE_ID) === activeMachineFilter),
         [visibleSessions, activeMachineFilter]
     )
-    const runningSessions = useMemo(
-        () => machineFilteredSessions
-            .filter((session) => session.active)
-            .sort((a, b) => b.updatedAt - a.updatedAt),
-        [machineFilteredSessions]
-    )
+    const runningSessions = useMemo(() => {
+        const buckets: Record<'working' | 'pending' | 'idle', SessionSummary[]> = {
+            working: [],
+            pending: [],
+            idle: []
+        }
+        for (const session of machineFilteredSessions) {
+            if (!session.active) {
+                continue
+            }
+            if (session.thinking || (session.backgroundTaskCount ?? 0) > 0) {
+                buckets.working.push(session)
+            } else if ((session.pendingRequestsCount ?? 0) > 0) {
+                buckets.pending.push(session)
+            } else {
+                buckets.idle.push(session)
+            }
+        }
+        const byRecent = (a: SessionSummary, b: SessionSummary) => b.updatedAt - a.updatedAt
+        for (const key of Object.keys(buckets) as Array<keyof typeof buckets>) {
+            buckets[key].sort(byRecent)
+        }
+        return buckets
+    }, [machineFilteredSessions])
+    const runningSessionTotal = runningSessions.working.length
+        + runningSessions.pending.length
+        + runningSessions.idle.length
     const groups = useMemo(
         () => groupSessionsByDirectory(machineFilteredSessions.filter((session) => !session.active)),
         [machineFilteredSessions]
@@ -1417,13 +1444,13 @@ export function SessionList(props: {
                     />
                 ) : null}
 
-                {props.sessions.length > 0 && (isFiltering || activeMachineFilter !== null) && groups.length === 0 && runningSessions.length === 0 ? (
+                {props.sessions.length > 0 && (isFiltering || activeMachineFilter !== null) && groups.length === 0 && runningSessionTotal === 0 ? (
                     <div className="px-4 py-8 text-center text-sm text-[var(--app-hint)]">
                         {t('sessions.search.noResults')}
                     </div>
                 ) : null}
 
-                {runningSessions.length > 0 ? (
+                {runningSessionTotal > 0 ? (
                     <div key="running-section">
                         <div
                             className="group/running flex min-w-0 w-full select-none cursor-pointer items-center gap-2 rounded-lg py-1.5 pl-2 pr-2 transition-colors hover:bg-[var(--app-secondary-bg)]"
@@ -1447,26 +1474,40 @@ export function SessionList(props: {
                                 {t('sessions.runningSection')}
                             </span>
                             <span className="shrink-0 text-[11px] tabular-nums text-[var(--app-hint)]">
-                                ({runningSessions.length})
+                                ({runningSessionTotal})
                             </span>
                         </div>
                         <div className="collapsible-panel" data-open={(!runningSectionCollapsed || isFiltering) || undefined}>
                             <div className="collapsible-inner">
                             <div className="flex flex-col gap-0.5 ml-3 pl-1 py-1">
-                                {runningSessions.map((s) => (
-                                    <SessionItem
-                                        key={s.id}
-                                        session={s}
-                                        onSelect={props.onSelect}
-                                        showPath={false}
-                                        api={api}
-                                        selected={s.id === selectedSessionId}
-                                        showDetailedStatus={showDetailedStatus}
-                                        inRunningSection
-                                        projectLabel={getGroupDisplayName(s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other')}
-                                        machineLabel={resolveMachineLabel(s.metadata?.machineId ?? null)}
-                                    />
-                                ))}
+                                {RUNNING_BUCKETS.map((bucket) => {
+                                    const sessions = runningSessions[bucket.key]
+                                    if (sessions.length === 0) {
+                                        return null
+                                    }
+                                    return (
+                                        <div key={bucket.key}>
+                                            <div className={`flex items-center gap-1 px-1 pt-1 pb-0.5 text-[11px] font-medium ${bucket.colorClass}`}>
+                                                <span className={`h-1.5 w-1.5 shrink-0 rounded-full bg-current ${bucket.pulse ? 'animate-pulse' : ''}`} aria-hidden="true" />
+                                                {t(bucket.labelKey)} ({sessions.length})
+                                            </div>
+                                            {sessions.map((s) => (
+                                                <SessionItem
+                                                    key={s.id}
+                                                    session={s}
+                                                    onSelect={props.onSelect}
+                                                    showPath={false}
+                                                    api={api}
+                                                    selected={s.id === selectedSessionId}
+                                                    showDetailedStatus={showDetailedStatus}
+                                                    inRunningSection
+                                                    projectLabel={getGroupDisplayName(s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other')}
+                                                    machineLabel={resolveMachineLabel(s.metadata?.machineId ?? null)}
+                                                />
+                                            ))}
+                                        </div>
+                                    )
+                                })}
                             </div>
                             </div>
                         </div>
