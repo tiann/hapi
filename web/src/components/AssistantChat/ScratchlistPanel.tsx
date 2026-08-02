@@ -352,7 +352,8 @@ function ScratchlistInventory({
             {entries.map((entry, index) => {
                 const isFirst = index === 0
                 const isLast = index === entries.length - 1
-                const isBusy = disabled || busyEntryId === entry.id
+                const isBusy = busyEntryId === entry.id
+                const mutationsDisabled = disabled || isBusy
                 return (
                     <li
                         key={entry.id}
@@ -385,7 +386,7 @@ function ScratchlistInventory({
                                 aria-label={t('scratchlist.action.moveUp')}
                                 title={t('scratchlist.action.moveUp')}
                                 onClick={() => onMove(entry, 'up')}
-                                disabled={isFirst || isBusy}
+                                disabled={isFirst || mutationsDisabled}
                                 className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-30"
                             >
                                 <ArrowUpIcon />
@@ -395,7 +396,7 @@ function ScratchlistInventory({
                                 aria-label={t('scratchlist.action.moveDown')}
                                 title={t('scratchlist.action.moveDown')}
                                 onClick={() => onMove(entry, 'down')}
-                                disabled={isLast || isBusy}
+                                disabled={isLast || mutationsDisabled}
                                 className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-30"
                             >
                                 <ArrowDownIcon />
@@ -405,7 +406,7 @@ function ScratchlistInventory({
                                 aria-label={t('scratchlist.action.promoteToComposer')}
                                 title={t('scratchlist.action.promoteToComposer')}
                                 onClick={() => onPromoteToComposer(entry)}
-                                disabled={isBusy}
+                                disabled={mutationsDisabled}
                                 className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-30"
                             >
                                 <PencilIcon />
@@ -415,7 +416,7 @@ function ScratchlistInventory({
                                 aria-label={t('scratchlist.action.promoteToQueue')}
                                 title={t('scratchlist.action.promoteToQueue')}
                                 onClick={() => onPromoteToQueue(entry)}
-                                disabled={isBusy}
+                                disabled={mutationsDisabled}
                                 className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-30"
                             >
                                 <SendIcon />
@@ -444,7 +445,7 @@ function ScratchlistInventory({
                                 aria-label={t('scratchlist.action.delete')}
                                 title={t('scratchlist.action.delete')}
                                 onClick={() => onDelete(entry)}
-                                disabled={isBusy}
+                                disabled={mutationsDisabled}
                                 className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-30"
                             >
                                 <TrashIcon />

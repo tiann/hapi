@@ -400,17 +400,19 @@ describe('ScratchlistDrawer disabled operations', () => {
             </I18nProvider>,
         )
 
-        const buttons = [
+        const mutationButtons = [
             ...screen.getAllByRole('button', { name: 'Move entry up' }),
             ...screen.getAllByRole('button', { name: 'Move entry down' }),
             screen.getByRole('button', { name: 'Copy into composer' }),
             screen.getByRole('button', { name: 'Send to queue' }),
             screen.getByRole('button', { name: 'Delete entry' }),
         ]
-        for (const button of buttons) {
+        for (const button of mutationButtons) {
             expect(button).toBeDisabled()
             fireEvent.click(button)
         }
+        // Copy is read-only and remains available while a chat send is pending.
+        expect(screen.getByRole('button', { name: 'Copy text to clipboard (not images)' })).not.toBeDisabled()
 
         await Promise.resolve()
         expect(onMove).not.toHaveBeenCalled()
