@@ -117,6 +117,17 @@ describe('cli resume routes', () => {
 })
 
 describe('cli OpenCode clear route', () => {
+    it('durably reserves through the namespace-scoped engine route', async () => {
+        const reserveOpenCodeClearSession = mock(() => ({ type: 'success' as const, sessionId: 'reserved-session' }))
+        const app = createApp({ reserveOpenCodeClearSession } as never)
+        const response = await app.request('/cli/sessions/source-session/clear-opencode/reserve', {
+            method: 'POST', headers: authHeaders()
+        })
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ ok: true, sessionId: 'reserved-session' })
+        expect(reserveOpenCodeClearSession).toHaveBeenCalledWith('source-session', 'default')
+    })
+
     it('orchestrates a fresh session only through the namespace-scoped engine route', async () => {
         const clearOpenCodeSession = mock(async () => ({ type: 'success' as const, sessionId: 'fresh-opencode-session' }))
         const app = createApp({ clearOpenCodeSession } as never)

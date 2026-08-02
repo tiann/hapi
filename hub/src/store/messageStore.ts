@@ -26,6 +26,7 @@ import {
     markUninvokedImmediateMessages,
     mergeSessionMessages,
     moveUninvokedScheduledMessages,
+    moveUninvokedMessages,
     copyMessageToSession as copyStoredMessageToSession,
     getAllMessages,
     type CancelQueuedMessageResult,
@@ -148,6 +149,10 @@ export class MessageStore {
 
     moveUninvokedScheduledMessages(fromSessionId: string, toSessionId: string): number {
         return moveUninvokedScheduledMessages(this.db, fromSessionId, toSessionId)
+    }
+
+    moveUninvokedMessages(fromSessionId: string, toSessionId: string): number {
+        return moveUninvokedMessages(this.db, fromSessionId, toSessionId)
     }
 
     mergeSessionMessages(fromSessionId: string, toSessionId: string): { moved: number; oldMaxSeq: number; newMaxSeq: number } {

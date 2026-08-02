@@ -5,7 +5,7 @@ import { SyncEngine } from './syncEngine'
 
 function createEngine() {
     const store = new Store(':memory:')
-    const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+    const engine = new SyncEngine(store, { of: () => ({ to: () => ({ emit() {} }) }) } as never, new RpcRegistry(), { broadcast() {} } as never)
     engine.getOrCreateMachine(
         'machine-1',
         { host: 'host', platform: 'linux', happyCliVersion: 'test' },
@@ -34,6 +34,64 @@ function setSpawn(engine: SyncEngine, spawnSession: ReturnType<typeof mock>) {
 }
 
 describe('SyncEngine.clearOpenCodeSession', () => {
+    it('durably reserves a replacement while the source is active and reuses it after archival', async () => {
+        const { store, engine } = createEngine()
+        try {
+            const source = engine.getOrCreateSession('active-clear-source', {
+                path: '/tmp/project', host: 'host', machineId: 'machine-1', flavor: 'opencode', startedBy: 'runner'
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: source.id, time: Date.now() })
+            const reserved = engine.reserveOpenCodeClearSession(source.id, 'default')
+            expect(reserved).toMatchObject({ type: 'success', sessionId: expect.any(String) })
+            if (reserved.type !== 'success') throw new Error('reservation failed')
+            expect(engine.getSessionByNamespace(source.id, 'default')?.metadata?.opencodeClearOperation).toMatchObject({
+                replacementSessionId: reserved.sessionId, state: 'reserved'
+            })
+            engine.handleSessionEnd({ sid: source.id, time: Date.now(), reason: 'cleared' })
+            const latest = store.sessions.getSessionByNamespace(source.id, 'default')!
+            store.sessions.updateSessionMetadata(source.id, { ...(latest.metadata as Record<string, unknown>), lifecycleState: 'archived', archiveReason: 'Cleared by /clear' }, latest.metadataVersion, 'default')
+            ;(engine as unknown as { sessionCache: { refreshSession(id: string): unknown } }).sessionCache.refreshSession(source.id)
+            const spawnSession = mock(async (...args: unknown[]) => ({ type: 'success' as const, sessionId: args[12] as string }))
+            setSpawn(engine, spawnSession)
+            await expect(engine.clearOpenCodeSession(source.id, 'default')).resolves.toEqual({ type: 'success', sessionId: reserved.sessionId })
+        } finally { engine.stop() }
+    })
+
+    it('atomically redirects messages arriving after reservation to the replacement', async () => {
+        const { store, engine } = createEngine()
+        try {
+            const source = engine.getOrCreateSession('active-clear-source', {
+                path: '/tmp/project', host: 'host', machineId: 'machine-1', flavor: 'opencode', startedBy: 'runner'
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: source.id, time: Date.now() })
+            const reserved = engine.reserveOpenCodeClearSession(source.id, 'default')
+            if (reserved.type !== 'success') throw new Error('reservation failed')
+            await engine.sendMessage(source.id, { text: 'late immediate', localId: 'late-immediate' })
+            await engine.sendMessage(source.id, { text: 'late scheduled', localId: 'late-scheduled', scheduledAt: Date.now() + 60_000 })
+            expect(store.messages.getAllMessages(source.id)).toEqual([])
+            expect(store.messages.getAllMessages(reserved.sessionId).map((m) => m.localId)).toEqual(['late-immediate', 'late-scheduled'])
+        } finally { engine.stop() }
+    })
+
+    it('recovers an inactive reserved clear even when the CLI died before writing archive metadata', async () => {
+        const { engine } = createEngine()
+        try {
+            const source = engine.getOrCreateSession('crashed-clear-source', {
+                path: '/tmp/project', host: 'host', machineId: 'machine-1', flavor: 'opencode', startedBy: 'runner'
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: source.id, time: Date.now() })
+            const reserved = engine.reserveOpenCodeClearSession(source.id, 'default')
+            if (reserved.type !== 'success') throw new Error('reservation failed')
+            engine.handleSessionEnd({ sid: source.id, time: Date.now(), reason: 'error' })
+            const spawnSession = mock(async (...args: unknown[]) => ({ type: 'success' as const, sessionId: args[12] as string }))
+            setSpawn(engine, spawnSession)
+            await (engine as unknown as { reconcileOpenCodeClears(): Promise<void> }).reconcileOpenCodeClears()
+            expect(engine.getSessionByNamespace(source.id, 'default')?.metadata).toMatchObject({
+                lifecycleState: 'archived', archiveReason: 'Cleared by /clear', supersededBySessionId: reserved.sessionId
+            })
+            expect(spawnSession).toHaveBeenCalledTimes(1)
+        } finally { engine.stop() }
+    })
     it.each(['resume', 'reopen'] as const)('blocks %s of an archived clear source before spawning', async (action) => {
         const { engine } = createEngine()
         try {
@@ -214,7 +272,7 @@ describe('SyncEngine.clearOpenCodeSession', () => {
         }
     })
 
-    it('settles immediate prompts rejected during the clear latch without consuming scheduled transfers', async () => {
+    it('moves every held prompt to the replacement without falsely consuming it', async () => {
         const { store, engine } = createEngine()
         try {
             const source = createClearSource(engine)
@@ -227,15 +285,12 @@ describe('SyncEngine.clearOpenCodeSession', () => {
             const result = await engine.clearOpenCodeSession(source.id, 'default')
             if (result.type !== 'success') throw new Error('expected successful clear')
 
-            expect(store.messages.getAllMessages(source.id)).toEqual(expect.arrayContaining([
-                expect.objectContaining({ localId: 'immediate-after-clear', invokedAt: expect.any(Number) })
-            ]))
+            expect(store.messages.getAllMessages(source.id)).toEqual([])
             expect(store.messages.getAllMessages(result.sessionId)).toEqual(expect.arrayContaining([
+                expect.objectContaining({ localId: 'immediate-after-clear', invokedAt: null }),
                 expect.objectContaining({ localId: 'scheduled-after-clear', invokedAt: null })
             ]))
-            expect(events).toContainEqual(expect.objectContaining({
-                type: 'messages-consumed', sessionId: source.id, localIds: ['immediate-after-clear']
-            }))
+            expect(events).not.toContainEqual(expect.objectContaining({ type: 'messages-consumed' }))
         } finally {
             engine.stop()
         }

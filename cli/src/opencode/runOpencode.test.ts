@@ -29,6 +29,7 @@ const harness = vi.hoisted(() => ({
     opencodeLoopError: null as Error | null,
     triggerClear: false,
     clearOpenCodeSession: vi.fn(async () => 'fresh-session'),
+    reserveOpenCodeClearSession: vi.fn(async () => 'fresh-session'),
     listSlashCommands: vi.fn(async (..._args: unknown[]) => [] as Array<unknown>),
     session: {
         sessionId: 'source-session',
@@ -51,14 +52,14 @@ vi.mock('@/agent/sessionFactory', () => ({
     bootstrapSession: vi.fn(async (options: Record<string, unknown>) => {
         harness.bootstrapArgs.push(options);
         return {
-            api: { clearOpenCodeSession: harness.clearOpenCodeSession },
+            api: { clearOpenCodeSession: harness.clearOpenCodeSession, reserveOpenCodeClearSession: harness.reserveOpenCodeClearSession },
             session: harness.session
         };
     }),
     bootstrapExistingSession: vi.fn(async (options: Record<string, unknown>) => {
         harness.bootstrapExistingArgs.push(options);
         return {
-            api: { clearOpenCodeSession: harness.clearOpenCodeSession },
+            api: { clearOpenCodeSession: harness.clearOpenCodeSession, reserveOpenCodeClearSession: harness.reserveOpenCodeClearSession },
             session: harness.session
         };
     })
@@ -76,7 +77,7 @@ vi.mock('./loop', () => ({
         }
         if (harness.triggerClear) {
             const onClearRequested = options.onClearRequested as (() => void) | undefined;
-            onClearRequested?.();
+            await onClearRequested?.();
         }
     })
 }));
@@ -135,6 +136,8 @@ describe('runOpencode set-session-config handler', () => {
         harness.triggerClear = false;
         harness.clearOpenCodeSession.mockReset();
         harness.clearOpenCodeSession.mockResolvedValue('fresh-session');
+        harness.reserveOpenCodeClearSession.mockReset();
+        harness.reserveOpenCodeClearSession.mockResolvedValue('fresh-session');
         mockOpencodeSession.setModel.mockReset();
         mockOpencodeSession.setPermissionMode.mockReset();
         mockOpencodeSession.setModelReasoningEffort.mockReset();
@@ -431,10 +434,7 @@ describe('runOpencode set-session-config handler', () => {
             ['follow-up'],
             expect.anything()
         );
-        expect(harness.session.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
-            message: expect.stringContaining('fresh OpenCode session is opening')
-        }));
-        expect(harness.session.sendAgentMessage).toHaveBeenCalledTimes(1);
+        expect(harness.session.sendAgentMessage).not.toHaveBeenCalled();
     });
 
     it('releases the clear transition latch when the queued /clear is cancelled', async () => {
@@ -453,9 +453,8 @@ describe('runOpencode set-session-config handler', () => {
             await new Promise((resolve) => setTimeout(resolve, 0));
         }
         expect(cancelHandler('queued-clear')).toBe(true);
-        expect(harness.session.emitMessagesConsumed).toHaveBeenCalledWith(
-            ['rejected-before-cancel'],
-            { clearQueuedThinkingGrace: true }
+        expect(harness.session.emitMessagesConsumed).not.toHaveBeenCalledWith(
+            ['rejected-before-cancel'], expect.anything()
         );
 
         userMessageHandler({ content: { text: 'continue in the source session' } }, 'after-cancel');
@@ -463,17 +462,33 @@ describe('runOpencode set-session-config handler', () => {
             await new Promise((resolve) => setTimeout(resolve, 0));
         }
 
-        expect(messageQueue.queue).toEqual([expect.objectContaining({
-            message: 'continue in the source session',
-            localId: 'after-cancel'
-        })]);
-        expect(harness.session.sendAgentMessage).toHaveBeenCalledTimes(1);
+        expect(messageQueue.queue).toEqual([
+            expect.objectContaining({ message: 'rejected while clear is queued', localId: 'rejected-before-cancel' }),
+            expect.objectContaining({ message: 'continue in the source session', localId: 'after-cancel' })
+        ]);
+        expect(harness.session.sendAgentMessage).not.toHaveBeenCalled();
+    });
+
+    it('removes an individually cancelled prompt held behind queued clear', async () => {
+        await runOpencode({ startedBy: 'runner' });
+        const messageQueue = harness.opencodeLoopArgs[0]?.messageQueue as { queue: Array<{ localId?: string }> };
+        const userMessageHandler = harness.session.onUserMessage.mock.calls[0]?.[0] as
+            ((msg: { content: { text: string } }, localId?: string) => void);
+        const cancelHandler = harness.session.onCancelQueuedMessage.mock.calls[0]?.[0] as ((localId: string) => boolean);
+        userMessageHandler({ content: { text: '/clear' } }, 'queued-clear');
+        userMessageHandler({ content: { text: 'keep me' } }, 'held-keep');
+        userMessageHandler({ content: { text: 'cancel me' } }, 'held-cancel');
+        for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(cancelHandler('held-cancel')).toBe(true);
+        expect(cancelHandler('queued-clear')).toBe(true);
+        expect(messageQueue.queue.map((item) => item.localId)).toEqual(['held-keep']);
     });
 
     it('archives the source before asking the hub to spawn the fresh OpenCode process', async () => {
         harness.triggerClear = true;
         const order: string[] = [];
         lifecycleMock.cleanupConfirmed.mockImplementationOnce(async () => { order.push('cleanup'); });
+        harness.reserveOpenCodeClearSession.mockImplementationOnce(async () => { order.push('reserve'); return 'fresh-session'; });
         harness.clearOpenCodeSession.mockImplementationOnce(async () => {
             order.push('spawn');
             return 'fresh-session';
@@ -489,7 +504,7 @@ describe('runOpencode set-session-config handler', () => {
         expect(lifecycleMock.setArchiveReason).toHaveBeenCalledWith('Cleared by /clear');
         expect(lifecycleMock.setSessionEndReason).toHaveBeenCalledWith('cleared');
         expect(harness.clearOpenCodeSession).toHaveBeenCalledWith('source-session');
-        expect(order).toEqual(['cleanup', 'spawn']);
+        expect(order).toEqual(['reserve', 'cleanup', 'spawn']);
     });
 
     it('keeps archive-confirmation ownership beyond the old finite budget', async () => {

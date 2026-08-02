@@ -771,6 +771,25 @@ async uploadScratchlistAttachment(
         // Piggybacked on the inactivity tick; not a logical part of expireInactive
         // but shares its 5s cadence (avoids a second timer).
         this.messageService.releaseMatureScheduledMessages(Date.now())
+        void this.reconcileOpenCodeClears()
+    }
+
+    private async reconcileOpenCodeClears(): Promise<void> {
+        for (let session of this.sessionCache.getSessions()) {
+            const operation = session.metadata?.opencodeClearOperation
+            if (session.active || !operation || operation.state === 'completed') continue
+            if (session.metadata?.lifecycleState !== 'archived' || session.metadata.archiveReason !== 'Cleared by /clear') {
+                const result = this.store.sessions.updateSessionMetadata(session.id, {
+                    ...session.metadata,
+                    lifecycleState: 'archived',
+                    lifecycleStateSince: Date.now(),
+                    archiveReason: 'Cleared by /clear'
+                }, session.metadataVersion, session.namespace, { touchUpdatedAt: false })
+                if (result.result !== 'success') continue
+                session = this.sessionCache.refreshSession(session.id) ?? session
+            }
+            await this.clearOpenCodeSession(session.id, session.namespace).catch(() => {})
+        }
     }
 
     private reloadAll(): void {
@@ -821,9 +840,9 @@ async uploadScratchlistAttachment(
             scheduledAt?: number | null
         }
     ): Promise<void> {
-        await this.messageService.sendMessage(sessionId, payload)
-        this.sessionCache.markMessageQueued(sessionId)
-        this.sessionCache.recordSessionActivity(sessionId, Date.now())
+        const actualSessionId = await this.messageService.sendMessage(sessionId, payload)
+        this.sessionCache.markMessageQueued(actualSessionId)
+        this.sessionCache.recordSessionActivity(actualSessionId, Date.now())
     }
 
     async cancelQueuedMessage(
@@ -1174,6 +1193,36 @@ async uploadScratchlistAttachment(
         }
     }
 
+    reserveOpenCodeClearSession(sessionId: string, namespace: string): ClearOpencodeSessionResult {
+        const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
+        if (!access.ok) {
+            return { type: 'error', message: access.reason === 'access-denied' ? 'Session access denied' : 'Session not found', code: access.reason === 'access-denied' ? 'access_denied' : 'session_not_found' }
+        }
+        const source = access.session
+        const metadata = source.metadata
+        if (!source.active || metadata?.flavor !== 'opencode' || metadata.startedBy !== 'runner' || !metadata.machineId || !metadata.path) {
+            return { type: 'error', message: 'Session is not an active runner-backed OpenCode session', code: 'clear_unavailable' }
+        }
+        const existing = metadata.opencodeClearOperation
+        const operation = existing ?? { replacementSessionId: randomUUID(), state: 'reserved' as const, updatedAt: Date.now() }
+        if (!existing && !this.persistClearOperation(sessionId, namespace, operation)) {
+            return { type: 'error', message: 'Could not persist the OpenCode clear reservation', code: 'replacement_link_failed' }
+        }
+        const replacementMetadata = { ...metadata }
+        delete replacementMetadata.opencodeSessionId
+        delete replacementMetadata.supersededBySessionId
+        delete replacementMetadata.opencodeClearOperation
+        delete replacementMetadata.lifecycleState
+        delete replacementMetadata.lifecycleStateSince
+        delete replacementMetadata.archivedBy
+        delete replacementMetadata.archiveReason
+        replacementMetadata.startedFromRunner = true
+        replacementMetadata.startedBy = 'runner'
+        this.getOrCreateSession(`opencode-clear-replacement:${operation.replacementSessionId}`, replacementMetadata, null, namespace,
+            source.model ?? undefined, source.effort ?? undefined, source.modelReasoningEffort ?? undefined, operation.replacementSessionId)
+        return { type: 'success', sessionId: operation.replacementSessionId }
+    }
+
     private async clearOpenCodeSessionOnce(sessionId: string, namespace: string): Promise<ClearOpencodeSessionResult> {
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
@@ -1246,6 +1295,13 @@ async uploadScratchlistAttachment(
                     message: 'Could not resume the OpenCode clear replacement operation',
                     code: 'replacement_link_failed'
                 }
+            }
+        }
+
+        if (operation.state === 'reserved') {
+            operation = { ...operation, state: 'finalizing', updatedAt: Date.now() }
+            if (!this.persistClearOperation(sessionId, namespace, operation)) {
+                return { type: 'error', message: 'Could not finalize the OpenCode clear reservation', code: 'replacement_link_failed' }
             }
         }
 
@@ -1325,17 +1381,7 @@ async uploadScratchlistAttachment(
             }
         }
         try {
-            const invokedAt = Date.now()
-            const rejectedLocalIds = this.store.messages.markUninvokedImmediateMessages(sessionId, invokedAt)
-            if (rejectedLocalIds.length > 0) {
-                this.eventPublisher.emit({
-                    type: 'messages-consumed',
-                    sessionId,
-                    localIds: rejectedLocalIds,
-                    invokedAt
-                })
-            }
-            const moved = this.store.messages.moveUninvokedScheduledMessages(sessionId, replacementSessionId)
+            const moved = this.store.messages.moveUninvokedMessages(sessionId, replacementSessionId)
             if (moved > 0) {
                 this.eventPublisher.emit({ type: 'messages-invalidated', sessionId })
                 this.eventPublisher.emit({ type: 'messages-invalidated', sessionId: replacementSessionId })

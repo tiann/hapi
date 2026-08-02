@@ -367,7 +367,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         (backendModule.createOpencodeBackend as unknown as ReturnType<typeof vi.fn>).mockClear();
     });
 
-    it('does not request a replacement if native OpenCode cleanup fails', async () => {
+    it('reserves before native cleanup but does not complete the transition when cleanup fails', async () => {
         harness.disconnectImpl = async () => {
             throw new Error('disconnect failed');
         };
@@ -377,7 +377,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         ]);
 
         await expect(opencodeRemoteLauncher(session as never, { onClearRequested })).rejects.toThrow('disconnect failed');
-        expect(onClearRequested).not.toHaveBeenCalled();
+        expect(onClearRequested).toHaveBeenCalledTimes(1);
         const backendModule = await import('./utils/opencodeBackend');
         (backendModule.createOpencodeBackend as unknown as ReturnType<typeof vi.fn>).mockClear();
     });

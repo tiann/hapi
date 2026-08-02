@@ -711,6 +711,22 @@ export function moveUninvokedScheduledMessages(
     }
 }
 
+/** Move every still-held prompt to a reserved replacement, preserving FIFO. */
+export function moveUninvokedMessages(db: Database, fromSessionId: string, toSessionId: string): number {
+    if (fromSessionId === toSessionId) return 0
+    const rows = db.prepare(`SELECT id FROM messages WHERE session_id = ? AND invoked_at IS NULL ORDER BY seq ASC`)
+        .all(fromSessionId) as Array<{ id: string }>
+    if (rows.length === 0) return 0
+    return db.transaction(() => {
+        let nextSeq = getMaxSeq(db, toSessionId)
+        const update = db.prepare('UPDATE messages SET session_id = ?, seq = ? WHERE id = ?')
+        for (const row of rows) update.run(toSessionId, ++nextSeq, row.id)
+        bumpMessageEpoch(db, fromSessionId)
+        bumpMessageEpoch(db, toSessionId)
+        return rows.length
+    })()
+}
+
 export function mergeSessionMessages(
     db: Database,
     fromSessionId: string,

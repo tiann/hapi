@@ -35,7 +35,7 @@ type OpencodeRemoteLauncherOptions = {
     // Called only after /clear reaches its FIFO position *and* this
     // launcher has disconnected its OpenCode backend. The caller then performs
     // the source lifecycle cleanup before requesting the fresh process.
-    onClearRequested?: () => void;
+    onClearRequested?: () => Promise<void>;
 };
 
 export type AbortStatusDecision = {
@@ -317,6 +317,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             // through handleAbort(true): that method exists to interrupt an
             // in-flight compact, while clear can only run after one finishes.
             if (batch.mode.operation === 'clear') {
+                await this.options.onClearRequested?.();
                 this.clearRequested = true;
                 await this.requestExit('exit', async () => {})
                 break;
@@ -641,9 +642,6 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         // failure and this callback never runs; runOpencode then archives the
         // source as an error rather than spawning a potentially concurrent
         // replacement.
-        if (this.clearRequested) {
-            this.options.onClearRequested?.();
-        }
     }
 
     private rollbackReasoningEffort(batch: { mode: OpencodeMode }, effort: string | null): void {

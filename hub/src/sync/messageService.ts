@@ -575,7 +575,7 @@ export class MessageService {
             sentFrom?: 'telegram-bot' | 'webapp'
             scheduledAt?: number | null
         }
-    ): Promise<void> {
+    ): Promise<string> {
         // Defence-in-depth invariant for non-REST callers (Telegram bot, MCP,
         // internal callers).  Attachment paths live under the CLI session's
         // upload directory which `cleanupUploadDir` purges on session end; a
@@ -602,13 +602,15 @@ export class MessageService {
             }
         }
 
-        const msg = this.store.messages.addMessage(
+        const inserted = this.store.addMessageForCurrentSession(
             sessionId,
             content,
             payload.localId ?? undefined,
             payload.scheduledAt ?? null
         )
-        this.onSessionActivity?.(sessionId, msg.createdAt)
+        const actualSessionId = inserted.sessionId
+        const msg = inserted.message
+        this.onSessionActivity?.(actualSessionId, msg.createdAt)
 
         // Only emit to CLI if the message is not scheduled for the future.
         // Mature or non-scheduled messages go through immediately; future scheduled
@@ -624,7 +626,7 @@ export class MessageService {
                 createdAt: msg.createdAt,
                 body: {
                     t: 'new-message' as const,
-                    sid: sessionId,
+                    sid: actualSessionId,
                     message: {
                         id: msg.id,
                         seq: msg.seq,
@@ -634,13 +636,13 @@ export class MessageService {
                     }
                 }
             }
-            this.io.of('/cli').to(`session:${sessionId}`).emit('update', update)
+            this.io.of('/cli').to(`session:${actualSessionId}`).emit('update', update)
         }
 
         // Always emit message-received to Web SSE so the floating bar renders.
         this.publisher.emit({
             type: 'message-received',
-            sessionId,
+            sessionId: actualSessionId,
             message: {
                 id: msg.id,
                 seq: msg.seq,
@@ -651,6 +653,7 @@ export class MessageService {
                 scheduledAt: msg.scheduledAt
             }
         })
+        return actualSessionId
     }
 
     /**

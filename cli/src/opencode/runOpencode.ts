@@ -111,12 +111,12 @@ export async function runOpencode(opts: {
     // throughout it.
     let compactSupported = false;
     let clearRequested = false;
-    // Once a runner-backed /clear is accepted, this source session is on a
-    // one-way transition. Later inbound messages must receive an explicit
-    // rejection instead of entering the queue that will be archived.
+    // Once a runner-backed /clear is accepted, hold later payloads until the
+    // transition commits or the queued clear is cancelled. The hub redirects
+    // their durable rows to the reserved replacement on success.
     let clearTransitionLatched = false;
     let queuedClearLocalId: string | null = null;
-    const rejectedDuringClearLocalIds = new Set<string>();
+    const heldDuringClear: Array<{ message: Parameters<Parameters<typeof session.onUserMessage>[0]>[0]; localId?: string }> = [];
     // True from the moment onCompactAvailabilityChange(false) fires (which,
     // per onLeavingRemote's contract, only ever happens because remote mode
     // is being left — never because remote just started) until this session
@@ -246,15 +246,7 @@ export async function runOpencode(opts: {
             try {
                 if (wasCancelled()) return;
                 if (clearTransitionLatched) {
-                    const firstRejection = !localId || !rejectedDuringClearLocalIds.has(localId);
-                    if (localId) rejectedDuringClearLocalIds.add(localId);
-                    if (firstRejection) {
-                        session.sendAgentMessage({
-                            type: 'message',
-                            message: 'A fresh OpenCode session is opening. Please send this message after the session redirects.',
-                            id: randomUUID()
-                        });
-                    }
+                    heldDuringClear.push({ message, localId });
                     sessionWrapperRef.current?.onThinkingChange(false);
                     return;
                 }
@@ -448,13 +440,15 @@ export async function runOpencode(opts: {
             if (queuedClearLocalId === localId) {
                 queuedClearLocalId = null;
                 clearTransitionLatched = false;
-                const rejectedLocalIds = [...rejectedDuringClearLocalIds];
-                if (rejectedLocalIds.length > 0) {
-                    session.emitMessagesConsumed(rejectedLocalIds, {
-                        clearQueuedThinkingGrace: true
-                    });
+                for (const held of heldDuringClear) {
+                    const formattedText = formatMessageWithAttachments(held.message.content.text, held.message.content.attachments);
+                    messageQueue.push(formattedText, {
+                        permissionMode: currentPermissionMode,
+                        model: sessionModel,
+                        modelReasoningEffort: sessionModelReasoningEffort
+                    }, held.localId);
                 }
-                rejectedDuringClearLocalIds.clear();
+                heldDuringClear.length = 0;
             }
             logger.debug(`[opencode] cancelByLocalId(${localId}): removed from queue`);
             return true;
@@ -462,6 +456,11 @@ export async function runOpencode(opts: {
         if (preparingLocalIds.has(localId)) {
             cancelledBeforeEnqueue.add(localId);
             logger.debug(`[opencode] cancelByLocalId(${localId}): marked for cancellation before enqueue`);
+            return true;
+        }
+        const heldIndex = heldDuringClear.findIndex((held) => held.localId === localId);
+        if (heldIndex >= 0) {
+            heldDuringClear.splice(heldIndex, 1);
             return true;
         }
         // Not in the queue and not in the pre-enqueue preparing window. As
@@ -548,7 +547,8 @@ export async function runOpencode(opts: {
                     compactTeardownInProgress = true;
                 }
             },
-            onClearRequested: () => {
+            onClearRequested: async () => {
+                await api.reserveOpenCodeClearSession(session.sessionId);
                 clearRequested = true;
             },
             isLocalIdCancelled: (localId) => cancelledDequeuedLocalIds.delete(localId)

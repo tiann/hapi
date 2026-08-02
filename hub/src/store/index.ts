@@ -4,6 +4,8 @@ import { dirname } from 'node:path'
 
 import { MachineStore } from './machineStore'
 import { MessageStore } from './messageStore'
+import { addMessage } from './messages'
+import type { StoredMessage } from './types'
 import { PushStore } from './pushStore'
 import { FcmStore } from './fcmStore'
 import { ScratchlistStore } from './scratchlistStore'
@@ -134,6 +136,26 @@ export class Store {
             }
 
             return session.updatedAt
+        })()
+    }
+
+    /** Resolve a durable OpenCode clear reservation and insert in one SQLite transaction. */
+    addMessageForCurrentSession(
+        sessionId: string,
+        content: unknown,
+        localId?: string,
+        scheduledAt?: number | null
+    ): { sessionId: string; message: StoredMessage } {
+        return this.db.transaction(() => {
+            const row = this.db.prepare('SELECT metadata FROM sessions WHERE id = ?').get(sessionId) as { metadata: string | null } | undefined
+            let targetSessionId = sessionId
+            if (row?.metadata) {
+                const metadata = JSON.parse(row.metadata) as { opencodeClearOperation?: { replacementSessionId?: string; state?: string }, supersededBySessionId?: string }
+                targetSessionId = metadata.supersededBySessionId
+                    ?? metadata.opencodeClearOperation?.replacementSessionId
+                    ?? sessionId
+            }
+            return { sessionId: targetSessionId, message: addMessage(this.db, targetSessionId, content, localId, scheduledAt) }
         })()
     }
 
