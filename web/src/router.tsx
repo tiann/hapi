@@ -46,7 +46,7 @@ import { inactiveSessionCanResume } from '@/lib/sessionResume'
 import { markSessionSeen } from '@/lib/sessionLastSeen'
 import { useSessionBrowserTitle } from '@/hooks/useSessionBrowserTitle'
 import { clearCodexImportedSession } from '@/lib/codexImportedSessions'
-import { getSupersedingSessionId } from '@/routes/sessions/followSupersedingSession'
+import { getSupersedingSessionId, shouldFollowSupersedingSession } from '@/routes/sessions/followSupersedingSession'
 import FilesPage from '@/routes/sessions/files'
 import FilePage from '@/routes/sessions/file'
 import TerminalPage from '@/routes/sessions/terminal'
@@ -738,17 +738,28 @@ function SessionDetailRoute() {
     const basePath = `/sessions/${sessionId}`
     const isChat = pathname === basePath || pathname === `${basePath}/`
     const supersedingSessionId = getSupersedingSessionId(sessionId, session?.metadata)
+    const observedSessionRef = useRef<{
+        sessionId: string
+        supersedingSessionId: string | null
+    } | null>(null)
 
     useEffect(() => {
-        if (!supersedingSessionId) {
+        if (!session) {
             return
         }
+        const shouldFollow = shouldFollowSupersedingSession(
+            observedSessionRef.current,
+            sessionId,
+            session.metadata
+        )
+        observedSessionRef.current = { sessionId, supersedingSessionId }
+        if (!shouldFollow || !supersedingSessionId) return
         navigate({
             to: '/sessions/$sessionId',
             params: { sessionId: supersedingSessionId },
             replace: true
         })
-    }, [navigate, supersedingSessionId])
+    }, [navigate, session, sessionId, supersedingSessionId])
 
     useEffect(() => {
         if (!sessionNotFound) {

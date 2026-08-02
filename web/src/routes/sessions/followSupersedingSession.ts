@@ -8,3 +8,13 @@ export function getSupersedingSessionId(
     }
     return replacement
 }
+
+export function shouldFollowSupersedingSession(
+    previous: { sessionId: string; supersedingSessionId: string | null } | null,
+    currentSessionId: string,
+    metadata: { supersededBySessionId?: string } | null | undefined
+): boolean {
+    return previous?.sessionId === currentSessionId
+        && previous.supersedingSessionId === null
+        && getSupersedingSessionId(currentSessionId, metadata) !== null
+}
