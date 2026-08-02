@@ -39,6 +39,7 @@ describe('SessionRowSummary model-error + attention', () => {
             pendingRequestKinds: ['permission'],
             pendingRequests: [{ id: 'r1', kind: 'permission', tool: 'Bash', since: 0 }],
             metadata: {
+                path: '/tmp/proj',
                 lastModelError: {
                     kind: 'model_not_found',
                     transient: false,
