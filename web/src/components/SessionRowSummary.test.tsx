@@ -1,10 +1,15 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import type { ReactNode } from 'react'
 import type { SessionSummary } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
 import { SessionRowSummary } from './SessionRowSummary'
 
 afterEach(() => cleanup())
+
+function renderWithI18n(children: ReactNode) {
+    return render(<I18nProvider>{children}</I18nProvider>)
+}
 
 function makeSummary(overrides: Partial<SessionSummary> = {}): SessionSummary {
     return {
@@ -153,5 +158,36 @@ describe('SessionRowSummary background status', () => {
         )
 
         expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('New activity')
+    })
+})
+
+describe('SessionRowSummary model-error + attention', () => {
+    it('shows model-error and permission attention together', () => {
+        const summary = makeSummary({
+            id: 's-both',
+            backgroundTaskCount: 0,
+            pendingRequestsCount: 1,
+            pendingRequestKinds: ['permission'],
+            pendingRequests: [{ id: 'r1', kind: 'permission', tool: 'Bash', since: 0 }],
+            metadata: {
+                lastModelError: {
+                    kind: 'model_not_found',
+                    message: 'Unknown model',
+                    atTs: 1,
+                },
+            },
+        })
+
+        renderWithI18n(
+            <SessionRowSummary
+                session={summary}
+                showDetailedStatus
+                selected={false}
+                nestedTooltips={false}
+            />
+        )
+
+        expect(screen.getByLabelText(/Model error/i)).toBeTruthy()
+        expect(screen.getByLabelText('Permission required')).toBeTruthy()
     })
 })
