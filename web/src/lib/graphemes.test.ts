@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { truncateGraphemes } from './graphemes'
 
-const ASCII_PREFIX = 'a'.repeat(119)
 const BOUNDARY_SAMPLES = [
     '😀',
     'e\u0301',
@@ -15,17 +14,35 @@ const CODE_POINT_FALLBACK_SAMPLES = [
     'a\u200Db',
 ]
 
-function expectBoundarySafeTruncation(): void {
+function expectGraphemeHardLimit(): void {
     for (const grapheme of BOUNDARY_SAMPLES) {
-        expect(truncateGraphemes(`${ASCII_PREFIX}${grapheme}x`, 120)).toBe(
-            `${ASCII_PREFIX}${grapheme}`
+        const fittingPrefix = 'a'.repeat(120 - grapheme.length)
+        const overflowingPrefix = 'a'.repeat(121 - grapheme.length)
+        expect(truncateGraphemes(`${fittingPrefix}${grapheme}x`, 120)).toBe(
+            `${fittingPrefix}${grapheme}`
+        )
+        expect(truncateGraphemes(`${overflowingPrefix}${grapheme}x`, 120)).toBe(
+            overflowingPrefix
         )
     }
 }
 
+function codePointBounded(value: string, maxLength: number): string {
+    let result = ''
+    for (const codePoint of Array.from(value)) {
+        if (result.length + codePoint.length > maxLength) break
+        result += codePoint
+    }
+    return result
+}
+
 describe('truncateGraphemes', () => {
-    it('keeps the 120th emoji, combining sequence, and ZWJ sequence intact', () => {
-        expectBoundarySafeTruncation()
+    it('keeps only whole 120-UTF-16-unit graphemes', () => {
+        expectGraphemeHardLimit()
+        expect(truncateGraphemes(`${'a'.repeat(119)}😀`, 120)).toBe('a'.repeat(119))
+        expect(truncateGraphemes(`${'a'.repeat(118)}😀`, 120)).toBe(`${'a'.repeat(118)}😀`)
+        expect(truncateGraphemes('👨\u200D👩\u200D👧\u200D👦', 2)).toBe('')
+        expect(truncateGraphemes('abc', 0)).toBe('')
     })
 
     it('uses a bounded code-point fallback when Intl.Segmenter is unavailable', () => {
@@ -33,10 +50,10 @@ describe('truncateGraphemes', () => {
         Object.defineProperty(Intl, 'Segmenter', { configurable: true, value: undefined })
         try {
             for (const grapheme of CODE_POINT_FALLBACK_SAMPLES) {
-                const source = `${ASCII_PREFIX}${grapheme}x`
+                const source = `${'a'.repeat(119)}${grapheme}x`
                 const result = truncateGraphemes(source, 120)
-                expect(result).toBe(Array.from(source).slice(0, 120).join(''))
-                expect(Array.from(result).length).toBeLessThanOrEqual(120)
+                expect(result).toBe(codePointBounded(source, 120))
+                expect(result.length).toBeLessThanOrEqual(120)
                 expect(result).not.toMatch(/[\uD800-\uDBFF]$/)
             }
             expect(truncateGraphemes('abc', 0)).toBe('')
