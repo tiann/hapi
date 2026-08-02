@@ -407,7 +407,8 @@ function deduplicateAdjacentImportedMessages(messages: CodexImportedMessageConte
 function parseCodexLocalSession(
     filePath: string,
     includeMessages: boolean,
-    sessionIndexTitles = new Map<string, CodexSessionIndexTitle>()
+    sessionIndexTitles = new Map<string, CodexSessionIndexTitle>(),
+    scanSummaryFields = true
 ): LocalCodexSessionWithMessages | LocalCodexSessionSummary | null {
     // Summary listing must not load entire transcripts into memory — only a head window.
     // Full-file reads are reserved for explicit import (includeMessages=true).
@@ -465,13 +466,15 @@ function parseCodexLocalSession(
     sessionId = sessionId ?? inferSessionIdFromFileName(filePath)
     if (!sessionId) return null
     const sessionIndexTitle = sessionIndexTitles.get(sessionId)?.threadName ?? null
-    // Title/last-user: full lines when importing; otherwise reverse-chunk until found (bounded memory).
+    // Title/last-user: full lines when importing; reverse-chunk for listing; skip for id/path lookup.
     const summaryFields = includeMessages
         ? {
             changedTitle: getLatestCodexChangedTitle(lines),
             lastUserMessage: getLatestCodexUserMessage(lines)
         }
-        : scanCodexSummaryFieldsBackward(filePath, CODEX_SUMMARY_TAIL_BYTES)
+        : scanSummaryFields
+            ? scanCodexSummaryFieldsBackward(filePath, CODEX_SUMMARY_TAIL_BYTES)
+            : { changedTitle: null, lastUserMessage: null }
     const { changedTitle, lastUserMessage } = summaryFields
     let modifiedAt = Date.now()
     try { modifiedAt = statSync(filePath).mtimeMs } catch {}
@@ -582,7 +585,8 @@ function findCodexSessionSummary(sessionId: string): LocalCodexSessionSummary | 
     for (const file of files) {
         const idFromName = inferSessionIdFromFileName(file)
         if (idFromName && idFromName !== normalized) continue
-        const summary = parseCodexLocalSession(file, false)
+        // Head-only: path/cwd lookup must not reverse-scan titles (blocks the event loop).
+        const summary = parseCodexLocalSession(file, false, new Map(), false)
         if (!summary || summary.id !== normalized) continue
         if (!best || best.modifiedAt < summary.modifiedAt) {
             best = summary
