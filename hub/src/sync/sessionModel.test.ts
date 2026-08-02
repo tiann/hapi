@@ -2354,6 +2354,29 @@ describe('session model', () => {
         } finally { engine.stop() }
     })
 
+    it('blocks Pi dedup before an unexpected child ID is attached to the persisted attempt', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            const original = engine.getOrCreateSession('pi-original-pre-mapping', {
+                path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'pi', piSessionId: 'pi-native-pre-mapping',
+                lifecycleState: 'archived', archivedBy: 'cli', archiveReason: 'Pi exited',
+                piResumeAttempt: { state: 'resuming', machineId: 'machine-1', startedAt: 1 },
+            }, null, 'default')
+            const temp = engine.getOrCreateSession('pi-temp-pre-mapping', {
+                path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'pi', piSessionId: 'pi-native-pre-mapping',
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: temp.id, time: Date.now() })
+            let dedupCalls = 0
+            ;(engine as any).sessionCache.deduplicateByAgentSessionId = async () => { dedupCalls += 1 }
+
+            ;(engine as any).triggerDedupIfNeeded(temp.id)
+            await flushAsyncWork()
+            expect(dedupCalls).toBe(0)
+            expect(store.sessions.getSession(original.id)).not.toBeNull()
+        } finally { engine.stop() }
+    })
+
     it('defers mergeSessions for cursor reopen until session-ready (load failure leaves old row)', async () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(

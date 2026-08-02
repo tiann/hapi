@@ -2080,6 +2080,13 @@ async uploadScratchlistAttachment(
         if (this.piResumeInFlightIds.has(session.id) || this.piResumeQuarantinedIds.has(session.id)) return false
         if (session.metadata?.piResumeAttempt) return false
         if (this.sessionCache.getSessions().some((candidate) => candidate.metadata?.piResumeAttempt?.childSessionId === session.id)) return false
+        const piSessionId = session.metadata?.piSessionId
+        if (piSessionId && this.sessionCache.getSessions().some((candidate) =>
+            candidate.id !== session.id
+            && candidate.namespace === session.namespace
+            && candidate.metadata?.piResumeAttempt !== undefined
+            && candidate.metadata.piSessionId === piSessionId
+        )) return false
         if (session.metadata?.flavor !== 'cursor') {
             return true
         }
