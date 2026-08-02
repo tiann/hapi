@@ -18,6 +18,7 @@ export type RunnerLifecycle = {
     hasExplicitSessionEndReason: () => boolean
     markCrash: (error: unknown) => void
     cleanup: () => Promise<void>
+    cleanupConfirmed: (options?: { timeoutMs?: number }) => Promise<void>
     cleanupAndExit: (codeOverride?: number) => Promise<void>
     registerProcessHandlers: () => void
 }
@@ -49,6 +50,8 @@ export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLi
     let sessionEndReasonExplicit = false
     let cleanupStarted = false
     let cleanupPromise: Promise<void> | null = null
+    let confirmedCleanupPrepared = false
+    let confirmedCleanupComplete = false
 
     const logPrefix = `[${options.logTag}]`
 
@@ -91,6 +94,42 @@ export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLi
         })()
 
         return cleanupPromise
+    }
+
+    const cleanupConfirmed = async (confirmedOptions?: { timeoutMs?: number }) => {
+        if (confirmedCleanupComplete) {
+            return
+        }
+        cleanupStarted = true
+        if (!confirmedCleanupPrepared) {
+            logger.debug(`${logPrefix} Confirmed cleanup start`)
+            restoreTerminalState()
+            options.stopKeepAlive?.()
+            await options.onBeforeClose?.()
+            options.session.updateMetadata((currentMetadata) => ({
+                ...currentMetadata,
+                lifecycleState: 'archived',
+                lifecycleStateSince: Date.now(),
+                archivedBy: 'cli',
+                archiveReason
+            }))
+            options.session.sendSessionDeath(sessionEndReason)
+            confirmedCleanupPrepared = true
+        }
+
+        const confirmed = await options.session.flush({ timeoutMs: confirmedOptions?.timeoutMs ?? 5_000 })
+        if (!confirmed) {
+            throw Object.assign(new Error(`${logPrefix} Timed out confirming session archive`), { code: 'ETIMEDOUT' })
+        }
+
+        await options.session.close()
+        confirmedCleanupComplete = true
+        try {
+            await options.onAfterClose?.()
+        } catch (error) {
+            logger.debug(`${logPrefix} Error during post-cleanup:`, error)
+        }
+        logger.debug(`${logPrefix} Confirmed cleanup complete`)
     }
 
     const cleanupAndExit = async (codeOverride?: number) => {
@@ -176,6 +215,7 @@ export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLi
         hasExplicitSessionEndReason,
         markCrash,
         cleanup,
+        cleanupConfirmed,
         cleanupAndExit,
         registerProcessHandlers
     }

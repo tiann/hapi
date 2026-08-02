@@ -372,6 +372,21 @@ describe('ApiSessionClient lazy materialization', () => {
         expect(socket.emitted.some((entry) => entry.event === 'session-end')).toBe(true)
         client.close()
     })
+
+    it('reports an unconfirmed final flush when the socket cannot reconnect before the deadline', async () => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+        socket.connected = false
+        socket.connectImmediately = false
+        client.sendSessionDeath('cleared')
+
+        await expect(client.flush({ timeoutMs: 20 })).resolves.toBe(false)
+
+        expect(socket.connectCalls).toBeGreaterThan(0)
+        client.close()
+    })
 })
 
 describe('ApiSessionClient incoming user messages', () => {

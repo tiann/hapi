@@ -565,10 +565,22 @@ export async function runOpencode(opts: {
             return;
         }
 
-        // cleanup() sends session-end and waits for the socket's ordered ping
-        // acknowledgement. Only after that hub-observed inactive boundary may
-        // the fresh HAPI/OpenCode process be spawned.
-        await lifecycle.cleanup();
+        // Keep the source socket open until the hub acknowledges the ordered
+        // archive/session-end boundary. A transient disconnect must not turn
+        // the following clear request into a non-retryable active-source 409.
+        await withRetry(
+            () => lifecycle.cleanupConfirmed({ timeoutMs: 5_000 }),
+            {
+                maxAttempts: 12,
+                minDelay: 500,
+                maxDelay: 5_000,
+                shouldRetry: isRetryableConnectionError,
+                onRetry: (error, attempt, nextDelayMs) => {
+                    const message = error instanceof Error ? error.message : String(error);
+                    logger.debug(`[opencode] Session archive confirmation failed (attempt ${attempt}), retrying in ${nextDelayMs}ms: ${message}`);
+                }
+            }
+        );
         try {
             await withRetry(
                 () => api.clearOpenCodeSession(session.sessionId),

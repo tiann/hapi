@@ -88,6 +88,7 @@ vi.mock('@/claude/registerKillSessionHandler', () => ({
 const lifecycleMock = vi.hoisted(() => ({
     registerProcessHandlers: vi.fn(),
     cleanup: vi.fn(async () => {}),
+    cleanupConfirmed: vi.fn(async () => {}),
     cleanupAndExit: vi.fn(async () => {}),
     markCrash: vi.fn(),
     setExitCode: vi.fn(),
@@ -151,6 +152,8 @@ describe('runOpencode set-session-config handler', () => {
         harness.listSlashCommands.mockResolvedValue([]);
         lifecycleMock.registerProcessHandlers.mockClear();
         lifecycleMock.cleanup.mockClear();
+        lifecycleMock.cleanupConfirmed.mockReset();
+        lifecycleMock.cleanupConfirmed.mockResolvedValue(undefined);
         lifecycleMock.cleanupAndExit.mockClear();
         lifecycleMock.markCrash.mockClear();
         lifecycleMock.setExitCode.mockClear();
@@ -463,7 +466,7 @@ describe('runOpencode set-session-config handler', () => {
     it('archives the source before asking the hub to spawn the fresh OpenCode process', async () => {
         harness.triggerClear = true;
         const order: string[] = [];
-        lifecycleMock.cleanup.mockImplementationOnce(async () => { order.push('cleanup'); });
+        lifecycleMock.cleanupConfirmed.mockImplementationOnce(async () => { order.push('cleanup'); });
         harness.clearOpenCodeSession.mockImplementationOnce(async () => {
             order.push('spawn');
             return 'fresh-session';
@@ -482,6 +485,23 @@ describe('runOpencode set-session-config handler', () => {
         expect(order).toEqual(['cleanup', 'spawn']);
     });
 
+    it('retries confirmed archive delivery before requesting the replacement session', async () => {
+        harness.triggerClear = true;
+        const timeout = Object.assign(new Error('archive acknowledgement timed out'), { code: 'ETIMEDOUT' });
+        lifecycleMock.cleanupConfirmed
+            .mockRejectedValueOnce(timeout)
+            .mockResolvedValueOnce(undefined);
+        const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+        try {
+            await runOpencode({ startedBy: 'runner' });
+            expect(lifecycleMock.cleanupConfirmed).toHaveBeenCalledTimes(2);
+            expect(harness.clearOpenCodeSession).toHaveBeenCalledTimes(1);
+        } finally {
+            exit.mockRestore();
+        }
+    });
+
     it('surfaces a fresh-session handoff failure instead of exiting cleanly after archival', async () => {
         harness.triggerClear = true;
         harness.clearOpenCodeSession.mockRejectedValueOnce(new Error('replacement link failed'));
@@ -493,7 +513,7 @@ describe('runOpencode set-session-config handler', () => {
             exit.mockRestore();
         }
 
-        expect(lifecycleMock.cleanup).toHaveBeenCalled();
+        expect(lifecycleMock.cleanupConfirmed).toHaveBeenCalled();
         expect(exit).not.toHaveBeenCalled();
     });
 
