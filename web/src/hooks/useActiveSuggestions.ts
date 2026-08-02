@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 
 export interface Suggestion {
     key: string
@@ -11,8 +11,10 @@ export interface Suggestion {
     sessionMention?: { id: string; title: string }
 }
 
+type SuggestionHandler = (query: string) => Promise<Suggestion[]>
+
 interface SuggestionOptions {
-    clampSelection?: boolean   // If true, clamp instead of preserving exact position
+    clampSelection?: boolean   // Legacy option; matching suggestion keys are always preserved before clamping
     autoSelectFirst?: boolean  // If true, automatically select first item when suggestions appear
     wrapAround?: boolean       // If true, wrap around when reaching top/bottom
     allowEmptyQuery?: boolean  // If true, allow empty string queries
@@ -64,13 +66,20 @@ class ValueSync<T> {
     }
 }
 
+interface SuggestionRequest {
+    query: string | null
+    handler: SuggestionHandler
+    generation: number
+    inputVersion: number
+}
+
 /**
  * Hook that manages autocomplete suggestions based on an active word query
  * Returns: [suggestions, selectedIndex, moveUp, moveDown]
  */
 export function useActiveSuggestions(
     query: string | null,
-    handler: (query: string) => Promise<Suggestion[]>,
+    handler: SuggestionHandler,
     options: SuggestionOptions = {}
 ) {
     const {
@@ -79,6 +88,37 @@ export function useActiveSuggestions(
         wrapAround = true,
         allowEmptyQuery = false
     } = options
+
+    const latestInputRef = useRef({
+        query,
+        handler,
+        clampSelection,
+        autoSelectFirst,
+        allowEmptyQuery,
+        version: 0,
+    })
+
+    // Commit the active input before passive request effects or any settled promise
+    // can publish. A layout effect avoids leaking an abandoned concurrent render.
+    useLayoutEffect(() => {
+        const latestInput = latestInputRef.current
+        if (
+            latestInput.query !== query
+            || latestInput.handler !== handler
+            || latestInput.clampSelection !== clampSelection
+            || latestInput.autoSelectFirst !== autoSelectFirst
+            || latestInput.allowEmptyQuery !== allowEmptyQuery
+        ) {
+            latestInputRef.current = {
+                query,
+                handler,
+                clampSelection,
+                autoSelectFirst,
+                allowEmptyQuery,
+                version: latestInput.version + 1,
+            }
+        }
+    }, [query, handler, clampSelection, autoSelectFirst, allowEmptyQuery])
 
     // State for suggestions
     const [state, setState] = useState<{
@@ -131,54 +171,45 @@ export function useActiveSuggestions(
         setState({ suggestions: [], selected: -1 })
     }, [])
 
-    // Sync query to suggestions
-    const handlerRef = useRef(handler)
-    handlerRef.current = handler
-
-    const syncRef = useRef<ValueSync<string | null> | null>(null)
+    const syncRef = useRef<ValueSync<SuggestionRequest> | null>(null)
+    const generationRef = useRef(0)
 
     useEffect(() => {
-        const sync = new ValueSync<string | null>(async (nextQuery) => {
+        const sync = new ValueSync<SuggestionRequest>(async ({ query: nextQuery, handler: requestHandler, generation, inputVersion }) => {
             if (nextQuery === null || (!allowEmptyQuery && nextQuery === '')) return
 
-            const suggestions = await handlerRef.current(nextQuery)
+            const suggestions = await requestHandler(nextQuery)
+
+            const isCurrentRequest = () => {
+                const latest = latestInputRef.current
+                return generation === generationRef.current
+                    && inputVersion === latest.version
+                    && nextQuery === latest.query
+            }
+
+            // ValueSync serializes work, but a previous request can still finish after a
+            // newer query has been queued. Only the current query generation may publish.
+            if (!isCurrentRequest()) return
 
             setState((prev) => {
-                if (clampSelection) {
-                    // Simply clamp the selection to valid range
-                    let newSelected = prev.selected
+                // React may defer this updater until another query is current.
+                if (!isCurrentRequest()) return prev
 
-                    if (suggestions.length === 0) {
-                        newSelected = -1
-                    } else if (autoSelectFirst && prev.suggestions.length === 0) {
-                        // First time showing suggestions, auto-select first
-                        newSelected = 0
-                    } else if (prev.selected >= suggestions.length) {
-                        // Selection is out of bounds, clamp to last item
-                        newSelected = suggestions.length - 1
-                    } else if (prev.selected < 0 && suggestions.length > 0 && autoSelectFirst) {
-                        // No selection but we have suggestions
-                        newSelected = 0
+                if (prev.selected >= 0 && prev.selected < prev.suggestions.length) {
+                    const previousKey = prev.suggestions[prev.selected].key
+                    const newIndex = suggestions.findIndex(s => s.key === previousKey)
+                    if (newIndex !== -1) {
+                        // Preserve the user's logical selection across a refreshed or reordered list.
+                        return { suggestions, selected: newIndex }
                     }
+                }
 
-                    return { suggestions, selected: newSelected }
-                } else {
-                    // Try to preserve selection by key (old behavior)
-                    if (prev.selected >= 0 && prev.selected < prev.suggestions.length) {
-                        const previousKey = prev.suggestions[prev.selected].key
-                        const newIndex = suggestions.findIndex(s => s.key === previousKey)
-                        if (newIndex !== -1) {
-                            // Found the same key, keep it selected
-                            return { suggestions, selected: newIndex }
-                        }
-                    }
-
-                    // Key not found or no previous selection, clamp the selection
-                    const clampedSelection = Math.min(prev.selected, suggestions.length - 1)
-                    return {
-                        suggestions,
-                        selected: clampedSelection < 0 && suggestions.length > 0 && autoSelectFirst ? 0 : clampedSelection
-                    }
+                // The selected key disappeared (or there was no selection): retain the
+                // existing fallback semantics and clamp the index to the new list.
+                const clampedSelection = Math.min(prev.selected, suggestions.length - 1)
+                return {
+                    suggestions,
+                    selected: clampedSelection < 0 && suggestions.length > 0 && autoSelectFirst ? 0 : clampedSelection
                 }
             })
         })
@@ -187,6 +218,7 @@ export function useActiveSuggestions(
 
         return () => {
             sync.stop()
+            generationRef.current += 1
             if (syncRef.current === sync) {
                 syncRef.current = null
             }
@@ -194,7 +226,14 @@ export function useActiveSuggestions(
     }, [clampSelection, autoSelectFirst, allowEmptyQuery])
 
     useEffect(() => {
-        syncRef.current?.setValue(query)
+        const generation = ++generationRef.current
+        const latestInput = latestInputRef.current
+        syncRef.current?.setValue({
+            query,
+            handler: latestInput.handler,
+            generation,
+            inputVersion: latestInput.version,
+        })
     }, [query, handler, clampSelection, autoSelectFirst, allowEmptyQuery])
 
     // If no query return empty suggestions
