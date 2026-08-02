@@ -102,6 +102,17 @@ export function classifyRecoveredProcessGeneration(
   return currentMarker === persistedMarker ? 'verified' : 'exited';
 }
 
+export function releaseRecoveredSpawnDedupe(
+  pid: number,
+  existingSessionIdByChildPid: Map<number, string>,
+  spawnSession: SpawnDeduplicator
+): void {
+  const existingSessionId = existingSessionIdByChildPid.get(pid);
+  if (!existingSessionId) return;
+  spawnSession.onChildExited(existingSessionId);
+  existingSessionIdByChildPid.delete(pid);
+}
+
 export async function startRunner(options: { workspaceRoots?: string[] } = {}): Promise<void> {
   // We don't have cleanup function at the time of server construction
   // Control flow is:
@@ -967,6 +978,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             pidToConfirmedSessionId.delete(pid);
             if (requestedSessionId) rememberVerifiedExit(requestedSessionId);
             if (confirmedSessionId) rememberVerifiedExit(confirmedSessionId);
+            releaseRecoveredSpawnDedupe(pid, existingSessionIdByChildPid, spawnSession);
             return 'already_gone';
           }
           if (!(await killProcessTreeByPid(pid))) return 'still_alive';
@@ -976,6 +988,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           pidToRequestedSessionId.delete(pid);
           pidToConfirmedSessionId.delete(pid);
           if (persistedResumeProcesses.delete(pid)) persistResumeProcesses();
+          releaseRecoveredSpawnDedupe(pid, existingSessionIdByChildPid, spawnSession);
           return 'stopped';
         }
         if (requestedSessionId) rememberVerifiedExit(requestedSessionId);
@@ -984,6 +997,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         pidToRequestedSessionId.delete(pid);
         pidToConfirmedSessionId.delete(pid);
         if (persistedResumeProcesses.delete(pid)) persistResumeProcesses();
+        releaseRecoveredSpawnDedupe(pid, existingSessionIdByChildPid, spawnSession);
         return 'already_gone';
       }
 

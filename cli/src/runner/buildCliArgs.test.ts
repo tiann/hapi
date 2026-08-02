@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildCliArgs, classifyRecoveredProcessGeneration, createSpawnDeduplicator } from './run'
+import { buildCliArgs, classifyRecoveredProcessGeneration, createSpawnDeduplicator, releaseRecoveredSpawnDedupe } from './run'
 
 describe('buildCliArgs', () => {
     it('adds --permission-mode for valid permission mode', () => {
@@ -400,5 +400,23 @@ describe('classifyRecoveredProcessGeneration', () => {
         expect(classifyRecoveredProcessGeneration(false, null, 'persisted-marker')).toBe('exited')
         expect(classifyRecoveredProcessGeneration(true, 'other-marker', 'persisted-marker')).toBe('exited')
         expect(classifyRecoveredProcessGeneration(true, 'persisted-marker', 'persisted-marker')).toBe('verified')
+    })
+})
+
+describe('releaseRecoveredSpawnDedupe', () => {
+    it('allows an immediate same-row spawn after a recovered child reaches a terminal stop branch', async () => {
+        let calls = 0
+        const dedupe = createSpawnDeduplicator(async () => {
+            calls += 1
+            return { type: 'success' as const, sessionId: 'fresh-hapi-session' }
+        })
+        dedupe.recoverChild('fresh-hapi-session', { type: 'success', sessionId: 'fresh-hapi-session' })
+        const recovered = new Map([[123, 'fresh-hapi-session']])
+
+        releaseRecoveredSpawnDedupe(123, recovered, dedupe)
+        await dedupe({ directory: '/tmp', existingSessionId: 'fresh-hapi-session' })
+
+        expect(calls).toBe(1)
+        expect(recovered.has(123)).toBe(false)
     })
 })
