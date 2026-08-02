@@ -170,12 +170,12 @@ describe('classifyCursorAgentMessage', () => {
             '```\r\n'
         expect(classifyCursorAgentMessage(crlfFence)).toBeNull()
 
-        // CommonMark indented code (4+ spaces) is not a live wire error.
+        // CommonMark indented code (4+ spaces or tab) is not a live wire error.
         expect(
             classifyCursorAgentMessage('    Error: T: [resource_exhausted] capacity exceeded')
         ).toBeNull()
         expect(
-            classifyCursorAgentMessage('        Error: RetriableError: Connection stalled after 30s')
+            classifyCursorAgentMessage('\tError: RetriableError: Connection stalled after 30s')
         ).toBeNull()
     })
 
@@ -212,7 +212,8 @@ describe('classifyCursorAgentMessage', () => {
     it('classifies leading-whitespace variants of all Error: T: kinds', () => {
         expect(classifyCursorAgentMessage('\n\nError: T: [resource_exhausted]')?.kind).toBe('quota_exhausted')
         expect(classifyCursorAgentMessage('  Error: T: [canceled]')?.kind).toBe('canceled')
-        expect(classifyCursorAgentMessage('\tError: T: [deadline_exceeded]')?.kind).toBe('deadline_exceeded')
+        // Tab-indented = CommonMark code (stripped). Light space pad is wire OK.
+        expect(classifyCursorAgentMessage('  Error: T: [deadline_exceeded]')?.kind).toBe('deadline_exceeded')
         expect(classifyCursorAgentMessage('\n\n  Error: T: [unavailable]')?.kind).toBe('unavailable')
         expect(classifyCursorAgentMessage('\nError: T: Connection stalled after 30s')?.kind).toBe('connection_stalled')
     })
