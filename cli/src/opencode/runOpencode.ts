@@ -588,9 +588,8 @@ export async function runOpencode(opts: {
             await withRetry(
                 () => api.clearOpenCodeSession(session.sessionId),
                 {
-                    maxAttempts: 5,
                     minDelay: 500,
-                    maxDelay: 5_000,
+                    maxDelay: 30_000,
                     shouldRetry: isRetryableConnectionError,
                     onRetry: (error, attempt, nextDelayMs) => {
                         const message = error instanceof Error ? error.message : String(error);
@@ -599,9 +598,8 @@ export async function runOpencode(opts: {
                 }
             );
         } catch (error) {
-            // The source has already archived, but the hub retains the durable
-            // retry operation. Do not turn that recoverable failure into a
-            // misleading clean exit; the runner must report it as an error.
+            // Only non-retryable failures reach here. Retryable transport and
+            // hub failures retain ownership in the loop above until recovery.
             logger.debug('[opencode] Fresh-session clear spawn failed', error);
             throw error;
         }

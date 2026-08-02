@@ -519,22 +519,31 @@ describe('runOpencode set-session-config handler', () => {
         expect(exit).not.toHaveBeenCalled();
     });
 
-    it('retries a transient clear handoff failure before exiting the archived source', async () => {
+    it('keeps retry ownership beyond the old finite budget until the archived-source handoff succeeds', async () => {
+        vi.useFakeTimers();
         harness.triggerClear = true;
         const transient = Object.assign(new Error('connection reset'), { code: 'ECONNRESET' });
         harness.clearOpenCodeSession
+            .mockRejectedValueOnce(transient)
+            .mockRejectedValueOnce(transient)
+            .mockRejectedValueOnce(transient)
+            .mockRejectedValueOnce(transient)
+            .mockRejectedValueOnce(transient)
             .mockRejectedValueOnce(transient)
             .mockResolvedValueOnce('fresh-session');
         const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
 
         try {
-            await runOpencode({ startedBy: 'runner' });
-            expect(harness.clearOpenCodeSession).toHaveBeenCalledTimes(2);
+            const run = runOpencode({ startedBy: 'runner' });
+            await vi.runAllTimersAsync();
+            await run;
+            expect(harness.clearOpenCodeSession).toHaveBeenCalledTimes(7);
             expect(harness.clearOpenCodeSession).toHaveBeenNthCalledWith(1, 'source-session');
-            expect(harness.clearOpenCodeSession).toHaveBeenNthCalledWith(2, 'source-session');
+            expect(harness.clearOpenCodeSession).toHaveBeenNthCalledWith(7, 'source-session');
             expect(exit).toHaveBeenCalledWith(0);
         } finally {
             exit.mockRestore();
+            vi.useRealTimers();
         }
     });
 
