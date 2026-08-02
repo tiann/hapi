@@ -538,7 +538,11 @@ export function listLocalCodexSessionsWithMessagesByIds(ids: Set<string>): Local
 
         if (idFromName && ids.has(idFromName)) {
             const session = parseCodexLocalSession(file, true, sessionIndexTitles)
-            if (session && Array.isArray((session as LocalCodexSessionWithMessages).messages)) {
+            if (
+                session
+                && ids.has(session.id)
+                && Array.isArray((session as LocalCodexSessionWithMessages).messages)
+            ) {
                 addResult(session as LocalCodexSessionWithMessages)
             }
             continue

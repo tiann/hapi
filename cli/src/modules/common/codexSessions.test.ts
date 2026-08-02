@@ -181,6 +181,25 @@ describe('listLocalCodexSessionSummaries', () => {
         rmSync(root, { recursive: true, force: true })
     })
 
+    it('ignores filename UUID hits when session_meta id is not requested', () => {
+        const root = mkdtempSync(join(tmpdir(), 'codex-home-'))
+        process.env.CODEX_HOME = root
+        const sessionsDir = join(root, 'sessions', '2026', '06', '27')
+        mkdirSync(sessionsDir, { recursive: true })
+
+        const requestedId = '11111111-2222-3333-4444-555555555555'
+        const actualId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+        writeFileSync(join(sessionsDir, `${requestedId}.jsonl`), [
+            JSON.stringify({ type: 'session_meta', payload: { id: actualId, cwd: '/tmp/project' } }),
+            JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'mismatch' }] } })
+        ].join('\n'))
+
+        const sessions = listLocalCodexSessionsWithMessagesByIds(new Set([requestedId]))
+        expect(sessions).toEqual([])
+
+        rmSync(root, { recursive: true, force: true })
+    })
+
     it('ignores UUIDs in parent directories when matching requested ids by filename', () => {
         const parentUuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
         const sessionUuid = '11111111-2222-3333-4444-555555555555'
