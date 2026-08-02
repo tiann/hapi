@@ -574,9 +574,8 @@ export async function runOpencode(opts: {
         await withRetry(
             () => lifecycle.cleanupConfirmed({ timeoutMs: 5_000 }),
             {
-                maxAttempts: 12,
                 minDelay: 500,
-                maxDelay: 5_000,
+                maxDelay: 30_000,
                 shouldRetry: isRetryableConnectionError,
                 onRetry: (error, attempt, nextDelayMs) => {
                     const message = error instanceof Error ? error.message : String(error);

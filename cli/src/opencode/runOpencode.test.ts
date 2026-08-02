@@ -487,20 +487,25 @@ describe('runOpencode set-session-config handler', () => {
         expect(order).toEqual(['cleanup', 'spawn']);
     });
 
-    it('retries confirmed archive delivery before requesting the replacement session', async () => {
+    it('keeps archive-confirmation ownership beyond the old finite budget', async () => {
+        vi.useFakeTimers();
         harness.triggerClear = true;
         const timeout = Object.assign(new Error('archive acknowledgement timed out'), { code: 'ETIMEDOUT' });
-        lifecycleMock.cleanupConfirmed
-            .mockRejectedValueOnce(timeout)
-            .mockResolvedValueOnce(undefined);
+        for (let i = 0; i < 13; i++) {
+            lifecycleMock.cleanupConfirmed.mockRejectedValueOnce(timeout);
+        }
+        lifecycleMock.cleanupConfirmed.mockResolvedValueOnce(undefined);
         const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
 
         try {
-            await runOpencode({ startedBy: 'runner' });
-            expect(lifecycleMock.cleanupConfirmed).toHaveBeenCalledTimes(2);
+            const run = runOpencode({ startedBy: 'runner' });
+            await vi.runAllTimersAsync();
+            await run;
+            expect(lifecycleMock.cleanupConfirmed).toHaveBeenCalledTimes(14);
             expect(harness.clearOpenCodeSession).toHaveBeenCalledTimes(1);
         } finally {
             exit.mockRestore();
+            vi.useRealTimers();
         }
     });
 
