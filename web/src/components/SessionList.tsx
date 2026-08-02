@@ -1177,7 +1177,14 @@ export function SessionList(props: {
         const group = groups.find(g =>
             g.sessions.some(s => s.id === selectedSessionId)
         )
-        if (!group) return
+        if (!group) {
+            // The selected session is not rendered inside any directory group
+            // (e.g. it moved to the pinned "in progress" section). Drop the
+            // guard so it auto-expands again when it transitions back into a
+            // group later.
+            autoExpandedSelectedSessionKeyRef.current = null
+            return
+        }
 
         const autoExpandKey = `${selectedSessionId}::${group.key}`
         if (autoExpandedSelectedSessionKeyRef.current === autoExpandKey) return
@@ -1432,7 +1439,7 @@ export function SessionList(props: {
                                 ({runningSessions.length})
                             </span>
                         </div>
-                        <div className="collapsible-panel" data-open={!runningSectionCollapsed || undefined}>
+                        <div className="collapsible-panel" data-open={(!runningSectionCollapsed || isFiltering) || undefined}>
                             <div className="collapsible-inner">
                             <div className="flex flex-col gap-0.5 ml-3 pl-1 py-1">
                                 {runningSessions.map((s) => (
