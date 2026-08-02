@@ -287,4 +287,55 @@ describe('listLocalCodexSessionSummaries', () => {
 
         rmSync(root, { recursive: true, force: true })
     })
+
+    it('finds title and last user message when they sit before a large trailing filler window', () => {
+        const root = mkdtempSync(join(tmpdir(), 'codex-home-'))
+        process.env.CODEX_HOME = root
+        const sessionsDir = join(root, 'sessions', '2026', '06', '27')
+        mkdirSync(sessionsDir, { recursive: true })
+
+        const fillerLine = JSON.stringify({
+            type: 'response_item',
+            payload: {
+                type: 'message',
+                role: 'assistant',
+                content: [{ type: 'output_text', text: 'y'.repeat(4000) }]
+            }
+        })
+        const lines = [
+            JSON.stringify({
+                type: 'session_meta',
+                payload: { id: 'middle-session-id', cwd: '/tmp/project' }
+            }),
+            JSON.stringify({
+                type: 'event_msg',
+                payload: {
+                    type: 'mcp_tool_call_end',
+                    invocation: {
+                        tool: 'change_title',
+                        arguments: { title: 'middle title' }
+                    }
+                }
+            }),
+            JSON.stringify({
+                type: 'response_item',
+                payload: {
+                    type: 'message',
+                    role: 'user',
+                    content: [{ type: 'input_text', text: 'prompt before long filler' }]
+                }
+            }),
+            ...Array.from({ length: 80 }, () => fillerLine)
+        ]
+        const filePath = join(sessionsDir, 'middle.jsonl')
+        writeFileSync(filePath, lines.join('\n') + '\n')
+        expect(statSync(filePath).size).toBeGreaterThan(256 * 1024)
+
+        const sessions = listLocalCodexSessionSummaries()
+        expect(sessions).toHaveLength(1)
+        expect(sessions[0]?.title).toBe('middle title')
+        expect(sessions[0]?.lastUserMessage).toBe('prompt before long filler')
+
+        rmSync(root, { recursive: true, force: true })
+    })
 })

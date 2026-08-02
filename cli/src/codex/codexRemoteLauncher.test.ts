@@ -94,6 +94,7 @@ const harness = vi.hoisted(() => ({
     emitLateUsageAfterClear: false,
     emitAccountRateLimitsDuringChild: false,
     emitLiveUsageThenDelayedTranscript: false,
+    emitAccountRateLimitsOnInitialize: false,
     bridgeOptions: [] as unknown[]
 }));
 
@@ -106,6 +107,16 @@ vi.mock('./codexAppServerClient', () => {
 
         async initialize(params: unknown): Promise<{ protocolVersion: number }> {
             harness.initializeCalls.push(params);
+            if (harness.emitAccountRateLimitsOnInitialize) {
+                const accountLimits = {
+                    rateLimits: {
+                        primary: { usedPercent: 12, windowMinutes: 300 },
+                        credits: { hasCredits: true, unlimited: false, balance: '50' }
+                    }
+                };
+                harness.notifications.push({ method: 'account/rateLimits/updated', params: accountLimits });
+                this.notificationHandler?.('account/rateLimits/updated', accountLimits);
+            }
             return { protocolVersion: 1 };
         }
 
@@ -1376,6 +1387,7 @@ describe('codexRemoteLauncher', () => {
         harness.emitLateUsageAfterClear = false;
         harness.emitAccountRateLimitsDuringChild = false;
         harness.emitLiveUsageThenDelayedTranscript = false;
+        harness.emitAccountRateLimitsOnInitialize = false;
         harness.bridgeOptions = [];
         harness.transcriptPathByThreadId = new Map();
         harness.scannerStarts = [];
@@ -3402,6 +3414,67 @@ describe('codexRemoteLauncher', () => {
             })
         }));
         // Account-only live snapshot must not block transcript context.
+        expect(usagePayloads).toContainEqual(expect.objectContaining({
+            type: 'token_count',
+            info: expect.objectContaining({
+                total_token_usage: expect.objectContaining({ total_tokens: 42000 }),
+                model_context_window: 128000
+            })
+        }));
+        expect(usagePayloads).not.toContainEqual(expect.objectContaining({
+            info: expect.objectContaining({
+                rate_limits: expect.objectContaining({
+                    primary: expect.objectContaining({ used_percent: 99 })
+                })
+            })
+        }));
+        const rateLimitWrites = usagePayloads.filter((payload) => {
+            if (!payload || typeof payload !== 'object') return false;
+            const info = (payload as { info?: { rate_limits?: unknown } }).info;
+            return Boolean(info && 'rate_limits' in info);
+        });
+        expect(rateLimitWrites.at(-1)).toMatchObject({
+            usage_scope: 'account',
+            info: {
+                rate_limits: {
+                    primary: { usedPercent: 12 }
+                }
+            }
+        });
+    });
+
+    it('keeps pre-thread account rate limits over stale transcript replay', async () => {
+        harness.transcriptPathByThreadId.set('thread-1', '/tmp/codex-thread-1.jsonl');
+        harness.emitAccountRateLimitsOnInitialize = true;
+        harness.scannerReplayOnCreate = [
+            {
+                type: 'event_msg',
+                payload: {
+                    type: 'token_count',
+                    info: {
+                        total_token_usage: { total_tokens: 42000 },
+                        model_context_window: 128000,
+                        rate_limits: {
+                            primary: { used_percent: 99, window_minutes: 300 }
+                        }
+                    }
+                }
+            }
+        ];
+        const { session, usagePayloads } = createSessionStub();
+
+        const exitReason = await codexRemoteLauncher(session as never);
+
+        expect(exitReason).toBe('exit');
+        expect(usagePayloads).toContainEqual(expect.objectContaining({
+            type: 'token_count',
+            usage_scope: 'account',
+            info: expect.objectContaining({
+                rate_limits: expect.objectContaining({
+                    primary: expect.objectContaining({ usedPercent: 12 })
+                })
+            })
+        }));
         expect(usagePayloads).toContainEqual(expect.objectContaining({
             type: 'token_count',
             info: expect.objectContaining({

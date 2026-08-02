@@ -118,26 +118,6 @@ function readFileHead(filePath: string, maxBytes: number): string | null {
     }
 }
 
-function readFileTail(filePath: string, maxBytes: number): string | null {
-    let fd: number | undefined
-    try {
-        const size = statSync(filePath).size
-        if (size <= 0) return ''
-        const length = Math.min(size, Math.max(1, maxBytes))
-        const position = size - length
-        fd = openSync(filePath, 'r')
-        const buffer = Buffer.alloc(length)
-        const bytesRead = readSync(fd, buffer, 0, length, position)
-        return buffer.subarray(0, bytesRead).toString('utf-8')
-    } catch {
-        return null
-    } finally {
-        if (fd !== undefined) {
-            try { closeSync(fd) } catch { /* ignore */ }
-        }
-    }
-}
-
 function getCodexHome(): string {
     return process.env.CODEX_HOME?.trim() || join(homedir(), '.codex')
 }
@@ -228,6 +208,67 @@ function getLatestCodexUserMessage(lines: string[]): string | null {
         } catch { continue }
     }
     return null
+}
+
+/** Walk the transcript from EOF toward BOF in fixed chunks until both fields resolve. */
+function scanCodexSummaryFieldsBackward(
+    filePath: string,
+    chunkBytes: number
+): { changedTitle: string | null; lastUserMessage: string | null } {
+    let changedTitle: string | null = null
+    let lastUserMessage: string | null = null
+    let fd: number | undefined
+    try {
+        const size = statSync(filePath).size
+        if (size <= 0) return { changedTitle: null, lastUserMessage: null }
+
+        fd = openSync(filePath, 'r')
+        let position = size
+        let incompletePrefix = ''
+        const chunkSize = Math.max(1, chunkBytes)
+
+        while (position > 0 && (changedTitle === null || lastUserMessage === null)) {
+            const length = Math.min(position, chunkSize)
+            position -= length
+            const buffer = Buffer.alloc(length)
+            const bytesRead = readSync(fd, buffer, 0, length, position)
+            const chunkText = buffer.subarray(0, bytesRead).toString('utf-8') + incompletePrefix
+            const lines = chunkText.split(/\r?\n/)
+            incompletePrefix = position > 0 ? (lines.shift() ?? '') : ''
+
+            for (let index = lines.length - 1; index >= 0; index -= 1) {
+                const line = lines[index]
+                if (!line?.trim()) continue
+                try {
+                    const record = asRecord(JSON.parse(line))
+                    if (!record) continue
+                    if (changedTitle === null) {
+                        const title = extractCodexChangedTitle(record)
+                        if (title) changedTitle = title
+                    }
+                    if (lastUserMessage === null && record.type === 'response_item') {
+                        const payload = asRecord(record.payload)
+                        if (payload?.type === 'message' && payload.role === 'user') {
+                            const text = extractCodexText(payload.content)
+                            if (text && !shouldIgnoreSyntheticUserMessage(text)) {
+                                lastUserMessage = truncateText(text, 140)
+                            }
+                        }
+                    }
+                    if (changedTitle !== null && lastUserMessage !== null) break
+                } catch {
+                    continue
+                }
+            }
+        }
+        return { changedTitle, lastUserMessage }
+    } catch {
+        return { changedTitle: null, lastUserMessage: null }
+    } finally {
+        if (fd !== undefined) {
+            try { closeSync(fd) } catch { /* ignore */ }
+        }
+    }
 }
 
 function getCodexSessionTitle(cwd: string | null | undefined, sessionId: string, sessionIndexTitle: string | null, changedTitle: string | null, firstUserMessage: string | null): string {
@@ -401,12 +442,14 @@ function parseCodexLocalSession(
     sessionId = sessionId ?? inferSessionIdFromFileName(filePath)
     if (!sessionId) return null
     const sessionIndexTitle = sessionIndexTitles.get(sessionId)?.threadName ?? null
-    // Title/last-user scans need the transcript tail; head alone goes stale on large sessions.
-    const latestLines = includeMessages
-        ? lines
-        : (readFileTail(filePath, CODEX_SUMMARY_TAIL_BYTES)?.split(/\r?\n/).filter(Boolean) ?? headLines)
-    const changedTitle = getLatestCodexChangedTitle(latestLines)
-    const lastUserMessage = getLatestCodexUserMessage(latestLines)
+    // Title/last-user: full lines when importing; otherwise reverse-chunk until found (bounded memory).
+    const summaryFields = includeMessages
+        ? {
+            changedTitle: getLatestCodexChangedTitle(lines),
+            lastUserMessage: getLatestCodexUserMessage(lines)
+        }
+        : scanCodexSummaryFieldsBackward(filePath, CODEX_SUMMARY_TAIL_BYTES)
+    const { changedTitle, lastUserMessage } = summaryFields
     let modifiedAt = Date.now()
     try { modifiedAt = statSync(filePath).mtimeMs } catch {}
     const summary = {
