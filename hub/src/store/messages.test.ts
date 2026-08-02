@@ -455,6 +455,22 @@ describe('moveUninvokedScheduledMessages', () => {
     })
 })
 
+describe('markUninvokedImmediateMessages', () => {
+    it('settles immediate queued rows while preserving scheduled rows for clear transfer', () => {
+        const store = makeStore()
+        const source = makeSession(store, 'clear-source-immediate')
+        const invokedAt = Date.now()
+        store.messages.addMessage(source.id, { text: 'immediate' }, 'immediate-local')
+        store.messages.addMessage(source.id, { text: 'scheduled' }, 'scheduled-local', invokedAt + 60_000)
+
+        expect(store.messages.markUninvokedImmediateMessages(source.id, invokedAt)).toEqual(['immediate-local'])
+        expect(store.messages.getAllMessages(source.id)).toEqual(expect.arrayContaining([
+            expect.objectContaining({ localId: 'immediate-local', invokedAt }),
+            expect.objectContaining({ localId: 'scheduled-local', invokedAt: null })
+        ]))
+    })
+})
+
 describe('content codec integration', () => {
     it('stores large agent content compressed and returns it truncated on read', () => {
         const store = makeStore()

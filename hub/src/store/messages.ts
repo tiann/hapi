@@ -644,6 +644,34 @@ export function markMessagesInvoked(
     ).run(invokedAt, sessionId, ...localIds).changes
 }
 
+/** Settle immediate queued rows on an archived clear source without touching
+ * scheduled rows, which must remain uninvoked for transfer to the replacement. */
+export function markUninvokedImmediateMessages(
+    db: Database,
+    sessionId: string,
+    invokedAt: number
+): string[] {
+    const rows = db.prepare(`
+        SELECT local_id FROM messages
+        WHERE session_id = ?
+          AND local_id IS NOT NULL
+          AND scheduled_at IS NULL
+          AND invoked_at IS NULL
+        ORDER BY seq ASC
+    `).all(sessionId) as Array<{ local_id: string }>
+    if (rows.length === 0) return []
+
+    db.prepare(`
+        UPDATE messages
+        SET invoked_at = ?
+        WHERE session_id = ?
+          AND local_id IS NOT NULL
+          AND scheduled_at IS NULL
+          AND invoked_at IS NULL
+    `).run(invokedAt, sessionId)
+    return rows.map((row) => row.local_id)
+}
+
 /**
  * Reassign only uninvoked scheduled rows when an archived OpenCode session
  * is replaced by /clear. The transaction preserves ids/localIds so the normal

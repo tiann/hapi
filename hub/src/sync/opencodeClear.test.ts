@@ -192,6 +192,33 @@ describe('SyncEngine.clearOpenCodeSession', () => {
         }
     })
 
+    it('settles immediate prompts rejected during the clear latch without consuming scheduled transfers', async () => {
+        const { store, engine } = createEngine()
+        try {
+            const source = createClearSource(engine)
+            store.messages.addMessage(source.id, { text: 'rejected immediate' }, 'immediate-after-clear')
+            store.messages.addMessage(source.id, { text: 'scheduled transfer' }, 'scheduled-after-clear', Date.now() + 60_000)
+            const events: Array<{ type: string, sessionId?: string, localIds?: string[] }> = []
+            engine.subscribe((event) => events.push(event))
+            setSpawn(engine, mock(async (...args: unknown[]) => ({ type: 'success' as const, sessionId: args[12] as string })))
+
+            const result = await engine.clearOpenCodeSession(source.id, 'default')
+            if (result.type !== 'success') throw new Error('expected successful clear')
+
+            expect(store.messages.getAllMessages(source.id)).toEqual(expect.arrayContaining([
+                expect.objectContaining({ localId: 'immediate-after-clear', invokedAt: expect.any(Number) })
+            ]))
+            expect(store.messages.getAllMessages(result.sessionId)).toEqual(expect.arrayContaining([
+                expect.objectContaining({ localId: 'scheduled-after-clear', invokedAt: null })
+            ]))
+            expect(events).toContainEqual(expect.objectContaining({
+                type: 'messages-consumed', sessionId: source.id, localIds: ['immediate-after-clear']
+            }))
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('refuses before spawning while the source is still active', async () => {
         const { engine } = createEngine()
         try {

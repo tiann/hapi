@@ -1325,6 +1325,16 @@ async uploadScratchlistAttachment(
             }
         }
         try {
+            const invokedAt = Date.now()
+            const rejectedLocalIds = this.store.messages.markUninvokedImmediateMessages(sessionId, invokedAt)
+            if (rejectedLocalIds.length > 0) {
+                this.eventPublisher.emit({
+                    type: 'messages-consumed',
+                    sessionId,
+                    localIds: rejectedLocalIds,
+                    invokedAt
+                })
+            }
             const moved = this.store.messages.moveUninvokedScheduledMessages(sessionId, replacementSessionId)
             if (moved > 0) {
                 this.eventPublisher.emit({ type: 'messages-invalidated', sessionId })
