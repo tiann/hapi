@@ -129,10 +129,9 @@ describe('machines routes', () => {
 
         expect(response.status).toBe(200)
         expect(captured).not.toBeNull()
-        // startingMode is the 13th positional arg (index 12); serviceTier (index 11)
-        // must stay undefined — otherwise the runner silently falls back to remote.
-        expect(captured![12]).toBe('pty')
-        expect(captured![11]).toBeUndefined()
+        // startingMode follows existingSessionId in the positional API.
+        expect(captured![13]).toBe('pty')
+        expect(captured![12]).toBeUndefined()
     })
 
     it('returns 400 when /opencode-models is called without cwd', async () => {

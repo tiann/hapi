@@ -69,7 +69,7 @@ function normalizeQuestionAnswers(
 }
 
 // The web-driven response delivered over the `permission` RPC. Same shape as
-// other hook-based permission handlers (the web UI is shared).
+// the shared PTY path (the web UI is shared).
 type PermissionResponse = {
     id: string;
     approved: boolean;

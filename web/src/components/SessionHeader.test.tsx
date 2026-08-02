@@ -76,6 +76,30 @@ describe('resolveSessionHeaderMachineLabel', () => {
 })
 
 describe('SessionHeader', () => {
+    it('renders and toggles the agent terminal control', () => {
+        const onToggleTerminal = vi.fn()
+        render(
+            <QueryClientProvider client={new QueryClient()}>
+                <ToastProvider>
+                    <I18nProvider>
+                        <SessionHeader
+                            session={baseSession({ metadata: { flavor: 'agy', path: '/repo', host: 'machine' } })}
+                            onBack={vi.fn()}
+                            onToggleTerminal={onToggleTerminal}
+                            terminalActive
+                            api={null}
+                        />
+                    </I18nProvider>
+                </ToastProvider>
+            </QueryClientProvider>
+        )
+
+        const terminal = screen.getByRole('button', { name: 'Terminal' })
+        expect(terminal).toHaveAttribute('aria-pressed', 'true')
+        terminal.click()
+        expect(onToggleTerminal).toHaveBeenCalledOnce()
+    })
+
     it('shows an inherited catalog-default Fast tier', () => {
         renderHeader(baseSession(), { serviceTier: 'priority' })
         expect(screen.getByText('fast')).toBeInTheDocument()

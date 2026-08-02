@@ -656,7 +656,7 @@ class AgyPtyLauncher extends RemoteLauncherBase {
         // paths funnel through AgentSessionBase.onSessionFound, so registering
         // here covers hook discovery AND is idempotent with the onBrainFound
         // self-loop above (scanner.onNewSession no-ops on an unchanged UUID).
-        // Also persist agySessionId here through the session state callback;
+        // Also persist agySessionId here (mirroring the shared launcher contract
         // handleSessionFound) so a crash/respawn in the narrow window between
         // the hook firing and the next PTY output chunk (which is the only other
         // writer, via onMessage's getBrainUuid() fallback) still resumes the same

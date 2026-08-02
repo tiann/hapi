@@ -351,7 +351,7 @@ describe('agyPtyLauncher session-found wiring (brain UUID -> scanner)', () => {
 
     it('persists the discovered UUID so a later PTY onMessage does not re-fire session.onSessionFound (hostile-review finding: crash-recovery resume gap)', async () => {
         // Root-cause regression guard for a gap the initial fix missed: the hook
-        // callback must persist the UUID through the session state callback
+        // callback must persist the uuid through the shared launcher contract
         // handleSessionFound does (this.claudeSessionId = sessionId), otherwise a
         // respawn between hook discovery and the next PTY output chunk would read
         // a stale null resumeSessionId and silently start a fresh brain instead of

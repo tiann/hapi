@@ -152,10 +152,8 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
     const { debugPrefix } = opts
     logger.debug(`${debugPrefix} Starting PTY session`)
 
-    // Flavor env vars are injected into the spawned process's environment ONLY —
-    // never into this process's process.env. This keeps CLAUDE_CONFIG_DIR (used
-    // by a caller to isolate agent state) scoped to the child, so the parent's
-    // session scanner still resolves transcripts against the real ~/.claude.
+    // Flavor env vars are scoped to the spawned child so agent-specific
+    // configuration cannot leak into the parent process.
     const spawnEnv = {
         ...process.env,
         // PTY agents with a full TUI need TERM set. agy (bubbletea) in particular
@@ -252,6 +250,9 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
             if (thinking) {
                 logger.debug(`${debugPrefix} idle watchdog: ${IDLE_SILENCE_MS}ms of silence; forcing idle`)
                 thinking = false
+                // The turn really ended even though no idle marker arrived, so the
+                // prompt is usable again — let the next queued message proceed.
+                inputReady = true
                 opts.onThinkingChange?.(false)
             }
         }, IDLE_SILENCE_MS)
@@ -278,11 +279,14 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
             if (signal?.aborted || !manager.isRunning) return
             const idle = Date.now() - lastOutputAt
             if (hasMarkers) {
-                if (promptSeen && idle >= idleReadyMs) return
+                // Require the prompt to be live (inputReady), not just a silence
+                // gap — a long response can go quiet mid-turn. The idle watchdog
+                // re-arms inputReady if an idle marker is missed, and the outer
+                // timeout is the final fallback.
+                if (inputReady && idle >= idleReadyMs) return
             } else if (sawOutput && idle >= idleReadyMs) {
                 return
             }
-            if (sawOutput && idle >= 3000) return
             await sleep(80)
         }
         if (requirePromptMarker) {
@@ -368,6 +372,7 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
                     manager.write('\r')
                 } else if (hasMarkers && !promptSeen && anyMarker(promptBuffer, markers)) {
                     promptSeen = true
+                    inputReady = true
                 }
                 // Note the login-menu screen if we see it before the prompt. We do
                 // NOT act immediately: agy shows this transiently on EVERY startup
@@ -415,10 +420,8 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
         })
 
         if (!manager.isRunning) {
-            // Surface the failure instead of returning as if it succeeded —
-            // otherwise the caller treats a never-started
-            // PTY as a clean exit and silently respawns, hiding real errors like
-            // `claude` not being installed or the terminal failing to attach.
+            // Surface the failure instead of returning as if it succeeded;
+            // otherwise the launcher can mistake a never-started PTY for a clean exit.
             throw spawnError ?? new Error(`Failed to spawn ${opts.command} PTY`)
         }
 

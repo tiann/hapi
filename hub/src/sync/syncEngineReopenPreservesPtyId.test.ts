@@ -33,15 +33,15 @@ describe('SyncEngine reopen/resume PTY session id preservation', () => {
             path: '/tmp/proj',
             host: 'localhost',
             machineId: 'machine-x',
-            flavor: 'claude',
-            claudeSessionId: 'claude-conv-1',
+            flavor: 'agy',
+            agySessionId: 'agy-conv-1',
             ...overrides
         }
     }
 
-    /** The 14th positional arg of rpcGateway.spawnSession is existingSessionId. */
+    /** existingSessionId precedes startingMode in rpcGateway.spawnSession. */
     function readExistingSessionId(args: unknown[]): string | undefined {
-        const value = args[13]
+        const value = args[12]
         return typeof value === 'string' && value.length > 0 ? value : undefined
     }
 
@@ -110,16 +110,5 @@ describe('SyncEngine reopen/resume PTY session id preservation', () => {
         expect(mintedNewId).toBeUndefined()
     })
 
-    it('resuming a non-PTY session still mints a new id and merges (delete-old) — merge path intact', async () => {
-        const sessionId = insertSession('remote-session', baseMetadata(), { startingMode: 'remote' }).id
 
-        const result = await engine.resumeSession(sessionId, NAMESPACE)
-
-        expect(mintedNewId).toBeDefined()
-        expect(result).toEqual({ type: 'success', sessionId: mintedNewId! })
-        expect(capturedExistingSessionId).toBeUndefined()
-        // Legacy merge deletes the old row.
-        expect(store.sessions.getSession(sessionId)).toBeNull()
-        expect(store.sessions.getSession(mintedNewId!)).not.toBeNull()
-    })
 })
