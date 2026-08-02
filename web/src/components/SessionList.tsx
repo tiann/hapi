@@ -765,9 +765,10 @@ function SessionItem(props: {
     selected?: boolean
     showDetailedStatus?: boolean
     inRunningSection?: boolean
+    projectLabel?: string
 }) {
     const { t } = useTranslation()
-    const { session: s, onSelect, showPath = true, api, selected = false, showDetailedStatus = false, inRunningSection = false } = props
+    const { session: s, onSelect, showPath = true, api, selected = false, showDetailedStatus = false, inRunningSection = false, projectLabel } = props
     const { haptic } = usePlatform()
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
@@ -861,6 +862,7 @@ function SessionItem(props: {
                     attentionTooltipId={attentionId}
                     scheduleTooltipId={scheduleId}
                     inRunningSection={inRunningSection}
+                    projectLabel={projectLabel}
                 />
             </button>
 
@@ -1431,6 +1433,7 @@ export function SessionList(props: {
                                     selected={s.id === selectedSessionId}
                                     showDetailedStatus={showDetailedStatus}
                                     inRunningSection
+                                    projectLabel={getGroupDisplayName(s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other')}
                                 />
                             ))}
                         </div>
