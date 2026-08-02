@@ -18,18 +18,16 @@ export class NotificationHub {
     private readonly notificationDebounce: Map<string, NodeJS.Timeout> = new Map()
     private readonly lastReadyNotificationAt: Map<string, number> = new Map()
     /**
-     * sessionId -> the `atTs` of the last `lastModelError` we already
-     * notified for. Lets us fire ONCE per distinct error event (the field
-     * is purely additive on the metadata; subsequent `session-updated`
-     * events for the same session shouldn't re-trigger). atTs is set by
-     * the launcher's recordModelError; new error in the same session =
-     * new atTs.
+     * sessionId -> the `eventId` of the last `lastModelError` we already
+     * notified for. Fire ONCE per distinct error event; subsequent
+     * `session-updated` storms must not re-trigger. Identity is eventId
+     * (CLI UUID), not wall-clock atTs — clocks can move backwards.
      *
      * Kept across failed deliveries while a bounded backoff retry timer
      * is pending — do not delete it to "retry on next session-updated"
      * (that storms on keepalive and misses inactive sessions).
      */
-    private readonly lastModelErrorNotifiedAt: Map<string, number> = new Map()
+    private readonly lastModelErrorNotifiedId: Map<string, string> = new Map()
     private readonly modelErrorRetryTimers: Map<string, NodeJS.Timeout> = new Map()
     private readonly modelErrorRetryAttempts: Map<string, number> = new Map()
     private unsubscribeSyncEvents: (() => void) | null = null
@@ -79,7 +77,7 @@ export class NotificationHub {
         this.notificationDebounce.clear()
         this.lastKnownRequests.clear()
         this.lastReadyNotificationAt.clear()
-        this.lastModelErrorNotifiedAt.clear()
+        this.lastModelErrorNotifiedId.clear()
         for (const timer of this.modelErrorRetryTimers.values()) {
             clearTimeout(timer)
         }
@@ -95,8 +93,8 @@ export class NotificationHub {
                 return
             }
             if (!session.active) {
-                // Keep lastModelErrorNotifiedAt across inactive/resume so the
-                // same atTs does not re-ping when the session comes back.
+                // Keep lastModelErrorNotifiedId across inactive/resume so the
+                // same eventId does not re-ping when the session comes back.
                 this.clearSessionState(event.sessionId, false)
                 // Still dispatch undelivered model-errors (no notifiedAt) —
                 // emergency pages must not wait for the session to become
@@ -105,8 +103,8 @@ export class NotificationHub {
                 return
             }
             this.checkForPermissionNotification(session)
-            // Model-error gating: fire when metadata.lastModelError.atTs
-            // is newer than what we last notified for this session.
+            // Model-error gating: fire when metadata.lastModelError.eventId
+            // differs from what we last notified for this session.
             this.checkForModelErrorNotification(session)
             return
         }
@@ -151,7 +149,7 @@ export class NotificationHub {
         this.lastKnownRequests.delete(sessionId)
         this.lastReadyNotificationAt.delete(sessionId)
         if (removeModelErrorWatermark) {
-            this.lastModelErrorNotifiedAt.delete(sessionId)
+            this.lastModelErrorNotifiedId.delete(sessionId)
             this.clearModelErrorRetry(sessionId)
         }
     }
@@ -167,7 +165,11 @@ export class NotificationHub {
 
     private checkForModelErrorNotification(session: Session): void {
         const lastModelError = session.metadata?.lastModelError
-        if (!lastModelError || typeof lastModelError.atTs !== 'number') {
+        if (
+            !lastModelError
+            || typeof lastModelError.eventId !== 'string'
+            || typeof lastModelError.atTs !== 'number'
+        ) {
             return
         }
         // Don't ping for already-acknowledged errors. The web UI sets
@@ -181,62 +183,61 @@ export class NotificationHub {
         // Durable watermark (survives hub restart). Seed the in-memory map
         // so concurrent session-updated storms stay quiet in this process.
         if (typeof lastModelError.notifiedAt === 'number') {
-            const prior = this.lastModelErrorNotifiedAt.get(session.id) ?? 0
-            if (lastModelError.atTs > prior) {
-                this.lastModelErrorNotifiedAt.set(session.id, lastModelError.atTs)
-            }
+            this.lastModelErrorNotifiedId.set(session.id, lastModelError.eventId)
             this.clearModelErrorRetry(session.id)
             return
         }
-        const lastNotifiedAt = this.lastModelErrorNotifiedAt.get(session.id) ?? 0
-        if (lastModelError.atTs <= lastNotifiedAt) {
+        const lastNotifiedId = this.lastModelErrorNotifiedId.get(session.id)
+        if (lastNotifiedId === lastModelError.eventId) {
             return
         }
+        const eventId = lastModelError.eventId
         const atTs = lastModelError.atTs
-        // New error supersedes any in-flight retry for an older atTs.
+        // New error supersedes any in-flight retry for an older eventId.
         this.clearModelErrorRetry(session.id)
         // Optimistic watermark: prevents concurrent session-updated storms
         // from double-firing. On delivery failure we KEEP it and schedule a
         // bounded backoff retry (do not rely on keepalive session-updated).
-        this.lastModelErrorNotifiedAt.set(session.id, atTs)
+        this.lastModelErrorNotifiedId.set(session.id, eventId)
 
         const notification: ModelErrorNotification = {
             kind: lastModelError.kind,
             transient: lastModelError.transient,
             rawSnippet: lastModelError.rawSnippet,
             priorAssistantClaimsDone: Boolean(lastModelError.priorAssistantClaimsDone),
+            eventId,
             atTs
         }
 
         void this.notifyModelError(session, notification).then(async (completed) => {
-            if (this.lastModelErrorNotifiedAt.get(session.id) !== atTs) {
+            if (this.lastModelErrorNotifiedId.get(session.id) !== eventId) {
                 return
             }
             if (completed) {
                 try {
-                    await this.syncEngine.markModelErrorNotified(session.id, atTs)
+                    await this.syncEngine.markModelErrorNotified(session.id, eventId)
                 } catch (error) {
                     console.error('[NotificationHub] Failed to persist model-error notifiedAt:', error)
                 }
                 return
             }
-            this.scheduleModelErrorRetry(session.id, atTs)
+            this.scheduleModelErrorRetry(session.id, eventId)
         }).catch((error) => {
             console.error('[NotificationHub] Failed to send model-error notification:', error)
-            if (this.lastModelErrorNotifiedAt.get(session.id) === atTs) {
-                this.scheduleModelErrorRetry(session.id, atTs)
+            if (this.lastModelErrorNotifiedId.get(session.id) === eventId) {
+                this.scheduleModelErrorRetry(session.id, eventId)
             }
         })
     }
 
-    private scheduleModelErrorRetry(sessionId: string, atTs: number): void {
+    private scheduleModelErrorRetry(sessionId: string, eventId: string): void {
         if (this.modelErrorRetryTimers.has(sessionId)) {
             return
         }
         const attempt = this.modelErrorRetryAttempts.get(sessionId) ?? 0
         if (attempt >= this.modelErrorRetryDelaysMs.length) {
             console.error(
-                `[NotificationHub] Exhausted model-error delivery retries for session=${sessionId} atTs=${atTs}`
+                `[NotificationHub] Exhausted model-error delivery retries for session=${sessionId} eventId=${eventId}`
             )
             return
         }
@@ -244,22 +245,22 @@ export class NotificationHub {
         this.modelErrorRetryAttempts.set(sessionId, attempt + 1)
         const timer = setTimeout(() => {
             this.modelErrorRetryTimers.delete(sessionId)
-            void this.retryModelErrorNotification(sessionId, atTs)
+            void this.retryModelErrorNotification(sessionId, eventId)
         }, delayMs)
         this.modelErrorRetryTimers.set(sessionId, timer)
     }
 
-    private async retryModelErrorNotification(sessionId: string, atTs: number): Promise<void> {
+    private async retryModelErrorNotification(sessionId: string, eventId: string): Promise<void> {
         const session = this.syncEngine.getSession(sessionId)
         if (!session) {
             this.clearModelErrorRetry(sessionId)
-            this.lastModelErrorNotifiedAt.delete(sessionId)
+            this.lastModelErrorNotifiedId.delete(sessionId)
             return
         }
         const lastModelError = session.metadata?.lastModelError
         if (
             !lastModelError
-            || lastModelError.atTs !== atTs
+            || lastModelError.eventId !== eventId
             || typeof lastModelError.acknowledgedAt === 'number'
         ) {
             this.clearModelErrorRetry(sessionId)
@@ -271,32 +272,33 @@ export class NotificationHub {
             transient: lastModelError.transient,
             rawSnippet: lastModelError.rawSnippet,
             priorAssistantClaimsDone: Boolean(lastModelError.priorAssistantClaimsDone),
-            atTs
+            eventId,
+            atTs: lastModelError.atTs
         }
 
         try {
             const completed = await this.notifyModelError(session, notification)
-            // A newer atTs may have taken the watermark while we were in flight.
+            // A newer eventId may have taken the watermark while we were in flight.
             // Do not install an obsolete retry that blocks the latest error.
-            if (this.lastModelErrorNotifiedAt.get(sessionId) !== atTs) {
+            if (this.lastModelErrorNotifiedId.get(sessionId) !== eventId) {
                 return
             }
             if (completed) {
                 this.modelErrorRetryAttempts.delete(sessionId)
                 try {
-                    await this.syncEngine.markModelErrorNotified(sessionId, atTs)
+                    await this.syncEngine.markModelErrorNotified(sessionId, eventId)
                 } catch (error) {
                     console.error('[NotificationHub] Failed to persist model-error notifiedAt:', error)
                 }
                 return
             }
-            this.scheduleModelErrorRetry(sessionId, atTs)
+            this.scheduleModelErrorRetry(sessionId, eventId)
         } catch (error) {
             console.error('[NotificationHub] Failed to retry model-error notification:', error)
-            if (this.lastModelErrorNotifiedAt.get(sessionId) !== atTs) {
+            if (this.lastModelErrorNotifiedId.get(sessionId) !== eventId) {
                 return
             }
-            this.scheduleModelErrorRetry(sessionId, atTs)
+            this.scheduleModelErrorRetry(sessionId, eventId)
         }
     }
 

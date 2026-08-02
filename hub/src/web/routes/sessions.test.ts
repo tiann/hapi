@@ -63,7 +63,7 @@ function createApp(session: Session, opts?: {
     getSessionExport?: (sessionId: string, session: Session, options?: { force?: boolean }) => unknown
     sessionExists?: boolean
     archiveSession?: (sessionId: string) => Promise<void>
-    acknowledgeModelError?: (sessionId: string, atTs: number) => Promise<void>
+    acknowledgeModelError?: (sessionId: string, eventId: string) => Promise<void>
     getCursorChatStoreStatus?: SyncEngine['getCursorChatStoreStatus']
     listCodexModelsForSession?: SyncEngine['listCodexModelsForSession']
     forkConversation?: SyncEngine['forkConversation']
@@ -1681,26 +1681,26 @@ describe('sessions routes', () => {
     })
 
     describe('POST /sessions/:id/model-error/acknowledge', () => {
-        it('forwards atTs to the engine when body is valid', async () => {
-            const calls: Array<[string, number]> = []
+        it('forwards eventId to the engine when body is valid', async () => {
+            const calls: Array<[string, string]> = []
             const { app } = createApp(createSession(), {
-                acknowledgeModelError: async (sessionId, atTs) => {
-                    calls.push([sessionId, atTs])
+                acknowledgeModelError: async (sessionId, eventId) => {
+                    calls.push([sessionId, eventId])
                 }
             })
 
             const response = await app.request('/api/sessions/session-1/model-error/acknowledge', {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ atTs: 1_700_000_000_123 })
+                body: JSON.stringify({ eventId: 'evt-ack-1' })
             })
 
             expect(response.status).toBe(200)
             expect(await response.json()).toEqual({ ok: true })
-            expect(calls).toEqual([['session-1', 1_700_000_000_123]])
+            expect(calls).toEqual([['session-1', 'evt-ack-1']])
         })
 
-        it('returns 400 when atTs is missing', async () => {
+        it('returns 400 when eventId is missing', async () => {
             let called = false
             const { app } = createApp(createSession(), {
                 acknowledgeModelError: async () => { called = true }
@@ -1726,7 +1726,7 @@ describe('sessions routes', () => {
             const response = await app.request('/api/sessions/session-1/model-error/acknowledge', {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ atTs: 111 })
+                body: JSON.stringify({ eventId: 'evt-stale' })
             })
 
             expect(response.status).toBe(409)

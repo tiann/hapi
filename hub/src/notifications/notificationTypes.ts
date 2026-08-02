@@ -23,7 +23,8 @@ export type ModelErrorNotification = {
     transient: boolean                    // retryable hint (rate_limit / canceled / timeout)
     rawSnippet: string                    // first 400 chars of the raw error text
     priorAssistantClaimsDone: boolean     // agent said "Done"/"Committed" right before the error
-    atTs: number                          // metadata.lastModelError.atTs, used for dedup
+    eventId: string                       // metadata.lastModelError.eventId — notify/ack identity
+    atTs: number                          // display / telemetry only (not monotonic identity)
 }
 
 /**

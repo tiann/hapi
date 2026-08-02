@@ -491,6 +491,7 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
     it('preserves lastModelError across sparse archive (durable alert state)', () => {
         const store = makeStore()
         const lastModelError = {
+            eventId: 'evt-1700000000000',
             kind: 'quota_exhausted',
             transient: false,
             rawSnippet: 'Error: T: [resource_exhausted]',
@@ -526,8 +527,9 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
         expect(metadata?.lifecycleState).toBe('archived')
     })
 
-    it('preserves lastModelError.acknowledgedAt against stale CLI rewrite of same atTs', () => {
+    it('preserves lastModelError.acknowledgedAt against stale CLI rewrite of same eventId', () => {
         const store = makeStore()
+        const eventId = 'evt-ack-1700000000111'
         const atTs = 1_700_000_000_111
         const session = store.sessions.getOrCreateSession(
             'cursor-model-error-ack-survives',
@@ -537,6 +539,7 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
                 flavor: 'cursor',
                 cursorSessionId: 'ack-uuid',
                 lastModelError: {
+                    eventId,
                     kind: 'quota_exhausted',
                     transient: false,
                     rawSnippet: 'Error: T: [resource_exhausted]',
@@ -558,6 +561,7 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
                 flavor: 'cursor',
                 cursorSessionId: 'ack-uuid',
                 lastModelError: {
+                    eventId,
                     kind: 'quota_exhausted',
                     transient: false,
                     rawSnippet: 'Error: T: [resource_exhausted]',
@@ -576,8 +580,9 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
         expect(metadata?.lastModelError?.acknowledgedAt).toBe(1_700_000_000_222)
     })
 
-    it('preserves lastModelError.notifiedAt against stale CLI rewrite of same atTs', () => {
+    it('preserves lastModelError.notifiedAt against stale CLI rewrite of same eventId', () => {
         const store = makeStore()
+        const eventId = 'evt-notified-1700000000333'
         const atTs = 1_700_000_000_333
         const session = store.sessions.getOrCreateSession(
             'cursor-model-error-notified-survives',
@@ -587,6 +592,7 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
                 flavor: 'cursor',
                 cursorSessionId: 'notify-uuid',
                 lastModelError: {
+                    eventId,
                     kind: 'rate_limited',
                     transient: true,
                     rawSnippet: 'Error: T: [resource_exhausted]',
@@ -607,6 +613,7 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
                 flavor: 'cursor',
                 cursorSessionId: 'notify-uuid',
                 lastModelError: {
+                    eventId,
                     kind: 'rate_limited',
                     transient: true,
                     rawSnippet: 'Error: T: [resource_exhausted]',

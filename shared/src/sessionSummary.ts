@@ -44,6 +44,7 @@ export type SessionSummaryMetadata = {
     /** Loopback MCP URL when session CLI happy server is running (#956). */
     hapiMcpUrl?: string
     lastModelError?: {
+        eventId: string
         kind: string
         transient: boolean
         rawSnippet: string

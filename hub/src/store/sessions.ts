@@ -129,8 +129,9 @@ function preserveCursorProtocolPair(
 
 /**
  * Hub-owned fields on lastModelError (ack + delivery watermark) must survive
- * stale CLI metadata rewrites of the same atTs. Web ack / NotificationHub
+ * stale CLI metadata rewrites of the same eventId. Web ack / NotificationHub
  * write these on the hub copy; the CLI's local snapshot often lacks them.
+ * Identity is eventId — wall-clock atTs is display-only.
  */
 function preserveModelErrorHubFields(
     prior: Record<string, unknown>,
@@ -139,7 +140,12 @@ function preserveModelErrorHubFields(
 ): Record<string, unknown> | null {
     const oldError = isPlainObject(prior.lastModelError) ? prior.lastModelError : null
     const newError = isPlainObject(next.lastModelError) ? next.lastModelError : null
-    if (!oldError || !newError || oldError.atTs !== newError.atTs) {
+    if (
+        !oldError
+        || !newError
+        || typeof oldError.eventId !== 'string'
+        || oldError.eventId !== newError.eventId
+    ) {
         return merged
     }
 
