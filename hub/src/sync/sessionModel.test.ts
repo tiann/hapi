@@ -2116,6 +2116,33 @@ describe('session model', () => {
         } finally { engine.stop() }
     })
 
+    it('quarantines a Pi attempt when runner spawn fails before process termination is confirmed', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            const session = engine.getOrCreateSession('pi-spawn-error-live-child', {
+                path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'pi', piSessionId: 'pi-native-spawn-error',
+                lifecycleState: 'archived', archivedBy: 'cli', archiveReason: 'Pi exited',
+            }, null, 'default')
+            engine.getOrCreateMachine('machine-1', { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' }, {
+                status: 'running', capabilities: { piExistingSessionResume: true }
+            }, 'default')
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+            engine.handleSessionEnd({ sid: session.id, time: Date.now() })
+            ;(engine as any).rpcGateway.spawnSession = async () => ({ type: 'error', message: 'webhook timeout' })
+            ;(engine as any).rpcGateway.stopRunnerSession = async () => 'still_alive'
+
+            expect(await engine.reopenSession(session.id, 'default')).toMatchObject({
+                type: 'error', message: 'webhook timeout'
+            })
+            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.piResumeAttempt?.state).toBe('quarantined')
+            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.lifecycleState).toBe('archived')
+            expect(await engine.reopenSession(session.id, 'default')).toMatchObject({
+                type: 'error', message: 'Pi resume is already in progress'
+            })
+        } finally { engine.stop() }
+    })
+
     it('keeps persisted Pi quarantine across SyncEngine restart and clears it on end', async () => {
         const store = new Store(':memory:')
         const first = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)

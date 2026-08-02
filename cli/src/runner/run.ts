@@ -1,4 +1,5 @@
 import fs from 'fs/promises';
+import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import os from 'os';
 
 import { ApiClient } from '@/api/api';
@@ -185,32 +186,44 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     const pidToRequestedSessionId = new Map<number, string>();
     // Only actual observed child exits may create a stop-session tombstone.
     // Tracking loss (notably webhook timeout) is deliberately not evidence.
-    const EXIT_TOMBSTONE_TTL_MS = 5 * 60_000;
     const MAX_EXIT_TOMBSTONES = 2_000;
-    const verifiedExitTombstones = new Map<string, number>();
-    const rememberVerifiedExit = (id: string) => {
-      const now = Date.now();
-      for (const [candidate, expiresAt] of verifiedExitTombstones) {
-        if (expiresAt <= now) verifiedExitTombstones.delete(candidate);
+    const exitTombstoneFile = `${configuration.runnerStateFile}.verified-exits.json`;
+    const verifiedExitTombstones = (() => {
+      try {
+        if (!existsSync(exitTombstoneFile)) return new Set<string>();
+        const parsed = JSON.parse(readFileSync(exitTombstoneFile, 'utf8'));
+        return new Set<string>(Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string') : []);
+      } catch (error) {
+        logger.debug('[RUNNER RUN] Failed to load verified exit tombstones:', error);
+        return new Set<string>();
       }
+    })();
+    const persistVerifiedExits = () => {
+      const tmp = `${exitTombstoneFile}.${process.pid}.tmp`;
+      try {
+        writeFileSync(tmp, JSON.stringify([...verifiedExitTombstones]));
+        renameSync(tmp, exitTombstoneFile);
+      } catch (error) {
+        logger.debug('[RUNNER RUN] Failed to persist verified exit tombstones:', error);
+      }
+    };
+    const rememberVerifiedExit = (id: string) => {
       // Refreshing an existing key should also refresh its insertion order so
       // capacity eviction removes the oldest verified generation.
       verifiedExitTombstones.delete(id);
       while (verifiedExitTombstones.size >= MAX_EXIT_TOMBSTONES) {
-        const oldest = verifiedExitTombstones.keys().next().value;
+        const oldest = verifiedExitTombstones.values().next().value;
         if (oldest === undefined) break;
         verifiedExitTombstones.delete(oldest);
       }
-      verifiedExitTombstones.set(id, now + EXIT_TOMBSTONE_TTL_MS);
+      verifiedExitTombstones.add(id);
+      persistVerifiedExits();
     };
     const hasVerifiedExit = (id: string): boolean => {
-      const expiresAt = verifiedExitTombstones.get(id);
-      if (expiresAt === undefined) return false;
-      if (expiresAt <= Date.now()) {
-        verifiedExitTombstones.delete(id);
-        return false;
-      }
-      return true;
+      return verifiedExitTombstones.has(id);
+    };
+    const invalidateVerifiedExit = (id: string) => {
+      if (verifiedExitTombstones.delete(id)) persistVerifiedExits();
     };
 
     // Webhook timeout tolerance. Opus 1M + --resume can legitimately take
@@ -263,7 +276,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
       if (existingSession && existingSession.startedBy === 'runner') {
         // Update runner-spawned session with reported data
-        verifiedExitTombstones.delete(sessionId);
+        invalidateVerifiedExit(sessionId);
+        invalidateVerifiedExit(`PID-${pid}`);
         existingSession.happySessionId = sessionId;
         existingSession.happySessionMetadataFromLocalWebhook = sessionMetadata;
         logger.debug(`[RUNNER RUN] Updated runner-spawned session ${sessionId} with metadata`);
@@ -309,7 +323,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           happySessionMetadataFromLocalWebhook: sessionMetadata,
           pid
         };
-        verifiedExitTombstones.delete(sessionId);
+        invalidateVerifiedExit(sessionId);
+        invalidateVerifiedExit(`PID-${pid}`);
         pidToTrackedSession.set(pid, trackedSession);
         logger.debug(`[RUNNER RUN] Registered externally-started session ${sessionId}`);
       }
@@ -522,10 +537,11 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         // The OS process now exists, so this is the point where a new generation
         // invalidates exit evidence left by an older child with the same HAPI ID.
         for (const id of [options.sessionId, options.existingSessionId]) {
-          if (id) verifiedExitTombstones.delete(id);
+          if (id) invalidateVerifiedExit(id);
         }
 
         const pid = happyProcess.pid;
+        invalidateVerifiedExit(`PID-${pid}`);
         logger.debug(`[RUNNER RUN] Spawned process with PID ${pid}`);
         let observedExitCode: number | null = null;
         let observedExitSignal: NodeJS.Signals | null = null;
@@ -595,7 +611,9 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             pidToAwaiter.delete(pid);
             errorAwaiter(buildWebhookFailureMessage('process-error-before-webhook'));
           }
-          onChildExited(pid);
+          // A ChildProcess error is not itself proof that the OS process exited.
+          // Keep tracking a live PID so machine StopSession can still terminate it.
+          if (!isProcessAlive(pid)) onChildExited(pid);
         });
 
         // Wait for webhook to populate session with happySessionId
@@ -698,6 +716,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       // Try to find by sessionId first
       for (const [pid, session] of pidToTrackedSession.entries()) {
         if (session.happySessionId === sessionId ||
+          session.requestedHappySessionId === sessionId ||
           (sessionId.startsWith('PID-') && pid === parseInt(sessionId.replace('PID-', '')))) {
 
           if (session.startedBy === 'runner' && session.childProcess) {
@@ -732,6 +751,29 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           logger.debug(`[RUNNER RUN] Removed terminated session ${sessionId} from tracking`);
           return 'stopped';
         }
+      }
+
+      // Webhook timeout can remove the normal TrackedSession before the process
+      // actually exits. Retain the requested HAPI ID -> PID relation so Hub can
+      // still terminate that exact generation by HAPI ID.
+      for (const [pid, requestedSessionId] of pidToRequestedSessionId.entries()) {
+        if (requestedSessionId !== sessionId) continue;
+        if (isProcessAlive(pid)) {
+          await killProcess(pid);
+          const deadline = Date.now() + 5_000;
+          while (isProcessAlive(pid) && Date.now() < deadline) {
+            await new Promise(resolve => setTimeout(resolve, 50));
+          }
+          if (isProcessAlive(pid)) return 'still_alive';
+          rememberVerifiedExit(requestedSessionId);
+          rememberVerifiedExit(`PID-${pid}`);
+          pidToRequestedSessionId.delete(pid);
+          return 'stopped';
+        }
+        rememberVerifiedExit(requestedSessionId);
+        rememberVerifiedExit(`PID-${pid}`);
+        pidToRequestedSessionId.delete(pid);
+        return 'already_gone';
       }
 
       if (hasVerifiedExit(sessionId)) {

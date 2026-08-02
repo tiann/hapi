@@ -1645,6 +1645,22 @@ async uploadScratchlistAttachment(
             )
 
             if (spawnResult.type !== 'success') {
+                if (requiresPiNativeReady) {
+                    const stopped = await this.terminateInPlacePiResume(
+                        targetMachine.id,
+                        access.sessionId,
+                        namespace
+                    )
+                    if (!stopped) {
+                        await this.quarantinePiResume(access.sessionId, namespace, targetMachine.id)
+                        return {
+                            type: 'error',
+                            message: spawnResult.message,
+                            code: 'resume_failed',
+                            rollbackSafe: false,
+                        }
+                    }
+                }
                 return { type: 'error', message: spawnResult.message, code: 'resume_failed' }
             }
 
