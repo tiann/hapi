@@ -49,7 +49,11 @@ describe('SessionCache.markModelErrorNotified', () => {
         spyOn(store.sessions, 'updateSessionMetadata').mockImplementation((...args) => {
             calls += 1
             if (calls === 1) {
-                return { result: 'version-mismatch' as const }
+                return {
+                    result: 'version-mismatch' as const,
+                    version: session.metadataVersion,
+                    value: session.metadata
+                }
             }
             return original(...args)
         })
