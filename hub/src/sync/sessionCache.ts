@@ -911,44 +911,50 @@ export class SessionCache {
      * Persist delivery watermark on lastModelError so hub restarts do not
      * re-page the same unacknowledged atTs (in-memory Map alone is lost).
      * No-ops when the error changed under us — a newer atTs owns the page.
+     * Retries on version-mismatch (same pattern as renameSession / #919).
      */
     async markModelErrorNotified(sessionId: string, atTs: number): Promise<void> {
-        const session = this.sessions.get(sessionId)
-        if (!session) {
-            return
-        }
-
-        const currentMetadata = session.metadata ?? { path: '', host: '' }
-        const currentError = currentMetadata.lastModelError
-        if (!currentError || currentError.atTs !== atTs) {
-            return
-        }
-        if (typeof currentError.notifiedAt === 'number') {
-            return
-        }
-
-        const newMetadata = {
-            ...currentMetadata,
-            lastModelError: {
-                ...currentError,
-                notifiedAt: Date.now()
+        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
+            const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+            if (!session) {
+                return
             }
+
+            const currentMetadata = session.metadata ?? { path: '', host: '' }
+            const currentError = currentMetadata.lastModelError
+            if (!currentError || currentError.atTs !== atTs) {
+                return
+            }
+            if (typeof currentError.notifiedAt === 'number') {
+                return
+            }
+
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                {
+                    ...currentMetadata,
+                    lastModelError: {
+                        ...currentError,
+                        notifiedAt: Date.now()
+                    }
+                },
+                session.metadataVersion,
+                session.namespace,
+                { touchUpdatedAt: false }
+            )
+
+            if (result.result === 'success') {
+                this.refreshSession(sessionId)
+                return
+            }
+            if (result.result === 'error') {
+                throw new Error('Failed to persist model-error notification')
+            }
+
+            this.refreshSession(sessionId)
         }
 
-        const result = this.store.sessions.updateSessionMetadata(
-            sessionId,
-            newMetadata,
-            session.metadataVersion,
-            session.namespace,
-            { touchUpdatedAt: false }
-        )
-
-        if (result.result === 'error' || result.result === 'version-mismatch') {
-            // Best-effort: in-memory watermark still covers this process.
-            return
-        }
-
-        this.refreshSession(sessionId)
+        throw new Error('Model-error notification metadata stayed contended')
     }
 
     /**
