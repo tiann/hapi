@@ -169,6 +169,14 @@ describe('classifyCursorAgentMessage', () => {
             'Error: T: [resource_exhausted] capacity exceeded\r\n' +
             '```\r\n'
         expect(classifyCursorAgentMessage(crlfFence)).toBeNull()
+
+        // CommonMark indented code (4+ spaces) is not a live wire error.
+        expect(
+            classifyCursorAgentMessage('    Error: T: [resource_exhausted] capacity exceeded')
+        ).toBeNull()
+        expect(
+            classifyCursorAgentMessage('        Error: RetriableError: Connection stalled after 30s')
+        ).toBeNull()
     })
 
     it('still classifies real Gemini errors when they ARE the message body', () => {
