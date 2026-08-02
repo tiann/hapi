@@ -21,6 +21,14 @@ const generatedImageSchema = z.object({
     imageId: z.string().min(1)
 })
 
+function normalizeFileSearchPath(path: string): string {
+    return path.replaceAll('\\', '/')
+}
+
+function isWindowsSessionPath(path: string): boolean {
+    return /^[A-Za-z]:[\\/]/.test(path) || path.startsWith('\\\\')
+}
+
 function parseBooleanParam(value: string | undefined): boolean | undefined {
     if (value === 'true') return true
     if (value === 'false') return false
@@ -227,10 +235,14 @@ export function createGitRoutes(getSyncEngine: () => SyncEngine | null): Hono<We
         }
 
         const stdout = result.stdout ?? ''
+        const normalizePath = isWindowsSessionPath(sessionPath)
+            ? normalizeFileSearchPath
+            : (path: string) => path
         const paths = stdout
             .split('\n')
             .map((line) => line.trim())
             .filter((line) => line.length > 0)
+            .map(normalizePath)
             .slice(0, limit)
 
         const metadataResult = await runRpc(() => engine.statFiles(sessionResult.sessionId, paths))

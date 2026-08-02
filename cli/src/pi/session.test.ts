@@ -18,6 +18,7 @@ function createMockSession(): PiSession {
             sendAgentMessage: vi.fn(),
             emitMessagesConsumed: vi.fn(),
             sendSessionEvent: vi.fn(),
+            emitSessionReady: vi.fn(),
         } as any,
         path: '/tmp/test',
         logPath: '/tmp/test.log',
@@ -76,6 +77,22 @@ describe('PiSession ready gate', () => {
         session.markReady();
 
         expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    it('only announces native-ready after successful get_state, not fallback readiness', () => {
+        const session = createMockSession();
+
+        session.markReady();
+        expect(session.client.emitSessionReady).not.toHaveBeenCalled();
+
+        session.markNativeReady();
+        expect(session.client.emitSessionReady).toHaveBeenCalledTimes(1);
+
+        const nativeSession = createMockSession();
+        nativeSession.markNativeReady();
+        nativeSession.markNativeReady();
+
+        expect(nativeSession.client.emitSessionReady).toHaveBeenCalledTimes(1);
     });
 
     it('preserves FIFO across mixed buffered + post-ready enqueues', () => {

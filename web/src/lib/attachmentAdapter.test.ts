@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-describe('attachmentAdapter restored uploads', () => {
+describe('attachmentAdapter', () => {
     beforeEach(() => {
         vi.stubGlobal('indexedDB', undefined)
         vi.resetModules()
@@ -8,6 +8,13 @@ describe('attachmentAdapter restored uploads', () => {
 
     afterEach(() => {
         vi.unstubAllGlobals()
+    })
+
+    it('uses the assistant-ui wildcard sentinel so all files reach the adapter', async () => {
+        const { createAttachmentAdapter } = await import('./attachmentAdapter')
+        const adapter = createAttachmentAdapter({} as never, 'session-1')
+
+        expect(adapter.accept).toBe('*')
     })
 
     it('restores an uploaded draft without uploading it again', async () => {

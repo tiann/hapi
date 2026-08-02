@@ -29,6 +29,12 @@ export function parseRemoteAgentCommandOptions<TPermissionMode extends Permissio
             } else {
                 throw new Error('Invalid --hapi-starting-mode (expected local or remote)')
             }
+        } else if (arg === '--existing-session-id') {
+            const sessionId = args[++i]
+            if (!sessionId || sessionId.startsWith('-')) {
+                throw new Error('Missing --existing-session-id value')
+            }
+            options.existingSessionId = sessionId
         } else if (arg === '--permission-mode') {
             const mode = args[++i]
             if (!mode || !(allowedPermissionModes as readonly string[]).includes(mode)) {

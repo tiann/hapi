@@ -147,6 +147,12 @@ describe('bootstrapExistingSession', () => {
             grokSessionId: 'grok-thread-1',
             cursorSessionId: 'cursor-thread-1',
             cursorSessionProtocol: 'acp',
+            piSessionId: 'pi-thread-1',
+            piResumeAttempt: {
+                state: 'resuming',
+                machineId: 'machine-1',
+                startedAt: 123,
+            },
             summary: {
                 text: 'resume me',
                 updatedAt: 100
@@ -176,6 +182,12 @@ describe('bootstrapExistingSession', () => {
             grokSessionId: 'grok-thread-1',
             cursorSessionId: 'cursor-thread-1',
             cursorSessionProtocol: 'acp',
+            piSessionId: 'pi-thread-1',
+            piResumeAttempt: {
+                state: 'resuming',
+                machineId: 'machine-1',
+                startedAt: 123,
+            },
             summary: {
                 text: 'resume me',
                 updatedAt: 100

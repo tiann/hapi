@@ -16,6 +16,11 @@ function createPublisher(events: SyncEvent[]): EventPublisher {
     } as unknown as EventPublisher
 }
 
+async function flushAsyncWork(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
 function productionCodexMessage(event: Record<string, unknown>): Record<string, unknown> {
     return {
         role: 'agent',
@@ -2001,6 +2006,375 @@ describe('session model', () => {
         } finally {
             engine.stop()
         }
+    })
+
+    it('reopens Pi in place only after native-ready, preserving its id and history', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            const session = engine.getOrCreateSession('pi-in-place', {
+                path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'pi', piSessionId: 'pi-native-1',
+                lifecycleState: 'archived', archivedBy: 'cli', archiveReason: 'Pi exited',
+            }, null, 'default')
+            store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'keep history' } })
+            engine.getOrCreateMachine('machine-1', { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' }, { status: 'running', capabilities: { piExistingSessionResume: true } }, 'default')
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+            engine.handleSessionEnd({ sid: session.id, time: Date.now() })
+            let existing: string | undefined
+            let merges = 0
+            ;(engine as any).sessionCache.mergeSessions = async () => { merges += 1 }
+            ;(engine as any).rpcGateway.spawnSession = async (...args: Parameters<SyncEngine['spawnSession']>) => {
+                existing = args[12]
+                engine.handleSessionAlive({ sid: session.id, time: Date.now() })
+                engine.handleSessionReady({ sid: session.id, time: Date.now() })
+                return { type: 'success', sessionId: session.id }
+            }
+            const result = await engine.reopenSession(session.id, 'default')
+            expect(result).toEqual({ type: 'success', sessionId: session.id, resumed: true })
+            expect(existing).toBe(session.id)
+            expect(merges).toBe(0)
+            expect(store.messages.getFirstMessages(session.id, 10)).toHaveLength(1)
+        } finally { engine.stop() }
+    })
+
+    it('kills and deletes an unexpected legacy Pi temp without touching the original row', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            const original = engine.getOrCreateSession('pi-original', {
+                path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'pi', piSessionId: 'pi-native-old',
+                lifecycleState: 'archived', archivedBy: 'cli', archiveReason: 'Pi exited',
+            }, null, 'default')
+            const unexpected = engine.getOrCreateSession('pi-unexpected', { path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'pi' }, null, 'default')
+            engine.getOrCreateMachine('machine-1', { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' }, { status: 'running', capabilities: { piExistingSessionResume: true } }, 'default')
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+            engine.handleSessionEnd({ sid: original.id, time: Date.now() })
+            ;(engine as any).rpcGateway.spawnSession = async () => ({ type: 'success', sessionId: unexpected.id })
+            ;(engine as any).rpcGateway.stopRunnerSession = async (_machineId: string, sid: string) => {
+                engine.handleSessionEnd({ sid, time: Date.now(), reason: 'error' })
+                return 'stopped'
+            }
+            const result = await engine.reopenSession(original.id, 'default')
+            expect(result).toMatchObject({ type: 'error', code: 'resume_failed', message: expect.stringContaining('upgrade') })
+            expect(store.sessions.getSession(unexpected.id)).toBeNull()
+            expect(store.sessions.getSession(original.id)).not.toBeNull()
+            expect(engine.getSessionByNamespace(original.id, 'default')?.metadata?.lifecycleState).toBe('archived')
+        } finally { engine.stop() }
+    })
+
+    it('does not restore archive metadata over a live Pi child after kill failure', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            const session = engine.getOrCreateSession('pi-live-failure', {
+                path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'pi', piSessionId: 'pi-native-live',
+                lifecycleState: 'archived', archivedBy: 'cli', archiveReason: 'Pi exited',
+            }, null, 'default')
+            engine.getOrCreateMachine('machine-1', { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' }, { status: 'running', capabilities: { piExistingSessionResume: true } }, 'default')
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+            engine.handleSessionEnd({ sid: session.id, time: Date.now() })
+            ;(engine as any).rpcGateway.spawnSession = async () => {
+                engine.handleSessionAlive({ sid: session.id, time: Date.now() })
+                return { type: 'success', sessionId: session.id }
+            }
+            ;(engine as any).waitForSessionReady = async () => 'timeout'
+            ;(engine as any).rpcGateway.stopRunnerSession = async () => 'still_alive'
+            const result = await engine.reopenSession(session.id, 'default')
+            expect(result).toMatchObject({ type: 'error', message: expect.stringContaining('still active') })
+            expect(engine.getSessionByNamespace(session.id, 'default')?.active).toBe(true)
+            // Pi keeps the persisted archive snapshot until bootstrap succeeds,
+            // so a failed stop never needs to reconstruct it from memory.
+            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.lifecycleState).toBe('archived')
+            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.piResumeAttempt?.state).toBe('quarantined')
+            expect(await engine.reopenSession(session.id, 'default')).toMatchObject({ type: 'error', message: 'Pi resume is already in progress' })
+
+            engine.handleSessionEnd({ sid: session.id, time: Date.now(), reason: 'error' })
+            await flushAsyncWork()
+            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.piResumeAttempt).toBeUndefined()
+        } finally { engine.stop() }
+    })
+
+    it('rejects Pi resume before spawn when the runner lacks in-place capability', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            const session = engine.getOrCreateSession('pi-old-runner', {
+                path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'pi', piSessionId: 'pi-native-old-runner',
+                lifecycleState: 'archived', archivedBy: 'cli', archiveReason: 'Pi exited',
+            }, null, 'default')
+            engine.getOrCreateMachine('machine-1', { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' }, { status: 'running' }, 'default')
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+            engine.handleSessionEnd({ sid: session.id, time: Date.now() })
+            let spawnCalls = 0
+            ;(engine as any).rpcGateway.spawnSession = async () => { spawnCalls += 1; return { type: 'error', message: 'unexpected' } }
+
+            const result = await engine.reopenSession(session.id, 'default')
+            expect(result).toMatchObject({ type: 'error', message: 'Pi resume requires an upgraded runner' })
+            expect(spawnCalls).toBe(0)
+            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.lifecycleState).toBe('archived')
+            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.piResumeAttempt).toBeUndefined()
+        } finally { engine.stop() }
+    })
+
+    it('quarantines a Pi attempt when runner spawn fails before process termination is confirmed', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            const session = engine.getOrCreateSession('pi-spawn-error-live-child', {
+                path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'pi', piSessionId: 'pi-native-spawn-error',
+                lifecycleState: 'archived', archivedBy: 'cli', archiveReason: 'Pi exited',
+            }, null, 'default')
+            engine.getOrCreateMachine('machine-1', { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' }, {
+                status: 'running', capabilities: { piExistingSessionResume: true }
+            }, 'default')
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+            engine.handleSessionEnd({ sid: session.id, time: Date.now() })
+            ;(engine as any).rpcGateway.spawnSession = async () => ({ type: 'error', message: 'webhook timeout' })
+            ;(engine as any).rpcGateway.stopRunnerSession = async () => 'still_alive'
+
+            expect(await engine.reopenSession(session.id, 'default')).toMatchObject({
+                type: 'error', message: 'webhook timeout'
+            })
+            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.piResumeAttempt?.state).toBe('quarantined')
+            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.lifecycleState).toBe('archived')
+            expect(await engine.reopenSession(session.id, 'default')).toMatchObject({
+                type: 'error', message: 'Pi resume is already in progress'
+            })
+        } finally { engine.stop() }
+    })
+
+    it('keeps persisted Pi quarantine across SyncEngine restart and clears it on end', async () => {
+        const store = new Store(':memory:')
+        const first = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        const persisted = first.getOrCreateSession('pi-persisted-attempt', {
+            path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'pi', piSessionId: 'pi-native-persisted',
+            lifecycleState: 'archived', archivedBy: 'cli', archiveReason: 'Pi exited',
+            piResumeAttempt: { state: 'quarantined', machineId: 'machine-1', startedAt: 1 },
+        }, null, 'default')
+        first.stop()
+
+        const restarted = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            expect(await restarted.reopenSession(persisted.id, 'default')).toMatchObject({
+                type: 'error', message: 'Pi resume is already in progress'
+            })
+            restarted.handleSessionEnd({ sid: persisted.id, time: Date.now(), reason: 'error' })
+            await flushAsyncWork()
+            expect(restarted.getSessionByNamespace(persisted.id, 'default')?.metadata?.piResumeAttempt).toBeUndefined()
+        } finally { restarted.stop() }
+    })
+
+    it('clears a persisted Pi attempt when native-ready arrives after Hub restart', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            const session = engine.getOrCreateSession('pi-ready-after-restart', {
+                path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'pi', piSessionId: 'pi-native-ready',
+                piResumeAttempt: { state: 'resuming', machineId: 'machine-1', startedAt: 1 },
+            }, null, 'default')
+            engine.handleSessionReady({ sid: session.id, time: Date.now() })
+            await flushAsyncWork()
+            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.piResumeAttempt).toBeUndefined()
+        } finally { engine.stop() }
+    })
+
+    it('clears same-process Pi quarantine when a late validated ready arrives', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            const session = engine.getOrCreateSession('pi-late-ready', {
+                path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'pi', piSessionId: 'pi-native-late-ready',
+                piResumeAttempt: { state: 'quarantined', machineId: 'machine-1', startedAt: 1 },
+            }, null, 'default')
+            ;(engine as any).piResumeQuarantinedIds.add(session.id)
+            engine.handleSessionReady({ sid: session.id, time: Date.now() })
+            await flushAsyncWork()
+            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.piResumeAttempt).toBeUndefined()
+            expect((engine as any).piResumeQuarantinedIds.has(session.id)).toBe(false)
+        } finally { engine.stop() }
+    })
+
+    it('does not report active Pi attempts as reopened before validated ready', async () => {
+        for (const state of ['resuming', 'terminating'] as const) {
+            const store = new Store(':memory:')
+            const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+            try {
+                const session = engine.getOrCreateSession(`pi-active-${state}`, {
+                    path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'pi', piSessionId: `pi-native-${state}`,
+                    piResumeAttempt: { state, machineId: 'machine-1', startedAt: 1 },
+                }, null, 'default')
+                engine.handleSessionAlive({ sid: session.id, time: Date.now() })
+                expect(await engine.reopenSession(session.id, 'default')).toMatchObject({
+                    type: 'error', message: 'Pi resume is already in progress'
+                })
+            } finally { engine.stop() }
+        }
+    })
+
+    it('reconciles persisted quarantined Pi state when the runner reports the child already gone', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            const session = engine.getOrCreateSession('pi-stale-quarantine', {
+                path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'pi', piSessionId: 'pi-native-stale-quarantine',
+                lifecycleState: 'archived', archivedBy: 'cli', archiveReason: 'Pi exited',
+                piResumeAttempt: { state: 'quarantined', machineId: 'machine-1', startedAt: 1 },
+            }, null, 'default')
+            ;(engine as any).rpcGateway.stopRunnerSession = async () => 'already_gone'
+            expect(await engine.reopenSession(session.id, 'default')).toMatchObject({
+                type: 'error', message: 'Previous Pi resume attempt was cleaned up; retry'
+            })
+            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.piResumeAttempt).toBeUndefined()
+        } finally { engine.stop() }
+    })
+
+    it('reconciles a persisted Pi attempt with an already-gone runner child without clearing archive state', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            const session = engine.getOrCreateSession('pi-stale-resume-attempt', {
+                path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'pi', piSessionId: 'pi-native-stale',
+                // Mirrors bootstrapExistingSession before native get_state: the
+                // live metadata says running, while the attempt carries the
+                // exact archived snapshot needed if the child is already gone.
+                lifecycleState: 'running', lifecycleStateSince: 200,
+                piResumeAttempt: {
+                    state: 'resuming', machineId: 'machine-1', startedAt: 1,
+                    archiveSnapshot: {
+                        lifecycleState: 'archived', lifecycleStateSince: 100,
+                        archivedBy: 'cli', archiveReason: 'Pi exited',
+                    },
+                },
+            }, null, 'default')
+            ;(engine as any).rpcGateway.stopRunnerSession = async () => 'already_gone'
+
+            expect(await engine.reopenSession(session.id, 'default')).toMatchObject({
+                type: 'error', message: 'Previous Pi resume attempt was cleaned up; retry'
+            })
+            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.piResumeAttempt).toBeUndefined()
+            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.lifecycleState).toBe('archived')
+            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.lifecycleStateSince).toBe(100)
+            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.archivedBy).toBe('cli')
+            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.archiveReason).toBe('Pi exited')
+        } finally { engine.stop() }
+    })
+
+    it('does not quarantine an in-place Pi row when session-end wins the stop response race', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            const session = engine.getOrCreateSession('pi-stop-end-race', {
+                path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'pi', piSessionId: 'pi-native-race',
+                piResumeAttempt: { state: 'resuming', machineId: 'machine-1', startedAt: 1 },
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: session.id, time: Date.now() })
+            ;(engine as any).rpcGateway.stopRunnerSession = async () => {
+                engine.handleSessionEnd({ sid: session.id, time: Date.now(), reason: 'error' })
+                return 'still_alive'
+            }
+
+            expect(await (engine as any).terminateInPlacePiResume('machine-1', session.id, 'default', true)).toBe(true)
+            await flushAsyncWork()
+            expect(engine.getSessionByNamespace(session.id, 'default')?.active).toBe(false)
+            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.piResumeAttempt).toBeUndefined()
+        } finally { engine.stop() }
+    })
+
+    it('does not persist an unexpected-child quarantine when child end wins the stop response race', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            const original = engine.getOrCreateSession('pi-original-stop-race', {
+                path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'pi', piSessionId: 'pi-native-race',
+                lifecycleState: 'archived', archivedBy: 'cli', archiveReason: 'Pi exited',
+                piResumeAttempt: { state: 'resuming', machineId: 'machine-1', startedAt: 1 },
+            }, null, 'default')
+            const temp = engine.getOrCreateSession('pi-temp-stop-race', {
+                path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'pi',
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: temp.id, time: Date.now() })
+            ;(engine as any).rpcGateway.stopRunnerSession = async () => {
+                engine.handleSessionEnd({ sid: temp.id, time: Date.now(), reason: 'error' })
+                return 'still_alive'
+            }
+
+            expect(await (engine as any).terminateUnexpectedPiTemp('machine-1', temp.id, original.id, 'default')).toBe(true)
+            await flushAsyncWork()
+            expect(store.sessions.getSession(temp.id)).toBeNull()
+            expect(engine.getSessionByNamespace(original.id, 'default')?.metadata?.piResumeAttempt).toBeUndefined()
+        } finally { engine.stop() }
+    })
+
+    it('keeps still-alive Pi children quarantined even when Hub cache is inactive', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            const original = engine.getOrCreateSession('pi-still-alive-inactive', {
+                path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'pi', piSessionId: 'pi-native-still-alive',
+                piResumeAttempt: { state: 'resuming', machineId: 'machine-1', startedAt: 1 },
+            }, null, 'default')
+            ;(engine as any).rpcGateway.stopRunnerSession = async () => 'still_alive'
+            expect(await (engine as any).terminateInPlacePiResume('machine-1', original.id, 'default')).toBe(false)
+
+            const temp = engine.getOrCreateSession('pi-temp-still-alive-inactive', {
+                path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'pi',
+            }, null, 'default')
+            expect(await (engine as any).terminateUnexpectedPiTemp('machine-1', temp.id, original.id, 'default')).toBe(false)
+            expect(store.sessions.getSession(temp.id)).not.toBeNull()
+            expect(engine.getSessionByNamespace(original.id, 'default')?.metadata?.piResumeAttempt).toMatchObject({
+                state: 'quarantined', childSessionId: temp.id
+            })
+        } finally { engine.stop() }
+    })
+
+    it('blocks dedup for a persisted unexpected Pi child and clears the original attempt on child end', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            const temp = engine.getOrCreateSession('pi-temp-mapped', {
+                path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'pi', piSessionId: 'pi-native-mapped',
+            }, null, 'default')
+            const original = engine.getOrCreateSession('pi-original-mapped', {
+                path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'pi', piSessionId: 'pi-native-mapped',
+                lifecycleState: 'archived', archivedBy: 'cli', archiveReason: 'Pi exited',
+                piResumeAttempt: { state: 'quarantined', machineId: 'machine-1', startedAt: 1, childSessionId: temp.id },
+            }, null, 'default')
+            let dedupCalls = 0
+            ;(engine as any).sessionCache.deduplicateByAgentSessionId = async () => { dedupCalls += 1 }
+            ;(engine as any).triggerDedupIfNeeded(temp.id)
+            await flushAsyncWork()
+            expect(dedupCalls).toBe(0)
+            expect(store.sessions.getSession(original.id)).not.toBeNull()
+
+            engine.handleSessionEnd({ sid: temp.id, time: Date.now(), reason: 'error' })
+            await flushAsyncWork()
+            expect(engine.getSessionByNamespace(original.id, 'default')?.metadata?.piResumeAttempt).toBeUndefined()
+            expect(store.sessions.getSession(original.id)).not.toBeNull()
+            expect(dedupCalls).toBe(0)
+        } finally { engine.stop() }
+    })
+
+    it('blocks Pi dedup before an unexpected child ID is attached to the persisted attempt', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            const original = engine.getOrCreateSession('pi-original-pre-mapping', {
+                path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'pi', piSessionId: 'pi-native-pre-mapping',
+                lifecycleState: 'archived', archivedBy: 'cli', archiveReason: 'Pi exited',
+                piResumeAttempt: { state: 'resuming', machineId: 'machine-1', startedAt: 1 },
+            }, null, 'default')
+            const temp = engine.getOrCreateSession('pi-temp-pre-mapping', {
+                path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'pi', piSessionId: 'pi-native-pre-mapping',
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: temp.id, time: Date.now() })
+            let dedupCalls = 0
+            ;(engine as any).sessionCache.deduplicateByAgentSessionId = async () => { dedupCalls += 1 }
+
+            ;(engine as any).triggerDedupIfNeeded(temp.id)
+            await flushAsyncWork()
+            expect(dedupCalls).toBe(0)
+            expect(store.sessions.getSession(original.id)).not.toBeNull()
+        } finally { engine.stop() }
     })
 
     it('defers mergeSessions for cursor reopen until session-ready (load failure leaves old row)', async () => {

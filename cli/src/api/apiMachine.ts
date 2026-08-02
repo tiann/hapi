@@ -46,7 +46,7 @@ import type { CursorChatStoreStatus } from '@hapi/protocol/apiTypes'
 
 type MachineRpcHandlers = {
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>
-    stopSession: (sessionId: string) => boolean
+    stopSession: (sessionId: string) => Promise<'stopped' | 'already_gone' | 'still_alive'>
     requestShutdown: () => void
 }
 
@@ -398,18 +398,14 @@ export class ApiMachineClient {
             }
         })
 
-        this.rpcHandlerManager.registerHandler(RPC_METHODS.StopSession, (params: any) => {
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.StopSession, async (params: any) => {
             const { sessionId } = params || {}
             if (!sessionId) {
                 throw new Error('Session ID is required')
             }
 
-            const success = stopSession(sessionId)
-            if (!success) {
-                throw new Error('Session not found or failed to stop')
-            }
-
-            return { message: 'Session stopped' }
+            const status = await stopSession(sessionId)
+            return { status }
         })
 
         this.rpcHandlerManager.registerHandler(RPC_METHODS.StopRunner, () => {

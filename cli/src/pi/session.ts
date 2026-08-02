@@ -34,6 +34,9 @@ export class PiSession {
     // Startup model from opts.model — prevents get_state from overwriting it
     // with Pi's default. Applied once when get_available_models returns.
     readonly initialModel: string | null;
+    // A runner/native resume must prove that Pi loaded this exact session with
+    // a non-empty get_state sessionId. Missing or contradictory IDs fail closed.
+    readonly expectedNativeSessionId: string | null;
 
     // Streaming state
     piIsStreaming = false;
@@ -53,6 +56,7 @@ export class PiSession {
     // are queued via runWhenReady() and drained FIFO once markReady() fires (on
     // the first get_state response).
     private piReady = false;
+    private nativeReadyAnnounced = false;
     // Buffered sends carry their localId so a cancel-queued-message that arrives
     // while a prompt is still held (before drain) can drop it instead of firing
     // a cancelled prompt on markReady (issue #1143 review — MAJOR).
@@ -68,6 +72,7 @@ export class PiSession {
         startedBy: 'runner' | 'terminal';
         startingMode: 'local' | 'remote';
         model?: string | null;
+        expectedNativeSessionId?: string;
     }) {
         this.api = opts.api;
         this.client = opts.client;
@@ -85,12 +90,23 @@ export class PiSession {
         // resume before Pi reports its real state.
         this.currentModel = undefined;
         this.initialModel = opts.model?.trim() || null;
+        this.expectedNativeSessionId = opts.expectedNativeSessionId?.trim() || null;
         this.currentThinkingLevel = undefined;
     }
 
     /** True once Pi RPC startup has completed and buffered sends have drained. */
     get isReady(): boolean {
         return this.piReady;
+    }
+
+    /** True only after Pi itself has completed a successful get_state. */
+    get isNativeReady(): boolean {
+        return this.nativeReadyAnnounced;
+    }
+
+    matchesExpectedNativeSessionId(actualSessionId: string | undefined): boolean {
+        if (!this.expectedNativeSessionId) return true;
+        return Boolean(actualSessionId) && actualSessionId === this.expectedNativeSessionId;
     }
 
     /**
@@ -121,16 +137,29 @@ export class PiSession {
     }
 
     /**
-     * Signal that Pi RPC startup is complete (first get_state response).
-     * Drains buffered sends in enqueue order. Idempotent — later get_state
-     * responses (or the startup fallback timer) are no-ops.
+     * Release buffered sends. This intentionally does not notify the hub: the
+     * startup fallback may use it to avoid losing prompts, but is not proof that
+     * Pi loaded a requested native session.
      */
-    markReady(): void {
-        if (this.piReady) return;
+    markReady(): boolean {
+        if (this.piReady) return false;
         this.piReady = true;
         const queued = this.readyQueue;
         this.readyQueue = [];
         for (const { fn } of queued) fn();
+        return true;
+    }
+
+    /**
+     * The first successful Pi get_state is the authoritative native-ready
+     * point. Unlike markReady(), this tells the hub that a native resume can be
+     * considered successful.
+     */
+    markNativeReady(): void {
+        this.markReady();
+        if (this.nativeReadyAnnounced) return;
+        this.nativeReadyAnnounced = true;
+        this.client.emitSessionReady();
     }
 
     startKeepAlive(): void {

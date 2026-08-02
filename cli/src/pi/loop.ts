@@ -84,13 +84,15 @@ function persistSelectedPiModel(session: PiSession): void {
 
 // --- Response handler ---
 
-function handleGetState(
-    rawData: unknown,
+function applyGetState(
+    data: {
+        model?: { id?: string; modelId?: string; provider?: string };
+        sessionId?: string;
+        thinkingLevel?: string;
+        steeringMode?: 'all' | 'one-at-a-time';
+    },
     session: PiSession,
 ): void {
-    const parsed = PiStateDataSchema.safeParse(rawData);
-    if (!parsed.success) return;
-    const data = parsed.data;
 
     if (data.model) {
         // Pi returns model.id (not modelId). Fallback to modelId for forward compat.
@@ -128,6 +130,7 @@ function handleGetState(
     if (data.steeringMode) {
         session.currentSteeringMode = data.steeringMode;
     }
+
 }
 
 function handleResponse(
@@ -135,6 +138,7 @@ function handleResponse(
     session: PiSession,
     pendingLocalIds: string[],
     transport?: PiTransport,
+    onStartupFailure?: (error: Error) => void,
 ): void {
     const { command, success } = response;
     const resolver = session.rpcResolver!;
@@ -153,19 +157,46 @@ function handleResponse(
             const oldestLocalId = pendingLocalIds.shift()!;
             session.emitMessagesConsumed([oldestLocalId], { clearQueuedThinkingGrace: true });
         }
+        // A failed initial get_state means Pi did not load its native session.
+        // Do not leave the HAPI wrapper alive until the hub's ready timeout: the
+        // caller tears down the process so the archived row can be restored.
+        // A fresh Pi session keeps the historic non-fatal fallback behavior;
+        // only a requested native resume must fail closed.
+        if (command === 'get_state' && session.expectedNativeSessionId && !session.isNativeReady) {
+            onStartupFailure?.(new Error(`Pi get_state failed: ${error}`));
+        }
         return;
     }
 
     switch (command) {
         case 'get_state': {
-            handleGetState(response.data, session);
+            const parsed = PiStateDataSchema.safeParse(response.data);
             // Pi has finished startup init (this is the response that persists
-            // metadata.piSessionId — the signal working callers already wait
-            // for). Release any prompts buffered during the spawn window so they
-            // reach an initialized Pi session instead of wedging (issue #1143).
-            // markReady is idempotent; a missing sessionId still flips ready so
-            // buffered prompts are never swallowed forever.
-            session.markReady();
+            // metadata.piSessionId). It is also the only native-ready signal
+            // that the hub trusts for Pi resume; session-alive only proves the
+            // HAPI wrapper connected. Validate a requested native session before
+            // mutating model/metadata state: an invalid resume must not publish a
+            // colliding piSessionId that auto-dedup could merge.
+            if (!parsed.success) {
+                if (session.expectedNativeSessionId) {
+                    onStartupFailure?.(new Error('Pi get_state returned malformed state data'));
+                }
+                break;
+            }
+            const state = parsed.data;
+            if (!session.matchesExpectedNativeSessionId(state.sessionId)) {
+                const actual = state.sessionId ? state.sessionId : '(missing)';
+                const error = `Pi loaded unexpected native session ${actual} instead of ${session.expectedNativeSessionId}`;
+                logger.debug(`[pi] ${error}`);
+                session.sendSessionEvent({ type: 'message', message: error });
+                onStartupFailure?.(new Error(error));
+                break;
+            }
+            // Emit ready before publishing Pi metadata. On native resume, this
+            // ensures the hub can never merge based on a piSessionId before the
+            // get_state identity check has completed.
+            session.markNativeReady();
+            applyGetState(state, session);
             break;
         }
         case 'set_model': {
@@ -305,6 +336,7 @@ export function wireTransportEvents(
     transport: PiTransport,
     session: PiSession,
     pendingLocalIds: string[],
+    options?: { onStartupFailure?: (error: Error) => void },
 ): void {
     session.rpcResolver = new PiRpcResolver();
     const assistantMessageAccumulator = new PiMessageAccumulator();
@@ -316,7 +348,13 @@ export function wireTransportEvents(
             logger.debug(`[pi][event] ${event.type}`);
         }
         if (event.type === 'response') {
-            handleResponse(event as unknown as PiResponseEvent, session, pendingLocalIds, transport);
+            handleResponse(
+                event as unknown as PiResponseEvent,
+                session,
+                pendingLocalIds,
+                transport,
+                options?.onStartupFailure,
+            );
             return;
         }
 

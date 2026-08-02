@@ -113,8 +113,14 @@ export const runnerCommand: CommandDefinition = {
             }
 
             try {
-                const success = await stopRunnerSession(sessionId)
-                console.log(success ? 'Session stopped' : 'Failed to stop session')
+                const status = await stopRunnerSession(sessionId)
+                if (status === 'stopped') {
+                    console.log('Session stopped')
+                } else if (status === 'already_gone') {
+                    console.log('Session was already stopped')
+                } else {
+                    console.log('Failed to stop session')
+                }
             } catch {
                 console.log('No runner running')
             }

@@ -24,6 +24,12 @@ describe('hubAttachmentFromRestoredDraft', () => {
 })
 
 describe('createScratchlistAttachmentAdapter', () => {
+    it('uses the assistant-ui wildcard sentinel so all files reach the adapter', () => {
+        const adapter = createScratchlistAttachmentAdapter({} as never, 'session-1')
+
+        expect(adapter.accept).toBe('*')
+    })
+
     it('reuses restored hub path without re-uploading', async () => {
         const drafts = await import('./composer-attachment-drafts')
         const hubId = 'a1b2c3d4-e5f6-4789-a012-3456789abcde'

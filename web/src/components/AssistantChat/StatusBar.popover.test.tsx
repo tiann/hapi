@@ -58,6 +58,7 @@ describe('StatusBar context details popover', () => {
                     agentState={null}
                     agentFlavor="codex"
                     modelReasoningEffort="xhigh"
+                    effort="max"
                 />
             </I18nProvider>
         )
@@ -66,6 +67,105 @@ describe('StatusBar context details popover', () => {
         const desktopLabel = screen.getByText('reasoning xhigh')
         expect(desktopLabel.className.split(' ')).toContain('hidden')
         expect(desktopLabel.className.split(' ')).toContain('sm:inline')
+    })
+
+    it('keeps the Codex default reasoning label when model effort is absent', () => {
+        render(
+            <I18nProvider>
+                <StatusBar
+                    active
+                    thinking={false}
+                    agentState={null}
+                    agentFlavor="codex"
+                    modelReasoningEffort={null}
+                />
+            </I18nProvider>
+        )
+
+        expect(screen.getByText('default').className.split(' ')).toContain('sm:hidden')
+        expect(screen.getByText('reasoning default').className.split(' ')).toContain('sm:inline')
+    })
+
+    it('uses Pi ordinary effort instead of model reasoning effort', () => {
+        render(
+            <I18nProvider>
+                <StatusBar
+                    active
+                    thinking={false}
+                    agentState={null}
+                    agentFlavor="pi"
+                    modelReasoningEffort="xhigh"
+                    effort="max"
+                />
+            </I18nProvider>
+        )
+
+        expect(screen.getByText('max').className.split(' ')).toContain('sm:hidden')
+        expect(screen.getByText('reasoning max').className.split(' ')).toContain('sm:inline')
+        expect(screen.queryByText('reasoning xhigh')).not.toBeInTheDocument()
+    })
+
+    it('hides Pi reasoning when effort is absent or blank', () => {
+        const { rerender } = render(
+            <I18nProvider>
+                <StatusBar
+                    active
+                    thinking={false}
+                    agentState={null}
+                    agentFlavor="pi"
+                />
+            </I18nProvider>
+        )
+
+        expect(screen.queryByText('reasoning default')).not.toBeInTheDocument()
+        expect(screen.queryByText('default')).not.toBeInTheDocument()
+
+        rerender(
+            <I18nProvider>
+                <StatusBar
+                    active
+                    thinking={false}
+                    agentState={null}
+                    agentFlavor="pi"
+                    effort="   "
+                />
+            </I18nProvider>
+        )
+
+        expect(screen.queryByText('reasoning default')).not.toBeInTheDocument()
+        expect(screen.queryByText('default')).not.toBeInTheDocument()
+    })
+
+    it('does not expose ordinary effort for Claude or unknown flavors', () => {
+        const { rerender } = render(
+            <I18nProvider>
+                <StatusBar
+                    active
+                    thinking={false}
+                    agentState={null}
+                    agentFlavor="claude"
+                    effort="max"
+                />
+            </I18nProvider>
+        )
+
+        expect(screen.queryByText('reasoning max')).not.toBeInTheDocument()
+        expect(screen.queryByText('max')).not.toBeInTheDocument()
+
+        rerender(
+            <I18nProvider>
+                <StatusBar
+                    active
+                    thinking={false}
+                    agentState={null}
+                    agentFlavor="unknown"
+                    effort="max"
+                />
+            </I18nProvider>
+        )
+
+        expect(screen.queryByText('reasoning max')).not.toBeInTheDocument()
+        expect(screen.queryByText('max')).not.toBeInTheDocument()
     })
 
     it('opens from the mobile-accessible context trigger and keeps the requested detail order', async () => {

@@ -1,5 +1,6 @@
 import { getCodexCollaborationModeOptions, getPermissionModeOptionsForFlavor } from '@hapi/protocol'
 import { ComposerPrimitive, useAui, useAuiState } from '@assistant-ui/react'
+import { flushTapSync } from '@assistant-ui/tap'
 import {
     type ChangeEvent as ReactChangeEvent,
     type ClipboardEvent as ReactClipboardEvent,
@@ -18,7 +19,7 @@ import {
     RichComposerInput,
     type RichComposerInputHandle,
 } from '@/components/AssistantChat/RichComposerInput'
-import type { AgentState, CodexCollaborationMode, PermissionMode, PiModelSummary, ThreadGoal } from '@/types/api'
+import type { AgentState, CodexCollaborationMode, PermissionMode, PiModelSummary } from '@/types/api'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import type { ConversationStatus } from '@/realtime/types'
 import { useActiveWord } from '@/hooks/useActiveWord'
@@ -86,6 +87,40 @@ export type ComposerSendError = {
     } | null
 }
 
+type RichComposerBridgeApi = {
+    composer: () => {
+        setText: (text: string) => void
+    }
+}
+
+/**
+ * The custom rich contenteditable must follow ComposerPrimitive.Input's
+ * synchronous composer-write contract. Kept separate so its callback identity
+ * is stable across unrelated HappyComposer renders and directly testable.
+ */
+export function useRichComposerBridge(
+    api: RichComposerBridgeApi,
+    setInputState: (state: TextInputState) => void,
+    sendError: ComposerSendError | null,
+    onClearSendError?: () => void,
+) {
+    const onValueChange = useCallback((text: string) => {
+        flushTapSync(() => {
+            api.composer().setText(text)
+        })
+    }, [api])
+
+    const onMirrorChange = useCallback((state: TextInputState) => {
+        setInputState(state)
+    }, [setInputState])
+
+    const onEdit = useCallback(() => {
+        if (sendError && onClearSendError) onClearSendError()
+    }, [sendError, onClearSendError])
+
+    return { onValueChange, onMirrorChange, onEdit }
+}
+
 const defaultSuggestionHandler = async (): Promise<Suggestion[]> => []
 
 export function ModelEffortSettingsSection(props: {
@@ -144,7 +179,6 @@ export function HappyComposer(props: {
     disabled?: boolean
     permissionMode?: PermissionMode
     collaborationMode?: CodexCollaborationMode
-    threadGoal?: ThreadGoal | null
     model?: string | null
     modelReasoningEffort?: string | null
     effort?: string | null
@@ -219,7 +253,6 @@ export function HappyComposer(props: {
         disabled = false,
         permissionMode: rawPermissionMode,
         collaborationMode: rawCollaborationMode,
-        threadGoal,
         model: rawModel,
         modelReasoningEffort: rawModelReasoningEffort,
         effort: rawEffort,
@@ -321,6 +354,12 @@ export function HappyComposer(props: {
     // read — hard reload required, so no per-keystroke localStorage/URL parse.
     const [richMentionsEnabled] = useState(() => isRichComposerMentionsEnabled())
     const prevControlledByUser = useRef(controlledByUser)
+
+    const {
+        onValueChange: handleRichValueChange,
+        onMirrorChange: handleRichMirrorChange,
+        onEdit: handleRichEdit,
+    } = useRichComposerBridge(api, setInputState, sendError, onClearSendError)
 
     const attachmentDrafts = attachments.flatMap((attachment) => {
         if (!attachment.file) return []
@@ -1336,10 +1375,10 @@ export function HappyComposer(props: {
                         contextModel={contextModel}
                         model={model}
                         modelReasoningEffort={modelReasoningEffort}
+                        effort={effort}
                         serviceTier={serviceTier}
                         permissionMode={permissionMode}
                         collaborationMode={collaborationMode}
-                        threadGoal={threadGoal}
                         agentFlavor={agentFlavor}
                         voiceStatus={voiceStatus}
                     />
@@ -1384,14 +1423,12 @@ export function HappyComposer(props: {
                                     autoFocus={!controlsDisabled && !isTouch}
                                     placeholder={showContinueHint ? t('misc.typeMessage') : t('misc.typeAMessage')}
                                     disabled={controlsDisabled}
-                                    onValueChange={(text) => api.composer().setText(text)}
-                                    onMirrorChange={(state) => setInputState(state)}
+                                    onValueChange={handleRichValueChange}
+                                    onMirrorChange={handleRichMirrorChange}
                                     onKeyDown={handleKeyDown}
                                     onPaste={handlePaste}
                                     resolveSessionMentionTooltip={resolveSessionMentionTooltip}
-                                    onEdit={() => {
-                                        if (sendError && onClearSendError) onClearSendError()
-                                    }}
+                                    onEdit={handleRichEdit}
                                     className="max-h-[7.5rem] min-h-[1.5rem] flex-1 overflow-y-auto whitespace-pre-wrap break-words bg-transparent text-base leading-snug text-[var(--app-fg)] focus:outline-none"
                                 />
                             ) : (

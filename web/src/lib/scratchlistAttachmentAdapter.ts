@@ -44,7 +44,10 @@ export function createScratchlistAttachmentAdapter(api: ApiClient, sessionId: st
     const cancelledAttachmentIds = new Set<string>()
 
     return {
-        accept: '*/*',
+        // assistant-ui uses the exact "*" sentinel for an allow-all adapter.
+        // "*/*" is forwarded to MIME matching and rejects every file before
+        // this adapter's add() method can run.
+        accept: '*',
 
         async *add({ file }): AsyncGenerator<PendingAttachment> {
             const contentType = file.type || 'application/octet-stream'

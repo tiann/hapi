@@ -95,6 +95,7 @@
       "dependencies": {
         "@assistant-ui/react": "^0.14.29",
         "@assistant-ui/react-markdown": "^0.14.7",
+        "@assistant-ui/tap": "^0.9.8",
         "@elevenlabs/react": "^0.13.0",
         "@hapi/protocol": "workspace:*",
         "@lobehub/icons": "^5.4.0",

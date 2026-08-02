@@ -16,6 +16,33 @@ export function isProcessAlive(pid: number): boolean {
   }
 }
 
+/** Stable marker for one OS PID generation; null means the platform probe failed. */
+export function getProcessStartMarker(pid: number): string | null {
+  if (!isProcessAlive(pid)) return null;
+  if (isWindows()) {
+    const powershell = spawn.sync('powershell', [
+      '-NoProfile', '-NonInteractive', '-Command',
+      `(Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}").CreationDate`
+    ], { stdio: 'pipe', windowsHide: true });
+    if (!powershell.error && powershell.status === 0) {
+      const marker = powershell.stdout?.toString().trim();
+      if (marker) return marker;
+    }
+    const result = spawn.sync('wmic', [
+      'process', 'where', `ProcessId=${pid}`, 'get', 'CreationDate', '/value'
+    ], { stdio: 'pipe', windowsHide: true });
+    if (result.error || result.status !== 0) return null;
+    const match = (result.stdout?.toString() ?? '').match(/CreationDate=([^\r\n]+)/);
+    return match?.[1]?.trim() || null;
+  }
+  const result = spawn.sync('ps', ['-p', String(pid), '-o', 'lstart='], {
+    stdio: 'pipe',
+    env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' }
+  });
+  if (result.error || result.status !== 0) return null;
+  return result.stdout?.toString().trim() || null;
+}
+
 // ponytail: ps -p is cheap and avoids PID-reuse false positives after OS upgrades/reboots
 function isRunnerCommand(commandLine: string): boolean {
   return /(?:^|\s)runner(?:\s|$)/.test(commandLine) && /(?:^|\s)start-sync(?:\s|$)/.test(commandLine);
@@ -138,7 +165,14 @@ async function killProcessTree(pid: number, force: boolean): Promise<boolean> {
     await waitForProcessToDie(p, force);
   }
 
-  return true;
+  return pids.every((candidate) => !isProcessAlive(candidate));
+}
+
+/** Kill a PID and all descendants, verifying the complete tree is gone. */
+export async function killProcessTreeByPid(pid: number, force: boolean = false): Promise<boolean> {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  if (isWindows()) return killProcess(pid, force);
+  return killProcessTree(pid, force);
 }
 
 /**
@@ -184,5 +218,5 @@ export async function killProcessByChildProcess(
   }
 
   // Kill entire process tree on Unix to prevent orphan processes
-  return killProcessTree(pid, force);
+  return killProcessTreeByPid(pid, force);
 }

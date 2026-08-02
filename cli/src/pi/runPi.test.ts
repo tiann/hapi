@@ -6,6 +6,10 @@ type LifecycleOptions = { stopKeepAlive: () => void };
 const harness = vi.hoisted(() => ({
     transportOptions: null as TransportOptions | null,
     sent: [] as unknown[],
+    throwOnGetCommands: true,
+    onError: null as ((error: Error) => void) | null,
+    killCount: 0,
+    cleanupCount: 0,
     session: {
         keepAlive: vi.fn(),
         onUserMessage: vi.fn(),
@@ -24,6 +28,7 @@ vi.mock('@/agent/runnerLifecycle', () => ({
         return {
             registerProcessHandlers: vi.fn(),
             cleanupAndExit: vi.fn(async () => {
+                harness.cleanupCount += 1;
                 options.stopKeepAlive();
             }),
             markCrash: vi.fn(),
@@ -50,7 +55,9 @@ vi.mock('./piTransport', () => ({
             harness.transportOptions = options;
         }
 
-        onError(): void {}
+        onError(callback: (error: Error) => void): void {
+            harness.onError = callback;
+        }
 
         onClose(): void {}
 
@@ -60,16 +67,20 @@ vi.mock('./piTransport', () => ({
 
         send(command: unknown): void {
             harness.sent.push(command);
-            if ((command as { type?: string }).type === 'get_commands') {
+            if (harness.throwOnGetCommands && (command as { type?: string }).type === 'get_commands') {
                 throw new Error('stop test transport');
             }
         }
 
-        kill(): void {}
+        kill(): void {
+            harness.killCount += 1;
+        }
     },
 }));
 
 import { buildPiCommandInventory, formatPiUserMessage, rewritePiSkillPrompt, runPi } from './runPi';
+import { bootstrapExistingSession } from '@/agent/sessionFactory';
+import { PiSession } from './session';
 
 describe('Pi command namespaces', () => {
     const commands = [
@@ -112,6 +123,11 @@ describe('runPi startup', () => {
     beforeEach(() => {
         harness.transportOptions = null;
         harness.sent.length = 0;
+        harness.throwOnGetCommands = true;
+        harness.onError = null;
+        harness.killCount = 0;
+        harness.cleanupCount = 0;
+        vi.useRealTimers();
     });
 
     it('lets Pi create a fresh session when no resume ID is provided', async () => {
@@ -145,5 +161,39 @@ describe('runPi startup', () => {
             { type: 'get_available_models' },
             { type: 'get_commands' },
         ]);
+    });
+
+    it('bootstraps the existing HAPI row for runner native resume', async () => {
+        await runPi({
+            workingDirectory: '/work',
+            existingSessionId: 'hapi-session-pi-1',
+            resumeSessionId: 'pi-session-1',
+            startedBy: 'runner',
+        });
+
+        expect(bootstrapExistingSession).toHaveBeenCalledWith({
+            sessionId: 'hapi-session-pi-1',
+            flavor: 'pi',
+            startedBy: 'runner',
+            workingDirectory: '/work',
+        });
+    });
+
+    it.each([
+        ['fresh', undefined, 1, 0],
+        ['resume', 'pi-session-1', 0, 1],
+    ] as const)('applies the startup fallback only to %s sessions', async (_label, resumeSessionId, expectedCalls, expectedKills) => {
+        vi.useFakeTimers();
+        harness.throwOnGetCommands = false;
+        const markReady = vi.spyOn(PiSession.prototype, 'markReady');
+        const running = runPi({ workingDirectory: '/work', resumeSessionId });
+
+        await vi.advanceTimersByTimeAsync(31_000);
+        expect(markReady).toHaveBeenCalledTimes(expectedCalls);
+        expect(harness.cleanupCount).toBe(expectedKills);
+
+        harness.onError?.(new Error('stop test transport'));
+        await running;
+        markReady.mockRestore();
     });
 });

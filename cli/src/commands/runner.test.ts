@@ -16,7 +16,7 @@ const {
     checkIfRunnerRunningAndCleanupStaleStateMock: vi.fn(),
     listRunnerSessionsMock: vi.fn(async () => []),
     stopRunnerMock: vi.fn(async () => {}),
-    stopRunnerSessionMock: vi.fn(async () => true),
+    stopRunnerSessionMock: vi.fn(async (_sessionId: string): Promise<'stopped' | 'already_gone' | 'still_alive'> => 'stopped'),
     spawnHappyCLIMock: vi.fn(() => ({ unref: vi.fn() })),
     startRunnerMock: vi.fn(async () => {}),
     getLatestRunnerLogMock: vi.fn(async () => null),
@@ -124,6 +124,28 @@ describe('runnerCommand start', () => {
         } finally {
             consoleLogSpy.mockRestore()
             exitSpy.mockRestore()
+        }
+    })
+})
+
+describe('runnerCommand stop-session', () => {
+    beforeEach(() => {
+        vi.clearAllMocks()
+    })
+
+    it.each([
+        ['stopped', 'Session stopped'],
+        ['already_gone', 'Session was already stopped'],
+        ['still_alive', 'Failed to stop session'],
+    ] as const)('renders the %s runner result', async (status, expected) => {
+        const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+        stopRunnerSessionMock.mockResolvedValueOnce(status)
+        try {
+            await runnerCommand.run(createContext(['stop-session', 'session-1']))
+            expect(stopRunnerSessionMock).toHaveBeenCalledWith('session-1')
+            expect(consoleLogSpy).toHaveBeenCalledWith(expected)
+        } finally {
+            consoleLogSpy.mockRestore()
         }
     })
 })

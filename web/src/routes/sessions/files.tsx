@@ -260,8 +260,7 @@ function SearchResultRow(props: {
     onOpen: () => void
     showDivider: boolean
 }) {
-    const { t, locale } = useTranslation()
-    const subtitle = getProjectRootLabel(props.file.filePath, t)
+    const { locale } = useTranslation()
     const metadata = formatFileMetadata(props.file.size, props.file.modified, locale)
     const icon = props.file.fileType === 'file'
         ? <FileIcon fileName={props.file.fileName} size={22} />
@@ -275,11 +274,8 @@ function SearchResultRow(props: {
         >
             {icon}
             <div className="min-w-0 flex-1">
-                <div className="truncate font-medium">{props.file.fileName}</div>
-                <div className="flex min-w-0 items-center gap-2 text-xs text-[var(--app-hint)]">
-                    <span className="truncate">{subtitle}</span>
-                    {metadata ? <span className="shrink-0">{metadata}</span> : null}
-                </div>
+                <div className="truncate font-medium">{props.file.fullPath}</div>
+                {metadata ? <div className="text-xs text-[var(--app-hint)]">{metadata}</div> : null}
             </div>
         </button>
     )

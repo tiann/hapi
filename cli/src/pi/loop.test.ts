@@ -44,6 +44,7 @@ function createMockSession(): PiSession {
             sendAgentMessage: vi.fn(),
             emitMessagesConsumed: vi.fn(),
             sendSessionEvent: vi.fn(),
+            emitSessionReady: vi.fn(),
         } as any,
         path: '/tmp/test',
         logPath: '/tmp/test.log',
@@ -267,6 +268,7 @@ describe('wireTransportEvents', () => {
         expect(session.currentThinkingLevel).toBe('high');
         expect(session.currentSteeringMode).toBe('one-at-a-time');
         expect(session.client.updateMetadata).toHaveBeenCalledWith(expect.any(Function));
+        expect(session.client.emitSessionReady).toHaveBeenCalledTimes(1);
     });
 
     it('marks session ready on get_state response (drains buffered sends) — issue #1143', () => {
@@ -289,6 +291,7 @@ describe('wireTransportEvents', () => {
         // get_state landing is the ready signal — buffered work drains.
         expect(session.isReady).toBe(true);
         expect(buffered).toHaveBeenCalledTimes(1);
+        expect(session.client.emitSessionReady).toHaveBeenCalledTimes(1);
     });
 
     it('marks session ready on get_state even when sessionId is absent', () => {
@@ -300,6 +303,154 @@ describe('wireTransportEvents', () => {
         emitEvent({ type: 'response', command: 'get_state', success: true, data: {} });
 
         expect(session.isReady).toBe(true);
+        expect(session.client.emitSessionReady).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps a fresh Pi get_state failure non-fatal for startup fallback compatibility', () => {
+        const transport = createMockTransport();
+        const onStartupFailure = vi.fn();
+        wireTransportEvents(transport, session, [], { onStartupFailure });
+
+        emitEvent({
+            type: 'response',
+            command: 'get_state',
+            success: false,
+            error: 'No session found matching pi-session-404',
+        });
+
+        expect(onStartupFailure).not.toHaveBeenCalled();
+        expect(session.client.emitSessionReady).not.toHaveBeenCalled();
+    });
+
+    it('keeps malformed get_state data non-fatal for a fresh Pi session', () => {
+        const transport = createMockTransport();
+        const onStartupFailure = vi.fn();
+        wireTransportEvents(transport, session, [], { onStartupFailure });
+
+        emitEvent({
+            type: 'response',
+            command: 'get_state',
+            success: true,
+            data: { model: 'not-a-model-object' },
+        });
+
+        expect(onStartupFailure).not.toHaveBeenCalled();
+        expect(session.isReady).toBe(false);
+        expect(session.client.emitSessionReady).not.toHaveBeenCalled();
+    });
+
+    it('fails a native resume when get_state returns malformed data', () => {
+        const expectedSession = new PiSession({
+            api: {} as any,
+            client: {
+                keepAlive: vi.fn(),
+                updateMetadata: vi.fn(),
+                sendAgentMessage: vi.fn(),
+                emitMessagesConsumed: vi.fn(),
+                sendSessionEvent: vi.fn(),
+                emitSessionReady: vi.fn(),
+            } as any,
+            path: '/tmp/test',
+            logPath: '/tmp/test.log',
+            startedBy: 'terminal',
+            startingMode: 'local',
+            expectedNativeSessionId: 'pi-session-requested',
+        });
+        const transport = createMockTransport();
+        const onStartupFailure = vi.fn();
+        wireTransportEvents(transport, expectedSession, [], { onStartupFailure });
+
+        emitEvent({
+            type: 'response',
+            command: 'get_state',
+            success: true,
+            data: { model: 'not-a-model-object' },
+        });
+
+        expect(onStartupFailure).toHaveBeenCalledTimes(1);
+        expect((onStartupFailure.mock.calls[0][0] as Error).message).toContain('malformed state data');
+        expect(expectedSession.isReady).toBe(false);
+        expect(expectedSession.client.emitSessionReady).not.toHaveBeenCalled();
+        expect(expectedSession.client.updateMetadata).not.toHaveBeenCalled();
+    });
+
+    it('rejects a resume get_state response with a missing session ID before mutating state', () => {
+        const expectedSession = new PiSession({
+            api: {} as any,
+            client: {
+                keepAlive: vi.fn(),
+                updateMetadata: vi.fn(),
+                sendAgentMessage: vi.fn(),
+                emitMessagesConsumed: vi.fn(),
+                sendSessionEvent: vi.fn(),
+                emitSessionReady: vi.fn(),
+            } as any,
+            path: '/tmp/test',
+            logPath: '/tmp/test.log',
+            startedBy: 'terminal',
+            startingMode: 'local',
+            expectedNativeSessionId: 'pi-session-requested',
+        });
+        const transport = createMockTransport();
+        const onStartupFailure = vi.fn();
+        wireTransportEvents(transport, expectedSession, [], { onStartupFailure });
+
+        emitEvent({
+            type: 'response',
+            command: 'get_state',
+            success: true,
+            data: {
+                model: { modelId: 'wrong-model', provider: 'wrong-provider' },
+                thinkingLevel: 'high',
+            },
+        });
+
+        expect(onStartupFailure).toHaveBeenCalledTimes(1);
+        expect((onStartupFailure.mock.calls[0][0] as Error).message)
+            .toContain('unexpected native session (missing)');
+        expect(expectedSession.client.emitSessionReady).not.toHaveBeenCalled();
+        expect(expectedSession.client.updateMetadata).not.toHaveBeenCalled();
+        expect(expectedSession.currentModel).toBeUndefined();
+        expect(expectedSession.currentThinkingLevel).toBeUndefined();
+    });
+
+    it('rejects a resume get_state response for a different session before metadata is published', () => {
+        const expectedSession = new PiSession({
+            api: {} as any,
+            client: {
+                keepAlive: vi.fn(),
+                updateMetadata: vi.fn(),
+                sendAgentMessage: vi.fn(),
+                emitMessagesConsumed: vi.fn(),
+                sendSessionEvent: vi.fn(),
+                emitSessionReady: vi.fn(),
+            } as any,
+            path: '/tmp/test',
+            logPath: '/tmp/test.log',
+            startedBy: 'terminal',
+            startingMode: 'local',
+            expectedNativeSessionId: 'pi-session-requested',
+        });
+        const transport = createMockTransport();
+        const onStartupFailure = vi.fn();
+        wireTransportEvents(transport, expectedSession, [], { onStartupFailure });
+
+        emitEvent({
+            type: 'response',
+            command: 'get_state',
+            success: true,
+            data: {
+                sessionId: 'pi-session-other',
+                model: { modelId: 'wrong-model', provider: 'wrong-provider' },
+            },
+        });
+
+        expect(onStartupFailure).toHaveBeenCalledTimes(1);
+        expect((onStartupFailure.mock.calls[0][0] as Error).message)
+            .toContain('unexpected native session pi-session-other');
+        expect(expectedSession.client.emitSessionReady).not.toHaveBeenCalled();
+        expect(expectedSession.client.updateMetadata).not.toHaveBeenCalled();
+        expect(expectedSession.currentModel).toBeUndefined();
     });
 
     it('handles error response — sends session event', () => {
