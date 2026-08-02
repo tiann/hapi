@@ -549,6 +549,8 @@ export async function runOpencode(opts: {
             },
             onClearRequested: async () => {
                 await api.reserveOpenCodeClearSession(session.sessionId);
+            },
+            onClearCleanupComplete: () => {
                 clearRequested = true;
             },
             isLocalIdCancelled: (localId) => cancelledDequeuedLocalIds.delete(localId)

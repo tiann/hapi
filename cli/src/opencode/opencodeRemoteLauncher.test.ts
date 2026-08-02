@@ -344,12 +344,13 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             resolvePrompt = resolve;
         });
         const onClearRequested = vi.fn();
+        const onClearCleanupComplete = vi.fn();
         const { session } = createSessionStub([
             { message: 'before-clear', mode: createMode() },
             { message: '', mode: createClearMode() }
         ]);
 
-        const launcherPromise = opencodeRemoteLauncher(session as never, { onClearRequested });
+        const launcherPromise = opencodeRemoteLauncher(session as never, { onClearRequested, onClearCleanupComplete });
         while (!harness.events.includes('prompt:start')) {
             await new Promise<void>((resolve) => setImmediate(resolve));
         }
@@ -361,6 +362,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         expect(harness.events).toEqual(['prompt:start', 'prompt:end']);
         expect(harness.promptCount).toBe(1);
         expect(onClearRequested).toHaveBeenCalledTimes(1);
+        expect(onClearCleanupComplete).toHaveBeenCalledTimes(1);
         // The sibling compact test below intentionally inspects its first
         // factory result; do not leave this test's backend instance behind.
         const backendModule = await import('./utils/opencodeBackend');
@@ -372,12 +374,14 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             throw new Error('disconnect failed');
         };
         const onClearRequested = vi.fn();
+        const onClearCleanupComplete = vi.fn();
         const { session } = createSessionStub([
             { message: '', mode: createClearMode() }
         ]);
 
-        await expect(opencodeRemoteLauncher(session as never, { onClearRequested })).rejects.toThrow('disconnect failed');
+        await expect(opencodeRemoteLauncher(session as never, { onClearRequested, onClearCleanupComplete })).rejects.toThrow('disconnect failed');
         expect(onClearRequested).toHaveBeenCalledTimes(1);
+        expect(onClearCleanupComplete).not.toHaveBeenCalled();
         const backendModule = await import('./utils/opencodeBackend');
         (backendModule.createOpencodeBackend as unknown as ReturnType<typeof vi.fn>).mockClear();
     });

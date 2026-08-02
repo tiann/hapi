@@ -26,6 +26,7 @@ interface OpencodeLoopOptions {
     onReasoningEffortRollback?: (effort: string | null) => void;
     onCompactAvailabilityChange?: (available: boolean) => void;
     onClearRequested?: () => Promise<void>;
+    onClearCleanupComplete?: () => void;
     // Consumes (delete-and-return) whether the given localId was cancelled
     // after already being dequeued — needed because a queued /compact can
     // still be running (its REST call can take minutes) by the time a
@@ -82,7 +83,8 @@ export async function opencodeLoop(opts: OpencodeLoopOptions): Promise<void> {
             onReasoningEffortRollback: opts.onReasoningEffortRollback,
             onCompactAvailabilityChange: opts.onCompactAvailabilityChange,
             isLocalIdCancelled: opts.isLocalIdCancelled,
-            onClearRequested: opts.onClearRequested
+            onClearRequested: opts.onClearRequested,
+            onClearCleanupComplete: opts.onClearCleanupComplete
         }),
         onSessionReady: opts.onSessionReady
     });

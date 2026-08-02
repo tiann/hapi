@@ -78,6 +78,8 @@ vi.mock('./loop', () => ({
         if (harness.triggerClear) {
             const onClearRequested = options.onClearRequested as (() => void) | undefined;
             await onClearRequested?.();
+            const onClearCleanupComplete = options.onClearCleanupComplete as (() => void) | undefined;
+            onClearCleanupComplete?.();
         }
     })
 }));
