@@ -34,6 +34,10 @@ export function isGlobalScopedMessageStreamEvent(scope: SSEScope, eventType: Syn
     return scope === 'global' && MESSAGE_STREAM_EVENT_TYPES.has(eventType)
 }
 
+export function shouldInvalidateSessionListForEvent(scope: SSEScope, eventType: SyncEvent['type']): boolean {
+    return scope === 'global' && eventType === 'messages-invalidated'
+}
+
 type VisibilityState = 'visible' | 'hidden'
 
 type ToastEvent = Extract<SyncEvent, { type: 'toast' }>
@@ -526,6 +530,10 @@ export function useSSE(options: {
             if (event.type === 'toast') {
                 onToastRef.current?.(event)
                 return
+            }
+
+            if (shouldInvalidateSessionListForEvent(scope, event.type)) {
+                queueSessionListInvalidation()
             }
 
             if (scope === 'global' && MESSAGE_STREAM_EVENT_TYPES.has(event.type)) {

@@ -1298,7 +1298,11 @@ async uploadScratchlistAttachment(
             }
         }
         try {
-            this.store.messages.moveUninvokedScheduledMessages(sessionId, replacementSessionId)
+            const moved = this.store.messages.moveUninvokedScheduledMessages(sessionId, replacementSessionId)
+            if (moved > 0) {
+                this.eventPublisher.emit({ type: 'messages-invalidated', sessionId })
+                this.eventPublisher.emit({ type: 'messages-invalidated', sessionId: replacementSessionId })
+            }
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Could not move scheduled prompts to the fresh OpenCode session'
             this.persistClearOperationState(sessionId, namespace, operation, message)

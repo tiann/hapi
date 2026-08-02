@@ -170,6 +170,8 @@ describe('SyncEngine.clearOpenCodeSession', () => {
         const { store, engine } = createEngine()
         try {
             const source = createClearSource(engine)
+            const events: Array<{ type: string, sessionId?: string }> = []
+            engine.subscribe((event) => events.push(event))
             const scheduled = store.messages.addMessage(source.id, { text: 'send later' }, 'scheduled-clear', Date.now() + 60_000)
             const spawnSession = mock(async (...args: unknown[]) => ({ type: 'success' as const, sessionId: args[12] as string }))
             setSpawn(engine, spawnSession)
@@ -183,6 +185,8 @@ describe('SyncEngine.clearOpenCodeSession', () => {
             expect(store.messages.getAllMessages(result.sessionId)).toEqual(expect.arrayContaining([
                 expect.objectContaining({ id: scheduled.id, localId: 'scheduled-clear', invokedAt: null })
             ]))
+            expect(events).toContainEqual(expect.objectContaining({ type: 'messages-invalidated', sessionId: source.id }))
+            expect(events).toContainEqual(expect.objectContaining({ type: 'messages-invalidated', sessionId: result.sessionId }))
         } finally {
             engine.stop()
         }
