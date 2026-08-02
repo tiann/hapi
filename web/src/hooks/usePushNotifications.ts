@@ -143,7 +143,6 @@ export function usePushNotifications(api: ApiClient | null) {
                     applicationServerKey
                 })
             }
-            writeStoredVapidKey(publicKey)
 
             const json = subscription.toJSON()
             const keys = json.keys
@@ -158,6 +157,11 @@ export function usePushNotifications(api: ApiClient | null) {
                     auth: keys.auth
                 }
             })
+            // Only record the key after the hub registration succeeded. A
+            // failed registration must leave the previous key in place so the
+            // next load retries the replacement instead of reusing a
+            // subscription the hub never learned about.
+            writeStoredVapidKey(publicKey)
             setIsSubscribed(true)
             return true
         } catch (error) {
