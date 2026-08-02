@@ -257,4 +257,57 @@ describe('useComposerDraft', () => {
         expect(result.current).toEqual({ sessionId: 'session-2', complete: true, restoredAny: false })
     })
 
+    it('does not mark hydration restored when every saved attachment rejects', async () => {
+        const file = new File(['broken'], 'broken.png', { type: 'image/png' })
+        mockGetDraftAttachments.mockResolvedValue([file])
+        const addAttachment = vi.fn(async () => { throw new Error('upload failed') })
+        const { result } = renderHook(() => useComposerDraft('session-1', '', [], true, vi.fn(), addAttachment))
+
+        await act(async () => flushRAF())
+
+        expect(addAttachment).toHaveBeenCalledWith(file)
+        expect(result.current).toEqual({ sessionId: 'session-1', complete: true, restoredAny: false })
+    })
+
+    it('marks hydration restored when at least one saved attachment succeeds', async () => {
+        const rejected = new File(['broken'], 'broken.png', { type: 'image/png' })
+        const restored = new File(['ok'], 'ok.png', { type: 'image/png' })
+        mockGetDraftAttachments.mockResolvedValue([rejected, restored])
+        const addAttachment = vi.fn(async (file: File) => {
+            if (file === rejected) throw new Error('upload failed')
+        })
+        const { result } = renderHook(() => useComposerDraft('session-1', '', [], true, vi.fn(), addAttachment))
+
+        await act(async () => flushRAF())
+
+        expect(addAttachment).toHaveBeenCalledTimes(2)
+        expect(result.current).toEqual({ sessionId: 'session-1', complete: true, restoredAny: true })
+    })
+
+    it('allows implicit failed-send restoration when every persisted attachment fails', async () => {
+        const file = new File(['broken'], 'broken.png', { type: 'image/png' })
+        mockGetDraftAttachments.mockResolvedValue([file])
+
+        function AttachmentFailureVsImplicitRestore() {
+            const [text, setText] = useState('')
+            const [errorCleared, setErrorCleared] = useState(false)
+            const hydration = useComposerDraft('session-race', text, [], true, setText, async () => {
+                throw new Error('upload failed')
+            })
+            useEffect(() => {
+                if (hydration.sessionId !== 'session-race' || !hydration.complete) return
+                if (hydration.restoredAny) {
+                    setErrorCleared(true)
+                    return
+                }
+                setText('failed-send text')
+            }, [hydration])
+            return createElement('output', { 'data-testid': 'attachment-race' }, `${text}|${errorCleared}`)
+        }
+
+        render(createElement(AttachmentFailureVsImplicitRestore))
+        await act(async () => flushRAF())
+        expect(screen.getByTestId('attachment-race')).toHaveTextContent('failed-send text|false')
+    })
+
 })

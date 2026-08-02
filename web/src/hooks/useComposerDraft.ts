@@ -81,27 +81,42 @@ export function useComposerDraft(
                 // publish old status or rehydrate old files after disposal.
                 if (disposed) return
                 const restoreAttachments = attachmentsRef.current.length === 0 && files.length > 0
-                // Publish discovery before any async addAttachment operation.
+                // Text is already known to be restored; attachment presence by
+                // itself is not. An upload can fail, so only successful adds
+                // contribute to restoredAny in the final completion update.
                 setHydration((current) => current.sessionId === sessionId
                     ? {
                         sessionId,
                         complete: false,
-                        restoredAny: restoreText || restoreAttachments,
+                        restoredAny: restoreText || current.restoredAny,
                     }
                     : current)
+                let restoredAttachment = false
                 if (restoreAttachments) {
                     for (const file of files) {
                         if (disposed) break
-                        await addAttachment(file)
+                        try {
+                            await addAttachment(file)
+                            restoredAttachment = true
+                        } catch {
+                            // Continue restoring remaining files; one failed
+                            // attachment must not discard a successful sibling.
+                        }
                     }
                 }
+                return restoredAttachment
             }).catch(() => {
-                // Attachment draft restoration is best effort.
-            }).finally(() => {
+                // Attachment draft read is best effort.
+                return false
+            }).then((restoredAttachment) => {
                 if (!disposed) {
                     attachmentsReadyRef.current = true
                     setHydration((current) => current.sessionId === sessionId
-                        ? { ...current, complete: true }
+                        ? {
+                            ...current,
+                            complete: true,
+                            restoredAny: current.restoredAny || Boolean(restoredAttachment),
+                        }
                         : current)
                 }
             })
