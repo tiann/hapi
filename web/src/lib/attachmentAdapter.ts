@@ -113,7 +113,16 @@ export function createAttachmentAdapter(api: ApiClient, sessionId: string): Atta
                 // Generate preview URL for images under 5MB
                 let previewUrl: string | undefined
                 if (isImageMimeType(contentType) && file.size <= MAX_PREVIEW_BYTES) {
-                    previewUrl = await fileToDataUrl(file)
+                    try {
+                        previewUrl = await fileToDataUrl(file)
+                    } catch {
+                        // Preview generation is optional after the upload has succeeded.
+                    }
+                }
+
+                if (cancelledAttachmentIds.has(id)) {
+                    await deleteUpload(result.path)
+                    return
                 }
 
                 yield {
