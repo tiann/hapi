@@ -198,8 +198,15 @@ function stripMarkdownFences(text: string): string {
     return visible.join('\n')
 }
 
+/** Drop CommonMark indented-code lines (4+ leading spaces) so quoted
+ *  Error: T: examples are not treated as live wire failures. Keep tabs and
+ *  1–3 space prefixes — real ACP emits sometimes pad lightly / use tabs. */
+function stripIndentedCode(text: string): string {
+    return text.split(/\r?\n/).filter((line) => !/^ {4,}/.test(line)).join('\n')
+}
+
 export function classifyCursorAgentMessage(text: string): CursorAgentStreamFailure | null {
-    const candidate = stripMarkdownFences(text)
+    const candidate = stripIndentedCode(stripMarkdownFences(text))
     for (const pattern of PATTERNS) {
         if (pattern.test(candidate)) {
             return { kind: pattern.kind, transient: pattern.transient, raw: text, source: 'text' }
