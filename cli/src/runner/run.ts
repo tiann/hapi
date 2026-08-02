@@ -802,18 +802,24 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
           if (session.startedBy === 'runner' && session.childProcess) {
             try {
-              await killProcessByChildProcess(session.childProcess);
+              const treeStopped = await killProcessByChildProcess(session.childProcess);
+              if (!treeStopped) {
+                logger.debug(`[RUNNER RUN] Process tree for session ${sessionId} is still alive after stop request`);
+                return 'still_alive';
+              }
               logger.debug(`[RUNNER RUN] Requested termination for runner-spawned session ${sessionId}`);
             } catch (error) {
               logger.debug(`[RUNNER RUN] Failed to kill session ${sessionId}:`, error);
+              return 'still_alive';
             }
           } else {
             // For externally started sessions, try to kill by PID
             try {
-              await killProcess(pid);
+              if (!(await killProcess(pid))) return 'still_alive';
               logger.debug(`[RUNNER RUN] Requested termination for external session PID ${pid}`);
             } catch (error) {
               logger.debug(`[RUNNER RUN] Failed to kill external session PID ${pid}:`, error);
+              return 'still_alive';
             }
           }
 
