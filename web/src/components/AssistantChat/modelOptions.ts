@@ -77,8 +77,8 @@ function getClaudeModelOptions(currentModel?: string | null, customOptions?: Mod
 }
 
 function getAgyModelOptions(currentModel?: string | null): ModelOption[] {
-    const options = MODEL_OPTIONS.agy.map((m) => ({
-        value: m.value === 'auto' ? null : m.value,
+    const options = MODEL_OPTIONS.agy.filter((m) => m.value !== 'auto').map((m) => ({
+        value: m.value,
         label: m.label
     }))
     return withCurrentModelOption(options, currentModel)

@@ -2,6 +2,18 @@ import { describe, expect, it } from 'vitest'
 import { getModelOptionsForFlavor, getNextModelForFlavor } from './modelOptions'
 
 describe('getModelOptionsForFlavor', () => {
+    it('never offers the unsupported default reset in an active AGY session', () => {
+        for (const currentModel of [null, 'auto']) {
+            const options = getModelOptionsForFlavor('agy', currentModel)
+            expect(options.length).toBeGreaterThan(0)
+            expect(options.some((option) => option.value === null)).toBe(false)
+        }
+
+        const options = getModelOptionsForFlavor('agy', 'agy-custom-model')
+        expect(options[0]).toEqual({ value: 'agy-custom-model', label: 'agy-custom-model' })
+        expect(options.some((option) => option.value === null)).toBe(false)
+    })
+
     it('returns Gemini model options for gemini flavor', () => {
         const options = getModelOptionsForFlavor('gemini')
         expect(options[0]).toEqual({ value: null, label: 'Default' })
@@ -167,6 +179,14 @@ describe('getModelOptionsForFlavor', () => {
 })
 
 describe('getNextModelForFlavor', () => {
+    it('cycles AGY null, auto, and unknown current values only to concrete models', () => {
+        const firstConcrete = getModelOptionsForFlavor('agy').find((option) => option.value !== null)?.value
+        expect(firstConcrete).toBeTruthy()
+        expect(getNextModelForFlavor('agy', null)).toBe(firstConcrete)
+        expect(getNextModelForFlavor('agy', 'auto')).toBe(firstConcrete)
+        expect(getNextModelForFlavor('agy', 'agy-custom-model')).toBe(firstConcrete)
+    })
+
     it('cycles Gemini models', () => {
         const next = getNextModelForFlavor('gemini', null)
         expect(next).not.toBeNull()
