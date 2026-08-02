@@ -68,7 +68,7 @@ export function resolveToolAutoApprovalDecision(
 
     const lowerTool = toolName.toLowerCase();
     const lowerId = toolCallId.toLowerCase();
-    const decisionForMode: AutoApprovalDecision = mode === 'yolo' ? 'approved_for_session' : 'approved';
+    const decisionForMode: AutoApprovalDecision = (mode === 'yolo' || mode === 'always-proceed') ? 'approved_for_session' : 'approved';
 
     if (
         AUTO_APPROVE_EXACT_TOOL_NAMES.has(lowerTool)
@@ -81,7 +81,7 @@ export function resolveToolAutoApprovalDecision(
         return decisionForMode;
     }
 
-    if (mode === 'yolo') {
+    if (mode === 'yolo' || mode === 'always-proceed') {
         return 'approved_for_session';
     }
 
@@ -122,6 +122,14 @@ export type CancelPendingRequestOptions = {
     completedReason: string;
     rejectMessage: string;
     decision?: PermissionCompletion['decision'];
+    /**
+     * When set, only pending requests whose toolName satisfies the predicate
+     * are canceled; every other pending request (and its agentState entry) is
+     * left untouched. Omitting it cancels everything — the original,
+     * unscoped behavior every existing caller (session-teardown cancelAll)
+     * relies on.
+     */
+    filter?: (toolName: string) => boolean;
 };
 
 export abstract class BasePermissionHandler<TResponse extends { id: string }, TResult> {
@@ -205,16 +213,24 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
     }
 
     protected cancelPendingRequests(options: CancelPendingRequestOptions): void {
-        for (const [, pending] of this.pendingRequests.entries()) {
+        const { filter } = options;
+
+        for (const [id, pending] of this.pendingRequests.entries()) {
+            if (filter && !filter(pending.toolName)) continue;
             pending.reject(new Error(options.rejectMessage));
+            this.pendingRequests.delete(id);
         }
-        this.pendingRequests.clear();
 
         this.client.updateAgentState((currentState) => {
             const pendingRequests = currentState.requests || {};
             const completedRequests = { ...currentState.completedRequests };
+            const nextRequests: typeof pendingRequests = {};
 
             for (const [id, request] of Object.entries(pendingRequests)) {
+                if (filter && !filter(request.tool)) {
+                    nextRequests[id] = request;
+                    continue;
+                }
                 completedRequests[id] = {
                     ...request,
                     completedAt: Date.now(),
@@ -226,7 +242,7 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
 
             return {
                 ...currentState,
-                requests: {},
+                requests: nextRequests,
                 completedRequests
             };
         });

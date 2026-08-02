@@ -76,7 +76,10 @@ export function ensureToolBlock(
     if (existing) {
         const isPlaceholderToolName = (name: string): boolean => {
             const normalized = name.trim().toLowerCase()
-            return normalized === '' || normalized === 'tool' || normalized === 'unknown'
+            // 'generic' is agy's non-specific result wrapper (e.g. manage_subagents
+            // surfaces its result as GENERIC); don't let it overwrite the specific
+            // tool name the permission request already set when the two merge.
+            return normalized === '' || normalized === 'tool' || normalized === 'unknown' || normalized === 'generic'
         }
 
         // Preserve earliest createdAt for stable ordering.

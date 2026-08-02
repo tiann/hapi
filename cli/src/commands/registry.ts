@@ -1,4 +1,5 @@
 import chalk from 'chalk'
+import { agyCommand } from './agy'
 import { authCommand } from './auth'
 import { claudeCommand } from './claude'
 import { codexCommand } from './codex'
@@ -36,6 +37,7 @@ const removedGeminiCommand: CommandDefinition = {
 }
 
 const COMMANDS: CommandDefinition[] = [
+    agyCommand,
     authCommand,
     connectCommand,
     codexCommand,

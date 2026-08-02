@@ -8,6 +8,7 @@ import { useMachinePathsExists } from '@/hooks/useMachinePathsExists'
 import { useSpawnSession } from '@/hooks/mutations/useSpawnSession'
 import { useCodexModels } from '@/hooks/queries/useCodexModels'
 import { useCursorModelsForMachine } from '@/hooks/queries/useCursorModelsForMachine'
+import { useAgyModels } from '@/hooks/queries/useAgyModels'
 import { useOpencodeModelsForCwd } from '@/hooks/queries/useOpencodeModelsForCwd'
 import { useGrokModelsForCwd } from '@/hooks/queries/useGrokModelsForCwd'
 import { useSessions } from '@/hooks/queries/useSessions'
@@ -40,6 +41,7 @@ import { AgentSelector } from './AgentSelector'
 import { CollaborationModeSelector } from './CollaborationModeSelector'
 import { CodexImportActions } from './CodexImportActions'
 import { clearBatchImportedCodexSelection, resolveCodexImportRedirectSessionId } from './codexImportMerge'
+import { AgyModelSelector } from './AgyModelSelector'
 import { DirectorySection } from './DirectorySection'
 import { GrokPermissionModeSelector } from './GrokPermissionModeSelector'
 import { FastModeSelector } from './FastModeSelector'
@@ -246,6 +248,7 @@ export function NewSession(props: {
         machineId,
         enabled: agent === 'codex' && Boolean(machineId)
     })
+    const [agySelectedModel, setAgySelectedModel] = useState<string | null>(null)
     const runnerSpawnError = useMemo(
         () => formatRunnerSpawnError(selectedMachine),
         [selectedMachine]
@@ -524,6 +527,19 @@ export function NewSession(props: {
             setGrokPermissionMode('default')
         }
     }, [agent, grokPermissionMode, grokModelsState.autoPermissionModeSupported])
+    const agyModelsState = useAgyModels({
+        api: props.api,
+        machineId,
+        enabled: agent === 'agy' && Boolean(machineId)
+    })
+    useEffect(() => {
+        // Reset selection when agent / machine changes. The default is "Default"
+        // (null → no --model → agy uses its own default); we intentionally do NOT
+        // auto-pick the first model, so the user's explicit "Default" choice
+        // sticks instead of snapping to the first option.
+        setAgySelectedModel(null)
+    }, [agent, machineId])
+
     useEffect(() => {
         // Restore a remembered model when it is still advertised for this cwd;
         // otherwise auto-pick the backend default.
@@ -1080,7 +1096,9 @@ export function NewSession(props: {
 
             const resolvedModel = agent === 'opencode'
                 ? (opencodeSelectedModel ?? undefined)
-                : (model !== 'auto' ? model : undefined)
+                : agent === 'agy'
+                    ? (agySelectedModel ?? undefined)
+                    : (model !== 'auto' ? model : undefined)
             const resolvedEffort = (agent === 'claude' || agent === 'grok') && effort !== 'auto'
                 ? effort
                 : undefined
@@ -1150,8 +1168,10 @@ export function NewSession(props: {
                 sessionType,
                 worktreeName: sessionType === 'worktree' ? (worktreeName.trim() || undefined) : undefined,
                 serviceTier: resolvedServiceTier,
-                collaborationMode: resolvedCollaborationMode
+                collaborationMode: resolvedCollaborationMode,
+                startingMode: agent === 'agy' ? 'pty' : undefined
             })
+
 
             if (result.type === 'success') {
                 haptic.notification('success')
@@ -1264,7 +1284,17 @@ export function NewSession(props: {
                     onClear={() => setSelectedCodexImportSessionId(null)}
                 />
             ) : null}
-            {agent === 'opencode' ? (
+            {agent === 'agy' ? (
+                <AgyModelSelector
+                    machineId={machineId}
+                    isLoading={agyModelsState.isLoading}
+                    error={agyModelsState.error}
+                    availableModels={agyModelsState.availableModels}
+                    selectedModel={agySelectedModel}
+                    onModelChange={setAgySelectedModel}
+                    onRetry={agyModelsState.refetch}
+                />
+            ) : agent === 'opencode' ? (
                 <OpencodeModelSelector
                     cwd={deferredDirectory}
                     machineId={machineId}

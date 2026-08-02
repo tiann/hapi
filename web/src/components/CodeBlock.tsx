@@ -35,6 +35,12 @@ export function CodeBlock(props: {
     size?: 'compact' | 'comfortable'
     collapseLineThreshold?: number
     collapseCharThreshold?: number
+    /**
+     * First line's number in the gutter (default 1). Set to the true starting
+     * line when showing a partial slice of a file (e.g. a Read of lines 50–100)
+     * so the gutter isn't misleadingly numbered from 1.
+     */
+    startLineNumber?: number
 }) {
     const { t } = useTranslation()
     const showCopyButton = props.showCopyButton ?? true
@@ -69,7 +75,8 @@ export function CodeBlock(props: {
     // on newlines using the same normalization, so line numbers match.
     const fallbackLines = splitCodeLines(props.code)
     const codeLines: ReactNode[] = highlightedLines ?? fallbackLines
-    const lineNumberWidth = Math.max(String(codeLines.length).length, 3)
+    const firstLine = props.startLineNumber ?? 1
+    const lineNumberWidth = Math.max(String(firstLine + codeLines.length - 1).length, 3)
     const label = formatCodeLabel(props.language, props.title)
     // First track sizes to the line-number column; the code column takes the
     // rest. When wrapped the code column is capped to the container width
@@ -158,7 +165,7 @@ export function CodeBlock(props: {
                                     aria-hidden="true"
                                     className={`select-none bg-[var(--app-code-header-bg)] px-3 text-right text-[var(--app-hint)]/70 ${rowPad}`}
                                 >
-                                    {index + 1}
+                                    {firstLine + index}
                                 </span>
                                 <span data-code-cell className={`pl-4 pr-8 ${rowPad}`} style={codeCellStyle}>
                                     {line}

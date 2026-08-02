@@ -8,6 +8,7 @@ export type RemoteLauncherExitReason = 'switch' | 'exit';
 
 export type LaunchOutcome = {
     reachedReady: boolean;
+    authFailed?: boolean;
     error?: Error;
 };
 
@@ -63,6 +64,8 @@ export abstract class RemoteLauncherBase {
     protected async runRespawnLoop(opts: {
         maxImmediateFailures?: number;
         respawnBackoffMs?: number;
+        maxAuthRetries?: number;
+        authRetryDelayMs?: number;
         onLaunchStart: (isNewSession: boolean) => void;
         launchOnce: (signal: AbortSignal) => Promise<LaunchOutcome>;
         onLaunchSuccess?: () => void;
@@ -70,8 +73,11 @@ export abstract class RemoteLauncherBase {
     }): Promise<void> {
         const maxImmediateFailures = opts.maxImmediateFailures ?? 3;
         const respawnBackoffMs = opts.respawnBackoffMs ?? 1000;
+        const maxAuthRetries = opts.maxAuthRetries ?? 8;
+        const authRetryDelayMs = opts.authRetryDelayMs ?? 1500;
 
         let consecutiveImmediateFailures = 0;
+        let authRetries = 0;
         let previousSessionId: string | null = null;
 
         while (!this.exitReason) {
@@ -88,8 +94,22 @@ export abstract class RemoteLauncherBase {
                 const outcome = await opts.launchOnce(controller.signal);
                 reachedReady = outcome.reachedReady;
 
+                if (outcome.authFailed) {
+                    if (!this.exitReason && !controller.signal.aborted) {
+                        authRetries++;
+                        if (authRetries > maxAuthRetries) {
+                            opts.onLaunchFailure?.(new Error(`Authentication failed after ${maxAuthRetries} attempts`));
+                            this.exitReason = 'exit';
+                            break;
+                        }
+                        await new Promise((r) => setTimeout(r, authRetryDelayMs));
+                        continue;
+                    }
+                }
+
                 if (reachedReady) {
                     consecutiveImmediateFailures = 0;
+                    authRetries = 0;
                     opts.onLaunchSuccess?.();
                 }
 

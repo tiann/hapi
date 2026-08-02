@@ -227,6 +227,34 @@ describe('session model', () => {
         expect(merged?.model).toBe('gpt-5.4')
     })
 
+    it('deduplicates agy sessions that share an agySessionId (reopen correlation)', async () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const oldSession = cache.getOrCreateSession(
+            'agy-dup-old',
+            { path: '/tmp/project', host: 'localhost', flavor: 'agy', agySessionId: 'brain-uuid-1' },
+            null,
+            'default'
+        )
+        const newSession = cache.getOrCreateSession(
+            'agy-dup-new',
+            { path: '/tmp/project', host: 'localhost', flavor: 'agy', agySessionId: 'brain-uuid-1' },
+            null,
+            'default'
+        )
+
+        await cache.deduplicateByAgentSessionId(newSession.id)
+
+        // The two rows sharing the brain UUID must collapse to one — reopen
+        // reactivates the archived row instead of orphaning a duplicate. Before
+        // the fix, extractAgentSessionId omitted agySessionId so it returned null
+        // and nothing merged (both rows survived).
+        const survivors = [oldSession.id, newSession.id].filter((id) => cache.getSession(id) != null)
+        expect(survivors).toHaveLength(1)
+    })
+
     it('preserves service tier from old session when merging into resumed session', async () => {
         const store = new Store(':memory:')
         const events: SyncEvent[] = []

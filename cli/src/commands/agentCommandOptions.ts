@@ -1,8 +1,11 @@
 import type { PermissionMode } from '@hapi/protocol/types'
 
-export type RemoteAgentCommandOptions<TPermissionMode extends PermissionMode> = {
+export type RemoteAgentCommandOptions<
+    TPermissionMode extends PermissionMode,
+    TStartingMode extends 'local' | 'remote' | 'pty' = 'local' | 'remote',
+> = {
     startedBy?: 'runner' | 'terminal'
-    startingMode?: 'local' | 'remote'
+    startingMode?: TStartingMode
     permissionMode?: TPermissionMode
     model?: string
     effort?: string
@@ -11,11 +14,16 @@ export type RemoteAgentCommandOptions<TPermissionMode extends PermissionMode> = 
     existingSessionId?: string
 }
 
-export function parseRemoteAgentCommandOptions<TPermissionMode extends PermissionMode>(
+export function parseRemoteAgentCommandOptions<
+    TPermissionMode extends PermissionMode,
+    TStartingMode extends 'local' | 'remote' | 'pty' = 'local' | 'remote',
+>(
     args: string[],
-    allowedPermissionModes: readonly TPermissionMode[]
-): RemoteAgentCommandOptions<TPermissionMode> {
-    const options: RemoteAgentCommandOptions<TPermissionMode> = {}
+    allowedPermissionModes: readonly TPermissionMode[],
+    allowedStartingModes?: readonly TStartingMode[],
+): RemoteAgentCommandOptions<TPermissionMode, TStartingMode> {
+    const options: RemoteAgentCommandOptions<TPermissionMode, TStartingMode> = {}
+    const startingModes: readonly string[] = allowedStartingModes ?? ['local', 'remote']
     let hasExplicitPermissionMode = false
 
     for (let i = 0; i < args.length; i++) {
@@ -24,8 +32,8 @@ export function parseRemoteAgentCommandOptions<TPermissionMode extends Permissio
             options.startedBy = args[++i] as 'runner' | 'terminal'
         } else if (arg === '--hapi-starting-mode') {
             const value = args[++i]
-            if (value === 'local' || value === 'remote') {
-                options.startingMode = value
+            if (startingModes.includes(value)) {
+                options.startingMode = value as TStartingMode
             } else {
                 throw new Error('Invalid --hapi-starting-mode (expected local, remote, or pty)')
             }
@@ -43,7 +51,25 @@ export function parseRemoteAgentCommandOptions<TPermissionMode extends Permissio
             options.permissionMode = mode as TPermissionMode
             hasExplicitPermissionMode = true
         } else if (arg === '--yolo' && !hasExplicitPermissionMode) {
-            options.permissionMode = 'yolo' as TPermissionMode
+            // --yolo means "auto-approve everything", but flavors name that mode
+            // differently (opencode/gemini: 'yolo', agy: 'always-proceed'). Pick
+            // whichever auto-approve mode this flavor actually allows instead of
+            // hardcoding 'yolo' — otherwise agy gets a mode that isn't in its set
+            // (AGY_PERMISSION_MODES) and downstream flavor validation rejects it.
+            const yoloEquivalent = (['yolo', 'always-proceed', 'bypassPermissions'] as const)
+                .find((m) => (allowedPermissionModes as readonly string[]).includes(m))
+            if (yoloEquivalent) {
+                options.permissionMode = yoloEquivalent as TPermissionMode
+            }
+        } else if (arg === '--hapi-session-id') {
+            // Hub row to reuse on reopen/resume of a pty session (agy), so the id
+            // stays stable instead of spawn-new + merge-delete (+ the 404 flash).
+            // The runner only emits this for pty flavors whose parser consumes it.
+            const id = args[++i]
+            if (!id) {
+                throw new Error('Missing --hapi-session-id value')
+            }
+            options.existingSessionId = id
         } else if (arg === '--resume') {
             const sessionId = args[++i]
             if (!sessionId) {

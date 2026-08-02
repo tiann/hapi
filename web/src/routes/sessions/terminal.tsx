@@ -7,6 +7,7 @@ import { useSession } from '@/hooks/queries/useSession'
 import { useTerminalSocket } from '@/hooks/useTerminalSocket'
 import { useQuickKeyInput, QuickKeyRows } from '@/components/QuickKeys/QuickKeys'
 import { useTranslation } from '@/lib/use-translation'
+import { randomId } from '@/lib/randomId'
 import { TerminalView } from '@/components/Terminal/TerminalView'
 import { LoadingState } from '@/components/LoadingState'
 import { Button } from '@/components/ui/button'
@@ -73,7 +74,7 @@ export default function TerminalPage() {
     // regenerates only when the route switches to a different session.
     const terminalIdRef = useRef<{ sessionId: string; id: string } | null>(null)
     if (terminalIdRef.current?.sessionId !== sessionId) {
-        terminalIdRef.current = { sessionId, id: `term-${sessionId}-${crypto.randomUUID()}` }
+        terminalIdRef.current = { sessionId, id: `term-${sessionId}-${randomId()}` }
     }
     const terminalId = terminalIdRef.current.id
     const terminalRef = useRef<Terminal | null>(null)

@@ -114,6 +114,7 @@ const AGENT_SESSION_ID_FIELD_BY_FLAVOR = {
     gemini: 'geminiSessionId',
     opencode: 'opencodeSessionId',
     grok: 'grokSessionId',
+    agy: 'agySessionId',
     cursor: 'cursorSessionId',
     kimi: 'kimiSessionId',
     pi: 'piSessionId'
@@ -135,6 +136,7 @@ function getSummaryAgentSessionId(metadata: Metadata): string | undefined {
         ?? metadata.geminiSessionId
         ?? metadata.opencodeSessionId
         ?? metadata.grokSessionId
+        ?? metadata.agySessionId
         ?? metadata.cursorSessionId
         ?? metadata.kimiSessionId
         ?? undefined

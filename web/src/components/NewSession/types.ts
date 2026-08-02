@@ -1,4 +1,6 @@
 import {
+    AGY_MODEL_LABELS,
+    AGY_MODEL_PRESETS,
     CLAUDE_EFFORT_LABELS,
     CLAUDE_EFFORT_LEVELS,
     CLAUDE_MODEL_LABELS,
@@ -25,6 +27,10 @@ function modelPresetOptions<TModel extends string>(
 }
 
 export const MODEL_OPTIONS: Record<AgentType, { value: string; label: string }[]> = {
+    agy: [
+        { value: 'auto', label: 'Default' },
+        ...modelPresetOptions(AGY_MODEL_PRESETS, AGY_MODEL_LABELS),
+    ],
     claude: [
         { value: 'auto', label: 'Default' },
         ...modelPresetOptions(CLAUDE_MODEL_PRESETS, CLAUDE_MODEL_LABELS),

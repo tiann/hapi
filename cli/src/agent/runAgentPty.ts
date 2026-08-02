@@ -4,13 +4,13 @@ import { bracketPasteIfMultiline } from "@/agent/bracketedPaste"
 import { logger } from "@/lib"
 
 /**
- * Shared driver for running an interactive agent CLI (e.g. claude) inside a
+ * Shared driver for running an interactive agent CLI (claude, agy, ...) inside a
  * PTY. All flavor-specific behavior is supplied via options:
  *  - `command` / `args` / `cwd` / `envVars` / `extraEnv` — how to spawn
  *  - `promptMarkers` — strings that indicate the agent's input prompt has
  *    rendered. When provided, input-ready is gated on seeing one of them (e.g.
  *    claude's ink TUI). When omitted, falls back to an output-idle heuristic
- *    (for an agent with no detectable prompt marker).
+ *    (e.g. agy, which has no detectable prompt marker).
  *
  * The driver handles the parts every PTY agent shares: spawn lifecycle,
  * waiting until the agent is ready before sending the first message, echo-
@@ -26,33 +26,62 @@ export type RunAgentPtyOpts = {
     /** Additional env vars (e.g. DISABLE_AUTOUPDATER) applied after envVars. */
     extraEnv?: Record<string, string>
     /**
-     * Env var names to REMOVE from the spawned process's environment. claude uses
-     * this to strip CLAUDECODE / CLAUDE_CODE_* so the child isn't mistaken for a
-     * nested session (which would stop it writing its JSONL transcript).
+     * Env var names to REMOVE from the spawned process's environment. agy uses
+     * this to strip SSH_* vars: when agy detects an SSH session (via SSH_AUTH_SOCK
+     * etc.) it switches to a degraded keyring code path with aggressive 1s/5s
+     * timeouts that fall back to (empty) file storage and fail to authenticate.
+     * Removing the SSH markers makes agy take the normal keyring path, which reads
+     * the (unlocked) login keyring instantly and signs in.
      */
     unsetEnv?: string[]
-    /** Output substrings that signal the input prompt has rendered. */
-    promptMarkers?: string[]
+    /**
+     * Output markers that signal the input prompt has rendered. A string is
+     * matched as a substring; a RegExp is matched with `.test()`. Use a RegExp
+     * when the marker must tolerate a moving part (e.g. agy's banner carries the
+     * CLI version — `/Antigravity CLI \d/` — so a version bump doesn't silently
+     * break readiness detection).
+     */
+    promptMarkers?: (string | RegExp)[]
     /**
      * Output substrings that indicate a trust/safety prompt the agent shows on
      * first run in a folder (e.g. claude's "Is this a project you trust?").
      * When detected, the driver auto-approves it (Enter selects the default
      * "Yes" option) so the trust screen doesn't get mistaken for the input
      * prompt and the first user message isn't consumed by it.
+     * Strings match as substrings; RegExps match with `.test()`.
      */
-    trustMarkers?: string[]
+    trustMarkers?: (string | RegExp)[]
+    /**
+     * Output substrings that indicate the agent failed to authenticate and is
+     * sitting at a login/menu screen instead of the input prompt (e.g. agy's
+     * "Select login method" / "not signed in"). agy's keyring auth intermittently
+     * times out (a hardcoded, non-configurable 5s ceiling), so when one of these
+     * is seen before the input prompt, the driver fires onAuthFailure and kills
+     * the PTY so the launcher can re-spawn — each fresh spawn has a fair chance of
+     * authenticating, so a few retries converge.
+     * Strings match as substrings; RegExps match with `.test()`.
+     */
+    authFailureMarkers?: (string | RegExp)[]
+    /**
+     * How long (ms) to let the agent's auth handshake settle before deciding a
+     * lingering login-menu screen is a real auth failure. Only used when
+     * authFailureMarkers is set. Default 12000.
+     */
+    authSettleMs?: number
     /** Idle window (ms) used to decide output has settled. */
     idleReadyMs?: number
     /**
      * Output substrings shown while the agent is actively working (e.g. claude's
      * "esc to interrupt" footer / spinner). When seen, `onThinkingChange(true)`.
+     * Strings match as substrings; RegExps match with `.test()`.
      */
-    busyMarkers?: string[]
+    busyMarkers?: (string | RegExp)[]
     /**
      * Output substrings shown when the agent is back at an idle input prompt
      * (e.g. claude's "for shortcuts" hint). When seen, `onThinkingChange(false)`.
+     * Strings match as substrings; RegExps match with `.test()`.
      */
-    idleMarkers?: string[]
+    idleMarkers?: (string | RegExp)[]
     debugPrefix: string
     signal?: AbortSignal
     nextMessage: () => Promise<{ message: string } | null>
@@ -66,6 +95,8 @@ export type RunAgentPtyOpts = {
      */
     onThinkingChange?: (thinking: boolean) => void
     onExit?: (code: number | null) => void
+    /** Fired when an authFailureMarker is seen before the agent becomes ready. */
+    onAuthFailure?: () => void
     /**
      * Fired after a message has been written to the PTY (text + CR) by the
      * driver's submit path. Callers that want to verify/repair delivery of a
@@ -95,9 +126,10 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
     // session scanner still resolves transcripts against the real ~/.claude.
     const spawnEnv = {
         ...process.env,
-        // PTY agents with a full TUI need TERM set — the runner's Bun.spawn env
-        // lacks it. Default to a sane terminal so the interactive TUI initializes
-        // correctly.
+        // PTY agents with a full TUI need TERM set. agy (bubbletea) in particular
+        // silently falls back to its "not signed in" login menu when TERM is
+        // absent — which the runner's Bun.spawn env lacks — dropping all input.
+        // Default to a sane terminal so the interactive TUI initializes correctly.
         TERM: process.env.TERM || 'xterm-256color',
         ...(opts.envVars ?? {}),
         ...(opts.extraEnv ?? {}),
@@ -111,15 +143,31 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
     const signal = opts.signal
     const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 
+    // Match an output chunk against a marker: substring for strings, `.test()`
+    // for RegExps. RegExp markers must be non-global (a `g` flag makes `.test()`
+    // stateful via lastIndex and would match every other call).
+    const markerMatches = (data: string, marker: string | RegExp): boolean =>
+        typeof marker === 'string' ? data.includes(marker) : marker.test(data)
+    const anyMarker = (data: string, list: (string | RegExp)[]): boolean =>
+        list.some((m) => markerMatches(data, m))
+
     const markers = opts.promptMarkers ?? []
     const hasMarkers = markers.length > 0
     const trustMarkers = opts.trustMarkers ?? []
+    const authFailureMarkers = opts.authFailureMarkers ?? []
     const idleReadyMs = opts.idleReadyMs ?? (hasMarkers ? 500 : 1000)
 
     let lastOutputAt = 0
     let sawOutput = false
     // For marker-based agents (claude): true once the input prompt rendered.
     let promptSeen = false
+    // Re-armable readiness: true only while the agent is actually sitting at an
+    // input prompt. Set by a prompt/idle marker (or the idle watchdog) and
+    // cleared on a busy marker and on every submit, so a queued message waits for
+    // a fresh prompt rather than any mid-turn output gap.
+    let inputReady = false
+    // Set whenever the login-menu screen is seen before the input prompt.
+    let sawAuthFailureScreen = false
     // Whether the first-run trust/safety prompt has been auto-approved.
     let trustHandled = false
 
@@ -135,7 +183,9 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
     // turn never started (a --resume replay swallowed the first message). A working
     // claude repaints its spinner footer every few hundred ms, so once output has
     // been SILENT for IDLE_SILENCE_MS while we still think it's busy, the turn is
-    // really over → force idle. Scoped to agents with a busy marker (claude).
+    // really over → force idle. Scoped to agents with a busy marker (claude): agy
+    // can sit silent mid-inference (no animated spinner), so it keeps marker-only
+    // clearing and no silence watchdog.
     const IDLE_SILENCE_MS = 3000
     let idleWatchdog: ReturnType<typeof setTimeout> | null = null
     const disarmIdleWatchdog = (): void => {
@@ -240,19 +290,29 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
                 // "Yes"). Do this BEFORE prompt detection so the trust screen
                 // isn't mistaken for the input prompt — otherwise the first user
                 // message gets consumed as the trust answer.
-                if (!trustHandled && trustMarkers.length > 0 && trustMarkers.some((m) => data.includes(m))) {
+                if (!trustHandled && trustMarkers.length > 0 && anyMarker(data, trustMarkers)) {
                     trustHandled = true
                     logger.debug(`${debugPrefix} trust prompt detected; auto-approving with Enter`)
                     manager.write('\r')
-                } else if (hasMarkers && !promptSeen && markers.some((m) => data.includes(m))) {
+                } else if (hasMarkers && !promptSeen && anyMarker(data, markers)) {
                     promptSeen = true
+                }
+                // Note the login-menu screen if we see it before the prompt. We do
+                // NOT act immediately: agy shows this transiently on EVERY startup
+                // while its keyring auth handshake is still in flight, and only
+                // stays here when auth actually fails. The settle-wait below decides
+                // (after giving auth time) whether it's a real failure → re-spawn.
+                if (!promptSeen && authFailureMarkers.length > 0
+                    && anyMarker(data, authFailureMarkers)) {
+                    sawAuthFailureScreen = true
                 }
                 // Track the working/idle state from the live footer. The busy
                 // marker (spinner/"esc to interrupt") wins when both appear in a
                 // chunk; chunks with neither leave the state unchanged.
-                if (busyMarkers.length > 0 && busyMarkers.some((m) => data.includes(m))) {
+                if (busyMarkers.length > 0 && anyMarker(data, busyMarkers)) {
                     setThinking(true)
-                } else if (idleMarkers.length > 0 && idleMarkers.some((m) => data.includes(m))) {
+                    inputReady = false
+                } else if (idleMarkers.length > 0 && anyMarker(data, idleMarkers)) {
                     setThinking(false)
                 } else if (thinking) {
                     // Still producing output (e.g. streaming response text with no
@@ -295,6 +355,27 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
                 manager.write(data)
             }
         })
+
+        // For auth-gated agents (agy): give the keyring auth handshake time to
+        // settle. agy shows its login menu transiently on every startup while auth
+        // is in flight; only a FAILED auth leaves it there. If the input prompt
+        // still hasn't rendered after authSettleMs and we're stuck on the login
+        // menu, request a re-spawn instead of proceeding on a session that never
+        // signed in. (A killed-too-early agy never finishes auth — that was the
+        // bug this guards against.) Runs before waitForInputReady so an auth
+        // failure re-spawns instead of being misread as "exited before ready".
+        if (authFailureMarkers.length > 0) {
+            const authDeadline = Date.now() + (opts.authSettleMs ?? 12000)
+            while (Date.now() < authDeadline) {
+                if (!manager.isRunning || signal?.aborted || promptSeen) break
+                await sleep(200)
+            }
+            if (manager.isRunning && !signal?.aborted && !promptSeen && sawAuthFailureScreen) {
+                logger.debug(`${debugPrefix} auth did not settle (still at login menu); requesting re-spawn`)
+                opts.onAuthFailure?.()
+                return
+            }
+        }
 
         // Wait until the prompt is actually usable BEFORE any message arrives, so
         // the first user message is processed immediately instead of being

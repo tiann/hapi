@@ -167,6 +167,32 @@ describe('sessionResume', () => {
             metadata: { path: '/tmp/project', host: 'localhost', flavor: 'grok' },
         }), 3)).toBe(false)
     })
+
+    it('resolveAgentSessionIdFromMetadata returns agySessionId for agy flavor', () => {
+        expect(resolveAgentSessionIdFromMetadata({
+            path: '/p',
+            host: 'h',
+            flavor: 'agy',
+            agySessionId: 'brain-uuid-1234',
+        })).toBe('brain-uuid-1234')
+    })
+
+    it('inactiveSessionCanResume allows agy resume when agySessionId exists', () => {
+        expect(inactiveSessionCanResume(makeSession({
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'agy',
+                agySessionId: 'brain-uuid-1234',
+            },
+        }), 5)).toBe(true)
+    })
+
+    it('inactiveSessionCanResume rejects agy with messages but no agySessionId', () => {
+        expect(inactiveSessionCanResume(makeSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'agy' },
+        }), 3)).toBe(false)
+    })
 })
 
 describe('sessionResume — pi flavor', () => {

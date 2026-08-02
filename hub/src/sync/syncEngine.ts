@@ -31,6 +31,7 @@ import {
     type RpcGeneratedImageResponse,
     type RpcListDirectoryResponse,
     type RpcStatFilesResponse,
+    type RpcListAgyModelsResponse,
     type RpcListCodexModelsResponse,
     type RpcArchiveCodexSessionResponse,
     type RpcListCursorModelsResponse,
@@ -59,6 +60,7 @@ export type {
     RpcGeneratedImageResponse,
     RpcListDirectoryResponse,
     RpcStatFilesResponse,
+    RpcListAgyModelsResponse,
     RpcListCodexModelsResponse,
     RpcListCursorModelsResponse,
     RpcListOpencodeModelsResponse,
@@ -1171,6 +1173,7 @@ async uploadScratchlistAttachment(
         if (flavor === 'gemini') return metadata.geminiSessionId ?? null
         if (flavor === 'opencode') return metadata.opencodeSessionId ?? null
         if (flavor === 'grok') return metadata.grokSessionId ?? null
+        if (flavor === 'agy') return metadata.agySessionId ?? null
         if (flavor === 'cursor') return metadata.cursorSessionId ?? null
         if (flavor === 'kimi') return metadata.kimiSessionId ?? null
         if (flavor === 'pi') return metadata.piSessionId ?? null
@@ -2098,6 +2101,7 @@ async uploadScratchlistAttachment(
             && (prev?.cursorSessionId ?? null) === (next.cursorSessionId ?? null)
             && (prev?.piSessionId ?? null) === (next.piSessionId ?? null)
             && (prev?.kimiSessionId ?? null) === (next.kimiSessionId ?? null)
+            && (prev?.agySessionId ?? null) === (next.agySessionId ?? null)
     }
 
     private canRunCursorDedup(session: Session): boolean {
@@ -2396,6 +2400,10 @@ async uploadScratchlistAttachment(
         error?: string
     }> {
         return await this.rpcGateway.listSkills(sessionId, flavor)
+    }
+
+    async listAgyModelsForMachine(machineId: string): Promise<RpcListAgyModelsResponse> {
+        return await this.rpcGateway.listAgyModelsForMachine(machineId)
     }
 
     async listCodexModelsForMachine(machineId: string): Promise<RpcListCodexModelsResponse> {

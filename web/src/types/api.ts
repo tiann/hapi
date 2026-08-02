@@ -10,6 +10,8 @@ import type {
 } from '@hapi/protocol/types'
 
 export type {
+    AgyModelsResponse,
+    AgyModelSummary,
     CodexModelsResponse,
     CodexModelSummary,
     CommandResponse,

@@ -270,7 +270,7 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
         if (buffered) {
             socket.emit('agent-terminal:output', { sessionId, terminalId: 'agent', data: buffered })
         }
-        // Full-screen TUIs (e.g. claude's ink alt-screen) can't always
+        // Full-screen TUIs (agy's bubbletea alt-screen, claude's ink) can't always
         // be reconstructed from a byte-ring replay (truncated alt-screen enter,
         // stale alt-screen-exit from a prior spawn). Ask the CLI to repaint the
         // current screen so a freshly (re)subscribed viewer never sees black.

@@ -77,6 +77,13 @@ vi.mock('@/hooks/queries/useCodexModels', () => ({
         error: null
     })
 }))
+vi.mock('@/hooks/queries/useAgyModels', () => ({
+    useAgyModels: () => ({
+        models: [],
+        isLoading: false,
+        error: null
+    })
+}))
 vi.mock('@/hooks/queries/useCursorModelsForMachine', () => ({
     useCursorModelsForMachine: () => ({
         availableModels: [],

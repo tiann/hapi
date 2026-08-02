@@ -13,6 +13,7 @@ export function resolveAgentSessionIdFromMetadata(
     }
     const flavor = isKnownFlavor(metadata.flavor) ? metadata.flavor : 'claude'
     switch (flavor) {
+        case 'agy': return metadata.agySessionId ?? undefined
         case 'codex': return metadata.codexSessionId ?? undefined
         case 'gemini': return metadata.geminiSessionId ?? undefined
         case 'opencode': return metadata.opencodeSessionId ?? undefined

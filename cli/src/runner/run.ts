@@ -1322,7 +1322,9 @@ export function buildCliArgs(
             ? 'opencode'
             : agent === 'pi'
               ? 'pi'
-              : 'claude';
+              : agent === 'agy'
+                ? 'agy'
+                : 'claude';
   const args = [agentCommand];
   if (options.resumeSessionId) {
     if (agent === 'codex') {
@@ -1336,7 +1338,12 @@ export function buildCliArgs(
       args.push('--resume', options.resumeSessionId);
     }
   }
-  args.push('--hapi-starting-mode', 'remote', '--started-by', 'runner');
+  // agy PTY reuses the existing hub row directly on reopen/resume.
+  if (options.existingSessionId && agent === 'agy') {
+    args.push('--hapi-session-id', options.existingSessionId);
+  }
+  const startingMode = options.startingMode || 'remote';
+  args.push('--hapi-starting-mode', startingMode, '--started-by', 'runner');
   // Codex, Cursor ACP, and Pi native resume reuse the original HAPI row via
   // --existing-session-id. Pi is reported successful only after the hub sees
   // its validated native get_state/session-ready signal.

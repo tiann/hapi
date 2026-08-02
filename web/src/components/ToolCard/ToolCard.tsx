@@ -274,6 +274,12 @@ function renderToolInput(block: ToolCallBlock, surface: 'inline' | 'dialog' = 'i
     const toolName = block.tool.name
     const input = block.tool.input
 
+    // No invocation input (e.g. agy's async background-task results): show a
+    // muted placeholder instead of dumping the literal "undefined"/"null".
+    if (input === undefined || input === null) {
+        return <div className="text-xs text-[var(--app-hint)]">—</div>
+    }
+
     if (isSubagentToolName(toolName) && isObject(input) && typeof input.prompt === 'string') {
         return <MarkdownRenderer content={input.prompt} />
     }

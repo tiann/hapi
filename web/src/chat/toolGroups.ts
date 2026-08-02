@@ -72,6 +72,9 @@ const MILESTONE_TOOL_NAMES = new Set([
     'TeamCreate',
     'TeamDelete',
     'SendMessage',
+    // agy's transitional task-log chip — keep it standalone (like SendMessage)
+    // so it reads as a thin marker instead of being folded into a tool group.
+    'AgyTaskLog',
     'Skill',
     'spawn_agent',
     'send_input',

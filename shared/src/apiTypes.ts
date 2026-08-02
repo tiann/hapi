@@ -630,6 +630,20 @@ export type OpencodeReasoningEffortResponse = {
     error?: string
 }
 
+export type AgyModelSummary = {
+    modelId: string
+    name?: string
+}
+
+export type AgyModelsResponse = {
+    success: boolean
+    availableModels?: AgyModelSummary[]
+    currentModelId?: string | null
+    error?: string
+}
+
+export type ListAgyModelsResponse = AgyModelsResponse
+
 export type CursorModelSummary = OpencodeModelSummary
 
 export type CursorModelsResponse = OpencodeModelsResponse

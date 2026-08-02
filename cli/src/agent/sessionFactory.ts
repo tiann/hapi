@@ -102,6 +102,7 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
     if (metadata.geminiSessionId !== undefined) preserved.geminiSessionId = metadata.geminiSessionId
     if (metadata.opencodeSessionId !== undefined) preserved.opencodeSessionId = metadata.opencodeSessionId
     if (metadata.grokSessionId !== undefined) preserved.grokSessionId = metadata.grokSessionId
+    if (metadata.agySessionId !== undefined) preserved.agySessionId = metadata.agySessionId
     if (metadata.cursorSessionId !== undefined) preserved.cursorSessionId = metadata.cursorSessionId
     if (metadata.cursorSessionProtocol !== undefined) preserved.cursorSessionProtocol = metadata.cursorSessionProtocol
     if (metadata.kimiSessionId !== undefined) preserved.kimiSessionId = metadata.kimiSessionId

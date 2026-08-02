@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import type { SessionMetadataSummary } from '@/types/api'
 import { isObject } from '@hapi/protocol'
-import { BulbIcon, ClipboardIcon, EyeIcon, FileDiffIcon, GlobeIcon, MessageSquareIcon, PuzzleIcon, QuestionIcon, RocketIcon, SearchIcon, TerminalIcon, UsersIcon, WrenchIcon } from '@/components/ToolCard/icons'
+import { AlertTriangleIcon, BulbIcon, ClipboardIcon, EyeIcon, FileDiffIcon, GlobeIcon, MessageSquareIcon, PuzzleIcon, QuestionIcon, RocketIcon, SearchIcon, TerminalIcon, UsersIcon, WrenchIcon } from '@/components/ToolCard/icons'
 import type { ChecklistItem } from '@/components/ToolCard/checklist'
 import { extractTodoChecklist, extractUpdatePlanChecklist } from '@/components/ToolCard/checklist'
 import { basename, resolveDisplayPath } from '@/utils/path'
@@ -125,6 +125,31 @@ export const knownTools: Record<string, {
     subtitle?: (opts: ToolOpts) => string | null
     minimal?: boolean | ((opts: ToolOpts) => boolean)
 }> = {
+    // agy transitional "Inside the task-NNN log…" narration → compact chip.
+    // description carries the short "task-NNN log" label from normalizeAgent.
+    AgyTaskLog: {
+        icon: () => <MessageSquareIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => {
+            const task = getInputStringAny(opts.input, ['task'])
+            return task ? `${task} log` : 'Inspecting task log'
+        },
+        minimal: true
+    },
+    // agy async/background task result (SYSTEM_MESSAGE). description carries the
+    // "task-NNN · failed (exit 1)" summary derived in normalizeAgent.
+    AgyAsyncTask: {
+        icon: () => <ClipboardIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => opts.description ?? 'Background task',
+        minimal: true
+    },
+    // agy tool-call parsing error (ERROR_MESSAGE). description carries the short
+    // reason ("Invalid tool call"); rendered as an error card (is_error set in
+    // normalizeAgent), not a mislabeled tool invocation.
+    AgyError: {
+        icon: () => <AlertTriangleIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => opts.description ?? 'Error',
+        minimal: true
+    },
     Task: {
         icon: () => <RocketIcon className={DEFAULT_ICON_CLASS} />,
         title: (opts) => {

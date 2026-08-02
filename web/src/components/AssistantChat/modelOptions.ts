@@ -76,6 +76,14 @@ function getClaudeModelOptions(currentModel?: string | null, customOptions?: Mod
     return nextOptions
 }
 
+function getAgyModelOptions(currentModel?: string | null): ModelOption[] {
+    const options = MODEL_OPTIONS.agy.map((m) => ({
+        value: m.value === 'auto' ? null : m.value,
+        label: m.label
+    }))
+    return withCurrentModelOption(options, currentModel)
+}
+
 function getGeminiModelOptions(currentModel?: string | null): ModelOption[] {
     const options = MODEL_OPTIONS.gemini.map((m) => ({
         value: m.value === 'auto' ? null : m.value,
@@ -98,6 +106,9 @@ export function getModelOptionsForFlavor(
     currentModel?: string | null,
     customOptions?: ModelOption[]
 ): ModelOption[] {
+    if (flavor === 'agy') {
+        return getAgyModelOptions(currentModel)
+    }
     if (flavor === 'claude') {
         return getClaudeModelOptions(currentModel, customOptions)
     }
@@ -146,6 +157,14 @@ export function getNextModelForFlavor(
     currentModel?: string | null,
     customOptions?: ModelOption[]
 ): string | null {
+    if (flavor === 'agy') {
+        const options = getAgyModelOptions(currentModel)
+        const currentIndex = options.findIndex((option) => option.value === (normalizeCurrentModel(currentModel) ?? null))
+        if (currentIndex === -1) {
+            return options.find((option) => option.value !== null)?.value ?? null
+        }
+        return options[(currentIndex + 1) % options.length]?.value ?? null
+    }
     if (flavor === 'claude') {
         const options = getClaudeModelOptions(currentModel, customOptions)
         const currentIndex = options.findIndex((option) => option.value === (normalizeCurrentModel(currentModel) ?? null))

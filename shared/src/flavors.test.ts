@@ -10,6 +10,11 @@ import {
 } from './flavors'
 
 describe('hasCapability', () => {
+    test('agy supports model-change but not effort', () => {
+        expect(hasCapability('agy', Capabilities.ModelChange)).toBe(true)
+        expect(hasCapability('agy', Capabilities.Effort)).toBe(false)
+    })
+
     test('claude supports model-change', () => {
         expect(hasCapability('claude', Capabilities.ModelChange)).toBe(true)
     })
@@ -65,6 +70,7 @@ describe('hasCapability', () => {
 
 describe('getFlavorLabel', () => {
     test('known flavors return display names', () => {
+        expect(getFlavorLabel('agy')).toBe('Antigravity')
         expect(getFlavorLabel('claude')).toBe('Claude')
         expect(getFlavorLabel('gemini')).toBe('Gemini')
         expect(getFlavorLabel('codex')).toBe('Codex')
@@ -87,6 +93,7 @@ describe('getFlavorLabel', () => {
 
 describe('isKnownFlavor', () => {
     test('returns true for registered flavors', () => {
+        expect(isKnownFlavor('agy')).toBe(true)
         expect(isKnownFlavor('claude')).toBe(true)
         expect(isKnownFlavor('gemini')).toBe(true)
         expect(isKnownFlavor('codex')).toBe(true)
@@ -110,6 +117,7 @@ describe('convenience functions', () => {
     })
 
     test('supportsModelChange matches hasCapability', () => {
+        expect(supportsModelChange('agy')).toBe(true)
         expect(supportsModelChange('claude')).toBe(true)
         expect(supportsModelChange('gemini')).toBe(true)
         expect(supportsModelChange('codex')).toBe(true)

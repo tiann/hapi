@@ -25,7 +25,7 @@ export function appendAgentTerminalOutput(sessionId: string, data: string): void
     )
 }
 
-// Replay variant: when a full-screen TUI exits (e.g. an archived alt-screen
+// Replay variant: when a full-screen TUI exits (e.g. an archived agy/bubbletea
 // session) it emits an alt-screen-exit (`CSI ? 1049 l`) that restores the empty
 // normal screen — so a raw replay would render black. If the buffer's LAST
 // alt-screen toggle is an exit (the process ended without re-entering), drop it

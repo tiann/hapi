@@ -1,8 +1,26 @@
 import { describe, expect, it } from 'vitest'
-import { GEMINI_PERMISSION_MODES, OPENCODE_PERMISSION_MODES } from '@hapi/protocol/modes'
+import { AGY_PERMISSION_MODES, GEMINI_PERMISSION_MODES, OPENCODE_PERMISSION_MODES } from '@hapi/protocol/modes'
 import { parseRemoteAgentCommandOptions } from './agentCommandOptions'
 
 describe('parseRemoteAgentCommandOptions', () => {
+    it('maps --yolo to the flavor\'s own auto-approve mode, not a hardcoded "yolo"', () => {
+        // agy renamed its auto-approve mode to 'always-proceed'; 'yolo' is not a
+        // valid agy mode, so --yolo must resolve to the flavor's equivalent.
+        expect(parseRemoteAgentCommandOptions(['--yolo'], AGY_PERMISSION_MODES).permissionMode)
+            .toBe('always-proceed')
+        // Flavors that DO have a 'yolo' mode keep it.
+        expect(parseRemoteAgentCommandOptions(['--yolo'], OPENCODE_PERMISSION_MODES).permissionMode)
+            .toBe('yolo')
+    })
+
+    it('parses --hapi-session-id into existingSessionId (pty reopen id reuse)', () => {
+        // The runner emits --hapi-session-id when reopening a pty session so the
+        // child reuses the existing hub row. agy (this shared parser) must consume
+        // it — else the flag is silently dropped and reopen mints a new id + 404.
+        expect(parseRemoteAgentCommandOptions(['--hapi-session-id', 'hub-id-1'], AGY_PERMISSION_MODES).existingSessionId)
+            .toBe('hub-id-1')
+    })
+
     it('parses common remote agent flags', () => {
         expect(parseRemoteAgentCommandOptions([
             '--started-by', 'runner',
@@ -18,6 +36,16 @@ describe('parseRemoteAgentCommandOptions', () => {
             permissionMode: 'yolo',
             resumeSessionId: 'session-1',
             model: 'model-a'
+        })
+    })
+
+    it('accepts pty as the agy runner starting mode', () => {
+        expect(parseRemoteAgentCommandOptions([
+            '--started-by', 'runner',
+            '--hapi-starting-mode', 'pty',
+        ], AGY_PERMISSION_MODES, ['local', 'remote', 'pty'])).toMatchObject({
+            startedBy: 'runner',
+            startingMode: 'pty',
         })
     })
 

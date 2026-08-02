@@ -7,7 +7,7 @@ import { z } from 'zod'
  */
 export const AGENT_MESSAGE_PAYLOAD_TYPE = 'codex' as const
 
-export const AGENT_FLAVORS = ['claude', 'codex', 'cursor', 'gemini', 'grok', 'kimi', 'opencode', 'pi'] as const
+export const AGENT_FLAVORS = ['agy', 'claude', 'codex', 'cursor', 'gemini', 'grok', 'kimi', 'opencode', 'pi'] as const
 export type AgentFlavor = typeof AGENT_FLAVORS[number]
 export const AgentFlavorSchema = z.enum(AGENT_FLAVORS)
 
@@ -18,6 +18,9 @@ export const AgentFlavorSchema = z.enum(AGENT_FLAVORS)
 export const CREATABLE_AGENT_FLAVORS: readonly AgentFlavor[] = AGENT_FLAVORS.filter(
     (flavor) => flavor !== 'gemini'
 )
+
+export const AGY_PERMISSION_MODES = ['request-review', 'always-proceed'] as const
+export type AgyPermissionMode = typeof AGY_PERMISSION_MODES[number]
 
 export const CLAUDE_PERMISSION_MODES = ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan'] as const
 export type ClaudePermissionMode = typeof CLAUDE_PERMISSION_MODES[number]
@@ -54,7 +57,9 @@ export const PERMISSION_MODES = [
     'autoReview',
     'read-only',
     'safe-yolo',
-    'yolo'
+    'yolo',
+    'request-review',
+    'always-proceed'
 ] as const
 export type PermissionMode = typeof PERMISSION_MODES[number]
 
@@ -70,7 +75,9 @@ export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
     bypassPermissions: 'Yolo',
     'read-only': 'Read Only',
     'safe-yolo': 'Safe Yolo',
-    yolo: 'Yolo'
+    yolo: 'Yolo',
+    'request-review': 'Request Review',
+    'always-proceed': 'Always Proceed'
 }
 
 export type PermissionModeTone = 'neutral' | 'info' | 'warning' | 'danger'
@@ -86,7 +93,9 @@ export const PERMISSION_MODE_TONES: Record<PermissionMode, PermissionModeTone> =
     bypassPermissions: 'danger',
     'read-only': 'warning',
     'safe-yolo': 'warning',
-    yolo: 'danger'
+    yolo: 'danger',
+    'request-review': 'neutral',
+    'always-proceed': 'danger'
 }
 
 export type PermissionModeOption = {
@@ -132,6 +141,9 @@ export function getPermissionModesForFlavor(flavor?: string | null): readonly Pe
     }
     if (flavor === 'opencode') {
         return OPENCODE_PERMISSION_MODES
+    }
+    if (flavor === 'agy') {
+        return AGY_PERMISSION_MODES
     }
     if (flavor === 'cursor') {
         return CURSOR_PERMISSION_MODES

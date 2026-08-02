@@ -423,6 +423,202 @@ function normalizeUserOutput(
     }
 }
 
+// "RUN_COMMAND" → "Run command", "VIEW_FILE" → "View file".
+function humanizeAgyActionType(type: string): string {
+    const words = type.toLowerCase().split('_').filter(Boolean)
+    if (words.length === 0) return 'Tool'
+    return words.map((w, i) => (i === 0 ? w.charAt(0).toUpperCase() + w.slice(1) : w)).join(' ')
+}
+
+// agy wraps each action result with framing that's noise in the chat: bookkeeping
+// timestamps, a per-file metadata header (File Path/Total Lines/…) that just
+// repeats the card title, the "line-number injected" note, and a model-directed
+// instruction appended to write/edit confirmations. Strip all of it and keep the
+// substantive result (file content, command output, edit confirmation).
+export function stripAgyActionPreamble(content: string): string {
+    return content
+        // Bookkeeping + view_file metadata header (the "File Path:" line duplicates
+        // the card title; Total Lines/Bytes/Showing lines are noise).
+        .replace(/^(?:Created At:|Completed At:|File Path:|Total Lines:|Total Bytes:|Showing lines\b).*(?:\r?\n)?/gm, '')
+        // agy's note that it prefixed each line with a line number.
+        .replace(/^The following code has been modified to include a line number.*(?:\r?\n)?/gm, '')
+        // Model-directed instruction agy appends to write/edit confirmations
+        // ("… If relevant, proactively run terminal commands to execute this code
+        // for the USER. Don't ask …") — meant for the agent, not the reader.
+        .replace(/\s*If relevant, proactively run terminal commands[\s\S]*$/, '')
+        .trim()
+}
+
+// agy's view_file result appends a trailing "The above content …" note — either
+// "…shows the entire, complete file contents" (full read) or "…does NOT show the
+// entire file contents. If you need to view …" (partial read). Strip whichever
+// trailer is present (noise, and a non-numbered line would defeat the gutter
+// offset below). The per-line "<n>: " prefixes are left in place: they carry the
+// TRUE line numbers (important for partial reads), and the code-block renderer
+// turns them into a correctly-offset gutter (see parseNumberedFileLines).
+export function stripAgyReadArtifacts(content: string): string {
+    return content
+        .replace(/\n?The above content (?:shows|does NOT show)[\s\S]*$/, '')
+        .trimEnd()
+}
+
+// agy sometimes echoes an async task's raw result into its own PLANNER_RESPONSE
+// prose: "Inside the task-246 log…\n[Message] timestamp=… content=Task id … finished
+// with result: … Output: …". That echoed block duplicates the background-task card
+// rendered from the corresponding SYSTEM_MESSAGE (and leaks the raw `[Message]`
+// framing), so strip it from the "…log…" marker onward and keep only the agent's
+// narration. The narration itself is the agent's real words — left intact.
+export function stripAgyEchoedTaskResult(text: string): string {
+    return text.replace(/\n*\[Message\]\s+timestamp=[\s\S]*$/, '').trim()
+}
+
+// Canonical tool id for agy's transitional "Inside the task-NNN log…" narration,
+// rendered as a compact Send-Message-style chip instead of a full agent bubble.
+export const AGY_TASK_LOG_TOOL = 'AgyTaskLog'
+
+// Canonical tool id for agy's SYSTEM_MESSAGE entries (async/background task
+// results). Rendered via a dedicated knownTools presentation (clipboard icon,
+// "Background task" title) instead of a mislabeled "System message" tool card.
+export const AGY_ASYNC_TASK_TOOL = 'AgyAsyncTask'
+
+/**
+ * agy delivers async/background task results as SYSTEM_MESSAGE entries wrapped in
+ * framing:
+ *   "The following is a <SYSTEM_MESSAGE> not actually sent by the user…
+ *    <SYSTEM_MESSAGE>\n[Message] timestamp=… sender=…/task-228 … content=Task id
+ *    "…/task-228" finished with result:\n\n<output>\n</SYSTEM_MESSAGE>"
+ * Strip the framing to the substantive task result, and derive a one-line
+ * summary (task id + outcome) for the card title.
+ */
+export function parseAgyAsyncTaskMessage(raw: string): { body: string; summary: string; isError: boolean } {
+    let body = raw
+    const contentEq = raw.indexOf('content=')
+    const endTag = raw.indexOf('</SYSTEM_MESSAGE>')
+    if (contentEq !== -1) {
+        body = raw.slice(contentEq + 'content='.length, endTag !== -1 ? endTag : undefined)
+    } else if (endTag !== -1) {
+        body = raw.slice(0, endTag)
+    }
+    // agy pads the task output with leading tabs — de-indent for readability.
+    body = body.replace(/^[\t ]+/gm, '').trim()
+
+    const taskMatch = raw.match(/task-(\d+)/)
+    const taskLabel = taskMatch ? `task-${taskMatch[1]}` : 'Background task'
+    const failMatch = body.match(/failed with exit code:?\s*(\d+)/i)
+    const isError = Boolean(failMatch)
+    let outcome = ''
+    if (failMatch) outcome = `failed (exit ${failMatch[1]})`
+    else if (/completed successfully/i.test(body)) outcome = 'completed'
+    const summary = outcome ? `${taskLabel} · ${outcome}` : taskLabel
+    return { body, summary, isError }
+}
+
+// Canonical tool id for agy's ERROR_MESSAGE entries — the runtime's feedback that
+// the model emitted a malformed tool call. Rendered via a dedicated knownTools
+// error presentation (alert icon, "Invalid tool call") instead of a mislabeled
+// "Error message" tool card.
+export const AGY_ERROR_TOOL = 'AgyError'
+
+/**
+ * agy's ERROR_MESSAGE payload is a tool-call parsing failure plus agent-directed
+ * retry boilerplate:
+ *   "Created At: …\nError invalid tool call: …\nError Message: … <reason>\n
+ *    Guidance: You are trying to correct your previous tool call error … Do not
+ *    apologize.\nRetries remaining: 4."
+ * Strip the bookkeeping timestamp and the agent-directed guidance/retry counter
+ * (noise for a reader), keep the substantive error, and derive a short title.
+ */
+export function parseAgyErrorMessage(raw: string): { body: string; summary: string } {
+    const body = raw
+        .replace(/^Created At:.*(?:\r?\n)?/gm, '')
+        // Guidance runs to the end of the payload (retry counter included).
+        .replace(/\n?Guidance:[\s\S]*$/, '')
+        .replace(/\n?Retries remaining:.*$/m, '')
+        .trim()
+    const summary = /invalid tool call/i.test(raw) ? 'Invalid tool call' : 'Error'
+    return { body, summary }
+}
+
+// agy names its tools differently from claude (run_command vs Bash, …) and its
+// args use different keys per tool (write_to_file.CodeContent vs Write.content).
+// Map the ones with a clear equivalent to the canonical tool id AND translate
+// their args into the fields that tool's view reads, so the ToolCard renders the
+// same rich view as the other flavors (Bash command, Read/Write file, Edit diff).
+// Anything unmapped keeps its humanized label + generic key/value input.
+type AgyToolSpec = { name: string; buildInput: (args: Record<string, unknown>) => Record<string, unknown> }
+const AGY_TOOL_SPECS: Record<string, AgyToolSpec> = {
+    run_command: { name: 'Bash', buildInput: (a) => ({ command: a.CommandLine, cwd: a.Cwd }) },
+    view_file: { name: 'Read', buildInput: (a) => ({ file_path: a.AbsolutePath ?? a.RelativePath }) },
+    // Write: the view renders input.content under the file path.
+    write_to_file: { name: 'Write', buildInput: (a) => ({ file_path: a.TargetFile, content: a.CodeContent }) },
+    // Edit: the view renders a diff from old_string → new_string.
+    replace_file_content: {
+        name: 'Edit',
+        buildInput: (a) => ({ file_path: a.TargetFile, old_string: a.TargetContent, new_string: a.ReplacementContent }),
+    },
+    grep_search: { name: 'Grep', buildInput: (a) => ({ pattern: a.Query ?? a.SearchQuery, path: a.SearchDirectory ?? a.SearchPath }) },
+    list_dir: { name: 'LS', buildInput: (a) => ({ path: a.DirectoryPath ?? a.AbsolutePath }) },
+}
+
+// agy arg keys → the canonical input field names the ToolCard presentations read
+// (command, file_path, pattern, …). Lets a Bash/Read card surface the command or
+// path in its subtitle instead of showing nothing.
+const AGY_ARG_KEY_MAP: Record<string, string> = {
+    CommandLine: 'command',
+    Cwd: 'cwd',
+    AbsolutePath: 'file_path',
+    RelativePath: 'file_path',
+    TargetFile: 'file_path',
+    FilePath: 'file_path',
+    Path: 'path',
+    DirectoryPath: 'path',
+    Query: 'query',
+    SearchQuery: 'query',
+    Pattern: 'pattern',
+    Url: 'url',
+    URL: 'url',
+}
+
+// Bookkeeping args that aren't worth showing as tool input.
+const AGY_ARG_NOISE = new Set(['toolAction', 'toolSummary', 'WaitMsBeforeAsync', 'Blocking'])
+
+function normalizeAgyToolInput(args: Record<string, unknown>): Record<string, unknown> | undefined {
+    const out: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(args)) {
+        if (AGY_ARG_NOISE.has(key)) continue
+        if (value === null || value === undefined || value === '') continue
+        out[AGY_ARG_KEY_MAP[key] ?? key] = value
+    }
+    return Object.keys(out).length > 0 ? out : undefined
+}
+
+// Build the tool-call presentation for an agy action from the paired invocation
+// (toolName + raw args) the CLI forwards. Falls back to the humanized action
+// type when no invocation was paired (older sessions / unmatched actions).
+function mapAgyToolCall(
+    toolName: string | null | undefined,
+    actionType: string,
+    args: Record<string, unknown> | undefined
+): { name: string; input: Record<string, unknown> | undefined; description: string | null } {
+    // agy attaches a one-line human summary of the action; use it as the card
+    // description (the title slot) for a readable label.
+    const description = args ? asString(args.toolSummary) ?? null : null
+    const spec = toolName ? AGY_TOOL_SPECS[toolName] : undefined
+    if (spec) {
+        // Translate agy's per-tool args into the fields that tool's view reads,
+        // dropping empties so an absent optional arg doesn't render a blank row.
+        const built: Record<string, unknown> = {}
+        for (const [key, value] of Object.entries(spec.buildInput(args ?? {}))) {
+            if (value !== null && value !== undefined && value !== '') built[key] = value
+        }
+        return { name: spec.name, input: Object.keys(built).length > 0 ? built : undefined, description }
+    }
+    // Unmapped tool: keep a humanized label, generic key/value input.
+    const name = humanizeAgyActionType(toolName ?? actionType)
+    const input = args ? normalizeAgyToolInput(args) : undefined
+    return { name, input, description }
+}
+
 export function isSkippableAgentContent(content: unknown): boolean {
     if (!isObject(content) || content.type !== 'output') return false
     const data = isObject(content.data) ? content.data : null
@@ -432,6 +628,9 @@ export function isSkippableAgentContent(content: unknown): boolean {
     // the away_summary branch (a bare "recap:" row) or, via a null return, fall
     // through to the raw-JSON stringify fallback in normalize.ts.
     if (data.type === 'system' && data.subtype === 'away_summary' && !asString(data.content)?.trim()) return true
+    // Empty agy planner steps (no text, no tool calls) carry nothing to render —
+    // skip cleanly so they don't fall through to the raw-JSON stringify fallback.
+    if (data.type === 'agy_message' && !(asString(data.content) ?? '').trim()) return true
     return !isClaudeChatVisibleMessage({ type: data.type, subtype: data.subtype })
 }
 
@@ -555,6 +754,135 @@ export function normalizeAgentRecord(
             }
         }
 
+        // agy (Antigravity) PTY messages — render the actual response text and
+        // tool calls instead of falling through to the raw-JSON stringify
+        // fallback. Empty planner steps (intermediate, no content) are skipped so
+        // they don't produce empty chat bubbles.
+        if (data.type === 'agy_message') {
+            const text = stripAgyEchoedTaskResult(asString(data.content) ?? '')
+            if (!text.trim()) return null
+            // Transitional "Inside the task-NNN log…" narration → a compact
+            // Send-Message-style chip, not a full agent bubble. The actual task
+            // result renders in its own background-task card, so this stays a thin
+            // marker of what the agent is doing.
+            const taskLog = text.match(/^Inside the task-(\d+) log\b/)
+            if (taskLog) {
+                const toolCallId = `${messageId}:tasklog`
+                return {
+                    id: messageId,
+                    localId,
+                    createdAt,
+                    role: 'agent',
+                    isSidechain: false,
+                    content: [
+                        { type: 'tool-call', id: toolCallId, name: AGY_TASK_LOG_TOOL, input: { task: `task-${taskLog[1]}` }, description: null, uuid: messageId, parentUUID: null },
+                        { type: 'tool-result', tool_use_id: toolCallId, content: '', is_error: false, uuid: messageId, parentUUID: null }
+                    ],
+                    meta
+                }
+            }
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'agent',
+                isSidechain: false,
+                content: [{ type: 'text', text, uuid: messageId, parentUUID: null }],
+                // Per-turn model (display name from the conversation DB), surfaced
+                // in the message metadata footer like the other flavors.
+                model: asString(data.model) ?? null,
+                meta
+            }
+        }
+        // agy tool ACTION (VIEW_FILE, RUN_COMMAND, …): render as a collapsible tool
+        // card keyed by the (humanized) action type, with the result as detail —
+        // instead of dumping the raw result text as a chat bubble.
+        if (data.type === 'agy_tool_action') {
+            const rawActionName = asString(data.name) ?? 'Tool'
+            // Key the tool-call by conversationId:stepIdx when present — the SAME id
+            // the PreToolUse permission request uses — so a gated tool's approval
+            // card and this result merge into ONE card (no stuck "running"
+            // duplicate), while the pending approval still shows in real time.
+            // Falls back to messageId for auto-allowed tools (no permission raised).
+            const toolCallId = asString(data.toolUseId) ?? messageId
+
+            let name: string
+            let input: Record<string, unknown> | undefined
+            let description: string | null
+            let content: string
+            let isError = false
+            if (rawActionName === 'SYSTEM_MESSAGE') {
+                // Not a real tool call — a deferred async/background task result.
+                // Strip the "<SYSTEM_MESSAGE> not actually sent by the user…"
+                // framing and render it as a dedicated background-task card so the
+                // output stays visible without masquerading as an invocation.
+                const parsed = parseAgyAsyncTaskMessage(asString(data.content) ?? '')
+                name = AGY_ASYNC_TASK_TOOL
+                input = undefined
+                description = parsed.summary
+                content = parsed.body
+                isError = parsed.isError
+            } else if (rawActionName === 'ERROR_MESSAGE') {
+                // Not a tool result — agy's feedback that the model emitted a
+                // malformed tool call (with agent-directed retry guidance). Render
+                // as a dedicated error card so it reads as a failure, not a
+                // mislabeled "Error message" tool invocation.
+                const parsed = parseAgyErrorMessage(asString(data.content) ?? '')
+                name = AGY_ERROR_TOOL
+                input = undefined
+                description = parsed.summary
+                content = parsed.body
+                isError = true
+            } else {
+                // Pair the invocation (toolName + input) the CLI forwarded from the
+                // preceding PLANNER_RESPONSE with this action's result, so the card
+                // shows the command/path/args like the other flavors instead of
+                // just the raw result blob.
+                const mapped = mapAgyToolCall(
+                    asString(data.toolName),
+                    rawActionName,
+                    isObject(data.input) ? data.input : undefined
+                )
+                name = mapped.name
+                input = mapped.input
+                description = mapped.description
+                content = stripAgyActionPreamble(asString(data.content) ?? '')
+                // view_file → Read: also drop agy's per-line "<n>: " prefixes and
+                // the "The above content shows…" trailer so the code block renders
+                // clean, single-gutter line numbers.
+                if (name === 'Read') content = stripAgyReadArtifacts(content)
+            }
+            // agy action entries are already DONE, so pair the tool-call with a
+            // tool-result (matching ids) — that makes the card render as COMPLETED
+            // (with its result) instead of perpetually "Running".
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'agent',
+                isSidechain: false,
+                content: [
+                    {
+                        type: 'tool-call',
+                        id: toolCallId,
+                        name,
+                        input,
+                        description,
+                        uuid: messageId,
+                        parentUUID: null
+                    },
+                    {
+                        type: 'tool-result',
+                        tool_use_id: toolCallId,
+                        content,
+                        is_error: isError,
+                        uuid: messageId,
+                        parentUUID: null
+                    }
+                ],
+                meta
+            }
+        }
         return null
     }
 

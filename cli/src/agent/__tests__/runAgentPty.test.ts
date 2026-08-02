@@ -119,12 +119,12 @@ describe('runAgentPty', () => {
     it('spawns with the given command/args/cwd and calls onReady', async () => {
         const msg = deferred<{ message: string } | null>()
         const onReady = vi.fn()
-        const opts = makeOpts({ command: 'mycli', args: ['--foo'], cwd: '/work', onReady, nextMessage: () => msg.promise })
+        const opts = makeOpts({ command: 'agy', args: ['--foo'], cwd: '/work', onReady, nextMessage: () => msg.promise })
         const promise = runAgentPty(opts)
         await tick(0)
         expect(harness.m.spawn).toHaveBeenCalled()
         const spawnArgs = harness.m.spawn.mock.calls[0][0] as { command: string; args: string[]; cwd: string }
-        expect(spawnArgs.command).toBe('mycli')
+        expect(spawnArgs.command).toBe('agy')
         expect(spawnArgs.args).toEqual(['--foo'])
         expect(spawnArgs.cwd).toBe('/work')
         // onReady fires only once the prompt is actually ready, not right after
@@ -164,7 +164,8 @@ describe('runAgentPty', () => {
         const spawnEnv = (harness.m.spawn.mock.calls[0][0] as { env: Record<string, string> }).env
         expect(spawnEnv.FLAVOR_TOKEN).toBe('tok')
         expect(spawnEnv.CLAUDE_CONFIG_DIR).toBe('/tmp/iso-cfg')
-        // TERM is always set so interactive TUI agents initialize correctly.
+        // TERM is always set so interactive TUI agents initialize (agy/bubbletea
+        // drops to its login menu without it).
         expect(spawnEnv.TERM).toBeTruthy()
         // process.env must stay clean so the parent's scanner is unaffected.
         expect(process.env.CLAUDE_CONFIG_DIR).toBeUndefined()
@@ -174,21 +175,64 @@ describe('runAgentPty', () => {
         await promise
     })
 
-    it('removes unsetEnv keys from the spawn env (CLAUDECODE stripping)', async () => {
+    it('removes unsetEnv keys from the spawn env (agy SSH_* stripping)', async () => {
         const msg = deferred<{ message: string } | null>()
         const opts = makeOpts({
-            extraEnv: { CLAUDECODE: '1', KEEP_ME: 'yes' },
-            unsetEnv: ['CLAUDECODE'],
+            extraEnv: { SSH_AUTH_SOCK: '/run/user/1000/gnupg/S.gpg-agent.ssh', KEEP_ME: 'yes' },
+            unsetEnv: ['SSH_AUTH_SOCK'],
             nextMessage: () => msg.promise,
         })
         const promise = runAgentPty(opts)
         await tick(0)
         const spawnEnv = (harness.m.spawn.mock.calls[0][0] as { env: Record<string, string> }).env
-        // CLAUDECODE is stripped so the child claude isn't treated as a nested
-        // session (which stops it writing its transcript); unrelated vars are kept.
-        expect(spawnEnv.CLAUDECODE).toBeUndefined()
+        // SSH_AUTH_SOCK is stripped so agy doesn't take its degraded "SSH session"
+        // keyring path; unrelated vars are preserved.
+        expect(spawnEnv.SSH_AUTH_SOCK).toBeUndefined()
         expect(spawnEnv.KEEP_ME).toBe('yes')
         await reachReady()
+        msg.resolve(null)
+        await promise
+    })
+
+    it('does NOT re-spawn for the transient login menu if the prompt renders within the settle window', async () => {
+        // agy shows the login menu briefly on every startup while auth is in
+        // flight, then renders the prompt. That must NOT count as a failure.
+        const msg = deferred<{ message: string } | null>()
+        const onAuthFailure = vi.fn()
+        const opts = makeOpts({
+            promptMarkers: ['for shortcuts'],
+            authFailureMarkers: ['Select login method'],
+            authSettleMs: 600,
+            onAuthFailure,
+            nextMessage: () => msg.promise,
+        })
+        const promise = runAgentPty(opts)
+        await tick(0)
+        harness.triggerData('Select login method: 1. Google OAuth') // transient
+        await tick(120)
+        harness.triggerData('? for shortcuts') // signed in within settle window
+        await tick(700)
+        expect(onAuthFailure).not.toHaveBeenCalled()
+        msg.resolve(null)
+        await promise
+    })
+
+    it('requests re-spawn (onAuthFailure) when still on the login menu past the settle window', async () => {
+        const msg = deferred<{ message: string } | null>()
+        const onAuthFailure = vi.fn()
+        const opts = makeOpts({
+            promptMarkers: ['for shortcuts'],
+            authFailureMarkers: ['Select login method'],
+            authSettleMs: 200,
+            onAuthFailure,
+            nextMessage: () => msg.promise,
+        })
+        const promise = runAgentPty(opts)
+        await tick(0)
+        harness.triggerData('Welcome. Select login method: 1. Google OAuth')
+        await tick(500) // past the settle window, prompt never rendered
+        expect(onAuthFailure).toHaveBeenCalledTimes(1)
+        expect(harness.m.kill).toHaveBeenCalled()
         msg.resolve(null)
         await promise
     })
@@ -203,6 +247,35 @@ describe('runAgentPty', () => {
         await tick(40)
         // Driver auto-approves with Enter (default highlight = Yes).
         expect(harness.m.write).toHaveBeenCalledWith('\r')
+        msg.resolve(null)
+        await promise
+    })
+
+    it('supports a RegExp promptMarker: ready only once the versioned banner renders', async () => {
+        // agy's signed-in banner carries the CLI version ("Antigravity CLI 1.1.0"),
+        // which a hard-coded string marker can't track across upgrades. A RegExp
+        // marker (/Antigravity CLI \d/) must (a) NOT match the pre-auth welcome
+        // line ("Antigravity CLI." — no version digit) and (b) mark ready once the
+        // versioned banner appears — proving readiness comes from the marker, not
+        // the 20 s startup hard-cap.
+        const msg = deferred<{ message: string } | null>()
+        const onReady = vi.fn()
+        const opts = makeOpts({
+            promptMarkers: [/Antigravity CLI \d/],
+            idleReadyMs: 20,
+            onReady,
+            nextMessage: () => msg.promise,
+        })
+        const promise = runAgentPty(opts)
+        await tick(0)
+        // Pre-auth welcome: has "Antigravity CLI" but no version digit → not ready.
+        harness.triggerData('Welcome to the Antigravity CLI. You are currently not signed in.')
+        await tick(80)
+        expect(onReady).not.toHaveBeenCalled()
+        // Signed-in versioned banner → RegExp matches → ready well before any cap.
+        harness.triggerData('▄▀▀▄        Antigravity CLI 1.1.0')
+        await tick(120)
+        expect(onReady).toHaveBeenCalled()
         msg.resolve(null)
         await promise
     })

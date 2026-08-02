@@ -400,12 +400,49 @@ function extractReadPathFromInput(input: unknown): string | null {
     return null
 }
 
-function renderReadTextResult(text: string, path: string | null, surface: ToolViewProps['surface']) {
-    const language = inferCodeLanguage(path, text)
-    if (language) {
-        return <CodeBlock code={text} language={language} title="File content" {...resultCodeBlockProps(surface, surface === 'inline')} />
+/**
+ * Some agents (agy) prefix every read line with its true file line number
+ * ("50: <line>", "51: <line>", …). Detect that format when the prefixes are
+ * strictly consecutive, strip them, and return the starting line so the code
+ * block's gutter can be offset to the real numbers instead of restarting at 1
+ * (which misleads a partial read into looking like it started at line 1).
+ * Returns null when the text isn't a consecutively-numbered block.
+ */
+export function parseNumberedFileLines(text: string): { startLine: number; body: string } | null {
+    const lines = text.split('\n')
+    if (lines.length < 2) return null
+    let startLine: number | null = null
+    let expected = 0
+    const body: string[] = []
+    for (const line of lines) {
+        const match = line.match(/^(\d+): ?(.*)$/)
+        if (!match) return null
+        const n = Number(match[1])
+        if (startLine === null) { startLine = n; expected = n }
+        if (n !== expected) return null
+        expected++
+        body.push(match[2])
     }
-    return renderPlainTextQuote(text, surface)
+    return startLine === null ? null : { startLine, body: body.join('\n') }
+}
+
+function renderReadTextResult(text: string, path: string | null, surface: ToolViewProps['surface']) {
+    // A file read is line-oriented content: render it in a code block (monospace
+    // + line-number gutter) even when the extension is unknown (.txt, .log, agy
+    // step output …), so it reads as clean numbered lines instead of a
+    // soft-wrapped prose quote.
+    const numbered = parseNumberedFileLines(text)
+    const body = numbered ? numbered.body : text
+    const language = inferCodeLanguage(path, body) ?? 'text'
+    return (
+        <CodeBlock
+            code={body}
+            language={language}
+            title="File content"
+            startLineNumber={numbered?.startLine}
+            {...resultCodeBlockProps(surface, surface === 'inline')}
+        />
+    )
 }
 
 function ResultMetaPill(props: { children: ReactNode }) {

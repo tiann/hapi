@@ -26,6 +26,7 @@ export const queryKeys = {
     machineGrokModelsForCwd: (machineId: string, cwd: string) => ['machine-grok-models', machineId, cwd] as const,
     sessionGrokModels: (sessionId: string) => ['session-grok-models', sessionId] as const,
     sessionGrokReasoningEffortOptions: (sessionId: string) => ['session-grok-reasoning-effort-options', sessionId] as const,
+    machineAgyModels: (machineId: string) => ['machine-agy-models', machineId] as const,
     skills: (sessionId: string) => ['skills', sessionId] as const,
     scratchlist: (sessionId: string) => ['scratchlist', sessionId] as const,
 }

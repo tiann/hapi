@@ -27,6 +27,10 @@ const FLAVOR_LOGOS: Record<string, IconType> = {
 // Letter-badge fallback for flavors without a brand logo in @lobehub/icons
 // (pi) and for anything unrecognized.
 const FLAVOR_BADGES: Record<string, { label: string; colors: string }> = {
+    agy: {
+        label: 'Ag',
+        colors: 'bg-[#0891b2] text-white',
+    },
     pi: {
         label: 'Pi',
         colors: 'bg-[#5b21b6] text-white',

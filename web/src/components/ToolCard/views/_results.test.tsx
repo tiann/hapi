@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import type { ToolCallBlock } from '@/chat/types'
-import { extractCodexBashDisplay, extractTextFromResult, getMutationResultRenderMode, getToolResultViewComponent } from '@/components/ToolCard/views/_results'
+import { extractCodexBashDisplay, extractTextFromResult, getMutationResultRenderMode, getToolResultViewComponent, parseNumberedFileLines } from '@/components/ToolCard/views/_results'
 import { I18nProvider } from '@/lib/i18n-context'
 
 vi.mock('@/components/MarkdownRenderer', () => ({
@@ -11,10 +11,10 @@ vi.mock('@/components/MarkdownRenderer', () => ({
 }))
 
 vi.mock('@/components/CodeBlock', () => ({
-    CodeBlock: (props: { code: string; language?: string; title?: string; className?: string; showWrapToggle?: boolean }) => (
+    CodeBlock: (props: { code: string; language?: string; title?: string; className?: string; showWrapToggle?: boolean; startLineNumber?: number }) => (
         <div className={props.className} data-show-wrap-toggle={String(props.showWrapToggle ?? true)}>
             {props.title ? <div>{props.title}</div> : null}
-            <pre data-language={props.language ?? 'text'}>
+            <pre data-language={props.language ?? 'text'} data-start-line={props.startLineNumber ?? 1}>
                 <code>{props.code}</code>
             </pre>
         </div>
@@ -407,31 +407,46 @@ describe('read file result formatting', () => {
         expect(screen.getAllByText('Raw JSON').length).toBeGreaterThan(0)
     })
 
-    it('renders plain read output as a quote', () => {
+    it('renders plain read output as a line-numbered code block', () => {
         const { container } = renderToolResult('Read', {
             file: {
                 filePath: '/tmp/notes.txt',
                 content: 'plain notes from the workspace'
             }
         })
-        const quote = container.querySelector('[class*="border-l-"]')
-
-        expect(quote).toHaveTextContent('plain notes from the workspace')
-        expect(quote).toHaveClass('tool-result-quote')
-        expect(quote?.querySelector('pre')).toBeNull()
+        // A file read renders as a code block (monospace + gutter), not a prose
+        // quote — so unknown extensions (.txt/.log/agy step output) show clean lines.
+        const pre = container.querySelector('pre')
+        expect(pre).not.toBeNull()
+        expect(pre).toHaveTextContent('plain notes from the workspace')
+        expect(container.querySelector('.tool-result-quote')).toBeNull()
         expect(screen.getAllByText('Raw JSON').length).toBeGreaterThan(0)
     })
 
-    it('renders parsed Codex read command output as a quote', () => {
+    it('offsets the gutter to the true start line for a partial numbered read (not restarting at 1)', () => {
+        const { container } = renderToolResult('Read', {
+            file: {
+                filePath: '/tmp/doc.md',
+                content: '50: alpha\n51: beta\n52: gamma'
+            }
+        })
+        const pre = container.querySelector('pre')
+        // Gutter is offset to the real first line (50), not restarted at 1.
+        expect(pre?.getAttribute('data-start-line')).toBe('50')
+        // The "<n>: " prefixes are stripped from the shown body.
+        expect(pre?.textContent).toContain('alpha')
+        expect(pre?.textContent).not.toContain('50:')
+    })
+
+    it('renders parsed Codex read command output as a code block', () => {
         const { container } = renderToolResult(
             'CodexBash',
             'Exit code: 0\nWall time: 0.1s\nOutput:\nhello from file',
             { parsed_cmd: [{ type: 'read', name: 'debug.txt' }] }
         )
-        const quote = container.querySelector('[class*="border-l-"]')
-
-        expect(quote).toHaveTextContent('hello from file')
-        expect(quote?.querySelector('pre')).toBeNull()
+        const pre = container.querySelector('pre')
+        expect(pre).not.toBeNull()
+        expect(pre).toHaveTextContent('hello from file')
     })
 
     it('renders parsed Codex read command source output as a code block', () => {
@@ -469,5 +484,26 @@ describe('read file result formatting', () => {
 
         expect(container.querySelector('[data-show-wrap-toggle="true"]')).not.toBeNull()
         expect(container.querySelector('[data-show-wrap-toggle="false"]')).toBeNull()
+    })
+})
+
+describe('parseNumberedFileLines', () => {
+    it('extracts the start line and strips consecutive "<n>: " prefixes', () => {
+        expect(parseNumberedFileLines('50: alpha\n51: beta\n52: gamma')).toEqual({
+            startLine: 50,
+            body: 'alpha\nbeta\ngamma'
+        })
+    })
+
+    it('handles a full read starting at 1', () => {
+        expect(parseNumberedFileLines('1: a\n2: b')).toEqual({ startLine: 1, body: 'a\nb' })
+    })
+
+    it('returns null when numbering is not consecutive (avoids false positives)', () => {
+        expect(parseNumberedFileLines('1: a\n3: c')).toBeNull()
+    })
+
+    it('returns null for non-numbered content (e.g. claude read output)', () => {
+        expect(parseNumberedFileLines('just some\nplain text')).toBeNull()
     })
 })
