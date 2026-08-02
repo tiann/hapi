@@ -58,6 +58,19 @@ describe('buildSessionReferenceText', () => {
             'See HAPI session /sessions/abc-def for context'
         )
     })
+
+    it('truncates session-reference titles by grapheme without splitting combining or ZWJ sequences', () => {
+        const prefix = 'a'.repeat(119)
+        const combining = `${prefix}e\u0301x`
+        const family = `${prefix}👨\u200D👩\u200D👧\u200D👦x`
+
+        expect(buildSessionReferenceText(combining, 'combining')).toBe(
+            `See session ${JSON.stringify(`${prefix}e\u0301`)} (/sessions/combining) for context`
+        )
+        expect(buildSessionReferenceText(family, 'family')).toBe(
+            `See session ${JSON.stringify(`${prefix}👨\u200D👩\u200D👧\u200D👦`)} (/sessions/family) for context`
+        )
+    })
 })
 
 describe('matchSessionsForMention', () => {

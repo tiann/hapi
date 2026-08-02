@@ -59,6 +59,14 @@ describe('serializeComposerSegments', () => {
             { type: 'text', text: ' after' },
         ])).toBe('before  after')
     })
+
+    it('truncates mention titles at 120 graphemes without splitting an emoji', () => {
+        const title = `${'a'.repeat(119)}😀x`
+        const expectedTitle = `${'a'.repeat(119)}😀`
+        expect(serializeComposerSegments([
+            { type: 'session', id: 'emoji-session', title },
+        ])).toBe(`[${expectedTitle}](/sessions/emoji-session)`)
+    })
 })
 
 describe('parseComposerSegments', () => {
@@ -226,6 +234,7 @@ describe('serializeComposerSelection', () => {
         const segments: ComposerSegment[] = [{ type: 'text', text: 'abc' }]
         expect(serializeComposerSelection(segments, { start: 1, end: 1 })).toBeNull()
     })
+
 })
 
 describe('insertSegmentsInComposerSegments', () => {
