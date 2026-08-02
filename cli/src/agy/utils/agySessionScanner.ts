@@ -250,31 +250,32 @@ class AgySessionScanner extends BaseSessionScanner<AgyTranscriptEntry> {
 
         const text = this.sessionMessageText
         const bodyNeedle = text ? extractBodyText(text) : null
-        const found: string[] = []
+        const matches: Array<{ uuid: string; logPath: string }> = []
         for (const { uuid } of candidates) {
             const logPath = brainLogPath(uuid)
             if (text) {
                 try {
                     if (await brainTranscriptMatches(logPath, text, bodyNeedle)) {
                         logger.debug(`[agy-scanner] matched brain ${uuid} via content`)
-                        this.foundBrainUuid = uuid
-                        found.push(logPath)
-                        // Notify the caller immediately so it can persist the UUID
-                        // to session metadata without waiting for onMessage polling.
-                        this.onBrainFoundCallback?.(uuid)
-                        break
+                        matches.push({ uuid, logPath })
                     }
                 } catch {
                     continue
                 }
-            } else {
-                found.push(logPath)
             }
         }
 
-        if (this.foundBrainUuid) {
-            logger.debug(`[agy-scanner] found brain ${this.foundBrainUuid}, watching ${found.length} file(s)`)
-            return found
+        if (matches.length === 1) {
+            const [{ uuid, logPath }] = matches
+            this.foundBrainUuid = uuid
+            // Notify the caller immediately so it can persist the UUID to
+            // session metadata without waiting for onMessage polling.
+            this.onBrainFoundCallback?.(uuid)
+            logger.debug(`[agy-scanner] found brain ${uuid}, watching 1 file`)
+            return [logPath]
+        }
+        if (matches.length > 1) {
+            logger.warn(`[agy-scanner] ${matches.length} brains matched the first message exactly; refusing ambiguous attachment`)
         }
         // Brain not yet identified — do NOT fall back to watching all candidates.
         // Emitting from unmatched brains leaks another session's transcript into
@@ -370,6 +371,8 @@ async function brainTranscriptMatches(
 }
 
 function matchesUserInput(entries: AgyTranscriptEntry[], text: string, bodyNeedle: string | null): boolean {
+    const normalizedText = normalizeUserInput(text)
+    const normalizedBody = bodyNeedle ? normalizeUserInput(bodyNeedle) : null
     for (const entry of entries) {
         if (entry.type !== 'USER_INPUT') continue
         const content = entry.content
@@ -381,11 +384,26 @@ function matchesUserInput(entries: AgyTranscriptEntry[], text: string, bodyNeedl
         // attachments. The body text alone still appears verbatim in agy's
         // re-packaged transcript regardless of how it re-orders/re-wraps the
         // attachment references.
-        if (content.includes(text) || (bodyNeedle && content.includes(bodyNeedle))) {
+        const normalizedContent = normalizeUserInput(content)
+        if (normalizedContent === normalizedText) {
             return true
         }
+        if (normalizedBody && extractRepackagedAttachmentBody(normalizedContent) === normalizedBody) return true
     }
     return false
+}
+
+function normalizeUserInput(value: string): string {
+    return value.replace(/\r\n/g, '\n').trim()
+}
+
+function extractRepackagedAttachmentBody(content: string): string {
+    return content
+        .split('\n')
+        .filter((line) => line !== '<USER_REQUEST>' && line !== '</USER_REQUEST>')
+        .filter((line) => !/^@\S+( @\S+)*$/.test(line.trim()))
+        .join('\n')
+        .trim()
 }
 
 // Reads and JSONL-parses at most `maxBytes` from the START of the file (not

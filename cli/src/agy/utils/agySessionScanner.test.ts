@@ -362,14 +362,48 @@ describe('AgySessionScanner — resume support', () => {
         await scanner.cleanup()
     })
 
+    it('fails closed when two in-window brains have the same exact first prompt', async () => {
+        const otherUuid = '00000000-0000-4000-8000-000000000002'
+        const prompt = `hapi-ambiguous-${Date.now()}`
+        makeTempBrain(TEST_UUID, makeTranscriptLine(0, 'USER_INPUT', prompt) + '\n')
+        makeTempBrain(otherUuid, makeTranscriptLine(0, 'USER_INPUT', prompt) + '\n')
+
+        try {
+            const foundUuids: string[] = []
+            const scanner = await createAgySessionScanner({
+                onEntry: () => {},
+                onBrainFound: (uuid) => foundUuids.push(uuid),
+            })
+            scanner.setSessionMessageText(prompt)
+            await new Promise((r) => setTimeout(r, 300))
+
+            expect(scanner.getBrainUuid()).toBeNull()
+            expect(foundUuids).toEqual([])
+            await scanner.cleanup()
+        } finally {
+            rmSync(join(BRAIN_BASE, otherUuid), { recursive: true, force: true })
+        }
+    })
+
+    it('does not match a USER_INPUT that only contains the first prompt as a substring', async () => {
+        const prompt = `yes-${Date.now()}`
+        makeTempBrain(TEST_UUID, makeTranscriptLine(0, 'USER_INPUT', `please say ${prompt} now`) + '\n')
+
+        const scanner = await createAgySessionScanner({ onEntry: () => {} })
+        scanner.setSessionMessageText(prompt)
+        await new Promise((r) => setTimeout(r, 300))
+
+        expect(scanner.getBrainUuid()).toBeNull()
+        await scanner.cleanup()
+    })
+
     it('matches a first message whose USER_INPUT line is longer than the bounded prefix read', async () => {
         // The first USER_INPUT sits at offset 0, so a very long first message
         // IS the prefix window: no complete line fits, the prefix parse yields
         // nothing, and giving up there would blank the chat forever (the old
         // whole-file read matched this input).
-        const needle = `hapi-huge-needle-${Date.now()}`
-        const filler = 'x'.repeat(70 * 1024)
-        makeTempBrain(TEST_UUID, makeTranscriptLine(0, 'USER_INPUT', `${filler} ${needle}`) + '\n')
+        const needle = `${'x'.repeat(70 * 1024)} hapi-huge-needle-${Date.now()}`
+        makeTempBrain(TEST_UUID, makeTranscriptLine(0, 'USER_INPUT', needle) + '\n')
 
         const scanner = await createAgySessionScanner({ onEntry: () => {} })
         scanner.setSessionMessageText(needle)
