@@ -83,7 +83,9 @@ function shouldIgnoreSyntheticUserMessage(text: string): boolean {
 }
 
 function inferSessionIdFromFileName(filePath: string): string | null {
-    return /([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/.exec(filePath)?.[1] ?? null
+    // Basename only: parent dirs (e.g. CODEX_HOME) may contain unrelated UUIDs.
+    return /([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/
+        .exec(basename(filePath))?.[1] ?? null
 }
 
 function collectJsonlFiles(root: string, files: string[]): void {
