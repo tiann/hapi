@@ -41,8 +41,10 @@ describe('SessionRowSummary model-error + attention', () => {
             metadata: {
                 lastModelError: {
                     kind: 'model_not_found',
-                    message: 'Unknown model',
+                    transient: false,
+                    rawSnippet: 'Unknown model',
                     atTs: 1,
+                    priorAssistantClaimsDone: false,
                 },
             },
         })
