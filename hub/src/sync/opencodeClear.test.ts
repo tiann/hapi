@@ -92,6 +92,23 @@ describe('SyncEngine.clearOpenCodeSession', () => {
             expect(spawnSession).toHaveBeenCalledTimes(1)
         } finally { engine.stop() }
     })
+
+    it('aborts a reservation after native cleanup failure and restores held rows to the source', async () => {
+        const { store, engine } = createEngine()
+        try {
+            const source = engine.getOrCreateSession('abort-clear-source', {
+                path: '/tmp/project', host: 'host', machineId: 'machine-1', flavor: 'opencode', startedBy: 'runner'
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: source.id, time: Date.now() })
+            const reserved = engine.reserveOpenCodeClearSession(source.id, 'default')
+            if (reserved.type !== 'success') throw new Error('reservation failed')
+            await engine.sendMessage(source.id, { text: 'held', localId: 'held' })
+            expect(store.messages.getAllMessages(reserved.sessionId)).toHaveLength(1)
+            expect(engine.abortOpenCodeClearSession(source.id, 'default')).toEqual({ type: 'success', sessionId: source.id })
+            expect(store.messages.getAllMessages(source.id).map((m) => m.localId)).toEqual(['held'])
+            expect(engine.getSessionByNamespace(source.id, 'default')?.metadata?.opencodeClearOperation?.state).toBe('aborted')
+        } finally { engine.stop() }
+    })
     it.each(['resume', 'reopen'] as const)('blocks %s of an archived clear source before spawning', async (action) => {
         const { engine } = createEngine()
         try {

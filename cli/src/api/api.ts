@@ -299,6 +299,16 @@ export class ApiClient {
         return parsed.data.sessionId
     }
 
+    async abortOpenCodeClearSession(sessionId: string): Promise<string> {
+        const response = await axios.post<ClearOpencodeSessionResponse>(
+            `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(sessionId)}/clear-opencode/abort`, {},
+            { headers: this.authHeaders(), timeout: 60_000 }
+        )
+        const parsed = ClearOpencodeSessionResponseSchema.safeParse(response.data)
+        if (!parsed.success) throw apiValidationError('Invalid clear abort response', response)
+        return parsed.data.sessionId
+    }
+
     sessionSyncClient(session: Session, options?: ApiSessionClientOptions): ApiSessionClient {
         return new ApiSessionClient(this.token, session, options)
     }

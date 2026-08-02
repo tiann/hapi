@@ -37,6 +37,7 @@ type OpencodeRemoteLauncherOptions = {
     // the source lifecycle cleanup before requesting the fresh process.
     onClearRequested?: () => Promise<void>;
     onClearCleanupComplete?: () => void;
+    onClearCleanupFailed?: () => Promise<void>;
 };
 
 export type AbortStatusDecision = {
@@ -629,8 +630,13 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         }
 
         if (this.backend) {
-            await this.backend.disconnect();
-            this.backend = null;
+            try {
+                await this.backend.disconnect();
+                this.backend = null;
+            } catch (error) {
+                if (this.clearRequested) await this.options.onClearCleanupFailed?.();
+                throw error;
+            }
         }
 
         if (this.happyServer) {

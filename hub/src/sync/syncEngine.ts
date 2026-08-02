@@ -777,7 +777,7 @@ async uploadScratchlistAttachment(
     private async reconcileOpenCodeClears(): Promise<void> {
         for (let session of this.sessionCache.getSessions()) {
             const operation = session.metadata?.opencodeClearOperation
-            if (session.active || !operation || operation.state === 'completed') continue
+            if (session.active || !operation || operation.state === 'completed' || operation.state === 'aborted') continue
             if (session.metadata?.lifecycleState !== 'archived' || session.metadata.archiveReason !== 'Cleared by /clear') {
                 const result = this.store.sessions.updateSessionMetadata(session.id, {
                     ...session.metadata,
@@ -1221,6 +1221,19 @@ async uploadScratchlistAttachment(
         this.getOrCreateSession(`opencode-clear-replacement:${operation.replacementSessionId}`, replacementMetadata, null, namespace,
             source.model ?? undefined, source.effort ?? undefined, source.modelReasoningEffort ?? undefined, operation.replacementSessionId)
         return { type: 'success', sessionId: operation.replacementSessionId }
+    }
+
+    abortOpenCodeClearSession(sessionId: string, namespace: string): ClearOpencodeSessionResult {
+        const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
+        if (!access.ok) return { type: 'error', message: 'Session not found', code: access.reason === 'access-denied' ? 'access_denied' : 'session_not_found' }
+        const operation = access.session.metadata?.opencodeClearOperation
+        if (!operation) return { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
+        if (operation.state === 'completed') return { type: 'success', sessionId: operation.replacementSessionId }
+        this.store.messages.moveUninvokedMessages(operation.replacementSessionId, sessionId)
+        if (!this.persistClearOperation(sessionId, namespace, { ...operation, state: 'aborted', updatedAt: Date.now(), error: undefined })) {
+            return { type: 'error', message: 'Could not abort clear reservation', code: 'replacement_link_failed' }
+        }
+        return { type: 'success', sessionId }
     }
 
     private async clearOpenCodeSessionOnce(sessionId: string, namespace: string): Promise<ClearOpencodeSessionResult> {

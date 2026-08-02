@@ -553,6 +553,9 @@ export async function runOpencode(opts: {
             onClearCleanupComplete: () => {
                 clearRequested = true;
             },
+            onClearCleanupFailed: async () => {
+                await api.abortOpenCodeClearSession(session.sessionId);
+            },
             isLocalIdCancelled: (localId) => cancelledDequeuedLocalIds.delete(localId)
         });
     } catch (error) {

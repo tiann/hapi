@@ -375,13 +375,15 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         };
         const onClearRequested = vi.fn();
         const onClearCleanupComplete = vi.fn();
+        const onClearCleanupFailed = vi.fn(async () => {});
         const { session } = createSessionStub([
             { message: '', mode: createClearMode() }
         ]);
 
-        await expect(opencodeRemoteLauncher(session as never, { onClearRequested, onClearCleanupComplete })).rejects.toThrow('disconnect failed');
+        await expect(opencodeRemoteLauncher(session as never, { onClearRequested, onClearCleanupComplete, onClearCleanupFailed })).rejects.toThrow('disconnect failed');
         expect(onClearRequested).toHaveBeenCalledTimes(1);
         expect(onClearCleanupComplete).not.toHaveBeenCalled();
+        expect(onClearCleanupFailed).toHaveBeenCalledTimes(1);
         const backendModule = await import('./utils/opencodeBackend');
         (backendModule.createOpencodeBackend as unknown as ReturnType<typeof vi.fn>).mockClear();
     });

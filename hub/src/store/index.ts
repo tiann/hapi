@@ -152,7 +152,9 @@ export class Store {
             if (row?.metadata) {
                 const metadata = JSON.parse(row.metadata) as { opencodeClearOperation?: { replacementSessionId?: string; state?: string }, supersededBySessionId?: string }
                 targetSessionId = metadata.supersededBySessionId
-                    ?? metadata.opencodeClearOperation?.replacementSessionId
+                    ?? (metadata.opencodeClearOperation?.state !== 'aborted'
+                        ? metadata.opencodeClearOperation?.replacementSessionId
+                        : undefined)
                     ?? sessionId
             }
             return { sessionId: targetSessionId, message: addMessage(this.db, targetSessionId, content, localId, scheduledAt) }
