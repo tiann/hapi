@@ -288,13 +288,18 @@ export function NewSession(props: {
         if (!props.api) {
             return
         }
-        props.api.getClaudeCustomModels().then((result) => {
-            if (!cancelled) {
-                setClaudeCustomModels(Array.isArray(result.models) ? result.models : [])
-            }
-        }).catch(() => {
-            // Custom models are optional — fall back to the built-in presets.
-        })
+        try {
+            props.api.getClaudeCustomModels().then((result) => {
+                if (!cancelled) {
+                    setClaudeCustomModels(Array.isArray(result.models) ? result.models : [])
+                }
+            }).catch(() => {
+                // Custom models are optional — fall back to the built-in presets.
+            })
+        } catch {
+            // Partial api clients (tests, older hub versions) without the
+            // method must not break the New Session form.
+        }
         return () => {
             cancelled = true
         }
