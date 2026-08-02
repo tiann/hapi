@@ -462,9 +462,11 @@ describe('SessionList collapse behavior', () => {
         const runningPanel = () => screen.getByTitle('In progress').nextElementSibling
 
         expect(runningPanel()?.getAttribute('data-open')).toBe('true')
+        expect(screen.getByTitle('In progress').getAttribute('aria-expanded')).toBe('true')
 
         fireEvent.click(screen.getByTitle('In progress'))
         expect(runningPanel()?.getAttribute('data-open')).toBeNull()
+        expect(screen.getByTitle('In progress').getAttribute('aria-expanded')).toBe('false')
 
         fireEvent.click(screen.getByRole('button', { name: 'Search sessions' }))
         fireEvent.change(screen.getByPlaceholderText('Search sessions…'), {
@@ -472,6 +474,31 @@ describe('SessionList collapse behavior', () => {
         })
 
         expect(runningPanel()?.getAttribute('data-open')).toBe('true')
+        // The section stays reported open while searching even though the
+        // underlying collapsed state is still set.
+        expect(screen.getByTitle('In progress').getAttribute('aria-expanded')).toBe('true')
+    })
+
+    it('toggles the running section with the keyboard', () => {
+        const sessions = [
+            makeSession({
+                id: 'session-running',
+                active: true,
+                thinking: true,
+                updatedAt: 100,
+                metadata: { path: '/work/hapi', name: 'Running task', flavor: 'codex' },
+            }),
+        ]
+        render(renderSessionList(sessions))
+
+        const header = screen.getByRole('button', { name: /In progress/ })
+        expect(header.getAttribute('aria-expanded')).toBe('true')
+
+        fireEvent.keyDown(header, { key: 'Enter' })
+        expect(header.getAttribute('aria-expanded')).toBe('false')
+
+        fireEvent.keyDown(header, { key: ' ' })
+        expect(header.getAttribute('aria-expanded')).toBe('true')
     })
 
     it('keeps the previous selected path open when selection moves', async () => {
