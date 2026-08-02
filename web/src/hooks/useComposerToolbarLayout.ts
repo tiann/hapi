@@ -15,12 +15,13 @@ export const COMPOSER_TOOLBAR_ITEM_IDS = [
 
 export type ComposerToolbarItemId = typeof COMPOSER_TOOLBAR_ITEM_IDS[number]
 export type ComposerToolbarLayoutMode = 'left' | 'center' | 'right' | 'split'
-export type ComposerToolbarGroup = 'left' | 'right'
+export type ComposerToolbarGroup = 'left' | 'right' | 'hidden'
 
 export type ComposerToolbarLayout = {
     mode: ComposerToolbarLayoutMode
     left: ComposerToolbarItemId[]
     right: ComposerToolbarItemId[]
+    hidden: ComposerToolbarItemId[]
 }
 
 export const DEFAULT_COMPOSER_TOOLBAR_LAYOUT: ComposerToolbarLayout = {
@@ -30,6 +31,7 @@ export const DEFAULT_COMPOSER_TOOLBAR_LAYOUT: ComposerToolbarLayout = {
         'abort',
     ],
     right: [],
+    hidden: [],
 }
 
 export function moveComposerToolbarItem(
@@ -40,9 +42,10 @@ export function moveComposerToolbarItem(
 ): ComposerToolbarLayout {
     const left = layout.left.filter((entry) => entry !== item)
     const right = layout.right.filter((entry) => entry !== item)
-    const target = targetGroup === 'left' ? left : right
+    const hidden = layout.hidden.filter((entry) => entry !== item)
+    const target = targetGroup === 'left' ? left : targetGroup === 'right' ? right : hidden
     target.splice(Math.max(0, Math.min(targetIndex, target.length)), 0, item)
-    return { ...layout, left, right }
+    return { ...layout, left, right, hidden }
 }
 
 export function moveComposerToolbarItemInSingleLayout(
@@ -52,11 +55,13 @@ export function moveComposerToolbarItemInSingleLayout(
 ): ComposerToolbarLayout {
     const leftCount = layout.left.length
     const items = [...layout.left, ...layout.right].filter((entry) => entry !== item)
+    const hidden = layout.hidden.filter((entry) => entry !== item)
     items.splice(Math.max(0, Math.min(targetIndex, items.length)), 0, item)
     return {
         ...layout,
         left: items.slice(0, leftCount),
         right: items.slice(leftCount),
+        hidden,
     }
 }
 
@@ -93,6 +98,7 @@ export function normalizeComposerToolbarLayout(value: unknown): ComposerToolbarL
 
     const left = normalizeGroup(candidate.left)
     const right = normalizeGroup(candidate.right)
+    const hidden = normalizeGroup(candidate.hidden)
     for (const item of COMPOSER_TOOLBAR_ITEM_IDS) {
         if (!seen.has(item)) {
             left.push(item)
@@ -103,6 +109,7 @@ export function normalizeComposerToolbarLayout(value: unknown): ComposerToolbarL
         mode: isLayoutMode(candidate.mode) ? candidate.mode : DEFAULT_COMPOSER_TOOLBAR_LAYOUT.mode,
         left,
         right,
+        hidden,
     }
 }
 

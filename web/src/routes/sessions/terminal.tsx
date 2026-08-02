@@ -447,10 +447,8 @@ export default function TerminalPage() {
             </div>
 
             {session.active ? null : (
-                <div className="px-3 pt-3">
-                    <div className="mx-auto w-full max-w-content rounded-md bg-[var(--app-subtle-bg)] p-3 text-sm text-[var(--app-hint)]">
-                        Session is inactive. Terminal is unavailable.
-                    </div>
+                <div className="mx-auto w-full max-w-content bg-[var(--app-subtle-bg)] p-3 text-sm text-[var(--app-hint)]">
+                    Session is inactive. Terminal is unavailable.
                 </div>
             )}
 

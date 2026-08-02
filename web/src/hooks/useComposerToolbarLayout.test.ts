@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import {
     DEFAULT_COMPOSER_TOOLBAR_LAYOUT,
+    moveComposerToolbarItem,
     moveComposerToolbarItemInSingleLayout,
     normalizeComposerToolbarLayout,
 } from './useComposerToolbarLayout'
@@ -19,6 +20,7 @@ describe('DEFAULT_COMPOSER_TOOLBAR_LAYOUT', () => {
             'schedule',
             'abort',
         ])
+        expect(DEFAULT_COMPOSER_TOOLBAR_LAYOUT.hidden).toEqual([])
     })
 })
 
@@ -39,7 +41,30 @@ describe('normalizeComposerToolbarLayout', () => {
         expect(result.mode).toBe('split')
         expect(result.left.slice(0, 2)).toEqual(['settings', 'attachment'])
         expect(result.right).toEqual(['abort', 'schedule'])
-        expect([...result.left, ...result.right]).toHaveLength(DEFAULT_COMPOSER_TOOLBAR_LAYOUT.left.length)
+        expect([...result.left, ...result.right, ...result.hidden]).toHaveLength(DEFAULT_COMPOSER_TOOLBAR_LAYOUT.left.length)
+    })
+
+    it('preserves hidden tools and keeps newly introduced tools visible', () => {
+        const result = normalizeComposerToolbarLayout({
+            mode: 'left',
+            left: ['attachment'],
+            right: [],
+            hidden: ['settings', 'abort', 'settings'],
+        })
+
+        expect(result.hidden).toEqual(['settings', 'abort'])
+        expect(result.left).toContain('schedule')
+        expect(result.left).not.toContain('settings')
+    })
+
+    it('moves tools between visible and hidden groups without duplication', () => {
+        const hidden = moveComposerToolbarItem(DEFAULT_COMPOSER_TOOLBAR_LAYOUT, 'terminal', 'hidden', 0)
+        expect(hidden.hidden).toEqual(['terminal'])
+        expect(hidden.left).not.toContain('terminal')
+
+        const visible = moveComposerToolbarItem(hidden, 'terminal', 'right', 0)
+        expect(visible.hidden).toEqual([])
+        expect(visible.right).toEqual(['terminal'])
     })
 
     it('reorders across a hidden split boundary in single-column modes', () => {

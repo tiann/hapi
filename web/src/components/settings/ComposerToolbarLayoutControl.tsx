@@ -37,10 +37,10 @@ export function ComposerToolbarLayoutControl() {
 
     const moveDraggedItem = (group: ComposerToolbarGroup, index: number) => {
         if (draggedItem) {
-            const next = layout.mode === 'split'
+            const next = group === 'hidden' || layout.hidden.includes(draggedItem) || layout.mode === 'split'
                 ? moveComposerToolbarItem(layout, draggedItem, group, index)
                 : moveComposerToolbarItemInSingleLayout(layout, draggedItem, index)
-            const unchanged = next.left.join() === layout.left.join() && next.right.join() === layout.right.join()
+            const unchanged = next.left.join() === layout.left.join() && next.right.join() === layout.right.join() && next.hidden.join() === layout.hidden.join()
             if (!unchanged) {
                 setLayout(next)
             }
@@ -51,9 +51,10 @@ export function ComposerToolbarLayoutControl() {
         event.preventDefault()
         const item = draggedItem ?? event.dataTransfer.getData('text/plain')
         if ((COMPOSER_TOOLBAR_ITEM_IDS as readonly string[]).includes(item)) {
-            const next = layout.mode === 'split'
-                ? moveComposerToolbarItem(layout, item as ComposerToolbarItemId, group, index)
-                : moveComposerToolbarItemInSingleLayout(layout, item as ComposerToolbarItemId, index)
+            const typedItem = item as ComposerToolbarItemId
+            const next = group === 'hidden' || layout.hidden.includes(typedItem) || layout.mode === 'split'
+                ? moveComposerToolbarItem(layout, typedItem, group, index)
+                : moveComposerToolbarItemInSingleLayout(layout, typedItem, index)
             setLayout(next)
         }
         setDraggedItem(null)
@@ -61,7 +62,7 @@ export function ComposerToolbarLayoutControl() {
 
     const moveItemByOffset = (item: ComposerToolbarItemId, group: ComposerToolbarGroup, index: number, offset: -1 | 1) => {
         const targetIndex = Math.max(0, index + offset)
-        const next = layout.mode === 'split'
+        const next = group === 'hidden' || layout.mode === 'split'
             ? moveComposerToolbarItem(layout, item, group, targetIndex)
             : moveComposerToolbarItemInSingleLayout(layout, item, targetIndex)
         setLayout(next)
@@ -127,8 +128,10 @@ export function ComposerToolbarLayoutControl() {
 
     const singleAlignment = layout.mode === 'center' ? 'justify-center' : layout.mode === 'right' ? 'justify-end' : 'justify-start'
     const singleItems = [...layout.left, ...layout.right]
-    const selectedGroup: ComposerToolbarGroup = selectedItem && layout.right.includes(selectedItem) ? 'right' : 'left'
-    const selectedItems = layout.mode === 'split' ? layout[selectedGroup] : singleItems
+    const selectedGroup: ComposerToolbarGroup = selectedItem && layout.hidden.includes(selectedItem)
+        ? 'hidden'
+        : selectedItem && layout.right.includes(selectedItem) ? 'right' : 'left'
+    const selectedItems = selectedGroup === 'hidden' ? layout.hidden : layout.mode === 'split' ? layout[selectedGroup] : singleItems
     const selectedIndex = selectedItem ? selectedItems.indexOf(selectedItem) : -1
 
     return (
@@ -173,6 +176,22 @@ export function ComposerToolbarLayoutControl() {
                     <span className="ml-1" title={t('composer.send')}><ComposerSendButtonPreview /></span>
                 </div>
             </div>
+            <div className="mx-3 mt-3">
+                <h4 className="text-sm font-medium text-[var(--app-fg)]">{t('settings.chat.composerToolbar.hidden')}</h4>
+                <div className="mt-2 rounded-xl border border-dashed border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-2 py-1.5">
+                    {layout.hidden.length > 0
+                        ? renderGroup('hidden', layout.hidden, 'justify-start', true)
+                        : (
+                            <div
+                                className="flex min-h-10 items-center justify-center text-xs text-[var(--app-hint)]"
+                                onDragOver={(event) => event.preventDefault()}
+                                onDrop={(event) => onDrop(event, 'hidden', 0)}
+                            >
+                                {t('settings.chat.composerToolbar.emptyHidden')}
+                            </div>
+                        )}
+                </div>
+            </div>
             {selectedItem && selectedIndex >= 0 ? (
                 <div className="mx-3 mt-2 flex items-center justify-between gap-2 rounded-lg bg-[var(--app-subtle-bg)] px-3 py-2 text-sm">
                     <span className="min-w-0 truncate text-[var(--app-hint)]">{t(ITEM_LABEL_KEYS[selectedItem])}</span>
@@ -197,7 +216,28 @@ export function ComposerToolbarLayoutControl() {
                         >
                             →
                         </button>
-                        {layout.mode === 'split' ? (
+                        {selectedGroup !== 'hidden' ? (
+                            <button
+                                type="button"
+                                aria-label={t('settings.chat.composerToolbar.hide')}
+                                title={t('settings.chat.composerToolbar.hide')}
+                                onClick={() => setLayout(moveComposerToolbarItem(layout, selectedItem, 'hidden', layout.hidden.length))}
+                                className="ml-1 rounded-lg px-2.5 py-1.5 text-xs text-[var(--app-link)] hover:bg-[var(--app-bg)]"
+                            >
+                                {t('settings.chat.composerToolbar.hide')}
+                            </button>
+                        ) : (
+                            <button
+                                type="button"
+                                aria-label={t('settings.chat.composerToolbar.show')}
+                                title={t('settings.chat.composerToolbar.show')}
+                                onClick={() => setLayout(moveComposerToolbarItem(layout, selectedItem, 'left', layout.left.length))}
+                                className="ml-1 rounded-lg px-2.5 py-1.5 text-xs text-[var(--app-link)] hover:bg-[var(--app-bg)]"
+                            >
+                                {t('settings.chat.composerToolbar.show')}
+                            </button>
+                        )}
+                        {layout.mode === 'split' && selectedGroup !== 'hidden' ? (
                             <button
                                 type="button"
                                 aria-label={selectedGroup === 'left' ? t('settings.chat.composerToolbar.moveRight') : t('settings.chat.composerToolbar.moveLeft')}

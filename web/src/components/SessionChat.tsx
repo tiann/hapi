@@ -1312,12 +1312,10 @@ function SessionChatInner(props: SessionChatProps) {
             )}
 
             {sessionInactive ? (
-                <div className="px-3 pt-3">
-                    <div className="mx-auto w-full max-w-content rounded-md bg-[var(--app-subtle-bg)] p-3 text-sm text-[var(--app-hint)]">
-                        {inactiveCanResume
-                            ? t('session.inactive.autoResume')
-                            : t('session.inactive.cannotResume')}
-                    </div>
+                <div className="mx-auto w-full max-w-content bg-[var(--app-subtle-bg)] p-3 text-sm text-[var(--app-hint)]">
+                    {inactiveCanResume
+                        ? t('session.inactive.autoResume')
+                        : t('session.inactive.cannotResume')}
                 </div>
             ) : null}
 
