@@ -1227,6 +1227,11 @@ function SessionChatInner(props: SessionChatProps) {
     // The ref is read at send time; resolvePendingSchedule converts it to an
     // absolute epoch-ms using Date.now() at that moment (send-time base for presets).
     const [pendingSchedule, setPendingSchedule] = useState<PendingSchedule | null>(null)
+    const [pendingScheduleRevision, setPendingScheduleRevision] = useState(0)
+    const updatePendingSchedule = useCallback((next: PendingSchedule | null) => {
+        setPendingSchedule(next)
+        setPendingScheduleRevision((revision) => revision + 1)
+    }, [])
     const pendingScheduleRef = useRef<PendingSchedule | null>(null)
     // Keep render ref in sync so onNew can snapshot at send time
     pendingScheduleRef.current = pendingSchedule
@@ -1242,12 +1247,12 @@ function SessionChatInner(props: SessionChatProps) {
         const ms = (pendingSchedule as Extract<PendingSchedule, { type: 'absolute' }>).ms
         const remaining = ms - Date.now()
         if (remaining <= 0) {
-            setPendingSchedule(null)
+            updatePendingSchedule(null)
             return
         }
-        const timer = setTimeout(() => setPendingSchedule(null), remaining)
+        const timer = setTimeout(() => updatePendingSchedule(null), remaining)
         return () => clearTimeout(timer)
-    }, [pendingSchedule])
+    }, [pendingSchedule, updatePendingSchedule])
 
     const handleSend = useCallback(async (text: string, attachments?: AttachmentMetadata[], scheduledAt?: number | null) => {
         // Route through the scratchlist-aware wrapper. When scratchlistMode
@@ -1272,10 +1277,10 @@ function SessionChatInner(props: SessionChatProps) {
             // its own send path). Schedule clear / forced scroll only
             // matter for chat sends; scratchlist adds don't have a
             // schedule and shouldn't move the chat viewport.
-            setPendingSchedule(null)
+            updatePendingSchedule(null)
             setForceScrollToken((token) => token + 1)
         }
-    }, [onSendForComposer, scratchlistMode])
+    }, [onSendForComposer, scratchlistMode, updatePendingSchedule])
 
     const attachmentAdapter = useMemo(() => {
         if (!props.session.active) {
@@ -1418,9 +1423,11 @@ function SessionChatInner(props: SessionChatProps) {
                             <QueuedMessagesBar
                                 sessionId={props.session.id}
                                 api={props.api}
+                                pendingSchedule={pendingSchedule}
+                                pendingScheduleRevision={pendingScheduleRevision}
                                 onEdit={({ pendingSchedule: restored }) => {
                                     // Restore the schedule so the clock button re-activates
-                                    setPendingSchedule(restored)
+                                    updatePendingSchedule(restored)
                                 }}
                             />
                         </div>
@@ -1431,8 +1438,8 @@ function SessionChatInner(props: SessionChatProps) {
                         resolveSessionMentionTooltip={resolveSessionMentionTooltip}
                         disabled={props.isSending}
                         pendingSchedule={pendingSchedule}
-                        onSchedule={setPendingSchedule}
-                        onClearSchedule={() => setPendingSchedule(null)}
+                        onSchedule={updatePendingSchedule}
+                        onClearSchedule={() => updatePendingSchedule(null)}
                         permissionMode={props.session.permissionMode}
                         collaborationMode={codexCollaborationModeSupported ? props.session.collaborationMode : undefined}
                         model={props.session.model}

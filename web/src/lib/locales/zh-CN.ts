@@ -530,6 +530,7 @@ export default {
   'composer.scheduleErrorTooFar': '最多只能定时 7 天。',
   'queuedMessages.scheduledFor': '定时发送: {time}',
   'queuedMessages.editAlreadyInvoked': '消息已发送，无法编辑',
+  'queuedMessages.editCurrentDraftKept': '队列消息已取消，已保留当前草稿和定时设置。',
 
   // Scratchlist (per-session workbench, issue #11)
   'scratchlist.title': '草稿夹',

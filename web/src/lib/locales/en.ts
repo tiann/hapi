@@ -526,6 +526,7 @@ export default {
   'composer.scheduleErrorTooFar': 'Maximum schedule time is 7 days.',
   'queuedMessages.scheduledFor': 'Scheduled for {time}',
   'queuedMessages.editAlreadyInvoked': "Message already sent — it can't be edited",
+  'queuedMessages.editCurrentDraftKept': 'Queued message cancelled — current draft and schedule were kept.',
 
   // Scratchlist (per-session workbench, issue #11)
   'scratchlist.title': 'Scratchlist',
