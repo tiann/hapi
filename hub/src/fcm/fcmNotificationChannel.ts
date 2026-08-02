@@ -276,7 +276,7 @@ export class FcmNotificationChannel implements NotificationChannel {
         const payload = this.buildPayload({
             title,
             body,
-            tag: `model-error-${session.id}-${notification.atTs}`,
+            tag: `model-error-${session.id}-${notification.eventId}`,
             type: 'model-error',
             sessionId: session.id,
             sessionName,

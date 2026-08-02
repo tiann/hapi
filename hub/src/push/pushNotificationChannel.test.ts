@@ -213,6 +213,7 @@ describe('PushNotificationChannel', () => {
         )
 
         await channel.sendModelError(createSession(), {
+            eventId: 'evt-1',
             kind: 'quota_exhausted',
             transient: false,
             rawSnippet: 'x',
@@ -238,6 +239,7 @@ describe('PushNotificationChannel', () => {
         )
 
         await channel.sendModelError(createSession(), {
+            eventId: 'evt-2',
             kind: 'rate_limited',
             transient: true,
             rawSnippet: 'y',

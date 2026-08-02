@@ -165,9 +165,9 @@ export class PushNotificationChannel implements NotificationChannel {
             body,
             // Distinct tag from `ready-${id}` so the model-error ping never
             // collapses into the prior "all done" notification on the same
-            // session. Tag keyed by atTs so distinct errors in the same
+            // session. Tag keyed by eventId so distinct errors in the same
             // session DON'T overwrite each other on the lock screen.
-            tag: `model-error-${session.id}-${notification.atTs}`,
+            tag: `model-error-${session.id}-${notification.eventId}`,
             data: {
                 type: 'model-error',
                 sessionId: session.id,

@@ -7,6 +7,7 @@ const baseNotification = (overrides: Partial<ModelErrorNotification> = {}): Mode
     transient: false,
     rawSnippet: 'Error: T: [resource_exhausted] capacity exceeded for the day',
     priorAssistantClaimsDone: false,
+    eventId: 'evt-copy-1',
     atTs: 1700000000000,
     ...overrides
 })
