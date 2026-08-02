@@ -1083,6 +1083,7 @@ export function SessionList(props: {
     const [collapseOverrides, setCollapseOverrides] = useState<Map<string, boolean>>(
         () => new Map()
     )
+    const [runningSectionCollapsed, setRunningSectionCollapsed] = useState(false)
     const autoExpandedSelectedSessionKeyRef = useRef<string | null>(null)
     const isGroupCollapsed = (group: SessionGroup): boolean => {
         if (isFiltering) return false
@@ -1411,7 +1412,12 @@ export function SessionList(props: {
 
                 {runningSessions.length > 0 ? (
                     <div key="running-section">
-                        <div className="group/running flex min-w-0 w-full select-none items-center gap-2 rounded-lg py-1.5 pl-2 pr-2">
+                        <div
+                            className="group/running flex min-w-0 w-full select-none cursor-pointer items-center gap-2 rounded-lg py-1.5 pl-2 pr-2 transition-colors hover:bg-[var(--app-secondary-bg)]"
+                            onClick={() => setRunningSectionCollapsed((value) => !value)}
+                            title={t('sessions.runningSection')}
+                        >
+                            <ChevronIcon className="h-3.5 w-3.5 text-[var(--app-hint)] shrink-0" collapsed={runningSectionCollapsed} />
                             <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center" aria-hidden="true">
                                 <span className="h-1.5 w-1.5 rounded-full bg-[var(--app-badge-success-text)] animate-pulse" />
                             </span>
@@ -1422,20 +1428,24 @@ export function SessionList(props: {
                                 ({runningSessions.length})
                             </span>
                         </div>
-                        <div className="flex flex-col gap-0.5 ml-3 pl-1 py-1">
-                            {runningSessions.map((s) => (
-                                <SessionItem
-                                    key={s.id}
-                                    session={s}
-                                    onSelect={props.onSelect}
-                                    showPath={false}
-                                    api={api}
-                                    selected={s.id === selectedSessionId}
-                                    showDetailedStatus={showDetailedStatus}
-                                    inRunningSection
-                                    projectLabel={getGroupDisplayName(s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other')}
-                                />
-                            ))}
+                        <div className="collapsible-panel" data-open={!runningSectionCollapsed || undefined}>
+                            <div className="collapsible-inner">
+                            <div className="flex flex-col gap-0.5 ml-3 pl-1 py-1">
+                                {runningSessions.map((s) => (
+                                    <SessionItem
+                                        key={s.id}
+                                        session={s}
+                                        onSelect={props.onSelect}
+                                        showPath={false}
+                                        api={api}
+                                        selected={s.id === selectedSessionId}
+                                        showDetailedStatus={showDetailedStatus}
+                                        inRunningSection
+                                        projectLabel={getGroupDisplayName(s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other')}
+                                    />
+                                ))}
+                            </div>
+                            </div>
                         </div>
                     </div>
                 ) : null}
