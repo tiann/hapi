@@ -313,6 +313,7 @@ function ScratchlistInventory({
     onMove,
     sessionId,
     api,
+    disabled = false,
 }: {
     entries: ScratchlistEntry[]
     busyEntryId: string | null
@@ -322,6 +323,7 @@ function ScratchlistInventory({
     onMove: (entry: ScratchlistEntry, direction: 'up' | 'down') => void
     sessionId?: string
     api?: ApiClient
+    disabled?: boolean
 }) {
     const { t } = useTranslation()
     const { copiedEntryId, signalCopied } = useCopiedFeedback()
@@ -350,7 +352,7 @@ function ScratchlistInventory({
             {entries.map((entry, index) => {
                 const isFirst = index === 0
                 const isLast = index === entries.length - 1
-                const isBusy = busyEntryId === entry.id
+                const isBusy = disabled || busyEntryId === entry.id
                 return (
                     <li
                         key={entry.id}
@@ -471,6 +473,7 @@ export function ScratchlistDrawer({
     onPromoteToQueue,
     sessionId,
     api,
+    disabled = false,
 }: {
     entries: ScratchlistEntry[]
     onMove: (id: string, direction: 'up' | 'down') => void
@@ -479,6 +482,7 @@ export function ScratchlistDrawer({
     onPromoteToQueue: (entry: ScratchlistEntry) => Promise<boolean>
     sessionId: string
     api: ApiClient
+    disabled?: boolean
 }) {
     const { t } = useTranslation()
     const [busyEntryId, setBusyEntryId] = useState<string | null>(null)
@@ -490,6 +494,7 @@ export function ScratchlistDrawer({
     }, [entries.length, t])
 
     const handleDelete = useCallback((entry: ScratchlistEntry) => {
+        if (disabled) return
         if (shouldConfirmDelete(entry)) {
             const confirmed = typeof window !== 'undefined'
                 ? window.confirm(t('scratchlist.confirmDelete'))
@@ -497,18 +502,20 @@ export function ScratchlistDrawer({
             if (!confirmed) return
         }
         onDelete(entry.id)
-    }, [onDelete, t])
+    }, [disabled, onDelete, t])
 
     const handleMove = useCallback((entry: ScratchlistEntry, direction: 'up' | 'down') => {
+        if (disabled) return
         onMove(entry.id, direction)
-    }, [onMove])
+    }, [disabled, onMove])
 
     const handlePromoteToComposer = useCallback((entry: ScratchlistEntry) => {
+        if (disabled) return
         void onPromoteToComposer(entry)
-    }, [onPromoteToComposer])
+    }, [disabled, onPromoteToComposer])
 
     const handlePromoteToQueue = useCallback(async (entry: ScratchlistEntry) => {
-        if (busyEntryId) return
+        if (disabled || busyEntryId) return
         setBusyEntryId(entry.id)
         try {
             const accepted = await onPromoteToQueue(entry)
@@ -516,7 +523,7 @@ export function ScratchlistDrawer({
         } finally {
             setBusyEntryId(null)
         }
-    }, [busyEntryId, onDelete, onPromoteToQueue])
+    }, [busyEntryId, disabled, onDelete, onPromoteToQueue])
 
     return (
         <div className="mx-auto w-full max-w-content mb-1">
@@ -549,6 +556,7 @@ export function ScratchlistDrawer({
                         busyEntryId={busyEntryId}
                         sessionId={sessionId}
                         api={api}
+                        disabled={disabled}
                         onPromoteToComposer={handlePromoteToComposer}
                         onPromoteToQueue={handlePromoteToQueue}
                         onDelete={handleDelete}

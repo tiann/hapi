@@ -333,9 +333,11 @@ export function ScratchlistDrawerHost(props: {
     onDelete: ReturnType<typeof useHubScratchlist>['remove']
     onSend: (text: string, attachments?: AttachmentMetadata[], scheduledAt?: number | null) => Promise<boolean>
     onExitScratchlistMode: () => void
+    disabled?: boolean
 }) {
     const assistantApi = useAui()
     const handlePromoteToComposer = useCallback(async (entry: ScratchlistEntry) => {
+        if (props.disabled) return
         assistantApi.composer().setText(entry.text)
         // Exit scratchlist mode before rehydrating attachments so addAttachment
         // uses the normal chat upload adapter (not the scratchlist hub adapter).
@@ -350,8 +352,9 @@ export function ScratchlistDrawerHost(props: {
                 assistantApi.composer()
             )
         }
-    }, [assistantApi, props.api, props.onExitScratchlistMode, props.sessionId])
+    }, [assistantApi, props.api, props.disabled, props.onExitScratchlistMode, props.sessionId])
     const handlePromoteToQueue = useCallback(async (entry: ScratchlistEntry) => {
+        if (props.disabled) return false
         let attachments: AttachmentMetadata[] | undefined
         if (entry.attachments && entry.attachments.length > 0) {
             attachments = await stageScratchlistAttachmentsForComposeSend(
@@ -365,7 +368,7 @@ export function ScratchlistDrawerHost(props: {
             props.onExitScratchlistMode()
         }
         return accepted
-    }, [props.api, props.onSend, props.onExitScratchlistMode, props.sessionId])
+    }, [props.api, props.disabled, props.onSend, props.onExitScratchlistMode, props.sessionId])
     return (
         <ScratchlistDrawer
             entries={props.entries}
@@ -375,6 +378,7 @@ export function ScratchlistDrawerHost(props: {
             onDelete={props.onDelete}
             onPromoteToComposer={handlePromoteToComposer}
             onPromoteToQueue={handlePromoteToQueue}
+            disabled={props.disabled}
         />
     )
 }
@@ -435,6 +439,7 @@ type SessionChatProps = {
     // user dismisses or starts editing.
     sendError?: ComposerSendError | null
     onClearSendError?: () => void
+    onSuppressSendErrorRestore?: (id: number) => void
     initialOutlineOpen?: boolean
     onInitialOutlineConsumed?: () => void
 }
@@ -1413,6 +1418,7 @@ function SessionChatInner(props: SessionChatProps) {
                                     onDelete={scratchlist.remove}
                                     onSend={props.onSend}
                                     onExitScratchlistMode={() => setScratchlistMode(false)}
+                                    disabled={props.isSending}
                                 />
                             ) : null}
                             <QueuedMessagesBar
@@ -1578,6 +1584,7 @@ function SessionChatInner(props: SessionChatProps) {
                         onScratchlistToggle={handleScratchlistToggle}
                         sendError={props.sendError ?? null}
                         onClearSendError={props.onClearSendError}
+                        onSuppressSendErrorRestore={props.onSuppressSendErrorRestore}
                         />
                     </div>
                 </DragDropZone>

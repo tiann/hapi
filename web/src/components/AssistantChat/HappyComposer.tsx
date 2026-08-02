@@ -80,6 +80,10 @@ export type ComposerSendError = {
     text: string
     message: string
     scheduledAt: number | null
+    /** False for guards that reject before the underlying message mutation starts. */
+    mutationStarted: boolean
+    /** True once the user has retried; retain UI but never restore this id again. */
+    restoreSuppressed: boolean
     action?: {
         label: string
         onClick: () => void
@@ -103,6 +107,7 @@ export function useRichComposerBridge(
     setInputState: (state: TextInputState) => void,
     sendError: ComposerSendError | null,
     onClearSendError?: () => void,
+    onUserEdit?: () => void,
 ) {
     const onValueChange = useCallback((text: string) => {
         flushTapSync(() => {
@@ -115,8 +120,9 @@ export function useRichComposerBridge(
     }, [setInputState])
 
     const onEdit = useCallback(() => {
+        onUserEdit?.()
         if (sendError && onClearSendError) onClearSendError()
-    }, [sendError, onClearSendError])
+    }, [sendError, onClearSendError, onUserEdit])
 
     return { onValueChange, onMirrorChange, onEdit }
 }
@@ -244,6 +250,7 @@ export function HappyComposer(props: {
     // inline error affordance until the user dismisses or starts editing.
     sendError?: ComposerSendError | null
     onClearSendError?: () => void
+    onSuppressSendErrorRestore?: (id: number) => void
     /** Chip hover / aria-label resolver (SessionChat → useSessions). */
     resolveSessionMentionTooltip?: (id: string, title: string) => SessionMentionResolveResult
 }) {
@@ -297,6 +304,7 @@ export function HappyComposer(props: {
         onClearSchedule: onClearScheduleProp,
         sendError = null,
         onClearSendError,
+        onSuppressSendErrorRestore,
         resolveSessionMentionTooltip,
     } = props
 
@@ -350,16 +358,43 @@ export function HappyComposer(props: {
 
     const textareaRef = useRef<HTMLTextAreaElement>(null)
     const richInputRef = useRef<RichComposerInputHandle>(null)
+    // `composer.text === ''` alone is not enough to identify the empty state
+    // created by a send. A user can type and delete a fresh draft before the
+    // failed mutation reports back. Keep monotonic interaction generations so
+    // history still wins over a visually identical empty composer.
+    const userEditGenerationRef = useRef(0)
+    const userScheduleGenerationRef = useRef(0)
+    const userAttachmentGenerationRef = useRef(0)
+    const observedAttachmentIdsRef = useRef(new Set(attachments.map((attachment) => attachment.id)))
+    const sendRestoreGuardRef = useRef<{
+        userEditGeneration: number
+        userScheduleGeneration: number
+        userAttachmentGeneration: number
+    } | null>(null)
     // Kill-switch only (?richMentions=0 / localStorage=0 / VITE=false). Mount-time
     // read — hard reload required, so no per-keystroke localStorage/URL parse.
     const [richMentionsEnabled] = useState(() => isRichComposerMentionsEnabled())
     const prevControlledByUser = useRef(controlledByUser)
 
+    const recordUserEdit = useCallback(() => {
+        userEditGenerationRef.current += 1
+    }, [])
+
+    const handleUserEdit = useCallback(() => {
+        recordUserEdit()
+        // Editing the restored text is the operator's "I'm handling it"
+        // signal -- drop the inline error so the affordance doesn't shout
+        // at them while they fix the message.
+        if (sendError && onClearSendError) {
+            onClearSendError()
+        }
+    }, [recordUserEdit, sendError, onClearSendError])
+
     const {
         onValueChange: handleRichValueChange,
         onMirrorChange: handleRichMirrorChange,
         onEdit: handleRichEdit,
-    } = useRichComposerBridge(api, setInputState, sendError, onClearSendError)
+    } = useRichComposerBridge(api, setInputState, sendError, onClearSendError, recordUserEdit)
 
     const attachmentDrafts = attachments.flatMap((attachment) => {
         if (!attachment.file) return []
@@ -381,38 +416,102 @@ export function HappyComposer(props: {
     )
 
     // assistant-ui clears `composer.text` synchronously the moment a send is
-    // invoked AND `SessionChat.handleSend` clears `pendingSchedule` the
-    // moment the mutation is accepted, so by the time the mutation's
-    // onError fires both the typed text and the schedule are gone.  When
-    // the route hands us a `sendError`, splice both back in -- once per
-    // `sendError.id` so a second failure with the same text still triggers
-    // a fresh restore.
+    // invoked AND `SessionChat.handleSend` clears `pendingSchedule` after the
+    // mutation is accepted. A failure must put the text and absolute schedule
+    // back as one atomic recovery unit, but only while the composer still
+    // reflects that send's cleared state. A blank composer alone is not enough:
+    // a user might type then delete a replacement draft before onError arrives.
     const restoredErrorIdRef = useRef<number | null>(null)
+    const restoredErrorSnapshotRef = useRef<{ id: number; text: string; observed: boolean } | null>(null)
     useEffect(() => {
-        if (!sendError) {
+        if (!sendError || restoredErrorIdRef.current === sendError.id) {
             return
         }
-        if (restoredErrorIdRef.current === sendError.id) {
+        if (sendError.restoreSuppressed) {
+            // Route retains the error UI for the retry attempt, but this id
+            // must never repopulate a composer after a keyed remount.
+            restoredErrorIdRef.current = sendError.id
             return
         }
+
+        const guard = sendRestoreGuardRef.current
+        // A resolved inactive session navigates to a keyed, fresh composer
+        // before the target mutation can fail. That new instance has no local
+        // send snapshot, but its zero mount-time generations still prove no
+        // user interaction has happened there. Treat that as an implicit guard;
+        // any edit, schedule interaction, or newly observed attachment makes
+        // the error terminally unsafe just like the explicit snapshot path.
+        const interactionChanged = guard
+            ? userEditGenerationRef.current !== guard.userEditGeneration
+                || userScheduleGenerationRef.current !== guard.userScheduleGeneration
+                || userAttachmentGenerationRef.current !== guard.userAttachmentGeneration
+            : userEditGenerationRef.current !== 0
+                || userScheduleGenerationRef.current !== 0
+                || userAttachmentGenerationRef.current !== 0
+        const textOrAttachmentChanged = composerText.length !== 0 || attachments.length !== 0
+
+        if (interactionChanged || textOrAttachmentChanged) {
+            // This error id is now conclusively unsafe. Do not retry if the
+            // user later deletes their replacement text or attachment. Clear
+            // route-level state as well: a remount otherwise loses this local
+            // consumed marker and can replay the stale error over the draft.
+            restoredErrorIdRef.current = sendError.id
+            onClearSendError?.()
+            return
+        }
+
+        if (sendError.mutationStarted && pendingSchedule !== null) {
+            // SessionChat clears an accepted send's schedule asynchronously.
+            // The mutation's onError can arrive before that parent render, so
+            // wait for its null cleared state before restoring text + schedule
+            // as one unit. User-selected schedules were rejected above by the
+            // schedule generation check.
+            return
+        }
+
         restoredErrorIdRef.current = sendError.id
-        // Only restore when the composer is empty.  If the user has already
-        // typed something new (rare -- composer is `disabled` during send,
-        // but possible if isSending toggles before this effect runs), we
-        // would otherwise stomp on their fresh input.
-        if (composerText.length === 0 && sendError.text.length > 0) {
-            api.composer().setText(sendError.text)
-        }
-        // Restore the pending schedule too.  `scheduledAt` was already
-        // resolved to an absolute epoch-ms before the failed send (presets
-        // are computed at send time -- see `resolvePendingSchedule`), so
-        // we feed it back as an 'absolute' PendingSchedule.  The existing
-        // shouldAutoClearPendingSchedule effect in SessionChat handles the
-        // case where the absolute time has passed by the time we restore.
+        restoredErrorSnapshotRef.current = { id: sendError.id, text: sendError.text, observed: false }
+        api.composer().setText(sendError.text)
+        // `scheduledAt` is already absolute (presets resolve at send time), so
+        // restore it through the normal controlled schedule path in the same
+        // effect as text. For a pre-mutation rejection this updates the still
+        // present source schedule to its send-time absolute instant.
         if (sendError.scheduledAt !== null && onScheduleProp) {
             onScheduleProp({ type: 'absolute', ms: sendError.scheduledAt })
         }
-    }, [sendError, api, composerText, onScheduleProp])
+    }, [sendError, api, attachments, composerText, onClearSendError, onScheduleProp, pendingSchedule])
+
+    // A successful automatic restore keeps its inline error visible so the
+    // operator understands why the draft returned. If another path replaces
+    // the restored text or inserts an attachment without firing a textarea or
+    // rich-input event (scratchlist/queued/draft programmatic writes), consume
+    // the route-level error before a keyed remount can replay it over that new
+    // state. The exact restored text is intentionally exempt from this check.
+    useEffect(() => {
+        const restored = restoredErrorSnapshotRef.current
+        if (!sendError || !restored || restored.id !== sendError.id) return
+        if (!restored.observed) {
+            if (composerText === restored.text && attachments.length === 0) {
+                restored.observed = true
+            }
+            return
+        }
+        if (composerText === restored.text && attachments.length === 0) return
+        onClearSendError?.()
+    }, [sendError, attachments, composerText, onClearSendError])
+
+    // A user-added attachment must make a recovery unsafe even if it is removed
+    // again before the send error arrives. This runs even without a local send
+    // guard so a post-resume composer gets the same protection. Attachment IDs
+    // already present at mount are the baseline; assistant-ui's send clear only
+    // removes IDs and therefore does not look like a user addition.
+    useEffect(() => {
+        for (const attachment of attachments) {
+            if (observedAttachmentIdsRef.current.has(attachment.id)) continue
+            observedAttachmentIdsRef.current.add(attachment.id)
+            userAttachmentGenerationRef.current += 1
+        }
+    }, [attachments])
 
     useEffect(() => {
         if (richMentionsEnabled) {
@@ -467,6 +566,10 @@ export function HappyComposer(props: {
             markSkillUsed(suggestion.text.slice(1))
         }
 
+        // Suggestions edit composer content programmatically, so neither the
+        // textarea onChange nor RichComposerInput.onEdit sees this path.
+        handleUserEdit()
+
         if (richMentionsEnabled && richInputRef.current) {
             // insert*/apply* emit mirror state via onMirrorChange (keep inputState in mirror space).
             if (suggestion.sessionMention) {
@@ -515,7 +618,7 @@ export function HappyComposer(props: {
         }, 0)
 
         haptic('light')
-    }, [api, suggestions, inputState, autocompletePrefixes, haptic, richMentionsEnabled])
+    }, [api, suggestions, inputState, autocompletePrefixes, haptic, richMentionsEnabled, handleUserEdit])
 
     const abortDisabled = controlsDisabled || isAborting || !threadIsRunning
     const switchDisabled = controlsDisabled || isSwitching || !controlledByUser
@@ -624,13 +727,46 @@ export function HappyComposer(props: {
         [permissionModeOptions]
     )
 
+    const handleUserSchedule = useCallback((nextPendingSchedule: PendingSchedule) => {
+        userScheduleGenerationRef.current += 1
+        if (sendError) onClearSendError?.()
+        setPendingSchedule(nextPendingSchedule)
+    }, [onClearSendError, sendError, setPendingSchedule])
+
+    const handleUserClearSchedule = useCallback(() => {
+        userScheduleGenerationRef.current += 1
+        if (sendError) onClearSendError?.()
+        if (isControlled) {
+            onClearScheduleProp?.()
+        } else {
+            setPendingScheduleLocal(null)
+        }
+    }, [isControlled, onClearScheduleProp, onClearSendError, sendError])
+    // Preserve the original controlled-mode contract: without a parent clear
+    // handler the schedule button opens the picker instead of claiming it can
+    // clear a value it does not own.
+    const onUserClearSchedule = isControlled && !onClearScheduleProp
+        ? undefined
+        : handleUserClearSchedule
+
     /** Flush rich chips → `[title](/sessions/<id>)` into composer.text, then send. */
     const flushAndSend = useCallback(() => {
         if (richMentionsEnabled && richInputRef.current) {
             richInputRef.current.flushSerializedText()
         }
+        // A retry intentionally clears composer state synchronously. It is
+        // neither a replacement draft nor a dismissal: route onSuccess/onError
+        // owns the inline-error transition for this new attempt. Drop the old
+        // restore watcher before the clear so it cannot consume that error.
+        restoredErrorSnapshotRef.current = null
+        if (sendError) onSuppressSendErrorRestore?.(sendError.id)
+        sendRestoreGuardRef.current = {
+            userEditGeneration: userEditGenerationRef.current,
+            userScheduleGeneration: userScheduleGenerationRef.current,
+            userAttachmentGeneration: userAttachmentGenerationRef.current,
+        }
         api.composer().send()
-    }, [api, richMentionsEnabled])
+    }, [api, attachments, onSuppressSendErrorRestore, richMentionsEnabled, sendError])
 
     const handleKeyDown = useCallback((e: ReactKeyboardEvent<HTMLTextAreaElement | HTMLDivElement>) => {
         const key = e.key
@@ -753,13 +889,8 @@ export function HappyComposer(props: {
             end: e.target.selectionEnd
         }
         setInputState({ text: e.target.value, selection })
-        // Editing the restored text is the operator's "I'm handling it"
-        // signal -- drop the inline error so the affordance doesn't shout
-        // at them while they fix the message.
-        if (sendError && onClearSendError) {
-            onClearSendError()
-        }
-    }, [sendError, onClearSendError])
+        handleUserEdit()
+    }, [handleUserEdit])
 
     const handleSelect = useCallback((e: ReactSyntheticEvent<HTMLTextAreaElement>) => {
         const target = e.target as HTMLTextAreaElement
@@ -1473,8 +1604,8 @@ export function HappyComposer(props: {
                             onVoiceMicToggle={onVoiceMicToggle}
                             onSend={handleSend}
                             pendingSchedule={pendingSchedule}
-                            onSchedule={setPendingSchedule}
-                            onClearSchedule={isControlled ? onClearScheduleProp : () => setPendingScheduleLocal(null)}
+                            onSchedule={handleUserSchedule}
+                            onClearSchedule={onUserClearSchedule}
                             hasAttachments={hasAttachments}
                             piModelLabel={piModelLabel}
                             piModelDisabled={controlsDisabled || !piHasModels}

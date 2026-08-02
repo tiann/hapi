@@ -369,6 +369,8 @@ function SessionPage() {
         message: string
         code: string | null
         scheduledAt: number | null
+        mutationStarted: boolean
+        restoreSuppressed: boolean
     }
     const [sendErrors, setSendErrors] = useState<Record<string, RawSendError>>({})
     const [reopeningSessionId, setReopeningSessionId] = useState<string | null>(null)
@@ -379,6 +381,17 @@ function SessionPage() {
             const next = { ...prev }
             delete next[sessionId]
             return next
+        })
+    }, [sessionId])
+
+    const suppressSendErrorRestore = useCallback((id: number) => {
+        setSendErrors((prev) => {
+            const current = prev[sessionId]
+            if (!current || current.id !== id || current.restoreSuppressed) return prev
+            return {
+                ...prev,
+                [sessionId]: { ...current, restoreSuppressed: true }
+            }
         })
     }, [sessionId])
 
@@ -443,6 +456,8 @@ function SessionPage() {
             text: rawSendError.text,
             message: rawSendError.message,
             scheduledAt: rawSendError.scheduledAt,
+            mutationStarted: rawSendError.mutationStarted,
+            restoreSuppressed: rawSendError.restoreSuppressed,
             action: rawSendError.code === 'session_inactive' && canOfferInactiveReopen
                 ? {
                     label: t('chat.sendError.sessionInactive.action'),
@@ -482,7 +497,9 @@ function SessionPage() {
                     text: info.text,
                     message,
                     code,
-                    scheduledAt: info.scheduledAt
+                    scheduledAt: info.scheduledAt,
+                    mutationStarted: info.mutationStarted,
+                    restoreSuppressed: false,
                 }
             }))
         },
@@ -721,6 +738,7 @@ function SessionPage() {
             availableSlashCommands={slashCommands}
             sendError={sendError}
             onClearSendError={clearSendError}
+            onSuppressSendErrorRestore={suppressSendErrorRestore}
             initialOutlineOpen={outline}
             onInitialOutlineConsumed={handleInitialOutlineConsumed}
         />

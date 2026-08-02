@@ -57,6 +57,8 @@ export type SendErrorInfo = {
     text: string
     error: unknown
     scheduledAt: number | null
+    /** True only after the message mutation was started. */
+    mutationStarted: boolean
 }
 
 type UseSendMessageOptions = {
@@ -197,7 +199,8 @@ export function useSendMessage(
                 sessionId: input.sessionId,
                 text: input.text,
                 error,
-                scheduledAt: input.scheduledAt ?? null
+                scheduledAt: input.scheduledAt ?? null,
+                mutationStarted: true,
             })
         },
     })
@@ -246,7 +249,8 @@ export function useSendMessage(
                     sessionId,
                     text,
                     error,
-                    scheduledAt: scheduledAt ?? null
+                    scheduledAt: scheduledAt ?? null,
+                    mutationStarted: false,
                 })
                 return false
             } finally {
