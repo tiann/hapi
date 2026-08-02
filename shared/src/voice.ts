@@ -299,25 +299,31 @@ export function listConfiguredVoiceBackends(env: VoiceBackendEnv): VoiceBackendT
     if (env.DASHSCOPE_API_KEY?.trim() || env.QWEN_API_KEY?.trim()) {
         backends.push('qwen-realtime')
     }
-    return backends.length > 0 ? backends : [DEFAULT_VOICE_BACKEND]
+    return backends
 }
 
-/** Hub default from VOICE_BACKEND when configured, else first available backend. */
-export function resolveHubVoiceBackend(env: VoiceBackendEnv): VoiceBackendType {
+/** Hub default from VOICE_BACKEND when configured, else first available backend. null when none configured. */
+export function resolveHubVoiceBackend(env: VoiceBackendEnv): VoiceBackendType | null {
     const configured = listConfiguredVoiceBackends(env)
+    if (configured.length === 0) {
+        return null
+    }
     const raw = env.VOICE_BACKEND
     const fromEnv = VOICE_BACKEND_VALUES.includes(raw as VoiceBackendType)
         ? (raw as VoiceBackendType)
         : DEFAULT_VOICE_BACKEND
-    return configured.includes(fromEnv) ? fromEnv : (configured[0] ?? DEFAULT_VOICE_BACKEND)
+    return configured.includes(fromEnv) ? fromEnv : configured[0]!
 }
 
 /** User preference wins when valid; otherwise hub default. */
 export function resolveEffectiveVoiceBackend(
     configured: readonly VoiceBackendType[],
-    hubDefault: VoiceBackendType,
+    hubDefault: VoiceBackendType | null,
     storedPreference: string | null | undefined
-): VoiceBackendType {
+): VoiceBackendType | null {
+    if (configured.length === 0) {
+        return null
+    }
     if (
         storedPreference
         && VOICE_BACKEND_VALUES.includes(storedPreference as VoiceBackendType)
@@ -325,10 +331,10 @@ export function resolveEffectiveVoiceBackend(
     ) {
         return storedPreference as VoiceBackendType
     }
-    if (configured.includes(hubDefault)) {
+    if (hubDefault && configured.includes(hubDefault)) {
         return hubDefault
     }
-    return configured[0] ?? hubDefault
+    return configured[0] ?? null
 }
 
 export const GEMINI_LIVE_MODEL = 'gemini-2.5-flash-native-audio-latest'

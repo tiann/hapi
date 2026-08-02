@@ -58,8 +58,8 @@ export function writeStoredVoiceBackendPreference(backend: VoiceBackendType): vo
 
 export function resolveSelectedVoiceBackend(
     configured: readonly VoiceBackendType[],
-    hubDefault: VoiceBackendType
-): VoiceBackendType {
+    hubDefault: VoiceBackendType | null
+): VoiceBackendType | null {
     return resolveEffectiveVoiceBackend(
         configured,
         hubDefault,
