@@ -15,8 +15,8 @@ describe('listConfiguredVoiceBackends', () => {
         expect(backends).toEqual(['elevenlabs', 'gemini-live', 'qwen-realtime'])
     })
 
-    test('falls back to elevenlabs when no keys configured', () => {
-        expect(listConfiguredVoiceBackends({})).toEqual(['elevenlabs'])
+    test('returns empty when no keys configured', () => {
+        expect(listConfiguredVoiceBackends({})).toEqual([])
     })
 })
 
@@ -37,6 +37,10 @@ describe('resolveHubVoiceBackend', () => {
         })
         expect(backend).toBe('elevenlabs')
     })
+
+    test('returns null when no backends configured', () => {
+        expect(resolveHubVoiceBackend({})).toBeNull()
+    })
 })
 
 describe('resolveEffectiveVoiceBackend', () => {
@@ -49,5 +53,9 @@ describe('resolveEffectiveVoiceBackend', () => {
     test('uses hub default when preference missing or invalid', () => {
         expect(resolveEffectiveVoiceBackend(configured, 'gemini-live', null)).toBe('gemini-live')
         expect(resolveEffectiveVoiceBackend(configured, 'gemini-live', 'qwen-realtime')).toBe('gemini-live')
+    })
+
+    test('returns null when no backends configured', () => {
+        expect(resolveEffectiveVoiceBackend([], null, null)).toBeNull()
     })
 })
