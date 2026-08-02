@@ -614,6 +614,7 @@ describe('FcmNotificationChannel', () => {
         )
 
         await channel.sendModelError(createSession(), {
+            eventId: 'evt-1710000000000',
             kind: 'quota_exhausted',
             transient: false,
             rawSnippet: 'You have hit your usage limit',
@@ -625,13 +626,13 @@ describe('FcmNotificationChannel', () => {
         expect(toasts).toHaveLength(0)
         expect(sent[0].data.type).toBe('model-error')
         expect(sent[0].data.severity).toBe('error')
-        expect(sent[0].tag).toBe('model-error-session-ready-1710000000000')
+        expect(sent[0].tag).toBe('model-error-session-ready-evt-1710000000000')
         expect(sent[0].title).toBe('Quota exhausted')
         expect(sent[0].body).toContain('Codex')
         expect(sent[0].body).toContain('Demo')
     })
 
-    it('sendModelError uses distinct tags per atTs so errors do not collapse', async () => {
+    it('sendModelError uses distinct tags per eventId so errors do not collapse', async () => {
         const sent: FcmSendPayload[] = []
         const channel = new FcmNotificationChannel(
             { sendToNamespace: async (_n: string, p: FcmSendPayload) => { sent.push(p) } } as never,
@@ -646,11 +647,11 @@ describe('FcmNotificationChannel', () => {
             priorAssistantClaimsDone: false
         }
 
-        await channel.sendModelError(createSession(), { ...base, atTs: 1 })
-        await channel.sendModelError(createSession(), { ...base, atTs: 2 })
+        await channel.sendModelError(createSession(), { ...base, eventId: 'evt-1', atTs: 1 })
+        await channel.sendModelError(createSession(), { ...base, eventId: 'evt-2', atTs: 2 })
 
-        expect(sent[0].tag).toBe('model-error-session-ready-1')
-        expect(sent[1].tag).toBe('model-error-session-ready-2')
+        expect(sent[0].tag).toBe('model-error-session-ready-evt-1')
+        expect(sent[1].tag).toBe('model-error-session-ready-evt-2')
         expect(sent[0].data.type).toBe('model-error')
         expect(sent[1].data.severity).toBe('error')
     })
@@ -666,6 +667,7 @@ describe('FcmNotificationChannel', () => {
         )
 
         await channel.sendModelError(createSession(), {
+            eventId: 'evt-9',
             kind: 'quota_exhausted',
             transient: false,
             rawSnippet: 'limit',
@@ -687,6 +689,7 @@ describe('FcmNotificationChannel', () => {
         )
 
         await channel.sendModelError(createSession(), {
+            eventId: 'evt-9',
             kind: 'quota_exhausted',
             transient: false,
             rawSnippet: 'limit',

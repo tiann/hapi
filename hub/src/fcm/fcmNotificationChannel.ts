@@ -62,7 +62,7 @@ export class FcmNotificationChannel implements NotificationChannel {
         const result = await this.deliver(session, {
             title,
             body,
-            tag: `model-error-${session.id}-${notification.atTs}`,
+            tag: `model-error-${session.id}-${notification.eventId}`,
             data: {
                 type: 'model-error',
                 sessionId: session.id,
