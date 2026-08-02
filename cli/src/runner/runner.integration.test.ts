@@ -160,6 +160,8 @@ describe.skipIf(!await isServerHealthy())('Runner Integration Tests', { timeout:
     // Clean up - stop the spawned session
     expect(spawnedSession.happySessionId).toBeDefined();
     expect(await stopRunnerSession(spawnedSession.happySessionId)).toBe('stopped');
+    expect(await stopRunnerSession(spawnedSession.happySessionId)).toBe('already_gone');
+    expect(await stopRunnerSession('unknown-session-id')).toBe('still_alive');
   });
 
   it('stress test: spawn / stop', { timeout: 60_000 }, async () => {

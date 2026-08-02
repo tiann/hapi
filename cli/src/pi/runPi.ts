@@ -214,18 +214,20 @@ export async function runPi(opts: {
         }
     }
 
+    const failNativeStartup = (error: Error) => {
+        // A wrapper socket can already be active while Pi rejects --session.
+        // End this process immediately so the hub's Pi-ready wait fails and
+        // an archived HAPI row is restored rather than shown as reopened.
+        logger.debug(`[pi] Native startup failed: ${error.message}`);
+        lifecycle.markCrash(error);
+        lifecycle.setExitCode(1);
+        lifecycle.setArchiveReason(error.message.slice(0, 200));
+        lifecycle.setSessionEndReason('error');
+        void safeCleanup();
+    };
+
     wireTransportEvents(transport, piSession, pendingLocalIds, {
-        onStartupFailure: (error) => {
-            // A wrapper socket can already be active while Pi rejects --session.
-            // End this process immediately so the hub's Pi-ready wait fails and
-            // an archived HAPI row is restored rather than shown as reopened.
-            logger.debug(`[pi] Native startup failed: ${error.message}`);
-            lifecycle.markCrash(error);
-            lifecycle.setExitCode(1);
-            lifecycle.setArchiveReason(error.message.slice(0, 200));
-            lifecycle.setSessionEndReason('error');
-            void safeCleanup();
-        },
+        onStartupFailure: failNativeStartup,
     });
 
     // --- Session config RPC ---
@@ -463,7 +465,10 @@ export async function runPi(opts: {
     // This degrades to pre-fix behaviour (send anyway) instead of something
     // worse. markReady is idempotent, so a real get_state that lands first wins.
     const readyFallback = setTimeout(() => {
-        if (!piSession.isReady) {
+        if (piSession.isReady) return;
+        if (piSession.expectedNativeSessionId) {
+            failNativeStartup(new Error(`Pi native resume did not become ready within ${PI_READY_FALLBACK_MS}ms`));
+        } else {
             logger.debug('[pi] get_state ready signal not seen within grace — draining buffered messages');
             piSession.markReady();
         }

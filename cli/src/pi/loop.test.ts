@@ -322,6 +322,58 @@ describe('wireTransportEvents', () => {
         expect(session.client.emitSessionReady).not.toHaveBeenCalled();
     });
 
+    it('keeps malformed get_state data non-fatal for a fresh Pi session', () => {
+        const transport = createMockTransport();
+        const onStartupFailure = vi.fn();
+        wireTransportEvents(transport, session, [], { onStartupFailure });
+
+        emitEvent({
+            type: 'response',
+            command: 'get_state',
+            success: true,
+            data: { model: 'not-a-model-object' },
+        });
+
+        expect(onStartupFailure).not.toHaveBeenCalled();
+        expect(session.isReady).toBe(false);
+        expect(session.client.emitSessionReady).not.toHaveBeenCalled();
+    });
+
+    it('fails a native resume when get_state returns malformed data', () => {
+        const expectedSession = new PiSession({
+            api: {} as any,
+            client: {
+                keepAlive: vi.fn(),
+                updateMetadata: vi.fn(),
+                sendAgentMessage: vi.fn(),
+                emitMessagesConsumed: vi.fn(),
+                sendSessionEvent: vi.fn(),
+                emitSessionReady: vi.fn(),
+            } as any,
+            path: '/tmp/test',
+            logPath: '/tmp/test.log',
+            startedBy: 'terminal',
+            startingMode: 'local',
+            expectedNativeSessionId: 'pi-session-requested',
+        });
+        const transport = createMockTransport();
+        const onStartupFailure = vi.fn();
+        wireTransportEvents(transport, expectedSession, [], { onStartupFailure });
+
+        emitEvent({
+            type: 'response',
+            command: 'get_state',
+            success: true,
+            data: { model: 'not-a-model-object' },
+        });
+
+        expect(onStartupFailure).toHaveBeenCalledTimes(1);
+        expect((onStartupFailure.mock.calls[0][0] as Error).message).toContain('malformed state data');
+        expect(expectedSession.isReady).toBe(false);
+        expect(expectedSession.client.emitSessionReady).not.toHaveBeenCalled();
+        expect(expectedSession.client.updateMetadata).not.toHaveBeenCalled();
+    });
+
     it('rejects a resume get_state response with a missing session ID before mutating state', () => {
         const expectedSession = new PiSession({
             api: {} as any,

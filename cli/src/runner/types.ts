@@ -11,6 +11,8 @@ import { ChildProcess } from 'child_process';
 export interface TrackedSession {
   startedBy: 'runner' | string;
   happySessionId?: string;
+  /** HAPI row requested for this process generation before its webhook arrives. */
+  requestedHappySessionId?: string;
   happySessionMetadataFromLocalWebhook?: Metadata;
   pid: number;
   childProcess?: ChildProcess;

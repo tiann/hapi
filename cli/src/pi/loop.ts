@@ -177,7 +177,12 @@ function handleResponse(
             // HAPI wrapper connected. Validate a requested native session before
             // mutating model/metadata state: an invalid resume must not publish a
             // colliding piSessionId that auto-dedup could merge.
-            if (!parsed.success) break;
+            if (!parsed.success) {
+                if (session.expectedNativeSessionId) {
+                    onStartupFailure?.(new Error('Pi get_state returned malformed state data'));
+                }
+                break;
+            }
             const state = parsed.data;
             if (!session.matchesExpectedNativeSessionId(state.sessionId)) {
                 const actual = state.sessionId ? state.sessionId : '(missing)';

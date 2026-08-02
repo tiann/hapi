@@ -180,6 +180,38 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
     // Setup state - key by PID
     const pidToTrackedSession = new Map<number, TrackedSession>();
+    // Retained until actual child exit even if webhook timeout removes normal
+    // tracking, so confirmed exit can be attributed to the requested HAPI row.
+    const pidToRequestedSessionId = new Map<number, string>();
+    // Only actual observed child exits may create a stop-session tombstone.
+    // Tracking loss (notably webhook timeout) is deliberately not evidence.
+    const EXIT_TOMBSTONE_TTL_MS = 5 * 60_000;
+    const MAX_EXIT_TOMBSTONES = 2_000;
+    const verifiedExitTombstones = new Map<string, number>();
+    const rememberVerifiedExit = (id: string) => {
+      const now = Date.now();
+      for (const [candidate, expiresAt] of verifiedExitTombstones) {
+        if (expiresAt <= now) verifiedExitTombstones.delete(candidate);
+      }
+      // Refreshing an existing key should also refresh its insertion order so
+      // capacity eviction removes the oldest verified generation.
+      verifiedExitTombstones.delete(id);
+      while (verifiedExitTombstones.size >= MAX_EXIT_TOMBSTONES) {
+        const oldest = verifiedExitTombstones.keys().next().value;
+        if (oldest === undefined) break;
+        verifiedExitTombstones.delete(oldest);
+      }
+      verifiedExitTombstones.set(id, now + EXIT_TOMBSTONE_TTL_MS);
+    };
+    const hasVerifiedExit = (id: string): boolean => {
+      const expiresAt = verifiedExitTombstones.get(id);
+      if (expiresAt === undefined) return false;
+      if (expiresAt <= Date.now()) {
+        verifiedExitTombstones.delete(id);
+        return false;
+      }
+      return true;
+    };
 
     // Webhook timeout tolerance. Opus 1M + --resume can legitimately take
     // longer than the default 15s to reach the "Session started" webhook
@@ -231,6 +263,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
       if (existingSession && existingSession.startedBy === 'runner') {
         // Update runner-spawned session with reported data
+        verifiedExitTombstones.delete(sessionId);
         existingSession.happySessionId = sessionId;
         existingSession.happySessionMetadataFromLocalWebhook = sessionMetadata;
         logger.debug(`[RUNNER RUN] Updated runner-spawned session ${sessionId} with metadata`);
@@ -276,6 +309,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           happySessionMetadataFromLocalWebhook: sessionMetadata,
           pid
         };
+        verifiedExitTombstones.delete(sessionId);
         pidToTrackedSession.set(pid, trackedSession);
         logger.debug(`[RUNNER RUN] Registered externally-started session ${sessionId}`);
       }
@@ -485,6 +519,12 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         }
         happyProcess.removeListener('error', captureSpawnErrorBeforePidCheck);
 
+        // The OS process now exists, so this is the point where a new generation
+        // invalidates exit evidence left by an older child with the same HAPI ID.
+        for (const id of [options.sessionId, options.existingSessionId]) {
+          if (id) verifiedExitTombstones.delete(id);
+        }
+
         const pid = happyProcess.pid;
         logger.debug(`[RUNNER RUN] Spawned process with PID ${pid}`);
         let observedExitCode: number | null = null;
@@ -520,12 +560,16 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         const trackedSession: TrackedSession = {
           startedBy: 'runner',
           pid,
+          requestedHappySessionId: options.existingSessionId ?? options.sessionId,
           childProcess: happyProcess,
           directoryCreated,
           message: directoryCreated ? `The path '${directory}' did not exist. We created a new folder and spawned a new session there.` : undefined
         };
 
         pidToTrackedSession.set(pid, trackedSession);
+        if (trackedSession.requestedHappySessionId) {
+          pidToRequestedSessionId.set(pid, trackedSession.requestedHappySessionId);
+        }
 
         happyProcess.on('exit', (code, signal) => {
           observedExitCode = typeof code === 'number' ? code : null;
@@ -681,22 +725,35 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             logger.debug(`[RUNNER RUN] Session ${sessionId} process ${pid} is still alive after stop request`);
             return 'still_alive';
           }
+          if (session.happySessionId) rememberVerifiedExit(session.happySessionId);
+          if (session.requestedHappySessionId) rememberVerifiedExit(session.requestedHappySessionId);
+          rememberVerifiedExit(`PID-${pid}`);
           pidToTrackedSession.delete(pid);
           logger.debug(`[RUNNER RUN] Removed terminated session ${sessionId} from tracking`);
           return 'stopped';
         }
       }
 
-      logger.debug(`[RUNNER RUN] Session ${sessionId} not found`);
-      return 'already_gone';
+      if (hasVerifiedExit(sessionId)) {
+        logger.debug(`[RUNNER RUN] Session ${sessionId} was previously observed exited`);
+        return 'already_gone';
+      }
+      logger.debug(`[RUNNER RUN] Session ${sessionId} not found without verified exit`);
+      return 'still_alive';
     };
 
     // Handle child process exit
     const onChildExited = (pid: number) => {
+      const session = pidToTrackedSession.get(pid);
+      if (session?.happySessionId) rememberVerifiedExit(session.happySessionId);
+      const requestedSessionId = session?.requestedHappySessionId ?? pidToRequestedSessionId.get(pid);
+      if (requestedSessionId) rememberVerifiedExit(requestedSessionId);
+      rememberVerifiedExit(`PID-${pid}`);
       logger.debug(`[RUNNER RUN] Removing exited process PID ${pid} from tracking`);
       pidToTrackedSession.delete(pid);
       pidToAwaiter.delete(pid);
       pidToErrorAwaiter.delete(pid);
+      pidToRequestedSessionId.delete(pid);
     };
 
     // Start control server
