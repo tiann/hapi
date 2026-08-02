@@ -170,12 +170,15 @@ describe('classifyCursorAgentMessage', () => {
             '```\r\n'
         expect(classifyCursorAgentMessage(crlfFence)).toBeNull()
 
-        // CommonMark indented code (4+ spaces or tab) is not a live wire error.
+        // CommonMark indented code (4+ spaces, or 0–3 spaces + tab) is not live.
         expect(
             classifyCursorAgentMessage('    Error: T: [resource_exhausted] capacity exceeded')
         ).toBeNull()
         expect(
             classifyCursorAgentMessage('\tError: RetriableError: Connection stalled after 30s')
+        ).toBeNull()
+        expect(
+            classifyCursorAgentMessage('  \tError: T: [resource_exhausted] capacity exceeded')
         ).toBeNull()
     })
 

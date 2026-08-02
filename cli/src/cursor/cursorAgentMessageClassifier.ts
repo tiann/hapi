@@ -198,11 +198,14 @@ function stripMarkdownFences(text: string): string {
     return visible.join('\n')
 }
 
-/** Drop CommonMark indented-code lines (4+ spaces or a leading tab) so quoted
- *  Error: T: examples are not treated as live wire failures. Keep 1–3 space
- *  prefixes — real ACP emits sometimes pad lightly. */
+/** Drop CommonMark indented-code lines so quoted Error: T: examples are not
+ *  treated as live wire failures. Tab stops of 4: 4+ spaces, or 0–3 spaces
+ *  then a tab. Keep bare 1–3 space prefixes — real ACP emits sometimes pad. */
 function stripIndentedCode(text: string): string {
-    return text.split(/\r?\n/).filter((line) => !/^(?: {4,}|\t)/.test(line)).join('\n')
+    return text
+        .split(/\r?\n/)
+        .filter((line) => !/^(?: {4,}| {0,3}\t)/.test(line))
+        .join('\n')
 }
 
 export function classifyCursorAgentMessage(text: string): CursorAgentStreamFailure | null {
