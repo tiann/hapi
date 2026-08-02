@@ -182,8 +182,13 @@ function stripMarkdownFences(text: string): string {
             continue
         }
         fence.buffered.push(line)
-        if (char === fence.char && marker.length >= fence.length) {
-            // Closed fence: discard opener..closer inclusive.
+        // Closers are bare markers only (no info string like ```ts).
+        const close = line.match(/^[ \t]{0,3}(`{3,}|~{3,})[ \t]*$/)
+        if (
+            close
+            && close[1]![0] === fence.char
+            && close[1]!.length >= fence.length
+        ) {
             fence = null
         }
     }

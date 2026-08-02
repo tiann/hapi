@@ -153,6 +153,15 @@ describe('classifyCursorAgentMessage', () => {
             '\n' +
             'Error: T: [resource_exhausted] Error\n'
         expect(classifyCursorAgentMessage(truncatedFence)?.kind).toBe('quota_exhausted')
+
+        // Same-length marker WITH info string is not a closer — keep fenced.
+        const fakeCloser =
+            '```\n' +
+            'quoted example\n' +
+            '```ts\n' +
+            'Error: T: [resource_exhausted] capacity exceeded\n' +
+            '```\n'
+        expect(classifyCursorAgentMessage(fakeCloser)).toBeNull()
     })
 
     it('still classifies real Gemini errors when they ARE the message body', () => {
