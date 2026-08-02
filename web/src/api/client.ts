@@ -611,8 +611,14 @@ export class ApiClient {
         })
     }
 
-    async getMachines(): Promise<MachinesResponse> {
-        return await this.request<MachinesResponse>('/api/machines')
+    /**
+     * Defaults to online machines only, which is what every caller that spawns
+     * or filters sessions wants. `includeOffline` is for surfaces that manage
+     * machines rather than run on them.
+     */
+    async getMachines(options?: { includeOffline?: boolean }): Promise<MachinesResponse> {
+        const query = options?.includeOffline ? '?includeOffline=1' : ''
+        return await this.request<MachinesResponse>(`/api/machines${query}`)
     }
 
     /** Pass an empty string to clear the custom name and fall back to the hostname. */

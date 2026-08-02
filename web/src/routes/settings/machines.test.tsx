@@ -12,8 +12,12 @@ vi.mock('@/lib/app-context', () => ({
     useAppContext: () => ({ api: { renameMachine: renameMachineMock } }),
 }))
 
+const useMachinesOptions = vi.fn()
 vi.mock('@/hooks/queries/useMachines', () => ({
-    useMachines: () => ({ machines: machinesMock(), isLoading: false, error: null, refetch: vi.fn() }),
+    useMachines: (_api: unknown, _enabled: boolean, options?: unknown) => {
+        useMachinesOptions(options)
+        return { machines: machinesMock(), isLoading: false, error: null, refetch: vi.fn() }
+    },
 }))
 
 function makeMachine(overrides?: Partial<Machine>): Machine {
@@ -60,14 +64,22 @@ describe('SettingsMachinesPage', () => {
         cleanup()
     })
 
-    it('falls back to the hostname and always shows host and platform', () => {
+    it('requests offline machines too', () => {
+        renderPage()
+
+        expect(useMachinesOptions).toHaveBeenCalledWith({ includeOffline: true })
+    })
+
+    it('falls back to the hostname without repeating it in a second line', () => {
         renderPage()
 
         expect(screen.getByRole('button', { name: 'Rename workstation.local' })).toBeTruthy()
-        expect(screen.getByText('workstation.local · linux')).toBeTruthy()
+        // The hostname is already the label; showing it again below would be noise.
+        expect(screen.getAllByText('workstation.local')).toHaveLength(1)
+        expect(screen.getByText('Linux')).toBeTruthy()
     })
 
-    it('shows the custom name while keeping the hostname visible', () => {
+    it('shows the custom name and reveals the hostname underneath it', () => {
         machinesMock.mockReturnValue([makeMachine({
             metadata: { host: 'workstation.local', platform: 'linux', happyCliVersion: '1.0.0', displayName: 'Workstation' },
         } as Partial<Machine>)])
@@ -75,7 +87,42 @@ describe('SettingsMachinesPage', () => {
         renderPage()
 
         expect(screen.getByRole('button', { name: 'Rename Workstation' })).toBeTruthy()
-        expect(screen.getByText('workstation.local · linux')).toBeTruthy()
+        expect(screen.getByText('workstation.local')).toBeTruthy()
+    })
+
+    it('exposes online and offline state to assistive tech', () => {
+        machinesMock.mockReturnValue([
+            makeMachine({ id: 'on', active: true } as Partial<Machine>),
+            makeMachine({ id: 'off', active: false, metadata: { host: 'sleeping', platform: 'linux', happyCliVersion: '1.0.0' } } as Partial<Machine>),
+        ])
+
+        renderPage()
+
+        expect(screen.getByRole('img', { name: 'Online' })).toBeTruthy()
+        expect(screen.getByRole('img', { name: 'Offline' })).toBeTruthy()
+    })
+
+    it('lists online machines before offline ones', () => {
+        machinesMock.mockReturnValue([
+            makeMachine({ id: 'off', active: false, metadata: { host: 'sleeping', platform: 'linux', happyCliVersion: '1.0.0' } } as Partial<Machine>),
+            makeMachine({ id: 'on', active: true, metadata: { host: 'awake', platform: 'linux', happyCliVersion: '1.0.0' } } as Partial<Machine>),
+        ])
+
+        renderPage()
+
+        const names = screen.getAllByRole('button', { name: /^Rename / }).map((b) => b.textContent)
+        expect(names).toEqual(['awake', 'sleeping'])
+    })
+
+    it('can rename an offline machine', async () => {
+        machinesMock.mockReturnValue([makeMachine({ id: 'off', active: false } as Partial<Machine>)])
+        renderPage()
+        const input = startEditing('workstation.local')
+
+        fireEvent.change(input, { target: { value: 'Sleeping box' } })
+        fireEvent.keyDown(input, { key: 'Enter' })
+
+        await waitFor(() => expect(renameMachineMock).toHaveBeenCalledWith('off', 'Sleeping box'))
     })
 
     it('seeds the input with the current custom name, not the hostname', () => {
@@ -174,10 +221,10 @@ describe('SettingsMachinesPage', () => {
         expect(screen.getByRole('textbox')).toBeTruthy()
     })
 
-    it('renders an empty state when no machines are online', () => {
+    it('renders an empty state when there are no machines', () => {
         machinesMock.mockReturnValue([])
         renderPage()
 
-        expect(screen.getByText('No machines online.')).toBeTruthy()
+        expect(screen.getByText('No machines yet.')).toBeTruthy()
     })
 })

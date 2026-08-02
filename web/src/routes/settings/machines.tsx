@@ -7,6 +7,7 @@ import { useAppContext } from '@/lib/app-context'
 import { useTranslation } from '@/lib/use-translation'
 import { useMachines } from '@/hooks/queries/useMachines'
 import { getMachineTitle } from '@/hooks/useMachineLabels'
+import { resolveMachineOsLabel } from '@/lib/machineHealth'
 import { queryKeys } from '@/lib/query-keys'
 import { SettingsPageContent, SettingsSection } from '@/components/settings/SettingsPrimitives'
 
@@ -18,17 +19,19 @@ function MachineRow(props: { api: ApiClient | null; machine: Machine }) {
     const [error, setError] = useState<string | null>(null)
     const savingRef = useRef(false)
 
+    const displayName = props.machine.metadata?.displayName ?? ''
     const label = getMachineTitle(props.machine)
     const host = props.machine.metadata?.host
-    const platform = props.machine.metadata?.platform
-    const subtitle = [host, platform].filter(Boolean).join(' · ')
+    const online = props.machine.active
+    const osLabel = resolveMachineOsLabel(props.machine.metadata?.platform)
+    const platform = osLabel.kind === 'i18n' ? t(osLabel.key) : osLabel.value
 
     const renameMutation = useMutation({
-        mutationFn: async (displayName: string) => {
+        mutationFn: async (next: string) => {
             if (!props.api) {
                 throw new Error('API unavailable')
             }
-            await props.api.renameMachine(props.machine.id, displayName)
+            await props.api.renameMachine(props.machine.id, next)
         },
         onSuccess: () => {
             setEditing(false)
@@ -39,7 +42,7 @@ function MachineRow(props: { api: ApiClient | null; machine: Machine }) {
     })
 
     function startEditing() {
-        setDraft(props.machine.metadata?.displayName ?? '')
+        setDraft(displayName)
         setError(null)
         setEditing(true)
     }
@@ -52,7 +55,7 @@ function MachineRow(props: { api: ApiClient | null; machine: Machine }) {
             return
         }
         const next = draft.trim()
-        if (next === (props.machine.metadata?.displayName ?? '')) {
+        if (next === displayName) {
             setEditing(false)
             return
         }
@@ -65,8 +68,16 @@ function MachineRow(props: { api: ApiClient | null; machine: Machine }) {
     }
 
     return (
-        <div className="px-3 py-3">
-            <div className="flex min-h-9 items-center justify-between gap-3">
+        <div className="group px-3 py-3">
+            <div className="flex items-center gap-2.5">
+                <span
+                    role="img"
+                    aria-label={online ? t('settings.machines.status.online') : t('settings.machines.status.offline')}
+                    title={online ? t('settings.machines.status.online') : t('settings.machines.status.offline')}
+                    className={online
+                        ? 'h-[7px] w-[7px] shrink-0 rounded-full bg-emerald-500'
+                        : 'h-[7px] w-[7px] shrink-0 rounded-full border-[1.5px] border-[var(--app-link-muted)]'}
+                />
                 <div className="min-w-0 flex-1">
                     {editing ? (
                         <input
@@ -91,19 +102,38 @@ function MachineRow(props: { api: ApiClient | null; machine: Machine }) {
                             className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-sm text-[var(--app-fg)] outline-none focus:border-[var(--app-link)] disabled:opacity-60"
                         />
                     ) : (
-                        <button
-                            type="button"
-                            onClick={startEditing}
-                            aria-label={t('settings.machines.rename', { name: label })}
-                            className="block w-full truncate text-left text-sm font-medium text-[var(--app-fg)] hover:text-[var(--app-link)]"
-                        >
-                            {label}
-                        </button>
+                        <>
+                            {/* The name itself is the tap target. The trailing button is a
+                                hover affordance for pointer users and never the only way in,
+                                since hover does not exist on touch. */}
+                            <button
+                                type="button"
+                                onClick={startEditing}
+                                aria-label={t('settings.machines.rename', { name: label })}
+                                className={`block w-full truncate text-left text-sm font-medium ${displayName ? 'text-[var(--app-fg)]' : 'text-[var(--app-hint)]'}`}
+                            >
+                                {label}
+                            </button>
+                            {displayName ? (
+                                <div className="mt-0.5 truncate text-xs leading-snug text-[var(--app-hint)]">{host}</div>
+                            ) : null}
+                        </>
                     )}
-                    {subtitle ? (
-                        <div className="mt-0.5 truncate text-xs leading-snug text-[var(--app-hint)]">{subtitle}</div>
-                    ) : null}
                 </div>
+                <span className="shrink-0 rounded-md bg-[var(--app-subtle-bg)] px-1.5 py-0.5 text-[11px] text-[var(--app-hint)]">
+                    {platform}
+                </span>
+                {editing ? null : (
+                    <button
+                        type="button"
+                        tabIndex={-1}
+                        aria-hidden
+                        onClick={startEditing}
+                        className="shrink-0 rounded-md px-1.5 py-0.5 text-xs text-[var(--app-hint)] opacity-0 transition-opacity hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] group-hover:opacity-100"
+                    >
+                        {displayName ? t('settings.machines.action.edit') : t('settings.machines.action.name')}
+                    </button>
+                )}
             </div>
             {error ? <div role="alert" className="mt-1 text-xs text-red-600 dark:text-red-400">{error}</div> : null}
         </div>
@@ -113,15 +143,21 @@ function MachineRow(props: { api: ApiClient | null; machine: Machine }) {
 export default function SettingsMachinesPage() {
     const { t } = useTranslation()
     const { api } = useAppContext()
-    const { machines } = useMachines(api, true)
+    const { machines } = useMachines(api, true, { includeOffline: true })
+
+    // Online first, then by label, so the machines you can act on lead.
+    const sorted = [...machines].sort((a, b) => {
+        if (a.active !== b.active) return a.active ? -1 : 1
+        return getMachineTitle(a).localeCompare(getMachineTitle(b))
+    })
 
     return (
         <SettingsPageContent description={t('settings.machines.description')}>
             <SettingsSection title={t('settings.machines.section')}>
-                {machines.length === 0 ? (
+                {sorted.length === 0 ? (
                     <div className="px-3 py-3 text-sm text-[var(--app-hint)]">{t('settings.machines.empty')}</div>
                 ) : (
-                    machines.map((machine) => (
+                    sorted.map((machine) => (
                         <MachineRow key={machine.id} api={api} machine={machine} />
                     ))
                 )}
