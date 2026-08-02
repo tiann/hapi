@@ -35,6 +35,7 @@ import { scheduleCursorModelsPrewarm } from '@/modules/common/cursorModelsPrewar
  * child exits must be allowed to start a new child for the same HAPI row.
  */
 export type SpawnDeduplicator = ((options: SpawnSessionOptions) => Promise<SpawnSessionResult>) & {
+  recoverChild: (existingSessionId: string, result: SpawnSessionResult) => void
   markChildAlive: (existingSessionId: string) => void
   markChildStopping: (existingSessionId: string) => void
   onChildExited: (existingSessionId: string) => void
@@ -71,6 +72,10 @@ export function createSpawnDeduplicator(
       }
     });
     return await task;
+  };
+  dedupe.recoverChild = (existingSessionId: string, result: SpawnSessionResult) => {
+    childState.set(existingSessionId, 'alive');
+    completedOrInFlight.set(existingSessionId, Promise.resolve(result));
   };
   dedupe.markChildAlive = (existingSessionId: string) => {
     childState.set(existingSessionId, 'alive');
@@ -857,6 +862,18 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     };
 
     spawnSession = createSpawnDeduplicator(spawnSessionOnce);
+    for (const [pid, record] of persistedResumeProcesses) {
+      // The startup scan populates this map only after proving that both the PID
+      // and its process-generation marker still match the persisted child.
+      if (pidToRequestedSessionId.get(pid) !== record.requestedSessionId) continue;
+      existingSessionIdByChildPid.set(pid, record.requestedSessionId);
+      spawnSession.recoverChild(
+        record.requestedSessionId,
+        record.confirmedSessionId
+          ? { type: 'success', sessionId: record.confirmedSessionId }
+          : { type: 'error', errorMessage: `Session ${record.requestedSessionId} is still starting` }
+      );
+    }
 
     // Stop a session by sessionId or PID fallback
     const stopSession = async (sessionId: string): Promise<'stopped' | 'already_gone' | 'still_alive'> => {

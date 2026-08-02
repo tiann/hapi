@@ -294,6 +294,24 @@ describe('buildCliArgs', () => {
 
 
 describe('createSpawnDeduplicator', () => {
+    it('rehydrates a live child after runner restart without spawning again', async () => {
+        let calls = 0
+        const dedupe = createSpawnDeduplicator(async () => {
+            calls += 1
+            return { type: 'success' as const, sessionId: 'duplicate' }
+        })
+
+        dedupe.recoverChild('fresh-hapi-session', {
+            type: 'error',
+            errorMessage: 'Session fresh-hapi-session is still starting'
+        })
+
+        await expect(dedupe({ directory: '/tmp', existingSessionId: 'fresh-hapi-session' })).resolves.toEqual({
+            type: 'error', errorMessage: 'Session fresh-hapi-session is still starting'
+        })
+        expect(calls).toBe(0)
+    })
+
     it('shares an in-flight spawn and its successful result while the child is alive', async () => {
         let calls = 0
         let resolveSpawn: ((result: { type: 'success'; sessionId: string }) => void) | undefined
