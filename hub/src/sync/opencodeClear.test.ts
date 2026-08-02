@@ -34,6 +34,28 @@ function setSpawn(engine: SyncEngine, spawnSession: ReturnType<typeof mock>) {
 }
 
 describe('SyncEngine.clearOpenCodeSession', () => {
+    it.each(['resume', 'reopen'] as const)('blocks %s of an archived clear source before spawning', async (action) => {
+        const { engine } = createEngine()
+        try {
+            const source = createClearSource(engine)
+            const spawnSession = mock(async () => ({ type: 'success' as const, sessionId: 'must-not-spawn' }))
+            setSpawn(engine, spawnSession)
+
+            const result = action === 'resume'
+                ? await engine.resumeSession(source.id, 'default')
+                : await engine.reopenSession(source.id, 'default')
+
+            expect(result).toMatchObject({ type: 'error', code: 'resume_unavailable' })
+            expect(spawnSession).not.toHaveBeenCalled()
+            expect(engine.getSessionByNamespace(source.id, 'default')?.metadata).toMatchObject({
+                lifecycleState: 'archived',
+                archiveReason: 'Cleared by /clear'
+            })
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('persists a preallocated replacement before spawning, preserving launch settings but never native source identity', async () => {
         const { engine } = createEngine()
         try {

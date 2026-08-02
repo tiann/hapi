@@ -1816,6 +1816,14 @@ async uploadScratchlistAttachment(
         return this.store.messages.getFirstMessages(sessionId, 1).length === 0
     }
 
+    private isOpenCodeClearSource(session: Session): boolean {
+        const metadata = session.metadata
+        return metadata?.flavor === 'opencode'
+            && (metadata.archiveReason === 'Cleared by /clear'
+                || metadata.opencodeClearOperation !== undefined
+                || metadata.supersededBySessionId !== undefined)
+    }
+
     async resumeSession(sessionId: string, namespace: string, opts?: { permissionMode?: PermissionMode }): Promise<ResumeSessionResult> {
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
@@ -1827,6 +1835,13 @@ async uploadScratchlistAttachment(
         }
 
         const initialSession = access.session
+        if (this.isOpenCodeClearSource(initialSession)) {
+            return {
+                type: 'error',
+                message: 'This OpenCode session was replaced by /clear',
+                code: 'resume_unavailable'
+            }
+        }
         if (initialSession.active) {
             return { type: 'success', sessionId: access.sessionId }
         }
@@ -2094,6 +2109,14 @@ async uploadScratchlistAttachment(
 
         const session = access.session
         const metadata = session.metadata
+
+        if (this.isOpenCodeClearSource(session)) {
+            return {
+                type: 'error',
+                message: 'This OpenCode session was replaced by /clear',
+                code: 'resume_unavailable'
+            }
+        }
 
         if (metadata?.flavor === 'pi' && this.isPiResumeBlocked(access.sessionId)) {
             if (session.active) {
