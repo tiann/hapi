@@ -79,6 +79,7 @@ export function NewSession(props: {
     onChooseFolder?: (args: { machineId: string | null; directory: string }) => void
     initialDirectory?: string
     initialMachineId?: string
+    initialCodexImportOpen?: boolean
 }) {
     const { haptic } = usePlatform()
     const { t } = useTranslation()
@@ -125,6 +126,7 @@ export function NewSession(props: {
     const isFormDisabled = Boolean(isCreating || isPending || props.isLoading || isImportingCodexSession || isBulkImportingCodexSessions)
     const worktreeInputRef = useRef<HTMLInputElement>(null)
     const preserveRestoredDraftRef = useRef(false)
+    const initialCodexImportHandledRef = useRef(false)
 
     useEffect(() => {
         if (sessionType === 'worktree') {
@@ -698,6 +700,19 @@ export function NewSession(props: {
             setIsLoadingCodexImportSessions(false)
         }
     }, [agent, machineId, props.api, trimmedDirectory, t])
+
+    useEffect(() => {
+        if (!props.initialCodexImportOpen || initialCodexImportHandledRef.current) return
+        if (agent !== 'codex') {
+            setAgent('codex')
+            return
+        }
+        if (!machineId) return
+
+        initialCodexImportHandledRef.current = true
+        setIsCodexImportDialogOpen(true)
+        void loadCodexImportSessions()
+    }, [agent, loadCodexImportSessions, machineId, props.initialCodexImportOpen])
 
     const normalizeCodexScriptError = useCallback((message: string | null | undefined, fallback: string): string => {
         const raw = (message ?? '').trim()

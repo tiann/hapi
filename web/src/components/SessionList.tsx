@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode, RefObject } from 'react'
 import type { SessionSummary } from '@/types/api'
 import type { ApiClient } from '@/api/client'
 import { useLongPress } from '@/hooks/useLongPress'
@@ -28,6 +29,15 @@ import { useSessionListMachineFilter } from '@/hooks/useSessionListMachineFilter
 import { useCursorChatStoreStatus } from '@/hooks/queries/useCursorChatStoreStatus'
 import { SessionRowSummary } from '@/components/SessionRowSummary'
 import { Spinner } from '@/components/Spinner'
+import { useSessionListToolbarLayout, type SessionListToolbarGroup, type SessionListToolbarItemId } from '@/hooks/useSessionListToolbarLayout'
+import {
+    CalendarIcon,
+    CodexImportIcon,
+    FolderOpenIcon,
+    RefreshIcon,
+    SearchIcon,
+    SettingsIcon,
+} from '@/components/SessionListToolbarIcons'
 
 export { getWorktreeSessionLabel } from '@/lib/sessionWorktreeLabel'
 
@@ -357,26 +367,6 @@ function CopyPathButton({ path, className }: { path: string; className?: string 
 }
 
 
-function SearchIcon(props: { className?: string }) {
-    return (
-        <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className={props.className}
-        >
-            <circle cx="11" cy="11" r="8" />
-            <path d="m21 21-4.35-4.35" />
-        </svg>
-    )
-}
-
 function XIcon(props: { className?: string }) {
     return (
         <svg
@@ -517,15 +507,6 @@ export function getVisibleSessionPreview(
     return visible
 }
 
-function CalendarIcon(props: { className?: string }) {
-    return (
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={props.className}>
-            <rect x="3" y="5" width="18" height="16" rx="2" />
-            <path d="M16 3v4M8 3v4M3 10h18" />
-        </svg>
-    )
-}
-
 function formatDateValue(date: Date): string {
     const year = date.getFullYear()
     const month = String(date.getMonth() + 1).padStart(2, '0')
@@ -540,6 +521,7 @@ function SessionDateRangePicker(props: {
     onChange: (start: string, end: string) => void
     onClear: () => void
     onClose: () => void
+    align: 'left' | 'right'
 }) {
     const { t } = useTranslation()
     const initialDate = parseLocalDate(props.start) ?? new Date()
@@ -561,7 +543,10 @@ function SessionDateRangePicker(props: {
     }
 
     return (
-        <div className="absolute right-0 top-full z-30 mt-2 w-72 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-3 shadow-xl">
+        <div className={cn(
+            'absolute top-full z-30 mt-2 w-72 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-3 shadow-xl',
+            props.align === 'left' ? 'left-0' : 'right-0'
+        )}>
             <div className="mb-2 flex items-center justify-between">
                 <button
                     type="button"
@@ -639,6 +624,82 @@ function SessionDateRangePicker(props: {
     )
 }
 
+function SessionDateFilterButton(props: {
+    customStart: string
+    customEnd: string
+    sessionActivityDates: ReadonlySet<string>
+    onDateRangeChange: (start: string, end: string) => void
+    variant: 'standalone' | 'embedded'
+    align: 'left' | 'right'
+    returnFocusRef?: RefObject<HTMLInputElement | null>
+}) {
+    const { t } = useTranslation()
+    const [open, setOpen] = useState(false)
+    const buttonRef = useRef<HTMLButtonElement>(null)
+    const hasDateRange = Boolean(props.customStart && props.customEnd)
+    const returnFocus = () => {
+        (props.returnFocusRef?.current ?? buttonRef.current)?.focus()
+    }
+
+    return (
+        <>
+            <button
+                ref={buttonRef}
+                type="button"
+                onClick={() => setOpen(value => !value)}
+                className={cn(
+                    'relative shrink-0 transition-colors hover:bg-[var(--app-subtle-bg)]',
+                    props.variant === 'standalone'
+                        ? 'rounded-full p-1.5 hover:text-[var(--app-fg)]'
+                        : 'flex items-center rounded-r-lg rounded-l-md px-2',
+                    hasDateRange ? 'text-[var(--app-link)]' : 'text-[var(--app-hint)]'
+                )}
+                title={hasDateRange ? `${props.customStart} – ${props.customEnd}` : t('sessions.timeFilter.label')}
+                aria-label={t('sessions.timeFilter.label')}
+                aria-expanded={open}
+            >
+                <CalendarIcon className="h-5 w-5" />
+                {hasDateRange ? (
+                    <span className={cn(
+                        'absolute h-1.5 w-1.5 rounded-full bg-[var(--app-link)]',
+                        props.variant === 'standalone' ? 'right-0.5 top-0.5' : 'right-1 top-1'
+                    )} />
+                ) : null}
+            </button>
+            {open ? (
+                <>
+                    <button
+                        type="button"
+                        aria-label={t('sessions.timeFilter.close')}
+                        className="fixed inset-0 z-20 cursor-default"
+                        onClick={() => {
+                            setOpen(false)
+                            returnFocus()
+                        }}
+                    />
+                    <SessionDateRangePicker
+                        start={props.customStart}
+                        end={props.customEnd}
+                        sessionActivityDates={props.sessionActivityDates}
+                        onChange={props.onDateRangeChange}
+                        onClear={() => {
+                            props.onDateRangeChange('', '')
+                            // The footer Clear button unmounts once the range is
+                            // empty; return focus so it does not drop to <body>.
+                            returnFocus()
+                        }}
+                        onClose={() => {
+                            setOpen(false)
+                            returnFocus()
+                        }}
+                        align={props.align}
+                    />
+                </>
+            ) : null}
+        </>
+    )
+}
+
 function SessionListSearch(props: {
     value: string
     onChange: (value: string) => void
@@ -648,20 +709,17 @@ function SessionListSearch(props: {
     onDateRangeChange: (start: string, end: string) => void
     expanded: boolean
     onExpandedChange: (expanded: boolean) => void
+    persistent: boolean
+    showDateFilter: boolean
 }) {
     const { t } = useTranslation()
-    const [datePickerOpen, setDatePickerOpen] = useState(false)
     const inputRef = useRef<HTMLInputElement>(null)
-    const hasDateRange = Boolean(props.customStart && props.customEnd)
-    const hasActiveFilters = props.value.length > 0 || hasDateRange
 
     useEffect(() => {
-        if (props.expanded) {
+        if (props.expanded && !props.persistent) {
             inputRef.current?.focus()
-        } else {
-            setDatePickerOpen(false)
         }
-    }, [props.expanded])
+    }, [props.expanded, props.persistent])
 
     if (!props.expanded) {
         return (
@@ -673,7 +731,7 @@ function SessionListSearch(props: {
                 aria-label={t('sessions.search.open')}
             >
                 <SearchIcon className="h-5 w-5" />
-                {hasActiveFilters ? <span className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-[var(--app-link)]" /> : null}
+                {props.value.length > 0 ? <span className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-[var(--app-link)]" /> : null}
             </button>
         )
     }
@@ -682,7 +740,7 @@ function SessionListSearch(props: {
         <div
             className="relative min-w-0 flex-1"
             onBlur={(event) => {
-                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                if (!props.persistent && !event.currentTarget.contains(event.relatedTarget as Node | null)) {
                     props.onExpandedChange(false)
                 }
             }}
@@ -696,7 +754,10 @@ function SessionListSearch(props: {
                 value={props.value}
                 onChange={(event) => props.onChange(event.target.value)}
                 placeholder={t('sessions.search.placeholder')}
-                className="w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] py-1.5 pl-8 pr-16 text-sm text-[var(--app-fg)] outline-none transition-colors placeholder:text-[var(--app-hint)] focus:border-[var(--app-link)] [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-decoration]:hidden"
+                className={cn(
+                    'w-full appearance-none rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] py-1.5 pl-8 text-sm text-[var(--app-fg)] outline-none transition-colors placeholder:text-[var(--app-hint)] focus:border-[var(--app-link)] [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-decoration]:hidden',
+                    props.showDateFilter ? 'pr-16' : 'pr-9'
+                )}
             />
             {props.value ? (
                 <button
@@ -707,52 +768,28 @@ function SessionListSearch(props: {
                         // so a later outside click still routes blur through the wrapper.
                         inputRef.current?.focus()
                     }}
-                    className="absolute inset-y-0 right-9 flex items-center rounded p-0.5 text-[var(--app-hint)] hover:text-[var(--app-fg)]"
+                    className={cn(
+                        'absolute inset-y-0 flex items-center rounded p-0.5 text-[var(--app-hint)] hover:text-[var(--app-fg)]',
+                        props.showDateFilter ? 'right-9' : 'right-2'
+                    )}
                     title={t('sessions.search.clear')}
                 >
                     <XIcon className="h-3.5 w-3.5" />
                 </button>
             ) : null}
-            <div className="absolute inset-y-0 right-0 flex items-stretch">
-                <button
-                    type="button"
-                    onClick={() => setDatePickerOpen(open => !open)}
-                    className={cn(
-                        'relative flex items-center rounded-r-lg rounded-l-md px-2 transition-colors hover:bg-[var(--app-subtle-bg)]',
-                        hasDateRange ? 'text-[var(--app-link)]' : 'text-[var(--app-hint)]'
-                    )}
-                    title={hasDateRange ? `${props.customStart} – ${props.customEnd}` : t('sessions.timeFilter.label')}
-                    aria-label={t('sessions.timeFilter.label')}
-                    aria-expanded={datePickerOpen}
-                >
-                    <CalendarIcon className="h-5 w-5" />
-                    {hasDateRange ? <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-[var(--app-link)]" /> : null}
-                </button>
-                {datePickerOpen ? (
-                    <>
-                        <button type="button" aria-label={t('sessions.timeFilter.close')} className="fixed inset-0 z-20 cursor-default" onClick={() => {
-                            setDatePickerOpen(false)
-                            inputRef.current?.focus()
-                        }} />
-                        <SessionDateRangePicker
-                            start={props.customStart}
-                            end={props.customEnd}
-                            sessionActivityDates={props.sessionActivityDates}
-                            onChange={props.onDateRangeChange}
-                            onClear={() => {
-                                props.onDateRangeChange('', '')
-                                // The footer Clear button unmounts once the range is
-                                // empty; return focus so the wrapper blur still works.
-                                inputRef.current?.focus()
-                            }}
-                            onClose={() => {
-                                setDatePickerOpen(false)
-                                inputRef.current?.focus()
-                            }}
-                        />
-                    </>
-                ) : null}
-            </div>
+            {props.showDateFilter ? (
+                <div className="absolute inset-y-0 right-0 flex items-stretch">
+                    <SessionDateFilterButton
+                        customStart={props.customStart}
+                        customEnd={props.customEnd}
+                        sessionActivityDates={props.sessionActivityDates}
+                        onDateRangeChange={props.onDateRangeChange}
+                        variant="embedded"
+                        align="right"
+                        returnFocusRef={inputRef}
+                    />
+                </div>
+            ) : null}
         </div>
     )
 }
@@ -964,10 +1001,12 @@ export function SessionList(props: {
     onNewSession: () => void
     onNewSessionInDirectory?: (args: { machineId: string | null; directory: string }) => void
     onBrowse?: () => void
+    onImportCodex?: () => void
+    onOpenSettings?: () => void
     onRefresh: () => Promise<unknown> | void
     isLoading: boolean
     renderHeader?: boolean
-    headerActions?: React.ReactNode
+    headerActions?: ReactNode
     api: ApiClient | null
     machineLabelsById?: Record<string, string>
     machinesById?: Record<string, Machine>
@@ -979,6 +1018,7 @@ export function SessionList(props: {
     const { sessionListStatusMode } = useSessionListStatusMode()
     const { showActiveSessionsOnly } = useShowActiveSessionsOnly()
     const { machineFilter, setMachineFilter } = useSessionListMachineFilter()
+    const { layout: toolbarLayout } = useSessionListToolbarLayout()
     const showDetailedStatus = sessionListStatusMode === 'detailed'
     const [searchQuery, setSearchQuery] = useState('')
     const [searchExpanded, setSearchExpanded] = useState(false)
@@ -1217,7 +1257,20 @@ export function SessionList(props: {
         if (!showSearch) setSearchExpanded(false)
     }, [showSearch])
 
-    const showHeaderRow = showSearch || renderHeader || Boolean(props.headerActions)
+    useEffect(() => {
+        setSearchExpanded(false)
+    }, [toolbarLayout.searchPresentation])
+
+    const searchVisible = showSearch && !toolbarLayout.hidden.includes('search')
+    const dateFilterVisible = showSearch && !toolbarLayout.hidden.includes('dateFilter')
+    const persistentSearch = searchVisible && toolbarLayout.searchPresentation === 'field'
+    const compactSearchExpanded = searchVisible
+        && toolbarLayout.searchPresentation === 'icon'
+        && searchExpanded
+    const showHeaderRow = showSearch
+        || renderHeader
+        || Boolean(props.headerActions)
+        || Boolean(props.onOpenSettings)
 
     // Pull-to-refresh on the scrollable list. Touch-only gesture mirroring the
     // pull-to-load-older pattern in HappyThread; desktop has no overscroll
@@ -1308,12 +1361,117 @@ export function SessionList(props: {
         }
     }, [])
 
+    const refreshFromToolbar = () => {
+        if (isRefreshingRef.current) return
+        isRefreshingRef.current = true
+        setIsRefreshing(true)
+        void Promise.resolve(onRefreshRef.current()).finally(() => {
+            isRefreshingRef.current = false
+            setIsRefreshing(false)
+        })
+    }
+
+    const renderToolbarItem = (item: SessionListToolbarItemId, group: Exclude<SessionListToolbarGroup, 'hidden'>) => {
+        switch (item) {
+            case 'search':
+                if (!searchVisible) return null
+                return (
+                    <SessionListSearch
+                        key={item}
+                        value={searchQuery}
+                        onChange={setSearchQuery}
+                        customStart={customStart}
+                        customEnd={customEnd}
+                        sessionActivityDates={sessionActivityDates}
+                        onDateRangeChange={(start, end) => {
+                            setCustomStart(start)
+                            setCustomEnd(end)
+                        }}
+                        expanded={persistentSearch || searchExpanded}
+                        onExpandedChange={setSearchExpanded}
+                        persistent={persistentSearch}
+                        showDateFilter={dateFilterVisible}
+                    />
+                )
+            case 'dateFilter':
+                if (!dateFilterVisible || persistentSearch) return null
+                return (
+                    <SessionDateFilterButton
+                        key={item}
+                        customStart={customStart}
+                        customEnd={customEnd}
+                        sessionActivityDates={sessionActivityDates}
+                        onDateRangeChange={(start, end) => {
+                            setCustomStart(start)
+                            setCustomEnd(end)
+                        }}
+                        variant="standalone"
+                        align={group}
+                    />
+                )
+            case 'machineFilter':
+                if (!showMachineFilterBar) return null
+                return (
+                    <MachineFilterMenu
+                        key={item}
+                        machines={machineFilterItems}
+                        totalCount={allSessions.length}
+                        value={activeMachineFilter}
+                        onChange={setMachineFilter}
+                    />
+                )
+            case 'codexImport':
+                if (!props.onImportCodex) return null
+                return (
+                    <button
+                        key={item}
+                        type="button"
+                        onClick={props.onImportCodex}
+                        className="shrink-0 rounded-full p-1.5 text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]"
+                        title={t('codexSync.tooltip')}
+                        aria-label={t('codexSync.tooltip')}
+                    >
+                        <CodexImportIcon className="h-5 w-5" />
+                    </button>
+                )
+            case 'refresh':
+                return (
+                    <button
+                        key={item}
+                        type="button"
+                        onClick={refreshFromToolbar}
+                        disabled={isRefreshing || props.isLoading}
+                        aria-label={t('sessions.toolbar.item.refresh')}
+                        aria-busy={isRefreshing || props.isLoading}
+                        className="shrink-0 rounded-full p-1.5 text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-wait disabled:opacity-60"
+                        title={t('sessions.toolbar.item.refresh')}
+                    >
+                        <RefreshIcon className={cn('h-5 w-5', (isRefreshing || props.isLoading) && 'animate-spin')} />
+                    </button>
+                )
+            case 'browse':
+                if (!props.onBrowse) return null
+                return (
+                    <button
+                        key={item}
+                        type="button"
+                        onClick={props.onBrowse}
+                        className="shrink-0 rounded-full p-1.5 text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]"
+                        title={t('browse.nav')}
+                        aria-label={t('browse.nav')}
+                    >
+                        <FolderOpenIcon className="h-5 w-5" />
+                    </button>
+                )
+        }
+    }
+
     return (
         <div className="flex min-h-0 w-full flex-1 flex-col">
             <div className="session-list-scrollbar-offset mx-auto w-full max-w-content shrink-0">
             {showHeaderRow ? (
-                <div className="flex items-center gap-1 px-2 py-1">
-                    {showSearch ? (
+                <div className="relative flex items-center gap-2 px-2 py-1">
+                    {compactSearchExpanded ? (
                         <SessionListSearch
                             value={searchQuery}
                             onChange={setSearchQuery}
@@ -1324,34 +1482,41 @@ export function SessionList(props: {
                                 setCustomStart(start)
                                 setCustomEnd(end)
                             }}
-                            expanded={searchExpanded}
+                            expanded
                             onExpandedChange={setSearchExpanded}
+                            persistent={false}
+                            showDateFilter={dateFilterVisible}
                         />
-                    ) : null}
-                    {!(showSearch && searchExpanded) ? (
+                    ) : (
                         <>
-                            <div className="flex-1" />
-                            {showMachineFilterBar ? (
-                                <MachineFilterMenu
-                                    machines={machineFilterItems}
-                                    totalCount={allSessions.length}
-                                    value={activeMachineFilter}
-                                    onChange={setMachineFilter}
-                                />
+                            {toolbarLayout.left.map((item) => renderToolbarItem(item, 'left'))}
+                            {!persistentSearch ? <div className="min-w-0 flex-1" /> : null}
+                            {toolbarLayout.right.map((item) => renderToolbarItem(item, 'right'))}
+                            {props.onOpenSettings ? (
+                                <button
+                                    type="button"
+                                    onClick={props.onOpenSettings}
+                                    className="shrink-0 rounded-full p-1.5 text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]"
+                                    title={t('settings.title')}
+                                    aria-label={t('settings.title')}
+                                >
+                                    <SettingsIcon className="h-5 w-5" />
+                                </button>
                             ) : null}
-                            {renderHeader ? (
+                            {renderHeader || props.onOpenSettings ? (
                                 <button
                                     type="button"
                                     onClick={props.onNewSession}
-                                    className="session-list-new-button flex h-9 w-9 items-center justify-center rounded-full text-[var(--app-link)] transition-colors"
+                                    className="session-list-new-button flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--app-link)] transition-colors"
                                     title={t('sessions.new')}
+                                    aria-label={t('sessions.new')}
                                 >
-                                    <PlusIcon className="h-5 w-5" />
+                                    <PlusIcon className="h-6 w-6" />
                                 </button>
                             ) : null}
                             {props.headerActions}
                         </>
-                    ) : null}
+                    )}
                 </div>
             ) : null}
 

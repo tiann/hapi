@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
     onSuccess: vi.fn(),
     notification: vi.fn(),
     checkPathsExists: vi.fn(),
+    getCodexSessions: vi.fn(),
     codexModelsLoading: false,
     directoryExists: undefined as boolean | undefined
 }))
@@ -109,7 +110,9 @@ vi.mock('../../utils/formatRunnerSpawnError', () => ({
     formatRunnerSpawnError: () => null
 }))
 vi.mock('@/components/CodexSessionSyncDialog', () => ({
-    CodexSessionSyncDialog: () => null
+    CodexSessionSyncDialog: (props: { isOpen: boolean }) => props.isOpen
+        ? <div data-testid="codex-import-dialog" />
+        : null
 }))
 vi.mock('./DirectorySection', () => ({ DirectorySection: () => null }))
 vi.mock('./MachineSelector', () => ({ MachineSelector: () => null }))
@@ -147,7 +150,7 @@ vi.mock('./ActionButtons', () => ({
 import { NewSession } from './index'
 
 const machine = { id: 'machine-1' } as Machine
-const api = {} as ApiClient
+const api = { getCodexSessions: mocks.getCodexSessions } as unknown as ApiClient
 
 describe('NewSession launch preferences', () => {
     beforeEach(() => {
@@ -158,6 +161,8 @@ describe('NewSession launch preferences', () => {
         mocks.notification.mockReset()
         mocks.checkPathsExists.mockReset()
         mocks.checkPathsExists.mockImplementation(async () => ({ 'C:\\repo': mocks.directoryExists }))
+        mocks.getCodexSessions.mockReset()
+        mocks.getCodexSessions.mockResolvedValue({ sessions: [], machineId: 'machine-1' })
         mocks.codexModelsLoading = false
         mocks.directoryExists = true
         savePreferredAgent('codex')
@@ -186,6 +191,23 @@ describe('NewSession launch preferences', () => {
             expect(screen.getByTestId('model')).toHaveTextContent('gpt-5.6-sol')
             expect(screen.getByTestId('reasoning')).toHaveTextContent('xhigh')
         })
+    })
+
+    it('opens the consolidated Codex import flow when requested by the session toolbar', async () => {
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory={'C:\\repo'}
+                initialCodexImportOpen
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => expect(screen.getByTestId('codex-import-dialog')).toBeInTheDocument())
+        expect(mocks.getCodexSessions).toHaveBeenCalledWith('C:\\repo', 'machine-1')
     })
 
     it.each([

@@ -10,6 +10,7 @@ import { SessionList } from './SessionList'
 afterEach(() => {
     cleanup()
     localStorage.removeItem('hapi-session-preview-limit')
+    localStorage.removeItem('hapi-session-list-toolbar-layout')
 })
 
 function makeSession(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
@@ -156,7 +157,7 @@ describe('SessionList time filter', () => {
         vi.useRealTimers()
     })
 
-    it('filters after selecting a start and end date', () => {
+    it('keeps the date filter beside collapsed search and filters without expanding it', () => {
         const recent = makeSession({
             id: 'recent',
             updatedAt: Date.now(),
@@ -184,8 +185,13 @@ describe('SessionList time filter', () => {
         expect(screen.getByRole('button', { name: /Recent session/ })).toBeInTheDocument()
         expect(screen.getByRole('button', { name: /Old session/ })).toBeInTheDocument()
 
-        fireEvent.click(screen.getByRole('button', { name: 'Search sessions' }))
-        fireEvent.click(screen.getByRole('button', { name: 'Filter sessions by last activity' }))
+        const searchButton = screen.getByRole('button', { name: 'Search sessions' })
+        const filterButton = screen.getByRole('button', { name: 'Filter sessions by last activity' })
+        expect(searchButton.nextElementSibling).toBe(filterButton)
+        expect(searchButton.parentElement).toHaveClass('relative', 'gap-2')
+        expect(screen.queryByPlaceholderText('Search sessions…')).toBeNull()
+
+        fireEvent.click(filterButton)
         const emptyDate = screen.getByRole('button', { name: new Date(2026, 6, 17).toLocaleDateString() })
         const activeDate = screen.getByRole('button', { name: `${new Date(2026, 6, 18).toLocaleDateString()}, has session activity` })
         expect(emptyDate).toHaveClass('text-[var(--app-hint)]')
@@ -196,6 +202,46 @@ describe('SessionList time filter', () => {
 
         expect(screen.getByRole('button', { name: /Recent session/ })).toBeInTheDocument()
         expect(screen.queryByRole('button', { name: /Old session/ })).toBeNull()
+        expect(screen.queryByPlaceholderText('Search sessions…')).toBeNull()
+        expect(filterButton).toHaveAttribute('title', '2026-07-17 – 2026-07-18')
+        expect(filterButton).toHaveFocus()
+    })
+
+    it('keeps the configured search field visible and embeds the date filter without hiding later actions', () => {
+        localStorage.setItem('hapi-session-list-toolbar-layout', JSON.stringify({
+            left: ['search', 'dateFilter'],
+            right: ['refresh'],
+            hidden: ['machineFilter', 'codexImport', 'browse'],
+            searchPresentation: 'field',
+        }))
+        const session = makeSession({
+            id: 'session-1',
+            updatedAt: Date.now(),
+            metadata: { path: '/work/hapi', name: 'Session' }
+        })
+
+        renderWithProviders(
+            <SessionList
+                sessions={[session]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                headerActions={<button type="button">Later action</button>}
+                api={null}
+            />
+        )
+
+        const input = screen.getByPlaceholderText('Search sessions…')
+        expect(screen.getAllByRole('button', { name: 'Filter sessions by last activity' })).toHaveLength(1)
+        expect(screen.getByRole('button', { name: 'Refresh sessions' })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Later action' })).toBeInTheDocument()
+
+        fireEvent.blur(input, { relatedTarget: screen.getByRole('button', { name: 'Later action' }) })
+        expect(screen.getByPlaceholderText('Search sessions…')).toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: 'Search sessions' })).toBeNull()
     })
 
     it('highlights today without requiring hover or session activity', () => {
