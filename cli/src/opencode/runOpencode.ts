@@ -113,6 +113,7 @@ export async function runOpencode(opts: {
     // one-way transition. Later inbound messages must receive an explicit
     // rejection instead of entering the queue that will be archived.
     let clearTransitionLatched = false;
+    let queuedClearLocalId: string | null = null;
     // True from the moment onCompactAvailabilityChange(false) fires (which,
     // per onLeavingRemote's contract, only ever happens because remote mode
     // is being left — never because remote just started) until this session
@@ -280,6 +281,7 @@ export async function runOpencode(opts: {
                     // messages behind this resolver, including the async
                     // listSlashCommands race, so they take the rejection path.
                     clearTransitionLatched = true;
+                    queuedClearLocalId = localId ?? null;
                     // A clear is isolated but retains its FIFO position:
                     // older prompts and native /compact work finish first.
                     messageQueue.pushIsolated('', { ...buildMode(), operation: 'clear' }, localId);
@@ -439,6 +441,10 @@ export async function runOpencode(opts: {
     session.onCancelQueuedMessage((localId) => {
         const removedFromQueue = messageQueue.cancelByLocalId(localId);
         if (removedFromQueue) {
+            if (queuedClearLocalId === localId) {
+                queuedClearLocalId = null;
+                clearTransitionLatched = false;
+            }
             logger.debug(`[opencode] cancelByLocalId(${localId}): removed from queue`);
             return true;
         }

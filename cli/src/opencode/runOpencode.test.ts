@@ -432,6 +432,34 @@ describe('runOpencode set-session-config handler', () => {
         }));
     });
 
+    it('releases the clear transition latch when the queued /clear is cancelled', async () => {
+        await runOpencode({ startedBy: 'runner' });
+
+        const messageQueue = harness.opencodeLoopArgs[0]?.messageQueue as
+            { queue: Array<{ message: string; mode: { operation?: string }; localId?: string }> };
+        const userMessageHandler = harness.session.onUserMessage.mock.calls[0]?.[0] as
+            ((msg: { content: { text: string; attachments?: unknown[] } }, localId?: string) => void);
+        const cancelHandler = harness.session.onCancelQueuedMessage.mock.calls[0]?.[0] as
+            ((localId: string) => boolean);
+
+        userMessageHandler({ content: { text: '/clear' } }, 'queued-clear');
+        for (let i = 0; i < 5; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+        expect(cancelHandler('queued-clear')).toBe(true);
+
+        userMessageHandler({ content: { text: 'continue in the source session' } }, 'after-cancel');
+        for (let i = 0; i < 5; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+
+        expect(messageQueue.queue).toEqual([expect.objectContaining({
+            message: 'continue in the source session',
+            localId: 'after-cancel'
+        })]);
+        expect(harness.session.sendAgentMessage).not.toHaveBeenCalled();
+    });
+
     it('archives the source before asking the hub to spawn the fresh OpenCode process', async () => {
         harness.triggerClear = true;
         const order: string[] = [];
