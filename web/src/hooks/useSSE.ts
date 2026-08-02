@@ -5,6 +5,7 @@ import {
     computePendingRequests,
     computePendingRequestsCount,
     computeTodoProgress,
+    getSummaryAgentSessionId,
     isObject,
     toSessionSummary,
     toSessionSummaryMetadata
@@ -509,15 +510,7 @@ export function useSSE(options: {
                 summary: metadata.summary ? { text: metadata.summary.text } : undefined,
                 flavor: metadata.flavor ?? null,
                 worktree: metadata.worktree,
-                agentSessionId: metadata.codexSessionId
-                    ?? metadata.claudeSessionId
-                    ?? metadata.geminiSessionId
-                    ?? metadata.opencodeSessionId
-                    ?? metadata.grokSessionId
-                    ?? metadata.cursorSessionId
-                    ?? metadata.kimiSessionId
-                    ?? metadata.piSessionId
-                    ?? undefined,
+                agentSessionId: getSummaryAgentSessionId(metadata),
                 lifecycleState: metadata.lifecycleState
             } : null
 
