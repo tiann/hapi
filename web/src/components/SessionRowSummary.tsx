@@ -115,6 +115,8 @@ export function SessionRowSummary(props: {
     inRunningSection?: boolean
     /** Short project name shown under the title (pinned "in progress" rows). */
     projectLabel?: string
+    /** Machine label shown next to the project name (pinned "in progress" rows). */
+    machineLabel?: string
 }) {
     const {
         session: s,
@@ -127,6 +129,7 @@ export function SessionRowSummary(props: {
         className,
         inRunningSection = false,
         projectLabel,
+        machineLabel,
     } = props
     const { t } = useTranslation()
     const sessionName = getSessionTitle(s)
@@ -245,9 +248,9 @@ export function SessionRowSummary(props: {
                     ) : null}
                 </div>
             </div>
-            {projectLabel ? (
-                <div className="truncate text-xs text-[var(--app-hint)]" title={projectLabel}>
-                    {projectLabel}
+            {projectLabel || machineLabel ? (
+                <div className="truncate text-xs text-[var(--app-hint)]" title={[projectLabel, machineLabel].filter(Boolean).join(' · ')}>
+                    {[projectLabel, machineLabel].filter(Boolean).join(' · ')}
                 </div>
             ) : showPath || worktreeLabel ? (
                 <div
