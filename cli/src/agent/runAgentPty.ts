@@ -254,6 +254,7 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
                 // prompt is usable again — let the next queued message proceed.
                 inputReady = true
                 opts.onThinkingChange?.(false)
+                completeAgentRun()
             }
         }, IDLE_SILENCE_MS)
         idleWatchdog.unref?.()

@@ -91,7 +91,7 @@ async function reachReady() {
 }
 
 describe('runAgentPty', () => {
-    afterEach(() => { harness.reset() })
+    afterEach(() => { vi.useRealTimers(); harness.reset() })
 
     it('rejects (does not silently return) when the PTY fails to spawn', async () => {
         // A real failure such as `claude` not installed or the terminal failing
@@ -166,6 +166,70 @@ describe('runAgentPty', () => {
         harness.triggerData('Generating...')
         harness.triggerData('? for shortcuts')
         await promise
+    })
+
+    it('closes the run boundary once when the silence watchdog fires before a late idle marker', async () => {
+        vi.useFakeTimers()
+        const completion = deferred<void>()
+        const nextMessage = vi.fn()
+            .mockResolvedValueOnce({ message: 'first' })
+            .mockResolvedValueOnce({ message: 'second' })
+            .mockResolvedValueOnce(null)
+        const onAgentRunCompleted = vi.fn(() => completion.promise)
+        const promise = runAgentPty(makeOpts({
+            promptMarkers: ['READY'],
+            busyMarkers: ['Generating'],
+            idleMarkers: ['? for shortcuts'],
+            requirePromptMarker: true,
+            nextMessage,
+            onAgentRunCompleted,
+        }))
+
+        harness.triggerData('READY')
+        await vi.advanceTimersByTimeAsync(520)
+        expect(harness.m.write).toHaveBeenCalledWith('first')
+        harness.triggerData('Generating...')
+        await vi.advanceTimersByTimeAsync(3000)
+        expect(onAgentRunCompleted).toHaveBeenCalledTimes(1)
+        expect(harness.m.write).not.toHaveBeenCalledWith('second')
+
+        harness.triggerData('? for shortcuts')
+        expect(onAgentRunCompleted).toHaveBeenCalledTimes(1)
+        completion.resolve()
+        await vi.advanceTimersByTimeAsync(520)
+        expect(harness.m.write).toHaveBeenCalledWith('second')
+        harness.triggerExit(0)
+        await vi.advanceTimersByTimeAsync(100)
+        await promise
+        vi.useRealTimers()
+    })
+
+    it('does not let an armed silence watchdog complete a run after its idle marker already did', async () => {
+        vi.useFakeTimers()
+        const done = deferred<{ message: string } | null>()
+        const onAgentRunCompleted = vi.fn()
+        const promise = runAgentPty(makeOpts({
+            promptMarkers: ['READY'],
+            busyMarkers: ['Generating'],
+            idleMarkers: ['? for shortcuts'],
+            requirePromptMarker: true,
+            nextMessage: vi.fn()
+                .mockResolvedValueOnce({ message: 'first' })
+                .mockImplementationOnce(() => done.promise),
+            onAgentRunCompleted,
+        }))
+
+        harness.triggerData('READY')
+        await vi.advanceTimersByTimeAsync(520)
+        harness.triggerData('Generating...')
+        harness.triggerData('? for shortcuts')
+        expect(onAgentRunCompleted).toHaveBeenCalledTimes(1)
+        await vi.advanceTimersByTimeAsync(3000)
+        expect(onAgentRunCompleted).toHaveBeenCalledTimes(1)
+
+        done.resolve(null)
+        await promise
+        vi.useRealTimers()
     })
 
     it('rejects (and never calls onReady) if the PTY exits before becoming ready', async () => {
