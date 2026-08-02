@@ -21,6 +21,30 @@ function base64UrlToUint8Array(base64Url: string): Uint8Array {
     return output
 }
 
+/**
+ * VAPID public key that the currently stored push subscription was created
+ * with. When the hub changes (or its keys rotate), existing browser
+ * subscriptions become undeliverable (push services reject them with
+ * VapidPkHashMismatch), so we compare and re-create them on the next load.
+ */
+const PUSH_VAPID_KEY_STORAGE = 'hapi.push.vapidKey'
+
+function readStoredVapidKey(): string | null {
+    try {
+        return localStorage.getItem(PUSH_VAPID_KEY_STORAGE)
+    } catch {
+        return null
+    }
+}
+
+function writeStoredVapidKey(publicKey: string): void {
+    try {
+        localStorage.setItem(PUSH_VAPID_KEY_STORAGE, publicKey)
+    } catch {
+        // Ignore storage errors — the key check degrades to a re-subscribe.
+    }
+}
+
 export function usePushNotifications(api: ApiClient | null) {
     const [isSupported, setIsSupported] = useState(false)
     const [permission, setPermission] = useState<NotificationPermission>('default')
@@ -43,8 +67,18 @@ export function usePushNotifications(api: ApiClient | null) {
 
         const registration = await navigator.serviceWorker.ready
         const subscription = await registration.pushManager.getSubscription()
-        setIsSubscribed(Boolean(subscription))
-    }, [])
+        let keyMatches = true
+        if (subscription && api) {
+            try {
+                const { publicKey } = await api.getPushVapidPublicKey()
+                keyMatches = readStoredVapidKey() === publicKey
+            } catch {
+                // Key lookup failed — keep the existing subscription benefit of
+                // the doubt rather than showing a false "off" state.
+            }
+        }
+        setIsSubscribed(Boolean(subscription) && keyMatches)
+    }, [api])
 
     useEffect(() => {
         void refreshSubscription()
@@ -78,10 +112,26 @@ export function usePushNotifications(api: ApiClient | null) {
             const existing = await registration.pushManager.getSubscription()
             const { publicKey } = await api.getPushVapidPublicKey()
             const applicationServerKey = base64UrlToUint8Array(publicKey).buffer as ArrayBuffer
-            const subscription = existing ?? await registration.pushManager.subscribe({
-                userVisibleOnly: true,
-                applicationServerKey
-            })
+            // A subscription created against a previous hub or VAPID key can
+            // never receive notifications from the current hub. Detect the
+            // mismatch via the key recorded at subscribe time and recreate it.
+            let subscription = existing
+            if (existing && readStoredVapidKey() !== publicKey) {
+                try {
+                    await existing.unsubscribe()
+                } catch {
+                    // Ignore unsubscribe failures — subscribe() below still
+                    // issues a fresh subscription with the current key.
+                }
+                subscription = null
+            }
+            if (!subscription) {
+                subscription = await registration.pushManager.subscribe({
+                    userVisibleOnly: true,
+                    applicationServerKey
+                })
+            }
+            writeStoredVapidKey(publicKey)
 
             const json = subscription.toJSON()
             const keys = json.keys
