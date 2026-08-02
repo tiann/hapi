@@ -448,10 +448,15 @@ describe('runOpencode set-session-config handler', () => {
             ((localId: string) => boolean);
 
         userMessageHandler({ content: { text: '/clear' } }, 'queued-clear');
+        userMessageHandler({ content: { text: 'rejected while clear is queued' } }, 'rejected-before-cancel');
         for (let i = 0; i < 5; i++) {
             await new Promise((resolve) => setTimeout(resolve, 0));
         }
         expect(cancelHandler('queued-clear')).toBe(true);
+        expect(harness.session.emitMessagesConsumed).toHaveBeenCalledWith(
+            ['rejected-before-cancel'],
+            { clearQueuedThinkingGrace: true }
+        );
 
         userMessageHandler({ content: { text: 'continue in the source session' } }, 'after-cancel');
         for (let i = 0; i < 5; i++) {
@@ -462,7 +467,7 @@ describe('runOpencode set-session-config handler', () => {
             message: 'continue in the source session',
             localId: 'after-cancel'
         })]);
-        expect(harness.session.sendAgentMessage).not.toHaveBeenCalled();
+        expect(harness.session.sendAgentMessage).toHaveBeenCalledTimes(1);
     });
 
     it('archives the source before asking the hub to spawn the fresh OpenCode process', async () => {

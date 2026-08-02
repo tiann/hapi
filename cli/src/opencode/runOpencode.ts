@@ -448,6 +448,12 @@ export async function runOpencode(opts: {
             if (queuedClearLocalId === localId) {
                 queuedClearLocalId = null;
                 clearTransitionLatched = false;
+                const rejectedLocalIds = [...rejectedDuringClearLocalIds];
+                if (rejectedLocalIds.length > 0) {
+                    session.emitMessagesConsumed(rejectedLocalIds, {
+                        clearQueuedThinkingGrace: true
+                    });
+                }
                 rejectedDuringClearLocalIds.clear();
             }
             logger.debug(`[opencode] cancelByLocalId(${localId}): removed from queue`);
