@@ -8,6 +8,7 @@ import type { CodexCollaborationMode } from '@hapi/protocol/types'
 import { Hono } from 'hono'
 import type { Machine, SyncEngine } from '../../sync/syncEngine'
 import type { Store, StoredMessage } from '../../store'
+import { truncateOversizedMessageContent } from '../../store/contentCodec'
 import type { WebAppEnv } from '../middleware/auth'
 
 type ScriptLogKind = 'sync' | 'restart'
@@ -1051,7 +1052,11 @@ function normalizeComparableAgentData(value: unknown): unknown {
 }
 
 function normalizeComparableContent(content: unknown): string | null {
-    const record = asRecord(content)
+    // Stored rows are truncated at ingest (contentCodec) while transcript
+    // messages arrive in full; truncation is idempotent, so applying it here
+    // makes both sides of the prefix comparison canonical. Pre-codec stored
+    // rows (never truncated) get normalized the same way.
+    const record = asRecord(truncateOversizedMessageContent(content))
     if (!record) {
         return null
     }
@@ -1083,7 +1088,9 @@ function normalizeComparableContent(content: unknown): string | null {
 
 function getComparableStoredMessageKey(message: StoredMessage): string {
     // 中文注释：重复会话合并时优先按标准 user/agent 结构去重；遇到非标准消息再回退到稳定序列化，确保不会遗漏相同内容。
-    return normalizeComparableContent(message.content) ?? stableSerialize(message.content)
+    // Fallback also truncates so a pre-codec (full) row and a post-codec
+    // (truncated) copy of the same message still dedupe to one key.
+    return normalizeComparableContent(message.content) ?? stableSerialize(truncateOversizedMessageContent(message.content))
 }
 
 function collectImportCandidates(

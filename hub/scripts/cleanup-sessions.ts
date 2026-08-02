@@ -33,6 +33,8 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { existsSync } from 'node:fs'
 
+import { decodeMessageContent } from '../src/store/contentCodec'
+
 // Format timestamp as human-readable date
 function formatDate(timestamp: number): string {
     const date = new Date(timestamp)
@@ -150,22 +152,30 @@ function querySessions(db: Database): SessionInfo[] {
         GROUP BY s.id
     `).all()
 
-    // Get all messages for processing
-    const messageRows = db.query<
-        { session_id: string; content: string; seq: number },
-        []
+    // Scan each session's messages in seq order, in small batches, until the
+    // first user prompt is found. Loading every row at once pulls the whole
+    // DB's content into RAM on large DBs, but the scan must not stop at a
+    // fixed rank either — sessions can lead with dozens of agent rows.
+    const batchQuery = db.query<
+        { content: string | Uint8Array },
+        [string, number, number]
     >(`
-        SELECT session_id, content, seq
-        FROM messages
-        ORDER BY session_id, seq
-    `).all()
-
-    // Group messages by session
-    const messagesBySession = new Map<string, { content: string; seq: number }[]>()
-    for (const msg of messageRows) {
-        const list = messagesBySession.get(msg.session_id) ?? []
-        list.push({ content: msg.content, seq: msg.seq })
-        messagesBySession.set(msg.session_id, list)
+        SELECT content FROM messages
+        WHERE session_id = ?
+        ORDER BY seq
+        LIMIT ? OFFSET ?
+    `)
+    const SCAN_BATCH = 50
+    function findFirstUserMessage(sessionId: string): string | null {
+        for (let offset = 0; ; offset += SCAN_BATCH) {
+            const rows = batchQuery.all(sessionId, SCAN_BATCH, offset)
+            if (rows.length === 0) return null
+            for (const row of rows) {
+                // decodeMessageContent handles both legacy plaintext and zstd BLOB rows
+                const userText = extractUserText(decodeMessageContent(row.content))
+                if (userText) return userText
+            }
+        }
     }
 
     return sessionRows.map(row => {
@@ -184,22 +194,7 @@ function querySessions(db: Database): SessionInfo[] {
             }
         }
 
-        // Extract first user message from session messages
-        let firstUserMessage: string | null = null
-        const messages = messagesBySession.get(row.id) ?? []
-
-        for (const msg of messages) {
-            if (firstUserMessage !== null) break
-            try {
-                const content = JSON.parse(msg.content)
-                const userText = extractUserText(content)
-                if (userText) {
-                    firstUserMessage = userText
-                }
-            } catch {
-                // Ignore parse errors
-            }
-        }
+        const firstUserMessage = findFirstUserMessage(row.id)
 
         return {
             id: row.id,

@@ -435,7 +435,6 @@ describe('countFutureScheduledLocalMessages', () => {
     })
 })
 
-
 describe('moveUninvokedScheduledMessages', () => {
     it('atomically moves only pending scheduled rows to the replacement session', () => {
         const store = makeStore()
@@ -453,5 +452,45 @@ describe('moveUninvokedScheduledMessages', () => {
         expect(store.messages.getUninvokedLocalMessages(source.id)).toEqual([
             expect.objectContaining({ localId: 'ordinary-local', scheduledAt: null })
         ])
+    })
+})
+
+describe('content codec integration', () => {
+    it('stores large agent content compressed and returns it truncated on read', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'codec-agent')
+        const stdout = 'line\n'.repeat(60_000) // ~300KB, above the truncate limit
+        const content = {
+            role: 'agent',
+            content: { type: 'codex', data: { type: 'tool-call-result', callId: 'c1', output: { stdout } } }
+        }
+
+        const added = store.messages.addMessage(session.id, content)
+        const read = store.messages.getMessages(session.id, 10)
+        expect(read).toHaveLength(1)
+
+        const readContent = read[0]!.content as typeof content
+        expect(readContent.content.data.output.stdout.length).toBeLessThan(stdout.length)
+        expect(readContent.content.data.output.stdout).toContain('[hapi: truncated')
+        expect(readContent.content.data.callId).toBe('c1')
+        // addMessage's return value matches what a later read sees (SSE broadcast uses it)
+        expect(added.content).toEqual(read[0]!.content)
+    })
+
+    it('round-trips large queued user prompts verbatim (delivery path must not truncate)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'codec-user')
+        const text = 'prompt '.repeat(30_000) // ~210KB user paste
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text } },
+            'lid-big',
+            Date.now() + 60_000
+        )
+
+        const scheduled = store.messages.getMatureScheduledMessages(Date.now() + 120_000)
+        expect(scheduled).toHaveLength(1)
+        const delivered = scheduled[0]!.content as { content: { text: string } }
+        expect(delivered.content.text).toBe(text)
     })
 })

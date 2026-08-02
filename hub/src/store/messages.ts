@@ -2,12 +2,13 @@ import type { Database } from 'bun:sqlite'
 import { randomUUID } from 'node:crypto'
 
 import type { StoredMessage } from './types'
-import { safeJsonParse } from './json'
+import { decodeMessageContent, encodeMessageContent, truncateOversizedMessageContent } from './contentCodec'
 
 type DbMessageRow = {
     id: string
     session_id: string
-    content: string
+    // TEXT (plaintext JSON, legacy rows) or BLOB (zstd-compressed JSON) — see contentCodec.ts
+    content: string | Uint8Array
     created_at: number
     seq: number
     local_id: string | null
@@ -24,7 +25,7 @@ function toStoredMessage(row: DbMessageRow): StoredMessage {
     return {
         id: row.id,
         sessionId: row.session_id,
-        content: safeJsonParse(row.content),
+        content: decodeMessageContent(row.content),
         createdAt: row.created_at,
         seq: row.seq,
         localId: row.local_id,
@@ -71,7 +72,7 @@ export function addMessage(
     const msgSeq = msgSeqRow.nextSeq
 
     const id = randomUUID()
-    const json = JSON.stringify(content)
+    const encoded = encodeMessageContent(truncateOversizedMessageContent(content))
 
     // Messages without a localId have no ack path (markMessagesInvoked matches by localId).
     // Treat them as already-invoked at insert time so they land in the thread normally instead
@@ -87,7 +88,7 @@ export function addMessage(
     `).run({
         id,
         session_id: sessionId,
-        content: json,
+        content: encoded,
         created_at: now,
         seq: msgSeq,
         local_id: localId ?? null,
@@ -137,7 +138,9 @@ export function copyMessageToSession(
     `).run({
         id,
         session_id: sessionId,
-        content: JSON.stringify(message.content),
+        // Lossless re-encode only — copies move existing history between
+        // sessions, so no truncation here even for pre-codec oversized rows.
+        content: encodeMessageContent(message.content),
         created_at: createdAt,
         seq: nextSeq,
         local_id: localId ?? null,

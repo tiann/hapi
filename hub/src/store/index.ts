@@ -29,7 +29,7 @@ export { ScratchlistStore } from './scratchlistStore'
 export { SessionStore } from './sessionStore'
 export { UserStore } from './userStore'
 
-const SCHEMA_VERSION: number = 15
+const SCHEMA_VERSION: number = 16
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -172,6 +172,7 @@ export class Store {
             12: () => this.migrateFromV12ToV13(),
             13: () => this.migrateFromV13ToV14(),
             14: () => this.migrateFromV14ToV15(),
+            15: () => this.migrateFromV15ToV16(),
         })
 
         if (currentVersion === 0) {
@@ -594,6 +595,15 @@ export class Store {
             this.db.exec(`ALTER TABLE session_scratchlist ADD COLUMN attachments TEXT DEFAULT NULL`)
         }
     }
+
+    /**
+     * V16 has no DDL change: messages.content may now hold zstd-compressed
+     * BLOBs alongside legacy plaintext JSON TEXT (see contentCodec.ts). The
+     * version bump exists so an older hub build refuses to open the DB with a
+     * schema-mismatch error instead of silently rendering every compressed
+     * message as null.
+     */
+    private migrateFromV15ToV16(): void {}
 
     private getSessionColumnNames(): Set<string> {
         const rows = this.db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>
