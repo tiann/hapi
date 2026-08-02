@@ -158,24 +158,39 @@ const PATTERNS: Pattern[] = [
  * this path runs and are not subject to false positives from prose that
  * happens to match the pattern shape.
  */
-/** Drop markdown fenced regions so quoted Error: T: examples are not classified.
- *  Tracks opener char + length so a ```` outer fence is not closed by inner ```. */
+/** Drop closed markdown fenced regions so quoted Error: T: examples are not
+ *  classified. Tracks opener char + length (four-backtick outer ≠ closed by
+ *  inner ```). Unclosed fences are restored at EOF so a truncated generation
+ *  that ends with Error: T: is still classifiable. */
 function stripMarkdownFences(text: string): string {
-    let fence: { char: '`' | '~'; length: number } | null = null
-    return text.split('\n').filter((line) => {
+    const visible: string[] = []
+    let fence: { char: '`' | '~'; length: number; buffered: string[] } | null = null
+    for (const line of text.split('\n')) {
         const match = line.match(/^[ \t]{0,3}(`{3,}|~{3,})/)
         if (!match) {
-            return fence === null
+            if (fence) {
+                fence.buffered.push(line)
+            } else {
+                visible.push(line)
+            }
+            continue
         }
         const marker = match[1]!
         const char = marker[0]! as '`' | '~'
         if (!fence) {
-            fence = { char, length: marker.length }
-        } else if (char === fence.char && marker.length >= fence.length) {
+            fence = { char, length: marker.length, buffered: [line] }
+            continue
+        }
+        fence.buffered.push(line)
+        if (char === fence.char && marker.length >= fence.length) {
+            // Closed fence: discard opener..closer inclusive.
             fence = null
         }
-        return false
-    }).join('\n')
+    }
+    if (fence) {
+        visible.push(...fence.buffered)
+    }
+    return visible.join('\n')
 }
 
 export function classifyCursorAgentMessage(text: string): CursorAgentStreamFailure | null {

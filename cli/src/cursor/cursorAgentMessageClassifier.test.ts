@@ -145,6 +145,14 @@ describe('classifyCursorAgentMessage', () => {
             '```\n' +
             '````\n'
         expect(classifyCursorAgentMessage(nestedFence)).toBeNull()
+
+        // Unclosed fence + failure tail must still classify (truncated generation).
+        const truncatedFence =
+            '```ts\n' +
+            'partial code\n' +
+            '\n' +
+            'Error: T: [resource_exhausted] Error\n'
+        expect(classifyCursorAgentMessage(truncatedFence)?.kind).toBe('quota_exhausted')
     })
 
     it('still classifies real Gemini errors when they ARE the message body', () => {
