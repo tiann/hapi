@@ -92,6 +92,16 @@ export function createSpawnDeduplicator(
   return dedupe;
 }
 
+export function classifyRecoveredProcessGeneration(
+  processAlive: boolean,
+  currentMarker: string | null,
+  persistedMarker: string
+): 'verified' | 'quarantined' | 'exited' {
+  if (!processAlive) return 'exited';
+  if (currentMarker === null) return 'quarantined';
+  return currentMarker === persistedMarker ? 'verified' : 'exited';
+}
+
 export async function startRunner(options: { workspaceRoots?: string[] } = {}): Promise<void> {
   // We don't have cleanup function at the time of server construction
   // Control flow is:
@@ -340,10 +350,11 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     for (const [pid, record] of [...persistedResumeProcesses]) {
       const alive = isProcessAlive(pid);
       const marker = alive ? getProcessStartMarker(pid) : null;
-      if (alive && marker === record.processStartMarker) {
+      const generation = classifyRecoveredProcessGeneration(alive, marker, record.processStartMarker);
+      if (generation === 'verified') {
         pidToRequestedSessionId.set(pid, record.requestedSessionId);
         if (record.confirmedSessionId) pidToConfirmedSessionId.set(pid, record.confirmedSessionId);
-      } else if (!alive || marker !== null) {
+      } else if (generation === 'exited') {
         persistedResumeProcesses.delete(pid);
         rememberVerifiedExit(record.requestedSessionId);
         if (record.confirmedSessionId) rememberVerifiedExit(record.confirmedSessionId);
@@ -863,15 +874,13 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
     spawnSession = createSpawnDeduplicator(spawnSessionOnce);
     for (const [pid, record] of persistedResumeProcesses) {
-      // The startup scan populates this map only after proving that both the PID
-      // and its process-generation marker still match the persisted child.
-      if (pidToRequestedSessionId.get(pid) !== record.requestedSessionId) continue;
+      const verified = pidToRequestedSessionId.get(pid) === record.requestedSessionId;
       existingSessionIdByChildPid.set(pid, record.requestedSessionId);
       spawnSession.recoverChild(
         record.requestedSessionId,
-        record.confirmedSessionId
+        verified && record.confirmedSessionId
           ? { type: 'success', sessionId: record.confirmedSessionId }
-          : { type: 'error', errorMessage: `Session ${record.requestedSessionId} is still starting` }
+          : { type: 'error', errorMessage: `Session ${record.requestedSessionId} process verification is pending` }
       );
     }
 
@@ -1203,6 +1212,28 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         if (!isProcessAlive(pid)) {
           logger.debug(`[RUNNER RUN] Removing stale session with PID ${pid} (process no longer exists)`);
           onChildExited(pid);
+          continue;
+        }
+        const persisted = persistedResumeProcesses.get(pid);
+        if (persisted) {
+          const generation = classifyRecoveredProcessGeneration(
+            true,
+            getProcessStartMarker(pid),
+            persisted.processStartMarker
+          );
+          if (generation === 'exited') {
+            logger.debug(`[RUNNER RUN] Removing stale session with reused PID ${pid}`);
+            onChildExited(pid);
+          } else if (generation === 'verified' && pidToRequestedSessionId.get(pid) !== persisted.requestedSessionId) {
+            pidToRequestedSessionId.set(pid, persisted.requestedSessionId);
+            if (persisted.confirmedSessionId) pidToConfirmedSessionId.set(pid, persisted.confirmedSessionId);
+            spawnSession.recoverChild(
+              persisted.requestedSessionId,
+              persisted.confirmedSessionId
+                ? { type: 'success', sessionId: persisted.confirmedSessionId }
+                : { type: 'error', errorMessage: `Session ${persisted.requestedSessionId} is still starting` }
+            );
+          }
         }
       }
 

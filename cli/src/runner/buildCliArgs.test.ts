@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildCliArgs, createSpawnDeduplicator } from './run'
+import { buildCliArgs, classifyRecoveredProcessGeneration, createSpawnDeduplicator } from './run'
 
 describe('buildCliArgs', () => {
     it('adds --permission-mode for valid permission mode', () => {
@@ -388,5 +388,17 @@ describe('createSpawnDeduplicator', () => {
         dedupe.onChildExited('fresh-hapi-session')
         await expect(dedupe(options)).resolves.toEqual({ type: 'success', sessionId: 'fresh-hapi-session' })
         expect(calls).toBe(2)
+    })
+})
+
+describe('classifyRecoveredProcessGeneration', () => {
+    it('quarantines a live recovered child while its generation marker is unavailable', () => {
+        expect(classifyRecoveredProcessGeneration(true, null, 'persisted-marker')).toBe('quarantined')
+    })
+
+    it('releases quarantine only after exit or a generation mismatch is proven', () => {
+        expect(classifyRecoveredProcessGeneration(false, null, 'persisted-marker')).toBe('exited')
+        expect(classifyRecoveredProcessGeneration(true, 'other-marker', 'persisted-marker')).toBe('exited')
+        expect(classifyRecoveredProcessGeneration(true, 'persisted-marker', 'persisted-marker')).toBe('verified')
     })
 })
