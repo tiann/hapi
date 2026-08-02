@@ -452,7 +452,8 @@ export const SpawnSessionRequestSchema = z.object({
     sessionType: z.enum(['simple', 'worktree']).optional(),
     worktreeName: z.string().optional(),
     serviceTier: z.enum(['fast', 'standard']).optional(),
-    collaborationMode: CodexCollaborationModeSchema.optional()
+    collaborationMode: CodexCollaborationModeSchema.optional(),
+    startingMode: z.enum(['remote', 'pty']).optional()
 })
 
 export type SpawnSessionRequest = z.infer<typeof SpawnSessionRequestSchema>

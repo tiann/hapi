@@ -15,6 +15,7 @@ import type { Server } from 'socket.io'
 import type { Store, CancelQueuedMessageResult } from '../store'
 import type { HapiSessionExportResult } from '@hapi/protocol/sessionExport'
 import type { RpcRegistry } from '../socket/rpcRegistry'
+import { clearAgentTerminalBuffer } from '../socket/agentTerminalBuffer'
 import type { SSEManager } from '../sse/sseManager'
 import { CursorLegacyMigrator, type CursorLegacyMigratorOptions } from '../cursor/cursorLegacyMigrator'
 
@@ -162,7 +163,7 @@ export class SyncEngine {
 
     constructor(
         private readonly store: Store,
-        io: Server,
+        private readonly io: Server,
         rpcRegistry: RpcRegistry,
         sseManager: SSEManager
     ) {
@@ -455,6 +456,17 @@ export class SyncEngine {
         if (ownsPiAttempt || isPiAttemptChild) {
             void this.clearPiAttemptForEndedSession(payload.sid, restorePiArchive)
         }
+
+        // Notify agent-terminal subscribers so the web UI shows a clear
+        // termination message instead of staying connected with stale output.
+        if (typeof this.io.of === 'function') {
+            this.io.of('/terminal').to(`agent-session:${payload.sid}`).emit('agent-terminal:output', {
+                sessionId: payload.sid,
+                terminalId: 'agent',
+                data: '\r\n[Session terminated]\r\n'
+            })
+        }
+        clearAgentTerminalBuffer(payload.sid)
     }
 
     handleBackgroundTaskDelta(sessionId: string, delta: { started: number; completed: number }): void {
@@ -1119,6 +1131,7 @@ async uploadScratchlistAttachment(
         permissionMode?: PermissionMode,
         serviceTier?: string,
         existingSessionId?: string,
+        startingMode?: 'remote' | 'pty',
         collaborationMode?: CodexCollaborationMode
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
         return await this.rpcGateway.spawnSession(
@@ -1135,6 +1148,7 @@ async uploadScratchlistAttachment(
             permissionMode,
             serviceTier,
             existingSessionId,
+            startingMode,
             collaborationMode
         )
     }
@@ -1625,6 +1639,10 @@ async uploadScratchlistAttachment(
             : opts?.permissionMode
                 ?? session.permissionMode
                 ?? metadataPermissionMode
+        const resumedStartingMode =
+            (session.agentState as { startingMode?: 'local' | 'remote' | 'pty' } | null)?.startingMode === 'pty'
+                ? 'pty'
+                : undefined
         let piResumeSucceeded = false
         try {
             const spawnResult = await this.rpcGateway.spawnSession(
@@ -1641,6 +1659,7 @@ async uploadScratchlistAttachment(
                 preferredPermissionMode,
                 session.serviceTier ?? undefined,
                 access.sessionId,
+                resumedStartingMode,
                 session.collaborationMode ?? undefined
             )
 
@@ -1696,7 +1715,8 @@ async uploadScratchlistAttachment(
                 return { type: 'error', message: 'Session failed to become active', code: 'resume_failed' }
             }
 
-            const needsReadyBeforeSuccess = requiresPiNativeReady
+            const needsReadyBeforeSuccess = resumedStartingMode === 'pty'
+                || requiresPiNativeReady
                 || (
                     spawnResult.sessionId !== access.sessionId
                     && flavor === 'cursor'
@@ -1720,6 +1740,10 @@ async uploadScratchlistAttachment(
                         ? readyResult === 'ended'
                             ? 'Pi session ended before native resume completed'
                             : 'Pi session failed to become native-ready'
+                        : resumedStartingMode === 'pty'
+                            ? readyResult === 'ended'
+                                ? 'Session ended before the agent PTY became ready'
+                                : 'Session failed to become ready'
                         : readyResult === 'ended'
                             ? 'Session ended before Cursor ACP load completed'
                             : 'Session failed to become ready'

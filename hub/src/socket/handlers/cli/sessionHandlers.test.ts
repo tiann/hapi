@@ -120,4 +120,45 @@ describe('cli session handlers', () => {
         expect(broadcastBody.metadata.value.path).toBe('/tmp/project')
         expect(broadcastBody.metadata.value.lifecycleState).toBe('archived')
     })
+
+    // Agent messages used to be stamped with
+    // the hub's own Date.now() at receive time (see messages.ts addMessage),
+    // ignoring the transcript's own jsonl timestamp entirely. During a burst
+    // (e.g. resume replaying several transcript lines back-to-back), the CLI-side
+    // processing/emit order does not always match the jsonl append order, so the
+    // hub's arrival-time stamping could display messages out of jsonl order. The
+    // fix is for agent messages to respect a client-provided `createdAt` (the
+    // transcript entry's own timestamp) for BOTH created_at and invoked_at, so
+    // getMessagesByPosition's existing COALESCE(invoked_at, created_at) sort
+    // reproduces jsonl order regardless of arrival order.
+    it('agent messages: display order follows client-provided createdAt (jsonl order), not hub arrival order', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('order-drift', {}, null, 'default')
+        const socket = new FakeSocket()
+
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => {
+                throw new Error('unexpected access error')
+            }
+        })
+
+        // jsonl SSOT order is msg-1 (createdAt=1000) then msg-2 (createdAt=2000).
+        // Simulate the burst/resume drift by having the hub receive msg-2 FIRST.
+        socket.trigger('message', {
+            sid: session.id,
+            message: { role: 'agent', content: { type: 'output', data: { uuid: 'msg-2' } } },
+            createdAt: 2000
+        })
+        socket.trigger('message', {
+            sid: session.id,
+            message: { role: 'agent', content: { type: 'output', data: { uuid: 'msg-1' } } },
+            createdAt: 1000
+        })
+
+        const ordered = store.messages.getMessagesByPosition(session.id, 10)
+        const uuids = ordered.map((m) => (m.content as { content: { data: { uuid: string } } }).content.data.uuid)
+        expect(uuids).toEqual(['msg-1', 'msg-2'])
+    })
 })

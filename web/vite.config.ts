@@ -1,9 +1,26 @@
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { shareTargetPathnameFromBase } from './src/lib/sharePath'
+
+function spaFallback(): Plugin {
+    return {
+        name: 'spa-fallback',
+        configureServer(server) {
+            server.middlewares.use((req, _res, next) => {
+                const url = (req.url ?? '').split('?')[0]
+                if (url === '/' || url === '' || url.includes('.') || url.startsWith('/@') || url.startsWith('/api') || url.startsWith('/socket.io') || url.startsWith('/src/')) {
+                    next()
+                    return
+                }
+                req.url = '/index.html'
+                next()
+            })
+        }
+    }
+}
 
 const base = process.env.VITE_BASE_URL || '/'
 const shareAction = shareTargetPathnameFromBase(base)
@@ -47,6 +64,7 @@ function getVendorChunkName(id: string): string | undefined {
 }
 
 export default defineConfig({
+    appType: 'spa',
     define: {
         __APP_VERSION__: JSON.stringify(appVersion),
     },
@@ -66,6 +84,7 @@ export default defineConfig({
     },
     plugins: [
         react(),
+        spaFallback(),
         VitePWA({
             // User-controlled reload avoids mid-session surprise reloads (autoUpdate reloads all tabs).
             registerType: 'prompt',

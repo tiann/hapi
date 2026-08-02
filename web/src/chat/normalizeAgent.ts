@@ -554,6 +554,7 @@ export function normalizeAgentRecord(
                 meta
             }
         }
+
         return null
     }
 

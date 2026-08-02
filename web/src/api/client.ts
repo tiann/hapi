@@ -664,7 +664,8 @@ export class ApiClient {
         effort?: string,
         permissionMode?: PermissionMode,
         serviceTier?: 'fast' | 'standard',
-        collaborationMode?: 'default' | 'plan'
+        collaborationMode?: 'default' | 'plan',
+        startingMode?: 'remote' | 'pty'
     ): Promise<SpawnResponse> {
         return await this.request<SpawnResponse>(`/api/machines/${encodeURIComponent(machineId)}/spawn`, {
             method: 'POST',
@@ -679,7 +680,8 @@ export class ApiClient {
                 effort,
                 permissionMode,
                 serviceTier,
-                collaborationMode
+                collaborationMode,
+                startingMode
             })
         })
     }

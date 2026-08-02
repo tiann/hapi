@@ -17,6 +17,7 @@ type SpawnInput = {
     worktreeName?: string
     serviceTier?: 'fast' | 'standard'
     collaborationMode?: CodexCollaborationMode
+    startingMode?: 'remote' | 'pty'
 }
 
 export function useSpawnSession(api: ApiClient | null): {
@@ -43,7 +44,8 @@ export function useSpawnSession(api: ApiClient | null): {
                 input.effort,
                 input.permissionMode,
                 input.serviceTier,
-                input.collaborationMode
+                input.collaborationMode,
+                input.startingMode
             )
         },
         onSuccess: () => {

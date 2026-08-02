@@ -282,6 +282,17 @@ export class MessageQueue2<T> {
     }
 
     /**
+     * localIds of messages still pending in the queue (enqueued but not yet
+     * consumed/acked). Lets a caller reconcile them with the hub before a
+     * reset() that would otherwise drop them without an ack.
+     */
+    pendingLocalIds(): string[] {
+        return this.queue
+            .map((item) => item.localId)
+            .filter((id): id is string => typeof id === 'string');
+    }
+
+    /**
      * Close the queue - no more messages can be pushed
      */
     close(): void {

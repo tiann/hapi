@@ -44,9 +44,14 @@ export function addMessage(
     sessionId: string,
     content: unknown,
     localId?: string,
-    scheduledAt?: number | null
+    scheduledAt?: number | null,
+    createdAt?: number
 ): StoredMessage {
     const now = Date.now()
+    // Client-provided origin timestamp (e.g. a Claude transcript entry's own
+    // `timestamp`), falling back to server-receive time when absent. Only
+    // agent-message callers (sessionHandlers' `on('message')`) pass this today.
+    const stampedAt = createdAt ?? now
 
     // Without a localId, invoked_at is stamped immediately below — there is no
     // ack path to flip it later.  A scheduled message in that state would be
@@ -76,8 +81,11 @@ export function addMessage(
 
     // Messages without a localId have no ack path (markMessagesInvoked matches by localId).
     // Treat them as already-invoked at insert time so they land in the thread normally instead
-    // of being stuck in the queued floating bar forever.
-    const invokedAt = localId ? null : now
+    // of being stuck in the queued floating bar forever. Stamped with `stampedAt` (the
+    // client-provided createdAt when present) rather than server-now so getMessagesByPosition's
+    // COALESCE(invoked_at, created_at) sort reflects the transcript's own jsonl order instead of
+    // hub arrival order.
+    const invokedAt = localId ? null : stampedAt
 
     db.prepare(`
         INSERT INTO messages (
@@ -89,7 +97,7 @@ export function addMessage(
         id,
         session_id: sessionId,
         content: encoded,
-        created_at: now,
+        created_at: stampedAt,
         seq: msgSeq,
         local_id: localId ?? null,
         invoked_at: invokedAt,

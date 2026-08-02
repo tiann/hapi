@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from '@tanstack/react-router'
 import type { Terminal } from '@xterm/xterm'
 import { useAppContext } from '@/lib/app-context'
@@ -7,7 +7,6 @@ import { useSession } from '@/hooks/queries/useSession'
 import { useTerminalSocket } from '@/hooks/useTerminalSocket'
 import { useQuickKeyInput, QuickKeyRows } from '@/components/QuickKeys/QuickKeys'
 import { useTranslation } from '@/lib/use-translation'
-import { randomId } from '@/lib/randomId'
 import { TerminalView } from '@/components/Terminal/TerminalView'
 import { LoadingState } from '@/components/LoadingState'
 import { Button } from '@/components/ui/button'
@@ -63,7 +62,20 @@ export default function TerminalPage() {
     const goBack = useAppGoBack()
     const { session } = useSession(api, sessionId)
     const terminalSupported = isRemoteTerminalSupported(session?.metadata)
-    const terminalId = useMemo(() => randomId(), [sessionId])
+    // A per-viewer-unique terminal id. Two browsers/tabs/devices viewing the
+    // same session must each drive their own shell: the hub registry evicts a
+    // reused id arriving from a different socket as a stale reconnect
+    // (terminalRegistry.ts), which would otherwise let a second viewer hijack
+    // the first viewer's PTY. The id is intentionally NOT derived from sessionId
+    // alone — scrollback survives navigation via the sessionId-keyed buffer
+    // (userTerminalBuffer.ts), not via a stable id. Held in a ref so it stays
+    // constant across re-renders and transient socket reconnects, and
+    // regenerates only when the route switches to a different session.
+    const terminalIdRef = useRef<{ sessionId: string; id: string } | null>(null)
+    if (terminalIdRef.current?.sessionId !== sessionId) {
+        terminalIdRef.current = { sessionId, id: `term-${sessionId}-${crypto.randomUUID()}` }
+    }
+    const terminalId = terminalIdRef.current.id
     const terminalRef = useRef<Terminal | null>(null)
     const inputDisposableRef = useRef<{ dispose: () => void } | null>(null)
     const connectOnceRef = useRef(false)

@@ -165,7 +165,13 @@ export class RpcGateway {
         permissionMode?: PermissionMode,
         serviceTier?: string,
         existingSessionId?: string,
+        startingMode?: 'remote' | 'pty',
         collaborationMode?: CodexCollaborationMode
+        // Hub session id to reuse for this spawn. When set, the runner boots the
+        // CLI with `--hapi-session-id`, so the child reuses the existing hub
+        // session row (same id) instead of minting a new one. Used by the
+        // reopen/resume path to keep a PTY session's id stable (no new id, no
+        // merge, no delete-old). Undefined => legacy fresh-id spawn.
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
         try {
             const result = await this.machineRpc(
@@ -186,7 +192,8 @@ export class RpcGateway {
                     serviceTier,
                     existingSessionId,
                     sessionId: existingSessionId,
-                    collaborationMode
+                    collaborationMode,
+                    startingMode
                 }
             )
             if (result && typeof result === 'object') {
