@@ -134,6 +134,17 @@ describe('classifyCursorAgentMessage', () => {
             'Error: RetriableError: Connection stalled after 30s\n' +
             '~~~\n'
         expect(classifyCursorAgentMessage(fencedRetriable)).toBeNull()
+
+        // Four-backtick outer fence quoting a triple-backtick example must
+        // not close early on the inner ``` and leak Error: T: into classify.
+        const nestedFence =
+            'Docs sample:\n' +
+            '````markdown\n' +
+            '```\n' +
+            'Error: T: [resource_exhausted] capacity exceeded\n' +
+            '```\n' +
+            '````\n'
+        expect(classifyCursorAgentMessage(nestedFence)).toBeNull()
     })
 
     it('still classifies real Gemini errors when they ARE the message body', () => {
