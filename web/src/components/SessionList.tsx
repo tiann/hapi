@@ -1170,7 +1170,11 @@ export function SessionList(props: {
             return
         }
 
-        const group = allGroups.find(g =>
+        // Pinned "in progress" sessions are not rendered inside directory
+        // groups, so only auto-expand when the selected session actually lives
+        // in a visible group. Using `allGroups` here would expand the group
+        // below whenever a running session is opened.
+        const group = groups.find(g =>
             g.sessions.some(s => s.id === selectedSessionId)
         )
         if (!group) return
@@ -1180,7 +1184,7 @@ export function SessionList(props: {
         autoExpandedSelectedSessionKeyRef.current = autoExpandKey
 
         setCollapseOverrides(prev => expandSelectedSessionCollapseOverrides(prev, group))
-    }, [selectedSessionId, allGroups])
+    }, [selectedSessionId, groups])
 
     // Clean up stale collapse overrides
     useEffect(() => {
