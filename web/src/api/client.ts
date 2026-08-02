@@ -250,6 +250,10 @@ export class ApiClient {
         return await this.request<PushVapidPublicKeyResponse>('/api/push/vapid-public-key')
     }
 
+    async getClaudeCustomModels(): Promise<{ models: string[] }> {
+        return await this.request<{ models: string[] }>('/api/claude/custom-models')
+    }
+
     async subscribePushNotifications(payload: PushSubscriptionPayload): Promise<void> {
         await this.request('/api/push/subscribe', {
             method: 'POST',
