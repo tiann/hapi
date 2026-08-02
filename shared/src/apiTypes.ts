@@ -406,9 +406,9 @@ export const ScratchlistEntryUpdateRequestSchema = z.object({
 
 export type ScratchlistEntryUpdateRequest = z.infer<typeof ScratchlistEntryUpdateRequestSchema>
 
-/** Dismiss the model-error banner for a specific displayed error (by atTs). */
+/** Dismiss the model-error banner for a specific displayed error (by eventId). */
 export const AcknowledgeModelErrorRequestSchema = z.object({
-    atTs: z.number()
+    eventId: z.string().min(1)
 })
 
 export type AcknowledgeModelErrorRequest = z.infer<typeof AcknowledgeModelErrorRequestSchema>

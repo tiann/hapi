@@ -1099,14 +1099,14 @@ function SessionChatInner(props: SessionChatProps) {
     )
 
     const handleAcknowledgeModelError = useCallback(async () => {
-        const atTs = props.session.metadata?.lastModelError?.atTs
-        if (typeof atTs !== 'number') {
+        const eventId = props.session.metadata?.lastModelError?.eventId
+        if (typeof eventId !== 'string' || eventId.length === 0) {
             props.onRefresh()
             return
         }
-        await props.api.acknowledgeModelError(props.session.id, atTs).catch(() => {})
+        await props.api.acknowledgeModelError(props.session.id, eventId).catch(() => {})
         props.onRefresh()
-    }, [props.api, props.session.id, props.session.metadata?.lastModelError?.atTs, props.onRefresh])
+    }, [props.api, props.session.id, props.session.metadata?.lastModelError?.eventId, props.onRefresh])
 
     // Voice assistant integration
     const voice = useVoiceOptional()

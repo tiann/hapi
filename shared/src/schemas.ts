@@ -160,9 +160,12 @@ export const MetadataSchema = z.object({
     // share a modelId.
     piSelectedModel: z.object({ provider: z.string(), modelId: z.string() }).nullable().optional(),
     lastModelError: z.object({
+        /** Stable identity for this error event (not wall-clock order). */
+        eventId: z.string().min(1),
         kind: z.string(),
         transient: z.boolean(),
         rawSnippet: z.string(),
+        /** Display / telemetry timestamp only — not used for notify/ack identity. */
         atTs: z.number(),
         priorAssistantClaimsDone: z.boolean(),
         retriedAndFailed: z.boolean().optional(),

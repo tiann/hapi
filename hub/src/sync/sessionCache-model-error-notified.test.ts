@@ -25,6 +25,7 @@ describe('SessionCache.acknowledgeModelError', () => {
     it('retries version-mismatch then persists acknowledgedAt', async () => {
         const store = new Store(':memory:')
         const cache = new SessionCache(store, createCapturingPublisher([]))
+        const eventId = 'evt-ack-9002'
         const atTs = 9_002
         const session = cache.getOrCreateSession(
             'model-error-ack-retry',
@@ -33,6 +34,7 @@ describe('SessionCache.acknowledgeModelError', () => {
                 host: 'localhost',
                 flavor: 'cursor',
                 lastModelError: {
+                    eventId,
                     kind: 'quota_exhausted',
                     transient: false,
                     rawSnippet: 'Error: T: [resource_exhausted]',
@@ -58,7 +60,7 @@ describe('SessionCache.acknowledgeModelError', () => {
             return original(...args)
         })
 
-        await cache.acknowledgeModelError(session.id, atTs)
+        await cache.acknowledgeModelError(session.id, eventId)
 
         expect(calls).toBeGreaterThanOrEqual(2)
         expect(cache.getSession(session.id)?.metadata?.lastModelError?.acknowledgedAt).toEqual(
@@ -71,6 +73,7 @@ describe('SessionCache.markModelErrorNotified', () => {
     it('retries version-mismatch then persists notifiedAt so a fresh hub does not redeliver', async () => {
         const store = new Store(':memory:')
         const cache = new SessionCache(store, createCapturingPublisher([]))
+        const eventId = 'evt-notified-9001'
         const atTs = 9_001
         const session = cache.getOrCreateSession(
             'model-error-notified-retry',
@@ -79,6 +82,7 @@ describe('SessionCache.markModelErrorNotified', () => {
                 host: 'localhost',
                 flavor: 'cursor',
                 lastModelError: {
+                    eventId,
                     kind: 'quota_exhausted',
                     transient: false,
                     rawSnippet: 'Error: T: [resource_exhausted]',
@@ -104,7 +108,7 @@ describe('SessionCache.markModelErrorNotified', () => {
             return original(...args)
         })
 
-        await cache.markModelErrorNotified(session.id, atTs)
+        await cache.markModelErrorNotified(session.id, eventId)
 
         expect(calls).toBeGreaterThanOrEqual(2)
         const refreshed = cache.getSession(session.id)

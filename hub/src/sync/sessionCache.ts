@@ -862,11 +862,12 @@ export class SessionCache {
         throw new Error('Session was modified concurrently. Please try again.')
     }
 
-    async acknowledgeModelError(sessionId: string, atTs: number): Promise<void> {
+    async acknowledgeModelError(sessionId: string, eventId: string): Promise<void> {
         // Bind dismiss to the error the client actually showed. If a newer
         // lastModelError replaced it between render and click, refuse so we
         // don't silently ack the unseen error (banner/dot would vanish).
-        // Retry version-mismatch (CLI metadata race) like markModelErrorNotified.
+        // Identity is eventId (not wall-clock atTs). Retry version-mismatch
+        // (CLI metadata race) like markModelErrorNotified.
         for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
             const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
             if (!session) {
@@ -878,7 +879,7 @@ export class SessionCache {
             if (!currentError) {
                 return
             }
-            if (currentError.atTs !== atTs) {
+            if (currentError.eventId !== eventId) {
                 throw new Error('Model error changed; refresh before acknowledging.')
             }
             if (typeof currentError.acknowledgedAt === 'number') {
@@ -915,11 +916,11 @@ export class SessionCache {
 
     /**
      * Persist delivery watermark on lastModelError so hub restarts do not
-     * re-page the same unacknowledged atTs (in-memory Map alone is lost).
-     * No-ops when the error changed under us — a newer atTs owns the page.
+     * re-page the same unacknowledged eventId (in-memory Map alone is lost).
+     * No-ops when the error changed under us — a different eventId owns the page.
      * Retries on version-mismatch (same pattern as renameSession / #919).
      */
-    async markModelErrorNotified(sessionId: string, atTs: number): Promise<void> {
+    async markModelErrorNotified(sessionId: string, eventId: string): Promise<void> {
         for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
             const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
             if (!session) {
@@ -928,7 +929,7 @@ export class SessionCache {
 
             const currentMetadata = session.metadata ?? { path: '', host: '' }
             const currentError = currentMetadata.lastModelError
-            if (!currentError || currentError.atTs !== atTs) {
+            if (!currentError || currentError.eventId !== eventId) {
                 return
             }
             if (typeof currentError.notifiedAt === 'number') {
@@ -1435,10 +1436,11 @@ export class SessionCache {
         }
 
         // Preserve durable model-error alert state across resume/dedup row merges.
-        // Store-level mergeSessionMetadata only covers sparse writes on one row;
-        // cross-row merge then deletes the old row, so without this the banner
-        // and ack/notified watermarks vanish.
+        // Identity is eventId (wall-clock atTs is display-only and can go
+        // backwards after NTP/sleep). Carry old when new has none; when both
+        // share an eventId, merge hub watermarks.
         type ModelErrorState = {
+            eventId?: string
             atTs?: number
             acknowledgedAt?: number
             notifiedAt?: number
@@ -1446,12 +1448,12 @@ export class SessionCache {
         }
         const oldError = oldObj.lastModelError as ModelErrorState | undefined
         const newError = newObj.lastModelError as ModelErrorState | undefined
-        const oldAt = typeof oldError?.atTs === 'number' ? oldError.atTs : null
-        const newAt = typeof newError?.atTs === 'number' ? newError.atTs : null
-        if (oldError && oldAt !== null && (newAt === null || oldAt > newAt)) {
+        const oldId = typeof oldError?.eventId === 'string' ? oldError.eventId : null
+        const newId = typeof newError?.eventId === 'string' ? newError.eventId : null
+        if (oldError && oldId && !newError) {
             merged.lastModelError = oldError
             changed = true
-        } else if (oldError && newError && oldAt !== null && oldAt === newAt) {
+        } else if (oldError && newError && oldId && newId && oldId === newId) {
             merged.lastModelError = {
                 ...oldError,
                 ...newError,

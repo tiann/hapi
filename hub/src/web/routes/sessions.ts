@@ -466,7 +466,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         try {
-            await engine.acknowledgeModelError(sessionResult.sessionId, parsed.data.atTs)
+            await engine.acknowledgeModelError(sessionResult.sessionId, parsed.data.eventId)
             return c.json({ ok: true })
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to acknowledge model error'

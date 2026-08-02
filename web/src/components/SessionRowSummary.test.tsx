@@ -41,6 +41,7 @@ describe('SessionRowSummary model-error + attention', () => {
             metadata: {
                 path: '/tmp/proj',
                 lastModelError: {
+                    eventId: 'evt-row-1',
                     kind: 'model_not_found',
                     transient: false,
                     rawSnippet: 'Unknown model',

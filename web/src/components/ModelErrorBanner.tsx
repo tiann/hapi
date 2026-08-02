@@ -4,6 +4,7 @@ import { useTranslation } from '@/lib/use-translation'
 // Minimal shape that both Metadata and SessionSummaryMetadata satisfy
 export type ModelErrorHolder = {
     lastModelError?: {
+        eventId: string
         kind: string
         transient: boolean
         rawSnippet: string

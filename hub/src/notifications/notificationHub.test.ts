@@ -14,7 +14,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 class FakeSyncEngine {
     private readonly listeners: Set<SyncEventListener> = new Set()
     private readonly sessions: Map<string, Session> = new Map()
-    readonly modelErrorNotifiedMarks: Array<{ sessionId: string; atTs: number }> = []
+    readonly modelErrorNotifiedMarks: Array<{ sessionId: string; eventId: string }> = []
 
     subscribe(listener: SyncEventListener): () => void {
         this.listeners.add(listener)
@@ -33,11 +33,11 @@ class FakeSyncEngine {
         this.sessions.set(session.id, session)
     }
 
-    async markModelErrorNotified(sessionId: string, atTs: number): Promise<void> {
-        this.modelErrorNotifiedMarks.push({ sessionId, atTs })
+    async markModelErrorNotified(sessionId: string, eventId: string): Promise<void> {
+        this.modelErrorNotifiedMarks.push({ sessionId, eventId })
         const session = this.sessions.get(sessionId)
         const err = session?.metadata?.lastModelError
-        if (!session || !err || err.atTs !== atTs) {
+        if (!session || !err || err.eventId !== eventId) {
             return
         }
         this.sessions.set(sessionId, {
@@ -289,6 +289,7 @@ describe('NotificationHub', () => {
         const session = createSession({
             metadata: {
                 lastModelError: {
+                    eventId: 'evt-1000',
                     kind: 'quota_exhausted',
                     transient: false,
                     rawSnippet: 'Error: T: [resource_exhausted] capacity exceeded',
@@ -320,6 +321,7 @@ describe('NotificationHub', () => {
         const session = createSession({
             metadata: {
                 lastModelError: {
+                    eventId: 'evt-2000',
                     kind: 'transport_closed',
                     transient: true,
                     rawSnippet: 'WritableIterable is closed',
@@ -348,6 +350,7 @@ describe('NotificationHub', () => {
         const firstSession = createSession({
             metadata: {
                 lastModelError: {
+                    eventId: 'evt-1000',
                     kind: 'quota_exhausted',
                     transient: false,
                     rawSnippet: 'first',
@@ -364,6 +367,7 @@ describe('NotificationHub', () => {
         const secondSession = createSession({
             metadata: {
                 lastModelError: {
+                    eventId: 'evt-2000',
                     kind: 'transport_closed',
                     transient: true,
                     rawSnippet: 'second',
@@ -389,6 +393,7 @@ describe('NotificationHub', () => {
             active: false,
             metadata: {
                 lastModelError: {
+                    eventId: 'evt-4500',
                     kind: 'quota_exhausted',
                     transient: false,
                     rawSnippet: 'Error: T: [resource_exhausted]',
@@ -406,7 +411,7 @@ describe('NotificationHub', () => {
 
         expect(channel.modelErrors).toHaveLength(1)
         expect(channel.modelErrors[0]?.notification.atTs).toBe(4500)
-        expect(engine.modelErrorNotifiedMarks).toEqual([{ sessionId: session.id, atTs: 4500 }])
+        expect(engine.modelErrorNotifiedMarks).toEqual([{ sessionId: session.id, eventId: 'evt-4500' }])
         hub.stop()
     })
 
@@ -418,6 +423,7 @@ describe('NotificationHub', () => {
         const session = createSession({
             metadata: {
                 lastModelError: {
+                    eventId: 'evt-4000',
                     kind: 'quota_exhausted',
                     transient: false,
                     rawSnippet: 'Error: T: [resource_exhausted]',
@@ -431,7 +437,7 @@ describe('NotificationHub', () => {
         await sleep(10)
 
         expect(channel.modelErrors).toHaveLength(1)
-        expect(engine.modelErrorNotifiedMarks).toEqual([{ sessionId: session.id, atTs: 4000 }])
+        expect(engine.modelErrorNotifiedMarks).toEqual([{ sessionId: session.id, eventId: 'evt-4000' }])
         expect(engine.getSession(session.id)?.metadata?.lastModelError?.notifiedAt).toEqual(
             expect.any(Number)
         )
@@ -454,6 +460,7 @@ describe('NotificationHub', () => {
         const session = createSession({
             metadata: {
                 lastModelError: {
+                    eventId: 'evt-1000',
                     kind: 'quota_exhausted',
                     transient: false,
                     rawSnippet: 'first',
@@ -485,6 +492,7 @@ describe('NotificationHub', () => {
         const session = createSession({
             metadata: {
                 lastModelError: {
+                    eventId: 'evt-3000',
                     kind: 'quota_exhausted',
                     transient: false,
                     rawSnippet: 'no-channel',
@@ -536,6 +544,7 @@ describe('NotificationHub', () => {
         const session = createSession({
             metadata: {
                 lastModelError: {
+                    eventId: 'evt-4000',
                     kind: 'quota_exhausted',
                     transient: false,
                     rawSnippet: 'gate-test',
@@ -584,6 +593,7 @@ describe('NotificationHub', () => {
         const session = createSession({
             metadata: {
                 lastModelError: {
+                    eventId: 'evt-5000',
                     kind: 'rate_limited',
                     transient: true,
                     rawSnippet: 'fallback-test',
@@ -620,6 +630,7 @@ describe('NotificationHub', () => {
         const session = createSession({
             metadata: {
                 lastModelError: {
+                    eventId: 'evt-6000',
                     kind: 'quota_exhausted',
                     transient: false,
                     rawSnippet: 'retry-me',
@@ -663,6 +674,7 @@ describe('NotificationHub', () => {
         const session = createSession({
             metadata: {
                 lastModelError: {
+                    eventId: 'evt-6500',
                     kind: 'quota_exhausted',
                     transient: false,
                     rawSnippet: 'zero-sent',
@@ -711,6 +723,7 @@ describe('NotificationHub', () => {
         const session = createSession({
             metadata: {
                 lastModelError: {
+                    eventId: 'evt-6600',
                     kind: 'rate_limited',
                     transient: true,
                     rawSnippet: 'status 429',
@@ -754,6 +767,7 @@ describe('NotificationHub', () => {
             id: 'session-1',
             metadata: {
                 lastModelError: {
+                    eventId: 'evt-7000',
                     kind: 'canceled',
                     transient: true,
                     rawSnippet: 'first',
@@ -772,6 +786,7 @@ describe('NotificationHub', () => {
             ...first,
             metadata: {
                 lastModelError: {
+                    eventId: 'evt-8000',
                     kind: 'quota_exhausted',
                     transient: false,
                     rawSnippet: 'second',
@@ -802,6 +817,7 @@ describe('NotificationHub', () => {
         const session = createSession({
             metadata: {
                 lastModelError: {
+                    eventId: 'evt-7000',
                     kind: 'rate_limited',
                     transient: true,
                     rawSnippet: 'status 429',
@@ -820,11 +836,57 @@ describe('NotificationHub', () => {
         engine.emit({ type: 'session-updated', sessionId: session.id })
         await sleep(5)
 
-        // Resume with same unacknowledged atTs - must not re-ping.
+        // Resume with same unacknowledged eventId - must not re-ping.
         engine.setSession({ ...session, active: true })
         engine.emit({ type: 'session-updated', sessionId: session.id })
         await sleep(10)
         expect(channel.modelErrors).toHaveLength(1)
+
+        hub.stop()
+    })
+
+    it('fires a later eventId even when wall-clock atTs went backwards', async () => {
+        const engine = new FakeSyncEngine()
+        const channel = new StubChannel()
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [channel])
+
+        const first = createSession({
+            metadata: {
+                lastModelError: {
+                    eventId: 'evt-clock-high',
+                    kind: 'quota_exhausted',
+                    transient: false,
+                    rawSnippet: 'first',
+                    atTs: 5_000,
+                    priorAssistantClaimsDone: false
+                }
+            } as Session['metadata']
+        })
+        engine.setSession(first)
+        engine.emit({ type: 'session-updated', sessionId: first.id })
+        await sleep(5)
+        expect(channel.modelErrors).toHaveLength(1)
+
+        // NTP/sleep rewind: newer logical error has a lower atTs.
+        const second = createSession({
+            metadata: {
+                lastModelError: {
+                    eventId: 'evt-clock-low',
+                    kind: 'transport_closed',
+                    transient: true,
+                    rawSnippet: 'second',
+                    atTs: 1_000,
+                    priorAssistantClaimsDone: false
+                }
+            } as Session['metadata']
+        })
+        engine.setSession(second)
+        engine.emit({ type: 'session-updated', sessionId: second.id })
+        await sleep(5)
+
+        expect(channel.modelErrors).toHaveLength(2)
+        expect(channel.modelErrors[1]?.notification.eventId).toBe('evt-clock-low')
+        expect(channel.modelErrors[1]?.notification.atTs).toBe(1_000)
 
         hub.stop()
     })

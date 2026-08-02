@@ -1,4 +1,5 @@
 import React from 'react';
+import { randomUUID } from 'node:crypto';
 import { logger } from '@/ui/logger';
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
 import { convertAgentMessage } from '@/agent/messageConverter';
@@ -619,6 +620,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             && isCompletionClaim(this.lastAssistantText))
             || (failure.source === 'text' && isCompletionClaim(failure.raw));
         const rawSnippet = rawSnippetForFailure(failure);
+        const eventId = randomUUID();
         const atTs = Date.now();
 
         logger.debug(
@@ -628,6 +630,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         this.session.client.updateMetadata((metadata) => ({
             ...metadata,
             lastModelError: {
+                eventId,
                 kind: failure.kind,
                 transient: failure.transient,
                 rawSnippet,
