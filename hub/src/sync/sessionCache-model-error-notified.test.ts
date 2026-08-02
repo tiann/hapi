@@ -129,6 +129,10 @@ describe('SessionCache.markModelErrorNotified', () => {
         const engine = {
             listeners: new Set<(e: { type: string; sessionId: string }) => void>(),
             getSession: (id: string) => cache.getSession(id),
+            getSessions: () => {
+                const s = cache.getSession(session.id)
+                return s ? [s] : []
+            },
             subscribe(listener: (e: { type: string; sessionId: string }) => void) {
                 this.listeners.add(listener)
                 return () => this.listeners.delete(listener)

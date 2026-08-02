@@ -47,6 +47,24 @@ export class NotificationHub {
         this.unsubscribeSyncEvents = this.syncEngine.subscribe((event) => {
             this.handleSyncEvent(event)
         })
+        // SyncEngine.reloadAll() emits session-added before NotificationHub
+        // exists. Rehydrate any undelivered model-error alerts (including
+        // inactive sessions) so a hub restart cannot drop a pending page.
+        this.rehydrateUndeliveredModelErrors()
+    }
+
+    private rehydrateUndeliveredModelErrors(): void {
+        for (const session of this.syncEngine.getSessions()) {
+            const error = session.metadata?.lastModelError
+            if (
+                !error
+                || typeof error.acknowledgedAt === 'number'
+                || typeof error.notifiedAt === 'number'
+            ) {
+                continue
+            }
+            this.checkForModelErrorNotification(session)
+        }
     }
 
     stop(): void {
@@ -80,12 +98,15 @@ export class NotificationHub {
                 // Keep lastModelErrorNotifiedAt across inactive/resume so the
                 // same atTs does not re-ping when the session comes back.
                 this.clearSessionState(event.sessionId, false)
+                // Still dispatch undelivered model-errors (no notifiedAt) —
+                // emergency pages must not wait for the session to become
+                // active again after a failed delivery + hub restart.
+                this.checkForModelErrorNotification(session)
                 return
             }
             this.checkForPermissionNotification(session)
             // Model-error gating: fire when metadata.lastModelError.atTs
-            // is newer than what we last notified for this session. Inactive
-            // sessions are filtered above (no-op for archived rows).
+            // is newer than what we last notified for this session.
             this.checkForModelErrorNotification(session)
             return
         }
