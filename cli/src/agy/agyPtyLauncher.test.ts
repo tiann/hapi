@@ -458,6 +458,24 @@ describe('agyPtyLauncher session-found wiring (brain UUID -> scanner)', () => {
         expect(session.client.emitMessagesConsumed).not.toHaveBeenCalled()
     })
 
+    it('consumes a skipped slash command and releases the next delivery boundary', async () => {
+        const { session } = createSessionStub()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString)
+            .mockResolvedValueOnce({
+                message: '/clear',
+                items: [{ message: '/clear', localId: 'local-clear' }],
+            } as never)
+            .mockResolvedValueOnce({ message: 'following prompt', items: [] } as never)
+        harness.afterNextMessage = async (opts) => {
+            await opts.onMessageSkipped?.('/clear')
+            await expect(opts.nextMessage()).resolves.toMatchObject({ message: 'following prompt' })
+        }
+
+        await agyPtyLauncher(session as never)
+
+        expect(session.client.emitMessagesConsumed).toHaveBeenCalledWith(['local-clear'])
+    })
+
     it('ends the launcher instead of respawning when PTY exits with an unconfirmed web delivery', async () => {
         harness.exitReason = null
         const { session } = createSessionStub()

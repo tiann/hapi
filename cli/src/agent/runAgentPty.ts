@@ -120,6 +120,8 @@ export type RunAgentPtyOpts = {
      * it). This hook guarantees the submit already happened.
      */
     onMessageSubmitted?: (message: string) => void | Promise<void>
+    /** Fired when a dequeued slash command is intentionally ignored by the PTY driver. */
+    onMessageSkipped?: (message: string) => void | Promise<void>
     /** Called at the serialized boundary immediately before a queued message starts a new agent run. */
     onBeforeAgentRunStart?: () => void | Promise<void>
     /**
@@ -520,6 +522,7 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
             const cmd = parseSpecialCommand(next.message)
             if (cmd.type === 'clear' || cmd.type === 'compact') {
                 logger.debug(`${debugPrefix} ${cmd.type} command - ignoring in PTY mode`)
+                await opts.onMessageSkipped?.(next.message)
                 continue
             }
 

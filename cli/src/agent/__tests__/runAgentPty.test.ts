@@ -753,6 +753,29 @@ describe('runAgentPty', () => {
         await promise
     })
 
+    it('awaits skipped-message cleanup before dequeuing the next prompt', async () => {
+        const msg1 = deferred<{ message: string } | null>()
+        const msg2 = deferred<{ message: string } | null>()
+        const cleanup = deferred<void>()
+        const nextMessage = vi.fn()
+            .mockImplementationOnce(() => msg1.promise)
+            .mockImplementationOnce(() => msg2.promise)
+        const onMessageSkipped = vi.fn(() => cleanup.promise)
+        const promise = runAgentPty(makeOpts({ nextMessage, onMessageSkipped }))
+        await reachReady()
+
+        msg1.resolve({ message: '/clear' })
+        await tick(60)
+        expect(onMessageSkipped).toHaveBeenCalledWith('/clear')
+        expect(nextMessage).toHaveBeenCalledTimes(1)
+
+        cleanup.resolve()
+        await tick(60)
+        expect(nextMessage).toHaveBeenCalledTimes(2)
+        msg2.resolve(null)
+        await promise
+    })
+
     it('stops and kills on exit', async () => {
         const msg1 = deferred<{ message: string } | null>()
         const onExit = vi.fn()

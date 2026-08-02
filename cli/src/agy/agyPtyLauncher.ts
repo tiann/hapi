@@ -519,6 +519,11 @@ class AgyPtyLauncher extends RemoteLauncherBase {
                     this.agentRunReserved = false
                     this.agentRunInProgress = true
                 },
+                onMessageSkipped: () => {
+                    const pending = this.pendingWebDelivery
+                    if (pending) this.session.client.emitMessagesConsumed(pending.localIds)
+                    this.finishPendingWebDelivery()
+                },
                 onBeforeAgentRunStart: async () => {
                     // Reserve the boundary synchronously. A model request that
                     // arrives after completion but before submit is deferred to
