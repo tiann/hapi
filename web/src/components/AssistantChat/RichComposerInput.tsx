@@ -358,6 +358,18 @@ function mirrorOffsetWithinElement(
     const span = mapping.spans.get(container)
     if (!span) return mapping.mirrorLength
 
+    // Any zero-output element has no mirror position of its own. Normalize it
+    // to the boundary immediately after that element in its parent; this
+    // deliberately climbs only to strict parents, including empty non-block
+    // wrappers such as <section> or <ul> around an empty block.
+    if (!span.producesOutput) {
+        const parent = container.parentElement
+        if (parent) {
+            const index = Array.from(parent.childNodes).indexOf(container)
+            if (index >= 0) return mirrorOffsetWithinElement(parent, index + 1, mapping)
+        }
+    }
+
     const children = Array.from(container.childNodes)
     const childOffset = Math.max(0, Math.min(offset, children.length))
     // A parent boundary before a later block belongs at that block's visible

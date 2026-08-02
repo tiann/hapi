@@ -248,9 +248,46 @@ describe('mirrorOffsetFromPoint', () => {
         // visible block start; the wrapper itself creates no new mirror slot.
         expect(mirrorOffsetFromPoint(root, root, 1)).toBe(4)
         expect(mirrorOffsetFromPoint(root, root, 2)).toBe(4)
+        const empty = root.children[1] as HTMLElement
+        expect(mirrorOffsetFromPoint(root, empty, 0)).toBe(4)
 
         const trailingEmpty = document.createElement('div')
         trailingEmpty.innerHTML = '<div>one</div><div></div>'
         expect(mirrorComposerSegments(segmentsFromEditor(trailingEmpty))).toBe('one')
+        expect(mirrorOffsetFromPoint(trailingEmpty, trailingEmpty.children[1]!, 0)).toBe(3)
+
+        const leadingEmpty = document.createElement('div')
+        leadingEmpty.innerHTML = '<div></div><div>two</div>'
+        expect(mirrorOffsetFromPoint(leadingEmpty, leadingEmpty.children[0]!, 0)).toBe(0)
+
+        const nestedEmpty = document.createElement('div')
+        nestedEmpty.innerHTML = '<div>one<div></div><div>two</div></div>'
+        const nested = nestedEmpty.firstChild as HTMLElement
+        expect(mirrorOffsetFromPoint(nestedEmpty, nested.children[0]!, 0)).toBe(4)
+
+        const sectionWrapped = document.createElement('div')
+        sectionWrapped.innerHTML = '<div>one</div><section><div></div></section><div>two</div>'
+        const section = sectionWrapped.children[1] as HTMLElement
+        const sectionInner = section.firstElementChild!
+        expect(mirrorOffsetFromPoint(sectionWrapped, sectionWrapped, 1)).toBe(4)
+        expect(mirrorOffsetFromPoint(sectionWrapped, sectionWrapped, 2)).toBe(4)
+        expect(mirrorOffsetFromPoint(sectionWrapped, section, 0)).toBe(4)
+        expect(mirrorOffsetFromPoint(sectionWrapped, sectionInner, 0)).toBe(4)
+
+        const listWrapped = document.createElement('div')
+        listWrapped.innerHTML = '<div>one</div><ul><li></li></ul><div>two</div>'
+        const list = listWrapped.children[1] as HTMLElement
+        const listItem = list.firstElementChild!
+        expect(mirrorOffsetFromPoint(listWrapped, listWrapped, 1)).toBe(4)
+        expect(mirrorOffsetFromPoint(listWrapped, listWrapped, 2)).toBe(4)
+        expect(mirrorOffsetFromPoint(listWrapped, list, 0)).toBe(4)
+        expect(mirrorOffsetFromPoint(listWrapped, listItem, 0)).toBe(4)
+
+        const inline = document.createElement('div')
+        inline.innerHTML = '<span></span>one<span></span>two'
+        expect(mirrorComposerSegments(segmentsFromEditor(inline))).toBe('onetwo')
+        expect(mirrorOffsetFromPoint(inline, inline.children[0]!, 0)).toBe(0)
+        expect(mirrorOffsetFromPoint(inline, inline.children[1]!, 0)).toBe(3)
+        expect(mirrorOffsetFromPoint(inline, inline, 2)).toBe(3)
     })
 })
