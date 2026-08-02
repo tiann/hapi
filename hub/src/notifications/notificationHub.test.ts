@@ -25,6 +25,10 @@ class FakeSyncEngine {
         return this.sessions.get(sessionId)
     }
 
+    getSessions(): Session[] {
+        return Array.from(this.sessions.values())
+    }
+
     setSession(session: Session): void {
         this.sessions.set(session.id, session)
     }
@@ -375,6 +379,34 @@ describe('NotificationHub', () => {
         expect(channel.modelErrors).toHaveLength(2)
         expect(channel.modelErrors[1]?.notification.atTs).toBe(2000)
 
+        hub.stop()
+    })
+
+    it('rehydrates undelivered model-error for inactive sessions on hub construct', async () => {
+        const engine = new FakeSyncEngine()
+        const channel = new StubChannel()
+        const session = createSession({
+            active: false,
+            metadata: {
+                lastModelError: {
+                    kind: 'quota_exhausted',
+                    transient: false,
+                    rawSnippet: 'Error: T: [resource_exhausted]',
+                    atTs: 4500,
+                    priorAssistantClaimsDone: true
+                }
+            } as Session['metadata']
+        })
+        // Seed before hub exists — mirrors SyncEngine.reloadAll() before
+        // NotificationHub is constructed in startHub.
+        engine.setSession(session)
+
+        const hub = new NotificationHub(engine as unknown as SyncEngine, [channel])
+        await sleep(10)
+
+        expect(channel.modelErrors).toHaveLength(1)
+        expect(channel.modelErrors[0]?.notification.atTs).toBe(4500)
+        expect(engine.modelErrorNotifiedMarks).toEqual([{ sessionId: session.id, atTs: 4500 }])
         hub.stop()
     })
 
