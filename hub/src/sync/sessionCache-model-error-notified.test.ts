@@ -21,6 +21,52 @@ function createCapturingPublisher(events: SyncEvent[]): EventPublisher {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
+describe('SessionCache.acknowledgeModelError', () => {
+    it('retries version-mismatch then persists acknowledgedAt', async () => {
+        const store = new Store(':memory:')
+        const cache = new SessionCache(store, createCapturingPublisher([]))
+        const atTs = 9_002
+        const session = cache.getOrCreateSession(
+            'model-error-ack-retry',
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'cursor',
+                lastModelError: {
+                    kind: 'quota_exhausted',
+                    transient: false,
+                    rawSnippet: 'Error: T: [resource_exhausted]',
+                    atTs,
+                    priorAssistantClaimsDone: false
+                }
+            },
+            null,
+            'default'
+        )
+
+        let calls = 0
+        const original = store.sessions.updateSessionMetadata.bind(store.sessions)
+        spyOn(store.sessions, 'updateSessionMetadata').mockImplementation((...args) => {
+            calls += 1
+            if (calls === 1) {
+                return {
+                    result: 'version-mismatch' as const,
+                    version: session.metadataVersion,
+                    value: session.metadata
+                }
+            }
+            return original(...args)
+        })
+
+        await cache.acknowledgeModelError(session.id, atTs)
+
+        expect(calls).toBeGreaterThanOrEqual(2)
+        expect(cache.getSession(session.id)?.metadata?.lastModelError?.acknowledgedAt).toEqual(
+            expect.any(Number)
+        )
+    })
+})
+
 describe('SessionCache.markModelErrorNotified', () => {
     it('retries version-mismatch then persists notifiedAt so a fresh hub does not redeliver', async () => {
         const store = new Store(':memory:')

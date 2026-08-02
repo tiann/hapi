@@ -863,48 +863,54 @@ export class SessionCache {
     }
 
     async acknowledgeModelError(sessionId: string, atTs: number): Promise<void> {
-        const session = this.sessions.get(sessionId)
-        if (!session) {
-            throw new Error('Session not found')
-        }
-
-        const currentMetadata = session.metadata ?? { path: '', host: '' }
-        if (!currentMetadata.lastModelError) {
-            return
-        }
-
         // Bind dismiss to the error the client actually showed. If a newer
         // lastModelError replaced it between render and click, refuse so we
         // don't silently ack the unseen error (banner/dot would vanish).
-        if (currentMetadata.lastModelError.atTs !== atTs) {
-            throw new Error('Model error changed; refresh before acknowledging.')
-        }
-
-        const newMetadata = {
-            ...currentMetadata,
-            lastModelError: {
-                ...currentMetadata.lastModelError,
-                acknowledgedAt: Date.now()
+        // Retry version-mismatch (CLI metadata race) like markModelErrorNotified.
+        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
+            const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+            if (!session) {
+                throw new Error('Session not found')
             }
+
+            const currentMetadata = session.metadata ?? { path: '', host: '' }
+            const currentError = currentMetadata.lastModelError
+            if (!currentError) {
+                return
+            }
+            if (currentError.atTs !== atTs) {
+                throw new Error('Model error changed; refresh before acknowledging.')
+            }
+            if (typeof currentError.acknowledgedAt === 'number') {
+                return
+            }
+
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                {
+                    ...currentMetadata,
+                    lastModelError: {
+                        ...currentError,
+                        acknowledgedAt: Date.now()
+                    }
+                },
+                session.metadataVersion,
+                session.namespace,
+                { touchUpdatedAt: false }
+            )
+
+            if (result.result === 'success') {
+                this.refreshSession(sessionId)
+                return
+            }
+            if (result.result === 'error') {
+                throw new Error('Failed to update session metadata')
+            }
+
+            this.refreshSession(sessionId)
         }
 
-        const result = this.store.sessions.updateSessionMetadata(
-            sessionId,
-            newMetadata,
-            session.metadataVersion,
-            session.namespace,
-            { touchUpdatedAt: false }
-        )
-
-        if (result.result === 'error') {
-            throw new Error('Failed to update session metadata')
-        }
-
-        if (result.result === 'version-mismatch') {
-            throw new Error('Session was modified concurrently. Please try again.')
-        }
-
-        this.refreshSession(sessionId)
+        throw new Error('Session was modified concurrently. Please try again.')
     }
 
     /**
