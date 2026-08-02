@@ -1433,6 +1433,33 @@ export class SessionCache {
             changed = true
         }
 
+        // Preserve durable model-error alert state across resume/dedup row merges.
+        // Store-level mergeSessionMetadata only covers sparse writes on one row;
+        // cross-row merge then deletes the old row, so without this the banner
+        // and ack/notified watermarks vanish.
+        type ModelErrorState = {
+            atTs?: number
+            acknowledgedAt?: number
+            notifiedAt?: number
+            [key: string]: unknown
+        }
+        const oldError = oldObj.lastModelError as ModelErrorState | undefined
+        const newError = newObj.lastModelError as ModelErrorState | undefined
+        const oldAt = typeof oldError?.atTs === 'number' ? oldError.atTs : null
+        const newAt = typeof newError?.atTs === 'number' ? newError.atTs : null
+        if (oldError && oldAt !== null && (newAt === null || oldAt > newAt)) {
+            merged.lastModelError = oldError
+            changed = true
+        } else if (oldError && newError && oldAt !== null && oldAt === newAt) {
+            merged.lastModelError = {
+                ...oldError,
+                ...newError,
+                acknowledgedAt: newError.acknowledgedAt ?? oldError.acknowledgedAt,
+                notifiedAt: newError.notifiedAt ?? oldError.notifiedAt
+            }
+            changed = true
+        }
+
         return changed ? merged : newMetadata
     }
 
