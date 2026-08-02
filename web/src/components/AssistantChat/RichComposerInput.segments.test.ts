@@ -118,6 +118,8 @@ describe('insertLineBreakAtCaret', () => {
         document.body.appendChild(root)
         const hello = document.createTextNode('hello')
         root.appendChild(hello)
+        Object.defineProperty(root, 'scrollHeight', { value: 120 })
+        root.scrollTop = 10
         placeCaretAtEnd(root, hello)
 
         insertLineBreakAtCaret(root)
@@ -125,6 +127,7 @@ describe('insertLineBreakAtCaret', () => {
         const texts = Array.from(root.childNodes).map((n) => n.textContent ?? '')
         expect(texts).toContain(CARET_PAD)
         expect(serializeComposerSegments(segmentsFromEditor(root))).toBe('hello\n')
+        expect(root.scrollTop).toBe(120)
     })
 
     it('does not pad when there is meaningful content after the caret', () => {
@@ -132,12 +135,41 @@ describe('insertLineBreakAtCaret', () => {
         document.body.appendChild(root)
         const text = document.createTextNode('helloworld')
         root.appendChild(text)
+        Object.defineProperty(root, 'scrollHeight', { value: 120 })
+        root.scrollTop = 10
         placeCaretInText(text, 5) // between hello|world
 
         insertLineBreakAtCaret(root)
 
         expect(serializeComposerSegments(segmentsFromEditor(root))).toBe('hello\nworld')
         expect(Array.from(root.childNodes).some((n) => n.textContent === CARET_PAD)).toBe(false)
+        expect(root.scrollTop).toBe(10)
+    })
+
+    it('does not scroll for a nested middle-line break', () => {
+        const root = document.createElement('div')
+        document.body.appendChild(root)
+        root.innerHTML = '<div>first</div><div>second</div>'
+        Object.defineProperty(root, 'scrollHeight', { value: 120 })
+        root.scrollTop = 10
+        placeCaretAtEnd(root, root.firstElementChild!.firstChild as Text)
+
+        insertLineBreakAtCaret(root)
+
+        expect(root.scrollTop).toBe(10)
+    })
+
+    it('scrolls for a line break at the end of nested blocks', () => {
+        const root = document.createElement('div')
+        document.body.appendChild(root)
+        root.innerHTML = '<div>first</div><div>second</div>'
+        Object.defineProperty(root, 'scrollHeight', { value: 120 })
+        root.scrollTop = 10
+        placeCaretAtEnd(root, root.lastElementChild!.firstChild as Text)
+
+        insertLineBreakAtCaret(root)
+
+        expect(root.scrollTop).toBe(120)
     })
 })
 
