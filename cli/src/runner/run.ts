@@ -14,7 +14,7 @@ import { getEnvironmentInfo } from '@/ui/doctor';
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
 import { writeRunnerState, RunnerLocallyPersistedState, readRunnerState, acquireRunnerLock, releaseRunnerLock } from '@/persistence';
 import { getCliArgs } from '@/utils/cliArgs';
-import { isProcessAlive, isWindows, killProcess, killProcessByChildProcess } from '@/utils/process';
+import { getProcessStartMarker, isProcessAlive, isWindows, killProcess, killProcessByChildProcess } from '@/utils/process';
 import { PERMISSION_MODES } from '@hapi/protocol/modes';
 import { withRetry } from '@/utils/time';
 import { isRetryableConnectionError } from '@/utils/errorUtils';
@@ -184,20 +184,23 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     // Retained until actual child exit even if webhook timeout removes normal
     // tracking, so confirmed exit can be attributed to the requested HAPI row.
     const pidToRequestedSessionId = new Map<number, string>();
+    const pidToConfirmedSessionId = new Map<number, string>();
     // Only actual observed child exits may create a stop-session tombstone.
     // Tracking loss (notably webhook timeout) is deliberately not evidence.
-    const MAX_EXIT_TOMBSTONES = 2_000;
     const exitTombstoneFile = `${configuration.runnerStateFile}.verified-exits.json`;
     const verifiedExitTombstones = (() => {
       try {
         if (!existsSync(exitTombstoneFile)) return new Set<string>();
         const parsed = JSON.parse(readFileSync(exitTombstoneFile, 'utf8'));
-        return new Set<string>(Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string') : []);
+        return new Set<string>(Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string' && !value.startsWith('PID-')) : []);
       } catch (error) {
         logger.debug('[RUNNER RUN] Failed to load verified exit tombstones:', error);
         return new Set<string>();
       }
     })();
+    // PID aliases are generation-local and must not survive runner restart,
+    // because the OS may reuse a PID for an unrelated process.
+    const verifiedPidExitTombstones = new Set<string>();
     const persistVerifiedExits = () => {
       const tmp = `${exitTombstoneFile}.${process.pid}.tmp`;
       try {
@@ -208,23 +211,86 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       }
     };
     const rememberVerifiedExit = (id: string) => {
+      if (id.startsWith('PID-')) {
+        verifiedPidExitTombstones.add(id);
+        return;
+      }
       // Refreshing an existing key should also refresh its insertion order so
       // capacity eviction removes the oldest verified generation.
       verifiedExitTombstones.delete(id);
-      while (verifiedExitTombstones.size >= MAX_EXIT_TOMBSTONES) {
-        const oldest = verifiedExitTombstones.values().next().value;
-        if (oldest === undefined) break;
-        verifiedExitTombstones.delete(oldest);
-      }
       verifiedExitTombstones.add(id);
       persistVerifiedExits();
     };
     const hasVerifiedExit = (id: string): boolean => {
-      return verifiedExitTombstones.has(id);
+      return id.startsWith('PID-')
+        ? verifiedPidExitTombstones.has(id)
+        : verifiedExitTombstones.has(id);
     };
     const invalidateVerifiedExit = (id: string) => {
-      if (verifiedExitTombstones.delete(id)) persistVerifiedExits();
+      if (id.startsWith('PID-')) {
+        verifiedPidExitTombstones.delete(id);
+      } else if (verifiedExitTombstones.delete(id)) {
+        persistVerifiedExits();
+      }
     };
+
+    type PersistedResumeProcess = {
+      requestedSessionId: string;
+      confirmedSessionId?: string;
+      pid: number;
+      processStartMarker: string;
+    };
+    const resumeProcessFile = `${configuration.runnerStateFile}.resume-processes.json`;
+    const persistedResumeProcesses = (() => {
+      try {
+        if (!existsSync(resumeProcessFile)) return new Map<number, PersistedResumeProcess>();
+        const parsed = JSON.parse(readFileSync(resumeProcessFile, 'utf8'));
+        const records = Array.isArray(parsed) ? parsed : [];
+        return new Map<number, PersistedResumeProcess>(records.flatMap((record): Array<[number, PersistedResumeProcess]> => {
+          const requestedSessionId = typeof record?.requestedSessionId === 'string'
+            ? record.requestedSessionId
+            : typeof record?.sessionId === 'string'
+              ? record.sessionId
+              : null;
+          if (!requestedSessionId || typeof record.pid !== 'number' || typeof record.processStartMarker !== 'string') return [];
+          return [[record.pid, {
+            requestedSessionId,
+            confirmedSessionId: typeof record.confirmedSessionId === 'string' ? record.confirmedSessionId : undefined,
+            pid: record.pid,
+            processStartMarker: record.processStartMarker,
+          }]];
+        }));
+      } catch (error) {
+        logger.debug('[RUNNER RUN] Failed to load persisted resume processes:', error);
+        return new Map<number, PersistedResumeProcess>();
+      }
+    })();
+    const persistResumeProcesses = () => {
+      const tmp = `${resumeProcessFile}.${process.pid}.tmp`;
+      try {
+        writeFileSync(tmp, JSON.stringify([...persistedResumeProcesses.values()]));
+        renameSync(tmp, resumeProcessFile);
+      } catch (error) {
+        logger.debug('[RUNNER RUN] Failed to persist resume processes:', error);
+      }
+    };
+    for (const [pid, record] of [...persistedResumeProcesses]) {
+      const alive = isProcessAlive(pid);
+      const marker = alive ? getProcessStartMarker(pid) : null;
+      if (alive && marker === record.processStartMarker) {
+        pidToRequestedSessionId.set(pid, record.requestedSessionId);
+        if (record.confirmedSessionId) pidToConfirmedSessionId.set(pid, record.confirmedSessionId);
+      } else if (!alive || marker !== null) {
+        persistedResumeProcesses.delete(pid);
+        rememberVerifiedExit(record.requestedSessionId);
+        if (record.confirmedSessionId) rememberVerifiedExit(record.confirmedSessionId);
+      } else {
+        // PID is live but generation probing failed: keep the durable record and
+        // fail closed instead of manufacturing verified-exit evidence.
+        logger.debug(`[RUNNER RUN] Could not verify process generation for PID ${pid}; keeping persisted resume quarantine`);
+      }
+    }
+    persistResumeProcesses();
 
     // Webhook timeout tolerance. Opus 1M + --resume can legitimately take
     // longer than the default 15s to reach the "Session started" webhook
@@ -279,6 +345,12 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         invalidateVerifiedExit(sessionId);
         invalidateVerifiedExit(`PID-${pid}`);
         existingSession.happySessionId = sessionId;
+        pidToConfirmedSessionId.set(pid, sessionId);
+        const persisted = persistedResumeProcesses.get(pid);
+        if (persisted) {
+          persisted.confirmedSessionId = sessionId;
+          persistResumeProcesses();
+        }
         existingSession.happySessionMetadataFromLocalWebhook = sessionMetadata;
         logger.debug(`[RUNNER RUN] Updated runner-spawned session ${sessionId} with metadata`);
 
@@ -585,6 +657,15 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         pidToTrackedSession.set(pid, trackedSession);
         if (trackedSession.requestedHappySessionId) {
           pidToRequestedSessionId.set(pid, trackedSession.requestedHappySessionId);
+          const processStartMarker = getProcessStartMarker(pid);
+          if (processStartMarker) {
+            persistedResumeProcesses.set(pid, {
+              requestedSessionId: trackedSession.requestedHappySessionId,
+              pid,
+              processStartMarker
+            });
+            persistResumeProcesses();
+          }
         }
 
         happyProcess.on('exit', (code, signal) => {
@@ -748,6 +829,9 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           if (session.requestedHappySessionId) rememberVerifiedExit(session.requestedHappySessionId);
           rememberVerifiedExit(`PID-${pid}`);
           pidToTrackedSession.delete(pid);
+          pidToRequestedSessionId.delete(pid);
+          pidToConfirmedSessionId.delete(pid);
+          if (persistedResumeProcesses.delete(pid)) persistResumeProcesses();
           logger.debug(`[RUNNER RUN] Removed terminated session ${sessionId} from tracking`);
           return 'stopped';
         }
@@ -756,8 +840,11 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       // Webhook timeout can remove the normal TrackedSession before the process
       // actually exits. Retain the requested HAPI ID -> PID relation so Hub can
       // still terminate that exact generation by HAPI ID.
-      for (const [pid, requestedSessionId] of pidToRequestedSessionId.entries()) {
-        if (requestedSessionId !== sessionId) continue;
+      const fallbackPids = new Set([...pidToRequestedSessionId.keys(), ...pidToConfirmedSessionId.keys()]);
+      for (const pid of fallbackPids) {
+        const requestedSessionId = pidToRequestedSessionId.get(pid);
+        const confirmedSessionId = pidToConfirmedSessionId.get(pid);
+        if (requestedSessionId !== sessionId && confirmedSessionId !== sessionId) continue;
         if (isProcessAlive(pid)) {
           await killProcess(pid);
           const deadline = Date.now() + 5_000;
@@ -765,14 +852,20 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             await new Promise(resolve => setTimeout(resolve, 50));
           }
           if (isProcessAlive(pid)) return 'still_alive';
-          rememberVerifiedExit(requestedSessionId);
+          if (requestedSessionId) rememberVerifiedExit(requestedSessionId);
+          if (confirmedSessionId) rememberVerifiedExit(confirmedSessionId);
           rememberVerifiedExit(`PID-${pid}`);
           pidToRequestedSessionId.delete(pid);
+          pidToConfirmedSessionId.delete(pid);
+          if (persistedResumeProcesses.delete(pid)) persistResumeProcesses();
           return 'stopped';
         }
-        rememberVerifiedExit(requestedSessionId);
+        if (requestedSessionId) rememberVerifiedExit(requestedSessionId);
+        if (confirmedSessionId) rememberVerifiedExit(confirmedSessionId);
         rememberVerifiedExit(`PID-${pid}`);
         pidToRequestedSessionId.delete(pid);
+        pidToConfirmedSessionId.delete(pid);
+        if (persistedResumeProcesses.delete(pid)) persistResumeProcesses();
         return 'already_gone';
       }
 
@@ -787,15 +880,18 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     // Handle child process exit
     const onChildExited = (pid: number) => {
       const session = pidToTrackedSession.get(pid);
-      if (session?.happySessionId) rememberVerifiedExit(session.happySessionId);
       const requestedSessionId = session?.requestedHappySessionId ?? pidToRequestedSessionId.get(pid);
       if (requestedSessionId) rememberVerifiedExit(requestedSessionId);
+      const confirmedSessionId = session?.happySessionId ?? pidToConfirmedSessionId.get(pid);
+      if (confirmedSessionId) rememberVerifiedExit(confirmedSessionId);
       rememberVerifiedExit(`PID-${pid}`);
       logger.debug(`[RUNNER RUN] Removing exited process PID ${pid} from tracking`);
       pidToTrackedSession.delete(pid);
       pidToAwaiter.delete(pid);
       pidToErrorAwaiter.delete(pid);
       pidToRequestedSessionId.delete(pid);
+      pidToConfirmedSessionId.delete(pid);
+      if (persistedResumeProcesses.delete(pid)) persistResumeProcesses();
     };
 
     // Start control server
