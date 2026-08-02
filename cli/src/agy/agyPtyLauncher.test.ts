@@ -1109,7 +1109,11 @@ describe('agyPtyLauncher ask_question safety: invalidate stale pending questions
 
         ptyOptsCaptured.onExit(1)
         const respawnedSendKeys = vi.fn()
-        ptyOptsCaptured.registerControls?.({ sendKeys: respawnedSendKeys })
+        const respawnedInvalidateInputReady = vi.fn()
+        ptyOptsCaptured.registerControls?.({
+            sendKeys: respawnedSendKeys,
+            invalidateInputReady: respawnedInvalidateInputReady,
+        })
         ptyOptsCaptured.onMessage('Switch Model\n> Gemini 3.5 Flash             (current)')
         await tick(5)
         ptyOptsCaptured.onMessage('Model set to Gemini 3.5 Flash (Low)')
@@ -1117,6 +1121,7 @@ describe('agyPtyLauncher ask_question safety: invalidate stale pending questions
         await tick(10)
 
         expect(respawnedSendKeys).not.toHaveBeenCalled()
+        expect(respawnedInvalidateInputReady).not.toHaveBeenCalled()
 
         harness.exitReason = 'exit'
         msgPromise.resolve(null)

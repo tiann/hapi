@@ -278,10 +278,10 @@ class AgyPtyLauncher extends RemoteLauncherBase {
             .then((answers) => {
                 const keys = buildAgyQuestionKeys(questions, answers)
                 if (keys) {
-                    void this.enqueuePtyInteraction(async () => {
-                        if (interactionEpoch !== this.questionInteractionEpoch) return
-                        this.ptyControls?.sendKeys(keys)
-                    })
+                    void this.enqueuePtyInteraction(
+                        async () => { this.ptyControls?.sendKeys(keys) },
+                        () => interactionEpoch === this.questionInteractionEpoch,
+                    )
                 }
             })
             .catch((err) => {
@@ -289,8 +289,12 @@ class AgyPtyLauncher extends RemoteLauncherBase {
             })
     }
 
-    private enqueuePtyInteraction(task: () => Promise<void>): Promise<void> {
+    private enqueuePtyInteraction(
+        task: () => Promise<void>,
+        isCurrent: () => boolean = () => true,
+    ): Promise<void> {
         const result = this.interactionTail.then(async () => {
+            if (!isCurrent()) return
             this.ptyControls?.invalidateInputReady()
             await task()
         })
