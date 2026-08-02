@@ -402,7 +402,7 @@ describe('runOpencode set-session-config handler', () => {
         expect(harness.session.emitMessagesConsumed).not.toHaveBeenCalled();
     });
 
-    it('latches the first accepted /clear so a queued follow-up prompt is explicitly rejected rather than delivered to the archived source', async () => {
+    it('leaves a prompt uninvoked when it arrives during the clear latch so scheduled rows can transfer', async () => {
         let resolveCommands: ((commands: Array<unknown>) => void) | undefined;
         harness.listSlashCommands.mockImplementationOnce(() => new Promise((resolve) => {
             resolveCommands = resolve;
@@ -416,6 +416,7 @@ describe('runOpencode set-session-config handler', () => {
 
         userMessageHandler({ content: { text: '/clear' } }, 'first-clear');
         userMessageHandler({ content: { text: 'must not reach the source session' } }, 'follow-up');
+        userMessageHandler({ content: { text: 'redelivered scheduled prompt' } }, 'follow-up');
         await Promise.resolve();
         resolveCommands?.([]);
         for (let i = 0; i < 5; i++) {
@@ -426,13 +427,14 @@ describe('runOpencode set-session-config handler', () => {
             mode: expect.objectContaining({ operation: 'clear' }),
             localId: 'first-clear'
         })]);
-        expect(harness.session.emitMessagesConsumed).toHaveBeenCalledWith(
+        expect(harness.session.emitMessagesConsumed).not.toHaveBeenCalledWith(
             ['follow-up'],
-            { clearQueuedThinkingGrace: true }
+            expect.anything()
         );
         expect(harness.session.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
             message: expect.stringContaining('fresh OpenCode session is opening')
         }));
+        expect(harness.session.sendAgentMessage).toHaveBeenCalledTimes(1);
     });
 
     it('releases the clear transition latch when the queued /clear is cancelled', async () => {

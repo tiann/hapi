@@ -116,6 +116,7 @@ export async function runOpencode(opts: {
     // rejection instead of entering the queue that will be archived.
     let clearTransitionLatched = false;
     let queuedClearLocalId: string | null = null;
+    const rejectedDuringClearLocalIds = new Set<string>();
     // True from the moment onCompactAvailabilityChange(false) fires (which,
     // per onLeavingRemote's contract, only ever happens because remote mode
     // is being left — never because remote just started) until this session
@@ -245,14 +246,15 @@ export async function runOpencode(opts: {
             try {
                 if (wasCancelled()) return;
                 if (clearTransitionLatched) {
-                    if (localId) {
-                        session.emitMessagesConsumed([localId], { clearQueuedThinkingGrace: true });
+                    const firstRejection = !localId || !rejectedDuringClearLocalIds.has(localId);
+                    if (localId) rejectedDuringClearLocalIds.add(localId);
+                    if (firstRejection) {
+                        session.sendAgentMessage({
+                            type: 'message',
+                            message: 'A fresh OpenCode session is opening. Please send this message after the session redirects.',
+                            id: randomUUID()
+                        });
                     }
-                    session.sendAgentMessage({
-                        type: 'message',
-                        message: 'A fresh OpenCode session is opening. Please send this message after the session redirects.',
-                        id: randomUUID()
-                    });
                     sessionWrapperRef.current?.onThinkingChange(false);
                     return;
                 }
@@ -446,6 +448,7 @@ export async function runOpencode(opts: {
             if (queuedClearLocalId === localId) {
                 queuedClearLocalId = null;
                 clearTransitionLatched = false;
+                rejectedDuringClearLocalIds.clear();
             }
             logger.debug(`[opencode] cancelByLocalId(${localId}): removed from queue`);
             return true;
