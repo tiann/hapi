@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { AgentState, ClearOpencodeSessionResponse, CreateMachineResponse, CreateSessionResponse, RunnerState, Machine, MachineMetadata, Metadata, Session } from '@/api/types'
+import type { AgentState, ClearOpencodeSessionCallbackRequest, ClearOpencodeSessionResponse, CreateMachineResponse, CreateSessionResponse, RunnerState, Machine, MachineMetadata, Metadata, Session } from '@/api/types'
 import type { LocalResumeTarget, ResumableSession } from '@hapi/protocol'
 import {
     AgentStateSchema,
@@ -299,9 +299,10 @@ export class ApiClient {
         return parsed.data.sessionId
     }
 
-    async abortOpenCodeClearSession(sessionId: string): Promise<string> {
+    async abortOpenCodeClearSession(sessionId: string, replacementSessionId: string): Promise<string> {
         const response = await axios.post<ClearOpencodeSessionResponse>(
-            `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(sessionId)}/clear-opencode/abort`, {},
+            `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(sessionId)}/clear-opencode/abort`,
+            { replacementSessionId } satisfies ClearOpencodeSessionCallbackRequest,
             { headers: this.authHeaders(), timeout: 60_000 }
         )
         const parsed = ClearOpencodeSessionResponseSchema.safeParse(response.data)
@@ -309,9 +310,10 @@ export class ApiClient {
         return parsed.data.sessionId
     }
 
-    async confirmOpenCodeClearCleanup(sessionId: string): Promise<string> {
+    async confirmOpenCodeClearCleanup(sessionId: string, replacementSessionId: string): Promise<string> {
         const response = await axios.post<ClearOpencodeSessionResponse>(
-            `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(sessionId)}/clear-opencode/confirm-cleanup`, {},
+            `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(sessionId)}/clear-opencode/confirm-cleanup`,
+            { replacementSessionId } satisfies ClearOpencodeSessionCallbackRequest,
             { headers: this.authHeaders(), timeout: 60_000 }
         )
         const parsed = ClearOpencodeSessionResponseSchema.safeParse(response.data)

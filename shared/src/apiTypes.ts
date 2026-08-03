@@ -69,6 +69,11 @@ export const ClearOpencodeSessionResponseSchema = z.object({
 })
 export type ClearOpencodeSessionResponse = z.infer<typeof ClearOpencodeSessionResponseSchema>
 
+export const ClearOpencodeSessionCallbackRequestSchema = z.object({
+    replacementSessionId: z.string()
+})
+export type ClearOpencodeSessionCallbackRequest = z.infer<typeof ClearOpencodeSessionCallbackRequestSchema>
+
 export type AuthResponse = {
     token: string
     user: {

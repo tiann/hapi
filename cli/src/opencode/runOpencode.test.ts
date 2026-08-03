@@ -517,6 +517,7 @@ describe('runOpencode set-session-config handler', () => {
         expect(lifecycleMock.setArchiveReason).toHaveBeenCalledWith('Cleared by /clear');
         expect(lifecycleMock.setSessionEndReason).toHaveBeenCalledWith('cleared');
         expect(harness.clearOpenCodeSession).toHaveBeenCalledWith('source-session');
+        expect(harness.confirmOpenCodeClearCleanup).toHaveBeenCalledWith('source-session', 'fresh-session');
         expect(order).toEqual(['reserve', 'cleanup', 'spawn']);
     });
 
@@ -585,6 +586,7 @@ describe('runOpencode set-session-config handler', () => {
             await vi.runAllTimersAsync();
             await run;
             expect(harness.abortOpenCodeClearSession).toHaveBeenCalledTimes(2);
+            expect(harness.abortOpenCodeClearSession).toHaveBeenLastCalledWith('source-session', 'fresh-session');
             expect(harness.clearOpenCodeSession).not.toHaveBeenCalled();
         } finally {
             vi.useRealTimers();

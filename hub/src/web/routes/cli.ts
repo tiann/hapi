@@ -3,6 +3,7 @@ import { z } from 'zod'
 import {
     CreateOrLoadMachineRequestSchema,
     CreateOrLoadSessionRequestSchema,
+    ClearOpencodeSessionCallbackRequestSchema,
     CursorMigrateToAcpRequestSchema,
     PROTOCOL_VERSION
 } from '@hapi/protocol'
@@ -213,18 +214,22 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         return c.json({ ok: true, sessionId: result.sessionId })
     })
 
-    app.post('/sessions/:id/clear-opencode/abort', (c) => {
+    app.post('/sessions/:id/clear-opencode/abort', async (c) => {
         const engine = getSyncEngine()
         if (!engine) return c.json({ error: 'Not ready' }, 503)
-        const result = engine.abortOpenCodeClearSession(c.req.param('id'), c.get('namespace'))
+        const parsed = ClearOpencodeSessionCallbackRequestSchema.safeParse(await c.req.json().catch(() => null))
+        if (!parsed.success) return c.json({ error: 'Invalid clear callback request' }, 400)
+        const result = engine.abortOpenCodeClearSession(c.req.param('id'), c.get('namespace'), parsed.data.replacementSessionId)
         if (result.type === 'error') return c.json({ error: result.message, code: result.code }, clearErrorStatus(result.code))
         return c.json({ ok: true, sessionId: result.sessionId })
     })
 
-    app.post('/sessions/:id/clear-opencode/confirm-cleanup', (c) => {
+    app.post('/sessions/:id/clear-opencode/confirm-cleanup', async (c) => {
         const engine = getSyncEngine()
         if (!engine) return c.json({ error: 'Not ready' }, 503)
-        const result = engine.confirmOpenCodeClearCleanup(c.req.param('id'), c.get('namespace'))
+        const parsed = ClearOpencodeSessionCallbackRequestSchema.safeParse(await c.req.json().catch(() => null))
+        if (!parsed.success) return c.json({ error: 'Invalid clear callback request' }, 400)
+        const result = engine.confirmOpenCodeClearCleanup(c.req.param('id'), c.get('namespace'), parsed.data.replacementSessionId)
         if (result.type === 'error') return c.json({ error: result.message, code: result.code }, clearErrorStatus(result.code))
         return c.json({ ok: true, sessionId: result.sessionId })
     })

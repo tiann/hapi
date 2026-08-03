@@ -131,6 +131,17 @@ describe('API extra headers integration', () => {
         )
     })
 
+    it.each(['confirmOpenCodeClearCleanup', 'abortOpenCodeClearSession'] as const)('sends reservation identity with %s', async (method) => {
+        axiosPostMock.mockResolvedValue({ data: { ok: true, sessionId: 'fresh-session' } })
+        const client = await ApiClient.create()
+        await expect(client[method]('source-session', 'fresh-session')).resolves.toBe('fresh-session')
+        expect(axiosPostMock).toHaveBeenCalledWith(
+            expect.stringContaining('/clear-opencode/'),
+            { replacementSessionId: 'fresh-session' },
+            expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer cli-token' }) })
+        )
+    })
+
     it('adds extra headers to socket transport options', () => {
         configuration._setExtraHeaders({
             Cookie: 'CF_Authorization=token'

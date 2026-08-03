@@ -442,10 +442,7 @@ export class SyncEngine {
         if (before?.metadata?.opencodeClearOperation?.state === 'reserved' && payload.reason !== 'cleared') {
             const operation = before.metadata.opencodeClearOperation
             if (this.transitionClearOperation(payload.sid, before.namespace, operation, 'abort-needed')) {
-                this.abortOpenCodeClearSession(payload.sid, before.namespace, {
-                    replacementSessionId: operation.replacementSessionId,
-                    state: 'abort-needed'
-                })
+                this.abortOpenCodeClearSession(payload.sid, before.namespace, operation.replacementSessionId, 'abort-needed')
             }
         }
         const ownsPiAttempt = before?.metadata?.piResumeAttempt !== undefined
@@ -789,10 +786,7 @@ async uploadScratchlistAttachment(
             if (session.active || !operation) continue
             if (operation.state === 'reserved') continue
             if (operation.state === 'abort-needed') {
-                this.abortOpenCodeClearSession(session.id, session.namespace, {
-                    replacementSessionId: operation.replacementSessionId,
-                    state: 'abort-needed'
-                })
+                this.abortOpenCodeClearSession(session.id, session.namespace, operation.replacementSessionId, 'abort-needed')
                 continue
             }
             if (!['cleanup-confirmed', 'finalizing', 'failed'].includes(operation.state)) continue
@@ -1246,21 +1240,20 @@ async uploadScratchlistAttachment(
     abortOpenCodeClearSession(
         sessionId: string,
         namespace: string,
-        expected?: { replacementSessionId: string; state: 'reserved' | 'abort-needed'; requireInactive?: true }
+        replacementSessionId: string,
+        expectedState: 'reserved' | 'abort-needed' = 'reserved',
+        requireInactive: boolean = false
     ): ClearOpencodeSessionResult {
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) return { type: 'error', message: 'Session not found', code: access.reason === 'access-denied' ? 'access_denied' : 'session_not_found' }
         const operation = access.session.metadata?.opencodeClearOperation
         if (!operation) return { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
         if (operation.state === 'aborted') {
-            return !expected || expected.replacementSessionId === operation.replacementSessionId
+            return replacementSessionId === operation.replacementSessionId
                 ? { type: 'success', sessionId }
                 : { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
         }
-        const required = expected ?? (operation.state === 'reserved'
-            ? { replacementSessionId: operation.replacementSessionId, state: 'reserved' as const }
-            : undefined)
-        if (!required) return { type: 'error', message: 'Clear reservation cannot be aborted from its current state', code: 'clear_unavailable' }
+        const required = { replacementSessionId, state: expectedState, requireInactive }
         for (let attempt = 0; attempt < 3; attempt += 1) {
             const latest = this.sessionCache.getSessionByNamespace(sessionId, namespace) ?? this.sessionCache.refreshSession(sessionId)
             if (!latest?.metadata) break
@@ -1286,13 +1279,16 @@ async uploadScratchlistAttachment(
         return { type: 'error', message: 'Could not abort clear reservation', code: 'replacement_link_failed' }
     }
 
-    confirmOpenCodeClearCleanup(sessionId: string, namespace: string): ClearOpencodeSessionResult {
+    confirmOpenCodeClearCleanup(sessionId: string, namespace: string, replacementSessionId: string): ClearOpencodeSessionResult {
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) return { type: 'error', message: 'Session not found', code: access.reason === 'access-denied' ? 'access_denied' : 'session_not_found' }
         const operation = access.session.metadata?.opencodeClearOperation
         if (!operation) return { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
-        if (operation.state === 'cleanup-confirmed') return { type: 'success', sessionId: operation.replacementSessionId }
+        if (operation.state === 'cleanup-confirmed' && operation.replacementSessionId === replacementSessionId) {
+            return { type: 'success', sessionId: operation.replacementSessionId }
+        }
         if (operation.state !== 'reserved') return { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
+        if (operation.replacementSessionId !== replacementSessionId) return { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
         if (!this.transitionClearOperation(sessionId, namespace, operation, 'cleanup-confirmed')) {
             return { type: 'error', message: 'Could not confirm native cleanup', code: 'replacement_link_failed' }
         }
@@ -1986,11 +1982,9 @@ async uploadScratchlistAttachment(
         try {
             const status = await this.rpcGateway.stopRunnerSession(machineId, session.id)
             if (status === 'still_alive') return false
-            return this.abortOpenCodeClearSession(session.id, namespace, {
-                replacementSessionId: operation.replacementSessionId,
-                state: 'reserved',
-                requireInactive: true
-            }).type === 'success'
+            return this.abortOpenCodeClearSession(
+                session.id, namespace, operation.replacementSessionId, 'reserved', true
+            ).type === 'success'
         } catch {
             return false
         }

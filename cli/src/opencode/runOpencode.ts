@@ -111,6 +111,7 @@ export async function runOpencode(opts: {
     // throughout it.
     let compactSupported = false;
     let clearRequested = false;
+    let clearReplacementSessionId: string | null = null;
     // Once a runner-backed /clear is accepted, hold later payloads until the
     // transition commits or the queued clear is cancelled. The hub redirects
     // their durable rows to the reserved replacement on success.
@@ -548,18 +549,20 @@ export async function runOpencode(opts: {
                 }
             },
             onClearRequested: async () => {
-                await withRetry(() => api.reserveOpenCodeClearSession(session.sessionId), {
+                clearReplacementSessionId = await withRetry(() => api.reserveOpenCodeClearSession(session.sessionId), {
                     minDelay: 500, maxDelay: 30_000, shouldRetry: isRetryableConnectionError
                 });
             },
             onClearCleanupComplete: async () => {
-                await withRetry(() => api.confirmOpenCodeClearCleanup(session.sessionId), {
+                if (!clearReplacementSessionId) throw new Error('OpenCode clear cleanup completed without a reservation')
+                await withRetry(() => api.confirmOpenCodeClearCleanup(session.sessionId, clearReplacementSessionId!), {
                     minDelay: 500, maxDelay: 30_000, shouldRetry: isRetryableConnectionError
                 });
                 clearRequested = true;
             },
             onClearCleanupFailed: async () => {
-                await withRetry(() => api.abortOpenCodeClearSession(session.sessionId), {
+                if (!clearReplacementSessionId) throw new Error('OpenCode clear cleanup failed without a reservation')
+                await withRetry(() => api.abortOpenCodeClearSession(session.sessionId, clearReplacementSessionId!), {
                     minDelay: 500, maxDelay: 30_000, shouldRetry: isRetryableConnectionError
                 });
             },

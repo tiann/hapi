@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ClearOpencodeSessionResponseSchema, ListCodexSessionsRpcResponseSchema, MessagesQuerySchema } from './apiTypes'
+import { ClearOpencodeSessionCallbackRequestSchema, ClearOpencodeSessionResponseSchema, ListCodexSessionsRpcResponseSchema, MessagesQuerySchema } from './apiTypes'
 
 describe('ListCodexSessionsRpcResponseSchema', () => {
     it('preserves Codex session messages when parsing runner RPC responses', () => {
@@ -36,6 +36,15 @@ describe('ClearOpencodeSessionResponseSchema', () => {
             ok: true,
             sessionId: 'fresh-session'
         })
+    })
+})
+
+describe('ClearOpencodeSessionCallbackRequestSchema', () => {
+    it('requires the reservation identity', () => {
+        expect(ClearOpencodeSessionCallbackRequestSchema.parse({ replacementSessionId: 'fresh-session' })).toEqual({
+            replacementSessionId: 'fresh-session'
+        })
+        expect(ClearOpencodeSessionCallbackRequestSchema.safeParse({}).success).toBe(false)
     })
 })
 
