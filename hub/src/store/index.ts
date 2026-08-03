@@ -161,6 +161,20 @@ export class Store {
         })()
     }
 
+    abortOpenCodeClearOperation(
+        sessionId: string,
+        replacementSessionId: string,
+        metadata: unknown,
+        expectedVersion: number,
+        namespace: string
+    ) {
+        return this.db.transaction(() => {
+            const result = this.sessions.updateSessionMetadata(sessionId, metadata, expectedVersion, namespace, { touchUpdatedAt: false })
+            if (result.result === 'success') this.messages.moveUninvokedMessages(replacementSessionId, sessionId)
+            return result
+        })()
+    }
+
     close(): void {
         if (this.closed) return
         this.db.close()

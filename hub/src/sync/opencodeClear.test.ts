@@ -160,6 +160,19 @@ describe('SyncEngine.clearOpenCodeSession', () => {
             expect(engine.getSessionByNamespace(source.id, 'default')?.metadata?.opencodeClearOperation?.state).toBe('reserved')
             expect(store.messages.getAllMessages(source.id)).toEqual([])
             expect(spawnSession).not.toHaveBeenCalled()
+            const gateway = (engine as unknown as { rpcGateway: { stopRunnerSession: ReturnType<typeof mock> } }).rpcGateway
+            gateway.stopRunnerSession = mock(async () => 'still_alive' as const)
+            await expect(engine.resumeSession(source.id, 'default')).resolves.toMatchObject({ type: 'error', code: 'resume_unavailable' })
+            gateway.stopRunnerSession = mock(async () => 'already_gone' as const)
+            expect(await (engine as unknown as { recoverInactiveReservedClear(session: unknown, namespace: string): Promise<boolean> })
+                .recoverInactiveReservedClear(engine.getSessionByNamespace(source.id, 'default')!, 'default')).toBe(true)
+            expect(engine.getSessionByNamespace(source.id, 'default')?.metadata?.opencodeClearOperation?.state).toBe('aborted')
+            expect((engine as unknown as { isOpenCodeClearSource(session: unknown): boolean }).isOpenCodeClearSource(
+                engine.getSessionByNamespace(source.id, 'default')!
+            )).toBe(false)
+            expect(store.messages.getAllMessages(source.id)).toEqual([
+                expect.objectContaining({ localId: 'still-owned', invokedAt: null })
+            ])
         } finally { engine.stop() }
     })
 
@@ -181,6 +194,32 @@ describe('SyncEngine.clearOpenCodeSession', () => {
             expect((engine as unknown as { isOpenCodeClearSource(session: unknown): boolean }).isOpenCodeClearSource(
                 engine.getSessionByNamespace(source.id, 'default')!
             )).toBe(false)
+        } finally { engine.stop() }
+    })
+
+    it('durably retries an explicit-exit abort after a metadata write failure', async () => {
+        const { store, engine } = createEngine()
+        try {
+            const source = engine.getOrCreateSession('abort-retry-source', {
+                path: '/tmp/project', host: 'host', machineId: 'machine-1', flavor: 'opencode', startedBy: 'runner'
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: source.id, time: Date.now() })
+            expect(engine.reserveOpenCodeClearSession(source.id, 'default')).toMatchObject({ type: 'success' })
+            await engine.sendMessage(source.id, { text: 'restore atomically', localId: 'atomic-held' })
+            const original = store.abortOpenCodeClearOperation.bind(store)
+            let fail = true
+            store.abortOpenCodeClearOperation = ((...args: Parameters<typeof original>) => {
+                if (fail) return { result: 'not-found' as const }
+                return original(...args)
+            }) as typeof store.abortOpenCodeClearOperation
+            engine.handleSessionEnd({ sid: source.id, time: Date.now(), reason: 'error' })
+            expect(store.messages.getAllMessages(source.id)).toEqual([])
+            fail = false
+            await (engine as unknown as { reconcileOpenCodeClears(): Promise<void> }).reconcileOpenCodeClears()
+            expect(engine.getSessionByNamespace(source.id, 'default')?.metadata?.opencodeClearOperation?.state).toBe('aborted')
+            expect(store.messages.getAllMessages(source.id)).toEqual([
+                expect.objectContaining({ localId: 'atomic-held', invokedAt: null })
+            ])
         } finally { engine.stop() }
     })
 

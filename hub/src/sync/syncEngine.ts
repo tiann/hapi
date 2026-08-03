@@ -440,6 +440,7 @@ export class SyncEngine {
     handleSessionEnd(payload: { sid: string; time: number; reason?: SessionEndReason }): void {
         const before = this.sessionCache.getSession(payload.sid)
         if (before?.metadata?.opencodeClearOperation?.state === 'reserved' && payload.reason !== 'cleared') {
+            this.sessionCache.markSessionArchivedFromHub(payload.sid, 'OpenCode clear owner exited before cleanup confirmation')
             this.abortOpenCodeClearSession(payload.sid, before.namespace)
         }
         const ownsPiAttempt = before?.metadata?.piResumeAttempt !== undefined
@@ -781,7 +782,12 @@ async uploadScratchlistAttachment(
         for (let session of this.sessionCache.getSessions()) {
             const operation = session.metadata?.opencodeClearOperation
             if (session.active || !operation) continue
-            if (operation.state === 'reserved') continue
+            if (operation.state === 'reserved') {
+                if (session.metadata?.archiveReason === 'OpenCode clear owner exited before cleanup confirmation') {
+                    this.abortOpenCodeClearSession(session.id, session.namespace)
+                }
+                continue
+            }
             if (!['cleanup-confirmed', 'finalizing', 'failed'].includes(operation.state)) continue
             if (session.metadata?.lifecycleState !== 'archived' || session.metadata.archiveReason !== 'Cleared by /clear') {
                 const result = this.store.sessions.updateSessionMetadata(session.id, {
@@ -1236,11 +1242,23 @@ async uploadScratchlistAttachment(
         const operation = access.session.metadata?.opencodeClearOperation
         if (!operation) return { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
         if (operation.state === 'completed') return { type: 'success', sessionId: operation.replacementSessionId }
-        this.store.messages.moveUninvokedMessages(operation.replacementSessionId, sessionId)
-        if (!this.persistClearOperation(sessionId, namespace, { ...operation, state: 'aborted', updatedAt: Date.now(), error: undefined })) {
-            return { type: 'error', message: 'Could not abort clear reservation', code: 'replacement_link_failed' }
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            const latest = this.sessionCache.getSessionByNamespace(sessionId, namespace) ?? this.sessionCache.refreshSession(sessionId)
+            if (!latest?.metadata) break
+            const current = latest.metadata.opencodeClearOperation
+            if (!current) break
+            const result = this.store.abortOpenCodeClearOperation(sessionId, current.replacementSessionId, {
+                ...latest.metadata,
+                opencodeClearOperation: { ...current, state: 'aborted', updatedAt: Date.now(), error: undefined }
+            }, latest.metadataVersion, namespace)
+            if (result.result === 'success') {
+                this.sessionCache.refreshSession(sessionId)
+                return { type: 'success', sessionId }
+            }
+            if (result.result !== 'version-mismatch') break
+            this.sessionCache.refreshSession(sessionId)
         }
-        return { type: 'success', sessionId }
+        return { type: 'error', message: 'Could not abort clear reservation', code: 'replacement_link_failed' }
     }
 
     confirmOpenCodeClearCleanup(sessionId: string, namespace: string): ClearOpencodeSessionResult {
@@ -1904,6 +1922,19 @@ async uploadScratchlistAttachment(
                 || metadata.supersededBySessionId !== undefined)
     }
 
+    private async recoverInactiveReservedClear(session: Session, namespace: string): Promise<boolean> {
+        const operation = session.metadata?.opencodeClearOperation
+        const machineId = session.metadata?.machineId
+        if (session.active || operation?.state !== 'reserved' || !machineId) return false
+        try {
+            const status = await this.rpcGateway.stopRunnerSession(machineId, session.id)
+            if (status === 'still_alive') return false
+            return this.abortOpenCodeClearSession(session.id, namespace).type === 'success'
+        } catch {
+            return false
+        }
+    }
+
     async resumeSession(sessionId: string, namespace: string, opts?: { permissionMode?: PermissionMode }): Promise<ResumeSessionResult> {
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
@@ -1914,7 +1945,10 @@ async uploadScratchlistAttachment(
             }
         }
 
-        const initialSession = access.session
+        let initialSession = access.session
+        if (await this.recoverInactiveReservedClear(initialSession, namespace)) {
+            initialSession = this.sessionCache.getSessionByNamespace(sessionId, namespace) ?? initialSession
+        }
         if (this.isOpenCodeClearSource(initialSession)) {
             return {
                 type: 'error',
@@ -2187,7 +2221,10 @@ async uploadScratchlistAttachment(
             }
         }
 
-        const session = access.session
+        let session = access.session
+        if (await this.recoverInactiveReservedClear(session, namespace)) {
+            session = this.sessionCache.getSessionByNamespace(sessionId, namespace) ?? session
+        }
         const metadata = session.metadata
 
         if (this.isOpenCodeClearSource(session)) {
