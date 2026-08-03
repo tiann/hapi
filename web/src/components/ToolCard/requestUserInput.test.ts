@@ -103,6 +103,20 @@ describe('MCP URL request user input', () => {
         })
     })
 
+    it('parses an option beginning with user_note as a selection before metadata', () => {
+        const question = parseRequestUserInputInput({
+            questions: [{
+                id: 'choice', question: 'Choose', options: [{ label: 'user_note: later' }]
+            }]
+        }).questions[0]!
+
+        expect(parseRequestUserInputAnswers({
+            choice: { answers: ['user_note: later'] }
+        }, [question])).toEqual({
+            choice: { selected: ['user_note: later'], userNote: null }
+        })
+    })
+
     it('requires an actual selection for required choice questions', () => {
         const question = parseRequestUserInputInput({
             questions: [{

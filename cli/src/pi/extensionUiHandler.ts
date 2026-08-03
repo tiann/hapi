@@ -29,7 +29,7 @@ type PendingEntry = {
 };
 
 type PiExtensionUiHandlerOptions = {
-    session: Pick<ApiSessionClient, 'rpcHandlerManager' | 'updateAgentState' | 'sendSessionEvent' | 'getMetadata' | 'updateMetadata'>;
+    session: Pick<ApiSessionClient, 'rpcHandlerManager' | 'updateAgentState' | 'sendAgentMessage' | 'sendSessionEvent' | 'getMetadata' | 'updateMetadata'>;
     sendResponse: (response: PiExtensionUiResponse) => void;
 };
 
@@ -104,7 +104,14 @@ function extractAnswer(
     if (!answers || answers.length === 0) return null;
 
     if (request.method === 'select') {
-        return answers.find((answer) => !answer.startsWith('user_note: ')) ?? null;
+        for (const answer of answers) {
+            const exact = request.options.find((option) => option === answer);
+            if (exact !== undefined) return exact;
+            const trimmedMatches = request.options.filter((option) => option.trim() === answer);
+            if (trimmedMatches.length === 1) return trimmedMatches[0]!;
+            if (trimmedMatches.length > 1) return null;
+        }
+        return null;
     }
     const note = answers.find((answer) => answer.startsWith('user_note: '));
     if (note) return note.slice('user_note: '.length);
@@ -203,6 +210,13 @@ export class PiExtensionUiHandler {
 
         const tool = requestToolName(request);
         const argumentsValue = requestArguments(request);
+        this.options.session.sendAgentMessage({
+            type: 'tool-call',
+            callId: request.id,
+            name: tool,
+            input: argumentsValue,
+            status: 'in_progress',
+        });
         this.options.session.updateAgentState((currentState) => ({
             ...currentState,
             requests: {
@@ -284,6 +298,12 @@ export class PiExtensionUiHandler {
                     },
                 },
             } satisfies AgentState;
+        });
+        this.options.session.sendAgentMessage({
+            type: 'tool-call-result',
+            callId: id,
+            output: answers ?? response,
+            is_error: !approved,
         });
         if (sendResponse) this.options.sendResponse(response);
     }

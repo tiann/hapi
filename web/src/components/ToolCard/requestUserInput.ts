@@ -204,9 +204,20 @@ export function parseRequestUserInputAnswers(
         let userNote: string | null = null
 
         for (const item of answerArray) {
+            const question = questionById.get(id)
+            const exactOption = question?.options.find((option) => option.label === item)
+            if (exactOption) {
+                selected.push(exactOption.label)
+                continue
+            }
+            const normalizedOptions = question?.options.filter((option) => option.label.trim() === item) ?? []
+            if (normalizedOptions.length === 1) {
+                selected.push(normalizedOptions[0]!.label)
+                continue
+            }
             if (item.startsWith('user_note: ')) {
                 const note = item.slice('user_note: '.length)
-                userNote = questionById.get(id)?.inputType === 'editor' ? note : note.trim()
+                userNote = question?.inputType === 'editor' ? note : note.trim()
             } else {
                 // Trim to match option labels which are also trimmed
                 selected.push(item.trim())

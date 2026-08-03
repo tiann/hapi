@@ -11,6 +11,7 @@ function createHarness() {
             registerHandler: vi.fn((_method: unknown, handler: PermissionHandler) => { permissionHandler = handler; }),
         },
         updateAgentState: vi.fn((updater: (current: never) => unknown) => { state = updater(state as never) as Record<string, unknown>; }),
+        sendAgentMessage: vi.fn(),
         sendSessionEvent: vi.fn(),
         getMetadata: vi.fn(() => null),
         updateMetadata: vi.fn(),
@@ -35,6 +36,9 @@ describe('PiExtensionUiHandler', () => {
         expect(harness.state().requests).toMatchObject({
             'select-1': { tool: 'request_user_input', arguments: { questions: [{ id: 'select-1', options: [{ label: 'one' }, { label: 'two' }] }] } },
         });
+        expect(harness.session.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'tool-call', callId: 'select-1', name: 'request_user_input', status: 'in_progress',
+        }));
 
         await harness.respond({
             id: 'select-1',
@@ -42,7 +46,64 @@ describe('PiExtensionUiHandler', () => {
             answers: { 'select-1': { answers: ['two', 'user_note: optional note'] } }
         });
         expect(harness.sendResponse).toHaveBeenCalledWith({ type: 'extension_ui_response', id: 'select-1', value: 'two' });
+        expect(harness.session.sendAgentMessage).toHaveBeenCalledWith({
+            type: 'tool-call-result',
+            callId: 'select-1',
+            output: { 'select-1': { answers: ['two', 'user_note: optional note'] } },
+            is_error: false,
+        });
         expect(harness.state().completedRequests).toMatchObject({ 'select-1': { status: 'approved' } });
+    });
+
+    it('round-trips select options that use metadata-like prefixes or padded labels', async () => {
+        const harness = createHarness();
+        harness.handler.handle({
+            type: 'extension_ui_request', id: 'select-prefix', method: 'select', title: 'Pick',
+            options: ['user_note: later', '  padded option  '],
+        });
+        await harness.respond({
+            id: 'select-prefix', approved: true,
+            answers: { 'select-prefix': { answers: ['user_note: later'] } },
+        });
+        expect(harness.sendResponse).toHaveBeenLastCalledWith({
+            type: 'extension_ui_response', id: 'select-prefix', value: 'user_note: later',
+        });
+
+        harness.handler.handle({
+            type: 'extension_ui_request', id: 'select-padded', method: 'select', title: 'Pick',
+            options: ['  padded option  '],
+        });
+        await harness.respond({
+            id: 'select-padded', approved: true,
+            answers: { 'select-padded': { answers: ['padded option'] } },
+        });
+        expect(harness.sendResponse).toHaveBeenLastCalledWith({
+            type: 'extension_ui_response', id: 'select-padded', value: '  padded option  ',
+        });
+
+        harness.handler.handle({
+            type: 'extension_ui_request', id: 'select-exact-first', method: 'select', title: 'Pick',
+            options: ['  padded option  ', 'padded option'],
+        });
+        await harness.respond({
+            id: 'select-exact-first', approved: true,
+            answers: { 'select-exact-first': { answers: ['padded option'] } },
+        });
+        expect(harness.sendResponse).toHaveBeenLastCalledWith({
+            type: 'extension_ui_response', id: 'select-exact-first', value: 'padded option',
+        });
+
+        harness.handler.handle({
+            type: 'extension_ui_request', id: 'select-ambiguous', method: 'select', title: 'Pick',
+            options: [' padded option', 'padded option '],
+        });
+        await harness.respond({
+            id: 'select-ambiguous', approved: true,
+            answers: { 'select-ambiguous': { answers: ['padded option'] } },
+        });
+        expect(harness.sendResponse).toHaveBeenLastCalledWith({
+            type: 'extension_ui_response', id: 'select-ambiguous', cancelled: true,
+        });
     });
 
     it('maps confirm to the generic permission card and retains a denied history entry', async () => {
