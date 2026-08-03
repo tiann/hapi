@@ -571,6 +571,89 @@ describe('MessageQueue2', () => {
             expect(queue.queue[0].message).toBe('msg-no-id');
             expect(queue.queue[1].message).toBe('msg-no-id-2');
         });
+
+        it('cancels a taken reservation so a failed steer cannot restore it', () => {
+            const queue = new MessageQueue2<string>(mode => mode);
+            queue.push('msg', 'local', 'id-a');
+            const reservation = queue.takeByLocalId('id-a');
+
+            expect(queue.cancelByLocalId('id-a')).toBe(true);
+            expect(reservation?.state).toBe('cancelled');
+            expect(queue.restoreReservation(reservation!)).toBe(false);
+            expect(queue.size()).toBe(0);
+        });
+    });
+
+    describe('takeByLocalId / peekByLocalId', () => {
+        it('peek returns the item without removing it', () => {
+            const queue = new MessageQueue2<string>(mode => mode);
+            queue.push('msg1', 'local', 'id-a');
+            const peeked = queue.peekByLocalId('id-a');
+            expect(peeked?.message).toBe('msg1');
+            expect(queue.size()).toBe(1);
+        });
+
+        it('take removes and returns the item with its index', () => {
+            const queue = new MessageQueue2<string>(mode => mode);
+            queue.push('msg1', 'local', 'id-a');
+            queue.push('msg2', 'local', 'id-b');
+            const taken = queue.takeByLocalId('id-a');
+            expect(taken?.item.message).toBe('msg1');
+            expect(taken?.index).toBe(0);
+            expect(queue.size()).toBe(1);
+            expect(queue.queue[0].localId).toBe('id-b');
+        });
+
+        it('take returns null when missing', () => {
+            const queue = new MessageQueue2<string>(mode => mode);
+            expect(queue.takeByLocalId('missing')).toBeNull();
+        });
+
+        it('restoreTakenItem puts the item back at the original index', () => {
+            const queue = new MessageQueue2<string>(mode => mode);
+            queue.push('a', 'local', 'id-a');
+            queue.push('b', 'local', 'id-b');
+            queue.push('c', 'local', 'id-c');
+            const taken = queue.takeByLocalId('id-b');
+            expect(taken).not.toBeNull();
+            expect(queue.queue.map((item) => item.localId)).toEqual(['id-a', 'id-c']);
+            queue.restoreTakenItem(taken!);
+            expect(queue.queue.map((item) => item.localId)).toEqual(['id-a', 'id-b', 'id-c']);
+        });
+
+        it('commits a reservation so it can no longer be cancelled', () => {
+            const queue = new MessageQueue2<string>(mode => mode);
+            queue.push('msg', 'local', 'id-a');
+            const reservation = queue.takeByLocalId('id-a');
+
+            expect(queue.commitReservation(reservation!)).toBe(true);
+            expect(queue.cancelByLocalId('id-a')).toBe(false);
+        });
+
+        it('does not cancel a reservation after steer dispatch begins', () => {
+            const queue = new MessageQueue2<string>(mode => mode);
+            queue.push('msg', 'local', 'id-a');
+            const reservation = queue.takeByLocalId('id-a');
+
+            expect(queue.beginReservationDispatch(reservation!)).toBe(true);
+            expect(queue.cancelByLocalId('id-a')).toBe(false);
+            expect(queue.restoreReservation(reservation!)).toBe(true);
+        });
+
+        it('restoreTakenItem wakes a waiter parked on an empty queue', async () => {
+            const queue = new MessageQueue2<string>(mode => mode);
+            const waitPromise = queue.waitForMessagesAndGetAsString();
+            queue.push('placeholder', 'local', 'id-placeholder');
+            const taken = queue.takeByLocalId('id-placeholder');
+            expect(taken).not.toBeNull();
+            expect(queue.size()).toBe(0);
+
+            queue.restoreTakenItem(taken!);
+
+            const result = await waitPromise;
+            expect(result?.message).toBe('placeholder');
+            expect(queue.size()).toBe(0);
+        });
     });
 
     it('should differentiate between pushImmediate and pushIsolateAndClear behavior', async () => {

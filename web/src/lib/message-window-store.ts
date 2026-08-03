@@ -1064,7 +1064,12 @@ export function removeOptimisticMessage(sessionId: string, localId: string): voi
     }, true)
 }
 
-export function markMessagesConsumed(sessionId: string, localIds: string[], invokedAt: number): void {
+export function markMessagesConsumed(
+    sessionId: string,
+    localIds: string[],
+    invokedAt: number,
+    steered?: boolean
+): void {
     if (localIds.length === 0) return
     const idSet = new Set(localIds)
     updateState(sessionId, (previous) => {
@@ -1075,12 +1080,14 @@ export function markMessagesConsumed(sessionId: string, localIds: string[], invo
             }
             const needsStatus = message.status !== 'sent'
             const needsInvokedAt = message.invokedAt === null
-            if (!needsStatus && !needsInvokedAt) return message
+            const needsSteered = steered === true && message.steered !== true
+            if (!needsStatus && !needsInvokedAt && !needsSteered) return message
             changed = true
             return {
                 ...message,
                 ...(needsStatus ? { status: 'sent' as MessageStatus } : {}),
-                ...(needsInvokedAt ? { invokedAt } : {})
+                ...(needsInvokedAt ? { invokedAt } : {}),
+                ...(needsSteered ? { steered: true } : {})
             }
         })
         if (!changed) return previous

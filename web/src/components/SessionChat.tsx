@@ -1545,7 +1545,6 @@ function SessionChatInner(props: SessionChatProps) {
                                 </div>
                             </div>
                         ) : null}
-
                         {/*
                          * tiann/hapi#893: one-time banner shown on first
                          * v2-load when localStorage entries got migrated to
@@ -1582,6 +1581,8 @@ function SessionChatInner(props: SessionChatProps) {
                             <QueuedMessagesBar
                                 sessionId={props.session.id}
                                 api={props.api}
+                                sessionMetadata={props.session.metadata}
+                                steeringActive={props.session.agentState?.steeringActive === true}
                                 pendingSchedule={pendingSchedule}
                                 pendingScheduleRevision={pendingScheduleRevision}
                                 onEdit={({ pendingSchedule: restored }) => {

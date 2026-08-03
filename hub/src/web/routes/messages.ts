@@ -71,7 +71,6 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return sessionResult
         }
         const sessionId = sessionResult.sessionId
-
         const body = await c.req.json().catch(() => null)
         const parsed = QueuedStateRequestSchema.safeParse(body)
         if (!parsed.success) {
@@ -83,6 +82,23 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ queuedLocalIds: [], invokedLocalMessages: [] })
         }
         return c.json(engine.getQueuedState(sessionId, localIds))
+    })
+
+    app.post('/sessions/:id/messages/:messageId/steer', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        const sessionId = sessionResult.sessionId
+        const messageId = c.req.param('messageId')
+
+        const result = await engine.steerQueuedMessage(sessionId, messageId)
+        return c.json(result)
     })
 
     app.post('/sessions/:id/messages', async (c) => {

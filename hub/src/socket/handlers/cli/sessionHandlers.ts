@@ -312,7 +312,12 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         onSessionReady?.(data)
     })
 
-    socket.on('messages-consumed', (data: { sid: string; localIds: string[]; clearQueuedThinkingGrace?: boolean }) => {
+    socket.on('messages-consumed', (data: {
+        sid: string
+        localIds: string[]
+        clearQueuedThinkingGrace?: boolean
+        steered?: boolean
+    }) => {
         if (!data || typeof data.sid !== 'string' || !Array.isArray(data.localIds)) {
             return
         }
@@ -356,7 +361,13 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         // Emit only after the DB transaction succeeds. This is an ACK-level
         // batch contract, so preserve its original timestamp even when IDs are
         // heterogeneous, replayed, or unknown.
-        onWebappEvent?.({ type: 'messages-consumed', sessionId: data.sid, localIds, invokedAt })
+        onWebappEvent?.({
+            type: 'messages-consumed',
+            sessionId: data.sid,
+            localIds,
+            invokedAt,
+            ...(data.steered === true ? { steered: true } : {})
+        })
     })
 
     socket.on('session-end', (data: SessionEndPayload) => {

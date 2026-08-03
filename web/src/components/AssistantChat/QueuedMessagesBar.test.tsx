@@ -51,12 +51,25 @@ vi.mock('@/hooks/mutations/useCancelQueuedMessage', () => ({
     }),
 }))
 
+vi.mock('@/hooks/mutations/useSteerQueuedMessage', () => ({
+    useSteerQueuedMessage: () => ({
+        isPending: false,
+        variables: undefined,
+        mutate: vi.fn(),
+    }),
+}))
+
 vi.mock('@/lib/composer-drafts', () => ({
     saveDraft: mocks.saveDraft,
 }))
 
 vi.mock('@/lib/use-translation', () => ({
-    useTranslation: () => ({ t: (key: string) => key }),
+    useTranslation: () => ({
+        t: (key: string) => ({
+            'queuedMessages.edit': 'Edit queued message',
+            'queuedMessages.cancel': 'Cancel queued message',
+        })[key] ?? key,
+    }),
 }))
 
 vi.mock('@/lib/toast-context', () => ({

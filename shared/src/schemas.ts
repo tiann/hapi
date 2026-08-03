@@ -160,6 +160,7 @@ export type AgentStateCompletedRequest = z.infer<typeof AgentStateCompletedReque
 
 export const AgentStateSchema = z.object({
     controlledByUser: z.boolean().nullish(),
+    steeringActive: z.boolean().nullish(),
     requests: z.record(z.string(), AgentStateRequestSchema).nullish(),
     completedRequests: z.record(z.string(), AgentStateCompletedRequestSchema).nullish()
 })
@@ -251,7 +252,9 @@ export const DecryptedMessageSchema = z.object({
     content: z.unknown(),
     createdAt: z.number(),
     invokedAt: z.number().nullable().optional(),
-    scheduledAt: z.number().nullable().optional()
+    scheduledAt: z.number().nullable().optional(),
+    // Live signal via messages-consumed (steered:true); not persisted by the hub.
+    steered: z.boolean().optional()
 })
 
 export type DecryptedMessage = z.infer<typeof DecryptedMessageSchema>
@@ -463,7 +466,9 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
     SessionChangedSchema.extend({
         type: z.literal('messages-consumed'),
         localIds: z.array(z.string()),
-        invokedAt: z.number()
+        invokedAt: z.number(),
+        // True when messages were steered into an active turn (not a normal queue drain).
+        steered: z.boolean().optional()
     }),
     SessionChangedSchema.extend({
         type: z.literal('message-cancelled'),
@@ -493,3 +498,11 @@ export const CancelMessageResponseSchema = z.discriminatedUnion('status', [
 ])
 
 export type CancelMessageResponse = z.infer<typeof CancelMessageResponseSchema>
+
+export const SteerQueuedMessageResponseSchema = z.discriminatedUnion('status', [
+    z.object({ status: z.literal('steered'), localId: z.string() }),
+    z.object({ status: z.literal('invoked'), message: DecryptedMessageSchema }),
+    z.object({ status: z.literal('failed'), error: z.string(), localId: z.string().nullable() }),
+])
+
+export type SteerQueuedMessageResponse = z.infer<typeof SteerQueuedMessageResponseSchema>
