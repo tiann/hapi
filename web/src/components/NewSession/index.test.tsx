@@ -173,8 +173,19 @@ vi.mock('./AgyModelSelector', () => ({
     )
 }))
 vi.mock('./LaunchEffortSelector', () => ({
-    LaunchEffortSelector: (props: { effort: string }) => (
-        <div data-testid="launch-effort">{props.effort}</div>
+    LaunchEffortSelector: (props: {
+        effort: string
+        isDisabled: boolean
+        onEffortChange: (effort: string) => void
+    }) => (
+        <button
+            type="button"
+            data-testid="launch-effort"
+            disabled={props.isDisabled}
+            onClick={() => props.onEffortChange('low')}
+        >
+            {props.effort}
+        </button>
     )
 }))
 vi.mock('./ModelSelector', () => ({
@@ -372,12 +383,16 @@ describe('NewSession launch preferences', () => {
         )
 
         const model = screen.getByTestId('model')
+        const effort = screen.getByTestId('launch-effort')
         const create = screen.getByTestId('create')
         expect(model).toBeDisabled()
+        expect(effort).toBeDisabled()
         expect(create).toBeDisabled()
         fireEvent.click(model)
+        fireEvent.click(effort)
         fireEvent.click(create)
         expect(model).toHaveTextContent('auto')
+        expect(effort).toHaveTextContent('auto')
         expect(mocks.spawnSession).not.toHaveBeenCalled()
 
         await act(async () => {
@@ -387,6 +402,8 @@ describe('NewSession launch preferences', () => {
         await waitFor(() => {
             expect(model).toHaveTextContent('deepseek-v4-flash[1m]')
             expect(model).toBeEnabled()
+            expect(effort).toHaveTextContent('high')
+            expect(effort).toBeEnabled()
             expect(create).toBeEnabled()
         })
     })
