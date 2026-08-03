@@ -217,23 +217,26 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                     flushPendingExecWrapper(message.callId, message);
                 }
             } else if (message.type === 'token_count') {
-                if (replayingUsage) {
-                    noteReplayUsageSample(replayUsage, message);
-                } else {
-                    session.recordCodexUsage(message);
+                const scopeRole = message.scopeRole ?? message.scope_role;
+                const messageThreadId = message.threadId ?? message.thread_id;
+                // Parent budget / composer gauge only; child samples keep native thread ids for hub deltas.
+                if (scopeRole !== 'child') {
+                    if (replayingUsage) {
+                        noteReplayUsageSample(replayUsage, message);
+                    } else {
+                        session.recordCodexUsage(message);
+                    }
                 }
-                const scopedMessage = context.replayedHistory
-                    ? { ...message, model: transcriptModel, hapiUsageScope: 'imported-history' }
-                    : primarySessionId
-                        ? {
-                            ...message,
-                            model: transcriptModel,
-                            threadId: primarySessionId,
-                            thread_id: primarySessionId,
-                            hapiUsageScope: 'managed'
-                        }
-                        : { ...message, model: transcriptModel };
-                session.sendAgentMessage(scopedMessage);
+                const managedThreadId = messageThreadId ?? primarySessionId;
+                const scopedUsage = context.replayedHistory
+                    ? { ...message, model: transcriptModel, hapiUsageScope: 'imported-history' as const }
+                    : {
+                        ...message,
+                        model: transcriptModel,
+                        ...(managedThreadId ? { threadId: managedThreadId, thread_id: managedThreadId } : {}),
+                        hapiUsageScope: 'managed' as const
+                    };
+                session.sendAgentMessage(scopedUsage);
             } else {
                 session.sendAgentMessage(message);
             }
