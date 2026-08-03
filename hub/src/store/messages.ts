@@ -240,6 +240,18 @@ export function getAllMessages(
     return rows.map(toStoredMessage)
 }
 
+export function getMessagesAfterSeq(
+    db: Database,
+    sessionId: string,
+    afterSeq: number
+): StoredMessage[] {
+    const rows = db.prepare(
+        'SELECT * FROM messages WHERE session_id = ? AND seq > ? ORDER BY seq ASC'
+    ).all(sessionId, afterSeq) as DbMessageRow[]
+
+    return rows.map(toStoredMessage)
+}
+
 export function getFirstMessages(
     db: Database,
     sessionId: string,

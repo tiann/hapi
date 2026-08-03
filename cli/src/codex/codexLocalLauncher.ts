@@ -202,7 +202,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                 }
                 session.onSessionFound(sessionId);
             },
-            onEvent: (event) => {
+            onEvent: (event, context) => {
                 const observedReasoningEffort = extractTurnContextReasoningEffort(event);
                 if (observedReasoningEffort !== undefined) {
                     session.setModelReasoningEffort(observedReasoningEffort);
@@ -242,7 +242,19 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                             flushPendingExecWrapper(message.callId, message);
                         }
                     } else {
-                        session.sendAgentMessage(message);
+                        const scopedMessage = message.type !== 'token_count'
+                            ? message
+                            : context.replayedHistory
+                                ? { ...message, hapiUsageScope: 'imported-history' }
+                                : primarySessionId
+                                    ? {
+                                        ...message,
+                                        threadId: primarySessionId,
+                                        thread_id: primarySessionId,
+                                        hapiUsageScope: 'managed'
+                                    }
+                                    : message;
+                        session.sendAgentMessage(scopedMessage);
                     }
                 }
                 if (converted?.finishedTurnId) {

@@ -731,3 +731,35 @@ export type SqliteStorageUsageResponse = {
     shmBytes: number
     totalBytes: number
 }
+
+export type UsageSummaryBucket = {
+    key: string
+    inputTokens: number
+    outputTokens: number
+    cacheReadTokens: number
+    cacheCreationTokens: number
+    totalTokens: number
+    uncachedTokens: number
+    requests: number
+}
+
+export type UsageSummaryResponse = {
+    range: {
+        from: number | null
+        to: number | null
+    }
+    totals: {
+        inputTokens: number
+        outputTokens: number
+        cacheReadTokens: number
+        cacheCreationTokens: number
+        totalTokens: number
+        uncachedTokens: number
+        requests: number
+        sessions: number
+    }
+    daily: Array<UsageSummaryBucket & { key: string }>
+    byAgent: UsageSummaryBucket[]
+    byModel: UsageSummaryBucket[]
+    updatedAt: number
+}
