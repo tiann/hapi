@@ -321,11 +321,20 @@ export function NewSession(props: {
                 options.push({ value: modelName, label: modelName })
             }
         }
+        if (
+            agent === 'claude'
+            && model !== 'auto'
+            && !options.some((option) => option.value === model)
+        ) {
+            options.splice(1, 0, { value: model, label: model })
+        }
         return options
-    }, [claudeCustomModels])
+    }, [agent, claudeCustomModels, model])
     const claudePreferredModelValues = useMemo(
-        () => agent === 'claude' ? claudeModelOptions.map((option) => option.value) : null,
-        [agent, claudeModelOptions]
+        () => agent === 'claude'
+            ? [...MODEL_OPTIONS.claude.map((option) => option.value), ...claudeCustomModels]
+            : null,
+        [agent, claudeCustomModels]
     )
     const claudeModelsLoading = agent === 'claude' && !claudeModelsLoaded
     const preferredModelCatalogReady = !claudeModelsLoading

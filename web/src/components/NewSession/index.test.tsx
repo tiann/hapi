@@ -195,19 +195,24 @@ vi.mock('./ModelSelector', () => ({
         isDisabled: boolean
         isLoading?: boolean
         onModelChange: (model: string) => void
-    }) => (
-        <>
-            <button
-                type="button"
-                data-testid="model"
-                disabled={props.isDisabled || props.isLoading}
-                onClick={() => props.onModelChange('gpt-5.6-terra')}
-            >
-                {props.model}
-            </button>
-            <div data-testid="model-options">{props.options?.map((option) => option.label).join(',')}</div>
-        </>
-    )
+    }) => {
+        const displayedModel = props.options && !props.options.some((option) => option.value === props.model)
+            ? props.options[0]?.value ?? props.model
+            : props.model
+        return (
+            <>
+                <button
+                    type="button"
+                    data-testid="model"
+                    disabled={props.isDisabled || props.isLoading}
+                    onClick={() => props.onModelChange('gpt-5.6-terra')}
+                >
+                    {displayedModel}
+                </button>
+                <div data-testid="model-options">{props.options?.map((option) => option.label).join(',')}</div>
+            </>
+        )
+    }
 }))
 vi.mock('./ReasoningEffortSelector', () => ({
     ReasoningEffortSelector: (props: { value: string; onChange: (effort: string) => void }) => (
@@ -829,5 +834,50 @@ describe('NewSession launch preferences', () => {
             expect(screen.getByTestId('model')).toHaveTextContent('gpt-5.6-terra')
             expect(screen.getByTestId('reasoning')).toHaveTextContent('max')
         })
+    })
+
+    it('keeps a browse-return custom Claude model visible when it is no longer configured', async () => {
+        savePreferredAgent('claude')
+        saveNewSessionFormDraft({
+            agent: 'claude',
+            model: 'deepseek-v4-flash[1m]',
+            cursorSelectedBase: 'auto',
+            machineId: 'machine-1',
+            effort: 'high',
+            modelReasoningEffort: 'default',
+            serviceTier: 'standard',
+            collaborationMode: 'default',
+            copilotAgentMode: 'interactive',
+            yoloMode: false,
+            codexFamilyPermissionMode: 'default',
+            grokPermissionMode: 'default',
+            sessionType: 'simple',
+            worktreeName: ''
+        })
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'session-1' })
+        const claudeApi = {
+            getClaudeCustomModels: vi.fn().mockResolvedValue({ models: [] })
+        } as unknown as ApiClient
+
+        render(
+            <NewSession
+                api={claudeApi}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('model')).toHaveTextContent('deepseek-v4-flash[1m]')
+            expect(screen.getByTestId('create')).toBeEnabled()
+        })
+        fireEvent.click(screen.getByTestId('create'))
+
+        await waitFor(() => expect(mocks.spawnSession).toHaveBeenCalledWith(
+            expect.objectContaining({ model: 'deepseek-v4-flash[1m]' })
+        ))
     })
 })
