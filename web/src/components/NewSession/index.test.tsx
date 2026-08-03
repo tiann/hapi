@@ -15,6 +15,8 @@ const mocks = vi.hoisted(() => ({
     notification: vi.fn(),
     checkPathsExists: vi.fn(),
     codexModelsLoading: false,
+    agyModelsLoading: false,
+    agyModels: [{ modelId: 'gemini-3.6-flash-low', name: 'Gemini 3.6 Flash (Low)' }],
     directoryExists: undefined as boolean | undefined
 }))
 
@@ -79,9 +81,11 @@ vi.mock('@/hooks/queries/useCodexModels', () => ({
 }))
 vi.mock('@/hooks/queries/useAgyModels', () => ({
     useAgyModels: () => ({
-        models: [],
-        isLoading: false,
-        error: null
+        availableModels: mocks.agyModels,
+        currentModelId: null,
+        isLoading: mocks.agyModelsLoading,
+        error: null,
+        refetch: vi.fn()
     })
 }))
 vi.mock('@/hooks/queries/useCursorModelsForMachine', () => ({
@@ -174,6 +178,8 @@ describe('NewSession launch preferences', () => {
         mocks.checkPathsExists.mockReset()
         mocks.checkPathsExists.mockImplementation(async () => ({ 'C:\\repo': mocks.directoryExists }))
         mocks.codexModelsLoading = false
+        mocks.agyModelsLoading = false
+        mocks.agyModels = [{ modelId: 'gemini-3.6-flash-low', name: 'Gemini 3.6 Flash (Low)' }]
         mocks.directoryExists = true
         savePreferredAgent('codex')
     })
@@ -308,6 +314,32 @@ describe('NewSession launch preferences', () => {
         await waitFor(() => expect(screen.getByTestId('agy-model')).toHaveTextContent('gemini-3.6-flash-low'))
     })
 
+    it('falls back to Default when a browse-return AGY model is no longer advertised', async () => {
+        savePreferredAgent('agy')
+        saveNewSessionFormDraft({
+            agent: 'agy', model: 'removed-model', cursorSelectedBase: 'auto', machineId: 'machine-1',
+            effort: 'auto', modelReasoningEffort: 'default', serviceTier: 'standard', collaborationMode: 'default',
+            yoloMode: false, grokPermissionMode: 'default', sessionType: 'simple', worktreeName: ''
+        })
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        await waitFor(() => expect(screen.getByTestId('agy-model')).toHaveTextContent('auto'))
+    })
+
+    it('falls back to Default when a preferred AGY model is no longer advertised', async () => {
+        savePreferredAgent('agy')
+        savePreferredLaunchSettings('machine-1', 'agy', { model: 'removed-model', cursorSelectedBase: 'auto', effort: 'auto', modelReasoningEffort: 'default' })
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        await waitFor(() => expect(screen.getByTestId('agy-model')).toHaveTextContent('auto'))
+    })
+
+    it('blocks Create while a remembered AGY model is awaiting catalog validation', async () => {
+        savePreferredAgent('agy')
+        savePreferredLaunchSettings('machine-1', 'agy', { model: 'gemini-3.6-flash-low', cursorSelectedBase: 'auto', effort: 'auto', modelReasoningEffort: 'default' })
+        mocks.agyModelsLoading = true
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        await waitFor(() => expect(screen.getByTestId('create')).toBeDisabled())
+    })
+
     it('persists the selected AGY model only after a successful launch', async () => {
         savePreferredAgent('agy')
         mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'agy-session' })
@@ -322,6 +354,10 @@ describe('NewSession launch preferences', () => {
     it('does not overwrite AGY model preference after a failed launch', async () => {
         savePreferredAgent('agy')
         savePreferredLaunchSettings('machine-1', 'agy', { model: 'gemini-3.5-flash-low', cursorSelectedBase: 'auto', effort: 'auto', modelReasoningEffort: 'default' })
+        mocks.agyModels = [
+            { modelId: 'gemini-3.5-flash-low', name: 'Gemini 3.5 Flash (Low)' },
+            { modelId: 'gemini-3.6-flash-low', name: 'Gemini 3.6 Flash (Low)' }
+        ]
         mocks.spawnSession.mockResolvedValue({ type: 'error', message: 'spawn failed' })
         render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
         await waitFor(() => expect(screen.getByTestId('agy-model')).toHaveTextContent('gemini-3.5-flash-low'))

@@ -547,6 +547,26 @@ export function NewSession(props: {
     }, [agent, machineId])
 
     useEffect(() => {
+        if (
+            agent !== 'agy'
+            || agyModelsState.isLoading
+            || agyModelsState.error
+            || agySelectedModel === null
+        ) {
+            return
+        }
+        if (!agyModelsState.availableModels.some((candidate) => candidate.modelId === agySelectedModel)) {
+            setAgySelectedModel(null)
+        }
+    }, [
+        agent,
+        agyModelsState.availableModels,
+        agyModelsState.error,
+        agyModelsState.isLoading,
+        agySelectedModel
+    ])
+
+    useEffect(() => {
         // Restore a remembered model when it is still advertised for this cwd;
         // otherwise auto-pick the backend default.
         if (
@@ -1217,6 +1237,9 @@ export function NewSession(props: {
         (agent === 'codex'
             && (model !== 'auto' || modelReasoningEffort !== 'default')
             && codexModelsState.isLoading)
+        || (agent === 'agy'
+            && agySelectedModel !== null
+            && agyModelsState.isLoading)
         || (agent === 'cursor'
             && (model !== 'auto' || cursorSelectedBase !== 'auto')
             && cursorModelsState.isLoading)
