@@ -118,12 +118,8 @@ export function usePushNotifications(api: ApiClient | null) {
             let subscription = existing
             if (existing && readStoredVapidKey() !== publicKey) {
                 const staleEndpoint = existing.endpoint
-                try {
-                    await existing.unsubscribe()
-                } catch {
-                    // Ignore unsubscribe failures — subscribe() below still
-                    // issues a fresh subscription with the current key.
-                }
+                const unsubscribed = await existing.unsubscribe()
+                if (!unsubscribed) return false
                 // Prune the obsolete endpoint from the hub so it stops
                 // receiving failed sends (VapidPkHashMismatch) for a
                 // subscription that can no longer be reached.
@@ -185,9 +181,10 @@ export function usePushNotifications(api: ApiClient | null) {
 
             const endpoint = subscription.endpoint
             const success = await subscription.unsubscribe()
+            if (!success) return false
             await api.unsubscribePushNotifications({ endpoint })
             setIsSubscribed(false)
-            return success
+            return true
         } catch (error) {
             console.error('[PushNotifications] Failed to unsubscribe:', error)
             return false
