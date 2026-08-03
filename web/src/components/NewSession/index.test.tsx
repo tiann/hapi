@@ -124,6 +124,13 @@ vi.mock('./SessionTypeSelector', () => ({ SessionTypeSelector: () => null }))
 vi.mock('./GrokPermissionModeSelector', () => ({ GrokPermissionModeSelector: () => null }))
 vi.mock('./YoloToggle', () => ({ YoloToggle: () => null }))
 vi.mock('./OpencodeModelSelector', () => ({ OpencodeModelSelector: () => null }))
+vi.mock('./AgyModelSelector', () => ({
+    AgyModelSelector: (props: { selectedModel: string | null; onModelChange: (model: string | null) => void }) => (
+        <button type="button" data-testid="agy-model" onClick={() => props.onModelChange('gemini-3.6-flash-low')}>
+            {props.selectedModel ?? 'auto'}
+        </button>
+    )
+}))
 vi.mock('./LaunchEffortSelector', () => ({
     LaunchEffortSelector: (props: { effort: string }) => (
         <div data-testid="launch-effort">{props.effort}</div>
@@ -144,10 +151,11 @@ vi.mock('./ReasoningEffortSelector', () => ({
     )
 }))
 vi.mock('./ActionButtons', () => ({
-    ActionButtons: (props: { onCreate: () => void; canCreate: boolean }) => (
-        <button type="button" data-testid="create" disabled={!props.canCreate} onClick={props.onCreate}>
-            create
-        </button>
+    ActionButtons: (props: { onCreate: () => void; onChooseFolder?: () => void; canCreate: boolean }) => (
+        <>
+            <button type="button" data-testid="create" disabled={!props.canCreate} onClick={props.onCreate}>create</button>
+            {props.onChooseFolder ? <button type="button" data-testid="browse" onClick={props.onChooseFolder}>browse</button> : null}
+        </>
     )
 }))
 
@@ -287,6 +295,40 @@ describe('NewSession launch preferences', () => {
             effort: 'auto',
             modelReasoningEffort: 'max'
         })
+    })
+
+    it('restores the AGY model from a browse-return draft', async () => {
+        savePreferredAgent('agy')
+        saveNewSessionFormDraft({
+            agent: 'agy', model: 'gemini-3.6-flash-low', cursorSelectedBase: 'auto', machineId: 'machine-1',
+            effort: 'auto', modelReasoningEffort: 'default', serviceTier: 'standard', collaborationMode: 'default',
+            yoloMode: false, grokPermissionMode: 'default', sessionType: 'simple', worktreeName: ''
+        })
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        await waitFor(() => expect(screen.getByTestId('agy-model')).toHaveTextContent('gemini-3.6-flash-low'))
+    })
+
+    it('persists the selected AGY model only after a successful launch', async () => {
+        savePreferredAgent('agy')
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'agy-session' })
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        fireEvent.click(screen.getByTestId('agy-model'))
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('agy-session'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({ agent: 'agy', model: 'gemini-3.6-flash-low' }))
+        expect(loadPreferredLaunchSettings('machine-1', 'agy')?.model).toBe('gemini-3.6-flash-low')
+    })
+
+    it('does not overwrite AGY model preference after a failed launch', async () => {
+        savePreferredAgent('agy')
+        savePreferredLaunchSettings('machine-1', 'agy', { model: 'gemini-3.5-flash-low', cursorSelectedBase: 'auto', effort: 'auto', modelReasoningEffort: 'default' })
+        mocks.spawnSession.mockResolvedValue({ type: 'error', message: 'spawn failed' })
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        await waitFor(() => expect(screen.getByTestId('agy-model')).toHaveTextContent('gemini-3.5-flash-low'))
+        fireEvent.click(screen.getByTestId('agy-model'))
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.notification).toHaveBeenCalledWith('error'))
+        expect(loadPreferredLaunchSettings('machine-1', 'agy')?.model).toBe('gemini-3.5-flash-low')
     })
 
     it('spawns only once when Create is activated twice during directory validation', async () => {
