@@ -63,6 +63,27 @@ describe('browser-local realtime transcription', () => {
         session.cancel()
     })
 
+    it('shares one successful native probe across concurrent browser-local starts', async () => {
+        let resolveAvailable!: (status: string) => void
+        const available = vi.fn(() => new Promise<string>((resolve) => { resolveAvailable = resolve }))
+        const onConstruct = vi.fn()
+        installBrowserLocalSpeechRecognition(available, onConstruct)
+        const firstCallbacks = browserLocalCallbacks()
+        const secondCallbacks = browserLocalCallbacks()
+
+        const first = startBrowserLocalTranscription({ language: 'en-US', callbacks: firstCallbacks })
+        const second = startBrowserLocalTranscription({ language: 'en-US', callbacks: secondCallbacks })
+        await vi.waitFor(() => expect(available).toHaveBeenCalledOnce())
+
+        resolveAvailable('available')
+        const sessions = await Promise.all([first, second])
+
+        expect(onConstruct).toHaveBeenCalledTimes(2)
+        expect(firstCallbacks.onConnected).toHaveBeenCalledOnce()
+        expect(secondCallbacks.onConnected).toHaveBeenCalledOnce()
+        sessions.forEach((session) => session.cancel())
+    })
+
     it('surfaces a synchronous available failure', async () => {
         const available = vi.fn(() => { throw new Error('native failure') })
         installBrowserLocalSpeechRecognition(available)
