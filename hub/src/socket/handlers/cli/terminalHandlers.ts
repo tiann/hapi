@@ -33,36 +33,36 @@ export type TerminalHandlersDeps = {
 export function registerTerminalHandlers(socket: CliSocketWithData, deps: TerminalHandlersDeps): void {
     const { terminalRegistry, terminalNamespace, resolveSessionAccess, emitAccessError } = deps
 
-    const forwardTerminalEvent = (event: string, payload: { sessionId: string; terminalId: string } & Record<string, unknown>) => {
+    const resolveOwnedTerminal = (payload: { sessionId: string; terminalId: string }) => {
         const entry = terminalRegistry.get(payload.terminalId)
-        if (!entry) {
-            return
-        }
-        if (entry.cliSocketId !== socket.id) {
-            return
-        }
-        if (payload.sessionId !== entry.sessionId) {
-            return
-        }
+        if (!entry || entry.cliSocketId !== socket.id || payload.sessionId !== entry.sessionId) return null
         const sessionAccess = resolveSessionAccess(payload.sessionId)
         if (!sessionAccess.ok) {
             emitAccessError('session', payload.sessionId, sessionAccess.reason)
-            return
+            return null
         }
         const terminalSocket = terminalNamespace.sockets.get(entry.socketId)
-        if (!terminalSocket) {
-            return
-        }
-        terminalSocket.emit(event, payload)
+        return terminalSocket ? { entry, terminalSocket } : null
     }
+
+    const forwardTerminalEvent = (event: string, payload: { sessionId: string; terminalId: string } & Record<string, unknown>) => {
+        const owned = resolveOwnedTerminal(payload)
+        if (!owned) return false
+        owned.terminalSocket.emit(event, payload)
+        return true
+    }
+
+    const ownsAgentSession = (sessionId: string): boolean => socket.rooms.has(`session:${sessionId}`)
+
 
     socket.on('terminal:ready', (data: unknown) => {
         const parsed = terminalReadySchema.safeParse(data)
         if (!parsed.success) {
             return
         }
-        terminalRegistry.markActivity(parsed.data.terminalId)
-        forwardTerminalEvent('terminal:ready', parsed.data)
+        if (forwardTerminalEvent('terminal:ready', parsed.data)) {
+            terminalRegistry.markActivity(parsed.data.terminalId)
+        }
     })
 
     socket.on('terminal:output', (data: unknown) => {
@@ -70,24 +70,13 @@ export function registerTerminalHandlers(socket: CliSocketWithData, deps: Termin
         if (!parsed.success) {
             return
         }
-        const entry = terminalRegistry.get(parsed.data.terminalId)
-        if (!entry || entry.cliSocketId !== socket.id || entry.sessionId !== parsed.data.sessionId) {
-            return
-        }
-        const sessionAccess = resolveSessionAccess(parsed.data.sessionId)
-        if (!sessionAccess.ok) {
-            emitAccessError('session', parsed.data.sessionId, sessionAccess.reason)
-            return
-        }
-        const terminalSocket = terminalNamespace.sockets.get(entry.socketId)
-        if (!terminalSocket) {
-            return
-        }
+        const owned = resolveOwnedTerminal(parsed.data)
+        if (!owned) return
         terminalRegistry.markActivity(parsed.data.terminalId)
         // Keep a scrollback buffer so reconnecting web clients see the
         // current terminal content instead of a black screen.
         appendUserTerminalOutput(parsed.data.sessionId, parsed.data.terminalId, parsed.data.data)
-        terminalSocket.emit('terminal:output', parsed.data)
+        owned.terminalSocket.emit('terminal:output', parsed.data)
     })
 
     socket.on('agent-terminal:output', (data: unknown) => {
@@ -95,6 +84,7 @@ export function registerTerminalHandlers(socket: CliSocketWithData, deps: Termin
         if (!parsed.success) {
             return
         }
+        if (!ownsAgentSession(parsed.data.sessionId)) return
         const sessionAccess = resolveSessionAccess(parsed.data.sessionId)
         if (!sessionAccess.ok) {
             emitAccessError('session', parsed.data.sessionId, sessionAccess.reason)
@@ -114,6 +104,7 @@ export function registerTerminalHandlers(socket: CliSocketWithData, deps: Termin
         if (!parsed.success) {
             return
         }
+        if (!ownsAgentSession(parsed.data.sessionId)) return
         const sessionAccess = resolveSessionAccess(parsed.data.sessionId)
         if (!sessionAccess.ok) {
             emitAccessError('session', parsed.data.sessionId, sessionAccess.reason)

@@ -4,6 +4,7 @@ import type { CliSocketWithData } from '../../socketTypes'
 import { TerminalRegistry } from '../../terminalRegistry'
 import { registerTerminalHandlers } from './terminalHandlers'
 import { clearUserTerminalBuffer, getUserTerminalBuffer } from '../../userTerminalBuffer'
+import { appendAgentTerminalOutput, clearAgentTerminalBuffer, getAgentTerminalReplay } from '../../agentTerminalBuffer'
 
 type EmittedEvent = {
     event: string
@@ -13,6 +14,7 @@ type EmittedEvent = {
 class FakeSocket {
     readonly id: string
     readonly data: Record<string, unknown> = {}
+    readonly rooms = new Set<string>()
     readonly emitted: EmittedEvent[] = []
     private readonly handlers = new Map<string, (...args: unknown[]) => void>()
 
@@ -81,6 +83,7 @@ describe('cli terminal handlers', () => {
         const cliSocket = new FakeSocket('cli-socket')
         const terminalNamespace = new FakeNamespace()
         const terminalRegistry = new TerminalRegistry({ idleTimeoutMs: 0 })
+        cliSocket.rooms.add('session:session-1')
 
         registerTerminalHandlers(cliSocket as unknown as CliSocketWithData, {
             terminalRegistry,
@@ -112,6 +115,7 @@ describe('cli terminal handlers', () => {
         const terminalNamespace = new FakeNamespace()
         const terminalRegistry = new TerminalRegistry({ idleTimeoutMs: 0 })
         const accessErrors: { scope: string; id: string; reason: string }[] = []
+        cliSocket.rooms.add('session:session-1')
 
         registerTerminalHandlers(cliSocket as unknown as CliSocketWithData, {
             terminalRegistry,
@@ -132,6 +136,44 @@ describe('cli terminal handlers', () => {
         expect(accessErrors).toEqual([
             { scope: 'session', id: 'session-1', reason: 'access-denied' }
         ])
+    })
+
+    it('does not refresh a replacement terminal from a stale CLI ready event', () => {
+        const staleCli = new FakeSocket('stale-cli')
+        const ownerCli = new FakeSocket('owner-cli')
+        const terminalSocket = new FakeSocket('terminal-socket')
+        const terminalNamespace = new FakeNamespace()
+        terminalNamespace.sockets.set(terminalSocket.id, terminalSocket)
+        const terminalRegistry = new TerminalRegistry({ idleTimeoutMs: 60_000 })
+        terminalRegistry.register('terminal-1', 'session-1', terminalSocket.id, ownerCli.id)
+        const before = terminalRegistry.get('terminal-1')?.idleTimer
+        registerTerminalHandlers(staleCli as unknown as CliSocketWithData, {
+            terminalRegistry, terminalNamespace: terminalNamespace as never,
+            resolveSessionAccess: () => ({ ok: true, value: {} as StoredSession }),
+            emitAccessError: () => { throw new Error('Unexpected access error') }
+        })
+        staleCli.trigger('terminal:ready', { sessionId: 'session-1', terminalId: 'terminal-1' })
+        expect(terminalRegistry.get('terminal-1')?.idleTimer).toBe(before)
+        terminalRegistry.remove('terminal-1')
+    })
+
+    it('rejects foreign agent-terminal output and reset without mutating replay', () => {
+        const foreignCli = new FakeSocket('foreign-cli')
+        foreignCli.rooms.add('session:session-a')
+        const terminalNamespace = new FakeNamespace()
+        const terminalRegistry = new TerminalRegistry({ idleTimeoutMs: 0 })
+        clearAgentTerminalBuffer('session-b')
+        appendAgentTerminalOutput('session-b', 'owned-screen')
+        registerTerminalHandlers(foreignCli as unknown as CliSocketWithData, {
+            terminalRegistry, terminalNamespace: terminalNamespace as never,
+            resolveSessionAccess: () => ({ ok: true, value: {} as StoredSession }),
+            emitAccessError: () => { throw new Error('Unexpected access error') }
+        })
+        foreignCli.trigger('agent-terminal:output', { sessionId: 'session-b', terminalId: 'agent', data: 'foreign' })
+        foreignCli.trigger('agent-terminal:reset', { sessionId: 'session-b' })
+        expect(getAgentTerminalReplay('session-b')).toBe('owned-screen')
+        expect(terminalNamespace.roomEmits).toHaveLength(0)
+        clearAgentTerminalBuffer('session-b')
     })
 
     it('does not buffer output for unknown or removed terminals', () => {
