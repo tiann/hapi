@@ -37,6 +37,7 @@ import type { PiThinkingLevel } from '@hapi/protocol'
 import { markSkillUsed } from '@/lib/recent-skills'
 import { useComposerDraft } from '@/hooks/useComposerDraft'
 import { useComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
+import { oppositeComposerSteerBehavior, useComposerSteerBehavior } from '@/hooks/useComposerSteerBehavior'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { Autocomplete } from '@/components/ChatInput/Autocomplete'
 import { StatusBar } from '@/components/AssistantChat/StatusBar'
@@ -216,6 +217,12 @@ export function ModelEffortSettingsSection(props: {
 export function HappyComposer(props: {
     sessionId?: string
     disabled?: boolean
+    /**
+     * Stages how the send about to happen should be delivered if the agent is
+     * mid-turn (see useComposerSteerBehavior). Called immediately before
+     * composer().send(), because assistant-ui's send() carries no arguments.
+     */
+    onStageSteerIntent?: (steer: boolean | undefined) => void
     permissionMode?: PermissionMode
     collaborationMode?: CodexCollaborationMode
     copilotAgentMode?: CopilotAgentMode
@@ -368,6 +375,7 @@ export function HappyComposer(props: {
 
     const api = useAui()
     const { composerEnterBehavior } = useComposerEnterBehavior()
+    const { composerSteerBehavior } = useComposerSteerBehavior()
     const composerText = useAuiState((s) => s.composer.text)
     const attachments = useAuiState((s) => s.composer.attachments)
     const threadIsRunning = useAuiState((s) => s.thread.isRunning)
@@ -889,7 +897,7 @@ export function HappyComposer(props: {
         ? undefined
         : handleUserClearSchedule
 
-    const handleSend = useCallback(async () => {
+    const handleSend = useCallback(async (useOppositeSteerBehavior = false) => {
         // Rich chips must be serialized into composer.text before any send or
         // scratchlist park snapshot (RichComposerInput contract).
         if (richMentionsEnabled && richInputRef.current) {
@@ -943,6 +951,13 @@ export function HappyComposer(props: {
             userScheduleGeneration: userScheduleGenerationRef.current,
             userAttachmentGeneration: userAttachmentGenerationRef.current,
         }
+        // Staged here rather than earlier: the scratchlist-park branch above
+        // returns without sending, and a staged intent left behind would then
+        // be picked up by whatever send came next.
+        const steerBehavior = useOppositeSteerBehavior
+            ? oppositeComposerSteerBehavior(composerSteerBehavior)
+            : composerSteerBehavior
+        props.onStageSteerIntent?.(steerBehavior === 'steer')
         api.composer().send()
         // SessionChat owns clearing the schedule — it clears only after awaiting
         // the send hook's accepted result, which covers both pre-mutation guards
@@ -961,13 +976,15 @@ export function HappyComposer(props: {
         onSuppressSendErrorRestore,
         pendingSchedule,
         props.onParkScratchlist,
+        props.onStageSteerIntent,
         props.scratchlistMode,
+        composerSteerBehavior,
         richMentionsEnabled,
         sendError,
     ])
 
-    const flushAndSend = useCallback(() => {
-        void handleSend()
+    const flushAndSend = useCallback((useOppositeSteerBehavior = false) => {
+        void handleSend(useOppositeSteerBehavior)
     }, [handleSend])
 
     const handleKeyDown = useCallback((e: ReactKeyboardEvent<HTMLTextAreaElement | HTMLDivElement>) => {
@@ -979,7 +996,10 @@ export function HappyComposer(props: {
         }
 
         // Shift+Enter inserts a newline (textarea default; rich path inserts <br>).
-        if (key === 'Enter' && e.shiftKey) {
+        // Ctrl/Cmd+Shift+Enter is excluded: with Enter set to "insert newline"
+        // that combo is the secondary send (see the Enter branch below), and
+        // plain Shift+Enter still covers the newline it used to give there.
+        if (key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.metaKey) {
             return
         }
 
@@ -991,19 +1011,24 @@ export function HappyComposer(props: {
             return
         }
 
-        // Only plain Enter (no modifiers) sends; other modifier combos are ignored
+        // Two send shortcuts: the primary one sends with the configured
+        // steer/queue behaviour, the secondary one sends with the other. Which
+        // key is primary depends on composerEnterBehavior, so the secondary is
+        // always "the primary plus one more modifier" rather than a fixed combo:
+        //   Enter sends     -> Enter = primary,            Ctrl/Cmd+Enter = secondary
+        //   Enter newlines  -> Ctrl/Cmd+Enter = primary,   Ctrl/Cmd+Shift+Enter = secondary
         if (key === 'Enter') {
             if (composerEnterBehavior === 'newline') {
                 if ((e.ctrlKey || e.metaKey) && !e.altKey && canSend) {
                     e.preventDefault()
-                    flushAndSend()
+                    flushAndSend(e.shiftKey)
                     setShowContinueHint(false)
                 }
                 return
             }
             e.preventDefault()
-            if (!e.ctrlKey && !e.altKey && !e.metaKey && canSend) {
-                flushAndSend()
+            if (!e.altKey && canSend) {
+                flushAndSend(e.ctrlKey || e.metaKey)
                 setShowContinueHint(false)
             }
             return

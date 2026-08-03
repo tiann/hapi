@@ -468,6 +468,16 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             allowedTools: messageAllowedTools,
             disallowedTools: messageDisallowedTools
         };
+        // Steering (opt-in, see isSteeringEnabled in claudeRemoteLauncher): if a
+        // turn is already running and this message is compatible with it, hand
+        // it straight to that turn rather than making the user wait for the
+        // turn to end. Returns false whenever that is not safe, which is the
+        // stock queue behaviour below. Only plain messages are offered --
+        // /clear and /compact returned above via pushIsolateAndClear().
+        if (currentSessionRef.current?.trySteer(formattedText, enhancedMode, localId, message.meta?.steer)) {
+            logger.debugLargeJson('User message steered into the live turn:', message)
+            return;
+        }
         messageQueue.push(formattedText, enhancedMode, localId);
         logger.debugLargeJson('User message pushed to queue:', message)
     };

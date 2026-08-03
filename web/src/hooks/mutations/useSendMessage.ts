@@ -18,6 +18,11 @@ type SendMessageInput = {
     createdAt: number
     attachments?: AttachmentMetadata[]
     scheduledAt?: number | null
+    /**
+     * Delivery intent when the agent is mid-turn (see the composer's steer
+     * setting). Undefined leaves the decision to the CLI.
+     */
+    steer?: boolean
 }
 
 type BlockedReason = 'no-api' | 'no-session' | 'pending'
@@ -142,7 +147,7 @@ export function useSendMessage(
     // resume happens before mutation.mutate(), and a sync `true` would let the
     // caller clear UI state (e.g. pendingSchedule) before knowing whether
     // resume succeeded — see SessionChat.handleSend.
-    sendMessage: (text: string, attachments?: AttachmentMetadata[], scheduledAt?: number | null) => Promise<boolean>
+    sendMessage: (text: string, attachments?: AttachmentMetadata[], scheduledAt?: number | null, steer?: boolean) => Promise<boolean>
     retryMessage: (localId: string) => boolean
     isSending: boolean
 } {
@@ -157,7 +162,7 @@ export function useSendMessage(
             if (!api) {
                 throw new Error('API unavailable')
             }
-            await api.sendMessage(input.sessionId, input.text, input.localId, input.attachments, input.scheduledAt)
+            await api.sendMessage(input.sessionId, input.text, input.localId, input.attachments, input.scheduledAt, input.steer)
         },
         onMutate: async (input) => {
             const successStatus = isSessionThinkingRef.current ? 'queued' as const : 'sent' as const
@@ -205,7 +210,7 @@ export function useSendMessage(
         },
     })
 
-    const sendMessage = async (text: string, attachments?: AttachmentMetadata[], scheduledAt?: number | null): Promise<boolean> => {
+    const sendMessage = async (text: string, attachments?: AttachmentMetadata[], scheduledAt?: number | null, steer?: boolean): Promise<boolean> => {
         if (!api) {
             options?.onBlocked?.('no-api')
             haptic.notification('error')
@@ -265,6 +270,7 @@ export function useSendMessage(
             createdAt,
             attachments,
             scheduledAt,
+            steer,
         })
         return true
     }

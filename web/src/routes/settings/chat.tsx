@@ -1,5 +1,6 @@
 import { useTranslation } from '@/lib/use-translation'
 import { getComposerEnterBehaviorOptions, useComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
+import { getComposerSteerBehaviorOptions, useComposerSteerBehavior } from '@/hooks/useComposerSteerBehavior'
 import { getTerminalToolDisplayModeOptions, useTerminalToolDisplayMode } from '@/hooks/useTerminalToolDisplayMode'
 import { useCodexExplorationCollapse } from '@/hooks/useCodexExplorationCollapse'
 import {
@@ -48,6 +49,7 @@ function ChatSurfaceColorControl(props: {
 export default function SettingsChatPage() {
     const { t } = useTranslation()
     const { composerEnterBehavior, setComposerEnterBehavior } = useComposerEnterBehavior()
+    const { composerSteerBehavior, setComposerSteerBehavior } = useComposerSteerBehavior()
     const { terminalToolDisplayMode, setTerminalToolDisplayMode } = useTerminalToolDisplayMode()
     const { codexExplorationCollapsed, setCodexExplorationCollapsed } = useCodexExplorationCollapse()
     const { toolGroupBackground, userMessageBackground, setToolGroupBackground, setUserMessageBackground } = useChatSurfaceColors()
@@ -59,6 +61,13 @@ export default function SettingsChatPage() {
                     value={composerEnterBehavior}
                     options={getComposerEnterBehaviorOptions().map((option) => ({ value: option.value, label: t(option.labelKey) }))}
                     onChange={setComposerEnterBehavior}
+                />
+                <SettingsChoiceGroup
+                    label={t('settings.chat.steerBehavior')}
+                    description={t('settings.chat.steerBehavior.hint')}
+                    value={composerSteerBehavior}
+                    options={getComposerSteerBehaviorOptions().map((option) => ({ value: option.value, label: t(option.labelKey) }))}
+                    onChange={setComposerSteerBehavior}
                 />
                 <ComposerToolbarLayoutControl />
             </SettingsSection>

@@ -856,6 +856,7 @@ async uploadScratchlistAttachment(
             }>
             sentFrom?: 'telegram-bot' | 'webapp'
             scheduledAt?: number | null
+            steer?: boolean
         }
     ): Promise<void> {
         if (this.historyActionsInFlight.has(sessionId)) {

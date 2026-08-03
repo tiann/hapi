@@ -37,6 +37,17 @@ export class MessageQueue2<T> {
     }
 
     /**
+     * Hash a mode with this queue's own hasher. Callers that bypass the queue
+     * -- the Claude steering hook is the only one today -- must decide "is this
+     * message compatible with the batch already in flight?" using exactly the
+     * rule collectBatch() batches by, so the two can never disagree about what
+     * counts as the same mode.
+     */
+    hashMode(mode: T): string {
+        return this.modeHasher(mode);
+    }
+
+    /**
      * Push a message to the queue with a mode.
      */
     push(message: string, mode: T, localId?: string): void {

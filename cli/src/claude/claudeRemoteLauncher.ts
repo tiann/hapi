@@ -1,7 +1,7 @@
 import React from "react";
 import { Session } from "./session";
 import { RemoteModeDisplay } from "@/ui/ink/RemoteModeDisplay";
-import { claudeRemote } from "./claudeRemote";
+import { claudeRemote, type ClaudeSteer } from "./claudeRemote";
 import { PermissionHandler } from "./utils/permissionHandler";
 import { Future } from "@/utils/future";
 import { SDKAssistantMessage, SDKMessage, SDKUserMessage } from "./sdk";
@@ -36,6 +36,26 @@ interface PermissionsField {
 // is dropped, so a later unrelated failure gets its own fresh budget. Only
 // the one message is given up on -- the session/process itself is not ended.
 const MAX_IMMEDIATE_RESPAWN_FAILURES = 3;
+
+// Opt-in. With steering off (the default), a user message that arrives while a
+// turn is running waits in session.queue until that turn's `result`, and is
+// then delivered -- batched with anything else that piled up behind it -- as
+// the next turn. With steering on, a message that is compatible with the
+// running process is injected into the turn instead, and Claude picks it up at
+// the next step boundary of its tool loop.
+//
+// This is only the fallback for senders that state no preference. The web
+// composer sends one per message (MessageMetaSchema.steer), so in practice
+// this covers older clients, the Telegram bot and MCP callers -- and gives
+// them an escape hatch that needs no rebuild.
+//
+// Defaulting to off because steering widens what can reach a running Claude
+// process: the queue path is the only one the relaunch/mode-gate logic below
+// models, so anything the steering guards fail to exclude bypasses that
+// reasoning entirely.
+function isSteeringEnabled(): boolean {
+    return process.env.HAPI_CLAUDE_STEERING === '1';
+}
 
 function getRespawnBackoffMs(): number {
     const raw = process.env.CLAUDE_REMOTE_RESPAWN_BACKOFF_MS;
@@ -341,6 +361,22 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 this.abortFuture = new Future<void>();
                 let modeHash: string | null = null;
                 let mode: EnhancedMode | null = null;
+                // Steering channel for this attempt, published by claudeRemote
+                // once its Claude process exists and revoked when it is done.
+                // Both of these carry the same `as` cast as inFlightMessage
+                // below, and for the same reason: they are only ever assigned
+                // from inside callbacks, so TS's control-flow analysis narrows
+                // them to their initializer type at the steer hook and would
+                // reject `steer(...)` as not-callable / treat `!turnInFlight`
+                // as always true.
+                let steer: ClaudeSteer | null = null as ClaudeSteer | null;
+                // True only between "a message was handed to the SDK" and the
+                // onReady() that reports the resulting turn finished. This is
+                // exactly the window in which there is a live turn to steer;
+                // outside it the queue path must run, because it -- not this
+                // file's steering hook -- is what respawns the process and
+                // applies mode changes.
+                let turnInFlight = false as boolean;
                 // True once onReady() has fired at least once during this
                 // attempt. Used to distinguish an immediate/deterministic
                 // failure (never reached ready) from a failure after real
@@ -379,6 +415,93 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 // typecheck with "Property 'isolate' does not exist on type
                 // 'never'" (verified against `bun run typecheck`).
                 let inFlightMessage: InFlightMessage | null = null as InFlightMessage | null;
+
+                // Steering: offered every user message that reaches
+                // runClaude.ts's queue push, and accepts only the ones that are
+                // safe to fold into the turn already running. Each guard covers
+                // a case the queue path handles and this one cannot:
+                //  - turnInFlight/steer: no live turn means nothing to steer
+                //    into, and the queue path is what spawns/respawns Claude.
+                //  - modeHash: a differing hash means the message needs a
+                //    process started with different CLI flags (plan/auto,
+                //    model, system prompts, tool lists), so it has to go
+                //    through the park-and-relaunch gate in nextMessage().
+                //  - isolate: /clear and /compact go through
+                //    pushIsolateAndClear() in runClaude.ts and never reach
+                //    this hook, so they keep their "processed alone" promise.
+                //  - aborted: between abort() and the teardown that revokes the
+                //    channel there is a window where `steer` and `turnInFlight`
+                //    are both still set but the stream is being killed.
+                //    Injecting there pushes into a stream nobody drains and
+                //    acks the message, while claudeRemote swallows the
+                //    AbortError and returns normally -- so the launcher's catch,
+                //    and with it restoreInFlightMessage, never runs and the
+                //    message is simply lost. The queue path survives an abort
+                //    (the item stays in session.queue and the next attempt
+                //    replays it), so once aborted the queue must own it.
+                session.setSteerHook((text, messageMode, localId, intent) => {
+                    // The sender's explicit choice wins; HAPI_CLAUDE_STEERING
+                    // only decides for senders that expressed none (older
+                    // clients, Telegram, MCP).
+                    if (!(intent ?? isSteeringEnabled())) return false;
+                    if (!steer || !turnInFlight) return false;
+                    if (controller.signal.aborted) return false;
+                    if (!modeHash || session.queue.hashMode(messageMode) !== modeHash) return false;
+
+                    // acceptEdits/bypassPermissions are emulated through
+                    // canCallTool rather than a CLI flag, so they are excluded
+                    // from the mode hash on purpose -- which means a switch
+                    // between them reaches here, and the handler still has to
+                    // be told about it.
+                    permissionHandler.handleModeChange(messageMode.permissionMode);
+                    steer(session.expandSkillReference(text), messageMode);
+
+                    // A steered message never entered session.queue, so
+                    // collectBatch()'s onBatchConsumed ack never fires for it.
+                    // Without this the hub would leave it sitting in the
+                    // "Queued" list forever.
+                    //
+                    // Acked after a flush for the same reason nextMessage()
+                    // flushes before consuming a turn: the hub stamps invokedAt
+                    // when it sees the ack, so acking while this turn's agent
+                    // messages are still sitting in OutgoingMessageQueue would
+                    // sort them permanently below the message that interrupted
+                    // them. The flush is deliberately NOT awaited before the
+                    // injection above -- steering is only useful if it reaches
+                    // Claude at the next step boundary, and the ack is just
+                    // bookkeeping.
+                    if (localId) {
+                        void messageQueue.flush()
+                            .then(() => session.client.emitMessagesConsumed([localId]))
+                            .catch((error) => {
+                                logger.debug('[remote]: steer ack flush failed, acking anyway', error);
+                                session.client.emitMessagesConsumed([localId]);
+                            });
+                    }
+                    // Fold it into the batch currently attributed to this turn
+                    // so a crash mid-turn restores it along with the rest
+                    // instead of dropping it (see restoreInFlightMessage).
+                    //
+                    // This buys at-least-once, not exactly-once, and the cost
+                    // is worth stating: Claude may already have read this
+                    // message off stdin and written it into its session JSONL
+                    // before dying. The next attempt resumes that same session,
+                    // so the restored copy can be a second delivery of a
+                    // message the transcript already contains. That is the same
+                    // trade the first message of a turn has always made here --
+                    // restoreInFlightMessage exists precisely to retry rather
+                    // than lose -- and steering deliberately does not invent a
+                    // different rule for itself. Dropping steered messages on a
+                    // crash instead would lose input the user already saw
+                    // acknowledged, which is the worse failure of the two.
+                    if (inFlightMessage) {
+                        inFlightMessage.items.push({ message: text, localId });
+                    }
+
+                    logger.debug('[remote]: steered message into the live turn');
+                    return true;
+                });
+
                 try {
                     await claudeRemote({
                         sessionId: session.sessionId,
@@ -423,6 +546,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 sdkToLogConverter.updateSelectedModel(p.mode.model ?? null);
                                 inFlightMessage = { items: p.items, mode: p.mode, isolate: p.isolate };
                                 deliveredMessageThisAttempt = true;
+                                turnInFlight = true;
                                 return { ...p, message: session.expandSkillReference(p.message) };
                             }
 
@@ -453,6 +577,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 sdkToLogConverter.updateSelectedModel(mode.model ?? null);
                                 inFlightMessage = { items: msg.items, mode: msg.mode, isolate: msg.isolate };
                                 deliveredMessageThisAttempt = true;
+                                turnInFlight = true;
                                 return {
                                     message: session.expandSkillReference(msg.message),
                                     mode: msg.mode
@@ -470,6 +595,10 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             // ever processed), the flag stays in session.claudeArgs so the next
                             // launch attempt can still resume the original session.
                             session.consumeOneTimeFlags();
+                        },
+                        onSteerReady: (channel) => {
+                            steer = channel;
+                            logger.debug(`[remote]: steering channel ${channel ? 'published' : 'revoked'}`);
                         },
                         onThinkingChange: session.onThinkingChange,
                         claudeEnvVars: session.claudeEnvVars,
@@ -500,6 +629,10 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             // longer "in flight" either.
                             reachedReadyThisAttempt = true;
                             inFlightMessage = null;
+                            // The turn this ready reports on is over: anything
+                            // arriving from here on has no live turn to join
+                            // and must take the queue path again.
+                            turnInFlight = false;
 
                             logger.debug(
                                 `[claudeRemoteLauncher][async-debug] onReady callback ` +
@@ -614,6 +747,13 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 } finally {
                     logger.debug('[remote]: launch finally');
 
+                    // Uninstall before anything else in this teardown can run:
+                    // between here and the next attempt's setSteerHook there is
+                    // no process to steer, so every message must queue.
+                    session.setSteerHook(null);
+                    steer = null;
+                    turnInFlight = false;
+
                     for (let [toolCallId, { parentToolCallId }] of ongoingToolCalls) {
                         const converted = sdkToLogConverter.generateInterruptedToolResult(toolCallId, parentToolCallId);
                         if (converted) {
@@ -646,6 +786,9 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
 
     protected async cleanup(): Promise<void> {
         this.clearAbortHandlers(this.session.client.rpcHandlerManager);
+        // The session outlives this launcher (local/remote handoff reuses it),
+        // so a hook left installed here would close over a dead attempt.
+        this.session.setSteerHook(null);
 
         if (this.handleSessionFound) {
             this.session.removeSessionFoundCallback(this.handleSessionFound);
