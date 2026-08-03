@@ -437,6 +437,9 @@ describe('agyPtyLauncher session-found wiring (brain UUID -> scanner)', () => {
         const { session } = createSessionStub()
         vi.mocked(session.queue.waitForMessagesAndGetAsString)
             .mockResolvedValueOnce({ message: 'hello agy', mode: 'default' } as never)
+        harness.afterNextMessage = async (opts) => {
+            await opts.onBeforeMessageSubmit?.('hello agy')
+        }
 
         await expect(agyPtyLauncher(session as never)).resolves.toBe('exit')
         expect(harness.scannerSetSessionMessageText).toHaveBeenCalledWith('hello agy')
@@ -507,11 +510,14 @@ describe('agyPtyLauncher session-found wiring (brain UUID -> scanner)', () => {
         harness.afterNextMessage = async (opts) => {
             await opts.onMessageSkipped?.('/clear')
             await expect(opts.nextMessage()).resolves.toMatchObject({ message: 'following prompt' })
+            await opts.onBeforeMessageSubmit?.('following prompt')
         }
 
         await agyPtyLauncher(session as never)
 
         expect(session.client.emitMessagesConsumed).toHaveBeenCalledWith(['local-clear'])
+        expect(harness.scannerSetSessionMessageText).toHaveBeenCalledOnce()
+        expect(harness.scannerSetSessionMessageText).toHaveBeenCalledWith('following prompt')
     })
 
     it('ends the launcher instead of respawning when PTY exits with an unconfirmed web delivery', async () => {

@@ -486,12 +486,6 @@ class AgyPtyLauncher extends RemoteLauncherBase {
                             observedBeforeSubmit: null,
                         }
                     }
-                    if (!this.firstMessageSent) {
-                        this.firstMessageSent = true
-                        if (!this.agySessionId) {
-                            this.scanner.setSessionMessageText(msg.message)
-                        }
-                    }
                     return { message: msg.message }
                 },
                 registerControls: (controls) => {
@@ -550,7 +544,13 @@ class AgyPtyLauncher extends RemoteLauncherBase {
                     await this.interactionTail
                     await this.applyPendingModelChange()
                 },
-                onBeforeMessageSubmit: () => {
+                onBeforeMessageSubmit: (message) => {
+                    if (!this.firstMessageSent) {
+                        this.firstMessageSent = true
+                        if (!this.agySessionId) {
+                            this.scanner.setSessionMessageText(message)
+                        }
+                    }
                     // The driver's text echo has completed but its CR has not
                     // yet been written, so user-input echo cannot trigger this
                     // output-only detector.
