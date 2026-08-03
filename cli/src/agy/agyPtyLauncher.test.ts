@@ -473,7 +473,7 @@ describe('agyPtyLauncher session-found wiring (brain UUID -> scanner)', () => {
         expect(session.client.emitMessagesConsumed).toHaveBeenCalledWith(['local-1'])
     })
 
-    it('keeps a mismatched web message unacknowledged without blocking the next queued message', async () => {
+    it('keeps a mismatched web message pending until the matching USER_INPUT arrives', async () => {
         const { session } = createSessionStub()
         vi.mocked(session.queue.waitForMessagesAndGetAsString)
             .mockResolvedValueOnce({
@@ -492,12 +492,26 @@ describe('agyPtyLauncher session-found wiring (brain UUID -> scanner)', () => {
                 step_index: 11,
                 content: '<USER_REQUEST>\ndirect terminal message\n</USER_REQUEST>',
             })
-            await expect(opts.nextMessage()).resolves.toMatchObject({ message: 'following message' })
+            const nextMessage = opts.nextMessage()
+            let nextMessageResolved = false
+            void nextMessage.then(() => { nextMessageResolved = true })
+            await Promise.resolve()
+
+            expect(nextMessageResolved).toBe(false)
+            expect(session.client.emitMessagesConsumed).not.toHaveBeenCalled()
+
+            onEntry({
+                type: 'USER_INPUT',
+                step_index: 12,
+                content: '<USER_REQUEST>\nweb message\n</USER_REQUEST>',
+            })
+            await expect(nextMessage).resolves.toMatchObject({ message: 'following message' })
         }
 
         await agyPtyLauncher(session as never)
 
-        expect(session.client.emitMessagesConsumed).not.toHaveBeenCalled()
+        expect(session.client.emitMessagesConsumed).toHaveBeenCalledTimes(1)
+        expect(session.client.emitMessagesConsumed).toHaveBeenCalledWith(['local-2'])
     })
 
     it('consumes a skipped slash command and releases the next delivery boundary', async () => {

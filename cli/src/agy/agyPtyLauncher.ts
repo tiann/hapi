@@ -179,15 +179,7 @@ class AgyPtyLauncher extends RemoteLauncherBase {
             pending.observedBeforeSubmit = content
             return
         }
-        if (!userRequestMatches(pending.message, content)) {
-            logger.warn('[agy-pty]: USER_INPUT did not match the pending web message; leaving it unacknowledged and continuing the queue')
-            this.session.client.sendSessionEvent({
-                type: 'message',
-                message: 'agy could not confirm delivery of the previous web message; it remains unacknowledged'
-            })
-            this.finishPendingWebDelivery()
-            return
-        }
+        if (!userRequestMatches(pending.message, content)) return
         this.session.client.emitMessagesConsumed(pending.localIds)
         this.finishPendingWebDelivery()
     }
