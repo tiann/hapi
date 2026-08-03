@@ -435,18 +435,25 @@ function humanizeAgyActionType(type: string): string {
 // repeats the card title, the "line-number injected" note, and a model-directed
 // instruction appended to write/edit confirmations. Strip all of it and keep the
 // substantive result (file content, command output, edit confirmation).
-export function stripAgyActionPreamble(content: string): string {
-    return content
-        // Bookkeeping + view_file metadata header (the "File Path:" line duplicates
-        // the card title; Total Lines/Bytes/Showing lines are noise).
-        .replace(/^(?:Created At:|Completed At:|File Path:|Total Lines:|Total Bytes:|Showing lines\b).*(?:\r?\n)?/gm, '')
-        // agy's note that it prefixed each line with a line number.
-        .replace(/^The following code has been modified to include a line number.*(?:\r?\n)?/gm, '')
-        // Model-directed instruction agy appends to write/edit confirmations
-        // ("… If relevant, proactively run terminal commands to execute this code
-        // for the USER. Don't ask …") — meant for the agent, not the reader.
-        .replace(/\s*If relevant, proactively run terminal commands[\s\S]*$/, '')
-        .trim()
+export function stripAgyActionPreamble(content: string, name: string, rawActionName?: string): string {
+    let result = content.replace(
+        /^(?:Created At:.*(?:\r?\n|$))?(?:Completed At:.*(?:\r?\n|$))?/,
+        ''
+    )
+
+    if (name === 'Read' || rawActionName === 'VIEW_FILE') {
+        result = result
+            .replace(/^(?:(?:File Path:|Total Lines:|Total Bytes:|Showing lines\b).*(?:\r?\n|$))+/, '')
+            .replace(/^The following code has been modified to include a line number.*(?:\r?\n|$)/, '')
+    }
+
+    const isGeneratedLegacyMutation = rawActionName === 'CODE_ACTION'
+        && /^The following [^\r\n]*\b(?:write_to_file|replace_file_content) tool\b/.test(result)
+    if (name === 'Write' || name === 'Edit' || isGeneratedLegacyMutation) {
+        result = result.replace(/\s*If relevant, proactively run terminal commands[\s\S]*$/, '')
+    }
+
+    return result.trim()
 }
 
 // agy's view_file result appends a trailing "The above content …" note — either
@@ -846,11 +853,11 @@ export function normalizeAgentRecord(
                 name = mapped.name
                 input = mapped.input
                 description = mapped.description
-                content = stripAgyActionPreamble(asString(data.content) ?? '')
+                content = stripAgyActionPreamble(asString(data.content) ?? '', name, rawActionName)
                 // view_file → Read: also drop agy's per-line "<n>: " prefixes and
                 // the "The above content shows…" trailer so the code block renders
                 // clean, single-gutter line numbers.
-                if (name === 'Read') content = stripAgyReadArtifacts(content)
+                if (name === 'Read' || rawActionName === 'VIEW_FILE') content = stripAgyReadArtifacts(content)
             }
             // agy action entries are already DONE, so pair the tool-call with a
             // tool-result (matching ids) — that makes the card render as COMPLETED

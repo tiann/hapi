@@ -43,7 +43,7 @@ describe('stripAgyActionPreamble', () => {
             '1: export PATH=$PATH',
             '2: alias ll="ls -la"',
         ].join('\n')
-        const out = stripAgyActionPreamble(raw)
+        const out = stripAgyActionPreamble(raw, 'Read')
         expect(out).not.toContain('File Path:')
         expect(out).not.toContain('Total Lines:')
         expect(out).not.toContain('The following code has been modified')
@@ -52,9 +52,48 @@ describe('stripAgyActionPreamble', () => {
         expect(out).toContain('alias ll="ls -la"')
     })
 
+    it('strips read framing from a legacy VIEW_FILE action without a paired tool name', () => {
+        const raw = [
+            'Created At: 2026-07-08T14:24:49+09:00',
+            'Completed At: 2026-07-08T14:24:50+09:00',
+            'File Path: `file:///tmp/x.ts`',
+            'Total Lines: 1',
+            'The following code has been modified to include a line number before every line.',
+            '1: export const x = 1',
+        ].join('\r\n')
+
+        expect(stripAgyActionPreamble(raw, 'View file', 'VIEW_FILE')).toBe('1: export const x = 1')
+    })
+
+    it('strips generated instructions from a legacy CODE_ACTION confirmation', () => {
+        const raw = "The following changes were made by the replace_file_content tool to: /tmp/x.py. If relevant, proactively run terminal commands to execute this code for the USER. Don't ask for permission."
+
+        expect(stripAgyActionPreamble(raw, 'Code action', 'CODE_ACTION')).toBe(
+            'The following changes were made by the replace_file_content tool to: /tmp/x.py.'
+        )
+    })
+
+    it('preserves header-like lines and instruction phrases in ordinary tool output', () => {
+        const raw = [
+            'Created At: 2026-07-08T14:24:49+09:00',
+            'Completed At: 2026-07-08T14:24:50+09:00',
+            'command output',
+            'File Path: /tmp/result',
+            'If relevant, proactively run terminal commands printed by the command',
+            'still ordinary output',
+        ].join('\n')
+
+        expect(stripAgyActionPreamble(raw, 'Bash')).toBe([
+            'command output',
+            'File Path: /tmp/result',
+            'If relevant, proactively run terminal commands printed by the command',
+            'still ordinary output',
+        ].join('\n'))
+    })
+
     it('drops the model-directed instruction agy appends to edit/write confirmations', () => {
         const raw = 'The following changes were made by the replace_file_content tool to: /tmp/x.py. If relevant, proactively run terminal commands to execute this code for the USER. Don\'t ask for permission.'
-        const out = stripAgyActionPreamble(raw)
+        const out = stripAgyActionPreamble(raw, 'Edit')
         // Keeps the concise confirmation…
         expect(out).toContain('The following changes were made by the replace_file_content tool to: /tmp/x.py.')
         // …but drops the agent-directed instruction tail.
