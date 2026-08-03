@@ -52,7 +52,7 @@ const harness = vi.hoisted(() => ({
     safetyBufferingFasterModel: null as string | null,
     emitModelSafetyNotices: false,
     transcriptPathByThreadId: new Map<string, string>(),
-    scannerStarts: [] as Array<{ transcriptPath: string | null; replayExistingHistory?: boolean }>,
+    scannerStarts: [] as Array<{ transcriptPath: string | null; replayExistingHistory?: boolean; initialCursor?: number }>,
     scannerCleanups: 0,
     scannerEvents: [] as Array<(event: unknown) => void>,
     scannerReplayOnCreate: [] as unknown[],
@@ -1111,17 +1111,14 @@ vi.mock('./utils/codexSessionScanner', () => ({
     createCodexSessionScanner: async (opts: {
         transcriptPath: string | null;
         replayExistingHistory?: boolean;
+        initialCursor?: number;
         onEvent: (event: unknown) => void;
     }) => {
         harness.scannerStarts.push({
             transcriptPath: opts.transcriptPath,
-            replayExistingHistory: opts.replayExistingHistory
+            replayExistingHistory: opts.replayExistingHistory,
+            initialCursor: opts.initialCursor
         });
-        if (opts.replayExistingHistory) {
-            for (const event of harness.scannerReplayOnCreate) {
-                opts.onEvent(event);
-            }
-        }
         harness.scannerEvents.push(opts.onEvent);
         return {
             cleanup: async () => {
@@ -1129,6 +1126,42 @@ vi.mock('./utils/codexSessionScanner', () => ({
             },
             setTranscriptPath: async () => {}
         };
+    },
+    readLatestCodexUsageFromTail: async () => {
+        // Mirror coalesce-latest behavior for harness event fixtures (forward last-wins).
+        let latestTokens: unknown = null;
+        let latestRateLimits: unknown = null;
+        for (const event of harness.scannerReplayOnCreate as Array<Record<string, unknown>>) {
+            const payload = event.payload as Record<string, unknown> | undefined;
+            if (!payload || payload.type !== 'token_count') continue;
+            if (payload.scope_role === 'child' || payload.scopeRole === 'child') continue;
+            const info = (payload.info && typeof payload.info === 'object')
+                ? { ...(payload.info as Record<string, unknown>) }
+                : null;
+            if (!info) continue;
+            if (info.rate_limits === undefined && info.rateLimits === undefined) {
+                const rateLimits = payload.rate_limits ?? payload.rateLimits;
+                if (rateLimits !== undefined) info.rate_limits = rateLimits;
+            }
+            const message: Record<string, unknown> = { type: 'token_count', info };
+            if (typeof event.thread_id === 'string') message.thread_id = event.thread_id;
+            if (typeof event.threadId === 'string') message.threadId = event.threadId;
+            if (typeof payload.scope_role === 'string') message.scope_role = payload.scope_role;
+            if (typeof payload.scopeRole === 'string') message.scopeRole = payload.scopeRole;
+            const hasTokens = Boolean(
+                info.model_context_window ?? info.modelContextWindow
+                ?? info.total_token_usage ?? info.totalTokenUsage
+                ?? info.last_token_usage ?? info.lastTokenUsage
+            );
+            const hasRateLimits = 'rate_limits' in info || 'rateLimits' in info
+                || 'rate_limits' in payload || 'rateLimits' in payload;
+            if (hasTokens) latestTokens = message;
+            if (hasRateLimits) latestRateLimits = message;
+        }
+        if (latestTokens && latestRateLimits && latestTokens === latestRateLimits) {
+            return [latestTokens];
+        }
+        return [latestTokens, latestRateLimits].filter(Boolean);
     }
 }));
 
@@ -3328,7 +3361,8 @@ describe('codexRemoteLauncher', () => {
         expect(exitReason).toBe('exit');
         expect(harness.scannerStarts).toEqual([{
             transcriptPath: '/tmp/codex-thread-1.jsonl',
-            replayExistingHistory: true
+            replayExistingHistory: false,
+            initialCursor: 0
         }]);
         expect(usagePayloads).toHaveLength(1);
         expect(usagePayloads[0]).toMatchObject({

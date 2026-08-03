@@ -263,4 +263,83 @@ describe('codexSessionScanner', () => {
         expect(events).toHaveLength(1);
         expect(events[0]?.payload).toEqual({ type: 'agent_message', message: 'completed later' });
     });
+
+    it('reads latest usage from a bounded reverse tail without scanning the whole file', async () => {
+        const oldTokens = JSON.stringify({
+            type: 'event_msg',
+            payload: {
+                type: 'token_count',
+                info: { total_token_usage: { total_tokens: 11 }, model_context_window: 100000 }
+            }
+        });
+        const latestTokens = JSON.stringify({
+            type: 'event_msg',
+            payload: {
+                type: 'token_count',
+                info: {
+                    total_token_usage: { total_tokens: 42000 },
+                    model_context_window: 128000,
+                    rate_limits: { primary: { used_percent: 33, window_minutes: 300 } }
+                }
+            }
+        });
+        const fillerLine = `${'a'.repeat(120)}\n`;
+        const filler = Buffer.from(fillerLine.repeat(3000), 'utf8'); // ~360 KiB of JSONL-ish lines
+        await writeFile(
+            transcriptPath,
+            Buffer.concat([
+                Buffer.from(`${oldTokens}\n`, 'utf8'),
+                filler,
+                Buffer.from(`${latestTokens}\n`, 'utf8')
+            ])
+        );
+
+        const { readLatestCodexUsageFromTail } = await import('./codexSessionScanner');
+        const payloads = await readLatestCodexUsageFromTail(transcriptPath, {
+            maxBytes: 64 * 1024,
+            chunkBytes: 8 * 1024
+        });
+
+        expect(payloads).toHaveLength(1);
+        expect(payloads[0]).toMatchObject({
+            type: 'token_count',
+            info: {
+                total_token_usage: { total_tokens: 42000 },
+                model_context_window: 128000
+            }
+        });
+    });
+
+    it('primes at initialCursor without replaying prior transcript events', async () => {
+        await writeFile(
+            transcriptPath,
+            [
+                JSON.stringify({ type: 'session_meta', payload: { id: 'session-cursor' } }),
+                JSON.stringify({
+                    type: 'event_msg',
+                    payload: { type: 'agent_message', message: 'history should be skipped' }
+                })
+            ].join('\n') + '\n'
+        );
+        const { size } = await import('node:fs/promises').then((fs) => fs.stat(transcriptPath));
+
+        scanner = await createCodexSessionScanner({
+            transcriptPath,
+            initialCursor: size,
+            replayExistingHistory: false,
+            onEvent: (event) => events.push(event)
+        });
+        expect(events).toEqual([]);
+
+        await appendFile(
+            transcriptPath,
+            JSON.stringify({
+                type: 'event_msg',
+                payload: { type: 'agent_message', message: 'live only' }
+            }) + '\n'
+        );
+        await scanner.flush();
+        expect(events).toHaveLength(1);
+        expect(events[0]?.payload).toEqual({ type: 'agent_message', message: 'live only' });
+    });
 });

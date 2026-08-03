@@ -1,14 +1,32 @@
+import { closeSync, openSync, readSync, statSync } from 'node:fs';
 import { open, stat } from 'node:fs/promises';
 import { BaseSessionScanner, SessionFileScanEntry, SessionFileScanResult, SessionFileScanStats } from '@/modules/common/session/BaseSessionScanner';
 import { logger } from '@/ui/logger';
-import type { CodexSessionEvent } from './codexEventConverter';
+import { convertCodexEvent, type CodexSessionEvent } from './codexEventConverter';
+import {
+    createReplayUsageAccumulator,
+    noteReplayUsageSampleIfAbsent,
+    orderedReplayUsagePayloads,
+    type ReplayUsageAccumulator
+} from './codexUsage';
+
+const DEFAULT_USAGE_TAIL_MAX_BYTES = 4 * 1024 * 1024;
+const DEFAULT_USAGE_TAIL_READ_CHUNK_BYTES = 64 * 1024;
 
 interface CodexSessionScannerOptions {
     transcriptPath: string | null;
     onEvent: (event: CodexSessionEvent, context: { replayedHistory: boolean }) => void;
     onSessionId?: (sessionId: string) => void;
     replayExistingHistory?: boolean;
+    /** When set (and not replaying history), start watching at this byte offset without reading prior bytes. */
+    initialCursor?: number;
 }
+
+export type ReadLatestCodexUsageFromTailOptions = {
+    maxBytes?: number;
+    chunkBytes?: number;
+    threadId?: string;
+};
 
 export interface CodexSessionScanner {
     flush: () => Promise<void>;
@@ -33,6 +51,110 @@ export async function createCodexSessionScanner(opts: CodexSessionScannerOptions
     };
 }
 
+/**
+ * Reverse-scan a bounded tail of a Codex transcript for the newest parent
+ * token_count / rate-limit samples. Stops once both dimensions are found or
+ * the byte budget is exhausted - does not allocate the full file.
+ */
+export async function readLatestCodexUsageFromTail(
+    transcriptPath: string,
+    options: ReadLatestCodexUsageFromTailOptions = {}
+): Promise<unknown[]> {
+    const maxBytes = Math.max(1, options.maxBytes ?? DEFAULT_USAGE_TAIL_MAX_BYTES);
+    const readChunkBytes = Math.min(
+        Math.max(1, options.chunkBytes ?? DEFAULT_USAGE_TAIL_READ_CHUNK_BYTES),
+        maxBytes
+    );
+    const threadId = options.threadId;
+    const accumulator = createReplayUsageAccumulator();
+    let fd: number | undefined;
+    try {
+        const size = statSync(transcriptPath).size;
+        if (size <= 0) return [];
+
+        fd = openSync(transcriptPath, 'r');
+        let position = size;
+        const scanStart = Math.max(0, size - maxBytes);
+        let incompletePrefix = Buffer.alloc(0);
+
+        while (position > scanStart && !replayUsageComplete(accumulator)) {
+            const length = Math.min(position - scanStart, readChunkBytes);
+            position -= length;
+            const buffer = Buffer.alloc(length);
+            const bytesRead = readSync(fd, buffer, 0, length, position);
+            const combined = Buffer.concat([buffer.subarray(0, bytesRead), incompletePrefix]);
+
+            let complete = combined;
+            if (position > scanStart) {
+                const firstNewline = combined.indexOf(0x0a);
+                if (firstNewline < 0) {
+                    incompletePrefix = combined;
+                    continue;
+                }
+                incompletePrefix = combined.subarray(0, firstNewline);
+                complete = combined.subarray(firstNewline + 1);
+            } else {
+                incompletePrefix = Buffer.alloc(0);
+            }
+
+            const lines = complete.toString('utf8').split(/\r?\n/);
+            // Newest lines are at the end of this chunk window.
+            for (let index = lines.length - 1; index >= 0; index -= 1) {
+                noteUsageFromTranscriptLine(lines[index] ?? '', accumulator, threadId);
+                if (replayUsageComplete(accumulator)) break;
+            }
+        }
+
+        if (
+            scanStart === 0
+            && incompletePrefix.length > 0
+            && !replayUsageComplete(accumulator)
+        ) {
+            noteUsageFromTranscriptLine(incompletePrefix.toString('utf8'), accumulator, threadId);
+        }
+
+        return orderedReplayUsagePayloads(accumulator);
+    } catch (error) {
+        logger.debug(`[codex-session-scanner] Failed to reverse-scan usage from ${transcriptPath}: ${error}`);
+        return [];
+    } finally {
+        if (fd !== undefined) {
+            try { closeSync(fd); } catch { /* ignore */ }
+        }
+    }
+}
+
+function replayUsageComplete(accumulator: ReplayUsageAccumulator): boolean {
+    return accumulator.latestTokens !== null && accumulator.latestRateLimits !== null;
+}
+
+function noteUsageFromTranscriptLine(
+    line: string,
+    accumulator: ReplayUsageAccumulator,
+    threadId: string | undefined
+): void {
+    if (!line || line.trim().length === 0) return;
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(line);
+    } catch {
+        return;
+    }
+    const event = parseCodexSessionEvent(parsed);
+    if (!event) return;
+    const converted = convertCodexEvent(event);
+    for (const message of converted?.messages ?? []) {
+        if (message.type !== 'token_count') continue;
+        const scopeRole = message.scopeRole ?? message.scope_role;
+        if (scopeRole === 'child') continue;
+        const eventThreadId = message.threadId ?? message.thread_id;
+        if (threadId && eventThreadId && eventThreadId !== threadId) continue;
+
+        // Reverse scan: first hit per dimension is the newest.
+        noteReplayUsageSampleIfAbsent(accumulator, message);
+    }
+}
+
 class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
     private transcriptPath: string | null;
     private readonly onEvent: (event: CodexSessionEvent, context: { replayedHistory: boolean }) => void;
@@ -46,6 +168,7 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
     }>();
     private replayExistingHistoryOnNextAttach: boolean;
     private replayingExistingHistory = false;
+    private readonly initialCursor: number | null;
     private observedSessionId: string | null = null;
 
     constructor(opts: CodexSessionScannerOptions) {
@@ -54,6 +177,9 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
         this.onEvent = opts.onEvent;
         this.onSessionId = opts.onSessionId;
         this.replayExistingHistoryOnNextAttach = opts.replayExistingHistory ?? false;
+        this.initialCursor = typeof opts.initialCursor === 'number' && Number.isFinite(opts.initialCursor)
+            ? Math.max(0, opts.initialCursor)
+            : null;
     }
 
     async setTranscriptPath(transcriptPath: string): Promise<void> {
@@ -117,7 +243,30 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
         }
 
         this.replayingExistingHistory = false;
+        if (this.initialCursor !== null) {
+            await this.primeTranscriptAtOffset(filePath, this.initialCursor);
+            return;
+        }
+
         await this.primeTranscript(filePath);
+    }
+
+    private async primeTranscriptAtOffset(filePath: string, offset: number): Promise<void> {
+        let fileStats;
+        try {
+            fileStats = await stat(filePath);
+        } catch (error) {
+            logger.debug(`[codex-session-scanner] Failed to stat transcript ${filePath}: ${error}`);
+            return;
+        }
+        const cursor = Math.min(offset, fileStats.size);
+        this.setCursor(filePath, cursor);
+        this.fileStateByPath.set(filePath, {
+            device: fileStats.dev,
+            inode: fileStats.ino,
+            partialLine: Buffer.alloc(0),
+            nextLineIndex: 0
+        });
     }
 
     private async primeTranscript(filePath: string): Promise<void> {
