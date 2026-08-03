@@ -412,6 +412,40 @@ describe('ApiSessionClient lazy materialization', () => {
     })
 })
 
+describe('ApiSessionClient agy transcript messages', () => {
+    it('renders only the USER_REQUEST body, not the sections agy appends', () => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+
+        // The shape agy actually writes for every terminal-typed message.
+        client.sendAgySessionMessage({
+            step_index: 0,
+            source: 'USER_EXPLICIT',
+            type: 'USER_INPUT',
+            status: 'DONE',
+            created_at: '2026-08-04T00:00:00Z',
+            content: [
+                '<USER_REQUEST>',
+                'hi',
+                '</USER_REQUEST>',
+                '<ADDITIONAL_METADATA>',
+                'The current local time is: 2026-08-04T09:00:00+09:00.',
+                '</ADDITIONAL_METADATA>',
+                '<USER_SETTINGS_CHANGE>',
+                'The user changed setting `Model Selection` from None to Gemini 3.6 Flash (Low).',
+                '</USER_SETTINGS_CHANGE>',
+            ].join('\n'),
+        } as never)
+
+        const emitted = socket.emitted.find((entry) => entry.event === 'message')
+        expect(emitted).toBeDefined()
+        expect((emitted!.args[0] as any).message.content.text).toBe('hi')
+        client.close()
+    })
+})
+
 describe('ApiSessionClient incoming user messages', () => {
     it('ignores CLI-originated transcript messages while advancing the incoming cursor', () => {
         socketHarness.sockets.length = 0

@@ -9,6 +9,7 @@ import { apiValidationError } from '@/utils/errorUtils'
 import { AsyncLock } from '@/utils/lock'
 import type { RawJSONLines } from '@/claude/types'
 import { configuration } from '@/configuration'
+import { extractUserRequest } from '@/agy/utils/agySessionScanner'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from "@hapi/protocol"
 import type { SessionEndReason } from '@hapi/protocol'
 import type { ClientToServerEvents, ServerToClientEvents, TerminalOutputPayload, Update } from '@hapi/protocol'
@@ -853,7 +854,9 @@ export class ApiSessionClient extends EventEmitter {
         toolCall?: { name: string; args: Record<string, unknown> }
     ): void {
         const isUser = entry.type === 'USER_INPUT'
-        const text = isUser ? entry.content?.replace(/<\/?USER_REQUEST>/g, '').trim() ?? '' : undefined
+        // agy appends its own sections (<ADDITIONAL_METADATA>, <USER_SETTINGS_CHANGE>)
+        // after the request block, so only the extracted request may be rendered.
+        const text = isUser ? (extractUserRequest(entry.content ?? '') ?? entry.content ?? '').trim() : undefined
 
         if (isUser && text) {
             this.socket.emit('message', {
