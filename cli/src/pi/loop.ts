@@ -7,6 +7,7 @@ import { PiExtensionUiHandler } from './extensionUiHandler';
 import { parsePiModels, parsePiCommands, parsePiContextUsage, PiAgentEndEventSchema, PiAgentSettledEventSchema, PiExtensionUiRequestSchema, PiLifecycleEventSchema, PiResponseEventSchema, PiStateDataSchema, PiSetModelDataSchema } from './schemas';
 import type { PiContextUsage, PiResponseEvent, PiRpcCommand, PiThinkingLevel, PiTurnEndEvent } from './types';
 import type { PiSession } from './session';
+import type { PiConversationHistory } from './conversationHistory';
 
 // --- Response parsers: re-exported from schemas.ts ---
 export { parsePiModels, parsePiCommands, parsePiContextUsage } from './schemas';
@@ -160,7 +161,8 @@ function handleResponse(
     pendingLocalIds: string[],
     transport?: PiTransport,
     onStartupFailure?: (error: Error) => void,
-    onPromptRejected?: () => void,
+    conversationHistory?: PiConversationHistory,
+    onPromptRejected?: (localId?: string) => void,
     onReady?: () => void,
 ): void {
     const { command, success } = response;
@@ -179,7 +181,8 @@ function handleResponse(
         if (command === 'prompt' && pendingLocalIds.length > 0) {
             const oldestLocalId = pendingLocalIds.shift()!;
             session.emitMessagesConsumed([oldestLocalId], { clearQueuedThinkingGrace: true });
-            onPromptRejected?.();
+            conversationHistory?.rejectPendingEntry(oldestLocalId, 'prompt');
+            onPromptRejected?.(oldestLocalId);
         }
         // A failed initial get_state means Pi did not load its native session.
         // Do not leave the HAPI wrapper alive until the hub's ready timeout: the
@@ -202,13 +205,14 @@ function handleResponse(
             // mutating model/metadata state: an invalid resume must not publish a
             // colliding piSessionId that auto-dedup could merge.
             if (!parsed.success) {
+                resolvePendingRpc(resolver, response);
                 if (session.expectedNativeSessionId) {
                     onStartupFailure?.(new Error('Pi get_state returned malformed state data'));
                 }
                 break;
             }
             const state = parsed.data;
-            if (!session.matchesExpectedNativeSessionId(state.sessionId)) {
+            if (!session.isHistoryTransactionActive && !session.matchesExpectedNativeSessionId(state.sessionId)) {
                 const actual = state.sessionId ? state.sessionId : '(missing)';
                 const error = `Pi loaded unexpected native session ${actual} instead of ${session.expectedNativeSessionId}`;
                 logger.debug(`[pi] ${error}`);
@@ -219,9 +223,15 @@ function handleResponse(
             // Emit ready before publishing Pi metadata. On native resume, this
             // ensures the hub can never merge based on a piSessionId before the
             // get_state identity check has completed.
-            session.markNativeReady();
-            applyGetState(state, session);
-            onReady?.();
+            // History transactions deliberately switch Pi through temporary
+            // clone/fork identities. Resolve their awaited get_state request,
+            // but never publish the temporary identity/model to the source row.
+            if (!session.isHistoryTransactionActive) {
+                session.markNativeReady();
+                applyGetState(state, session);
+                onReady?.();
+            }
+            resolvePendingRpc(resolver, response);
             break;
         }
         case 'set_model': {
@@ -370,8 +380,9 @@ type PiTransportEventOptions = {
     onStartupFailure?: (error: Error) => void;
     onReady?: () => void;
     onAgentSettled?: () => void;
-    onPromptRejected?: () => void;
-    onPromptLifecycleMissing?: () => void;
+    onPromptRejected?: (localId?: string) => void;
+    onPromptLifecycleMissing?: (localId?: string) => void;
+    conversationHistory?: PiConversationHistory;
 };
 
 const PI_LEGACY_SETTLE_GRACE_MS = 500;
@@ -505,7 +516,13 @@ export function wireTransportEvents(
         clearLegacySettleFallback();
         clearPromptLifecycleFallback();
         session.updateThinkingState(false);
-        options.onAgentSettled?.();
+        if (options.conversationHistory) {
+            void options.conversationHistory.syncEntries()
+                .catch(() => {})
+                .finally(() => options.onAgentSettled?.());
+        } else {
+            options.onAgentSettled?.();
+        }
     };
     const scheduleLegacySettleFallback = (): void => {
         if ((activePromptId !== null && !activePromptResponseAccepted) || !agentEndObserved || maintenanceActive.size > 0 || deliveredSettlement || legacySettleTimer) return;
@@ -523,7 +540,7 @@ export function wireTransportEvents(
             if (generation !== lifecycleGeneration || deliveredSettlement || agentLifecycleSeen) return;
             deliveredSettlement = true;
             session.updateThinkingState(false);
-            options.onPromptLifecycleMissing?.();
+            options.onPromptLifecycleMissing?.(pendingLocalIds[0]);
         }, PI_PROMPT_LIFECYCLE_GRACE_MS);
         promptLifecycleTimer.unref?.();
     };
@@ -554,6 +571,7 @@ export function wireTransportEvents(
                     pendingLocalIds,
                     transport,
                     options.onStartupFailure,
+                    options.conversationHistory,
                     options.onPromptRejected,
                     options.onReady,
                 );
@@ -571,6 +589,10 @@ export function wireTransportEvents(
                 logger.debug('[pi] Ignoring malformed RPC response');
             }
             return;
+        }
+
+        if (event.type === 'entry_appended') {
+            options.conversationHistory?.observeEntry((event as { entry?: unknown }).entry);
         }
 
         if (event.type === 'extension_ui_request') {
@@ -622,6 +644,11 @@ export function wireTransportEvents(
             if (pendingLocalIds.length > 0) {
                 const oldestLocalId = pendingLocalIds.shift()!;
                 session.emitMessagesConsumed([oldestLocalId]);
+            }
+            // Some Pi integrations omit entry_appended forwarding. Incremental
+            // get_entries is the durable fallback and still pairs only FIFO.
+            if (options.conversationHistory) {
+                void options.conversationHistory.syncEntries().catch(() => {});
             }
         } else if (event.type === 'turn_end') {
             // Pi emits turn_end for each LLM/tool-loop iteration. The enclosing

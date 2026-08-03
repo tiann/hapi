@@ -8,6 +8,7 @@ import { createRunnerLifecycle, createModeChangeHandler, setControlledByUser } f
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import { PiTransport } from './piTransport';
 import { PiSession } from './session';
+import { PiConversationHistory, PiHistoryRestoreError } from './conversationHistory';
 import { parsePiModels, parsePiCommands, sendPiRpcAndWait, wireTransportEvents } from './loop';
 import { PiThinkingLevelSchema, SetSessionConfigPayloadSchema } from './schemas';
 import type { PiImageContent, PiThinkingLevel } from './types';
@@ -114,6 +115,11 @@ export async function preparePiUserMessage(
     return { message: formattedMessage, images, imageReadErrors };
 }
 
+/** A failed source restore leaves the live wrapper on an unknown native branch. */
+export function failPiHistoryOnRestoreError(error: unknown, failNativeStartup: (error: Error) => void): void {
+    if (error instanceof PiHistoryRestoreError) failNativeStartup(error);
+}
+
 export async function runPi(opts: {
     startedBy?: 'runner' | 'terminal';
     startingMode?: 'local' | 'remote';
@@ -178,6 +184,29 @@ export async function runPi(opts: {
         cwd: workingDirectory,
         env: { ...process.env, PI_RPC_EMIT_TITLE: '1' },
     });
+    const conversationHistory = new PiConversationHistory(
+        piSession,
+        (command) => sendPiRpcAndWait(piSession, transport, command),
+    );
+    piSession.setNativeReadyPreparation(async () => await conversationHistory.initialize());
+
+    const publishConversationHistoryCapabilities = async () => {
+        const conversationHistoryCapabilities = conversationHistory.getCapabilitiesForMetadata()?.conversationHistory;
+        piSession.updateMetadata((metadata) => {
+            const capabilities = { ...metadata.capabilities };
+            delete capabilities.conversationHistory;
+            if (conversationHistoryCapabilities) {
+                capabilities.conversationHistory = conversationHistoryCapabilities;
+            }
+            return { ...metadata, capabilities };
+        });
+    };
+    conversationHistory.setPublishCapabilities(publishConversationHistoryCapabilities);
+    conversationHistory.restoreEntryIds(
+        typeof apiSession.getMetadata === 'function'
+            ? apiSession.getMetadata()?.conversationHistoryEntryIds
+            : undefined,
+    );
 
     piSession.startKeepAlive();
 
@@ -290,35 +319,83 @@ export async function runPi(opts: {
     let preparationChain = Promise.resolve();
     let promptCommandInFlight = false;
     let abortInFlight = false;
+    let activePromptLocalId: string | undefined;
+    let historyPumpDeferred = false;
 
     const pumpPromptQueue = (): void => {
+        if (piSession.isHistoryTransactionActive) {
+            if (!historyPumpDeferred) {
+                historyPumpDeferred = true;
+                piSession.runWhenHistoryIdle(() => {
+                    historyPumpDeferred = false;
+                    pumpPromptQueue();
+                });
+            }
+            return;
+        }
         if (!piSession.isReady || piSession.piIsStreaming || promptCommandInFlight || abortInFlight) return;
         const next = promptQueue.dequeue();
         if (!next) return;
         promptCommandInFlight = true;
+        activePromptLocalId = next.localId;
         const promptId = randomUUID();
         transportEvents?.beginPromptLifecycle(promptId);
-        if (next.localId) pendingLocalIds.push(next.localId);
+        if (next.localId) {
+            conversationHistory.registerPrompt(next.localId);
+            pendingLocalIds.push(next.localId);
+        }
         transport.send({ id: promptId, type: 'prompt', message: next.message, ...(next.images.length > 0 ? { images: next.images } : {}) });
     };
 
     transportEvents = wireTransportEvents(transport, piSession, pendingLocalIds, {
         onStartupFailure: failNativeStartup,
-        onReady: pumpPromptQueue,
+        conversationHistory,
+        onReady: () => piSession.runWhenReady(pumpPromptQueue),
         onAgentSettled: () => {
             promptCommandInFlight = false;
+            activePromptLocalId = undefined;
             pumpPromptQueue();
         },
         onPromptRejected: () => {
             promptCommandInFlight = false;
+            activePromptLocalId = undefined;
             pumpPromptQueue();
         },
-        onPromptLifecycleMissing: () => {
+        onPromptLifecycleMissing: (localId) => {
             promptCommandInFlight = false;
-            const localId = pendingLocalIds.shift();
-            if (localId) piSession.emitMessagesConsumed([localId], { clearQueuedThinkingGrace: true });
+            const rejectedLocalId = localId ?? activePromptLocalId;
+            if (rejectedLocalId) {
+                conversationHistory.rejectPendingEntry(rejectedLocalId, 'prompt');
+                if (pendingLocalIds[0] === rejectedLocalId) pendingLocalIds.shift();
+                piSession.emitMessagesConsumed([rejectedLocalId], { clearQueuedThinkingGrace: true });
+            }
+            activePromptLocalId = undefined;
             pumpPromptQueue();
         },
+    });
+
+    apiSession.rpcHandlerManager.registerHandler(RPC_METHODS.ForkConversation, async (payload: unknown) => {
+        const messageLocalId = payload && typeof payload === 'object'
+            && typeof (payload as { messageLocalId?: unknown }).messageLocalId === 'string'
+            ? (payload as { messageLocalId: string }).messageLocalId
+            : undefined;
+        try {
+            return await conversationHistory.fork(messageLocalId);
+        } catch (error) {
+            failPiHistoryOnRestoreError(error, failNativeStartup);
+            throw error;
+        }
+    });
+    apiSession.rpcHandlerManager.registerHandler(RPC_METHODS.RewindConversation, async (payload: unknown) => {
+        if (!payload || typeof payload !== 'object' || typeof (payload as { messageLocalId?: unknown }).messageLocalId !== 'string') {
+            throw new Error('messageLocalId is required');
+        }
+        try {
+            return await conversationHistory.rewind((payload as { messageLocalId: string }).messageLocalId);
+        } catch (error) {
+            failPiHistoryOnRestoreError(error, failNativeStartup);
+            throw error;
+        }
     });
 
     // --- Session config RPC ---
@@ -331,6 +408,7 @@ export async function runPi(opts: {
     // { provider, modelId } for Pi sessions.
 
     apiSession.rpcHandlerManager.registerHandler(RPC_METHODS.SetSessionConfig, async (rawPayload: unknown) => {
+        piSession.assertNoHistoryTransaction('change session configuration');
         const parsed = SetSessionConfigPayloadSchema.safeParse(rawPayload);
         if (!parsed.success) {
             throw new Error('Invalid session config payload');
@@ -546,39 +624,41 @@ export async function runPi(opts: {
     // Pi's `abort` command cancels the active turn but the process stays in RPC mode.
     let abortPromise: Promise<{ success: true }> | null = null;
     apiSession.rpcHandlerManager.registerHandler(RPC_METHODS.Abort, async () => {
+        piSession.assertNoHistoryTransaction('abort Pi');
         if (abortPromise) return await abortPromise;
         abortPromise = (async (): Promise<{ success: true }> => {
-        abortInFlight = true;
-        transportEvents?.cancelPendingExtensionUi('Pi prompt aborted', { sendResponse: true });
-        // Keep the current lifecycle intact until Pi confirms abort. If abort
-        // fails, the canceled extension can still finish through its normal
-        // prompt response or agent-settled path.
-        // Capture only the prompt that was already on the wire before abort began.
-        // agent_end may arrive while `session.abort()` is awaiting idle and must not
-        // make a newly pumped prompt look like the aborted one.
-        const abortedPendingLocalId = pendingLocalIds[0];
-        try {
-            await sendPiRpcAndWait(piSession, transport, { type: 'abort' });
-        } catch (error) {
+            abortInFlight = true;
+            transportEvents?.cancelPendingExtensionUi('Pi prompt aborted', { sendResponse: true });
+            // Keep the current lifecycle intact until Pi confirms abort. If abort
+            // fails, the canceled extension can still finish through its normal
+            // prompt response or agent-settled path.
+            const abortedLocalId = activePromptLocalId;
+            try {
+                await sendPiRpcAndWait(piSession, transport, { type: 'abort' });
+            } catch (error) {
+                abortInFlight = false;
+                const detail = error instanceof Error ? error.message : String(error);
+                piSession.sendSessionEvent({ type: 'message', message: `Pi abort failed: ${detail}` });
+                pumpPromptQueue();
+                throw new Error(`Pi abort failed: ${detail}`);
+            }
+            transportEvents?.abortPromptLifecycle();
             abortInFlight = false;
-            const detail = error instanceof Error ? error.message : String(error);
-            piSession.sendSessionEvent({ type: 'message', message: `Pi abort failed: ${detail}` });
+            // Pi confirmed abort before we clear the local streaming indicator.
+            // Remove the exact history registration even when turn_start already
+            // consumed the HAPI queued row and removed it from pendingLocalIds.
+            if (abortedLocalId) {
+                conversationHistory.rejectPendingEntry(abortedLocalId, 'prompt');
+                if (pendingLocalIds[0] === abortedLocalId) {
+                    pendingLocalIds.shift();
+                    piSession.emitMessagesConsumed([abortedLocalId], { clearQueuedThinkingGrace: true });
+                }
+            }
+            activePromptLocalId = undefined;
+            piSession.updateThinkingState(false);
+            promptCommandInFlight = false;
             pumpPromptQueue();
-            throw new Error(`Pi abort failed: ${detail}`);
-        }
-        transportEvents?.abortPromptLifecycle();
-        abortInFlight = false;
-        // Pi confirmed abort before we clear the local streaming indicator. If
-        // the prompt was accepted but never reached turn_start, resolve exactly
-        // that in-flight local id now; otherwise the next prompt would consume it.
-        if (abortedPendingLocalId && pendingLocalIds[0] === abortedPendingLocalId) {
-            pendingLocalIds.shift();
-            piSession.emitMessagesConsumed([abortedPendingLocalId], { clearQueuedThinkingGrace: true });
-        }
-        piSession.updateThinkingState(false);
-        promptCommandInFlight = false;
-        pumpPromptQueue();
-        return { success: true };
+            return { success: true };
         })().finally(() => { abortPromise = null; });
         return await abortPromise;
     });

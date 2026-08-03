@@ -157,6 +157,10 @@ export interface PiToolExecutionEndEvent {
     result: unknown;
     isError: boolean;
 }
+export interface PiEntryAppendedEvent {
+    type: 'entry_appended';
+    entry: unknown;
+}
 
 export type PiAgentEvent =
     | PiAgentStartEvent
@@ -171,6 +175,7 @@ export type PiAgentEvent =
     | PiToolExecutionUpdateEvent
     | PiToolExecutionEndEvent
     | PiExtensionUiRequest
+    | PiEntryAppendedEvent
     | { type: string }; // fallback for unknown events
 
 // ============================================================================
@@ -193,7 +198,12 @@ export type PiRpcCommand =
     | { type: 'get_available_models' }
     | { type: 'set_thinking_level'; level: PiThinkingLevel }
     | { type: 'get_commands' }
-    | { id?: string; type: 'get_session_stats' };
+    | { id?: string; type: 'get_session_stats' }
+    | { id?: string; type: 'switch_session'; sessionPath: string }
+    | { id?: string; type: 'fork'; entryId: string }
+    | { id?: string; type: 'clone' }
+    | { id?: string; type: 'get_fork_messages' }
+    | { id?: string; type: 'get_entries'; since?: string };
 
 // ============================================================================
 // Pi RPC Responses (stdout)

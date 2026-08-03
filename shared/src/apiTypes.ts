@@ -475,6 +475,11 @@ export type RewindConversationRpcResult = {
         createdAt?: number
         invokedAt?: number | null
     }>
+} | {
+    success: false
+    error: string
+    /** Native state is unchanged, cancelled, or was restored exactly. */
+    outcome: 'rejected' | 'cancelled' | 'source_restored'
 }
 
 export const QueuedStateRequestSchema = z.object({

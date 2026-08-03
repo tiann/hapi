@@ -36,7 +36,8 @@ export class PiSession {
     readonly initialModel: string | null;
     // A runner/native resume must prove that Pi loaded this exact session with
     // a non-empty get_state sessionId. Missing or contradictory IDs fail closed.
-    readonly expectedNativeSessionId: string | null;
+    expectedNativeSessionId: string | null;
+    currentNativeSessionFile: string | null = null;
 
     // Streaming state
     piIsStreaming = false;
@@ -57,10 +58,14 @@ export class PiSession {
     // the first get_state response).
     private piReady = false;
     private nativeReadyAnnounced = false;
+    private nativeReadyPreparation: (() => Promise<void>) | null = null;
+    private nativeReadyPreparationStarted = false;
+    private historyTransaction: symbol | null = null;
     // Buffered sends carry their localId so a cancel-queued-message that arrives
     // while a prompt is still held (before drain) can drop it instead of firing
     // a cancelled prompt on markReady (issue #1143 review — MAJOR).
     private readyQueue: Array<{ localId?: string; fn: () => void }> = [];
+    private historyDeferredQueue: Array<{ localId?: string; fn: () => void }> = [];
 
     private keepAliveInterval: NodeJS.Timeout | null = null;
 
@@ -104,9 +109,78 @@ export class PiSession {
         return this.nativeReadyAnnounced;
     }
 
+    /**
+     * Establish a stable native baseline before buffered prompts are released.
+     * Pi's history cursor must be read before the first web prompt is allowed
+     * to append, otherwise an old duplicate user message could be paired with
+     * a new HAPI localId.
+     */
+    setNativeReadyPreparation(fn: () => Promise<void>): void {
+        this.nativeReadyPreparation = fn;
+    }
+
+    get isHistoryTransactionActive(): boolean {
+        return this.historyTransaction !== null;
+    }
+
+    beginHistoryTransaction(): (options?: { drain?: boolean }) => void {
+        if (this.historyTransaction) throw new Error('Conversation history action already in progress');
+        const token = Symbol('pi-history-transaction');
+        this.historyTransaction = token;
+        return (options = {}) => {
+            if (this.historyTransaction !== token) return;
+            this.historyTransaction = null;
+            const deferred = this.historyDeferredQueue;
+            this.historyDeferredQueue = [];
+            if (options.drain === false) return;
+            for (const { fn } of deferred) fn();
+        };
+    }
+
+    assertNoHistoryTransaction(operation: string): void {
+        if (this.historyTransaction) {
+            throw new Error(`Cannot ${operation} while a conversation history action is in progress`);
+        }
+    }
+
+    /** Queue ordinary outbound work until native source identity is restored. */
+    runWhenHistoryIdle(fn: () => void, localId?: string): void {
+        if (!this.historyTransaction) {
+            fn();
+            return;
+        }
+        this.historyDeferredQueue.push({ fn, localId });
+    }
+
     matchesExpectedNativeSessionId(actualSessionId: string | undefined): boolean {
         if (!this.expectedNativeSessionId) return true;
         return Boolean(actualSessionId) && actualSessionId === this.expectedNativeSessionId;
+    }
+
+    /**
+     * Commit an in-process native session transition (Pi rewind creates a new
+     * branched session file). Future get_state validation must target the new
+     * id before its metadata is exposed to the hub.
+     */
+    commitNativeSessionIdentity(
+        identity: { sessionId: string; sessionFile: string },
+        metadataUpdater?: (metadata: Metadata) => Metadata,
+    ): void {
+        this.expectedNativeSessionId = identity.sessionId;
+        this.currentNativeSessionFile = identity.sessionFile;
+        this.updateMetadata((metadata) => metadataUpdater?.({
+            ...metadata,
+            piSessionId: identity.sessionId,
+        }) ?? {
+            ...metadata,
+            piSessionId: identity.sessionId,
+        });
+    }
+
+    /** Wait for queued metadata writes before exposing a native history result. */
+    async flushMetadata(timeoutMs: number = 5_000): Promise<boolean> {
+        const flush = (this.client as Partial<ApiSessionClient>).flushMetadata
+        return flush ? await flush.call(this.client, timeoutMs) : true
     }
 
     /**
@@ -131,8 +205,13 @@ export class PiSession {
      */
     cancelBufferedMessage(localId: string): boolean {
         const idx = this.readyQueue.findIndex((item) => item.localId === localId);
-        if (idx === -1) return false;
-        this.readyQueue.splice(idx, 1);
+        if (idx !== -1) {
+            this.readyQueue.splice(idx, 1);
+            return true;
+        }
+        const deferredIdx = this.historyDeferredQueue.findIndex((item) => item.localId === localId);
+        if (deferredIdx === -1) return false;
+        this.historyDeferredQueue.splice(deferredIdx, 1);
         return true;
     }
 
@@ -156,10 +235,26 @@ export class PiSession {
      * considered successful.
      */
     markNativeReady(): void {
-        this.markReady();
-        if (this.nativeReadyAnnounced) return;
+        if (this.nativeReadyAnnounced || this.nativeReadyPreparationStarted) return;
+        // The hub uses session-ready as the validated native identity fence.
+        // It must precede piSessionId metadata publication, while prompt drain
+        // may wait for the append-log baseline below.
         this.nativeReadyAnnounced = true;
         this.client.emitSessionReady();
+        if (this.nativeReadyPreparation) {
+            this.nativeReadyPreparationStarted = true;
+            void this.nativeReadyPreparation()
+                // The history feature is optional. A failed baseline must not
+                // wedge a normal Pi session; it simply remains unpublished.
+                .catch(() => {})
+                .finally(() => this.finishNativeReady());
+            return;
+        }
+        this.finishNativeReady();
+    }
+
+    private finishNativeReady(): void {
+        this.markReady();
     }
 
     startKeepAlive(): void {

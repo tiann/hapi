@@ -270,6 +270,7 @@ export const PiStateDataSchema = z.object({
         provider: z.string().optional(),
     }).passthrough().optional(),
     sessionId: z.string().optional(),
+    sessionFile: z.string().optional(),
     thinkingLevel: z.string().optional(),
     steeringMode: z.enum(['all', 'one-at-a-time']).optional(),
     isStreaming: z.boolean().optional(),

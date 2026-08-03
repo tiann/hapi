@@ -64,6 +64,8 @@ describe('GrokConversationHistory', () => {
         history.rememberPromptIndex('local-y', 1)
         const result = await history.rewind('local-y')
         expect(result.success).toBe(true)
+        expect(result.success).toBe(true)
+        if (!result.success) throw new Error(result.error)
         expect(result.truncateFromLocalId).toBe('local-y')
     })
 

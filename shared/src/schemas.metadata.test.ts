@@ -15,4 +15,13 @@ describe('MetadataSchema cursorSessionProtocol', () => {
     it('rejects unknown protocol values', () => {
         expect(MetadataSchema.safeParse({ ...base, cursorSessionProtocol: 'websocket' }).success).toBe(false);
     });
+
+    it('persists Pi native history entry ids', () => {
+        const result = MetadataSchema.safeParse({
+            ...base,
+            conversationHistoryEntryIds: { 'local-user-id': 'pi-entry-id' },
+        });
+        expect(result.success).toBe(true);
+        expect(result.data?.conversationHistoryEntryIds).toEqual({ 'local-user-id': 'pi-entry-id' });
+    });
 });

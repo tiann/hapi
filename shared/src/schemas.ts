@@ -115,6 +115,9 @@ export const MetadataSchema = z.object({
     conversationHistoryIndexes: z.record(z.string(), z.number().int().nonnegative()).optional(),
     // Codex localId → turnId mapping (durable across runner relaunches).
     conversationHistoryTurns: z.record(z.string(), z.string().min(1)).optional(),
+    // Pi localId → append-only session entry id mapping. Pi entry ids are the
+    // only stable native boundary accepted by its fork API.
+    conversationHistoryEntryIds: z.record(z.string(), z.string().min(1)).optional(),
     // Set when native rewind succeeded but HAPI truncate/hydrate failed.
     conversationHistoryDiverged: z.boolean().optional(),
     worktree: WorktreeMetadataSchema.optional(),

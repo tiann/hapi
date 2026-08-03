@@ -3,6 +3,7 @@ import { parsePiModels, parsePiCommands, parsePiContextUsage, sendPiRpcAndWait, 
 import type { PiResponseEvent } from './types';
 import { PiSession } from './session';
 import { PiTransport } from './piTransport';
+import { PiConversationHistory } from './conversationHistory';
 import type { PiThinkingLevel } from './types';
 
 // Mock logger
@@ -1033,5 +1034,82 @@ describe('Pi abort UI lifecycle', () => {
         listener!({ type: 'agent_settled' });
         await Promise.resolve();
         expect(onPromptLifecycleMissing).not.toHaveBeenCalled();
+    });
+});
+
+describe('Pi conversation-history transport integration', () => {
+    function setup(expectedNativeSessionId?: string) {
+        let listener: ((event: Record<string, unknown>) => void) | null = null;
+        const transport = {
+            onEvent: vi.fn((handler: (event: Record<string, unknown>) => void) => { listener = handler; }),
+            send: vi.fn(),
+        } as unknown as PiTransport;
+        const session = new PiSession({
+            api: {} as never,
+            client: {
+                keepAlive: vi.fn(),
+                updateMetadata: vi.fn(),
+                sendAgentMessage: vi.fn(),
+                emitMessagesConsumed: vi.fn(),
+                sendSessionEvent: vi.fn(),
+                updateAgentState: vi.fn(),
+                emitSessionReady: vi.fn(),
+                rpcHandlerManager: { registerHandler: vi.fn() },
+            } as never,
+            path: '/tmp/test',
+            logPath: '/tmp/test.log',
+            startedBy: 'terminal',
+            startingMode: 'remote',
+            expectedNativeSessionId,
+        });
+        return {
+            transport,
+            session,
+            emit: (event: Record<string, unknown>) => listener?.(event),
+        };
+    }
+
+    it('resolves an awaited temporary get_state without publishing clone identity', async () => {
+        const h = setup('source-id');
+        wireTransportEvents(h.transport, h.session, []);
+        const release = h.session.beginHistoryTransaction();
+        const pending = sendPiRpcAndWait(h.session, h.transport, { type: 'get_state' });
+        const command = (h.transport.send as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0] as { id: string };
+
+        h.emit({
+            type: 'response',
+            id: command.id,
+            command: 'get_state',
+            success: true,
+            data: { sessionId: 'clone-id', sessionFile: '/tmp/clone.jsonl' },
+        });
+
+        await expect(pending).resolves.toEqual({ sessionId: 'clone-id', sessionFile: '/tmp/clone.jsonl' });
+        expect(h.session.client.updateMetadata).not.toHaveBeenCalled();
+        expect(h.session.client.emitSessionReady).not.toHaveBeenCalled();
+        release();
+    });
+
+    it('maps entry_appended events and completes the final sync before releasing the queue', async () => {
+        const h = setup();
+        const rpc = vi.fn(async () => ({ entries: [], leafId: null }));
+        const history = new PiConversationHistory(h.session, rpc);
+        history.registerPrompt('local-1');
+        const onAgentSettled = vi.fn();
+        const controller = wireTransportEvents(h.transport, h.session, [], {
+            conversationHistory: history,
+            onAgentSettled,
+        });
+
+        h.emit({ type: 'entry_appended', entry: { id: 'entry-1', type: 'message', message: { role: 'user' } } });
+        expect(history.getEntryIds()).toEqual({ 'local-1': 'entry-1' });
+
+        controller.beginPromptLifecycle('prompt-1');
+        h.emit({ type: 'response', id: 'prompt-1', command: 'prompt', success: true });
+        h.emit({ type: 'agent_start' });
+        h.emit({ type: 'agent_settled' });
+        expect(onAgentSettled).not.toHaveBeenCalled();
+        await vi.waitFor(() => expect(onAgentSettled).toHaveBeenCalledTimes(1));
+        expect(rpc).toHaveBeenCalledWith({ type: 'get_entries', since: 'entry-1' });
     });
 });

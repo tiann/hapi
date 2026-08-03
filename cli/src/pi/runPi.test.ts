@@ -87,9 +87,10 @@ vi.mock('./piTransport', () => ({
     },
 }));
 
-import { buildPiCommandInventory, formatPiUserMessage, rewritePiSkillPrompt, runPi } from './runPi';
+import { buildPiCommandInventory, failPiHistoryOnRestoreError, formatPiUserMessage, rewritePiSkillPrompt, runPi } from './runPi';
 import { bootstrapExistingSession } from '@/agent/sessionFactory';
 import { PiSession } from './session';
+import { PiHistoryRestoreError } from './conversationHistory';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 
 describe('Pi command namespaces', () => {
@@ -201,6 +202,22 @@ describe('runPi startup', () => {
         });
     });
 
+    it('registers native conversation fork and rewind RPC handlers', async () => {
+        await runPi({ workingDirectory: '/work' });
+
+        expect(harness.rpcHandlers.has(RPC_METHODS.ForkConversation)).toBe(true);
+        expect(harness.rpcHandlers.has(RPC_METHODS.RewindConversation)).toBe(true);
+    });
+
+    it('escalates only failed source restoration to lifecycle cleanup', () => {
+        const failNativeStartup = vi.fn();
+        failPiHistoryOnRestoreError(new PiHistoryRestoreError('restore failed'), failNativeStartup);
+        failPiHistoryOnRestoreError(new Error('ordinary fork failure'), failNativeStartup);
+
+        expect(failNativeStartup).toHaveBeenCalledTimes(1);
+        expect(failNativeStartup).toHaveBeenCalledWith(expect.any(PiHistoryRestoreError));
+    });
+
     it.each([
         ['fresh', undefined, 1, 0],
         ['resume', 'pi-session-1', 0, 1],
@@ -242,6 +259,20 @@ describe('runPi startup', () => {
 
 
 describe('Pi abort queue boundary', () => {
+    async function completeHistoryInitialization(): Promise<void> {
+        const replyTo = async (type: 'get_entries' | 'get_fork_messages', occurrence: number, data: unknown) => {
+            await vi.waitFor(() => {
+                expect(harness.sent.filter((item) => (item as { type?: string }).type === type)).toHaveLength(occurrence);
+            });
+            const command = harness.sent.filter((item) => (item as { type?: string }).type === type)[occurrence - 1] as { id: string };
+            harness.onEvent!({ type: 'response', id: command.id, command: type, success: true, data });
+        };
+
+        await replyTo('get_entries', 1, { entries: [], leafId: null });
+        await replyTo('get_fork_messages', 1, { messages: [] });
+        await replyTo('get_entries', 2, { entries: [], leafId: null });
+    }
+
     beforeEach(() => {
         harness.sent.length = 0;
         harness.throwOnGetCommands = false;
@@ -281,6 +312,7 @@ describe('Pi abort queue boundary', () => {
         const running = runPi({ workingDirectory: '/work' });
         await vi.waitFor(() => expect(harness.onEvent).not.toBeNull());
         harness.onEvent!({ type: 'response', command: 'get_state', success: true, data: {} });
+        await completeHistoryInitialization();
 
         const userMessage = (text: string) => ({ role: 'user', content: { type: 'text', text } });
         const onUserMessage = harness.session.onUserMessage.mock.calls.at(-1)![0] as (message: ReturnType<typeof userMessage>, localId: string) => void;

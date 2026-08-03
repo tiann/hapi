@@ -95,6 +95,26 @@ describe('PiSession ready gate', () => {
         expect(nativeSession.client.emitSessionReady).toHaveBeenCalledTimes(1);
     });
 
+    it('announces native-ready before async history baseline drains prompts', async () => {
+        const session = createMockSession();
+        let finishBaseline!: () => void;
+        session.setNativeReadyPreparation(() => new Promise<void>((resolve) => { finishBaseline = resolve; }));
+        const sent = vi.fn();
+        session.runWhenReady(sent);
+
+        session.markNativeReady();
+
+        expect(session.client.emitSessionReady).toHaveBeenCalledTimes(1);
+        expect(session.isReady).toBe(false);
+        expect(sent).not.toHaveBeenCalled();
+
+        finishBaseline();
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(session.isReady).toBe(true);
+        expect(sent).toHaveBeenCalledTimes(1);
+    });
+
     it('preserves FIFO across mixed buffered + post-ready enqueues', () => {
         const session = createMockSession();
         const order: string[] = [];
@@ -146,5 +166,22 @@ describe('PiSession cancelBufferedMessage', () => {
 
         // Already sent to Pi — cannot be recalled.
         expect(session.cancelBufferedMessage('id-1')).toBe(false);
+    });
+});
+
+describe('PiSession history transaction gate', () => {
+    it('defers a prompt during clone/restore and drains it FIFO after source restoration', () => {
+        const session = createMockSession();
+        const sent: string[] = [];
+        const release = session.beginHistoryTransaction();
+        session.runWhenHistoryIdle(() => sent.push('first'), 'first');
+        session.runWhenHistoryIdle(() => sent.push('second'), 'second');
+
+        expect(sent).toEqual([]);
+        expect(session.cancelBufferedMessage('second')).toBe(true);
+        release();
+
+        expect(sent).toEqual(['first']);
+        expect(session.isHistoryTransactionActive).toBe(false);
     });
 });
