@@ -151,6 +151,7 @@ class AgyPtyLauncher extends RemoteLauncherBase {
     private pendingAgyToolCalls: AgyToolCall[] = []
     private pendingWebDelivery: PendingWebDelivery | null = null
     private pendingWebDeliveryResolved: (() => void) | null = null
+    private activeWebPrompt: string | null = null
 
     private waitForPendingWebDelivery(signal: AbortSignal): Promise<void> {
         if (!this.pendingWebDelivery) return Promise.resolve()
@@ -218,6 +219,11 @@ class AgyPtyLauncher extends RemoteLauncherBase {
 
     private async handleAbortRequest(): Promise<void> {
         logger.debug('[agy-pty]: handleAbortRequest (interrupt)')
+        const prompt = this.activeWebPrompt
+        this.activeWebPrompt = null
+        if (prompt !== null) {
+            this.session.client.sendSessionEvent({ type: 'abort-restore', text: prompt })
+        }
         this.questionInteractionEpoch += 1
         // Finding F1 (hostile-review): the interrupt kills the in-flight turn
         // but leaves any pending ask_question request unresolved. Phase 0
@@ -408,6 +414,7 @@ class AgyPtyLauncher extends RemoteLauncherBase {
     }
 
     private async completeAgentRun(): Promise<void> {
+        this.activeWebPrompt = null
         this.disarmQuotaDetector()
         this.agentRunInProgress = false
         await this.applyPendingModelChange()
@@ -537,6 +544,7 @@ class AgyPtyLauncher extends RemoteLauncherBase {
                     await this.applyPendingModelChange()
                 },
                 onBeforeMessageSubmit: (message) => {
+                    this.activeWebPrompt = message
                     if (!this.firstMessageSent) {
                         this.firstMessageSent = true
                         if (!this.agySessionId) {
@@ -557,6 +565,7 @@ class AgyPtyLauncher extends RemoteLauncherBase {
                     this.ptyGeneration += 1
                     this.agentRunInProgress = false
                     this.agentRunReserved = false
+                    this.activeWebPrompt = null
                     this.disarmQuotaDetector()
                     this.rejectPendingModelChange('AGY PTY ended before the live model change')
                     // A respawn establishes a new PTY generation. No pending

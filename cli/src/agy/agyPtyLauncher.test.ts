@@ -514,6 +514,29 @@ describe('agyPtyLauncher session-found wiring (brain UUID -> scanner)', () => {
         expect(session.client.emitMessagesConsumed).toHaveBeenCalledWith(['local-2'])
     })
 
+    it('restores a submitted web prompt exactly once on abort and never after completion', async () => {
+        const { session } = createSessionStub()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockResolvedValueOnce({
+            message: 'restore me',
+            items: [{ message: 'restore me', localId: 'local-restore' }],
+        } as never)
+        harness.afterNextMessage = async (opts) => {
+            await opts.onBeforeMessageSubmit?.('restore me')
+            await opts.onMessageSubmitted?.('restore me')
+            await harness.abortHandler?.()
+            await harness.abortHandler?.()
+            await opts.onAgentRunCompleted?.()
+            await harness.abortHandler?.()
+        }
+
+        await agyPtyLauncher(session as never)
+
+        expect(vi.mocked(session.client.sendSessionEvent).mock.calls
+            .map(([event]) => event)
+            .filter((event) => event.type === 'abort-restore'))
+            .toEqual([{ type: 'abort-restore', text: 'restore me' }])
+    })
+
     it('consumes a skipped slash command and releases the next delivery boundary', async () => {
         const { session } = createSessionStub()
         vi.mocked(session.queue.waitForMessagesAndGetAsString)
