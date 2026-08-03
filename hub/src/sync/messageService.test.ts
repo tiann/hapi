@@ -1123,7 +1123,7 @@ describe('MessageService.sendMessage deliveryMode', () => {
         return { io, cliEmitted }
     }
 
-    it('persists and preserves Pi steer intent through immediate, replay, and backfill delivery', async () => {
+    it('persists Pi steer provenance but downgrades every deferred CLI delivery to queue', async () => {
         const store = makeStore()
         const session = store.sessions.getOrCreateSession(
             'delivery-mode-pi',
@@ -1155,7 +1155,7 @@ describe('MessageService.sendMessage deliveryMode', () => {
         expect(service.replayImmediateQueuedMessages(session.id)).toBe(1)
         expect(cliEmitted).toHaveLength(2)
         expect(cliEmitted[1]).toMatchObject({
-            body: { message: { content: { meta: { deliveryMode: 'steer' } } } }
+            body: { message: { content: { meta: { deliveryMode: 'queue' } } } }
         })
 
         const backfill = service.getDeliverableMessagesAfter(session.id, {
@@ -1164,7 +1164,92 @@ describe('MessageService.sendMessage deliveryMode', () => {
             now: Date.now()
         })
         expect(backfill).toHaveLength(1)
-        expect(backfill[0]?.content).toMatchObject({ meta: { deliveryMode: 'steer' } })
+        expect(backfill[0]?.content).toMatchObject({ meta: { deliveryMode: 'queue' } })
+
+        expect(service.releaseDeliverableQueuedMessages(session.id)).toBe(1)
+        expect(cliEmitted).toHaveLength(3)
+        expect(cliEmitted[2]).toMatchObject({
+            body: { message: { content: { meta: { deliveryMode: 'queue' } } } }
+        })
+
+        // Deferred delivery is a view transformation only. The database keeps
+        // the original provenance for Web display and diagnostics.
+        expect(store.messages.getUninvokedLocalMessages(session.id)[0]?.content).toMatchObject({
+            role: 'user',
+            meta: { sentFrom: 'webapp', deliveryMode: 'steer' }
+        })
+    })
+
+    it('downgrades a legacy persisted steer through the mature scheduled scan', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'delivery-mode-mature-pi',
+            { path: '/tmp/delivery-mode-mature-pi', host: 'localhost', flavor: 'pi' },
+            null,
+            'default'
+        )
+        const publisher = makePublisher()
+        const { io, cliEmitted } = makeTrackingIo()
+        const service = new MessageService(store, io, publisher as any)
+        const scheduledAt = Date.now() - 1_000
+
+        store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: { type: 'text', text: 'legacy scheduled steer' },
+                meta: { sentFrom: 'webapp', deliveryMode: 'steer' }
+            },
+            'mature-steer',
+            scheduledAt
+        )
+
+        service.releaseMatureScheduledMessages(Date.now())
+
+        expect(cliEmitted).toHaveLength(1)
+        expect(cliEmitted[0]).toMatchObject({
+            body: { message: { content: { meta: { deliveryMode: 'queue' } } } }
+        })
+        expect(store.messages.getUninvokedLocalMessages(session.id)[0]?.content).toMatchObject({
+            role: 'user',
+            meta: { sentFrom: 'webapp', deliveryMode: 'steer' }
+        })
+    })
+
+    it('leaves non-user and already-queued content unchanged during CLI backfill', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'delivery-mode-backfill-guards')
+        const service = new MessageService(store, makeTrackingIo().io, makePublisher() as any)
+        const agentContent = {
+            role: 'agent',
+            content: { type: 'text', text: 'agent event' },
+            meta: { deliveryMode: 'steer', marker: 'keep-agent' }
+        }
+        const userWithoutMeta = {
+            role: 'user',
+            content: { type: 'text', text: 'legacy user' }
+        }
+        const queuedUser = {
+            role: 'user',
+            content: { type: 'text', text: 'already queued' },
+            meta: { sentFrom: 'webapp', deliveryMode: 'queue', marker: 'keep-user' }
+        }
+
+        store.messages.addMessage(session.id, agentContent)
+        store.messages.addMessage(session.id, userWithoutMeta, 'legacy-user')
+        store.messages.addMessage(session.id, queuedUser, 'queued-user')
+
+        const backfill = service.getDeliverableMessagesAfter(session.id, {
+            afterSeq: 0,
+            limit: 10,
+            now: Date.now()
+        })
+
+        expect(backfill.map((message) => message.content)).toEqual([
+            agentContent,
+            userWithoutMeta,
+            queuedUser
+        ])
     })
 
     it('downgrades forged steer intent for non-Pi sessions and defaults omitted intent to queue', async () => {

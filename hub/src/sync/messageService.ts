@@ -93,6 +93,27 @@ function getNormalizedDeliveryMode(
     return isObject(metadata) && metadata.flavor === 'pi' ? 'steer' : 'queue'
 }
 
+/**
+ * Native steer is scoped to the Pi turn active at the initial live emit. Once
+ * a durable row is delivered through reconnect, backfill, a clear gate, or a
+ * scheduled scan, that turn identity is no longer provable. Preserve stored
+ * provenance for Web diagnostics, but make deferred CLI delivery an ordinary
+ * queue item so it cannot steer a later generation.
+ */
+function contentForDeferredDelivery(content: unknown): unknown {
+    if (!isObject(content) || content.role !== 'user' || !isObject(content.meta)) {
+        return content
+    }
+    if (content.meta.deliveryMode !== 'steer') return content
+    return {
+        ...content,
+        meta: {
+            ...content.meta,
+            deliveryMode: 'queue' as const
+        }
+    }
+}
+
 export class MessageService {
     /** One scheduled-matured SSE per localId per hub process (cleared on cancel/consume paths here). */
     private readonly scheduledMatureNotifiedLocalIds = new Set<string>()
@@ -375,7 +396,7 @@ export class MessageService {
             id: message.id,
             seq: message.seq,
             localId: message.localId,
-            content: message.content,
+            content: contentForDeferredDelivery(message.content),
             createdAt: message.createdAt,
             invokedAt: message.invokedAt,
             scheduledAt: message.scheduledAt
@@ -723,7 +744,7 @@ export class MessageService {
                         seq: msg.seq,
                         createdAt: msg.createdAt,
                         localId: msg.localId,
-                        content: msg.content
+                        content: contentForDeferredDelivery(msg.content)
                     }
                 }
             }
@@ -750,7 +771,7 @@ export class MessageService {
                         seq: msg.seq,
                         createdAt: msg.createdAt,
                         localId: msg.localId,
-                        content: msg.content
+                        content: contentForDeferredDelivery(msg.content)
                     }
                 }
             }
@@ -804,7 +825,7 @@ export class MessageService {
                         seq: msg.seq,
                         createdAt: msg.createdAt,
                         localId: msg.localId,
-                        content: msg.content
+                        content: contentForDeferredDelivery(msg.content)
                     }
                 }
             }
