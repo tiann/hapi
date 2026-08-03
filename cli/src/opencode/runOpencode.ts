@@ -548,7 +548,9 @@ export async function runOpencode(opts: {
                 }
             },
             onClearRequested: async () => {
-                await api.reserveOpenCodeClearSession(session.sessionId);
+                await withRetry(() => api.reserveOpenCodeClearSession(session.sessionId), {
+                    minDelay: 500, maxDelay: 30_000, shouldRetry: isRetryableConnectionError
+                });
             },
             onClearCleanupComplete: async () => {
                 await withRetry(() => api.confirmOpenCodeClearCleanup(session.sessionId), {

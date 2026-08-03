@@ -542,6 +542,24 @@ describe('runOpencode set-session-config handler', () => {
         }
     });
 
+    it('retries a lost durable-reservation response before native teardown', async () => {
+        vi.useFakeTimers();
+        harness.triggerClear = true;
+        const transient = Object.assign(new Error('connection reset after commit'), { code: 'ECONNRESET' });
+        harness.reserveOpenCodeClearSession.mockRejectedValueOnce(transient).mockResolvedValueOnce('fresh-session');
+        const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+        try {
+            const run = runOpencode({ startedBy: 'runner' });
+            await vi.runAllTimersAsync();
+            await run;
+            expect(harness.reserveOpenCodeClearSession).toHaveBeenCalledTimes(2);
+            expect(lifecycleMock.cleanupConfirmed).toHaveBeenCalledTimes(1);
+        } finally {
+            exit.mockRestore();
+            vi.useRealTimers();
+        }
+    });
+
     it('surfaces a fresh-session handoff failure instead of exiting cleanly after archival', async () => {
         harness.triggerClear = true;
         harness.clearOpenCodeSession.mockRejectedValueOnce(new Error('replacement link failed'));

@@ -366,10 +366,12 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         // rows after the CLI exits — there is no longer an ack path, so they would
         // stay queued forever.  The 5-second tick in syncEngine.expireInactive
         // emits scheduled rows when they mature, regardless of session end.
-        try {
-            onSweepImmediateQueued?.(data.sid, Date.now())
-        } catch (err) {
-            console.error('session-end sweep failed', err)
+        if (data.reason !== 'cleared') {
+            try {
+                onSweepImmediateQueued?.(data.sid, Date.now())
+            } catch (err) {
+                console.error('session-end sweep failed', err)
+            }
         }
 
         onSessionEnd?.(data)

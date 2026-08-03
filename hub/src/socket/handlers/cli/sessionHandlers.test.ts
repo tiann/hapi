@@ -38,6 +38,25 @@ function redundantGoalStatusContent(message: string): unknown {
 }
 
 describe('cli session handlers', () => {
+    it('preserves immediate queued rows for cleared handoff transfer', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('clear-end', {}, null, 'default')
+        store.messages.addMessage(session.id, { text: 'held' }, 'held-local')
+        const socket = new FakeSocket()
+        let swept = false
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => {},
+            onSweepImmediateQueued: () => { swept = true }
+        })
+        socket.trigger('session-end', { sid: session.id, time: Date.now(), reason: 'cleared' })
+        expect(swept).toBe(false)
+        expect(store.messages.getAllMessages(session.id)).toEqual([
+            expect.objectContaining({ localId: 'held-local', invokedAt: null })
+        ])
+    })
+
     it('drops redundant goal status events before persistence and broadcast', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('goal-status-session', {}, null, 'default')

@@ -30,7 +30,9 @@ const harness = vi.hoisted(() => ({
     // reproduced via the terminal UI's onExit/onSwitchToLocal callbacks,
     // not rpcHandlers.
     newSessionImpl: null as null | (() => Promise<string>),
-    disconnectImpl: null as null | (() => Promise<void>)
+    disconnectImpl: null as null | (() => Promise<void>),
+    permissionCancelError: null as Error | null,
+    serverStopError: null as Error | null
 }));
 
 // Captures the RemoteLauncherDisplayContext (including onExit/
@@ -128,7 +130,7 @@ vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
     buildHapiMcpBridge: async (_client: unknown, options?: { enableChangeTitle?: boolean; skillLookup?: { workingDirectory: string; flavor: string } }) => {
         harness.bridgeOptions = options ?? null;
         return {
-            server: { stop: () => {} },
+            server: { stop: () => { if (harness.serverStopError) throw harness.serverStopError; } },
             mcpServers: {}
         };
     }
@@ -136,7 +138,7 @@ vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
 
 vi.mock('./utils/permissionHandler', () => ({
     OpencodePermissionHandler: class {
-        async cancelAll(): Promise<void> {}
+        async cancelAll(): Promise<void> { if (harness.permissionCancelError) throw harness.permissionCancelError; }
     }
 }));
 
@@ -335,6 +337,8 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         harness.cancelPromptImpl = null;
         harness.newSessionImpl = null;
         harness.disconnectImpl = null;
+        harness.permissionCancelError = null;
+        harness.serverStopError = null;
         inkHarness.lastRenderProps = null;
     });
 
@@ -386,6 +390,20 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         expect(onClearCleanupFailed).toHaveBeenCalledTimes(1);
         const backendModule = await import('./utils/opencodeBackend');
         (backendModule.createOpencodeBackend as unknown as ReturnType<typeof vi.fn>).mockClear();
+    });
+
+    it.each(['permission', 'server'] as const)('aborts clear when %s cleanup fails', async (stage) => {
+        if (stage === 'permission') harness.permissionCancelError = new Error('permission cleanup failed');
+        else harness.serverStopError = new Error('server cleanup failed');
+        const onClearRequested = vi.fn(async () => {});
+        const onClearCleanupComplete = vi.fn(async () => {});
+        const onClearCleanupFailed = vi.fn(async () => {});
+        const { session } = createSessionStub([{ message: '', mode: createClearMode() }]);
+        await expect(opencodeRemoteLauncher(session as never, {
+            onClearRequested, onClearCleanupComplete, onClearCleanupFailed
+        })).rejects.toThrow('cleanup failed');
+        expect(onClearCleanupFailed).toHaveBeenCalledTimes(1);
+        expect(onClearCleanupComplete).not.toHaveBeenCalled();
     });
 
     it('reaches /clear only after an in-flight /compact has completed', async () => {
