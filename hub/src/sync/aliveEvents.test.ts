@@ -16,6 +16,37 @@ function createPublisher(events: SyncEvent[]): EventPublisher {
 }
 
 describe('alive incremental events', () => {
+    it('replays durable immediate prompts on every attach until consumed', () => {
+        const store = new Store(':memory:')
+        const emitted: Array<{ body?: { t?: string; message?: { localId?: string | null } } }> = []
+        const io = {
+            of: () => ({
+                to: () => ({ emit: (_event: string, payload: unknown) => emitted.push(payload as typeof emitted[number]) })
+            })
+        }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            const session = engine.getOrCreateSession('attach-replay', { path: '/tmp/project', host: 'localhost' }, null, 'default')
+            store.messages.addMessage(session.id, { text: 'queued before attach' }, 'queued-before-attach')
+            const invoked = store.messages.addMessage(session.id, { text: 'already consumed' }, 'already-consumed')
+            store.messages.markMessagesInvoked(session.id, ['already-consumed'], invoked.createdAt + 1)
+            store.messages.addMessage(session.id, { text: 'future scheduled' }, 'future-scheduled', Date.now() + 60_000)
+            expect(emitted).toEqual([])
+
+            engine.handleSessionAlive({ sid: session.id, time: Date.now() })
+            engine.handleSessionAlive({ sid: session.id, time: Date.now() + 1 })
+            expect(emitted.map((update) => update.body?.message?.localId)).toEqual([
+                'queued-before-attach', 'queued-before-attach'
+            ])
+
+            store.messages.markMessagesInvoked(session.id, ['queued-before-attach'], Date.now())
+            engine.handleSessionAlive({ sid: session.id, time: Date.now() + 2 })
+            expect(emitted.map((update) => update.body?.message?.localId)).toEqual([
+                'queued-before-attach', 'queued-before-attach'
+            ])
+        } finally { engine.stop() }
+    })
+
     it('includes active=true in session alive updates', () => {
         const store = new Store(':memory:')
         const events: SyncEvent[] = []

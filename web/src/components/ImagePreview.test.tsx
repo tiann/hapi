@@ -40,4 +40,22 @@ describe('ImagePreview gallery navigation', () => {
         fireEvent.keyDown(window, { key: 'ArrowLeft' })
         expect(screen.getByRole('dialog', { name: 'First image' })).toBeInTheDocument()
     })
+
+    it('keeps named galleries separate from ungrouped previews', () => {
+        render(
+            <>
+                <ImagePreview src="/sent.png" fileName="sent.png" label="Sent image" />
+                <ImagePreview src="/draft-one.png" fileName="draft-one.png" label="First draft" galleryId="composer-attachments" />
+                <ImagePreview src="/draft-two.png" fileName="draft-two.png" label="Second draft" galleryId="composer-attachments" />
+            </>
+        )
+
+        fireEvent.click(screen.getByRole('button', { name: /first draft/i }))
+
+        const dialog = screen.getByRole('dialog', { name: 'First draft' })
+        expect(within(dialog).getByText('1 / 2')).toBeInTheDocument()
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Next image' }))
+        expect(screen.getByRole('dialog', { name: 'Second draft' })).toBeInTheDocument()
+        expect(within(screen.getByRole('dialog')).queryByRole('img', { name: 'Sent image' })).not.toBeInTheDocument()
+    })
 })

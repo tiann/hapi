@@ -115,6 +115,10 @@ See `src/web/routes/` for all endpoints.
 - `POST /api/machines/:id/spawn` - Spawn new session on machine.
 - `POST /api/machines/:id/paths/exists` - Check if path exists.
 
+### Usage (`src/web/routes/usage.ts`)
+
+- `GET /api/usage/summary` - Get cache-aware token usage for the owner namespace (`range=7d|30d|all`).
+
 ### Git/Files (`src/web/routes/git.ts`)
 
 - `GET /api/sessions/:id/git-status` - Git status.

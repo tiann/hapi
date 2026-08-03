@@ -970,6 +970,24 @@ export function getPullToRefreshState(distancePx: number): PullToRefreshState {
     return 'idle'
 }
 
+export function getPullRefreshIndicatorRotation(state: PullToRefreshState): number {
+    return state === 'ready' ? 180 : 0
+}
+
+function PullRefreshIcon(props: { rotation: number }) {
+    return (
+        <svg
+            aria-hidden="true"
+            className="h-4 w-4 shrink-0 transition-transform duration-200"
+            viewBox="0 0 24 24"
+            fill="none"
+            style={{ transform: `rotate(${props.rotation}deg)` }}
+        >
+            <path d="M12 5v14M6 13l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+    )
+}
+
 export function SessionList(props: {
     sessions: SessionSummary[]
     onSelect: (sessionId: string) => void
@@ -1423,7 +1441,9 @@ export function SessionList(props: {
                     aria-live="polite"
                     className="pointer-events-none absolute left-1/2 top-3 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-bg)]/90 px-2.5 py-1 text-xs text-[var(--app-hint)] shadow-sm backdrop-blur"
                 >
-                    {isRefreshing || props.isLoading ? <Spinner size="sm" label={null} className="text-current" /> : null}
+                    {isRefreshing || props.isLoading
+                        ? <Spinner size="sm" label={null} className="text-current" />
+                        : <PullRefreshIcon rotation={getPullRefreshIndicatorRotation(pullState)} />}
                     <span>
                         {isRefreshing
                             ? t('sessions.refresh.refreshing')

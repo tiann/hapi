@@ -11,7 +11,7 @@ import {
     truncateUtf8ByteLength,
     utf8ByteLength
 } from './voicePersonality'
-import { VOICE_PLATFORM_FIXTURES } from './voicePromptLayers'
+import { VOICE_PLATFORM_FIXTURES, getVoicePlatformFixturesPreview } from './voicePromptLayers'
 
 describe('voicePersonality', () => {
     test('parseVoicePersonalityPreferences returns defaults for invalid input', () => {
@@ -77,5 +77,11 @@ describe('voicePersonality', () => {
         expect(text).toBe('hello 🎙️ world')
         const huge = truncateUtf8ByteLength('a'.repeat(50_000), 100)
         expect(utf8ByteLength(huge)).toBeLessThanOrEqual(100)
+    })
+
+    test('settings fixtures preview returns full platform rules by default', () => {
+        expect(getVoicePlatformFixturesPreview()).toBe(VOICE_PLATFORM_FIXTURES)
+        expect(getVoicePlatformFixturesPreview(40)).toContain('[…]')
+        expect(getVoicePlatformFixturesPreview(40).length).toBeLessThan(VOICE_PLATFORM_FIXTURES.length)
     })
 })

@@ -326,7 +326,7 @@ async function publishPiTurnUsage(
     const usageMessage = convertPiTurnUsage(event, contextUsage);
     if (!usageMessage) return;
 
-    const converted = convertAgentMessage(usageMessage);
+    const converted = convertAgentMessage(usageMessage, session.currentModel);
     if (converted) session.sendAgentMessage(converted);
 }
 
@@ -362,7 +362,7 @@ export function wireTransportEvents(
         const accumulated = assistantMessageAccumulator.handleEvent(event);
         if (accumulated.length > 0) {
             for (const msg of accumulated) {
-                const converted = convertAgentMessage(msg);
+                const converted = convertAgentMessage(msg, session.currentModel);
                 if (converted) session.sendAgentMessage(converted);
             }
         }
@@ -371,7 +371,7 @@ export function wireTransportEvents(
         if (event.type !== 'message_start' && event.type !== 'message_update' && event.type !== 'message_end') {
             const messages = convertPiEvent(event);
             for (const msg of messages) {
-                const converted = convertAgentMessage(msg);
+                const converted = convertAgentMessage(msg, session.currentModel);
                 if (converted) session.sendAgentMessage(converted);
             }
         }

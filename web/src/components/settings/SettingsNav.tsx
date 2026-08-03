@@ -7,6 +7,8 @@ import { useAppContext } from '@/lib/app-context'
 import { settingsCategories } from '@/routes/settings/categories'
 import { ChevronRightIcon } from './SettingsPrimitives'
 
+const OWNER_ONLY_CATEGORIES = new Set(['storage', 'usage'])
+
 function getNamespace(token: string): string | null {
     try {
         const payload = token.split('.')[1]
@@ -34,9 +36,10 @@ export function SettingsNav(props: { activeId?: string; mobile?: boolean }) {
         voice: t('settings.hub.voice.summary'),
         machines: t('settings.hub.machines.summary'),
         storage: t('settings.storage.summary'),
+        usage: t('settings.usage.summary'),
         about: `v${__APP_VERSION__}`,
     }
-    const visibleCategories = settingsCategories.filter((category) => category.id !== 'storage' || getNamespace(token) === 'default')
+    const visibleCategories = settingsCategories.filter((category) => !OWNER_ONLY_CATEGORIES.has(category.id) || getNamespace(token) === 'default')
 
     return (
         <nav aria-label={t('settings.title')} className={props.mobile ? 'divide-y divide-[var(--app-divider)]' : 'space-y-1 p-3'}>

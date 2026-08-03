@@ -38,6 +38,25 @@ function redundantGoalStatusContent(message: string): unknown {
 }
 
 describe('cli session handlers', () => {
+    it('preserves immediate queued rows for cleared handoff transfer', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('clear-end', {}, null, 'default')
+        store.messages.addMessage(session.id, { text: 'held' }, 'held-local')
+        const socket = new FakeSocket()
+        let swept = false
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => {},
+            onSweepImmediateQueued: () => { swept = true }
+        })
+        socket.trigger('session-end', { sid: session.id, time: Date.now(), reason: 'cleared' })
+        expect(swept).toBe(false)
+        expect(store.messages.getAllMessages(session.id)).toEqual([
+            expect.objectContaining({ localId: 'held-local', invokedAt: null })
+        ])
+    })
+
     it('drops redundant goal status events before persistence and broadcast', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('goal-status-session', {}, null, 'default')
@@ -160,5 +179,56 @@ describe('cli session handlers', () => {
         const ordered = store.messages.getMessagesByPosition(session.id, 10)
         const uuids = ordered.map((m) => (m.content as { content: { data: { uuid: string } } }).content.data.uuid)
         expect(uuids).toEqual(['msg-1', 'msg-2'])
+    })
+
+    it.each(['supersededBySessionId', 'opencodeClearOperation'] as const)(
+        'ignores a forged hub-owned %s addition from CLI metadata',
+        (field) => {
+            const store = new Store(':memory:')
+            const session = store.sessions.getOrCreateSession('forged-clear-link', { path: '/tmp/project' }, null, 'default')
+            const socket = new FakeSocket()
+            registerSessionHandlers(socket as unknown as CliSocketWithData, {
+                store,
+                resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+                emitAccessError: () => { throw new Error('unexpected access error') }
+            })
+            socket.trigger('update-metadata', {
+                sid: session.id,
+                expectedVersion: session.metadataVersion,
+                metadata: {
+                    path: '/tmp/project',
+                    [field]: field === 'supersededBySessionId'
+                        ? 'foreign-session'
+                        : { replacementSessionId: 'foreign-session', state: 'reserved', updatedAt: Date.now() }
+                }
+            }, () => {})
+            expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).not.toHaveProperty(field)
+        }
+    )
+
+    it('preserves existing hub-owned clear metadata across CLI metadata updates', () => {
+        const store = new Store(':memory:')
+        const operation = { replacementSessionId: 'owned-target', state: 'completed', updatedAt: Date.now() }
+        const session = store.sessions.getOrCreateSession('preserve-clear-link', {
+            supersededBySessionId: 'owned-target', opencodeClearOperation: operation
+        }, null, 'default')
+        const socket = new FakeSocket()
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => { throw new Error('unexpected access error') }
+        })
+        socket.trigger('update-metadata', {
+            sid: session.id,
+            expectedVersion: session.metadataVersion,
+            metadata: {
+                lifecycleState: 'archived',
+                supersededBySessionId: 'forged-target',
+                opencodeClearOperation: { replacementSessionId: 'forged-target', state: 'reserved', updatedAt: 0 }
+            }
+        }, () => {})
+        expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).toMatchObject({
+            supersededBySessionId: 'owned-target', opencodeClearOperation: operation, lifecycleState: 'archived'
+        })
     })
 })

@@ -33,7 +33,7 @@ export function useVoiceSettings() {
             setConfiguredBackends(response.backends)
             const selected = resolveSelectedVoiceBackend(response.backends, response.backend)
             setBackendState(selected)
-            setVoiceIdState(readStoredVoiceSelection(selected))
+            setVoiceIdState(selected ? readStoredVoiceSelection(selected) : null)
         }).catch(() => {
             if (cancelled) return
             setConfiguredBackends(['elevenlabs'])

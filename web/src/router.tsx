@@ -46,6 +46,7 @@ import { inactiveSessionCanResume } from '@/lib/sessionResume'
 import { markSessionSeen } from '@/lib/sessionLastSeen'
 import { useSessionBrowserTitle } from '@/hooks/useSessionBrowserTitle'
 import { clearCodexImportedSession } from '@/lib/codexImportedSessions'
+import { getSupersedingSessionId, shouldFollowSupersedingSession } from '@/routes/sessions/followSupersedingSession'
 import { migrateSuppressedSendError } from '@/lib/suppressed-send-error'
 import FilesPage from '@/routes/sessions/files'
 import FilePage from '@/routes/sessions/file'
@@ -61,6 +62,7 @@ import SettingsVoiceAdvancedPage from '@/routes/settings/voice-advanced'
 import SettingsMachinesPage from '@/routes/settings/machines'
 import SettingsAboutPage from '@/routes/settings/about'
 import SettingsStoragePage from '@/routes/settings/storage'
+import SettingsUsagePage from '@/routes/settings/usage'
 import SharePage from '@/routes/share'
 import { setSharePendingTransfer } from '@/lib/sharePendingState'
 import { deleteShareTransfer } from '@/lib/shareTransfer'
@@ -778,6 +780,29 @@ function SessionDetailRoute() {
     useSessionBrowserTitle(session)
     const basePath = `/sessions/${sessionId}`
     const isChat = pathname === basePath || pathname === `${basePath}/`
+    const supersedingSessionId = getSupersedingSessionId(sessionId, session?.metadata)
+    const observedSessionRef = useRef<{
+        sessionId: string
+        supersedingSessionId: string | null
+    } | null>(null)
+
+    useEffect(() => {
+        if (!session) {
+            return
+        }
+        const shouldFollow = shouldFollowSupersedingSession(
+            observedSessionRef.current,
+            sessionId,
+            session.metadata
+        )
+        observedSessionRef.current = { sessionId, supersedingSessionId }
+        if (!shouldFollow || !supersedingSessionId) return
+        navigate({
+            to: '/sessions/$sessionId',
+            params: { sessionId: supersedingSessionId },
+            replace: true
+        })
+    }, [navigate, session, sessionId, supersedingSessionId])
 
     useEffect(() => {
         if (!sessionNotFound) {
@@ -1136,6 +1161,12 @@ const settingsStorageRoute = createRoute({
     component: SettingsStoragePage,
 })
 
+const settingsUsageRoute = createRoute({
+    getParentRoute: () => settingsRoute,
+    path: 'usage',
+    component: SettingsUsagePage,
+})
+
 // Web Share Target landing route. Service worker (`web/src/sw.ts`)
 // intercepts the manifest's `POST /share` and 303-redirects here with an
 // IDB transfer id. `error=ingest` is set when the SW failed to write IDB.
@@ -1177,6 +1208,7 @@ export const routeTree = rootRoute.addChildren([
         settingsVoiceAdvancedRoute,
         settingsMachinesRoute,
         settingsStorageRoute,
+        settingsUsageRoute,
         settingsAboutRoute,
     ]),
     shareRoute,

@@ -78,7 +78,7 @@ export function parseRemoteAgentCommandOptions<
             options.resumeSessionId = sessionId
         } else if (arg === '--existing-session-id') {
             const sessionId = args[++i]
-            if (!sessionId) {
+            if (!sessionId || sessionId.startsWith('-')) {
                 throw new Error('Missing --existing-session-id value')
             }
             options.existingSessionId = sessionId

@@ -89,13 +89,14 @@ describe('convertAgentMessage', () => {
             totalTokens: 13_892,
             contextTokens: 13_879,
             contextWindow: 65_536
-        });
+        }, 'kimi-k2.5');
 
         expect(converted).toEqual({
             type: 'token_count',
+            model: 'kimi-k2.5',
             info: {
                 total: {
-                    inputTokens: 8119,
+                    inputTokens: 13879,
                     outputTokens: 2,
                     cachedInputTokens: 5760,
                     thoughtTokens: 11,
@@ -104,6 +105,41 @@ describe('convertAgentMessage', () => {
                 contextTokens: 13879,
                 modelContextWindow: 65536
             }
+        });
+    });
+
+    it('includes cache creation in processed input', () => {
+        const converted = convertAgentMessage({
+            type: 'usage',
+            inputTokens: 100,
+            outputTokens: 20,
+            cacheReadTokens: 10,
+            cacheCreationTokens: 5
+        }, 'pi-model');
+
+        expect(converted).toMatchObject({
+            type: 'token_count',
+            info: {
+                total: {
+                    inputTokens: 115,
+                    outputTokens: 20,
+                    cachedInputTokens: 10,
+                    cacheWriteInputTokens: 5
+                }
+            }
+        });
+    });
+
+    it('stamps unknown usage models explicitly', () => {
+        const converted = convertAgentMessage({
+            type: 'usage',
+            inputTokens: 10,
+            outputTokens: 2
+        });
+
+        expect(converted).toMatchObject({
+            type: 'token_count',
+            model: null
         });
     });
     it('returns null instead of echoing an unrecognized message shape', () => {

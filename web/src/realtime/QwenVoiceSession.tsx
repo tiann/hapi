@@ -11,7 +11,7 @@ import {
     encodeVoiceSystemPromptForProxy,
     truncatePromptForProxy
 } from '@/lib/voicePersonalitySession'
-import { isVoiceProactiveSummaryEnabled, streamDeferredVoiceContext } from '@/lib/voiceContextStream'
+import { deliverVoiceSessionContextAfterConnect, isVoiceProactiveSummaryEnabled } from '@/lib/voiceContextStream'
 import { readStoredVoiceSelection } from '@/lib/voicePickerPreferences'
 import type { VoiceSession, VoiceSessionConfig, StatusCallback } from './types'
 import type { ApiClient } from '@/api/client'
@@ -197,23 +197,18 @@ class QwenVoiceSessionImpl implements VoiceSession {
                     }
                     state.statusCallback?.('connected')
 
-                    await streamDeferredVoiceContext(
-                        (chunk) => this.sendContextualUpdate(chunk),
-                        config.streamContextChunks ?? []
-                    )
+                    await deliverVoiceSessionContextAfterConnect({
+                        streamContextChunks: config.streamContextChunks,
+                        initialContext: config.initialContext,
+                        sendChunk: (chunk) => this.sendContextualUpdate(chunk)
+                    })
 
                     const proactive = isVoiceProactiveSummaryEnabled()
                     if (proactive) {
-                        if (config.initialContext?.trim()) {
-                            this.sendContextualUpdate(config.initialContext)
-                        }
                         this.sendTextMessage(
                             'Based on all session context above, give me a brief spoken summary of what the coding agent has been doing, then wait.'
                         )
                     } else {
-                        if (config.initialContext?.trim()) {
-                            this.sendContextualUpdate(config.initialContext)
-                        }
                         this.sendTextMessage(
                             '[Greet the user. Say a brief hello and invite them to speak. Do not mention Qwen or any model name.]'
                         )

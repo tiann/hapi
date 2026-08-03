@@ -32,6 +32,12 @@ type OpencodeRemoteLauncherOptions = {
     // call (and summary lookup) settles, so a cancelled request's result
     // doesn't surface for an action the user no longer expects a reply from.
     isLocalIdCancelled?: (localId: string) => boolean;
+    // Called only after /clear reaches its FIFO position *and* this
+    // launcher has disconnected its OpenCode backend. The caller then performs
+    // the source lifecycle cleanup before requesting the fresh process.
+    onClearRequested?: () => Promise<void>;
+    onClearCleanupComplete?: () => Promise<void>;
+    onClearCleanupFailed?: () => Promise<void>;
 };
 
 export type AbortStatusDecision = {
@@ -77,6 +83,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private baseUrl: string | null = null;
     private permissionHandler: OpencodePermissionHandler | null = null;
     private happyServer: { stop: () => void } | null = null;
+    // Becomes true when the FIFO loop reaches /clear. Its callback is deferred
+    // until cleanup() completes so a failed OpenCode disconnect cannot create a
+    // replacement while the source backend may still be live.
+    private clearRequested = false;
     private abortController = new AbortController();
     // Set by the dequeue loop as soon as a batch is identified as a
     // `operation:'compact'` one — deliberately *before* that batch's inline
@@ -300,6 +310,18 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 if (waitSignal.aborted && !this.shouldExit) {
                     continue;
                 }
+                break;
+            }
+
+            // /clear is deliberately a queue operation rather than a direct
+            // slash side effect: every prompt and /compact ahead of it has
+            // completed before this point. In particular, do not route this
+            // through handleAbort(true): that method exists to interrupt an
+            // in-flight compact, while clear can only run after one finishes.
+            if (batch.mode.operation === 'clear') {
+                await this.options.onClearRequested?.();
+                this.clearRequested = true;
+                await this.requestExit('exit', async () => {})
                 break;
             }
 
@@ -601,21 +623,45 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
 
     protected async cleanup(): Promise<void> {
         this.clearAbortHandlers(this.session.client.rpcHandlerManager);
-
+        const failures: unknown[] = [];
         if (this.permissionHandler) {
-            await this.permissionHandler.cancelAll('Session ended');
-            this.permissionHandler = null;
+            try {
+                await this.permissionHandler.cancelAll('Session ended');
+            } catch (error) {
+                failures.push(error);
+            } finally {
+                this.permissionHandler = null;
+            }
         }
-
         if (this.backend) {
-            await this.backend.disconnect();
-            this.backend = null;
+            try {
+                await this.backend.disconnect();
+            } catch (error) {
+                failures.push(error);
+            } finally {
+                this.backend = null;
+            }
         }
-
         if (this.happyServer) {
-            this.happyServer.stop();
-            this.happyServer = null;
+            try {
+                this.happyServer.stop();
+            } catch (error) {
+                failures.push(error);
+            } finally {
+                this.happyServer = null;
+            }
         }
+        if (failures.length > 0) {
+            if (this.clearRequested) await this.options.onClearCleanupFailed?.();
+            throw failures.length === 1 ? failures[0] : new AggregateError(failures, 'OpenCode cleanup failed');
+        }
+        if (this.clearRequested) await this.options.onClearCleanupComplete?.();
+
+        // Signal the runner only after the native backend is gone. If an
+        // awaited teardown above fails, RemoteLauncherBase propagates that
+        // failure and this callback never runs; runOpencode then archives the
+        // source as an error rather than spawning a potentially concurrent
+        // replacement.
     }
 
     private rollbackReasoningEffort(batch: { mode: OpencodeMode }, effort: string | null): void {
@@ -767,7 +813,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     }
 
     private handleAgentMessage(message: AgentMessage): void {
-        const converted = convertAgentMessage(message);
+        const converted = convertAgentMessage(message, this.currentBackendModel);
         if (converted) {
             this.session.sendAgentMessage(converted);
         }

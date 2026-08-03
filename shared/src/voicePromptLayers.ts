@@ -205,9 +205,15 @@ export function composeVoiceAgentPrompt(
     return prompt
 }
 
-/** Short preview for Settings (fixtures are read-only). */
-export function getVoicePlatformFixturesPreview(maxChars = 600): string {
+/**
+ * Read-only fixtures text for Settings.
+ * Pass a finite maxChars only when deliberately truncating (e.g. tests);
+ * Settings shows the full document in a scrollable panel.
+ */
+export function getVoicePlatformFixturesPreview(maxChars?: number): string {
     const text = VOICE_PLATFORM_FIXTURES
-    if (text.length <= maxChars) return text
+    if (maxChars == null || !Number.isFinite(maxChars) || maxChars <= 0 || text.length <= maxChars) {
+        return text
+    }
     return `${text.slice(0, maxChars)}\n\n[…]`
 }

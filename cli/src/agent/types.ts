@@ -48,6 +48,7 @@ export type AgentMessage =
         totalTokens?: number;
         thoughtTokens?: number;
         cacheReadTokens?: number;
+        cacheCreationTokens?: number;
         contextTokens?: number;
         contextWindow?: number;
     }

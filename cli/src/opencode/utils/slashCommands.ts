@@ -24,6 +24,9 @@ export type OpencodeSlashResolution =
     // synchronous 'handled' shape below. The launcher (runOpencode.ts)
     // intercepts this kind and drives that flow itself.
     | { kind: 'compact' }
+    // /clear exits the current runner-backed HAPI process after its FIFO
+    // predecessors finish, then asks the hub to spawn a fresh OpenCode one.
+    | { kind: 'clear' }
     | {
         kind: 'handled';
         message: string;
@@ -174,10 +177,7 @@ export function resolveOpencodeSlashCommand(
     }
 
     if (command === 'clear') {
-        return {
-            kind: 'handled',
-            message: `/${command} is not yet supported in HAPI OpenCode sessions.`
-        };
+        return { kind: 'clear' };
     }
 
     if (command === 'init') {
@@ -204,11 +204,10 @@ export function resolveOpencodeSlashCommand(
                 '- `/default` — return to default permission mode',
                 '- `/init [extra]` — generate or refresh AGENTS.md for this project',
                 '- `/compact` — compact (summarize) the OpenCode session context (remote sessions only)',
+                '- `/clear` — archive this HAPI session and open a fresh OpenCode session',
                 '',
                 'Model, reasoning effort, and permission mode have dedicated buttons in the composer. ' +
                 'You can still type `/model`, `/reasoning`, or `/permissions` if you prefer.',
-                '',
-                '`/clear` is not yet supported in HAPI OpenCode sessions.',
                 '',
                 'Custom commands from `~/.config/opencode/command` or `.opencode/command` are expanded before sending.'
             ].join('\n')

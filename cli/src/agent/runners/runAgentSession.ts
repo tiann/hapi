@@ -188,7 +188,8 @@ export async function runAgentSession(opts: {
 
             try {
                 await backend.prompt(agentSessionId, promptContent, (message) => {
-                    const converted = convertAgentMessage(message);
+                    const model = backend.getSessionModelsMetadata?.(agentSessionId)?.currentModelId;
+                    const converted = convertAgentMessage(message, model);
                     if (converted) {
                         session.sendAgentMessage(converted);
                     }

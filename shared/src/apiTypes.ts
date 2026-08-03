@@ -63,6 +63,17 @@ export type CreateMachineResponse = z.infer<typeof CreateMachineResponseSchema>
 export const GetSessionResponseSchema = CreateSessionResponseSchema
 export type GetSessionResponse = CreateSessionResponse
 
+export const ClearOpencodeSessionResponseSchema = z.object({
+    ok: z.literal(true),
+    sessionId: z.string()
+})
+export type ClearOpencodeSessionResponse = z.infer<typeof ClearOpencodeSessionResponseSchema>
+
+export const ClearOpencodeSessionCallbackRequestSchema = z.object({
+    replacementSessionId: z.string()
+})
+export type ClearOpencodeSessionCallbackRequest = z.infer<typeof ClearOpencodeSessionCallbackRequestSchema>
+
 export type AuthResponse = {
     token: string
     user: {
@@ -745,4 +756,36 @@ export type SqliteStorageUsageResponse = {
     walBytes: number
     shmBytes: number
     totalBytes: number
+}
+
+export type UsageSummaryBucket = {
+    key: string
+    inputTokens: number
+    outputTokens: number
+    cacheReadTokens: number
+    cacheCreationTokens: number
+    totalTokens: number
+    uncachedTokens: number
+    requests: number
+}
+
+export type UsageSummaryResponse = {
+    range: {
+        from: number | null
+        to: number | null
+    }
+    totals: {
+        inputTokens: number
+        outputTokens: number
+        cacheReadTokens: number
+        cacheCreationTokens: number
+        totalTokens: number
+        uncachedTokens: number
+        requests: number
+        sessions: number
+    }
+    daily: Array<UsageSummaryBucket & { key: string }>
+    byAgent: UsageSummaryBucket[]
+    byModel: UsageSummaryBucket[]
+    updatedAt: number
 }

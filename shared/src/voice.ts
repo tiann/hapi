@@ -95,6 +95,17 @@ no ${name} equivalent.`
 /** ElevenLabs first message — language controlled by ElevenLabs language field */
 export const VOICE_FIRST_MESSAGE = "Hey! Hapi here — what can I help you with?"
 
+/** Appended to ElevenLabs ConvAI agent prompt; filled via startSession dynamicVariables. */
+export const VOICE_ELEVENLABS_SESSION_CONTEXT_BLOCK = `
+
+# Active session at connect
+
+The user connected from a live coding session. Snapshot at connect (may be empty if unavailable):
+
+{{initialConversationContext}}
+
+Use this plus any later context updates when briefing or routing.`
+
 export const VOICE_TOOLS = [
     {
         type: 'client' as const,
@@ -191,7 +202,7 @@ export function buildVoiceAgentConfig(): VoiceAgentConfig {
                 first_message: VOICE_FIRST_MESSAGE,
                 language: 'en',
                 prompt: {
-                    prompt: VOICE_SYSTEM_PROMPT,
+                    prompt: VOICE_SYSTEM_PROMPT + VOICE_ELEVENLABS_SESSION_CONTEXT_BLOCK,
                     llm: 'gemini-2.5-flash',
                     temperature: 0.7,
                     max_tokens: 1024,
@@ -299,25 +310,31 @@ export function listConfiguredVoiceBackends(env: VoiceBackendEnv): VoiceBackendT
     if (env.DASHSCOPE_API_KEY?.trim() || env.QWEN_API_KEY?.trim()) {
         backends.push('qwen-realtime')
     }
-    return backends.length > 0 ? backends : [DEFAULT_VOICE_BACKEND]
+    return backends
 }
 
-/** Hub default from VOICE_BACKEND when configured, else first available backend. */
-export function resolveHubVoiceBackend(env: VoiceBackendEnv): VoiceBackendType {
+/** Hub default from VOICE_BACKEND when configured, else first available backend. null when none configured. */
+export function resolveHubVoiceBackend(env: VoiceBackendEnv): VoiceBackendType | null {
     const configured = listConfiguredVoiceBackends(env)
+    if (configured.length === 0) {
+        return null
+    }
     const raw = env.VOICE_BACKEND
     const fromEnv = VOICE_BACKEND_VALUES.includes(raw as VoiceBackendType)
         ? (raw as VoiceBackendType)
         : DEFAULT_VOICE_BACKEND
-    return configured.includes(fromEnv) ? fromEnv : (configured[0] ?? DEFAULT_VOICE_BACKEND)
+    return configured.includes(fromEnv) ? fromEnv : configured[0]!
 }
 
 /** User preference wins when valid; otherwise hub default. */
 export function resolveEffectiveVoiceBackend(
     configured: readonly VoiceBackendType[],
-    hubDefault: VoiceBackendType,
+    hubDefault: VoiceBackendType | null,
     storedPreference: string | null | undefined
-): VoiceBackendType {
+): VoiceBackendType | null {
+    if (configured.length === 0) {
+        return null
+    }
     if (
         storedPreference
         && VOICE_BACKEND_VALUES.includes(storedPreference as VoiceBackendType)
@@ -325,10 +342,10 @@ export function resolveEffectiveVoiceBackend(
     ) {
         return storedPreference as VoiceBackendType
     }
-    if (configured.includes(hubDefault)) {
+    if (hubDefault && configured.includes(hubDefault)) {
         return hubDefault
     }
-    return configured[0] ?? hubDefault
+    return configured[0] ?? null
 }
 
 export const GEMINI_LIVE_MODEL = 'gemini-2.5-flash-native-audio-latest'

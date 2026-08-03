@@ -248,6 +248,18 @@ export function getAllMessages(
     return rows.map(toStoredMessage)
 }
 
+export function getMessagesAfterSeq(
+    db: Database,
+    sessionId: string,
+    afterSeq: number
+): StoredMessage[] {
+    const rows = db.prepare(
+        'SELECT * FROM messages WHERE session_id = ? AND seq > ? ORDER BY seq ASC'
+    ).all(sessionId, afterSeq) as DbMessageRow[]
+
+    return rows.map(toStoredMessage)
+}
+
 export function getFirstMessages(
     db: Database,
     sessionId: string,
@@ -705,6 +717,118 @@ export function markMessagesInvoked(
            AND local_id IN (${placeholders})
            AND invoked_at IS NULL`
     ).run(invokedAt, sessionId, ...localIds).changes
+}
+
+/** Settle immediate queued rows on an archived clear source without touching
+ * scheduled rows, which must remain uninvoked for transfer to the replacement. */
+export function markUninvokedImmediateMessages(
+    db: Database,
+    sessionId: string,
+    invokedAt: number
+): string[] {
+    const rows = db.prepare(`
+        SELECT local_id FROM messages
+        WHERE session_id = ?
+          AND local_id IS NOT NULL
+          AND scheduled_at IS NULL
+          AND invoked_at IS NULL
+        ORDER BY seq ASC
+    `).all(sessionId) as Array<{ local_id: string }>
+    if (rows.length === 0) return []
+
+    db.prepare(`
+        UPDATE messages
+        SET invoked_at = ?
+        WHERE session_id = ?
+          AND local_id IS NOT NULL
+          AND scheduled_at IS NULL
+          AND invoked_at IS NULL
+    `).run(invokedAt, sessionId)
+    return rows.map((row) => row.local_id)
+}
+
+/**
+ * Reassign only uninvoked scheduled rows when an archived OpenCode session
+ * is replaced by /clear. The transaction preserves ids/localIds so the normal
+ * scheduled-message ack path continues on the replacement session.
+ */
+export function moveUninvokedScheduledMessages(
+    db: Database,
+    fromSessionId: string,
+    toSessionId: string
+): number {
+    if (fromSessionId === toSessionId) return 0
+
+    const rows = db.prepare(`
+        SELECT id FROM messages
+        WHERE session_id = ?
+          AND scheduled_at IS NOT NULL
+          AND invoked_at IS NULL
+        ORDER BY seq ASC
+    `).all(fromSessionId) as Array<{ id: string }>
+    if (rows.length === 0) return 0
+
+    try {
+        db.exec('BEGIN')
+        let nextSeq = getMaxSeq(db, toSessionId)
+        const update = db.prepare('UPDATE messages SET session_id = ?, seq = ? WHERE id = ?')
+        for (const row of rows) {
+            nextSeq += 1
+            update.run(toSessionId, nextSeq, row.id)
+        }
+        bumpMessageEpoch(db, fromSessionId)
+        bumpMessageEpoch(db, toSessionId)
+        db.exec('COMMIT')
+        return rows.length
+    } catch (error) {
+        db.exec('ROLLBACK')
+        throw error
+    }
+}
+
+/**
+ * Move every still-held prompt to a reserved replacement, preserving FIFO.
+ * If both sessions already contain the same non-null localId, the replacement
+ * row is authoritative (it represents the retry/new owner) and only the
+ * uninvoked source duplicate is discarded.
+ */
+export function moveUninvokedMessages(db: Database, fromSessionId: string, toSessionId: string): number {
+    if (fromSessionId === toSessionId) return 0
+    return db.transaction(() => {
+        const discarded = db.prepare(`
+            DELETE FROM messages
+            WHERE session_id = ?
+              AND invoked_at IS NULL
+              AND local_id IS NOT NULL
+              AND EXISTS (
+                  SELECT 1 FROM messages AS target
+                  WHERE target.session_id = ?
+                    AND target.local_id = messages.local_id
+              )
+        `).run(fromSessionId, toSessionId).changes
+        const rows = db.prepare(`
+            SELECT id, session_id FROM messages
+            WHERE session_id IN (?, ?) AND invoked_at IS NULL
+            -- created_at is millisecond-granularity; rowid is the durable
+            -- cross-session insertion order for ties within this database.
+            ORDER BY created_at ASC,
+                     rowid ASC,
+                     seq ASC,
+                     id ASC
+        `).all(fromSessionId, toSessionId) as Array<{ id: string; session_id: string }>
+        const moved = rows.filter((row) => row.session_id === fromSessionId).length
+        if (discarded === 0 && moved === 0) return 0
+        const invokedMax = db.prepare(`
+            SELECT COALESCE(MAX(seq), 0) AS maxSeq FROM messages
+            WHERE session_id = ? AND invoked_at IS NOT NULL
+        `).get(toSessionId) as { maxSeq: number }
+        let nextSeq = invokedMax.maxSeq
+        const update = db.prepare('UPDATE messages SET session_id = ?, seq = ? WHERE id = ?')
+        for (const row of rows) update.run(toSessionId, ++nextSeq, row.id)
+        bumpMessageEpoch(db, fromSessionId)
+        bumpMessageEpoch(db, toSessionId)
+        return discarded + moved
+    })()
 }
 
 export function mergeSessionMessages(

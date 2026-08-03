@@ -109,6 +109,24 @@ describe('createRunnerLifecycle', () => {
 
             expect(session.flush).toHaveBeenCalledWith({ timeoutMs: 1_000 });
         });
+
+        it('keeps the socket open when confirmed cleanup times out and closes only after a retry is acknowledged', async () => {
+            const session = createMockApiSession();
+            session.flush = vi.fn()
+                .mockResolvedValueOnce(false)
+                .mockResolvedValueOnce(true);
+            const lc = createRunnerLifecycle({ session, logTag: 'test' });
+            lc.setArchiveReason('Cleared by /clear');
+            lc.setSessionEndReason('cleared');
+
+            await expect(lc.cleanupConfirmed({ timeoutMs: 5_000 })).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+            expect(session.close).not.toHaveBeenCalled();
+
+            await expect(lc.cleanupConfirmed({ timeoutMs: 5_000 })).resolves.toBeUndefined();
+            expect(session.updateMetadata).toHaveBeenCalledTimes(1);
+            expect(session.sendSessionDeath).toHaveBeenCalledTimes(1);
+            expect(session.close).toHaveBeenCalledTimes(1);
+        });
     });
 });
 

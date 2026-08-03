@@ -373,9 +373,9 @@ describe('codexLocalLauncher', () => {
         });
     });
 
-    it('tracks explicit and default reasoning effort from local turn context', async () => {
+    it('tracks local turn context and stamps its model on usage', async () => {
         const transcriptPath = await writeTranscriptMeta('codex-turn-context.jsonl', 'codex-thread-effort');
-        const { session, getModelReasoningEffort, getModelReasoningEffortUpdates } = createSessionStub('default');
+        const { session, agentMessages, getModelReasoningEffort, getModelReasoningEffortUpdates } = createSessionStub('default');
         let releaseRunBarrier: (() => void) | undefined;
         harness.runBarrier = new Promise((resolve) => {
             releaseRunBarrier = resolve;
@@ -394,12 +394,12 @@ describe('codexLocalLauncher', () => {
                 payload: { effort: 'max' }
             }),
             JSON.stringify({
-                type: 'event_msg',
-                payload: { type: 'token_count', info: {} }
-            }),
-            JSON.stringify({
                 type: 'turn_context',
                 payload: { model: 'gpt-5.4' }
+            }),
+            JSON.stringify({
+                type: 'event_msg',
+                payload: { type: 'token_count', info: {} }
             })
         ].join('\n') + '\n');
         await wait(700);
@@ -409,6 +409,10 @@ describe('codexLocalLauncher', () => {
 
         expect(getModelReasoningEffortUpdates()).toEqual(['max', null]);
         expect(getModelReasoningEffort()).toBeNull();
+        expect(agentMessages).toContainEqual(expect.objectContaining({
+            type: 'token_count',
+            model: 'gpt-5.4'
+        }));
     });
 
     it('renders nested Code Mode plans and commands without their covered exec wrapper', async () => {
@@ -645,7 +649,14 @@ describe('codexLocalLauncher', () => {
             [
                 JSON.stringify({ type: 'session_meta', payload: { id: 'codex-thread-import' } }),
                 JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: 'old imported prompt' } }),
-                JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'old imported message' } })
+                JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'old imported message' } }),
+                JSON.stringify({
+                    type: 'event_msg',
+                    payload: {
+                        type: 'token_count',
+                        info: { total_token_usage: { input_tokens: 100, output_tokens: 10 } }
+                    }
+                })
             ].join('\n') + '\n'
         );
 
@@ -694,7 +705,14 @@ describe('codexLocalLauncher', () => {
             transcriptPath,
             [
                 JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: 'new local prompt' } }),
-                JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'new local response' } })
+                JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'new local response' } }),
+                JSON.stringify({
+                    type: 'event_msg',
+                    payload: {
+                        type: 'token_count',
+                        info: { total_token_usage: { input_tokens: 120, output_tokens: 12 } }
+                    }
+                })
             ].join('\n') + '\n'
         );
         await wait(700);
@@ -712,6 +730,17 @@ describe('codexLocalLauncher', () => {
             type: 'message',
             message: 'new local response',
             id: expect.any(String)
+        });
+        const tokenMessages = agentMessages.filter((message) => (
+            message as { type?: string }
+        ).type === 'token_count') as Array<Record<string, unknown>>;
+        expect(tokenMessages).toHaveLength(2);
+        expect(tokenMessages[0]).toMatchObject({ hapiUsageScope: 'imported-history' });
+        expect(tokenMessages[0]).not.toHaveProperty('thread_id');
+        expect(tokenMessages[1]).toMatchObject({
+            threadId: 'codex-thread-import',
+            thread_id: 'codex-thread-import',
+            hapiUsageScope: 'managed'
         });
     });
 

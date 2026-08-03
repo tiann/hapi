@@ -195,7 +195,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                     } else if (event.type === 'assistant' || event.type === 'tool_call' || event.type === 'result') {
                         const agentMsg = convertCursorEventToAgentMessage(event);
                         if (agentMsg) {
-                            const codexMsg = convertAgentMessage(agentMsg);
+                            const codexMsg = convertAgentMessage(agentMsg, session.model);
                             if (codexMsg) {
                                 session.sendAgentMessage(codexMsg);
                             }

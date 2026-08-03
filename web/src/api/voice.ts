@@ -205,7 +205,7 @@ export async function fetchQwenToken(api: ApiClient): Promise<QwenTokenResponse>
 
 export interface VoiceBackendResponse {
     /** Hub default (VOICE_BACKEND env, validated against configured backends). */
-    backend: VoiceBackendType
+    backend: VoiceBackendType | null
     /** Backends with API keys configured on the hub. */
     backends: VoiceBackendType[]
 }
@@ -229,12 +229,12 @@ function isVoiceBackendType(value: string): value is VoiceBackendType {
 export async function fetchVoiceBackend(api: ApiClient): Promise<VoiceBackendResponse> {
     const result = await api.fetchVoiceBackend()
     const { backend } = result
-    if (!isVoiceBackendType(backend)) {
+    if (backend !== null && !isVoiceBackendType(backend)) {
         throw new Error(`Unrecognised voice backend: ${backend}`)
     }
-    const rawBackends = Array.isArray(result.backends) ? result.backends : [backend]
+    const rawBackends = Array.isArray(result.backends) ? result.backends : backend !== null ? [backend] : []
     const backends = rawBackends.filter(isVoiceBackendType)
-    if (backends.length === 0) {
+    if (backend !== null && backends.length === 0) {
         backends.push(backend)
     }
     return { backend, backends }

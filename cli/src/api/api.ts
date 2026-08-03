@@ -1,8 +1,9 @@
 import axios from 'axios'
-import type { AgentState, CreateMachineResponse, CreateSessionResponse, RunnerState, Machine, MachineMetadata, Metadata, Session } from '@/api/types'
+import type { AgentState, ClearOpencodeSessionCallbackRequest, ClearOpencodeSessionResponse, CreateMachineResponse, CreateSessionResponse, RunnerState, Machine, MachineMetadata, Metadata, Session } from '@/api/types'
 import type { LocalResumeTarget, ResumableSession } from '@hapi/protocol'
 import {
     AgentStateSchema,
+    ClearOpencodeSessionResponseSchema,
     CreateMachineResponseSchema,
     CreateSessionResponseSchema,
     GetSessionResponseSchema,
@@ -270,6 +271,54 @@ export class ApiClient {
         if (!parsed.success || !parsed.data.ok) {
             throw apiValidationError('Invalid /cli/sessions/:id/handoff-local response', response)
         }
+    }
+
+    async clearOpenCodeSession(sessionId: string): Promise<string> {
+        const response = await axios.post<ClearOpencodeSessionResponse>(
+            `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(sessionId)}/clear-opencode`,
+            {},
+            {
+                headers: this.authHeaders(),
+                timeout: 60_000
+            }
+        )
+        const parsed = ClearOpencodeSessionResponseSchema.safeParse(response.data)
+        if (!parsed.success) {
+            throw apiValidationError('Invalid /cli/sessions/:id/clear-opencode response', response)
+        }
+        return parsed.data.sessionId
+    }
+
+    async reserveOpenCodeClearSession(sessionId: string): Promise<string> {
+        const response = await axios.post<ClearOpencodeSessionResponse>(
+            `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(sessionId)}/clear-opencode/reserve`, {},
+            { headers: this.authHeaders(), timeout: 60_000 }
+        )
+        const parsed = ClearOpencodeSessionResponseSchema.safeParse(response.data)
+        if (!parsed.success) throw apiValidationError('Invalid clear reservation response', response)
+        return parsed.data.sessionId
+    }
+
+    async abortOpenCodeClearSession(sessionId: string, replacementSessionId: string): Promise<string> {
+        const response = await axios.post<ClearOpencodeSessionResponse>(
+            `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(sessionId)}/clear-opencode/abort`,
+            { replacementSessionId } satisfies ClearOpencodeSessionCallbackRequest,
+            { headers: this.authHeaders(), timeout: 60_000 }
+        )
+        const parsed = ClearOpencodeSessionResponseSchema.safeParse(response.data)
+        if (!parsed.success) throw apiValidationError('Invalid clear abort response', response)
+        return parsed.data.sessionId
+    }
+
+    async confirmOpenCodeClearCleanup(sessionId: string, replacementSessionId: string): Promise<string> {
+        const response = await axios.post<ClearOpencodeSessionResponse>(
+            `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(sessionId)}/clear-opencode/confirm-cleanup`,
+            { replacementSessionId } satisfies ClearOpencodeSessionCallbackRequest,
+            { headers: this.authHeaders(), timeout: 60_000 }
+        )
+        const parsed = ClearOpencodeSessionResponseSchema.safeParse(response.data)
+        if (!parsed.success) throw apiValidationError('Invalid clear cleanup confirmation response', response)
+        return parsed.data.sessionId
     }
 
     sessionSyncClient(session: Session, options?: ApiSessionClientOptions): ApiSessionClient {

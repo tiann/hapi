@@ -658,11 +658,12 @@ describe('AcpSdkBackend', () => {
                 return {
                     stopReason: 'end_turn',
                     usage: {
-                        totalTokens: 13_892,
+                        totalTokens: 13_897,
                         inputTokens: 8_119,
                         outputTokens: 2,
                         thoughtTokens: 11,
-                        cachedReadTokens: 5_760
+                        cachedReadTokens: 5_760,
+                        cachedWriteTokens: 5
                     }
                 };
             },
@@ -678,8 +679,9 @@ describe('AcpSdkBackend', () => {
             inputTokens: 8_119,
             outputTokens: 2,
             cacheReadTokens: 5_760,
+            cacheCreationTokens: 5,
             thoughtTokens: 11,
-            totalTokens: 13_892,
+            totalTokens: 13_897,
             contextTokens: 13_879,
             contextWindow: 65_536
         });

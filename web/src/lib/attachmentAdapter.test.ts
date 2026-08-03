@@ -1,65 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-function stubUploadThenPreviewReadFailure(): void {
-    let readCount = 0
+async function collectAdditions(
+    file: File,
+    uploadFile = vi.fn(async () => ({ success: true, path: '/uploads/file' }))
+) {
+    const { createAttachmentAdapter } = await import('./attachmentAdapter')
+    const adapter = createAttachmentAdapter({ uploadFile } as never, 'session-1')
+    const additions = adapter.add({ file }) as AsyncIterable<Record<string, unknown>>
+    const emitted: Record<string, unknown>[] = []
 
-    class FileReaderMock {
-        result: string | ArrayBuffer | null = null
-        onload: FileReader['onload'] = null
-        onerror: FileReader['onerror'] = null
-
-        readAsDataURL(): void {
-            readCount += 1
-            if (readCount === 1) {
-                this.result = 'data:image/png;base64,dXBsb2Fk'
-                this.onload?.call(this as unknown as FileReader, {} as ProgressEvent<FileReader>)
-                return
-            }
-            this.onerror?.call(this as unknown as FileReader, {} as ProgressEvent<FileReader>)
-        }
+    for await (const attachment of additions) {
+        emitted.push(attachment)
     }
 
-    vi.stubGlobal('FileReader', FileReaderMock)
-}
-
-function stubUploadThenDeferredPreviewReadFailure(): {
-    previewStarted: Promise<void>
-    failPreview: () => void
-} {
-    let readCount = 0
-    let resolvePreviewStarted!: () => void
-    let failPreviewRead: (() => void) | undefined
-    const previewStarted = new Promise<void>((resolve) => {
-        resolvePreviewStarted = resolve
-    })
-
-    class FileReaderMock {
-        result: string | ArrayBuffer | null = null
-        onload: FileReader['onload'] = null
-        onerror: FileReader['onerror'] = null
-
-        readAsDataURL(): void {
-            readCount += 1
-            if (readCount === 1) {
-                this.result = 'data:image/png;base64,dXBsb2Fk'
-                this.onload?.call(this as unknown as FileReader, {} as ProgressEvent<FileReader>)
-                return
-            }
-            failPreviewRead = () => {
-                this.onerror?.call(this as unknown as FileReader, {} as ProgressEvent<FileReader>)
-            }
-            resolvePreviewStarted()
-        }
-    }
-
-    vi.stubGlobal('FileReader', FileReaderMock)
-    return {
-        previewStarted,
-        failPreview: () => {
-            if (!failPreviewRead) throw new Error('Preview read did not start')
-            failPreviewRead()
-        }
-    }
+    return { emitted, uploadFile }
 }
 
 describe('attachmentAdapter', () => {
@@ -109,77 +63,65 @@ describe('attachmentAdapter', () => {
         })])
     })
 
-    it('keeps a successful upload ready when image preview generation fails', async () => {
-        stubUploadThenPreviewReadFailure()
-        const { createAttachmentAdapter } = await import('./attachmentAdapter')
-        const uploadFile = vi.fn().mockResolvedValue({ success: true, path: '/uploads/proof.png' })
-        const deleteUploadFile = vi.fn().mockResolvedValue({ success: true })
-        const adapter = createAttachmentAdapter({ uploadFile, deleteUploadFile } as never, 'session-1')
+    it('uploads an image when the initial preview read fails', async () => {
+        let readCount = 0
+        class FileReaderMock {
+            result: string | ArrayBuffer | null = null
+            onload: FileReader['onload'] = null
+            onerror: FileReader['onerror'] = null
+
+            readAsDataURL(): void {
+                readCount += 1
+                if (readCount === 1) {
+                    this.onerror?.call(this as unknown as FileReader, {} as ProgressEvent<FileReader>)
+                    return
+                }
+                this.result = 'data:image/png;base64,dXBsb2Fk'
+                this.onload?.call(this as unknown as FileReader, {} as ProgressEvent<FileReader>)
+            }
+        }
+        vi.stubGlobal('FileReader', FileReaderMock)
+
         const file = new File(['proof'], 'proof.png', { type: 'image/png' })
-        const states: import('@assistant-ui/react').PendingAttachment[] = []
+        const { emitted, uploadFile } = await collectAdditions(file)
 
-        for await (const state of adapter.add({ file }) as AsyncGenerator<import('@assistant-ui/react').PendingAttachment>) {
-            states.push(state)
-        }
-
-        const ready = states.at(-1) as import('@assistant-ui/react').PendingAttachment & {
-            path?: string
-            previewUrl?: string
-        }
-        expect(uploadFile).toHaveBeenCalledTimes(1)
+        expect(readCount).toBe(2)
         expect(uploadFile).toHaveBeenCalledWith('session-1', 'proof.png', 'dXBsb2Fk', 'image/png')
-        expect(ready).toMatchObject({
-            type: 'file',
-            name: 'proof.png',
+        expect(emitted.at(-1)).toMatchObject({
             status: { type: 'requires-action', reason: 'composer-send' },
-            path: '/uploads/proof.png',
+            path: '/uploads/file'
         })
-        expect(ready.id).toEqual(expect.any(String))
-        expect(ready.previewUrl).toBeUndefined()
+        expect(emitted.every((attachment) => attachment.previewUrl === undefined)).toBe(true)
+    })
+})
 
-        const sent = await adapter.send(ready)
-        expect(JSON.parse((sent.content[0] as { text: string }).text)).toEqual({
-            __attachmentMetadata: {
-                id: ready.id,
-                filename: 'proof.png',
-                mimeType: 'image/png',
-                size: file.size,
-                path: '/uploads/proof.png',
-            },
+describe('attachmentAdapter image previews', () => {
+    it('includes the preview URL in every image upload state', async () => {
+        const file = new File(['image'], 'photo.png', { type: 'image/png' })
+        const readSpy = vi.spyOn(FileReader.prototype, 'readAsDataURL')
+        const { emitted } = await collectAdditions(file)
+
+        expect(emitted).toHaveLength(3)
+        expect(emitted[0]).toMatchObject({
+            previewUrl: 'data:image/png;base64,aW1hZ2U=',
+            status: { type: 'running', progress: 0 }
         })
-
-        await adapter.remove(ready)
-        expect(deleteUploadFile).toHaveBeenCalledWith('session-1', '/uploads/proof.png')
+        expect(emitted[1]).toMatchObject({
+            previewUrl: 'data:image/png;base64,aW1hZ2U=',
+            status: { type: 'running', progress: 50 }
+        })
+        expect(emitted[2]).toMatchObject({
+            previewUrl: 'data:image/png;base64,aW1hZ2U=',
+            status: { type: 'requires-action' }
+        })
+        expect(readSpy).toHaveBeenCalledTimes(1)
     })
 
-    it('cleans up a successful upload when cancellation occurs during preview generation', async () => {
-        const preview = stubUploadThenDeferredPreviewReadFailure()
-        const { createAttachmentAdapter } = await import('./attachmentAdapter')
-        const uploadFile = vi.fn().mockResolvedValue({ success: true, path: '/uploads/proof.png' })
-        const deleteUploadFile = vi.fn().mockResolvedValue({ success: true })
-        const adapter = createAttachmentAdapter({ uploadFile, deleteUploadFile } as never, 'session-1')
-        const file = new File(['proof'], 'proof.png', { type: 'image/png' })
-        const iter = adapter.add({ file }) as AsyncGenerator<import('@assistant-ui/react').PendingAttachment>
+    it('does not generate previews for non-image attachments', async () => {
+        const file = new File(['notes'], 'notes.txt', { type: 'text/plain' })
+        const { emitted } = await collectAdditions(file)
 
-        const initial = await iter.next()
-        const uploading = await iter.next()
-        expect(uploading.value).toMatchObject({
-            status: { type: 'running', reason: 'uploading', progress: 50 },
-        })
-        expect((uploading.value as { path?: string }).path).toBeUndefined()
-
-        const completion = iter.next()
-        await preview.previewStarted
-        expect(uploadFile).toHaveBeenCalledTimes(1)
-        await adapter.remove(uploading.value)
-        preview.failPreview()
-
-        expect(await completion).toEqual({ done: true, value: undefined })
-        expect([initial.value, uploading.value]).toEqual([
-            expect.objectContaining({ status: { type: 'running', reason: 'uploading', progress: 0 } }),
-            expect.objectContaining({ status: { type: 'running', reason: 'uploading', progress: 50 } }),
-        ])
-        expect(deleteUploadFile).toHaveBeenCalledTimes(1)
-        expect(deleteUploadFile).toHaveBeenCalledWith('session-1', '/uploads/proof.png')
+        expect(emitted).toHaveLength(3)
+        expect(emitted.every((attachment) => attachment.previewUrl === undefined)).toBe(true)
     })
 })

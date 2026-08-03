@@ -1318,7 +1318,7 @@ export class ApiSessionClient extends EventEmitter {
         return await this.drainLock(this.metadataLock, timeoutMs)
     }
 
-    async flush(options?: { timeoutMs?: number }): Promise<void> {
+    async flush(options?: { timeoutMs?: number }): Promise<boolean> {
         const deadlineMs = Date.now() + (options?.timeoutMs ?? 5_000)
         const remainingMs = () => Math.max(0, deadlineMs - Date.now())
 
@@ -1326,37 +1326,44 @@ export class ApiSessionClient extends EventEmitter {
         if (materializationTask) {
             this.materializationDrainRequested = true
             this.materializationRetryAbortController?.abort()
-            await this.waitForPromise(materializationTask, remainingMs())
+            if (!await this.waitForPromise(materializationTask, remainingMs())) {
+                return false
+            }
         }
 
         if (this.state !== 'active') {
-            return
+            return false
         }
 
         if (!this.socket.connected) {
             const connected = await this.waitForConnected(remainingMs())
             if (!connected) {
-                return
+                return false
             }
         }
 
-        await this.drainLock(this.metadataLock, remainingMs())
-        await this.drainLock(this.agentStateLock, remainingMs())
+        if (!await this.drainLock(this.metadataLock, remainingMs())) {
+            return false
+        }
+        if (!await this.drainLock(this.agentStateLock, remainingMs())) {
+            return false
+        }
 
         if (remainingMs() === 0) {
-            return
+            return false
         }
 
         const pingTimeoutMs = remainingMs()
         if (pingTimeoutMs === 0) {
-            return
+            return false
         }
 
         try {
             await this.socket.timeout(pingTimeoutMs).emitWithAck('ping')
             this.awaitingMaterializedConnection = false
+            return true
         } catch {
-            // best effort
+            return false
         }
     }
 

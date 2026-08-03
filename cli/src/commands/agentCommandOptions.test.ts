@@ -49,6 +49,15 @@ describe('parseRemoteAgentCommandOptions', () => {
         })
     })
 
+    it('parses --existing-session-id and rejects a missing value', () => {
+        expect(parseRemoteAgentCommandOptions([
+            '--existing-session-id', 'preallocated-hapi-id'
+        ], OPENCODE_PERMISSION_MODES).existingSessionId).toBe('preallocated-hapi-id')
+        expect(() => parseRemoteAgentCommandOptions([
+            '--existing-session-id'
+        ], OPENCODE_PERMISSION_MODES)).toThrow('Missing --existing-session-id value')
+    })
+
     it('does not let --yolo override an explicit permission mode that appeared first', () => {
         expect(parseRemoteAgentCommandOptions([
             '--permission-mode', 'default',

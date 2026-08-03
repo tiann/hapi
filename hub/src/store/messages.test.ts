@@ -435,6 +435,42 @@ describe('countFutureScheduledLocalMessages', () => {
     })
 })
 
+describe('moveUninvokedScheduledMessages', () => {
+    it('atomically moves only pending scheduled rows to the replacement session', () => {
+        const store = makeStore()
+        const source = makeSession(store, 'scheduled-source')
+        const replacement = makeSession(store, 'scheduled-replacement')
+        const now = Date.now()
+        const scheduled = store.messages.addMessage(source.id, { text: 'later' }, 'scheduled-local', now + 60_000)
+        store.messages.addMessage(source.id, { text: 'ordinary queued' }, 'ordinary-local')
+
+        expect(store.messages.moveUninvokedScheduledMessages(source.id, replacement.id)).toBe(1)
+        expect(store.messages.getAllMessages(source.id).map((message) => message.id)).not.toContain(scheduled.id)
+        expect(store.messages.getAllMessages(replacement.id)).toEqual([
+            expect.objectContaining({ id: scheduled.id, localId: 'scheduled-local', scheduledAt: now + 60_000, invokedAt: null })
+        ])
+        expect(store.messages.getUninvokedLocalMessages(source.id)).toEqual([
+            expect.objectContaining({ localId: 'ordinary-local', scheduledAt: null })
+        ])
+    })
+})
+
+describe('markUninvokedImmediateMessages', () => {
+    it('settles immediate queued rows while preserving scheduled rows for clear transfer', () => {
+        const store = makeStore()
+        const source = makeSession(store, 'clear-source-immediate')
+        const invokedAt = Date.now()
+        store.messages.addMessage(source.id, { text: 'immediate' }, 'immediate-local')
+        store.messages.addMessage(source.id, { text: 'scheduled' }, 'scheduled-local', invokedAt + 60_000)
+
+        expect(store.messages.markUninvokedImmediateMessages(source.id, invokedAt)).toEqual(['immediate-local'])
+        expect(store.messages.getAllMessages(source.id)).toEqual(expect.arrayContaining([
+            expect.objectContaining({ localId: 'immediate-local', invokedAt }),
+            expect.objectContaining({ localId: 'scheduled-local', invokedAt: null })
+        ]))
+    })
+})
+
 describe('content codec integration', () => {
     it('stores large agent content compressed and returns it truncated on read', () => {
         const store = makeStore()

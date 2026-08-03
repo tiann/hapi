@@ -6,6 +6,7 @@ export type CodexMessage =
     | { type: 'reasoning'; message: string; id: string }
     | {
         type: 'token_count';
+        model: string | null;
         info: {
             total: {
                 inputTokens: number;
@@ -13,6 +14,7 @@ export type CodexMessage =
                 totalTokens?: number;
                 thoughtTokens?: number;
                 cachedInputTokens?: number;
+                cacheWriteInputTokens?: number;
             };
             contextTokens?: number;
             modelContextWindow?: number;
@@ -36,7 +38,7 @@ export type CodexMessage =
     | { type: 'plan'; entries: PlanItem[] }
     | { type: 'error'; message: string };
 
-export function convertAgentMessage(message: AgentMessage): CodexMessage | null {
+export function convertAgentMessage(message: AgentMessage, model?: string | null): CodexMessage | null {
     switch (message.type) {
         case 'text':
             return { type: 'message', message: message.text };
@@ -48,13 +50,19 @@ export function convertAgentMessage(message: AgentMessage): CodexMessage | null 
         case 'usage':
             return {
                 type: 'token_count',
+                model: typeof model === 'string' && model.trim() ? model.trim() : null,
                 info: {
                     total: {
-                        inputTokens: message.inputTokens,
+                        inputTokens: message.inputTokens
+                            + (message.cacheReadTokens ?? 0)
+                            + (message.cacheCreationTokens ?? 0),
                         outputTokens: message.outputTokens,
                         totalTokens: message.totalTokens,
                         thoughtTokens: message.thoughtTokens,
-                        cachedInputTokens: message.cacheReadTokens
+                        cachedInputTokens: message.cacheReadTokens,
+                        ...(message.cacheCreationTokens !== undefined
+                            ? { cacheWriteInputTokens: message.cacheCreationTokens }
+                            : {})
                     },
                     contextTokens: message.contextTokens,
                     modelContextWindow: message.contextWindow

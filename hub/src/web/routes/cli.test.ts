@@ -116,6 +116,79 @@ describe('cli resume routes', () => {
     })
 })
 
+describe('cli OpenCode clear route', () => {
+    it.each(['confirm-cleanup', 'abort'] as const)('maps transient %s persistence failure to retryable 500', async (action) => {
+        const failure = mock(() => ({
+            type: 'error' as const,
+            code: 'replacement_link_failed' as const,
+            message: 'metadata write failed'
+        }))
+        const app = createApp(action === 'confirm-cleanup'
+            ? { confirmOpenCodeClearCleanup: failure } as never
+            : { abortOpenCodeClearSession: failure } as never)
+        const response = await app.request(`/cli/sessions/source-session/clear-opencode/${action}`, {
+            method: 'POST', headers: authHeaders(), body: JSON.stringify({ replacementSessionId: 'reserved-session' })
+        })
+        expect(response.status).toBe(500)
+        expect(await response.json()).toMatchObject({ code: 'replacement_link_failed' })
+        expect(failure).toHaveBeenCalledWith('source-session', 'default', 'reserved-session')
+    })
+
+    it.each(['confirm-cleanup', 'abort'] as const)('requires reservation identity for %s', async (action) => {
+        const app = createApp({} as never)
+        const response = await app.request(`/cli/sessions/source-session/clear-opencode/${action}`, {
+            method: 'POST', headers: authHeaders(), body: '{}'
+        })
+        expect(response.status).toBe(400)
+    })
+
+    it('durably reserves through the namespace-scoped engine route', async () => {
+        const reserveOpenCodeClearSession = mock(() => ({ type: 'success' as const, sessionId: 'reserved-session' }))
+        const app = createApp({ reserveOpenCodeClearSession } as never)
+        const response = await app.request('/cli/sessions/source-session/clear-opencode/reserve', {
+            method: 'POST', headers: authHeaders()
+        })
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ ok: true, sessionId: 'reserved-session' })
+        expect(reserveOpenCodeClearSession).toHaveBeenCalledWith('source-session', 'default')
+    })
+
+    it('orchestrates a fresh session only through the namespace-scoped engine route', async () => {
+        const clearOpenCodeSession = mock(async () => ({ type: 'success' as const, sessionId: 'fresh-opencode-session' }))
+        const app = createApp({ clearOpenCodeSession } as never)
+
+        const response = await app.request('/cli/sessions/source-session/clear-opencode', {
+            method: 'POST',
+            headers: authHeaders()
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ ok: true, sessionId: 'fresh-opencode-session' })
+        expect(clearOpenCodeSession).toHaveBeenCalledWith('source-session', 'default')
+    })
+
+    it('does not turn an active or wrong-flavor source into a new session', async () => {
+        const app = createApp({
+            clearOpenCodeSession: async () => ({
+                type: 'error' as const,
+                code: 'clear_unavailable' as const,
+                message: 'Session must be an archived OpenCode clear source'
+            })
+        } as never)
+
+        const response = await app.request('/cli/sessions/source-session/clear-opencode', {
+            method: 'POST',
+            headers: authHeaders()
+        })
+
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({
+            error: 'Session must be an archived OpenCode clear source',
+            code: 'clear_unavailable'
+        })
+    })
+})
+
 describe('cli lazy session creation', () => {
     const sessionId = '11111111-1111-4111-8111-111111111111'
 

@@ -18,6 +18,7 @@ type AcpPromptUsage = {
     totalTokens?: number;
     thoughtTokens?: number;
     cacheReadTokens?: number;
+    cacheCreationTokens?: number;
 };
 
 type AcpUsageUpdate = {
@@ -548,6 +549,9 @@ export class AcpSdkBackend implements AgentBackend {
                         totalTokens: promptUsage.totalTokens,
                         thoughtTokens: promptUsage.thoughtTokens,
                         cacheReadTokens: promptUsage.cacheReadTokens,
+                        ...(promptUsage.cacheCreationTokens !== undefined
+                            ? { cacheCreationTokens: promptUsage.cacheCreationTokens }
+                            : {}),
                         contextTokens: latestUsageUpdate ? latestUsageUpdate.contextTokens : undefined,
                         contextWindow: latestUsageUpdate ? latestUsageUpdate.contextWindow : undefined
                     });
@@ -988,6 +992,12 @@ export class AcpSdkBackend implements AgentBackend {
                 ?? usage.cached_read_tokens
                 ?? usage.cachedInputTokens
                 ?? usage.cached_input_tokens
+            ) ?? undefined,
+            cacheCreationTokens: this.asFiniteNumber(
+                usage.cachedWriteTokens
+                ?? usage.cached_write_tokens
+                ?? usage.cacheCreationInputTokens
+                ?? usage.cache_creation_input_tokens
             ) ?? undefined
         };
     }

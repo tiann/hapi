@@ -36,6 +36,7 @@ export function ImagePreview(props: {
     buttonClassName?: string
     imageClassName?: string
     caption?: ReactNode
+    galleryId?: string
 }) {
     const [viewerOpen, setViewerOpen] = useState(false)
     const [previewImages, setPreviewImages] = useState<PreviewImage[]>([])
@@ -56,7 +57,9 @@ export function ImagePreview(props: {
     const openViewer = useCallback((event: MouseEvent<HTMLButtonElement>) => {
         event.preventDefault()
         event.stopPropagation()
+        const galleryId = props.galleryId ?? ''
         const triggers = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-image-preview-trigger]'))
+            .filter((trigger) => (trigger.dataset.imagePreviewGallery ?? '') === galleryId)
         const images = triggers.flatMap((trigger): PreviewImage[] => {
             const image = trigger.querySelector('img')
             if (!image) return []
@@ -70,7 +73,7 @@ export function ImagePreview(props: {
         setPreviewImages(images)
         setPreviewIndex(index >= 0 ? index : 0)
         setViewerOpen(true)
-    }, [])
+    }, [props.galleryId])
 
     const updateScale = useCallback((next: number | ((current: number) => number)) => {
         setScale((current) => {
@@ -262,6 +265,7 @@ export function ImagePreview(props: {
                 data-image-preview-trigger=""
                 data-image-preview-file-name={props.fileName}
                 data-image-preview-label={props.label}
+                data-image-preview-gallery={props.galleryId ?? ''}
                 className={props.buttonClassName ?? 'group flex min-h-[18rem] w-full items-center justify-center overflow-auto rounded-md border border-[var(--app-border)] bg-[var(--app-code-bg)] p-3 text-left'}
                 title="Click to zoom"
             >

@@ -10,6 +10,7 @@ const harness = vi.hoisted(() => ({
     refreshSessionInfoCalls: [] as Array<{ sessionId: string; cwd: string }>,
     bridgeOptions: null as { enableChangeTitle?: boolean; skillLookup?: { workingDirectory: string; flavor: string } } | null,
     events: [] as string[],
+    cleanupEvents: [] as string[],
     setModelImpl: null as null | ((sessionId: string, modelId: string) => Promise<void>),
     setConfigOptionImpl: null as null | ((sessionId: string, configId: string, value: string) => Promise<void>),
     thoughtLevelOption: null as null | { id: string; currentValue?: string; options: Array<{ value: string; name?: string }> },
@@ -29,7 +30,10 @@ const harness = vi.hoisted(() => ({
     // registered once initialization finishes), so that race can only be
     // reproduced via the terminal UI's onExit/onSwitchToLocal callbacks,
     // not rpcHandlers.
-    newSessionImpl: null as null | (() => Promise<string>)
+    newSessionImpl: null as null | (() => Promise<string>),
+    disconnectImpl: null as null | (() => Promise<void>),
+    permissionCancelError: null as Error | null,
+    serverStopError: null as Error | null
 }));
 
 // Captures the RemoteLauncherDisplayContext (including onExit/
@@ -108,7 +112,12 @@ vi.mock('./utils/opencodeBackend', () => ({
             harness.refreshSessionInfoCalls.push({ sessionId, cwd });
         }),
         onPermissionRequest: vi.fn(),
-        disconnect: vi.fn(async () => {}),
+        disconnect: vi.fn(async () => {
+            harness.cleanupEvents.push('cleanup:disconnect');
+            if (harness.disconnectImpl) {
+                await harness.disconnectImpl();
+            }
+        }),
         getSessionModelsMetadata: vi.fn(() => harness.sessionModelsMetadata),
         getThoughtLevelConfigOption: vi.fn(() => harness.thoughtLevelOption ?? undefined),
         // Real AcpSdkBackend.suppressUpdatesDuring swaps out the message
@@ -123,7 +132,7 @@ vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
     buildHapiMcpBridge: async (_client: unknown, options?: { enableChangeTitle?: boolean; skillLookup?: { workingDirectory: string; flavor: string } }) => {
         harness.bridgeOptions = options ?? null;
         return {
-            server: { stop: () => {} },
+            server: { stop: () => { harness.cleanupEvents.push('cleanup:server-stop'); if (harness.serverStopError) throw harness.serverStopError; } },
             mcpServers: {}
         };
     }
@@ -131,7 +140,7 @@ vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
 
 vi.mock('./utils/permissionHandler', () => ({
     OpencodePermissionHandler: class {
-        async cancelAll(): Promise<void> {}
+        async cancelAll(): Promise<void> { harness.cleanupEvents.push('cleanup:permission'); if (harness.permissionCancelError) throw harness.permissionCancelError; }
     }
 }));
 
@@ -300,6 +309,13 @@ function createCompactMode(model?: string): OpencodeMode {
     };
 }
 
+function createClearMode(): OpencodeMode {
+    return {
+        permissionMode: 'default' as PermissionMode,
+        operation: 'clear'
+    };
+}
+
 describe('opencodeRemoteLauncher inline model switch', () => {
     afterEach(() => {
         harness.setModelArgs = [];
@@ -309,6 +325,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         harness.refreshSessionInfoCalls = [];
         harness.bridgeOptions = null;
         harness.events = [];
+        harness.cleanupEvents = [];
         harness.setModelImpl = null;
         harness.setConfigOptionImpl = null;
         harness.thoughtLevelOption = null;
@@ -322,7 +339,107 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         harness.sessionModelsMetadata = undefined;
         harness.cancelPromptImpl = null;
         harness.newSessionImpl = null;
+        harness.disconnectImpl = null;
+        harness.permissionCancelError = null;
+        harness.serverStopError = null;
         inkHarness.lastRenderProps = null;
+    });
+
+    it('reaches /clear only after the earlier prompt settles, without starting another OpenCode turn', async () => {
+        let resolvePrompt: (() => void) | null = null;
+        harness.promptImpl = () => new Promise<void>((resolve) => {
+            resolvePrompt = resolve;
+        });
+        const onClearRequested = vi.fn();
+        const onClearCleanupComplete = vi.fn(async () => {});
+        const { session } = createSessionStub([
+            { message: 'before-clear', mode: createMode() },
+            { message: '', mode: createClearMode() }
+        ]);
+
+        const launcherPromise = opencodeRemoteLauncher(session as never, { onClearRequested, onClearCleanupComplete });
+        while (!harness.events.includes('prompt:start')) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        expect(onClearRequested).not.toHaveBeenCalled();
+
+        resolvePrompt!();
+        await launcherPromise;
+
+        expect(harness.events).toEqual(['prompt:start', 'prompt:end']);
+        expect(harness.promptCount).toBe(1);
+        expect(onClearRequested).toHaveBeenCalledTimes(1);
+        expect(onClearCleanupComplete).toHaveBeenCalledTimes(1);
+        // The sibling compact test below intentionally inspects its first
+        // factory result; do not leave this test's backend instance behind.
+        const backendModule = await import('./utils/opencodeBackend');
+        (backendModule.createOpencodeBackend as unknown as ReturnType<typeof vi.fn>).mockClear();
+    });
+
+    it('reserves before native cleanup but does not complete the transition when cleanup fails', async () => {
+        harness.disconnectImpl = async () => {
+            throw new Error('disconnect failed');
+        };
+        const onClearRequested = vi.fn();
+        const onClearCleanupComplete = vi.fn(async () => {});
+        const onClearCleanupFailed = vi.fn(async () => {});
+        const { session } = createSessionStub([
+            { message: '', mode: createClearMode() }
+        ]);
+
+        await expect(opencodeRemoteLauncher(session as never, { onClearRequested, onClearCleanupComplete, onClearCleanupFailed })).rejects.toThrow('disconnect failed');
+        expect(onClearRequested).toHaveBeenCalledTimes(1);
+        expect(onClearCleanupComplete).not.toHaveBeenCalled();
+        expect(onClearCleanupFailed).toHaveBeenCalledTimes(1);
+        const backendModule = await import('./utils/opencodeBackend');
+        (backendModule.createOpencodeBackend as unknown as ReturnType<typeof vi.fn>).mockClear();
+    });
+
+    it.each(['permission', 'server'] as const)('aborts clear when %s cleanup fails', async (stage) => {
+        if (stage === 'permission') harness.permissionCancelError = new Error('permission cleanup failed');
+        else harness.serverStopError = new Error('server cleanup failed');
+        const onClearRequested = vi.fn(async () => {});
+        const onClearCleanupComplete = vi.fn(async () => {});
+        const onClearCleanupFailed = vi.fn(async () => {});
+        const { session } = createSessionStub([{ message: '', mode: createClearMode() }]);
+        await expect(opencodeRemoteLauncher(session as never, {
+            onClearRequested, onClearCleanupComplete, onClearCleanupFailed
+        })).rejects.toThrow('cleanup failed');
+        expect(onClearCleanupFailed).toHaveBeenCalledTimes(1);
+        expect(onClearCleanupComplete).not.toHaveBeenCalled();
+        expect(harness.cleanupEvents).toEqual(expect.arrayContaining([
+            'cleanup:permission', 'cleanup:disconnect', 'cleanup:server-stop'
+        ]));
+    });
+
+    it('reaches /clear only after an in-flight /compact has completed', async () => {
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        let resolveCompact: (() => void) | null = null;
+        compactHarness.triggerImpl = () => new Promise((resolve) => {
+            resolveCompact = () => resolve({ ok: true });
+        });
+        const onClearRequested = vi.fn();
+        const { session } = createSessionStub([
+            { message: '', mode: createCompactMode('ollama/x') },
+            { message: '', mode: createClearMode() }
+        ]);
+
+        const launcherPromise = opencodeRemoteLauncher(session as never, {
+            onCompactAvailabilityChange: () => {},
+            onClearRequested
+        });
+        while (compactHarness.calls.length === 0) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        expect(onClearRequested).not.toHaveBeenCalled();
+
+        resolveCompact!();
+        await launcherPromise;
+
+        expect(compactHarness.calls).toHaveLength(1);
+        expect(onClearRequested).toHaveBeenCalledTimes(1);
+        const backendModule = await import('./utils/opencodeBackend');
+        (backendModule.createOpencodeBackend as unknown as ReturnType<typeof vi.fn>).mockClear();
     });
 
     it('processes a queued /compact operation only after an earlier queued prompt has finished', async () => {
@@ -533,7 +650,11 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             setSessionInfoUpdateListener: vi.fn(),
             refreshSessionInfo: vi.fn(async () => {}),
             onPermissionRequest: vi.fn(),
-            disconnect: vi.fn(async () => {}),
+            disconnect: vi.fn(async () => {
+            if (harness.disconnectImpl) {
+                await harness.disconnectImpl();
+            }
+        }),
             getSessionModelsMetadata: vi.fn(() => ({
                 currentModelId: 'ollama/qwen3.6:35b-a3b-q8_0-mtp',
                 availableModels: []
@@ -1600,7 +1721,11 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             setSessionInfoUpdateListener: vi.fn(),
             refreshSessionInfo: vi.fn(async () => {}),
             onPermissionRequest: vi.fn(),
-            disconnect: vi.fn(async () => {}),
+            disconnect: vi.fn(async () => {
+            if (harness.disconnectImpl) {
+                await harness.disconnectImpl();
+            }
+        }),
             getSessionModelsMetadata: vi.fn((sessionId: string) => {
                 if (sessionId === 'acp-session-1') {
                     return { availableModels: fixtureModels, currentModelId: 'ollama/exaone:4.5-33b-q8' };

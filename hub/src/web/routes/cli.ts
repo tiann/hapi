@@ -3,6 +3,7 @@ import { z } from 'zod'
 import {
     CreateOrLoadMachineRequestSchema,
     CreateOrLoadSessionRequestSchema,
+    ClearOpencodeSessionCallbackRequestSchema,
     CursorMigrateToAcpRequestSchema,
     PROTOCOL_VERSION
 } from '@hapi/protocol'
@@ -54,6 +55,13 @@ function resolveMachineForNamespace(
         return { ok: false, status: 403, error: 'Machine access denied' }
     }
     return { ok: false, status: 404, error: 'Machine not found' }
+}
+
+function clearErrorStatus(code: string): 403 | 404 | 409 | 500 {
+    return code === 'access_denied' ? 403
+        : code === 'session_not_found' ? 404
+            : code === 'clear_unavailable' ? 409
+                : 500
 }
 
 export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<CliEnv> {
@@ -176,6 +184,54 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         }
 
         return c.json({ ok: true })
+    })
+
+    app.post('/sessions/:id/clear-opencode', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ error: 'Not ready' }, 503)
+        }
+
+        const result = await engine.clearOpenCodeSession(c.req.param('id'), c.get('namespace'))
+        if (result.type === 'error') {
+            const status = result.code === 'access_denied' ? 403
+                : result.code === 'session_not_found' ? 404
+                    : result.code === 'clear_unavailable' ? 409
+                        : 500
+            return c.json({ error: result.message, code: result.code }, status)
+        }
+        return c.json({ ok: true, sessionId: result.sessionId })
+    })
+
+    app.post('/sessions/:id/clear-opencode/reserve', (c) => {
+        const engine = getSyncEngine()
+        if (!engine) return c.json({ error: 'Not ready' }, 503)
+        const result = engine.reserveOpenCodeClearSession(c.req.param('id'), c.get('namespace'))
+        if (result.type === 'error') {
+            const status = result.code === 'access_denied' ? 403 : result.code === 'session_not_found' ? 404 : result.code === 'clear_unavailable' ? 409 : 500
+            return c.json({ error: result.message, code: result.code }, status)
+        }
+        return c.json({ ok: true, sessionId: result.sessionId })
+    })
+
+    app.post('/sessions/:id/clear-opencode/abort', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) return c.json({ error: 'Not ready' }, 503)
+        const parsed = ClearOpencodeSessionCallbackRequestSchema.safeParse(await c.req.json().catch(() => null))
+        if (!parsed.success) return c.json({ error: 'Invalid clear callback request' }, 400)
+        const result = engine.abortOpenCodeClearSession(c.req.param('id'), c.get('namespace'), parsed.data.replacementSessionId)
+        if (result.type === 'error') return c.json({ error: result.message, code: result.code }, clearErrorStatus(result.code))
+        return c.json({ ok: true, sessionId: result.sessionId })
+    })
+
+    app.post('/sessions/:id/clear-opencode/confirm-cleanup', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) return c.json({ error: 'Not ready' }, 503)
+        const parsed = ClearOpencodeSessionCallbackRequestSchema.safeParse(await c.req.json().catch(() => null))
+        if (!parsed.success) return c.json({ error: 'Invalid clear callback request' }, 400)
+        const result = engine.confirmOpenCodeClearCleanup(c.req.param('id'), c.get('namespace'), parsed.data.replacementSessionId)
+        if (result.type === 'error') return c.json({ error: result.message, code: result.code }, clearErrorStatus(result.code))
+        return c.json({ ok: true, sessionId: result.sessionId })
     })
 
     app.get('/sessions/:id', (c) => {

@@ -16,6 +16,8 @@ import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import { listSlashCommands } from '@/modules/common/slashCommands';
 import { resolveOpencodeSlashCommand } from './utils/slashCommands';
+import { isRetryableConnectionError } from '@/utils/errorUtils';
+import { withRetry } from '@/utils/time';
 
 export async function runOpencode(opts: {
     startedBy?: 'runner' | 'terminal';
@@ -108,6 +110,14 @@ export async function runOpencode(opts: {
     // onLeavingRemote exists to protect, since `mode` stays 'remote'
     // throughout it.
     let compactSupported = false;
+    let clearRequested = false;
+    let clearReplacementSessionId: string | null = null;
+    // Once a runner-backed /clear is accepted, hold later payloads until the
+    // transition commits or the queued clear is cancelled. The hub redirects
+    // their durable rows to the reserved replacement on success.
+    let clearTransitionLatched = false;
+    let queuedClearLocalId: string | null = null;
+    const heldDuringClear: Array<{ message: Parameters<Parameters<typeof session.onUserMessage>[0]>[0]; localId?: string }> = [];
     // True from the moment onCompactAvailabilityChange(false) fires (which,
     // per onLeavingRemote's contract, only ever happens because remote mode
     // is being left — never because remote just started) until this session
@@ -236,6 +246,11 @@ export async function runOpencode(opts: {
             };
             try {
                 if (wasCancelled()) return;
+                if (clearTransitionLatched) {
+                    heldDuringClear.push({ message, localId });
+                    sessionWrapperRef.current?.onThinkingChange(false);
+                    return;
+                }
                 let text = message.content.text;
                 const commands = await listSlashCommands('opencode', workingDirectory).catch(() => []);
                 if (wasCancelled()) return;
@@ -245,6 +260,30 @@ export async function runOpencode(opts: {
                     model: sessionModel,
                     modelReasoningEffort: sessionModelReasoningEffort
                 });
+
+                if (slash.kind === 'clear') {
+                    if (startedBy !== 'runner') {
+                        if (localId) {
+                            session.emitMessagesConsumed([localId], { clearQueuedThinkingGrace: true });
+                        }
+                        session.sendAgentMessage({
+                            type: 'message',
+                            message: '/clear is available only for runner-backed OpenCode sessions.',
+                            id: randomUUID()
+                        });
+                        sessionWrapperRef.current?.onThinkingChange(false);
+                        return;
+                    }
+                    // Latch before enqueueing. userMessageChain serializes later
+                    // messages behind this resolver, including the async
+                    // listSlashCommands race, so they take the rejection path.
+                    clearTransitionLatched = true;
+                    queuedClearLocalId = localId ?? null;
+                    // A clear is isolated but retains its FIFO position:
+                    // older prompts and native /compact work finish first.
+                    messageQueue.pushIsolated('', { ...buildMode(), operation: 'clear' }, localId);
+                    return;
+                }
 
                 if (slash.kind === 'compact') {
                     // `compactSupported` alone conflates two different
@@ -399,12 +438,30 @@ export async function runOpencode(opts: {
     session.onCancelQueuedMessage((localId) => {
         const removedFromQueue = messageQueue.cancelByLocalId(localId);
         if (removedFromQueue) {
+            if (queuedClearLocalId === localId) {
+                queuedClearLocalId = null;
+                clearTransitionLatched = false;
+                for (const held of heldDuringClear) {
+                    const formattedText = formatMessageWithAttachments(held.message.content.text, held.message.content.attachments);
+                    messageQueue.push(formattedText, {
+                        permissionMode: currentPermissionMode,
+                        model: sessionModel,
+                        modelReasoningEffort: sessionModelReasoningEffort
+                    }, held.localId);
+                }
+                heldDuringClear.length = 0;
+            }
             logger.debug(`[opencode] cancelByLocalId(${localId}): removed from queue`);
             return true;
         }
         if (preparingLocalIds.has(localId)) {
             cancelledBeforeEnqueue.add(localId);
             logger.debug(`[opencode] cancelByLocalId(${localId}): marked for cancellation before enqueue`);
+            return true;
+        }
+        const heldIndex = heldDuringClear.findIndex((held) => held.localId === localId);
+        if (heldIndex >= 0) {
+            heldDuringClear.splice(heldIndex, 1);
             return true;
         }
         // Not in the queue and not in the pre-enqueue preparing window. As
@@ -491,6 +548,24 @@ export async function runOpencode(opts: {
                     compactTeardownInProgress = true;
                 }
             },
+            onClearRequested: async () => {
+                clearReplacementSessionId = await withRetry(() => api.reserveOpenCodeClearSession(session.sessionId), {
+                    minDelay: 500, maxDelay: 30_000, shouldRetry: isRetryableConnectionError
+                });
+            },
+            onClearCleanupComplete: async () => {
+                if (!clearReplacementSessionId) throw new Error('OpenCode clear cleanup completed without a reservation')
+                await withRetry(() => api.confirmOpenCodeClearCleanup(session.sessionId, clearReplacementSessionId!), {
+                    minDelay: 500, maxDelay: 30_000, shouldRetry: isRetryableConnectionError
+                });
+                clearRequested = true;
+            },
+            onClearCleanupFailed: async () => {
+                if (!clearReplacementSessionId) throw new Error('OpenCode clear cleanup failed without a reservation')
+                await withRetry(() => api.abortOpenCodeClearSession(session.sessionId, clearReplacementSessionId!), {
+                    minDelay: 500, maxDelay: 30_000, shouldRetry: isRetryableConnectionError
+                });
+            },
             isLocalIdCancelled: (localId) => cancelledDequeuedLocalIds.delete(localId)
         });
     } catch (error) {
@@ -499,13 +574,55 @@ export async function runOpencode(opts: {
         logger.debug('[opencode] Loop error:', error);
     } finally {
         const localFailure = sessionWrapperRef.current?.localLaunchFailure;
-        if (localFailure?.exitReason === 'exit') {
+        if (clearRequested) {
+            lifecycle.setArchiveReason('Cleared by /clear');
+            lifecycle.setSessionEndReason('cleared');
+        } else if (localFailure?.exitReason === 'exit') {
             lifecycle.setExitCode(1);
             lifecycle.setArchiveReason(`Local launch failed: ${localFailure.message.slice(0, 200)}`);
             lifecycle.setSessionEndReason('error');
         } else if (!crashed) {
             lifecycle.setSessionEndReason('completed');
         }
-        await lifecycle.cleanupAndExit();
+        if (!clearRequested) {
+            await lifecycle.cleanupAndExit();
+            return;
+        }
+
+        // Keep the source socket open until the hub acknowledges the ordered
+        // archive/session-end boundary. A transient disconnect must not turn
+        // the following clear request into a non-retryable active-source 409.
+        await withRetry(
+            () => lifecycle.cleanupConfirmed({ timeoutMs: 5_000 }),
+            {
+                minDelay: 500,
+                maxDelay: 30_000,
+                shouldRetry: isRetryableConnectionError,
+                onRetry: (error, attempt, nextDelayMs) => {
+                    const message = error instanceof Error ? error.message : String(error);
+                    logger.debug(`[opencode] Session archive confirmation failed (attempt ${attempt}), retrying in ${nextDelayMs}ms: ${message}`);
+                }
+            }
+        );
+        try {
+            await withRetry(
+                () => api.clearOpenCodeSession(session.sessionId),
+                {
+                    minDelay: 500,
+                    maxDelay: 30_000,
+                    shouldRetry: isRetryableConnectionError,
+                    onRetry: (error, attempt, nextDelayMs) => {
+                        const message = error instanceof Error ? error.message : String(error);
+                        logger.debug(`[opencode] Fresh-session clear handoff failed (attempt ${attempt}), retrying in ${nextDelayMs}ms: ${message}`);
+                    }
+                }
+            );
+        } catch (error) {
+            // Only non-retryable failures reach here. Retryable transport and
+            // hub failures retain ownership in the loop above until recovery.
+            logger.debug('[opencode] Fresh-session clear spawn failed', error);
+            throw error;
+        }
+        process.exit(0);
     }
 }

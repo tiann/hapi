@@ -4,7 +4,7 @@ import { registerVoiceSession, resetRealtimeSessionState } from './RealtimeSessi
 import { realtimeClientTools, registerSessionStore } from './realtimeClientTools'
 import { fetchVoiceToken } from '@/api/voice'
 import { buildElevenLabsSessionOverrides, capElevenLabsInitialContext } from '@/lib/voicePersonalitySession'
-import { isVoiceProactiveSummaryEnabled, streamDeferredVoiceContext } from '@/lib/voiceContextStream'
+import { deliverVoiceSessionContextAfterConnect, isVoiceProactiveSummaryEnabled } from '@/lib/voiceContextStream'
 import { readStoredVoiceSelection } from '@/lib/voicePickerPreferences'
 import type { VoiceSession, VoiceSessionConfig, ConversationStatus, StatusCallback } from './types'
 import type { ApiClient } from '@/api/client'
@@ -101,12 +101,11 @@ class RealtimeVoiceSessionImpl implements VoiceSession {
                 console.log('[Voice] Started conversation with ID:', conversationId)
             }
 
-            if (config.streamContextChunks?.length) {
-                await streamDeferredVoiceContext(
-                    (chunk) => conversationInstance?.sendContextualUpdate(chunk),
-                    config.streamContextChunks
-                )
-            }
+            await deliverVoiceSessionContextAfterConnect({
+                streamContextChunks: config.streamContextChunks,
+                initialContext: config.initialContext,
+                sendChunk: (chunk) => conversationInstance?.sendContextualUpdate(chunk)
+            })
 
             if (isVoiceProactiveSummaryEnabled()) {
                 this.sendTextMessage(

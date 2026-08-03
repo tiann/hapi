@@ -35,6 +35,7 @@ export function convertPiTurnUsage(
         outputTokens: usage.output ?? 0,
         totalTokens: usage.totalTokens,
         cacheReadTokens: usage.cacheRead,
+        cacheCreationTokens: usage.cacheWrite,
         contextTokens: contextUsage?.tokens ?? usage.totalTokens,
         contextWindow: contextUsage?.contextWindow,
     };

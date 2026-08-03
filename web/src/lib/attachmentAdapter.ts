@@ -50,16 +50,26 @@ export function createAttachmentAdapter(api: ApiClient, sessionId: string): Atta
             const id = randomId()
             const contentType = file.type || 'application/octet-stream'
 
-            yield {
-                id,
-                type: 'file',
-                name: file.name,
-                contentType,
-                file,
-                status: { type: 'running', reason: 'uploading', progress: 0 }
-            }
-
             try {
+                let previewUrl: string | undefined
+                if (isImageMimeType(contentType) && file.size <= MAX_PREVIEW_BYTES) {
+                    try {
+                        previewUrl = await fileToDataUrl(file)
+                    } catch {
+                        // Preview generation is optional; retry the read for the upload payload below.
+                    }
+                }
+
+                yield {
+                    id,
+                    type: 'file',
+                    name: file.name,
+                    contentType,
+                    file,
+                    status: { type: 'running', reason: 'uploading', progress: 0 },
+                    previewUrl
+                } as PendingUploadAttachment
+
                 if (cancelledAttachmentIds.has(id)) {
                     return
                 }
@@ -76,7 +86,9 @@ export function createAttachmentAdapter(api: ApiClient, sessionId: string): Atta
                     return
                 }
 
-                const content = await fileToBase64(file)
+                const content = previewUrl
+                    ? base64FromDataUrl(previewUrl)
+                    : await fileToBase64(file)
                 if (cancelledAttachmentIds.has(id)) {
                     return
                 }
@@ -87,8 +99,9 @@ export function createAttachmentAdapter(api: ApiClient, sessionId: string): Atta
                     name: file.name,
                     contentType,
                     file,
-                    status: { type: 'running', reason: 'uploading', progress: 50 }
-                }
+                    status: { type: 'running', reason: 'uploading', progress: 50 },
+                    previewUrl
+                } as PendingUploadAttachment
 
                 const result = await api.uploadFile(sessionId, file.name, content, contentType)
                 if (cancelledAttachmentIds.has(id)) {
@@ -107,21 +120,6 @@ export function createAttachmentAdapter(api: ApiClient, sessionId: string): Atta
                         file,
                         status: { type: 'incomplete', reason: 'error' }
                     }
-                    return
-                }
-
-                // Generate preview URL for images under 5MB
-                let previewUrl: string | undefined
-                if (isImageMimeType(contentType) && file.size <= MAX_PREVIEW_BYTES) {
-                    try {
-                        previewUrl = await fileToDataUrl(file)
-                    } catch {
-                        // Preview generation is optional after the upload has succeeded.
-                    }
-                }
-
-                if (cancelledAttachmentIds.has(id)) {
-                    await deleteUpload(result.path)
                     return
                 }
 
@@ -181,20 +179,16 @@ export function createAttachmentAdapter(api: ApiClient, sessionId: string): Atta
 }
 
 async function fileToBase64(file: File): Promise<string> {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader()
-        reader.onload = () => {
-            const result = reader.result as string
-            const base64 = result.split(',')[1]
-            if (!base64) {
-                reject(new Error('Failed to read file'))
-                return
-            }
-            resolve(base64)
-        }
-        reader.onerror = reject
-        reader.readAsDataURL(file)
-    })
+    return base64FromDataUrl(await fileToDataUrl(file))
+}
+
+function base64FromDataUrl(dataUrl: string): string {
+    const separatorIndex = dataUrl.indexOf(',')
+    const base64 = separatorIndex >= 0 ? dataUrl.slice(separatorIndex + 1) : ''
+    if (!base64) {
+        throw new Error('Failed to read file')
+    }
+    return base64
 }
 
 async function fileToDataUrl(file: File): Promise<string> {

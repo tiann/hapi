@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionSummary } from '@/types/api'
 import type { Session } from '@/types/api'
-import { isGlobalScopedMessageStreamEvent, isRenderIrrelevantPatch, isRenderIrrelevantSessionPatch } from './useSSE'
+import { isGlobalScopedMessageStreamEvent, isRenderIrrelevantPatch, isRenderIrrelevantSessionPatch, shouldInvalidateSessionListForEvent } from './useSSE'
 
 function makeSummary(overrides: Partial<SessionSummary> = {}): SessionSummary {
     return {
@@ -25,6 +25,11 @@ function makeSummary(overrides: Partial<SessionSummary> = {}): SessionSummary {
 }
 
 describe('useSSE scope handling', () => {
+    it('invalidates the global session list when message ownership changes', () => {
+        expect(shouldInvalidateSessionListForEvent('global', 'messages-invalidated')).toBe(true)
+        expect(shouldInvalidateSessionListForEvent('full', 'messages-invalidated')).toBe(false)
+    })
+
     it('treats message stream events as global-scoped skips', () => {
         expect(isGlobalScopedMessageStreamEvent('global', 'message-received')).toBe(true)
         expect(isGlobalScopedMessageStreamEvent('global', 'messages-consumed')).toBe(true)

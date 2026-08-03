@@ -32,6 +32,29 @@ export async function streamDeferredVoiceContext(
     }
 }
 
+/**
+ * Stream older history, then deliver bootstrap context — same order on every backend.
+ * ElevenLabs dynamicVariables alone are insufficient unless the agent prompt references
+ * {{initialConversationContext}}; contextual updates are the reliable delivery path.
+ */
+export async function deliverVoiceSessionContextAfterConnect(options: {
+    streamContextChunks?: string[]
+    initialContext?: string
+    sendChunk: (chunk: string) => void
+    streamDelayMs?: number
+}): Promise<void> {
+    const streamChunks = options.streamContextChunks ?? []
+    if (streamChunks.length > 0) {
+        await streamDeferredVoiceContext(options.sendChunk, streamChunks, {
+            delayMs: options.streamDelayMs
+        })
+    }
+    const bootstrap = options.initialContext?.trim()
+    if (bootstrap) {
+        options.sendChunk(bootstrap)
+    }
+}
+
 export function isVoiceProactiveSummaryEnabled(): boolean {
     return localStorage.getItem('hapi-voice-proactive') === 'true'
 }

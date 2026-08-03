@@ -99,6 +99,12 @@ describe('FilesPage search navigation', () => {
 
         const input = screen.getByRole('textbox')
         expect(input).toHaveValue('感')
+        const sortButton = screen.getByRole('button', { name: 'Sort files' })
+        const refreshButton = screen.getByRole('button', { name: 'Refresh filesystem view' })
+        expect(sortButton.parentElement?.parentElement).toBe(input.parentElement)
+        expect(input.parentElement?.nextElementSibling).toBe(refreshButton)
+        expect(sortButton).toHaveClass('w-10', 'self-stretch')
+        expect(refreshButton).toHaveClass('h-9', 'w-9')
         expect(mocks.fileSearch).toHaveBeenCalledWith(
             expect.anything(),
             'session-1',
