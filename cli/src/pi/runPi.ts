@@ -18,6 +18,7 @@ import type { ListSkillsResponse, SkillSummary } from '@/modules/common/skills';
 import type { AttachmentMetadata } from '@/api/types';
 import { readBoundedAttachmentFile } from '@/modules/common/attachmentFile';
 import { MAX_UPLOAD_BYTES } from '@/modules/common/attachmentLimits';
+import { isPathWithinUploadDir } from '@/modules/common/handlers/uploads';
 
 // Grace period before force-draining prompts buffered during Pi startup when no
 // get_state response arrives. Comfortably above the 10s Pi RPC timeout so a slow
@@ -98,6 +99,7 @@ export async function preparePiUserMessage(
     message: string,
     attachments: AttachmentMetadata[] | undefined,
     commands: readonly PiCommandSummary[],
+    options: { authorizeImagePath: (path: string) => boolean },
 ): Promise<PiPromptPreparation> {
     const formattedMessage = formatPiUserMessage(message, attachments, commands);
     const images: PiImageContent[] = [];
@@ -106,6 +108,10 @@ export async function preparePiUserMessage(
 
     for (const attachment of attachments ?? []) {
         if (!attachment.mimeType.toLowerCase().startsWith('image/')) continue;
+        if (!options.authorizeImagePath(attachment.path)) {
+            imageReadErrors.push(`Could not attach image ${attachment.filename}: invalid upload path`);
+            continue;
+        }
         try {
             const data = await readBoundedAttachmentFile(attachment.path, MAX_UPLOAD_BYTES - totalImageBytes);
             totalImageBytes += data.length;
@@ -679,6 +685,7 @@ export async function runPi(opts: {
                 message.content.text,
                 message.content.attachments,
                 piSession.cachedPiCommands,
+                { authorizeImagePath: (path) => isPathWithinUploadDir(path, apiSession.sessionId) },
             );
             if (localId) {
                 preparingLocalIds.delete(localId);

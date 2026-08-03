@@ -584,7 +584,11 @@ export function wireTransportEvents(
         promptLifecycleTimer = setTimeout(() => {
             promptLifecycleTimer = null;
             if (generation !== lifecycleGeneration || deliveredSettlement || agentLifecycleSeen) return;
-            if (options.onPromptLifecycleMissing?.(pendingLocalIds[0]) === false) return;
+            const handled = options.onPromptLifecycleMissing?.(pendingLocalIds[0]);
+            // The callback may synchronously pump the next queued prompt, whose
+            // beginPromptLifecycle() advances the generation and resets state.
+            // Never stamp the old timer's settlement onto that new prompt.
+            if (handled === false || generation !== lifecycleGeneration) return;
             deliveredSettlement = true;
             session.updateThinkingState(false);
         }, PI_PROMPT_LIFECYCLE_GRACE_MS);

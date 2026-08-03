@@ -133,7 +133,7 @@ function cleanupUploadDirsSync(): void {
     }
 }
 
-function isPathWithinUploadDir(path: string, sessionId?: string): boolean {
+export function isPathWithinUploadDir(path: string, sessionId?: string): boolean {
     const sessionKey = getSessionKey(sessionId)
     const resolvedPath = resolve(path)
     const activeDir = uploadDirs.get(sessionKey)

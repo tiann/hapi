@@ -13,6 +13,7 @@ const harness = vi.hoisted(() => ({
     killCount: 0,
     cleanupCount: 0,
     session: {
+        sessionId: 'hapi-session-test',
         keepAlive: vi.fn(),
         onUserMessage: vi.fn(),
         onCancelQueuedMessage: vi.fn(),
@@ -456,6 +457,38 @@ describe('Pi abort queue boundary', () => {
         harness.onError?.(new Error('finish test'));
         await running;
     });
+
+    it('settles consecutive command-only prompts without stamping the old timer onto the next generation', async () => {
+        const running = runPi({ workingDirectory: '/work' });
+        await vi.waitFor(() => expect(harness.onEvent).not.toBeNull());
+        harness.onEvent!({ type: 'response', command: 'get_state', success: true, data: {} });
+        await completeHistoryInitialization();
+
+        const userMessage = (text: string) => ({ role: 'user', content: { type: 'text', text } });
+        const onUserMessage = harness.session.onUserMessage.mock.calls.at(-1)![0] as (message: ReturnType<typeof userMessage>, localId: string) => void;
+        onUserMessage(userMessage('command-a'), 'command-a-id');
+        onUserMessage(userMessage('command-b'), 'command-b-id');
+        await vi.waitFor(() => expect(harness.sent).toContainEqual(expect.objectContaining({ type: 'prompt', message: 'command-a' })));
+
+        vi.useFakeTimers();
+        const firstPrompt = harness.sent.find((item) => (item as { type?: string; message?: string }).type === 'prompt') as { id: string };
+        harness.onEvent!({ type: 'response', id: firstPrompt.id, command: 'prompt', success: true });
+        await vi.advanceTimersByTimeAsync(1_000);
+        const promptsAfterFirst = harness.sent.filter((item) => (item as { type?: string }).type === 'prompt') as Array<{ id: string; message: string }>;
+        expect(promptsAfterFirst.map((item) => item.message)).toEqual(['command-a', 'command-b']);
+
+        const secondPrompt = promptsAfterFirst[1]!;
+        harness.onEvent!({ type: 'response', id: secondPrompt.id, command: 'prompt', success: true });
+        await vi.advanceTimersByTimeAsync(1_000);
+        onUserMessage(userMessage('command-c'), 'command-c-id');
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(harness.sent).toContainEqual(expect.objectContaining({ type: 'prompt', message: 'command-c' }));
+        vi.useRealTimers();
+
+        harness.onError?.(new Error('finish test'));
+        await running;
+    });
 });
 
 describe('Pi prompt preparation', () => {
@@ -469,14 +502,17 @@ describe('Pi prompt preparation', () => {
             const prepared = await preparePiUserMessage('$brave-search explain', [
                 { id: 'image', filename: 'plot.png', mimeType: 'image/png', size: 4, path: imagePath },
                 { id: 'text', filename: 'notes file.txt', mimeType: 'text/plain', size: 1, path: '/tmp/notes file.txt' },
-            ], [{ name: 'skill:brave-search', source: 'skill' }]);
+            ], [{ name: 'skill:brave-search', source: 'skill' }], { authorizeImagePath: () => true });
             expect(prepared.message).toBe('/skill:brave-search explain\n\nAttached file: \"/tmp/notes file.txt\"');
             expect(prepared.images).toEqual([{ type: 'image', mimeType: 'image/png', data: 'iVBORw==' }]);
             expect(prepared.imageReadErrors).toEqual([]);
             expect(formatPiUserMessage('', [{ id: 'newline', filename: 'x', mimeType: 'text/plain', size: 1, path: '/tmp/a\nb' }], [])).toBe('Attached file: \"/tmp/a\\nb\"');
-            const failed = await preparePiUserMessage('', [{ id: 'missing', filename: 'missing.png', mimeType: 'image/png', size: 1, path: '/missing/image.png' }], []);
+            const failed = await preparePiUserMessage('', [{ id: 'missing', filename: 'missing.png', mimeType: 'image/png', size: 1, path: '/missing/image.png' }], [], { authorizeImagePath: () => true });
             expect(failed).toMatchObject({ message: '', images: [] });
             expect(failed.imageReadErrors[0]).toContain('Could not attach image missing.png');
+            const unauthorized = await preparePiUserMessage('', [{ id: 'forged', filename: 'hosts.png', mimeType: 'image/png', size: 1, path: '/etc/hosts' }], [], { authorizeImagePath: () => false });
+            expect(unauthorized).toMatchObject({ message: '', images: [] });
+            expect(unauthorized.imageReadErrors).toEqual(['Could not attach image hosts.png: invalid upload path']);
         } finally {
             await rm(imagePath, { force: true });
         }
