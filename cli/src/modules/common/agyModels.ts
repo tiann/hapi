@@ -71,11 +71,14 @@ function parseAgyModelsOutput(output: string): AgyModelsResponse['availableModel
             models.push({ modelId, name: columns[2].trim() })
             continue
         }
-        // Non-TTY output may contain only wire ids.
+        // Non-TTY output may contain only wire ids. Piped output takes this
+        // branch for every model, so backfill the known display label — without
+        // it the picker would show raw ids whenever the live probe succeeds.
         if (/^[a-z0-9][a-z0-9._/-]*$/i.test(line) && line.includes('-')) {
             if (seen.has(line)) continue
             seen.add(line)
-            models.push({ modelId: line })
+            const label = AGY_MODEL_LABELS[line as keyof typeof AGY_MODEL_LABELS]
+            models.push(label ? { modelId: line, name: label } : { modelId: line })
             continue
         }
         // Accept a known name verbatim, or anything shaped like "Name (Variant)".

@@ -37,10 +37,19 @@ describe('parseAgyModelsOutput', () => {
         ])
     })
 
-    it('accepts raw model ids from non-tty output', () => {
+    it('accepts raw model ids from non-tty output and keeps their display labels', () => {
+        // Piped `agy models` emits bare wire ids, which is the path the probe
+        // actually takes; without the label backfill the picker would regress to
+        // showing raw ids for every model.
         expect(_parseAgyModelsOutputForTests('gemini-3.6-flash-high\ngemini-3.6-flash-low\n')).toEqual([
-            { modelId: 'gemini-3.6-flash-high' },
-            { modelId: 'gemini-3.6-flash-low' }
+            { modelId: 'gemini-3.6-flash-high', name: 'Gemini 3.6 Flash (High)' },
+            { modelId: 'gemini-3.6-flash-low', name: 'Gemini 3.6 Flash (Low)' }
+        ])
+    })
+
+    it('leaves an unknown wire id unlabeled rather than inventing a name', () => {
+        expect(_parseAgyModelsOutputForTests('gemini-9.9-experimental\n')).toEqual([
+            { modelId: 'gemini-9.9-experimental' }
         ])
     })
 })
