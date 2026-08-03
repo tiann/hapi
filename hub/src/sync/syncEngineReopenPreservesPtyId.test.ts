@@ -46,6 +46,7 @@ describe('SyncEngine reopen/resume PTY session id preservation', () => {
     }
 
     let capturedExistingSessionId: string | undefined
+    let staleReadyPresentAtSpawn = false
 
     function installFakeRunner(): void {
         const cache = (engine as unknown as { sessionCache: import('./sessionCache').SessionCache }).sessionCache
@@ -60,6 +61,9 @@ describe('SyncEngine reopen/resume PTY session id preservation', () => {
             async (...args: unknown[]) => {
                 const existingSessionId = readExistingSessionId(args)
                 capturedExistingSessionId = existingSessionId
+                staleReadyPresentAtSpawn = existingSessionId
+                    ? (engine as unknown as { sessionReadyIds: Set<string> }).sessionReadyIds.has(existingSessionId)
+                    : false
                 if (existingSessionId) {
                     // Runner honored the existing hub id — reuse the row.
                     return { type: 'success', sessionId: existingSessionId }
@@ -90,7 +94,21 @@ describe('SyncEngine reopen/resume PTY session id preservation', () => {
         engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
         capturedExistingSessionId = undefined
         mintedNewId = undefined
+        staleReadyPresentAtSpawn = false
         installFakeRunner()
+    })
+
+    it('clears stale readiness before spawning the same-id PTY replacement', async () => {
+        const sessionId = insertSession(
+            'pty-session-stale-ready',
+            baseMetadata({ lifecycleState: 'archived', archivedBy: 'hub', archiveReason: 'inactivity' }),
+            { startingMode: 'pty' }
+        ).id
+        ;(engine as unknown as { sessionReadyIds: Set<string> }).sessionReadyIds.add(sessionId)
+
+        await engine.reopenSession(sessionId, NAMESPACE)
+
+        expect(staleReadyPresentAtSpawn).toBe(false)
     })
 
     it('reopening an archived PTY session keeps the same hub session id (no new row, old row intact)', async () => {

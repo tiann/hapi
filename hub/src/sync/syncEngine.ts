@@ -1646,6 +1646,12 @@ async uploadScratchlistAttachment(
             (session.agentState as { startingMode?: 'local' | 'remote' | 'pty' } | null)?.startingMode === 'pty'
                 ? 'pty'
                 : undefined
+        if (resumedStartingMode === 'pty') {
+            // PTY reopen intentionally reuses the archived session id. Any
+            // readiness bit from the previous process must not satisfy the
+            // replacement process's readiness barrier.
+            this.sessionReadyIds.delete(access.sessionId)
+        }
         let piResumeSucceeded = false
         try {
             const spawnResult = await this.rpcGateway.spawnSession(
