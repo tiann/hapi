@@ -310,6 +310,54 @@ describe('codexSessionScanner', () => {
         });
     });
 
+    it('returns split token/rate-limit samples oldest-first so newer context wins', async () => {
+        const olderMixed = JSON.stringify({
+            type: 'event_msg',
+            payload: {
+                type: 'token_count',
+                info: {
+                    total_token_usage: { total_tokens: 1000 },
+                    model_context_window: 100000,
+                    rate_limits: { primary: { used_percent: 10, window_minutes: 300 } }
+                }
+            }
+        });
+        const newerTokensOnly = JSON.stringify({
+            type: 'event_msg',
+            payload: {
+                type: 'token_count',
+                info: {
+                    total_token_usage: { total_tokens: 42000 },
+                    model_context_window: 128000
+                }
+            }
+        });
+        await writeFile(
+            transcriptPath,
+            `${olderMixed}\n${newerTokensOnly}\n`
+        );
+
+        const { readLatestCodexUsageFromTail } = await import('./codexSessionScanner');
+        const payloads = await readLatestCodexUsageFromTail(transcriptPath);
+
+        expect(payloads).toHaveLength(2);
+        // Oldest first: applying in order keeps newer context after the mixed rate-limit seed.
+        expect(payloads[0]).toMatchObject({
+            type: 'token_count',
+            info: {
+                total_token_usage: { total_tokens: 1000 },
+                rate_limits: { primary: { used_percent: 10, window_minutes: 300 } }
+            }
+        });
+        expect(payloads[1]).toMatchObject({
+            type: 'token_count',
+            info: {
+                total_token_usage: { total_tokens: 42000 },
+                model_context_window: 128000
+            }
+        });
+    });
+
     it('primes at initialCursor without replaying prior transcript events', async () => {
         await writeFile(
             transcriptPath,

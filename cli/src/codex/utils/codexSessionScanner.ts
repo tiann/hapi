@@ -113,7 +113,7 @@ export async function readLatestCodexUsageFromTail(
             noteUsageFromTranscriptLine(incompletePrefix.toString('utf8'), accumulator, threadId);
         }
 
-        return orderedReplayUsagePayloads(accumulator);
+        return orderedReplayUsagePayloads(accumulator).reverse();
     } catch (error) {
         logger.debug(`[codex-session-scanner] Failed to reverse-scan usage from ${transcriptPath}: ${error}`);
         return [];
