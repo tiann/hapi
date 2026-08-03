@@ -240,15 +240,12 @@ export function toCodexBudgetState(usage: CodexUsage | null | undefined): AgentB
         const subscriptionCapped = axes.some(
             (axis) => (axis.id === 'fiveHour' || axis.id === 'weekly') && axis.pressure >= 100
         )
-        // Credits axis pressure: codex's protocol doesn't expose a
-        // 'capacity' to derive a true percent against, so the adapter
-        // picks a pragmatic mapping. When exhausted -> 100 so the row
-        // participates in dominant-axis selection (rendered critical).
-        // When credits remain, axis is 'covering' iff at least one
-        // subscription window is already at cap - that signals 'this
-        // axis is keeping you going' rather than 'this axis is a
-        // constraint'.
-        const pressure = exhausted ? 100 : 0
+        // Credits only constrain when subscription capacity is gone too
+        // (no windows, or at least one window capped). Empty top-up with
+        // healthy 5h/weekly remaining is inventory info, not a red axis.
+        // When credits remain and a window is capped, mark covering.
+        const creditsConstrainNow = exhausted && (!subscriptionExists || subscriptionCapped)
+        const pressure = creditsConstrainNow ? 100 : 0
         const covering = !exhausted && subscriptionExists && subscriptionCapped
         axes.push({
             id: 'credits',
@@ -257,11 +254,13 @@ export function toCodexBudgetState(usage: CodexUsage | null | undefined): AgentB
             valueText: formatCreditsValue(usage.credits),
             ...(usage.credits.unlimited
                 ? { detail: 'unlimited' }
-                : exhausted
+                : creditsConstrainNow
                     ? { detail: 'subscription / top-up exhausted', critical: true }
                     : covering
                         ? { detail: 'covering exhausted subscription window', covering: true }
-                        : {})
+                        : exhausted
+                            ? { detail: 'top-up credits exhausted' }
+                            : {})
         })
     }
 
