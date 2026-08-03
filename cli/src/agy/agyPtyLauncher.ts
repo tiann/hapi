@@ -567,17 +567,12 @@ class AgyPtyLauncher extends RemoteLauncherBase {
                     this.agentRunReserved = false
                     this.disarmQuotaDetector()
                     this.rejectPendingModelChange('AGY PTY ended before the live model change')
-                    // Finding F1 (hostile-review): a respawn (runRespawnLoop)
-                    // establishes a brand-new PTY/selector — Phase 0 measured
-                    // that `agy --conversation <uuid>` resume does NOT restore
-                    // a pending ask_question TUI, it lands on a plain idle
-                    // prompt. Without this, a stale web answer that resolves
-                    // AFTER the respawn would inject keys into that idle
-                    // prompt (or a fresh turn) on the NEW PTY generation.
-                    // Invalidating on every exit (not just final teardown)
-                    // closes that window and also resolves the web's question
-                    // card instead of leaving it pending forever.
-                    this.session.agyPermissionHandler?.cancelPendingQuestions('agy PTY exited while a question was pending')
+                    // A respawn establishes a new PTY generation. No pending
+                    // permission or question belongs to that replacement process,
+                    // so invalidate every approval card owned by the exited PTY.
+                    // The Ctrl-C abort path remains question-only because that PTY
+                    // stays alive and can continue serving ordinary approvals.
+                    this.session.agyPermissionHandler?.cancelAll('agy PTY exited while a permission request was pending')
                     if (this.pendingWebDelivery) {
                         this.exitReason = 'exit'
                         this.pendingWebDeliveryResolved?.()

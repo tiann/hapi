@@ -155,6 +155,7 @@ function createSessionStub(opts?: { agyPermissionHandler?: Record<string, unknow
         : {
             registerQuestionRequest: vi.fn().mockResolvedValue(null),
             cancelPendingQuestions: vi.fn(),
+            cancelAll: vi.fn(),
             ...(passedHandler ?? {}),
         }
     return {
@@ -991,6 +992,32 @@ describe('agyPtyLauncher ask_question safety: invalidate stale pending questions
             },
         }
     }
+
+    it('cancels an ordinary tool approval when the PTY exits', async () => {
+        const { session, handler, respondAsWeb } = createRealHandlerSessionStub()
+        const msgPromise = deferred<{ message: string } | null>()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
+        const pending = handler.requestDecision(
+            'run-command:0',
+            'run_command',
+            { CommandLine: 'echo stale', Cwd: '/tmp' }
+        )
+        let rejected = false
+        void pending.catch(() => { rejected = true })
+
+        const launcherPromise = agyPtyLauncher(session as never)
+        await tick(20)
+        ptyOptsCaptured.onExit(1)
+        await tick(5)
+
+        expect(rejected).toBe(true)
+        await respondAsWeb({ id: 'run-command:0', approved: true })
+        await expect(pending).rejects.toThrow('agy PTY exited')
+
+        harness.exitReason = 'exit'
+        msgPromise.resolve(null)
+        await launcherPromise
+    })
 
     it('never injects keys for a question that was pending when the PTY exited (crash/respawn safety)', async () => {
         const { session, handler, respondAsWeb } = createRealHandlerSessionStub()
