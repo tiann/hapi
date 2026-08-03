@@ -242,22 +242,25 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                 }
                 for (const message of converted?.messages ?? []) {
                     if (message.type === 'token_count') {
-                        if (replayingUsage) {
-                            noteReplayUsageSample(replayUsage, message);
-                        } else {
-                            session.recordCodexUsage(message);
+                        const scopeRole = message.scopeRole ?? message.scope_role;
+                        const messageThreadId = message.threadId ?? message.thread_id;
+                        // Parent budget / composer gauge only; child samples keep native thread ids for hub deltas.
+                        if (scopeRole !== 'child') {
+                            if (replayingUsage) {
+                                noteReplayUsageSample(replayUsage, message);
+                            } else {
+                                session.recordCodexUsage(message);
+                            }
                         }
+                        const managedThreadId = messageThreadId ?? primarySessionId;
                         const scopedUsage = context.replayedHistory
                             ? { ...message, model: transcriptModel, hapiUsageScope: 'imported-history' as const }
-                            : primarySessionId
-                                ? {
-                                    ...message,
-                                    model: transcriptModel,
-                                    threadId: primarySessionId,
-                                    thread_id: primarySessionId,
-                                    hapiUsageScope: 'managed' as const
-                                }
-                                : { ...message, model: transcriptModel };
+                            : {
+                                ...message,
+                                model: transcriptModel,
+                                ...(managedThreadId ? { threadId: managedThreadId, thread_id: managedThreadId } : {}),
+                                hapiUsageScope: 'managed' as const
+                            };
                         session.sendAgentMessage(scopedUsage);
                     } else if (message.type === 'proposed_plan') {
                         // Codex may complete the Plan item before emitting its final text preface.

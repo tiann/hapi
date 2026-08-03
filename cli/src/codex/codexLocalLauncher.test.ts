@@ -76,6 +76,7 @@ function createSessionStub(
     const sessionEvents: Array<{ type: string; message?: string }> = [];
     const userMessages: string[] = [];
     const agentMessages: unknown[] = [];
+    const usagePayloads: unknown[] = [];
     let userActivityCount = 0;
     let localLaunchFailure: { message: string; exitReason: 'switch' | 'exit' } | null = null;
     let sessionId: string | null = null;
@@ -149,12 +150,15 @@ function createSessionStub(
             sendAgentMessage: (message: unknown) => {
                 agentMessages.push(message);
             },
-            recordCodexUsage: () => {},
+            recordCodexUsage: (payload: unknown) => {
+                usagePayloads.push(payload);
+            },
             queue: createQueueStub()
         },
         sessionEvents,
         userMessages,
         agentMessages,
+        usagePayloads,
         getUserActivityCount: () => userActivityCount,
         getLocalLaunchFailure: () => localLaunchFailure,
         getModelReasoningEffort: () => modelReasoningEffort,
@@ -415,6 +419,79 @@ describe('codexLocalLauncher', () => {
             model: 'gpt-5.4',
             usageSchema: 'hapi.usage.v1',
             inputTokenSemantics: 'includes-cache'
+        }));
+    });
+
+    it('keeps child token_count off the parent budget and preserves child thread ids', async () => {
+        const transcriptPath = join(tempDir, 'codex-child-usage.jsonl');
+        const { session, agentMessages, usagePayloads } = createSessionStub('default');
+        let releaseRunBarrier: (() => void) | undefined;
+        harness.runBarrier = new Promise((resolve) => {
+            releaseRunBarrier = resolve;
+        });
+
+        await writeFile(
+            transcriptPath,
+            JSON.stringify({ type: 'session_meta', payload: { id: 'codex-thread-parent' } }) + '\n'
+        );
+
+        const launcherPromise = codexLocalLauncher(session as never);
+        await wait(50);
+        harness.sessionHookHandlers[0]?.('codex-thread-parent', {
+            hook_event_name: 'SessionStart',
+            transcript_path: transcriptPath
+        });
+        await wait(100);
+
+        await appendFile(transcriptPath, [
+            JSON.stringify({
+                type: 'event_msg',
+                thread_id: 'codex-thread-child',
+                payload: {
+                    type: 'token_count',
+                    scope_role: 'child',
+                    info: {
+                        total_token_usage: { total_tokens: 999 },
+                        model_context_window: 128000
+                    }
+                }
+            }),
+            JSON.stringify({
+                type: 'event_msg',
+                payload: {
+                    type: 'token_count',
+                    info: {
+                        total_token_usage: { total_tokens: 42000 },
+                        model_context_window: 128000
+                    }
+                }
+            })
+        ].join('\n') + '\n');
+        await wait(700);
+
+        releaseRunBarrier?.();
+        await launcherPromise;
+
+        expect(usagePayloads).toHaveLength(1);
+        expect(usagePayloads[0]).toMatchObject({
+            type: 'token_count',
+            info: { total_token_usage: { total_tokens: 42000 } }
+        });
+        expect(agentMessages).toContainEqual(expect.objectContaining({
+            type: 'token_count',
+            scope_role: 'child',
+            thread_id: 'codex-thread-child',
+            threadId: 'codex-thread-child',
+            hapiUsageScope: 'managed'
+        }));
+        expect(agentMessages).toContainEqual(expect.objectContaining({
+            type: 'token_count',
+            thread_id: 'codex-thread-parent',
+            threadId: 'codex-thread-parent',
+            hapiUsageScope: 'managed',
+            info: expect.objectContaining({
+                total_token_usage: { total_tokens: 42000 }
+            })
         }));
     });
 
