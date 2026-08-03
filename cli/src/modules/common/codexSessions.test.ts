@@ -326,6 +326,7 @@ describe('listLocalCodexSessionSummaries', () => {
                 content: [{ type: 'output_text', text: 'y'.repeat(4000) }]
             }
         })
+        // Keep title/user inside the last 256 KiB scan budget (~40 * 4KiB filler).
         const lines = [
             JSON.stringify({
                 type: 'session_meta',
@@ -349,16 +350,69 @@ describe('listLocalCodexSessionSummaries', () => {
                     content: [{ type: 'input_text', text: 'prompt before long filler' }]
                 }
             }),
-            ...Array.from({ length: 80 }, () => fillerLine)
+            ...Array.from({ length: 40 }, () => fillerLine)
         ]
         const filePath = join(sessionsDir, 'middle.jsonl')
         writeFileSync(filePath, lines.join('\n') + '\n')
-        expect(statSync(filePath).size).toBeGreaterThan(256 * 1024)
+        expect(statSync(filePath).size).toBeGreaterThan(128 * 1024)
+        expect(statSync(filePath).size).toBeLessThanOrEqual(256 * 1024)
 
         const sessions = listLocalCodexSessionSummaries()
         expect(sessions).toHaveLength(1)
         expect(sessions[0]?.title).toBe('middle title')
         expect(sessions[0]?.lastUserMessage).toBe('prompt before long filler')
+
+        rmSync(root, { recursive: true, force: true })
+    })
+
+    it('falls back when change_title sits outside the reverse-scan budget', () => {
+        const root = mkdtempSync(join(tmpdir(), 'codex-home-'))
+        process.env.CODEX_HOME = root
+        const sessionsDir = join(root, 'sessions', '2026', '06', '27')
+        mkdirSync(sessionsDir, { recursive: true })
+
+        const fillerLine = JSON.stringify({
+            type: 'response_item',
+            payload: {
+                type: 'message',
+                role: 'assistant',
+                content: [{ type: 'output_text', text: 'y'.repeat(4000) }]
+            }
+        })
+        const lines = [
+            JSON.stringify({
+                type: 'session_meta',
+                payload: { id: 'beyond-budget-id', cwd: '/tmp/project' }
+            }),
+            JSON.stringify({
+                type: 'event_msg',
+                payload: {
+                    type: 'mcp_tool_call_end',
+                    invocation: {
+                        tool: 'change_title',
+                        arguments: { title: 'beyond budget title' }
+                    }
+                }
+            }),
+            JSON.stringify({
+                type: 'response_item',
+                payload: {
+                    type: 'message',
+                    role: 'user',
+                    content: [{ type: 'input_text', text: 'early prompt' }]
+                }
+            }),
+            ...Array.from({ length: 80 }, () => fillerLine)
+        ]
+        const filePath = join(sessionsDir, 'beyond.jsonl')
+        writeFileSync(filePath, lines.join('\n') + '\n')
+        expect(statSync(filePath).size).toBeGreaterThan(256 * 1024)
+
+        const sessions = listLocalCodexSessionSummaries()
+        expect(sessions).toHaveLength(1)
+        // Title beyond the 256 KiB budget falls back to the first head user prompt.
+        expect(sessions[0]?.title).toBe('early prompt')
+        expect(sessions[0]?.lastUserMessage).toBeNull()
 
         rmSync(root, { recursive: true, force: true })
     })
@@ -405,13 +459,15 @@ describe('listLocalCodexSessionSummaries', () => {
         rmSync(root, { recursive: true, force: true })
     })
 
-    it('preserves CJK title text when a UTF-8 code point straddles the reverse-scan chunk boundary', () => {
+    it('preserves CJK title text when a UTF-8 code point straddles a reverse-scan read-chunk boundary', () => {
         const root = mkdtempSync(join(tmpdir(), 'codex-home-'))
         process.env.CODEX_HOME = root
         const sessionsDir = join(root, 'sessions', '2026', '06', '27')
         mkdirSync(sessionsDir, { recursive: true })
 
-        const chunkBytes = 256 * 1024
+        // Straddle an internal 64 KiB *read* boundary (not the 256 KiB scan-budget edge).
+        // A change_title line that starts before the scan window is intentionally out of budget.
+        const readChunkBytes = 64 * 1024
         const title = '预算标题'
         const titleLine = JSON.stringify({
             type: 'event_msg',
@@ -436,7 +492,7 @@ describe('listLocalCodexSessionSummaries', () => {
             payload: { id: 'cjk-session-id', cwd: '/tmp/project' }
         })
         const titleUtf8 = Buffer.from(title, 'utf8')
-        // Split inside the final CJK code point (3 bytes) across the chunk boundary.
+        // Split inside the final CJK code point (3 bytes) across the read-chunk boundary.
         const splitOffsetInTitle = titleUtf8.length - 1
         const beforeTitle = Buffer.from(`${metaLine}\n`, 'utf8')
         const titleLineBuf = Buffer.from(`${titleLine}\n`, 'utf8')
@@ -446,13 +502,15 @@ describe('listLocalCodexSessionSummaries', () => {
         const splitAt = beforeTitle.length + titleCharStartInLine + splitOffsetInTitle
         const prefix = Buffer.concat([beforeTitle, titleLineBuf, userLineBuf])
         expect(splitAt).toBeLessThan(prefix.length)
-        const fillerLen = chunkBytes - (prefix.length - splitAt)
+        const fillerLen = readChunkBytes - (prefix.length - splitAt)
         expect(fillerLen).toBeGreaterThan(0)
-        // ASCII filler only - no trailing newline - so size - chunkBytes lands mid-codepoint.
+        // ASCII filler only - no trailing newline - so size - readChunkBytes lands mid-codepoint.
         const filler = Buffer.alloc(fillerLen, 0x61)
         const filePath = join(sessionsDir, 'cjk.jsonl')
         writeFileSync(filePath, Buffer.concat([prefix, filler]))
-        expect(statSync(filePath).size - chunkBytes).toBe(splitAt)
+        expect(statSync(filePath).size - readChunkBytes).toBe(splitAt)
+        // Whole file stays inside the 256 KiB scan budget so the title remains in-window.
+        expect(statSync(filePath).size).toBeLessThan(256 * 1024)
 
         const sessions = listLocalCodexSessionSummaries()
         expect(sessions).toHaveLength(1)
