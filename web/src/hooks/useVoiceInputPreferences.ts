@@ -7,31 +7,15 @@ import {
     type TranscriptionProviderInfo,
     type VoiceMode
 } from '@hapi/protocol/voice'
+import { hasBrowserLocalSpeechSupport } from './browserLocalSpeech'
 
 const VOICE_MODE_KEY = 'hapi-voice-mode'
 const TRANSCRIPTION_PROVIDER_KEY = 'hapi-transcription-provider'
 const TRANSCRIPTION_MODE_KEY = 'hapi-transcription-mode'
 const CHANGE_EVENT = 'hapi-voice-input-change'
-export const VOICE_LANGUAGE_CHANGE_EVENT = 'hapi-voice-language-change'
 
 function notifyChange(): void {
     window.dispatchEvent(new Event(CHANGE_EVENT))
-}
-
-async function browserLocalTranscriptionSupported(): Promise<boolean> {
-    const constructor = (globalThis as typeof globalThis & {
-        SpeechRecognition?: {
-            prototype: object
-            available?: (options: { langs: string[]; processLocally: true }) => Promise<string>
-        }
-    }).SpeechRecognition
-    if (!constructor || typeof constructor.available !== 'function' || !('processLocally' in constructor.prototype)) return false
-    const language = localStorage.getItem('hapi-voice-lang') || navigator.language
-    try {
-        return await constructor.available({ langs: [language], processLocally: true }) === 'available'
-    } catch {
-        return false
-    }
 }
 
 function readVoiceMode(): VoiceMode {
@@ -64,27 +48,21 @@ export function useVoiceInputPreferences(api: ApiClient | null) {
     useEffect(() => {
         if (!api) return
         let cancelled = false
-        let request = 0
-        const refreshProviders = () => {
-            const current = ++request
-            Promise.all([api.fetchTranscriptionProviders(), browserLocalTranscriptionSupported()]).then(([{ providers: configured }, browserLocal]) => {
-                if (cancelled || current !== request) return
-                const available = browserLocal
-                    ? [...configured, BROWSER_LOCAL_TRANSCRIPTION_PROVIDER]
-                    : configured
-                setProviders(available)
-                const selectedProvider = resolveProvider(available, localStorage.getItem(TRANSCRIPTION_PROVIDER_KEY))
-                setProviderState(selectedProvider)
-                setTranscriptionModeState(resolveMode(available, selectedProvider, localStorage.getItem(TRANSCRIPTION_MODE_KEY)))
-            }).catch(() => {
-                if (!cancelled && current === request) setProviders([])
-            })
-        }
-        refreshProviders()
-        window.addEventListener(VOICE_LANGUAGE_CHANGE_EVENT, refreshProviders)
+        const browserLocal = hasBrowserLocalSpeechSupport()
+        api.fetchTranscriptionProviders().then(({ providers: configured }) => {
+            if (cancelled) return
+            const available = browserLocal
+                ? [...configured, BROWSER_LOCAL_TRANSCRIPTION_PROVIDER]
+                : configured
+            setProviders(available)
+            const selectedProvider = resolveProvider(available, localStorage.getItem(TRANSCRIPTION_PROVIDER_KEY))
+            setProviderState(selectedProvider)
+            setTranscriptionModeState(resolveMode(available, selectedProvider, localStorage.getItem(TRANSCRIPTION_MODE_KEY)))
+        }).catch(() => {
+            if (!cancelled) setProviders([])
+        })
         return () => {
             cancelled = true
-            window.removeEventListener(VOICE_LANGUAGE_CHANGE_EVENT, refreshProviders)
         }
     }, [api])
 

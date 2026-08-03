@@ -1,4 +1,11 @@
 import { DEEPGRAM_TRANSCRIPTION_MODEL } from '@hapi/protocol/voice'
+import {
+    getBrowserLocalSpeechSupport,
+    type LocalSpeechRecognition,
+    type LocalSpeechRecognitionAvailability,
+    type LocalSpeechRecognitionConstructor,
+    type LocalSpeechRecognitionEvent
+} from './browserLocalSpeech'
 
 export interface RealtimeTranscriptionCallbacks {
     onConnected: () => void
@@ -330,43 +337,120 @@ export async function startDeepgramRealtimeTranscription(options: {
     }
 }
 
-interface LocalSpeechRecognitionResult {
-    readonly isFinal: boolean
-    readonly 0: { readonly transcript: string }
+export const BROWSER_LOCAL_AVAILABILITY_TIMEOUT_MS = 10_000
+
+interface BrowserLocalAvailabilityProbe {
+    readonly available: LocalSpeechRecognitionAvailability
+    readonly constructor: LocalSpeechRecognitionConstructor
+    readonly language: string
+    readonly subscribers: Set<BrowserLocalAvailabilitySubscriber>
 }
 
-interface LocalSpeechRecognitionEvent extends Event {
-    readonly results: { readonly length: number; readonly [index: number]: LocalSpeechRecognitionResult }
+interface BrowserLocalAvailabilitySubscriber {
+    resolve: (status: string) => void
+    reject: (error: unknown) => void
 }
 
-interface LocalSpeechRecognition extends EventTarget {
-    continuous: boolean
-    interimResults: boolean
-    lang: string
-    processLocally: boolean
-    onresult: ((event: LocalSpeechRecognitionEvent) => void) | null
-    onerror: ((event: Event & { error?: string }) => void) | null
-    onend: (() => void) | null
-    start: () => void
-    stop: () => void
-    abort: () => void
+const browserLocalAvailabilityProbes = new WeakMap<LocalSpeechRecognitionConstructor, Map<string, BrowserLocalAvailabilityProbe>>()
+
+function browserLocalProbeMap(constructor: LocalSpeechRecognitionConstructor): Map<string, BrowserLocalAvailabilityProbe> {
+    let probes = browserLocalAvailabilityProbes.get(constructor)
+    if (!probes) {
+        probes = new Map()
+        browserLocalAvailabilityProbes.set(constructor, probes)
+    }
+    return probes
 }
 
-interface LocalSpeechRecognitionConstructor {
-    new(): LocalSpeechRecognition
-    prototype: LocalSpeechRecognition
-    available: (options: { langs: string[]; processLocally: true }) => Promise<string>
+function getBrowserLocalAvailabilityProbe(options: {
+    available: LocalSpeechRecognitionAvailability
+    constructor: LocalSpeechRecognitionConstructor
+    language: string
+}): BrowserLocalAvailabilityProbe {
+    const probes = browserLocalProbeMap(options.constructor)
+    const existing = probes.get(options.language)
+    if (existing) return existing
+
+    const probe: BrowserLocalAvailabilityProbe = {
+        ...options,
+        subscribers: new Set()
+    }
+    probes.set(options.language, probe)
+    queueMicrotask(() => {
+        if (probe.subscribers.size === 0) {
+            probes.delete(options.language)
+            return
+        }
+        Promise.resolve()
+            .then(() => probe.available.call(probe.constructor, { langs: [probe.language], processLocally: true }))
+            .then(
+                (status) => settleBrowserLocalAvailabilityProbe(probes, probe, (subscriber) => subscriber.resolve(status)),
+                (error) => settleBrowserLocalAvailabilityProbe(probes, probe, (subscriber) => subscriber.reject(error))
+            )
+    })
+    return probe
 }
 
-function localSpeechRecognitionConstructor(): LocalSpeechRecognitionConstructor | null {
-    const constructor = (globalThis as typeof globalThis & {
-        SpeechRecognition?: LocalSpeechRecognitionConstructor
-    }).SpeechRecognition
-    return constructor
-        && typeof constructor.available === 'function'
-        && 'processLocally' in constructor.prototype
-        ? constructor
-        : null
+function settleBrowserLocalAvailabilityProbe(
+    probes: Map<string, BrowserLocalAvailabilityProbe>,
+    probe: BrowserLocalAvailabilityProbe,
+    notify: (subscriber: BrowserLocalAvailabilitySubscriber) => void
+): void {
+    if (probes.get(probe.language) !== probe) return
+    probes.delete(probe.language)
+    const subscribers = Array.from(probe.subscribers)
+    probe.subscribers.clear()
+    subscribers.forEach(notify)
+}
+
+export function getBrowserLocalAvailabilityProbeSubscriberCountForTesting(
+    constructor: object,
+    language: string
+): number {
+    return browserLocalAvailabilityProbes
+        .get(constructor as LocalSpeechRecognitionConstructor)
+        ?.get(language)
+        ?.subscribers.size ?? 0
+}
+
+function abortError(signal: AbortSignal): unknown {
+    return signal.reason ?? new Error('On-device speech recognition availability check was aborted')
+}
+
+async function checkBrowserLocalSpeechAvailability(options: {
+    available: LocalSpeechRecognitionAvailability
+    constructor: LocalSpeechRecognitionConstructor
+    language: string
+    signal?: AbortSignal
+}): Promise<string> {
+    options.signal?.throwIfAborted()
+    const probe = getBrowserLocalAvailabilityProbe(options)
+
+    return await new Promise<string>((resolve, reject) => {
+        let settled = false
+        const subscriber: BrowserLocalAvailabilitySubscriber = { resolve, reject }
+        const detach = () => probe.subscribers.delete(subscriber)
+        const finish = (callback: () => void) => {
+            if (settled) return
+            settled = true
+            clearTimeout(timeout)
+            options.signal?.removeEventListener('abort', onAbort)
+            detach()
+            callback()
+        }
+        const timeout = setTimeout(() => {
+            finish(() => reject(new Error('On-device speech recognition availability check timed out')))
+        }, BROWSER_LOCAL_AVAILABILITY_TIMEOUT_MS)
+        const onAbort = () => finish(() => reject(abortError(options.signal!)))
+        if (options.signal?.aborted) {
+            onAbort()
+            return
+        }
+        probe.subscribers.add(subscriber)
+        options.signal?.addEventListener('abort', onAbort, { once: true })
+        subscriber.resolve = (status) => finish(() => resolve(status))
+        subscriber.reject = (error) => finish(() => reject(error))
+    })
 }
 
 export async function startBrowserLocalTranscription(options: {
@@ -375,15 +459,18 @@ export async function startBrowserLocalTranscription(options: {
     callbacks: RealtimeTranscriptionCallbacks
 }): Promise<RealtimeTranscriptionSession> {
     options.signal?.throwIfAborted()
-    const constructor = localSpeechRecognitionConstructor()
-    if (!constructor) throw new Error('On-device speech recognition is not supported by this browser')
+    const support = getBrowserLocalSpeechSupport()
+    if (!support) throw new Error('On-device speech recognition is not supported by this browser')
     const language = options.language || navigator.language
-    if (await constructor.available({ langs: [language], processLocally: true }) !== 'available') {
+    // `available()` is deferred to a microtask so an abort between start and
+    // native invocation detaches its only consumer before touching the API.
+    options.signal?.throwIfAborted()
+    if (await checkBrowserLocalSpeechAvailability({ ...support, language, signal: options.signal }) !== 'available') {
         throw new Error(`On-device speech recognition is not installed for ${language}`)
     }
     options.signal?.throwIfAborted()
 
-    const recognition = new constructor()
+    const recognition = new support.constructor()
     recognition.continuous = true
     recognition.interimResults = true
     recognition.lang = language
