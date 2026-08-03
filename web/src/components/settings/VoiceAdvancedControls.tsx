@@ -307,7 +307,7 @@ export function VoiceDiagnosticsControls(props: {
 
     const backend = props.voiceBackend ?? 'elevenlabs'
     const wireHint = getVoiceWireBudgetHint(backend)
-    const fixturesPreview = useMemo(() => getVoicePlatformFixturesPreview(800), [])
+    const fixturesPreview = useMemo(() => getVoicePlatformFixturesPreview(), [])
     const composed = useMemo(
         () => resolveComposedVoiceSystemPrompt(prefs, { backend }),
         [prefs, backend]
