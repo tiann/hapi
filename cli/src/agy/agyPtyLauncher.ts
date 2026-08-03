@@ -130,12 +130,6 @@ class AgyPtyLauncher extends RemoteLauncherBase {
     private agentRunReserved = false
     private ptyGeneration = 0
     private questionInteractionEpoch = 0
-    private pendingModelChange: {
-        model: string | null
-        generation: number
-        resolve: () => void
-        reject: (error: Error) => void
-    } | null = null
     private interactionTail: Promise<void> = Promise.resolve()
     private outputWaiter: { expected: string; resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> } | null = null
     private recentOutput = ''
@@ -391,39 +385,17 @@ class AgyPtyLauncher extends RemoteLauncherBase {
     }
 
     private applyLiveModel(model: string | null): Promise<void> {
-        const generation = this.ptyGeneration
-        // Validate synchronously before accepting a request for the boundary.
         buildAgyModelPickerTarget(model)
-        if (!this.agentRunInProgress && !this.agentRunReserved) return this.applyLiveModelNow(model, generation)
-        return new Promise((resolve, reject) => {
-            this.pendingModelChange?.reject(new Error('Live AGY model change was superseded by a newer request'))
-            this.pendingModelChange = { model, generation, resolve, reject }
-        })
-    }
-
-    private async applyPendingModelChange(): Promise<void> {
-        const pending = this.pendingModelChange
-        if (!pending) return
-        this.pendingModelChange = null
-        try {
-            await this.applyLiveModelNow(pending.model, pending.generation)
-            pending.resolve()
-        } catch (error) {
-            pending.reject(error instanceof Error ? error : new Error(String(error)))
+        if (this.agentRunInProgress || this.agentRunReserved) {
+            return Promise.reject(new Error('Wait for the current AGY turn to finish before changing models'))
         }
+        return this.applyLiveModelNow(model, this.ptyGeneration)
     }
 
     private async completeAgentRun(): Promise<void> {
         this.activeWebPrompt = null
         this.disarmQuotaDetector()
         this.agentRunInProgress = false
-        await this.applyPendingModelChange()
-    }
-
-    private rejectPendingModelChange(reason: string): void {
-        const pending = this.pendingModelChange
-        this.pendingModelChange = null
-        pending?.reject(new Error(reason))
     }
 
     private async handleSwitchRequest(): Promise<void> {
@@ -535,13 +507,12 @@ class AgyPtyLauncher extends RemoteLauncherBase {
                 },
                 onBeforeAgentRunStart: async () => {
                     // Reserve the boundary synchronously. A model request that
-                    // arrives after completion but before submit is deferred to
-                    // the new run instead of racing raw keys with its prompt.
+                    // arrives after completion but before submit is rejected instead
+                    // of racing raw keys with the reserved prompt.
                     this.agentRunReserved = true
                     // A live picker may already have started while nextMessage()
                     // was blocked. Let it finish before typing the queued prompt.
                     await this.interactionTail
-                    await this.applyPendingModelChange()
                 },
                 onBeforeMessageSubmit: (message) => {
                     this.activeWebPrompt = message
@@ -567,7 +538,6 @@ class AgyPtyLauncher extends RemoteLauncherBase {
                     this.agentRunReserved = false
                     this.activeWebPrompt = null
                     this.disarmQuotaDetector()
-                    this.rejectPendingModelChange('AGY PTY ended before the live model change')
                     // A respawn establishes a new PTY generation. No pending
                     // permission or question belongs to that replacement process,
                     // so invalidate every approval card owned by the exited PTY.

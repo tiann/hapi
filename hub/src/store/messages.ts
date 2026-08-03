@@ -51,7 +51,9 @@ export function addMessage(
     // Client-provided origin timestamp (e.g. a Claude transcript entry's own
     // `timestamp`), falling back to server-receive time when absent. Only
     // agent-message callers (sessionHandlers' `on('message')`) pass this today.
-    const stampedAt = createdAt ?? now
+    const stampedAt = Number.isFinite(createdAt)
+        ? Math.min(createdAt!, now)
+        : now
 
     // Without a localId, invoked_at is stamped immediately below — there is no
     // ack path to flip it later.  A scheduled message in that state would be

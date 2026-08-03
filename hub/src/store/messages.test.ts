@@ -236,6 +236,24 @@ describe('position pagination and structural epochs', () => {
         expect(store.messages.getMessageEpoch(target.id)).toBe(1)
     })
 
+    it('clamps future client timestamps to hub receive time', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'future-client-clock')
+        const before = Date.now()
+
+        const message = store.messages.addMessage(
+            session.id,
+            { text: 'future clock' },
+            undefined,
+            undefined,
+            before + 60_000,
+        )
+
+        expect(message.createdAt).toBeGreaterThanOrEqual(before)
+        expect(message.createdAt).toBeLessThanOrEqual(Date.now())
+        expect(message.invokedAt).toBe(message.createdAt)
+    })
+
     it('bumps the epoch when a newly inserted message is backdated behind the cached head', () => {
         const store = makeStore()
         const session = makeSession(store, 'epoch-backdated-insert')

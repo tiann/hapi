@@ -281,33 +281,27 @@ describe('agyPtyLauncher session-found wiring (brain UUID -> scanner)', () => {
         await launcherPromise
     })
 
-    it('waits for the current agent run to complete before changing the model', async () => {
+    it('rejects model changes during an active agent run instead of outliving the RPC', async () => {
         const { session } = createSessionStub()
         const msgPromise = deferred<{ message: string } | null>()
         vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
         const launcherPromise = agyPtyLauncher(session as never)
         await tick(20)
         ptyOptsCaptured.onMessageSubmitted?.('current turn')
-        ptyOptsCaptured.onMessage('⣾ Generating...')
-        const applied = harness.liveModelHandler!('gemini-3.5-flash-low')
-        await tick(10)
+
+        await expect(harness.liveModelHandler!('gemini-3.5-flash-low'))
+            .rejects.toThrow('Wait for the current AGY turn to finish')
         expect(harness.sendKeys).not.toHaveBeenCalledWith('/model\r')
 
-        const completion = ptyOptsCaptured.onAgentRunCompleted?.()
-        await tick(10)
-        expect(harness.sendKeys).toHaveBeenCalledWith('/model\r')
-        ptyOptsCaptured.onMessage('Switch Model\n> Gemini 3.5 Flash             (current)')
-        await tick(10)
-        ptyOptsCaptured.onMessage('Model set to Gemini 3.5 Flash (Low)')
-        await completion
-        await expect(applied).resolves.toBeUndefined()
+        await ptyOptsCaptured.onAgentRunCompleted?.()
+        expect(harness.sendKeys).not.toHaveBeenCalledWith('/model\r')
 
         harness.exitReason = 'exit'
         msgPromise.resolve(null)
         await launcherPromise
     })
 
-    it('does not race a model picker with a queued agent run reserved for submission', async () => {
+    it('rejects model changes while an agent run is reserved for submission', async () => {
         const { session } = createSessionStub()
         const msgPromise = deferred<{ message: string } | null>()
         vi.mocked(session.queue.waitForMessagesAndGetAsString).mockImplementation(() => msgPromise.promise)
@@ -315,19 +309,9 @@ describe('agyPtyLauncher session-found wiring (brain UUID -> scanner)', () => {
         await tick(20)
 
         await ptyOptsCaptured.onBeforeAgentRunStart?.()
-        const applied = harness.liveModelHandler!('gemini-3.5-flash-low')
-        await tick(10)
+        await expect(harness.liveModelHandler!('gemini-3.5-flash-low'))
+            .rejects.toThrow('Wait for the current AGY turn to finish')
         expect(harness.sendKeys).not.toHaveBeenCalledWith('/model\r')
-
-        ptyOptsCaptured.onMessageSubmitted?.('queued turn')
-        const completion = ptyOptsCaptured.onAgentRunCompleted?.()
-        await tick(10)
-        expect(harness.sendKeys).toHaveBeenCalledWith('/model\r')
-        ptyOptsCaptured.onMessage('Switch Model\n> Gemini 3.5 Flash             (current)')
-        await tick(10)
-        ptyOptsCaptured.onMessage('Model set to Gemini 3.5 Flash (Low)')
-        await completion
-        await applied
 
         harness.exitReason = 'exit'
         msgPromise.resolve(null)
