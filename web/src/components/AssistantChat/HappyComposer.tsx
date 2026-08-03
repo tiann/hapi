@@ -937,6 +937,14 @@ export function HappyComposer(props: {
         }
 
         if (key === 'Escape') {
+            // FUE callout also listens on window; dismiss it first so Escape
+            // does not also abort a running thread or collapse the editor.
+            if (richComposerFueStatus === 'engaging') {
+                e.preventDefault()
+                e.stopPropagation()
+                dismissRichComposerFue()
+                return
+            }
             const action = getComposerEscapeAction({
                 hasSuggestions: suggestions.length > 0,
                 threadIsRunning,
@@ -976,6 +984,8 @@ export function HappyComposer(props: {
         haptic,
         composerEnterBehavior,
         richMentionsEnabled,
+        richComposerFueStatus,
+        dismissRichComposerFue,
         flushAndSend,
         isExpanded,
         handleExpandedToggle,
@@ -1696,7 +1706,7 @@ export function HappyComposer(props: {
                             {richMentionsEnabled ? (
                                 <div
                                     ref={richComposerFueAnchorRef}
-                                    className="relative min-w-0 flex-1"
+                                    className="relative flex min-w-0 flex-1"
                                     data-testid="rich-composer-fue-anchor"
                                 >
                                     <RichComposerInput

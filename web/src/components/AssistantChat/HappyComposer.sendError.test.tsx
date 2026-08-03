@@ -77,7 +77,11 @@ vi.mock('@assistant-ui/react', async () => {
     }
 })
 
-vi.mock('@/lib/composerSegments', () => ({ isRichComposerMentionsEnabled: () => false }))
+vi.mock('@/lib/composerSegments', () => ({
+    isRichComposerMentionsEnabled: () => false,
+    resolveComposerPlaceholderKey: ({ showContinueHint }: { showContinueHint: boolean }) =>
+        showContinueHint ? 'misc.typeMessage' : 'misc.typeAMessage',
+}))
 vi.mock('@/hooks/useComposerDraft', () => ({
     useComposerDraft: (sessionId: string | undefined) => ({ sessionId, complete: true, restoredAny: false }),
 }))
