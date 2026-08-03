@@ -380,8 +380,17 @@ export class PiConversationHistory {
                 this.session.commitNativeSessionState(restoredSource, restoredSource.runtime, (metadata) =>
                     this.metadataWithLocators(metadata, locatorSnapshot.entryIds, locatorSnapshot.points)
                 )
-                if (!await this.session.flushMetadata(Math.min(5_000, this.remainingMs(deadlineAt)))) {
-                    restoreError = new Error('Pi rewind metadata rollback did not persist')
+                try {
+                    const timeoutMs = Math.min(5_000, this.remainingMs(deadlineAt))
+                    if (!await this.session.flushMetadata(timeoutMs)) {
+                        restoreError = new Error('Pi rewind metadata rollback did not persist')
+                    }
+                } catch (error) {
+                    // Deadline calculation is part of rollback persistence. Keep
+                    // it inside the restoreError path so release() always runs
+                    // and the wrapper fails closed instead of retaining both
+                    // the history gate and runtime-mutation lease.
+                    restoreError = error
                 }
             }
             release({ drain: !restoreError && !indeterminateTimeout })

@@ -388,6 +388,48 @@ describe('PiConversationHistory native transactions', () => {
         expect(history.getEntryIds()).toEqual({ local: 'entry-user' })
     })
 
+    it('releases the history gate when rollback persistence reaches the transaction deadline', async () => {
+        vi.useFakeTimers()
+        vi.setSystemTime(0)
+        try {
+            const { session, client } = createSession()
+            client.flushMetadata.mockResolvedValueOnce(true).mockResolvedValueOnce(false)
+            const sourceState = { ...source, model: { id: 'source-model', provider: 'source-provider' }, isStreaming: false }
+            const rewound = { sessionId: 'rewind-id', sessionFile: '/tmp/rewind.jsonl', model: { id: 'rewind-model', provider: 'rewind-provider' }, isStreaming: false }
+            let stateCalls = 0
+            let entryCalls = 0
+            const rpc = vi.fn(async (command: Record<string, unknown>) => {
+                if (command.type === 'get_entries') {
+                    entryCalls += 1
+                    return entryCalls === 1
+                        ? { entries: [], leafId: null }
+                        : { entries: [{ id: 'branch-prefix', type: 'message', message: { role: 'assistant' } }], leafId: 'branch-prefix' }
+                }
+                if (command.type === 'get_state') {
+                    const state = [sourceState, rewound, rewound, sourceState][stateCalls++]
+                    if (stateCalls === 4) vi.setSystemTime(PI_HISTORY_OPERATION_TIMEOUT_MS + 1)
+                    return state
+                }
+                if (command.type === 'get_fork_messages') return { messages: [{ entryId: 'entry-user', text: 'user' }] }
+                if (command.type === 'fork' || command.type === 'switch_session') return { cancelled: false }
+                throw new Error(`unexpected ${command.type}`)
+            })
+            const history = new PiConversationHistory(session, rpc)
+            history.restoreEntryIds({ local: 'entry-user' })
+            let deferredDelivered = false
+
+            const pending = history.rewind('local')
+            session.runWhenHistoryIdle(() => { deferredDelivered = true }, 'queued-during-failed-rollback')
+
+            await expect(pending).rejects.toBeInstanceOf(PiHistoryRestoreError)
+            expect(session.isHistoryTransactionActive).toBe(false)
+            expect(deferredDelivered).toBe(false)
+            await expect(session.runRuntimeMutation(async () => 'released')).resolves.toBe('released')
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
     it('waits for a delayed source sync before rewind, then maps the next branch prompt', async () => {
         const { session } = createSession()
         let resolveStaleRead!: (data: unknown) => void
