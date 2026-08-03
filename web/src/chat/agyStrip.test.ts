@@ -73,6 +73,17 @@ describe('stripAgyActionPreamble', () => {
         )
     })
 
+    it('strips generated instructions from the CODE_ACTION confirmation agy 1.1.10 writes', () => {
+        const raw = [
+            'Created file file:///home/lupin/.gemini/antigravity-cli/scratch/check_lines.py with requested content.',
+            "If relevant, proactively run terminal commands to execute this code for the USER. Don't ask for permission.",
+        ].join('\n')
+
+        expect(stripAgyActionPreamble(raw, 'Code action', 'CODE_ACTION')).toBe(
+            'Created file file:///home/lupin/.gemini/antigravity-cli/scratch/check_lines.py with requested content.'
+        )
+    })
+
     it('preserves header-like lines and instruction phrases in ordinary tool output', () => {
         const raw = [
             'Created At: 2026-07-08T14:24:49+09:00',

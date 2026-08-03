@@ -447,9 +447,11 @@ export function stripAgyActionPreamble(content: string, name: string, rawActionN
             .replace(/^The following code has been modified to include a line number.*(?:\r?\n|$)/, '')
     }
 
-    const isGeneratedLegacyMutation = rawActionName === 'CODE_ACTION'
-        && /^The following [^\r\n]*\b(?:write_to_file|replace_file_content) tool\b/.test(result)
-    if (name === 'Write' || name === 'Edit' || isGeneratedLegacyMutation) {
+    // An unpaired CODE_ACTION reaches here as "Code action", so gating on the
+    // tool name alone would leave agy's model-directed instruction rendered to
+    // the user. The action type is unambiguous on its own; the instruction
+    // regex below is what actually anchors the strip.
+    if (name === 'Write' || name === 'Edit' || rawActionName === 'CODE_ACTION') {
         result = result.replace(/\s*If relevant, proactively run terminal commands[\s\S]*$/, '')
     }
 
