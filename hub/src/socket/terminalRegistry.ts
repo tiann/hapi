@@ -9,8 +9,7 @@ export type TerminalRegistryEntry = {
 type TerminalRegistryOptions = {
     idleTimeoutMs: number
     onIdle?: (entry: TerminalRegistryEntry) => void
-    // Fired whenever an entry is genuinely removed (close / disconnect / idle /
-    // CLI gone), but NOT on a same-id reconnect re-register, so per-terminal
+    // Fired whenever an entry is genuinely removed (close / idle / CLI gone), but NOT on a same-id reconnect re-register, so per-terminal
     // resources (e.g. the scrollback buffer) are released without wiping a
     // reconnecting client's state.
     onRemove?: (entry: TerminalRegistryEntry) => void
@@ -97,12 +96,16 @@ export class TerminalRegistry {
         return entry
     }
 
-    removeBySocket(socketId: string): TerminalRegistryEntry[] {
+    detachBySocket(socketId: string): TerminalRegistryEntry[] {
         const ids = this.terminalsBySocket.get(socketId)
         if (!ids || ids.size === 0) {
             return []
         }
-        return Array.from(ids).map((terminalId) => this.remove(terminalId)).filter(Boolean) as TerminalRegistryEntry[]
+        const entries = Array.from(ids)
+            .map((terminalId) => this.terminals.get(terminalId))
+            .filter(Boolean) as TerminalRegistryEntry[]
+        this.terminalsBySocket.delete(socketId)
+        return entries
     }
 
     removeByCliSocket(socketId: string): TerminalRegistryEntry[] {

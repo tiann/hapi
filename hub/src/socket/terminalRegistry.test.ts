@@ -20,13 +20,16 @@ describe('TerminalRegistry onRemove', () => {
         expect(removed).toEqual([])
     })
 
-    it('fires onRemove for every terminal dropped on web disconnect', () => {
+    it('detaches terminals on web disconnect without releasing their resources', () => {
         const removed: string[] = []
         const reg = new TerminalRegistry({ idleTimeoutMs: 0, onRemove: (e) => removed.push(e.terminalId) })
         reg.register('t1', 's1', 'sock1', 'cli1')
         reg.register('t2', 's1', 'sock1', 'cli1')
-        reg.removeBySocket('sock1')
-        expect(removed.sort()).toEqual(['t1', 't2'])
+        reg.detachBySocket('sock1')
+        expect(removed).toEqual([])
+        expect(reg.countForSocket('sock1')).toBe(0)
+        expect(reg.get('t1')).not.toBeNull()
+        expect(reg.get('t2')).not.toBeNull()
     })
 
     it('fires onRemove for every terminal dropped on CLI disconnect', () => {

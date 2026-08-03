@@ -324,10 +324,10 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
     })
 
     socket.on('disconnect', () => {
-        const removed = terminalRegistry.removeBySocket(socket.id)
-        for (const entry of removed) {
-            emitCloseToCli(entry)
-        }
+        // Socket.IO reconnects with a new socket id. Keep the PTY and its
+        // scrollback alive until the normal idle timeout; terminal:create with
+        // the same terminal id will rebind it to the replacement socket.
+        terminalRegistry.detachBySocket(socket.id)
         // On disconnect the socket has already left its rooms, so the room size
         // now reflects the remaining viewers — tell the CLI to stop streaming any
         // agent terminal this socket was the last viewer of.

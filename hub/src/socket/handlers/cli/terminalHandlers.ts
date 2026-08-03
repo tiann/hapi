@@ -33,7 +33,7 @@ export type TerminalHandlersDeps = {
 export function registerTerminalHandlers(socket: CliSocketWithData, deps: TerminalHandlersDeps): void {
     const { terminalRegistry, terminalNamespace, resolveSessionAccess, emitAccessError } = deps
 
-    const resolveOwnedTerminal = (payload: { sessionId: string; terminalId: string }) => {
+    const resolveOwnedEntry = (payload: { sessionId: string; terminalId: string }) => {
         const entry = terminalRegistry.get(payload.terminalId)
         if (!entry || entry.cliSocketId !== socket.id || payload.sessionId !== entry.sessionId) return null
         const sessionAccess = resolveSessionAccess(payload.sessionId)
@@ -41,6 +41,12 @@ export function registerTerminalHandlers(socket: CliSocketWithData, deps: Termin
             emitAccessError('session', payload.sessionId, sessionAccess.reason)
             return null
         }
+        return entry
+    }
+
+    const resolveOwnedTerminal = (payload: { sessionId: string; terminalId: string }) => {
+        const entry = resolveOwnedEntry(payload)
+        if (!entry) return null
         const terminalSocket = terminalNamespace.sockets.get(entry.socketId)
         return terminalSocket ? { entry, terminalSocket } : null
     }
@@ -70,13 +76,13 @@ export function registerTerminalHandlers(socket: CliSocketWithData, deps: Termin
         if (!parsed.success) {
             return
         }
-        const owned = resolveOwnedTerminal(parsed.data)
-        if (!owned) return
+        const entry = resolveOwnedEntry(parsed.data)
+        if (!entry) return
         terminalRegistry.markActivity(parsed.data.terminalId)
-        // Keep a scrollback buffer so reconnecting web clients see the
-        // current terminal content instead of a black screen.
+        // Keep buffering while the web socket is detached so its replacement
+        // can replay everything the still-running PTY emitted in the gap.
         appendUserTerminalOutput(parsed.data.sessionId, parsed.data.terminalId, parsed.data.data)
-        owned.terminalSocket.emit('terminal:output', parsed.data)
+        terminalNamespace.sockets.get(entry.socketId)?.emit('terminal:output', parsed.data)
     })
 
     socket.on('agent-terminal:output', (data: unknown) => {

@@ -133,7 +133,13 @@ export abstract class RemoteLauncherBase {
                 }
                 continue;
             } finally {
-                this.ptyAbortController = null;
+                // launchOnce may have raced PTY exit against an abort-aware queue
+                // read. Cancel the losing read before the next launch starts so it
+                // cannot steal that launch's first queued message.
+                controller.abort();
+                if (this.ptyAbortController === controller) {
+                    this.ptyAbortController = null;
+                }
             }
         }
     }

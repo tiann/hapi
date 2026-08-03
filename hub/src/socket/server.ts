@@ -92,7 +92,7 @@ export function createSocketServer(deps: SocketServerDeps): {
     const terminalRegistry = new TerminalRegistry({
         idleTimeoutMs,
         // Release the per-terminal scrollback buffer whenever a terminal is
-        // genuinely removed (close / web disconnect / idle / CLI gone) so it
+        // genuinely removed (close / idle / CLI gone) so it
         // doesn't accumulate in the hub for the process's life. Reconnect
         // re-registers skip this (remove(id, false)) to keep their buffer.
         onRemove: (entry) => clearUserTerminalBuffer(entry.sessionId, entry.terminalId),

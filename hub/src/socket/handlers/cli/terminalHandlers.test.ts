@@ -176,6 +176,32 @@ describe('cli terminal handlers', () => {
         clearAgentTerminalBuffer('session-b')
     })
 
+    it('buffers PTY output while the web socket is detached', () => {
+        const cliSocket = new FakeSocket('cli-socket')
+        const terminalNamespace = new FakeNamespace()
+        const terminalRegistry = new TerminalRegistry({ idleTimeoutMs: 0 })
+        clearUserTerminalBuffer('session-1', 'terminal-1')
+        terminalRegistry.register('terminal-1', 'session-1', 'disconnected-socket', cliSocket.id)
+        terminalRegistry.detachBySocket('disconnected-socket')
+
+        registerTerminalHandlers(cliSocket as unknown as CliSocketWithData, {
+            terminalRegistry,
+            terminalNamespace: terminalNamespace as never,
+            resolveSessionAccess: () => ({ ok: true, value: {} as StoredSession }),
+            emitAccessError: () => { throw new Error('Unexpected access error') }
+        })
+
+        cliSocket.trigger('terminal:output', {
+            sessionId: 'session-1',
+            terminalId: 'terminal-1',
+            data: 'output during reconnect'
+        })
+
+        expect(getUserTerminalBuffer('session-1', 'terminal-1')).toBe('output during reconnect')
+        terminalRegistry.remove('terminal-1')
+        clearUserTerminalBuffer('session-1', 'terminal-1')
+    })
+
     it('does not buffer output for unknown or removed terminals', () => {
         const cliSocket = new FakeSocket('cli-socket')
         const terminalSocket = new FakeSocket('terminal-socket')

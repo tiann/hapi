@@ -111,4 +111,38 @@ describe('RemoteLauncherBase.runRespawnLoop', () => {
         // Exactly one backoff: after the immediate failure, none after the ready crash.
         expect(backoffWaits).toHaveLength(1)
     })
+
+    it('aborts each launch before respawning so a stale queue read cannot consume the next message', async () => {
+        const launcher = new TestLauncher()
+        const consumedBy: number[] = []
+        let queuedMessage: string | null = null
+        const waiters: Array<{ launch: number; signal: AbortSignal }> = []
+        let launch = 0
+
+        const launchOnce = vi.fn(async (signal: AbortSignal): Promise<LaunchOutcome> => {
+            launch++
+            waiters.push({ launch, signal })
+            if (launch === 1) {
+                return readyCrash()
+            }
+            queuedMessage = 'next turn'
+            for (const waiter of waiters) {
+                if (!waiter.signal.aborted && queuedMessage) {
+                    consumedBy.push(waiter.launch)
+                    queuedMessage = null
+                }
+            }
+            launcher.stop()
+            return { reachedReady: true }
+        })
+
+        await launcher.run({
+            respawnBackoffMs: 0,
+            onLaunchStart: () => {},
+            launchOnce,
+            onLaunchFailure: () => {},
+        })
+
+        expect(consumedBy).toEqual([2])
+    })
 })

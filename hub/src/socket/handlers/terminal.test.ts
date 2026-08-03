@@ -239,8 +239,8 @@ describe('terminal socket handlers', () => {
         clearUserTerminalBuffer('session-1', 'terminal-1')
     })
 
-    it('cleans up and notifies CLI on terminal socket disconnect', () => {
-        const { terminalSocket, cliNamespace, terminalRegistry } = createHarness()
+    it('preserves the terminal and replays scrollback after a transient socket disconnect', () => {
+        const { io, terminalSocket, cliNamespace, terminalRegistry } = createHarness()
         const cliSocket = new FakeSocket('cli-socket-1')
         connectCliSocket(cliNamespace, cliSocket, 'session-1')
 
@@ -251,14 +251,34 @@ describe('terminal socket handlers', () => {
             rows: 24
         })
 
+        appendUserTerminalOutput('session-1', 'terminal-1', 'scrollback')
+
         terminalSocket.trigger('disconnect')
 
-        const closeEvent = lastEmit(cliSocket, 'terminal:close')
-        expect(closeEvent?.data).toEqual({
-            sessionId: 'session-1',
-            terminalId: 'terminal-1'
+        expect(lastEmit(cliSocket, 'terminal:close')).toBeUndefined()
+        expect(terminalRegistry.get('terminal-1')).not.toBeNull()
+
+        const reconnectedSocket = new FakeSocket('terminal-socket-2')
+        reconnectedSocket.data.namespace = 'default'
+        registerTerminalHandlers(reconnectedSocket as unknown as SocketWithData, {
+            io: io as unknown as SocketServer,
+            getSession: () => ({ active: true, namespace: 'default' }),
+            terminalRegistry,
+            maxTerminalsPerSocket: 4,
+            maxTerminalsPerSession: 4
         })
-        expect(terminalRegistry.get('terminal-1')).toBeNull()
+        reconnectedSocket.trigger('terminal:create', {
+            sessionId: 'session-1',
+            terminalId: 'terminal-1',
+            cols: 90,
+            rows: 24
+        })
+
+        expect(lastEmit(reconnectedSocket, 'terminal:output')?.data).toEqual({
+            terminalId: 'terminal-1',
+            data: 'scrollback'
+        })
+        clearUserTerminalBuffer('session-1', 'terminal-1')
     })
 
     it('joins terminal socket to session room on create', () => {
