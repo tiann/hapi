@@ -787,17 +787,27 @@ export function moveUninvokedMessages(db: Database, fromSessionId: string, toSes
               )
         `).run(fromSessionId, toSessionId).changes
         const rows = db.prepare(`
-            SELECT id FROM messages
-            WHERE session_id = ? AND invoked_at IS NULL
-            ORDER BY seq ASC
-        `).all(fromSessionId) as Array<{ id: string }>
-        if (discarded === 0 && rows.length === 0) return 0
-        let nextSeq = getMaxSeq(db, toSessionId)
+            SELECT id, session_id FROM messages
+            WHERE session_id IN (?, ?) AND invoked_at IS NULL
+            -- created_at is millisecond-granularity; rowid is the durable
+            -- cross-session insertion order for ties within this database.
+            ORDER BY created_at ASC,
+                     rowid ASC,
+                     seq ASC,
+                     id ASC
+        `).all(fromSessionId, toSessionId) as Array<{ id: string; session_id: string }>
+        const moved = rows.filter((row) => row.session_id === fromSessionId).length
+        if (discarded === 0 && moved === 0) return 0
+        const invokedMax = db.prepare(`
+            SELECT COALESCE(MAX(seq), 0) AS maxSeq FROM messages
+            WHERE session_id = ? AND invoked_at IS NOT NULL
+        `).get(toSessionId) as { maxSeq: number }
+        let nextSeq = invokedMax.maxSeq
         const update = db.prepare('UPDATE messages SET session_id = ?, seq = ? WHERE id = ?')
         for (const row of rows) update.run(toSessionId, ++nextSeq, row.id)
         bumpMessageEpoch(db, fromSessionId)
         bumpMessageEpoch(db, toSessionId)
-        return discarded + rows.length
+        return discarded + moved
     })()
 }
 

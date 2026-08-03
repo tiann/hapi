@@ -104,6 +104,28 @@ describe('SyncEngine.clearOpenCodeSession', () => {
         } finally { engine.stop() }
     })
 
+    it('preserves FIFO from a source prompt before reservation to a redirected target prompt', async () => {
+        const { store, engine } = createEngine()
+        try {
+            const source = engine.getOrCreateSession('reservation-boundary-fifo', {
+                path: '/tmp/project', host: 'host', machineId: 'machine-1', flavor: 'opencode', startedBy: 'runner'
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: source.id, time: Date.now() })
+            store.messages.addMessage(source.id, { text: 'A before reservation' }, 'fifo-a')
+            const reserved = engine.reserveOpenCodeClearSession(source.id, 'default')
+            if (reserved.type !== 'success') throw new Error('reservation failed')
+            await engine.sendMessage(source.id, { text: 'B after reservation', localId: 'fifo-b' })
+            expect(engine.confirmOpenCodeClearCleanup(source.id, 'default', reserved.sessionId)).toMatchObject({ type: 'success' })
+            engine.handleSessionEnd({ sid: source.id, time: Date.now(), reason: 'cleared' })
+            setSpawn(engine, mock(async (...args: unknown[]) => ({ type: 'success' as const, sessionId: args[12] as string })))
+
+            await (engine as unknown as { reconcileOpenCodeClears(): Promise<void> }).reconcileOpenCodeClears()
+
+            expect(store.messages.getAllMessages(reserved.sessionId).map((message) => message.localId)).toEqual(['fifo-a', 'fifo-b'])
+            expect(store.messages.getAllMessages(source.id)).toEqual([])
+        } finally { engine.stop() }
+    })
+
     it.each([
         ['supersededBySessionId', 'foreign'],
         ['opencodeClearOperation', 'foreign'],

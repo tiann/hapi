@@ -687,6 +687,31 @@ export class MessageService {
         return { localIds, invokedAt }
     }
 
+    /** Replay durable immediate prompts whenever their CLI session attaches. */
+    replayImmediateQueuedMessages(sessionId: string): number {
+        const queued = this.store.messages.getImmediateQueuedLocalMessages(sessionId)
+        for (const msg of queued) {
+            const update = {
+                id: msg.id,
+                seq: msg.seq,
+                createdAt: msg.createdAt,
+                body: {
+                    t: 'new-message' as const,
+                    sid: sessionId,
+                    message: {
+                        id: msg.id,
+                        seq: msg.seq,
+                        createdAt: msg.createdAt,
+                        localId: msg.localId,
+                        content: msg.content
+                    }
+                }
+            }
+            this.io.of('/cli').to(`session:${sessionId}`).emit('update', update)
+        }
+        return queued.length
+    }
+
     /** Called by the hub 5-second tick (syncEngine.expireInactive).
      *
      * Finds all scheduled messages whose scheduled_at <= now and emits them to
