@@ -92,6 +92,14 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private userAbortRequested = false;
     private lastAssistantText: string | null = null;
     private turnHasModelError = false;
+    /**
+     * Text-classifier hit retained until `backend.prompt` settles. Callbacks
+     * run before the promise rejects, so recording text immediately would
+     * beat the structural RPC classification (e.g. unknown_t_prefix vs
+     * transport_closed for WritableIterable). Flush on success; prefer RPC
+     * in catch.
+     */
+    private pendingTextFailure: CursorAgentStreamFailure | null = null;
     /** True while backend.prompt() is in flight — lets stderr model_not_found
      *  surface as modelError during a turn without breaking setup/load remap. */
     private promptInFlight = false;
@@ -643,13 +651,13 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             session.onThinkingChange(true);
             this.turnHasModelError = false;
             this.lastAssistantText = null;
+            this.pendingTextFailure = null;
             this.promptInFlight = true;
             session.client.updateAgentState?.((state) => ({ ...state, steeringActive: true }));
             this.activePromptModeHash = batch.hash;
 
             this.promptInFlight = true;
             try {
-                this.promptInFlight = true;
                 this.userAbortRequested = false;
                 for (let retryAttempt = 0; retryAttempt <= CURSOR_AUTO_RETRY_LIMIT; retryAttempt += 1) {
                     this.pendingRetryableError = null;
@@ -667,6 +675,10 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                             this.pendingRetryableError = null;
                         }
                         if (!this.pendingRetryableError) {
+                            if (this.pendingTextFailure && !this.turnHasModelError) {
+                                this.recordModelError(this.pendingTextFailure);
+                            }
+                            this.pendingTextFailure = null;
                             void backend.refreshSessionInfo(acpSessionId, session.path);
                             break;
                         }
@@ -675,7 +687,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                         if (this.userAbortRequested) break;
                         if (!isRetryableCursorError(error)) {
                             this.surfacePromptFailure(error instanceof Error ? error.message : String(error));
-                            const failure = classifyAcpRpcRejection(error);
+                            const failure = classifyAcpRpcRejection(error) ?? this.pendingTextFailure;
+                            this.pendingTextFailure = null;
                             if (failure) this.recordModelError(failure);
                             break;
                         }
@@ -693,7 +706,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     this.surfacePromptFailure(`Cursor Agent failed after ${CURSOR_AUTO_RETRY_LIMIT} retries.`);
                     const exhaustedFailure = classifyAcpRpcRejection(
                         this.pendingRetryableError ?? 'Cursor Agent failed after retries'
-                    );
+                    ) ?? this.pendingTextFailure;
+                    this.pendingTextFailure = null;
                     if (exhaustedFailure) this.recordModelError(exhaustedFailure);
                 }
             } finally {
@@ -727,6 +741,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 this.pendingRetryableFromStderr = false;
                 this.pendingInlineRetryableError = false;
                 this.attemptProducedToolActivity = false;
+                this.pendingTextFailure = null;
                 session.onThinkingChange(false);
                 await this.permissionAdapter?.cancelAll('Prompt finished');
                 await this.extensionAdapter?.cancelAll('Prompt finished');
@@ -950,31 +965,26 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     private handleTextMessageClassification(text: string): void {
-        // FALLBACK PATH ONLY. If a structural signal (stderr / RPC) already
-        // classified this turn, do not re-classify the agent's text -- the
-        // text is often the agent's own stringified version of the same
-        // error we already caught structurally, and re-classifying produces
-        // duplicate banners. We still record lastAssistantText so the
-        // priorAssistantClaimsDone heuristic works for any subsequent
-        // structural signal in this turn.
+        // FALLBACK PATH ONLY — deferred until prompt settles so structural
+        // RPC / stderr can win. If a structural signal already classified
+        // this turn, keep lastAssistantText for priorAssistantClaimsDone.
         if (this.turnHasModelError) {
             this.lastAssistantText = text;
             return;
         }
         const failure = classifyCursorAgentMessage(text);
         if (failure) {
-            this.recordModelError(failure);
+            this.pendingTextFailure ??= failure;
         } else {
             this.lastAssistantText = text;
         }
     }
 
     /**
-     * Single source of truth for emitting modelError. All signal paths
-     * (RPC catch / stderr subscriber / text fallback) route through here.
-     * First signal wins: subsequent signals in the same turn are dropped
-     * to avoid banner-flapping when the agent emits both an RPC rejection
-     * AND a stringified text version of the same failure.
+     * Single source of truth for emitting modelError. Structural paths
+     * (RPC catch / stderr) record immediately; text fallback is deferred
+     * via pendingTextFailure until prompt settles, then flushed here.
+     * First recorded signal wins for the turn.
      */
     private recordModelError(failure: CursorAgentStreamFailure): void {
         if (this.turnHasModelError) {
@@ -984,6 +994,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             return;
         }
         this.turnHasModelError = true;
+        this.pendingTextFailure = null;
 
         // Same-message case: Cursor often appends `Error: T: ...` onto the
         // assistant block that already claimed "Done." — lastAssistantText is

@@ -40,6 +40,8 @@ const harness = vi.hoisted(() => ({
         message: string
         raw: string
     } | null,
+    emitTextOnPrompt: null as string | null,
+    promptReject: null as Error | null,
     disconnectError: null as Error | null,
     overlayCleanup: null as ReturnType<typeof vi.fn> | null,
     agentActivityListener: null as ((thinking: boolean) => void) | null
@@ -142,6 +144,9 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                 harness.prompts.push(content);
                 const messages = harness.promptMessageBatches.shift() ?? harness.promptMessages.splice(0, 1);
                 for (const message of messages) onMessage?.(message);
+                if (harness.emitTextOnPrompt && onMessage) {
+                    onMessage({ type: 'text', text: harness.emitTextOnPrompt });
+                }
                 const stderrError = harness.promptStderrErrors.shift();
                 if (stderrError) harness.stderrErrorHandler?.(stderrError);
                 if (harness.emitStderrOnPrompt && harness.stderrErrorHandler) {
@@ -150,6 +155,9 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                 if (harness.deferPrompt) await harness.deferPrompt;
                 const error = harness.promptErrors.shift();
                 if (error) throw error;
+                if (harness.promptReject) {
+                    throw harness.promptReject;
+                }
             }),
             cancelPrompt: vi.fn(async () => {}),
             getPromptGeneration: vi.fn(() => 1),
@@ -309,6 +317,8 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.releaseLoadSession = null;
         harness.stderrErrorHandler = null;
         harness.emitStderrOnPrompt = null;
+        harness.emitTextOnPrompt = null;
+        harness.promptReject = null;
         harness.disconnectError = null;
         harness.overlayCleanup = null;
         harness.agentActivityListener = null;
@@ -1882,5 +1892,33 @@ describe('cursorAcpRemoteLauncher', () => {
             return (next.lastModelError as { kind?: string } | undefined)?.kind === 'rate_limited';
         });
         expect(wroteLastModelError).toBe(true);
+    });
+
+    it('prefers structural RPC classification over text fallback when both fire', async () => {
+        // Prompt callback emits wire text first (unknown_t_prefix / non-transient),
+        // then the promise rejects with WritableIterable (transport_closed / transient).
+        harness.emitTextOnPrompt = '\n\nError: T: WritableIterable is closed';
+        harness.promptReject = new Error('WritableIterable is closed');
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        session.queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        const modelErrors = client.sendSessionEvent.mock.calls
+            .map((call) => call[0])
+            .filter((event) => event?.type === 'modelError');
+        expect(modelErrors).toHaveLength(1);
+        expect(modelErrors[0]?.kind).toBe('transport_closed');
+        expect(modelErrors[0]?.transient).toBe(true);
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'ready'
+        )).toBe(false);
     });
 });
