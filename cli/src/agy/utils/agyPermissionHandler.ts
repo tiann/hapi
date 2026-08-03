@@ -76,6 +76,7 @@ type PermissionResponse = {
     reason?: string;
     mode?: PermissionMode;
     allowTools?: string[];
+    decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort';
     // Picked answers for a pending ask_user_question request (see
     // registerQuestionRequest) — same wire shape the web's
     // AskUserQuestionFooter already sends for claude/cursor questions.
@@ -258,13 +259,18 @@ export class AgyPermissionHandler extends BasePermissionHandler<PermissionRespon
         // allowedCommandLiterals — consistent with what buildPermissionOverrides
         // emits as command(<CommandLine>) and with what isCommandAllowed checks.
         const pendingInput = pending.input as { CommandLine?: string } | null;
+        const allowTools = response.allowTools ?? (
+            response.approved && response.decision === 'approved_for_session'
+                ? [pending.toolName]
+                : undefined
+        );
         // n1 guard: only an approved response may populate the session-allow
         // caches. A deny must never grant a future allow. Today the hub only
         // sends allowTools on approval, but that is a convention — enforce the
         // invariant here so a malformed/denied response carrying allowTools
         // can never escalate into a cached allow.
-        if (response.approved && response.allowTools && response.allowTools.length > 0) {
-            for (const tool of response.allowTools) {
+        if (response.approved && allowTools && allowTools.length > 0) {
+            for (const tool of allowTools) {
                 if (tool === 'run_command') {
                     // Scope to the specific command being approved — mirrors the
                     // command(<CommandLine>) override we emit to agy.
@@ -288,13 +294,13 @@ export class AgyPermissionHandler extends BasePermissionHandler<PermissionRespon
             status: response.approved ? 'approved' : 'denied',
             reason: response.reason,
             mode: response.mode,
-            allowTools: response.allowTools
+            allowTools
         };
 
         // Build agy permissionOverrides for session-allows (agy native format).
         // The pending tool input provides the CommandLine context needed to
         // scope bare run_command session-allows to the specific command.
-        const permissionOverrides = this.buildPermissionOverrides(response.allowTools, pendingInput?.CommandLine);
+        const permissionOverrides = this.buildPermissionOverrides(allowTools, pendingInput?.CommandLine);
 
         if (response.approved) {
             pending.resolve({

@@ -10,6 +10,7 @@ type PermissionRpcHandler = (response: {
     reason?: string;
     mode?: PermissionMode;
     allowTools?: string[];
+    decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort';
     answers?: Record<string, string[]>;
 }) => Promise<void> | void;
 
@@ -101,6 +102,21 @@ describe('AgyPermissionHandler', () => {
         const second = await handler.requestDecision('c-2:0', 'write_to_file', { path: '/tmp/y' });
         expect(second.permissionDecision).toBe('allow');
         expect(Object.keys(state.requests).length).toBe(before);
+    });
+
+    it('scopes decision-only session approval to the exact pending command', async () => {
+        const { client, state, respond } = createFakeClient();
+        const handler = new AgyPermissionHandler(client, { getPermissionMode: () => 'default' });
+        const first = handler.requestDecision('c-decision:0', 'run_command', { CommandLine: 'npm test' });
+        await respond({ id: 'c-decision:0', approved: true, decision: 'approved_for_session' });
+        const decision = await first;
+        expect(decision.permissionOverrides).toEqual(['command(npm test)']);
+        expect((await handler.requestDecision('c-decision:1', 'run_command', { CommandLine: 'npm test' })).permissionDecision).toBe('allow');
+        const different = handler.requestDecision('c-decision:2', 'run_command', { CommandLine: 'npm publish' });
+        expect(state.requests['c-decision:2']).toMatchObject({ tool: 'run_command' });
+        await respond({ id: 'c-decision:2', approved: false });
+        expect((await different).permissionDecision).toBe('deny');
+        expect(decision.permissionOverrides).not.toContain('command(*)');
     });
 
     it('includes permissionOverrides in the decision for session-allows', async () => {

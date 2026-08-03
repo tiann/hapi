@@ -88,7 +88,27 @@ export async function runAgy(opts: {
     let hapiMcpBridge: Awaited<ReturnType<typeof buildHapiMcpBridge>> | null = null;
     let hookCarrierDir: string | undefined;
 
-    if (isPtyMode) {
+    const lifecycle = createRunnerLifecycle({
+        session,
+        logTag: 'agy',
+        stopKeepAlive: () => sessionWrapperRef.current?.stopKeepAlive(),
+        onBeforeClose: () => { sessionWrapperRef.current?.kill(); },
+        onAfterClose: () => {
+            agyPermissionHandler?.cancelAll('Session ended');
+            hookServer?.stop();
+            hapiMcpBridge?.server.stop();
+            cleanupAgyHookCarrier(hookCarrierDir);
+        }
+    });
+
+    lifecycle.registerProcessHandlers();
+    registerKillSessionHandler(session.rpcHandlerManager, lifecycle.cleanupAndExit);
+    registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);
+
+    let crashed = false;
+
+    try {
+        if (isPtyMode) {
         hookServer = await startHookServer({
             onSessionHook: () => {
                 // agy does not fire a SessionStart hook; this callback is a
@@ -128,7 +148,6 @@ export async function runAgy(opts: {
         try {
             hookCommand = shellJoin([command, ...args]);
         } catch (error) {
-            hookServer.stop();
             throw new Error('agy PTY session aborted: could not safely encode the hook command.', { cause: error });
         }
 
@@ -141,14 +160,10 @@ export async function runAgy(opts: {
             const { command: mcpCommand, args: mcpArgs } = hapiMcpBridge.mcpServers.hapi;
             carrierResult = prepareAgyHookCarrier(hooksJson, { command: mcpCommand, args: mcpArgs });
         } catch (error) {
-            hookServer.stop();
-            hapiMcpBridge?.server.stop();
             throw new Error('agy PTY session aborted: could not prepare the session-local HAPI MCP bridge.', { cause: error });
         }
         if (!carrierResult) {
             logger.debug('[agy] Failed to prepare hook carrier; aborting PTY session (fail-closed)');
-            hookServer.stop();
-            hapiMcpBridge.server.stop();
             throw new Error(
                 'agy PTY session aborted: could not prepare the hook carrier needed for the permission bridge. ' +
                 'Check that the temporary directory is writable and has sufficient space.'
@@ -170,23 +185,6 @@ export async function runAgy(opts: {
             }
         });
     }
-
-    const lifecycle = createRunnerLifecycle({
-        session,
-        logTag: 'agy',
-        stopKeepAlive: () => sessionWrapperRef.current?.stopKeepAlive(),
-        onBeforeClose: () => { sessionWrapperRef.current?.kill(); },
-        onAfterClose: () => {
-            agyPermissionHandler?.cancelAll('Session ended');
-            hookServer?.stop();
-            hapiMcpBridge?.server.stop();
-            cleanupAgyHookCarrier(hookCarrierDir);
-        }
-    });
-
-    lifecycle.registerProcessHandlers();
-    registerKillSessionHandler(session.rpcHandlerManager, lifecycle.cleanupAndExit);
-    registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);
 
     const syncSessionMode = () => {
         const sessionInstance = sessionWrapperRef.current;
@@ -232,9 +230,6 @@ export async function runAgy(opts: {
         onAfterApply: syncSessionMode
     });
 
-    let crashed = false;
-
-    try {
         await agyLoop({
             path: workingDirectory,
             startingMode,
