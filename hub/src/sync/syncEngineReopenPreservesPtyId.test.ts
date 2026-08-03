@@ -129,4 +129,347 @@ describe('SyncEngine reopen/resume PTY session id preservation', () => {
     })
 
 
+
+    it('stops a same-id PTY child when readiness times out', async () => {
+        const sessionId = insertSession(
+            'pty-session-ready-timeout',
+            baseMetadata({ lifecycleState: 'archived', archivedBy: 'hub', archiveReason: 'inactivity' }),
+            { startingMode: 'pty' }
+        ).id
+        ;(engine as any).rpcGateway.spawnSession = async () => {
+            engine.handleSessionAlive({ sid: sessionId, time: Date.now() })
+            return { type: 'success', sessionId }
+        }
+        ;(engine as any).waitForSessionReady = async () => 'timeout'
+        let stoppedSessionId: string | undefined
+        ;(engine as any).rpcGateway.stopRunnerSession = async (_machineId: string, sid: string) => {
+            stoppedSessionId = sid
+            engine.handleSessionEnd({ sid, time: Date.now(), reason: 'error' })
+            return 'stopped'
+        }
+
+        const result = await engine.reopenSession(sessionId, NAMESPACE)
+
+        expect(result).toMatchObject({ type: 'error', code: 'resume_failed' })
+        expect(stoppedSessionId).toBe(sessionId)
+        expect(engine.getSessionByNamespace(sessionId, NAMESPACE)?.active).toBe(false)
+    })
+
+    it('persists a quarantine and rejects an immediate retry when the timed-out child stays alive', async () => {
+        const sessionId = insertSession(
+            'pty-session-still-alive',
+            baseMetadata({ lifecycleState: 'archived', archivedBy: 'hub', archiveReason: 'inactivity' }),
+            { startingMode: 'pty' }
+        ).id
+        let spawnCalls = 0
+        ;(engine as any).rpcGateway.spawnSession = async () => {
+            spawnCalls += 1
+            engine.handleSessionAlive({ sid: sessionId, time: Date.now() })
+            return { type: 'success', sessionId }
+        }
+        ;(engine as any).waitForSessionReady = async () => 'timeout'
+        ;(engine as any).rpcGateway.stopRunnerSession = async () => 'still_alive'
+
+        const first = await engine.reopenSession(sessionId, NAMESPACE)
+        const second = await engine.reopenSession(sessionId, NAMESPACE)
+
+        expect(first).toMatchObject({ type: 'error', code: 'resume_failed', rollbackSafe: false })
+        expect(second).toMatchObject({ type: 'error', code: 'resume_failed' })
+        expect(spawnCalls).toBe(1)
+        expect((engine.getSessionByNamespace(sessionId, NAMESPACE)?.metadata as any)?.ptyResumeAttempt)
+            .toMatchObject({ state: 'quarantined', machineId: 'machine-x' })
+    })
+
+    it('keeps a persisted PTY quarantine fail-closed across hub restart when the child is still alive', async () => {
+        const sessionId = insertSession(
+            'pty-session-restart-still-alive',
+            baseMetadata({
+                lifecycleState: 'running',
+                ptyResumeAttempt: { state: 'quarantined', machineId: 'machine-x', startedAt: 1 },
+            }),
+            { startingMode: 'pty' }
+        ).id
+        engine.handleSessionAlive({ sid: sessionId, time: Date.now() })
+
+        const restarted = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        ;(restarted as any).machineCache = {
+            getOnlineMachinesByNamespace: () => [{ id: 'machine-x', metadata: { host: 'localhost' } }]
+        }
+        ;(restarted as any).rpcGateway.stopRunnerSession = async () => 'still_alive'
+
+        const result = await restarted.reopenSession(sessionId, NAMESPACE)
+
+        expect(result).toMatchObject({ type: 'error', code: 'resume_failed' })
+        expect((restarted.getSessionByNamespace(sessionId, NAMESPACE)?.metadata as any)?.ptyResumeAttempt)
+            .toBeDefined()
+        restarted.stop()
+    })
+
+    it('reconciles a persisted PTY quarantine after restart when the old child is already gone', async () => {
+        const sessionId = insertSession(
+            'pty-session-restart-gone',
+            baseMetadata({
+                lifecycleState: 'running',
+                ptyResumeAttempt: { state: 'quarantined', machineId: 'machine-x', startedAt: 1 },
+            }),
+            { startingMode: 'pty' }
+        ).id
+        engine.handleSessionAlive({ sid: sessionId, time: Date.now() })
+
+        const restarted = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        ;(restarted as any).machineCache = {
+            getOnlineMachinesByNamespace: () => [{ id: 'machine-x', metadata: { host: 'localhost' } }]
+        }
+        ;(restarted as any).rpcGateway.stopRunnerSession = async () => 'already_gone'
+        ;(restarted as any).rpcGateway.spawnSession = async () => {
+            restarted.handleSessionAlive({ sid: sessionId, time: Date.now() })
+            restarted.handleSessionReady({ sid: sessionId, time: Date.now() })
+            return { type: 'success', sessionId }
+        }
+
+        const result = await restarted.reopenSession(sessionId, NAMESPACE)
+
+        expect(result).toEqual({ type: 'success', sessionId, resumed: true })
+        expect((restarted.getSessionByNamespace(sessionId, NAMESPACE)?.metadata as any)?.ptyResumeAttempt)
+            .toBeUndefined()
+        restarted.stop()
+    })
+
+
+
+    it('does not spawn when the durable pre-spawn PTY attempt cannot be written', async () => {
+        const sessionId = insertSession(
+            'pty-session-attempt-write-fails',
+            baseMetadata({ lifecycleState: 'archived', archivedBy: 'hub', archiveReason: 'inactivity' }),
+            { startingMode: 'pty' }
+        ).id
+        let spawnCalls = 0
+        ;(engine as any).rpcGateway.spawnSession = async () => {
+            spawnCalls += 1
+            return { type: 'success', sessionId }
+        }
+        const originalUpdate = store.sessions.updateSessionMetadata.bind(store.sessions)
+        ;(store.sessions as any).updateSessionMetadata = (...args: any[]) => {
+            if (args[1]?.ptyResumeAttempt?.state === 'resuming') return { result: 'not-found' }
+            return (originalUpdate as any)(...args)
+        }
+
+        const result = await engine.reopenSession(sessionId, NAMESPACE)
+
+        expect(result).toMatchObject({ type: 'error', code: 'resume_failed' })
+        expect(spawnCalls).toBe(0)
+    })
+
+    it('does not spawn after pre-spawn marker CAS retries are exhausted', async () => {
+        const sessionId = insertSession(
+            'pty-session-attempt-cas-exhausted',
+            baseMetadata({ lifecycleState: 'archived', archivedBy: 'hub', archiveReason: 'inactivity' }),
+            { startingMode: 'pty' }
+        ).id
+        let spawnCalls = 0
+        ;(engine as any).rpcGateway.spawnSession = async () => {
+            spawnCalls += 1
+            return { type: 'success', sessionId }
+        }
+        const originalUpdate = store.sessions.updateSessionMetadata.bind(store.sessions)
+        ;(store.sessions as any).updateSessionMetadata = (...args: any[]) => {
+            if (args[1]?.ptyResumeAttempt?.state === 'resuming') return { result: 'version-mismatch' }
+            return (originalUpdate as any)(...args)
+        }
+
+        const result = await engine.reopenSession(sessionId, NAMESPACE)
+
+        expect(result).toMatchObject({ type: 'error', code: 'resume_failed' })
+        expect(spawnCalls).toBe(0)
+    })
+
+    it('keeps the durable resuming marker when quarantine transition fails', async () => {
+        const sessionId = insertSession(
+            'pty-session-transition-fails',
+            baseMetadata({ lifecycleState: 'archived', archivedBy: 'hub', archiveReason: 'inactivity' }),
+            { startingMode: 'pty' }
+        ).id
+        ;(engine as any).rpcGateway.spawnSession = async () => {
+            engine.handleSessionAlive({ sid: sessionId, time: Date.now() })
+            return { type: 'success', sessionId }
+        }
+        ;(engine as any).waitForSessionReady = async () => 'timeout'
+        ;(engine as any).rpcGateway.stopRunnerSession = async () => 'still_alive'
+        const originalUpdate = store.sessions.updateSessionMetadata.bind(store.sessions)
+        ;(store.sessions as any).updateSessionMetadata = (...args: any[]) => {
+            if (args[1]?.ptyResumeAttempt?.state === 'quarantined') return { result: 'not-found' }
+            return (originalUpdate as any)(...args)
+        }
+
+        const first = await engine.reopenSession(sessionId, NAMESPACE)
+
+        expect(first).toMatchObject({ type: 'error', code: 'resume_failed', rollbackSafe: false })
+        expect((engine.getSessionByNamespace(sessionId, NAMESPACE)?.metadata as any)?.ptyResumeAttempt)
+            .toMatchObject({ state: 'resuming' })
+
+        const restarted = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        ;(restarted as any).rpcGateway.stopRunnerSession = async () => 'still_alive'
+        let spawnCalls = 0
+        ;(restarted as any).rpcGateway.spawnSession = async () => {
+            spawnCalls += 1
+            return { type: 'success', sessionId }
+        }
+        const retry = await restarted.reopenSession(sessionId, NAMESPACE)
+        expect(retry).toMatchObject({ type: 'error', code: 'resume_failed' })
+        expect(spawnCalls).toBe(0)
+        restarted.stop()
+    })
+
+    it('does not spawn when clearing a reconciled durable PTY marker fails', async () => {
+        const sessionId = insertSession(
+            'pty-session-clear-fails',
+            baseMetadata({
+                lifecycleState: 'running',
+                ptyResumeAttempt: { state: 'resuming', machineId: 'machine-x', startedAt: 1 },
+            }),
+            { startingMode: 'pty' }
+        ).id
+        engine.handleSessionAlive({ sid: sessionId, time: Date.now() })
+        ;(engine as any).rpcGateway.stopRunnerSession = async () => 'already_gone'
+        let spawnCalls = 0
+        ;(engine as any).rpcGateway.spawnSession = async () => {
+            spawnCalls += 1
+            return { type: 'success', sessionId }
+        }
+        const originalUpdate = store.sessions.updateSessionMetadata.bind(store.sessions)
+        ;(store.sessions as any).updateSessionMetadata = (...args: any[]) => {
+            if (args[1]?.ptyResumeAttempt === undefined) return { result: 'not-found' }
+            return (originalUpdate as any)(...args)
+        }
+
+        const result = await engine.reopenSession(sessionId, NAMESPACE)
+
+        expect(result).toMatchObject({ type: 'error', code: 'resume_failed' })
+        expect(spawnCalls).toBe(0)
+    })
+
+    it('does not spawn after marker-clear CAS retries are exhausted', async () => {
+        const sessionId = insertSession(
+            'pty-session-clear-cas-exhausted',
+            baseMetadata({
+                lifecycleState: 'running',
+                ptyResumeAttempt: { state: 'resuming', machineId: 'machine-x', startedAt: 1 },
+            }),
+            { startingMode: 'pty' }
+        ).id
+        engine.handleSessionAlive({ sid: sessionId, time: Date.now() })
+        ;(engine as any).rpcGateway.stopRunnerSession = async () => 'already_gone'
+        let spawnCalls = 0
+        ;(engine as any).rpcGateway.spawnSession = async () => {
+            spawnCalls += 1
+            return { type: 'success', sessionId }
+        }
+        const originalUpdate = store.sessions.updateSessionMetadata.bind(store.sessions)
+        ;(store.sessions as any).updateSessionMetadata = (...args: any[]) => {
+            if (args[1]?.ptyResumeAttempt === undefined) return { result: 'version-mismatch' }
+            return (originalUpdate as any)(...args)
+        }
+
+        const result = await engine.reopenSession(sessionId, NAMESPACE)
+
+        expect(result).toMatchObject({ type: 'error', code: 'resume_failed' })
+        expect(spawnCalls).toBe(0)
+    })
+
+    it('does not reconcile the durable marker owned by a concurrent direct resume', async () => {
+        const sessionId = insertSession(
+            'pty-session-resume-then-reopen',
+            baseMetadata({ lifecycleState: 'archived', archivedBy: 'hub', archiveReason: 'inactivity' }),
+            { startingMode: 'pty' }
+        ).id
+        let releaseSpawn!: () => void
+        const spawnGate = new Promise<void>((resolve) => { releaseSpawn = resolve })
+        let spawnCalls = 0
+        let stopCalls = 0
+        ;(engine as any).rpcGateway.spawnSession = async () => {
+            spawnCalls += 1
+            await spawnGate
+            engine.handleSessionAlive({ sid: sessionId, time: Date.now() })
+            engine.handleSessionReady({ sid: sessionId, time: Date.now() })
+            return { type: 'success', sessionId }
+        }
+        ;(engine as any).rpcGateway.stopRunnerSession = async () => {
+            stopCalls += 1
+            return 'still_alive'
+        }
+
+        const resume = engine.resumeSession(sessionId, NAMESPACE)
+        for (let i = 0; i < 20 && spawnCalls === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 0))
+        const reopenResult = await engine.reopenSession(sessionId, NAMESPACE)
+        releaseSpawn()
+        const resumeResult = await resume
+
+        expect(reopenResult).toMatchObject({ type: 'error', code: 'resume_failed' })
+        expect(resumeResult).toMatchObject({ type: 'success', sessionId })
+        expect(spawnCalls).toBe(1)
+        expect(stopCalls).toBe(0)
+    })
+
+    it('serializes concurrent PTY reopen requests without reconciling the owner marker', async () => {
+        const sessionId = insertSession(
+            'pty-session-reopen-twice',
+            baseMetadata({ lifecycleState: 'archived', archivedBy: 'hub', archiveReason: 'inactivity' }),
+            { startingMode: 'pty' }
+        ).id
+        let releaseSpawn!: () => void
+        const spawnGate = new Promise<void>((resolve) => { releaseSpawn = resolve })
+        let spawnCalls = 0
+        let stopCalls = 0
+        ;(engine as any).rpcGateway.spawnSession = async () => {
+            spawnCalls += 1
+            await spawnGate
+            engine.handleSessionAlive({ sid: sessionId, time: Date.now() })
+            engine.handleSessionReady({ sid: sessionId, time: Date.now() })
+            return { type: 'success', sessionId }
+        }
+        ;(engine as any).rpcGateway.stopRunnerSession = async () => {
+            stopCalls += 1
+            return 'still_alive'
+        }
+
+        const first = engine.reopenSession(sessionId, NAMESPACE)
+        for (let i = 0; i < 20 && spawnCalls === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 0))
+        const secondResult = await engine.reopenSession(sessionId, NAMESPACE)
+        releaseSpawn()
+        const firstResult = await first
+
+        expect(secondResult).toMatchObject({ type: 'error', code: 'resume_failed' })
+        expect(firstResult).toMatchObject({ type: 'success', sessionId })
+        expect(spawnCalls).toBe(1)
+        expect(stopCalls).toBe(0)
+    })
+
+    it('serializes concurrent PTY reopen and resume requests before spawning', async () => {
+        const sessionId = insertSession(
+            'pty-session-concurrent',
+            baseMetadata({ lifecycleState: 'archived', archivedBy: 'hub', archiveReason: 'inactivity' }),
+            { startingMode: 'pty' }
+        ).id
+        let releaseSpawn!: () => void
+        const spawnGate = new Promise<void>((resolve) => { releaseSpawn = resolve })
+        let spawnCalls = 0
+        ;(engine as any).rpcGateway.spawnSession = async () => {
+            spawnCalls += 1
+            await spawnGate
+            engine.handleSessionAlive({ sid: sessionId, time: Date.now() })
+            engine.handleSessionReady({ sid: sessionId, time: Date.now() })
+            return { type: 'success', sessionId }
+        }
+
+        const reopen = engine.reopenSession(sessionId, NAMESPACE)
+        for (let i = 0; i < 20 && spawnCalls === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 0))
+        const resume = engine.resumeSession(sessionId, NAMESPACE)
+        releaseSpawn()
+        const [reopenResult, resumeResult] = await Promise.all([reopen, resume])
+
+        expect(spawnCalls).toBe(1)
+        expect([reopenResult.type, resumeResult.type].sort()).toEqual(['error', 'success'])
+    })
+
+
 })
