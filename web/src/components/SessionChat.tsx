@@ -1410,7 +1410,7 @@ function SessionChatInner(props: SessionChatProps) {
     pendingScheduleRef.current = pendingSchedule
     // The single, shared intent ref travels HappyComposer -> useHappyRuntime
     // -> handleSend. The runtime consumes and resets it in the same submit
-    // turn, so explicit queue or restored steer intents never stick to later
+    // turn, so explicit or retry-safe queue intents never stick to later
     // ordinary sends.
     const pendingSendIntentRef = useRef<ComposerSendIntent>('default')
     const restoredSendErrorIdRef = useRef<number | null>(null)
@@ -1422,10 +1422,9 @@ function SessionChatInner(props: SessionChatProps) {
             return
         }
         if (restoredSendErrorIdRef.current === error.id) return
-        // A direct text retry must retain the exact durable wire mode from
-        // the failed send. In particular, a Pi main turn may settle between
-        // failure and retry, but that must not silently downgrade steer to
-        // queue; Hub still normalizes a steer if its target is no longer Pi.
+        // A retry cannot carry the original Pi streaming generation. Preserve
+        // queue, but deliberately downgrade a failed turn-scoped steer to the
+        // HAPI queue so a later active turn is never steered by stale text.
         pendingSendIntentRef.current = getRestoredComposerSendIntent(error.deliveryMode)
         restoredSendErrorIdRef.current = error.id
     }, [props.sendError])

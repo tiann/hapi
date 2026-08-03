@@ -4,10 +4,9 @@ import type { MessageDeliveryMode } from '@hapi/protocol'
  * The one-shot UI intent associated with a composer submission.  It is not
  * the wire delivery mode: `default` is resolved against the current session
  * state at the SessionChat boundary, while `queue` is an explicit operator
- * request not to steer an in-flight Pi turn. `steer` is only restored from a
- * failed send so its retry preserves the original wire delivery mode.
+ * request not to steer an in-flight Pi turn.
  */
-export type ComposerSendIntent = 'default' | 'queue' | 'steer'
+export type ComposerSendIntent = 'default' | 'queue'
 
 /** Structural shape shared by React's mutable ref and the runtime adapter. */
 export type ComposerSendIntentRef = { current: ComposerSendIntent }
@@ -24,14 +23,21 @@ export function consumeComposerSendIntent(ref?: ComposerSendIntentRef): Composer
 }
 
 /**
- * Convert the durable mode recorded for a failed send back into its one-shot
- * composer intent. Missing provenance predates delivery modes and falls back
- * to the ordinary live-state-resolved send.
+ * A retry cannot prove that the original Pi turn is still active. Preserve an
+ * explicit queue, but downgrade turn-scoped steer (and legacy missing mode) to
+ * the durable HAPI queue instead of binding the retry to a later generation.
  */
+export function getRetryDeliveryMode(
+    deliveryMode: MessageDeliveryMode | undefined,
+): 'queue' {
+    return deliveryMode === 'steer' ? 'queue' : (deliveryMode ?? 'queue')
+}
+
+/** Convert retry delivery into the composer's one-shot intent representation. */
 export function getRestoredComposerSendIntent(
     deliveryMode: MessageDeliveryMode | undefined,
 ): ComposerSendIntent {
-    return deliveryMode ?? 'default'
+    return getRetryDeliveryMode(deliveryMode)
 }
 
 /**
@@ -39,9 +45,8 @@ export function getRestoredComposerSendIntent(
  *
  * Fresh steering is deliberately narrow: it only applies to an immediate
  * ordinary composer submission while the Pi *main session* reports that it
- * is thinking. Scheduled messages and scratchlist additions never steer. A
- * restored explicit steer is passed through for Hub to normalize if the
- * target has changed since the failed attempt.
+ * is thinking. Scheduled messages, scratchlist additions, and retries never
+ * steer because none can prove the original turn identity.
  */
 export function resolveMessageDeliveryMode(input: {
     agentFlavor: string | null | undefined
@@ -53,7 +58,6 @@ export function resolveMessageDeliveryMode(input: {
     if (input.scheduledAt != null) return 'queue'
     if (input.routesToScratchlist === true) return 'queue'
     if (input.intent === 'queue') return 'queue'
-    if (input.intent === 'steer') return 'steer'
     if (input.agentFlavor !== 'pi') return 'queue'
     return input.isSessionThinking ? 'steer' : 'queue'
 }

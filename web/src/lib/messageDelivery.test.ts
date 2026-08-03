@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
     consumeComposerSendIntent,
     getRestoredComposerSendIntent,
+    getRetryDeliveryMode,
     resolveMessageDeliveryMode,
 } from './messageDelivery'
 
@@ -14,27 +15,19 @@ describe('consumeComposerSendIntent', () => {
         expect(consumeComposerSendIntent(ref)).toBe('default')
     })
 
-    it('consumes a restored steer request exactly once', () => {
-        const ref = { current: getRestoredComposerSendIntent('steer') }
-
-        expect(consumeComposerSendIntent(ref)).toBe('steer')
-        expect(ref.current).toBe('default')
-        expect(consumeComposerSendIntent(ref)).toBe('default')
-    })
-
     it('defaults safely when no composer ref is present', () => {
         expect(consumeComposerSendIntent()).toBe('default')
     })
 })
 
-describe('getRestoredComposerSendIntent', () => {
-    it('preloads the exact original queue or steer wire mode', () => {
+describe('retry delivery safety', () => {
+    it('preserves queue and downgrades steer or missing legacy provenance to queue', () => {
+        expect(getRetryDeliveryMode('queue')).toBe('queue')
+        expect(getRetryDeliveryMode('steer')).toBe('queue')
+        expect(getRetryDeliveryMode(undefined)).toBe('queue')
         expect(getRestoredComposerSendIntent('queue')).toBe('queue')
-        expect(getRestoredComposerSendIntent('steer')).toBe('steer')
-    })
-
-    it('uses live-state resolution when no durable mode is available', () => {
-        expect(getRestoredComposerSendIntent(undefined)).toBe('default')
+        expect(getRestoredComposerSendIntent('steer')).toBe('queue')
+        expect(getRestoredComposerSendIntent(undefined)).toBe('queue')
     })
 })
 
@@ -45,7 +38,7 @@ describe('resolveMessageDeliveryMode', () => {
         intent: 'default' as const,
     }
 
-    it('steers an immediate default Pi send while the main session is thinking', () => {
+    it('steers an immediate fresh Pi send while the main session is thinking', () => {
         expect(resolveMessageDeliveryMode(base)).toBe('steer')
     })
 
@@ -53,22 +46,13 @@ describe('resolveMessageDeliveryMode', () => {
         expect(resolveMessageDeliveryMode({ ...base, intent: 'queue' })).toBe('queue')
     })
 
-    it('preserves restored steer after the Pi main session settles, then resets to fresh idle queueing', () => {
+    it('queues a failed steer retry even when a later Pi generation is active', () => {
         const ref = { current: getRestoredComposerSendIntent('steer') }
         const retryIntent = consumeComposerSendIntent(ref)
 
-        expect(resolveMessageDeliveryMode({ ...base, isSessionThinking: false, intent: retryIntent })).toBe('steer')
+        expect(resolveMessageDeliveryMode({ ...base, intent: retryIntent })).toBe('queue')
         expect(ref.current).toBe('default')
-        expect(resolveMessageDeliveryMode({ ...base, isSessionThinking: false, intent: consumeComposerSendIntent(ref) })).toBe('queue')
-    })
-
-    it('keeps scheduled and scratchlist sends queued even when retry provenance says steer', () => {
-        expect(resolveMessageDeliveryMode({ ...base, intent: 'steer', scheduledAt: Date.now() + 60_000 })).toBe('queue')
-        expect(resolveMessageDeliveryMode({ ...base, intent: 'steer', routesToScratchlist: true })).toBe('queue')
-    })
-
-    it('leaves a restored immediate steer intact for Hub to normalize if its target is no longer Pi', () => {
-        expect(resolveMessageDeliveryMode({ ...base, agentFlavor: 'codex', intent: 'steer' })).toBe('steer')
+        expect(resolveMessageDeliveryMode({ ...base, intent: consumeComposerSendIntent(ref) })).toBe('steer')
     })
 
     it.each([

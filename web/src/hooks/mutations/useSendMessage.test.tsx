@@ -782,7 +782,7 @@ describe('useSendMessage', () => {
         )
     })
 
-    it('preserves deliveryMode when retrying a failed message', async () => {
+    it('downgrades a failed steer to queue when retrying the message', async () => {
         const sendMock = vi.fn(async () => {})
         const api = createMockApi(sendMock)
         const { getMessageWindowState } = await import('@/lib/message-window-store')
@@ -820,7 +820,7 @@ describe('useSendMessage', () => {
                 'local-steer-1',
                 undefined,
                 null,
-                'steer',
+                'queue',
             )
         })
     })

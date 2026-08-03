@@ -11,6 +11,7 @@ import {
 } from '@/lib/message-window-store'
 import { usePlatform } from '@/hooks/usePlatform'
 import type { MessageDeliveryMode } from '@hapi/protocol'
+import { getRetryDeliveryMode } from '@/lib/messageDelivery'
 
 type SendMessageInput = {
     sessionId: string
@@ -47,9 +48,9 @@ type BlockedReason = 'no-api' | 'no-session' | 'pending'
  *   downgrading to immediate -- `SessionChat.handleSend` clears the
  *   pendingSchedule the moment the mutation is accepted, so without
  *   this the schedule is gone by the time onError fires.
- * - `deliveryMode` is the resolved durable intent for this exact send. It is
- *   retained through restoration so a retry never silently loses the
- *   queue-versus-steer decision that was accepted for the failed POST.
+ * - `deliveryMode` is the resolved durable intent for this exact send. Retry
+ *   recovery retains queue, while turn-scoped steer safely degrades to queue
+ *   because the original Pi generation can no longer be proven.
  *
  * Only fired for text-only sends.  Sends with attachments fall back to
  * the legacy failed-bubble UX (the optimistic row stays as `failed` and
@@ -339,7 +340,7 @@ export function useSendMessage(
             createdAt: message.createdAt,
             attachments: getMessageAttachments(message),
             scheduledAt: message.scheduledAt ?? null,
-            deliveryMode: getMessageDeliveryMode(message),
+            deliveryMode: getRetryDeliveryMode(getMessageDeliveryMode(message)),
         })
         return true
     }
