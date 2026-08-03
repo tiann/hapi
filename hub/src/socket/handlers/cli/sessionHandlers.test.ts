@@ -139,4 +139,55 @@ describe('cli session handlers', () => {
         expect(broadcastBody.metadata.value.path).toBe('/tmp/project')
         expect(broadcastBody.metadata.value.lifecycleState).toBe('archived')
     })
+
+    it.each(['supersededBySessionId', 'opencodeClearOperation'] as const)(
+        'ignores a forged hub-owned %s addition from CLI metadata',
+        (field) => {
+            const store = new Store(':memory:')
+            const session = store.sessions.getOrCreateSession('forged-clear-link', { path: '/tmp/project' }, null, 'default')
+            const socket = new FakeSocket()
+            registerSessionHandlers(socket as unknown as CliSocketWithData, {
+                store,
+                resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+                emitAccessError: () => { throw new Error('unexpected access error') }
+            })
+            socket.trigger('update-metadata', {
+                sid: session.id,
+                expectedVersion: session.metadataVersion,
+                metadata: {
+                    path: '/tmp/project',
+                    [field]: field === 'supersededBySessionId'
+                        ? 'foreign-session'
+                        : { replacementSessionId: 'foreign-session', state: 'reserved', updatedAt: Date.now() }
+                }
+            }, () => {})
+            expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).not.toHaveProperty(field)
+        }
+    )
+
+    it('preserves existing hub-owned clear metadata across CLI metadata updates', () => {
+        const store = new Store(':memory:')
+        const operation = { replacementSessionId: 'owned-target', state: 'completed', updatedAt: Date.now() }
+        const session = store.sessions.getOrCreateSession('preserve-clear-link', {
+            supersededBySessionId: 'owned-target', opencodeClearOperation: operation
+        }, null, 'default')
+        const socket = new FakeSocket()
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => { throw new Error('unexpected access error') }
+        })
+        socket.trigger('update-metadata', {
+            sid: session.id,
+            expectedVersion: session.metadataVersion,
+            metadata: {
+                lifecycleState: 'archived',
+                supersededBySessionId: 'forged-target',
+                opencodeClearOperation: { replacementSessionId: 'forged-target', state: 'reserved', updatedAt: 0 }
+            }
+        }, () => {})
+        expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).toMatchObject({
+            supersededBySessionId: 'owned-target', opencodeClearOperation: operation, lifecycleState: 'archived'
+        })
+    })
 })

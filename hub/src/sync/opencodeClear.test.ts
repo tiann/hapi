@@ -1,7 +1,7 @@
 import { describe, expect, it, mock } from 'bun:test'
 import { RpcRegistry } from '../socket/rpcRegistry'
 import { Store } from '../store'
-import { SyncEngine } from './syncEngine'
+import { SyncEngine, type SyncEvent } from './syncEngine'
 
 function createEngine() {
     const store = new Store(':memory:')
@@ -103,6 +103,65 @@ describe('SyncEngine.clearOpenCodeSession', () => {
             expect(store.messages.getAllMessages(reserved.sessionId).map((m) => m.localId)).toEqual(['late-immediate', 'late-scheduled'])
         } finally { engine.stop() }
     })
+
+    it.each([
+        ['supersededBySessionId', 'foreign'],
+        ['opencodeClearOperation', 'foreign'],
+        ['supersededBySessionId', 'missing'],
+        ['opencodeClearOperation', 'missing']
+    ] as const)('fails closed for a forged %s redirect to a %s target', async (field, targetKind) => {
+        const { store, engine } = createEngine()
+        try {
+            const source = engine.getOrCreateSession(`forged-${field}-${targetKind}`, {
+                path: '/tmp/project', host: 'host', flavor: 'opencode'
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: source.id, time: Date.now() })
+            const targetId = `target-${field}-${targetKind}`
+            if (targetKind === 'foreign') {
+                engine.getOrCreateSession(`foreign-${field}`, { path: '/tmp/foreign', host: 'host' }, null, 'other', undefined, undefined, undefined, targetId)
+            }
+            const stored = store.sessions.getSessionByNamespace(source.id, 'default')!
+            const redirect = field === 'supersededBySessionId'
+                ? { supersededBySessionId: targetId }
+                : { opencodeClearOperation: { replacementSessionId: targetId, state: 'reserved', updatedAt: Date.now() } }
+            store.sessions.updateSessionMetadata(source.id, {
+                ...(stored.metadata as Record<string, unknown>), ...redirect
+            }, stored.metadataVersion, 'default')
+            const events: SyncEvent[] = []
+            engine.subscribe((event) => events.push(event))
+
+            await expect(engine.sendMessage(source.id, { text: 'must not cross namespace', localId: 'forged-local' })).rejects.toThrow(
+                'redirect target is unavailable'
+            )
+
+            expect(store.messages.getAllMessages(source.id)).toEqual([])
+            if (targetKind === 'foreign') expect(store.messages.getAllMessages(targetId)).toEqual([])
+            expect(events).not.toContainEqual(expect.objectContaining({ type: 'message-received' }))
+        } finally { engine.stop() }
+    })
+
+    it.each(['supersededBySessionId', 'opencodeClearOperation'] as const)(
+        'allows a same-namespace %s redirect',
+        async (field) => {
+            const { store, engine } = createEngine()
+            try {
+                const source = engine.getOrCreateSession(`same-namespace-${field}`, { path: '/tmp/project', host: 'host' }, null, 'default')
+                const target = engine.getOrCreateSession(`same-target-${field}`, { path: '/tmp/project', host: 'host' }, null, 'default')
+                const stored = store.sessions.getSessionByNamespace(source.id, 'default')!
+                const redirect = field === 'supersededBySessionId'
+                    ? { supersededBySessionId: target.id }
+                    : { opencodeClearOperation: { replacementSessionId: target.id, state: 'reserved', updatedAt: Date.now() } }
+                store.sessions.updateSessionMetadata(source.id, {
+                    ...(stored.metadata as Record<string, unknown>), ...redirect
+                }, stored.metadataVersion, 'default')
+                await engine.sendMessage(source.id, { text: 'same namespace', localId: `same-${field}` })
+                expect(store.messages.getAllMessages(source.id)).toEqual([])
+                expect(store.messages.getAllMessages(target.id)).toEqual([
+                    expect.objectContaining({ localId: `same-${field}`, invokedAt: null })
+                ])
+            } finally { engine.stop() }
+        }
+    )
 
     it('recovers cleanup-confirmed clear when the CLI dies before writing archive metadata', async () => {
         const { engine } = createEngine()

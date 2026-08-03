@@ -147,7 +147,8 @@ export class Store {
         scheduledAt?: number | null
     ): { sessionId: string; message: StoredMessage } {
         return this.db.transaction(() => {
-            const row = this.db.prepare('SELECT metadata FROM sessions WHERE id = ?').get(sessionId) as { metadata: string | null } | undefined
+            const row = this.db.prepare('SELECT namespace, metadata FROM sessions WHERE id = ?').get(sessionId) as { namespace: string; metadata: string | null } | undefined
+            if (!row) throw new Error('Message source session not found')
             let targetSessionId = sessionId
             if (row?.metadata) {
                 const metadata = JSON.parse(row.metadata) as { opencodeClearOperation?: { replacementSessionId?: string; state?: string }, supersededBySessionId?: string }
@@ -156,6 +157,11 @@ export class Store {
                         ? metadata.opencodeClearOperation?.replacementSessionId
                         : undefined)
                     ?? sessionId
+            }
+            if (targetSessionId !== sessionId) {
+                const target = this.db.prepare('SELECT 1 FROM sessions WHERE id = ? AND namespace = ?')
+                    .get(targetSessionId, row.namespace)
+                if (!target) throw new Error('OpenCode clear redirect target is unavailable in the source namespace')
             }
             return { sessionId: targetSessionId, message: addMessage(this.db, targetSessionId, content, localId, scheduledAt) }
         })()
