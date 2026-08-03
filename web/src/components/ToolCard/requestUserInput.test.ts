@@ -4,6 +4,7 @@ import {
     isRequestUserInputUrlConfirmed,
     formatRequestUserInputAnswers,
     openRequestUserInputUrl,
+    parseRequestUserInputAnswers,
     parseRequestUserInputInput
 } from './requestUserInput'
 
@@ -55,21 +56,50 @@ describe('MCP URL request user input', () => {
         })).toBe(true)
     })
 
-    it('preserves Pi extension textarea placeholder and prefill fields', () => {
+    it('preserves Pi extension textarea placeholder, prefill, and editor type', () => {
         const parsed = parseRequestUserInputInput({
             questions: [{
                 id: 'comment',
                 question: 'Comment',
                 options: [],
                 placeholder: 'Describe the change',
-                prefill: 'Initial draft'
+                prefill: 'Initial draft',
+                inputType: 'editor'
             }]
         })
 
         expect(parsed.questions[0]).toMatchObject({
             id: 'comment',
             placeholder: 'Describe the change',
-            prefill: 'Initial draft'
+            prefill: 'Initial draft',
+            inputType: 'editor'
+        })
+    })
+
+    it('round-trips editor whitespace and an intentionally empty document', () => {
+        const question = parseRequestUserInputInput({
+            questions: [{ id: 'document', question: 'Document', required: true, options: [], inputType: 'editor' }]
+        }).questions[0]!
+
+        expect(isRequestUserInputQuestionAnswered(question, { selected: [], userNote: '' })).toBe(true)
+        const whitespaceAnswers = formatRequestUserInputAnswers({
+            document: { selected: [], userNote: '  code\n' }
+        }, [question])
+        expect(whitespaceAnswers).toEqual({
+            answers: { document: { answers: ['user_note:   code\n'] } }
+        })
+        expect(parseRequestUserInputAnswers(whitespaceAnswers, [question])).toEqual({
+            document: { selected: [], userNote: '  code\n' }
+        })
+
+        const emptyAnswers = formatRequestUserInputAnswers({
+            document: { selected: [], userNote: '' }
+        }, [question])
+        expect(emptyAnswers).toEqual({
+            answers: { document: { answers: ['user_note: '] } }
+        })
+        expect(parseRequestUserInputAnswers(emptyAnswers, [question])).toEqual({
+            document: { selected: [], userNote: '' }
         })
     })
 

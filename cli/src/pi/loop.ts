@@ -411,6 +411,7 @@ type PiTransportEventOptions = {
 
 const PI_LEGACY_SETTLE_GRACE_MS = 500;
 const PI_PROMPT_LIFECYCLE_GRACE_MS = 1_000;
+const PI_COMPACTION_RETRY_START_GRACE_MS = 1_000;
 
 class PiLifecycleTimeline {
     private compacting = false;
@@ -491,7 +492,8 @@ export function wireTransportEvents(
     let deliveredSettlement = false;
     let legacySettleTimer: ReturnType<typeof setTimeout> | null = null;
     let promptLifecycleTimer: ReturnType<typeof setTimeout> | null = null;
-    const maintenanceActive = new Set<'compaction' | 'autoRetry' | 'summary'>();
+    let compactionRetryTimer: ReturnType<typeof setTimeout> | null = null;
+    const maintenanceActive = new Set<'compaction' | 'compactionRetry' | 'autoRetry' | 'summary'>();
     let agentEndObserved = false;
     let agentLifecycleSeen = false;
     let lifecycleGeneration = 0;
@@ -512,6 +514,11 @@ export function wireTransportEvents(
         if (promptLifecycleTimer) clearTimeout(promptLifecycleTimer);
         promptLifecycleTimer = null;
     };
+    const clearCompactionRetryPending = (): void => {
+        maintenanceActive.delete('compactionRetry');
+        if (compactionRetryTimer) clearTimeout(compactionRetryTimer);
+        compactionRetryTimer = null;
+    };
     const beginPromptLifecycle = (promptId: string): void => {
         lifecycleGeneration += 1;
         activePromptId = promptId;
@@ -523,6 +530,7 @@ export function wireTransportEvents(
         agentEndObserved = false;
         agentLifecycleSeen = false;
         maintenanceActive.clear();
+        clearCompactionRetryPending();
         clearLegacySettleFallback();
         clearPromptLifecycleFallback();
     };
@@ -537,6 +545,7 @@ export function wireTransportEvents(
         agentEndObserved = false;
         agentLifecycleSeen = false;
         maintenanceActive.clear();
+        clearCompactionRetryPending();
         clearLegacySettleFallback();
         clearPromptLifecycleFallback();
     };
@@ -554,6 +563,7 @@ export function wireTransportEvents(
         agentEndObserved = false;
         agentLifecycleSeen = false;
         maintenanceActive.clear();
+        clearCompactionRetryPending();
         latestContextUsageRequest += 1;
         clearLegacySettleFallback();
         clearPromptLifecycleFallback();
@@ -563,6 +573,7 @@ export function wireTransportEvents(
     const deliverSettlement = (): void => {
         if (deliveredSettlement || (activePromptId !== null && !activePromptResponseAccepted)) return;
         deliveredSettlement = true;
+        clearCompactionRetryPending();
         clearLegacySettleFallback();
         clearPromptLifecycleFallback();
         session.updateThinkingState(false);
@@ -683,12 +694,14 @@ export function wireTransportEvents(
         }
 
         if (event.type === 'agent_start' || event.type === 'turn_start') {
+            clearCompactionRetryPending();
             agentLifecycleSeen = true;
             clearLegacySettleFallback();
             clearPromptLifecycleFallback();
             options.onAgentLifecycleStarted?.();
         }
         if (event.type === 'compaction_start') {
+            clearCompactionRetryPending();
             maintenanceActive.add('compaction');
             clearLegacySettleFallback();
         } else if (event.type === 'auto_retry_start') {
@@ -699,6 +712,17 @@ export function wireTransportEvents(
             clearLegacySettleFallback();
         } else if (event.type === 'compaction_end') {
             maintenanceActive.delete('compaction');
+            if ('willRetry' in event && event.willRetry === true) {
+                maintenanceActive.add('compactionRetry');
+                clearLegacySettleFallback();
+                if (compactionRetryTimer) clearTimeout(compactionRetryTimer);
+                compactionRetryTimer = setTimeout(() => {
+                    compactionRetryTimer = null;
+                    if (!maintenanceActive.delete('compactionRetry')) return;
+                    scheduleLegacySettleFallback();
+                }, PI_COMPACTION_RETRY_START_GRACE_MS);
+                compactionRetryTimer.unref?.();
+            }
         } else if (event.type === 'auto_retry_end') {
             maintenanceActive.delete('autoRetry');
         } else if (event.type === 'summarization_retry_finished') {

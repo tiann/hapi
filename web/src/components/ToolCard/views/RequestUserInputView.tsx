@@ -27,7 +27,7 @@ export function RequestUserInputView(props: ToolViewProps) {
     const questions = parsed.questions
     // Try permission.answers first (live), fall back to tool.result (history)
     const rawAnswers = props.block.tool.permission?.answers ?? parseResultAsAnswers(props.block.tool.result) ?? undefined
-    const parsedAnswers = rawAnswers ? parseRequestUserInputAnswers(rawAnswers) : null
+    const parsedAnswers = rawAnswers ? parseRequestUserInputAnswers(rawAnswers, questions) : null
     const hasAnswers = parsedAnswers && Object.keys(parsedAnswers).length > 0
 
     if (questions.length === 0) {
@@ -50,13 +50,13 @@ export function RequestUserInputView(props: ToolViewProps) {
 
                         {isPureTextQuestion ? (
                             // Pure text question - show the answer directly
-                            hasAnswers && answer?.userNote ? (
+                            hasAnswers && answer?.userNote != null ? (
                                 <div className="mt-3">
                                     <div className="rounded-md border border-emerald-500 bg-emerald-50 dark:bg-emerald-950/30 px-2 py-2">
                                         <div className="flex items-start gap-2">
                                             <span className="shrink-0 text-sm text-emerald-600">●</span>
                                             <div className="min-w-0 flex-1">
-                                                <div className="text-sm text-emerald-700 dark:text-emerald-300 font-medium break-words">
+                                                <div className="text-sm text-emerald-700 dark:text-emerald-300 font-medium break-words whitespace-pre-wrap">
                                                     {answer.userNote}
                                                 </div>
                                             </div>

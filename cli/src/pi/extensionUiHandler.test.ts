@@ -78,6 +78,27 @@ describe('PiExtensionUiHandler', () => {
         expect(harness.sendResponse).not.toHaveBeenLastCalledWith({ type: 'extension_ui_response', id: 'no-timeout', cancelled: true });
     });
 
+    it('returns editor whitespace and an intentionally empty document byte-for-byte', async () => {
+        const harness = createHarness();
+        harness.handler.handle({ type: 'extension_ui_request', id: 'editor-whitespace', method: 'editor', title: 'Edit' });
+        await harness.respond({
+            id: 'editor-whitespace', approved: true,
+            answers: { 'editor-whitespace': { answers: ['user_note:   code\n'] } },
+        });
+        expect(harness.sendResponse).toHaveBeenCalledWith({
+            type: 'extension_ui_response', id: 'editor-whitespace', value: '  code\n',
+        });
+
+        harness.handler.handle({ type: 'extension_ui_request', id: 'editor-empty', method: 'editor', title: 'Edit' });
+        await harness.respond({
+            id: 'editor-empty', approved: true,
+            answers: { 'editor-empty': { answers: ['user_note: '] } },
+        });
+        expect(harness.sendResponse).toHaveBeenCalledWith({
+            type: 'extension_ui_response', id: 'editor-empty', value: '',
+        });
+    });
+
     it('reserves a capped proportional margin before Pi expires the dialog', async () => {
         vi.useFakeTimers();
         expect(getExtensionUiCleanupTimeout(undefined)).toBeUndefined();

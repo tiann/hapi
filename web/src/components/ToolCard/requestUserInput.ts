@@ -13,6 +13,7 @@ export type RequestUserInputQuestion = {
     options: RequestUserInputOption[]
     placeholder?: string
     prefill?: string
+    inputType?: 'editor'
 }
 
 export type RequestUserInputQuestionAnswer = {
@@ -93,7 +94,8 @@ export function parseRequestUserInputInput(input: unknown): ParsedRequestUserInp
             multiple: raw.multiple === true,
             options,
             ...(typeof raw.placeholder === 'string' ? { placeholder: raw.placeholder } : {}),
-            ...(typeof raw.prefill === 'string' ? { prefill: raw.prefill } : {})
+            ...(typeof raw.prefill === 'string' ? { prefill: raw.prefill } : {}),
+            ...(raw.inputType === 'editor' ? { inputType: 'editor' as const } : {})
         })
     }
 
@@ -123,6 +125,7 @@ export function isRequestUserInputQuestionAnswered(
     if (question.options.length > 0) {
         return answer.selected.length > 0
     }
+    if (question.inputType === 'editor') return true
     return answer.userNote.trim().length > 0
 }
 
@@ -150,17 +153,20 @@ export function extractRequestUserInputQuestionsInfo(input: unknown): RequestUse
  * Format: { answers: { [id]: { answers: ["option", "user_note: note text"] } } }
  */
 export function formatRequestUserInputAnswers(
-    answersByQuestion: Record<string, RequestUserInputQuestionAnswer>
+    answersByQuestion: Record<string, RequestUserInputQuestionAnswer>,
+    questions: RequestUserInputQuestion[] = []
 ): { answers: RequestUserInputAnswers } {
     const answers: RequestUserInputAnswers = {}
+    const questionById = new Map(questions.map((question) => [question.id, question]))
 
     for (const [id, answer] of Object.entries(answersByQuestion)) {
         const answerArray: string[] = []
 
         answerArray.push(...answer.selected)
 
-        const note = answer.userNote.trim()
-        if (note.length > 0) {
+        const isEditor = questionById.get(id)?.inputType === 'editor'
+        const note = isEditor ? answer.userNote : answer.userNote.trim()
+        if (isEditor || note.length > 0) {
             answerArray.push(`user_note: ${note}`)
         }
 
@@ -174,7 +180,8 @@ export function formatRequestUserInputAnswers(
  * Parse answers from the nested format for display
  */
 export function parseRequestUserInputAnswers(
-    answers: unknown
+    answers: unknown,
+    questions: RequestUserInputQuestion[] = []
 ): Record<string, { selected: string[]; userNote: string | null }> | null {
     if (!isObject(answers)) return null
 
@@ -182,6 +189,7 @@ export function parseRequestUserInputAnswers(
     const answersObj = isObject(answers.answers) ? answers.answers : answers
 
     const parsed: Record<string, { selected: string[]; userNote: string | null }> = {}
+    const questionById = new Map(questions.map((question) => [question.id, question]))
 
     for (const [id, value] of Object.entries(answersObj)) {
         let answerArray: string[] = []
@@ -197,7 +205,8 @@ export function parseRequestUserInputAnswers(
 
         for (const item of answerArray) {
             if (item.startsWith('user_note: ')) {
-                userNote = item.slice('user_note: '.length).trim()
+                const note = item.slice('user_note: '.length)
+                userNote = questionById.get(id)?.inputType === 'editor' ? note : note.trim()
             } else {
                 // Trim to match option labels which are also trimmed
                 selected.push(item.trim())

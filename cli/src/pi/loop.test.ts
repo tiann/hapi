@@ -1134,6 +1134,41 @@ describe('Pi settlement compatibility fallbacks', () => {
         expect(h.stateSession.client.sendSessionEvent).toHaveBeenCalledWith({ type: 'message', message: '📦 Compaction completed' });
     });
 
+    it('keeps the settlement gate closed across a compaction retry', async () => {
+        vi.useFakeTimers();
+        const h = setup();
+        h.stateSession.piIsStreaming = true;
+        h.emit({ type: 'agent_start' });
+        h.emit({ type: 'agent_end', willRetry: false });
+        h.emit({ type: 'compaction_start', reason: 'threshold' });
+        h.emit({ type: 'compaction_end', reason: 'threshold', aborted: false, willRetry: true });
+
+        await vi.advanceTimersByTimeAsync(600);
+        expect(h.onAgentSettled).not.toHaveBeenCalled();
+
+        h.emit({ type: 'agent_start' });
+        h.emit({ type: 'agent_end', willRetry: false });
+        await vi.advanceTimersByTimeAsync(499);
+        expect(h.onAgentSettled).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(h.onAgentSettled).toHaveBeenCalledTimes(1);
+    });
+
+    it('uses a bounded fallback when a compaction retry never starts', async () => {
+        vi.useFakeTimers();
+        const h = setup();
+        h.stateSession.piIsStreaming = true;
+        h.emit({ type: 'agent_start' });
+        h.emit({ type: 'agent_end', willRetry: false });
+        h.emit({ type: 'compaction_start', reason: 'threshold' });
+        h.emit({ type: 'compaction_end', reason: 'threshold', aborted: false, willRetry: true });
+
+        await vi.advanceTimersByTimeAsync(1_499);
+        expect(h.onAgentSettled).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(h.onAgentSettled).toHaveBeenCalledTimes(1);
+    });
+
     it('rejects all pending RPCs immediately during transport termination', async () => {
         const h = setup();
         const pending = sendPiRpcAndWait(h.stateSession, h.transport, { type: 'abort' }, 10_000);

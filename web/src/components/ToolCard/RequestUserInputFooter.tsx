@@ -132,7 +132,7 @@ export function RequestUserInputFooter(props: {
         }
 
         // Format answers for submission
-        const formattedAnswers = formatRequestUserInputAnswers(stateByQuestion)
+        const formattedAnswers = formatRequestUserInputAnswers(stateByQuestion, questions)
 
         if (parsed.url) {
             if (!isRequestUserInputUrlConfirmed(parsed, stateByQuestion)) {
