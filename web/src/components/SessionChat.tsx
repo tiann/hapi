@@ -568,8 +568,9 @@ function SessionChatInner(props: SessionChatProps) {
     // initializes to false again. (Previous effect-based reset was
     // racy on first paint - see public-export comment for context.)
     const handleScratchlistToggle = useCallback(() => {
+        if (isScratchlistParking) return
         setScratchlistMode((m) => !m)
-    }, [])
+    }, [isScratchlistParking])
     /**
      * Global keyboard shortcut: Ctrl/Cmd + Shift + S toggles scratchlist
      * mode (open/close drawer + flip composer routing).
@@ -594,6 +595,7 @@ function SessionChatInner(props: SessionChatProps) {
      */
     useEffect(() => {
         const onKeyDown = (e: globalThis.KeyboardEvent) => {
+            if (isScratchlistParking) return
             if (!isScratchlistToggleHotkey(e)) return
             if (isScratchlistHotkeyBlockedTarget(e.target)) return
             e.preventDefault()
@@ -601,7 +603,7 @@ function SessionChatInner(props: SessionChatProps) {
         }
         window.addEventListener('keydown', onKeyDown)
         return () => window.removeEventListener('keydown', onKeyDown)
-    }, [])
+    }, [isScratchlistParking])
     /**
      * onSend wrapper: when scratchlist mode is on AND the submission is
      * not scheduled, route to scratchlist (text and/or hub attachments).
