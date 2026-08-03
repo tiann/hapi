@@ -5,6 +5,7 @@ import {
 import type { ApiClient } from '@/api/client'
 import type { AttachmentMetadata } from '@/types/api'
 import { isImageMimeType } from '@/lib/fileAttachments'
+import { hubAttachmentFromRestoredDraft } from '@/lib/scratchlistAttachmentAdapter'
 
 async function blobToBase64(blob: Blob): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -35,10 +36,17 @@ export function attachmentsNeedScratchlistMigration(
     return (attachments ?? []).some((att) => !isHubScratchlistAttachmentPath(att.path))
 }
 
-/** Result of a scratchlist park attempt from HappyComposer. */
-export type ScratchlistParkResult =
-    | false
-    | { beforeClear: () => Promise<void> }
+/** Result of preparing a scratchlist park (migrate only — add happens in commit). */
+export type ScratchlistParkPrepared = {
+    /** Drop orphan hub blobs created during prepare (snapshot changed / give up). */
+    abort: () => Promise<void>
+    /** Persist the entry. On false, orphans are already cleaned. */
+    commit: () => Promise<boolean>
+    /** After successful commit + snapshot still matches: delete chat uploads + release chips. */
+    beforeClear: () => Promise<void>
+}
+
+export type ScratchlistParkResult = false | ScratchlistParkPrepared
 
 /**
  * - accepted: drop the original chat uploads (hub blobs are on the entry)
@@ -95,9 +103,14 @@ export async function prepareScratchlistParkAttachments(
     const createdHubIds: string[] = []
     try {
         for (const chip of pending) {
-            if (chip.hubAttachment) {
+            const contentType = chip.contentType || chip.file?.type || 'application/octet-stream'
+            const hubAttachment = chip.hubAttachment
+                ?? (chip.path && chip.file
+                    ? hubAttachmentFromRestoredDraft(chip.path, chip.file, contentType)
+                    : null)
+            if (hubAttachment) {
                 prepared.push({
-                    ...chip.hubAttachment,
+                    ...hubAttachment,
                     previewUrl: chip.previewUrl,
                 })
                 continue
@@ -106,7 +119,6 @@ export async function prepareScratchlistParkAttachments(
             if (!file) {
                 throw new Error(`Cannot park attachment ${chip.name} without file bytes`)
             }
-            const contentType = chip.contentType || file.type || 'application/octet-stream'
             const content = await blobToBase64(file)
             const result = await api.uploadScratchlistAttachment(
                 sessionId,

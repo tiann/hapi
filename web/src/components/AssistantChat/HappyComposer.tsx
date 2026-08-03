@@ -275,9 +275,8 @@ export function HappyComposer(props: {
     scratchlistCount?: number
     onScratchlistToggle?: () => void
     /**
-     * Park from a live composer snapshot without going through
-     * `composer.send()` (assistant-ui empties text/chips before onNew).
-     * Return true only when the entry was accepted so we can clear.
+     * Prepare a scratchlist park (migrate only). Caller validates the
+     * composer snapshot, then commit()/abort()/beforeClear().
      */
     onParkScratchlist?: (
         text: string,
@@ -896,16 +895,21 @@ export function HappyComposer(props: {
             setIsParkingScratchlist(true)
             try {
                 const snapshot = api.composer().getState()
-                const parkResult = await props.onParkScratchlist(
+                const prepared = await props.onParkScratchlist(
                     snapshot.text,
                     snapshot.attachments,
                 )
-                if (!parkResult) return
-                const current = api.composer().getState()
-                if (!composerParkSnapshotUnchanged(snapshot, current)) {
+                if (!prepared) return
+                // Validate before irreversible add — otherwise a mid-flight
+                // composer edit leaves a parked duplicate while chips remain.
+                if (!composerParkSnapshotUnchanged(snapshot, api.composer().getState())) {
+                    await prepared.abort()
                     return
                 }
-                await parkResult.beforeClear()
+                if (!await prepared.commit()) {
+                    return
+                }
+                await prepared.beforeClear()
                 api.composer().setText('')
                 await api.composer().clearAttachments()
             } finally {

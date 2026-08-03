@@ -642,17 +642,27 @@ function SessionChatInner(props: SessionChatProps) {
             } catch {
                 return false
             }
-            const accepted = await scratchlist.add(text, prepared)
-            if (!accepted) {
+            let aborted = false
+            const abort = async () => {
+                if (aborted) return
+                aborted = true
                 await finalizeMigratedScratchlistParkCleanup(
                     props.api,
                     props.session.id,
                     prepared,
                     false,
                 )
-                return false
             }
             return {
+                abort,
+                commit: async () => {
+                    const accepted = await scratchlist.add(text, prepared)
+                    if (!accepted) {
+                        await abort()
+                        return false
+                    }
+                    return true
+                },
                 beforeClear: async () => {
                     await finalizeMigratedScratchlistParkCleanup(
                         props.api,

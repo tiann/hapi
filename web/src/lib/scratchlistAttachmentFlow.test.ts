@@ -172,6 +172,34 @@ describe('prepareScratchlistParkAttachments (#1226)', () => {
         ])
     })
 
+    it('reuses a restored hub path without re-uploading', async () => {
+        const uploadScratchlistAttachment = vi.fn()
+        const api = { uploadScratchlistAttachment } as never
+        const hubPath = 'hapi-hub:scratchlist/default/session-1/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee-photo.png'
+        const file = new File([new Uint8Array([1, 2])], 'photo.png', { type: 'image/png' })
+
+        const result = await prepareScratchlistParkAttachments(api, 'session-1', [
+            {
+                id: 'chip-restored',
+                name: 'photo.png',
+                contentType: 'image/png',
+                file,
+                path: hubPath,
+                previewUrl: 'data:image/png;base64,x',
+            },
+        ])
+
+        expect(uploadScratchlistAttachment).not.toHaveBeenCalled()
+        expect(result).toEqual([{
+            id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+            filename: 'photo.png',
+            mimeType: 'image/png',
+            size: 2,
+            path: hubPath,
+            previewUrl: 'data:image/png;base64,x',
+        }])
+    })
+
     it('rolls back hub blobs when a later chip fails to migrate', async () => {
         const uploadScratchlistAttachment = vi.fn()
             .mockResolvedValueOnce({
