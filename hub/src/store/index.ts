@@ -166,9 +166,20 @@ export class Store {
         replacementSessionId: string,
         metadata: unknown,
         expectedVersion: number,
-        namespace: string
+        namespace: string,
+        expected?: { replacementSessionId: string; state: string; requireInactive?: boolean }
     ) {
         return this.db.transaction(() => {
+            const current = this.sessions.getSessionByNamespace(sessionId, namespace)
+            const operation = current?.metadata && typeof current.metadata === 'object'
+                ? (current.metadata as { opencodeClearOperation?: { replacementSessionId?: string; state?: string } }).opencodeClearOperation
+                : undefined
+            if (expected && (!current
+                || (expected.requireInactive === true && current.active)
+                || operation?.replacementSessionId !== expected.replacementSessionId
+                || operation.state !== expected.state)) {
+                return { result: 'version-mismatch' as const }
+            }
             const result = this.sessions.updateSessionMetadata(sessionId, metadata, expectedVersion, namespace, { touchUpdatedAt: false })
             if (result.result === 'success') this.messages.moveUninvokedMessages(replacementSessionId, sessionId)
             return result

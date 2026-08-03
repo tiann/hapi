@@ -440,7 +440,8 @@ export class SyncEngine {
     handleSessionEnd(payload: { sid: string; time: number; reason?: SessionEndReason }): void {
         const before = this.sessionCache.getSession(payload.sid)
         if (before?.metadata?.opencodeClearOperation?.state === 'reserved' && payload.reason !== 'cleared') {
-            this.sessionCache.markSessionArchivedFromHub(payload.sid, 'OpenCode clear owner exited before cleanup confirmation')
+            const operation = before.metadata.opencodeClearOperation
+            this.persistClearOperation(payload.sid, before.namespace, { ...operation, state: 'abort-needed', updatedAt: Date.now() })
             this.abortOpenCodeClearSession(payload.sid, before.namespace)
         }
         const ownsPiAttempt = before?.metadata?.piResumeAttempt !== undefined
@@ -782,10 +783,9 @@ async uploadScratchlistAttachment(
         for (let session of this.sessionCache.getSessions()) {
             const operation = session.metadata?.opencodeClearOperation
             if (session.active || !operation) continue
-            if (operation.state === 'reserved') {
-                if (session.metadata?.archiveReason === 'OpenCode clear owner exited before cleanup confirmation') {
-                    this.abortOpenCodeClearSession(session.id, session.namespace)
-                }
+            if (operation.state === 'reserved') continue
+            if (operation.state === 'abort-needed') {
+                this.abortOpenCodeClearSession(session.id, session.namespace)
                 continue
             }
             if (!['cleanup-confirmed', 'finalizing', 'failed'].includes(operation.state)) continue
@@ -1236,7 +1236,11 @@ async uploadScratchlistAttachment(
         return { type: 'success', sessionId: operation.replacementSessionId }
     }
 
-    abortOpenCodeClearSession(sessionId: string, namespace: string): ClearOpencodeSessionResult {
+    abortOpenCodeClearSession(
+        sessionId: string,
+        namespace: string,
+        expected?: { replacementSessionId: string; state: 'reserved'; requireInactive: true }
+    ): ClearOpencodeSessionResult {
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) return { type: 'error', message: 'Session not found', code: access.reason === 'access-denied' ? 'access_denied' : 'session_not_found' }
         const operation = access.session.metadata?.opencodeClearOperation
@@ -1247,15 +1251,18 @@ async uploadScratchlistAttachment(
             if (!latest?.metadata) break
             const current = latest.metadata.opencodeClearOperation
             if (!current) break
+            if (expected && (latest.active
+                || current.replacementSessionId !== expected.replacementSessionId
+                || current.state !== expected.state)) break
             const result = this.store.abortOpenCodeClearOperation(sessionId, current.replacementSessionId, {
                 ...latest.metadata,
                 opencodeClearOperation: { ...current, state: 'aborted', updatedAt: Date.now(), error: undefined }
-            }, latest.metadataVersion, namespace)
+            }, latest.metadataVersion, namespace, expected)
             if (result.result === 'success') {
                 this.sessionCache.refreshSession(sessionId)
                 return { type: 'success', sessionId }
             }
-            if (result.result !== 'version-mismatch') break
+            if (expected || result.result !== 'version-mismatch') break
             this.sessionCache.refreshSession(sessionId)
         }
         return { type: 'error', message: 'Could not abort clear reservation', code: 'replacement_link_failed' }
@@ -1929,7 +1936,11 @@ async uploadScratchlistAttachment(
         try {
             const status = await this.rpcGateway.stopRunnerSession(machineId, session.id)
             if (status === 'still_alive') return false
-            return this.abortOpenCodeClearSession(session.id, namespace).type === 'success'
+            return this.abortOpenCodeClearSession(session.id, namespace, {
+                replacementSessionId: operation.replacementSessionId,
+                state: 'reserved',
+                requireInactive: true
+            }).type === 'success'
         } catch {
             return false
         }
