@@ -650,11 +650,11 @@ export class ApiClient {
 
     async getUsageSummary(
         range: '7d' | '30d' | 'all' = '7d',
-        timezoneOffset: number = new Date().getTimezoneOffset()
+        timeZone: string = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
     ): Promise<UsageSummaryResponse> {
         const params = new URLSearchParams({
             range,
-            timezoneOffset: String(timezoneOffset)
+            timeZone
         })
         return await this.request<UsageSummaryResponse>(`/api/usage/summary?${params.toString()}`)
     }

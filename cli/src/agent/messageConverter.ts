@@ -14,6 +14,7 @@ export type CodexMessage =
                 totalTokens?: number;
                 thoughtTokens?: number;
                 cachedInputTokens?: number;
+                cacheWriteInputTokens?: number;
             };
             contextTokens?: number;
             modelContextWindow?: number;
@@ -52,11 +53,16 @@ export function convertAgentMessage(message: AgentMessage, model?: string | null
                 model: typeof model === 'string' && model.trim() ? model.trim() : null,
                 info: {
                     total: {
-                        inputTokens: message.inputTokens,
+                        inputTokens: message.inputTokens
+                            + (message.cacheReadTokens ?? 0)
+                            + (message.cacheCreationTokens ?? 0),
                         outputTokens: message.outputTokens,
                         totalTokens: message.totalTokens,
                         thoughtTokens: message.thoughtTokens,
-                        cachedInputTokens: message.cacheReadTokens
+                        cachedInputTokens: message.cacheReadTokens,
+                        ...(message.cacheCreationTokens !== undefined
+                            ? { cacheWriteInputTokens: message.cacheCreationTokens }
+                            : {})
                     },
                     contextTokens: message.contextTokens,
                     modelContextWindow: message.contextWindow

@@ -543,6 +543,7 @@ describe('wireTransportEvents', () => {
                 outputTokens: 200,
                 totalTokens: 315,
                 cacheReadTokens: 10,
+                cacheCreationTokens: 5,
                 contextTokens: 342,
                 contextWindow: 200_000,
             });

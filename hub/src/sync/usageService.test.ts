@@ -156,6 +156,38 @@ describe('usage service', () => {
         store.close()
     })
 
+    it('counts normalized ACP cached input as processed input', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession(
+            'acp-cache-usage-test',
+            { path: '/tmp', host: 'test', flavor: 'opencode' },
+            null,
+            'default'
+        )
+
+        addAgentMessage(store, session.id, {
+            type: 'codex',
+            data: {
+                type: 'token_count',
+                model: 'acp-model',
+                info: {
+                    total: {
+                        inputTokens: 13_879,
+                        outputTokens: 2,
+                        cachedInputTokens: 5_760
+                    }
+                }
+            }
+        })
+
+        const result = getUsageSummary(store, 'default', 'all')
+        expect(result.totals.inputTokens).toBe(13_879)
+        expect(result.totals.cacheReadTokens).toBe(5_760)
+        expect(result.totals.totalTokens).toBe(13_881)
+        expect(result.totals.uncachedTokens).toBe(8_121)
+        store.close()
+    })
+
     it('accepts Codex events that only contain last_token_usage', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession(
@@ -235,7 +267,7 @@ describe('usage service', () => {
         store.close()
     })
 
-    it('buckets daily usage using positive and negative viewer offsets', () => {
+    it('buckets historical usage with the event-specific DST offset', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession(
             'timezone-usage-test',
@@ -250,16 +282,12 @@ describe('usage service', () => {
                 message: { id, usage: { input_tokens: 10, output_tokens: 2 } }
             }
         })
-        addAgentMessage(store, session.id, usage('after-utc-midnight'), Date.parse('2026-01-15T00:30:00Z'))
-        addAgentMessage(store, session.id, usage('before-utc-midnight'), Date.parse('2026-01-15T23:30:00Z'))
+        addAgentMessage(store, session.id, usage('before-dst'), Date.parse('2026-03-07T04:30:00Z'))
+        addAgentMessage(store, session.id, usage('after-dst'), Date.parse('2026-03-09T04:30:00Z'))
 
-        expect(getUsageSummary(store, 'default', 'all', 60).daily.map((row) => row.key)).toEqual([
-            '2026-01-14',
-            '2026-01-15'
-        ])
-        expect(getUsageSummary(store, 'default', 'all', -60).daily.map((row) => row.key)).toEqual([
-            '2026-01-15',
-            '2026-01-16'
+        expect(getUsageSummary(store, 'default', 'all', 'America/New_York').daily.map((row) => row.key)).toEqual([
+            '2026-03-06',
+            '2026-03-09'
         ])
         store.close()
     })

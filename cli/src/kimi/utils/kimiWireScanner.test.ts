@@ -81,7 +81,14 @@ describe('convertKimiWireEvent', () => {
             message: {
                 type: 'token_count',
                 model: 'kimi-k2.5',
-                info: { total: { inputTokens: 160, outputTokens: 20, cachedInputTokens: 50 } }
+                info: {
+                    total: {
+                        inputTokens: 160,
+                        outputTokens: 20,
+                        cachedInputTokens: 50,
+                        cacheWriteInputTokens: 10
+                    }
+                }
             }
         });
     });

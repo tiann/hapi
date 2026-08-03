@@ -43,15 +43,15 @@ describe('GET /api/usage/summary', () => {
         }
     })
 
-    it('validates positive and negative timezone offset bounds', async () => {
+    it('validates IANA time zones', async () => {
         const store = new Store(':memory:')
         try {
-            for (const offset of [-840, 840]) {
-                const response = await createApp(store, 'default').request(`/api/usage/summary?timezoneOffset=${offset}`)
+            for (const timeZone of ['America/New_York', 'Asia/Shanghai']) {
+                const response = await createApp(store, 'default').request(`/api/usage/summary?timeZone=${encodeURIComponent(timeZone)}`)
                 expect(response.status).toBe(200)
             }
-            for (const offset of [-841, 841, 1.5]) {
-                const response = await createApp(store, 'default').request(`/api/usage/summary?timezoneOffset=${offset}`)
+            for (const timeZone of ['Mars/Olympus', 'x'.repeat(101)]) {
+                const response = await createApp(store, 'default').request(`/api/usage/summary?timeZone=${encodeURIComponent(timeZone)}`)
                 expect(response.status).toBe(400)
             }
         } finally {

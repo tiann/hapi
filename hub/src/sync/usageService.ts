@@ -224,15 +224,31 @@ function toBucket(key: string, totals: Totals): UsageSummaryBucket {
     return { key, ...totals }
 }
 
-function dayKey(timestamp: number, timezoneOffset: number): string {
-    return new Date(timestamp - timezoneOffset * 60_000).toISOString().slice(0, 10)
+function createDayFormatter(timeZone: string): Intl.DateTimeFormat {
+    return new Intl.DateTimeFormat('en-CA', {
+        timeZone,
+        calendar: 'iso8601',
+        numberingSystem: 'latn',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+    })
+}
+
+function dayKey(timestamp: number, formatter: Intl.DateTimeFormat): string {
+    const parts = formatter.formatToParts(new Date(timestamp))
+    const year = parts.find((part) => part.type === 'year')?.value
+    const month = parts.find((part) => part.type === 'month')?.value
+    const day = parts.find((part) => part.type === 'day')?.value
+    if (!year || !month || !day) throw new Error('Failed to format usage day')
+    return `${year}-${month}-${day}`
 }
 
 export function getUsageSummary(
     store: Store,
     namespace: string,
     range: string | undefined,
-    timezoneOffset: number = 0
+    timeZone: string = 'UTC'
 ): UsageSummaryResponse {
     const sessions = store.sessions.getSessionsByNamespace(namespace)
     // This is intentionally lazy. Existing HAPI databases have no usage table;
@@ -254,6 +270,7 @@ export function getUsageSummary(
     const sessionsWithUsage = new Set<string>()
     const cumulativePrevious = new Map<string, [number, number, number, number]>()
     const cumulativeFingerprints = new Set<string>()
+    const dayFormatter = createDayFormatter(timeZone)
 
     for (const event of events) {
         let inputTokens = event.inputTokens
@@ -293,7 +310,7 @@ export function getUsageSummary(
             ? inputTokens + cacheReadTokens + cacheCreationTokens
             : inputTokens
         addTotals(totals, normalizedInputTokens, outputTokens, cacheReadTokens, cacheCreationTokens)
-        const eventDayKey = dayKey(event.createdAt, timezoneOffset)
+        const eventDayKey = dayKey(event.createdAt, dayFormatter)
         const dailyTotals = daily.get(eventDayKey) ?? emptyTotals()
         addTotals(dailyTotals, normalizedInputTokens, outputTokens, cacheReadTokens, cacheCreationTokens)
         daily.set(eventDayKey, dailyTotals)

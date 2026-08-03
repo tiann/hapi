@@ -154,7 +154,8 @@ export function convertKimiWireEvent(event: KimiWireEvent, model?: string | null
                     total: {
                         inputTokens: inputOther + cacheRead + cacheCreation,
                         outputTokens: asFiniteNumber(usage.output) ?? 0,
-                        cachedInputTokens: cacheRead
+                        cachedInputTokens: cacheRead,
+                        cacheWriteInputTokens: cacheCreation
                     }
                 }
             }

@@ -47,12 +47,12 @@ export default function SettingsUsagePage() {
     const { api } = useAppContext()
     const { t } = useTranslation()
     const [range, setRange] = useState<UsageRange>('7d')
-    const [timezoneOffset] = useState(() => new Date().getTimezoneOffset())
+    const [timeZone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
     const query = useQuery({
-        queryKey: queryKeys.usageSummary(range, timezoneOffset),
+        queryKey: queryKeys.usageSummary(range, timeZone),
         queryFn: async () => {
             if (!api) throw new Error('API unavailable')
-            return await api.getUsageSummary(range, timezoneOffset)
+            return await api.getUsageSummary(range, timeZone)
         },
         enabled: Boolean(api),
         staleTime: 30_000,
