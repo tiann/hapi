@@ -483,6 +483,11 @@ describe('Pi abort queue boundary', () => {
         await vi.waitFor(() => expect(harness.sent.filter((item) => (item as { type?: string }).type === 'get_entries')).toHaveLength(3));
         const settlementSync = harness.sent.filter((item) => (item as { type?: string }).type === 'get_entries')[2] as { id: string };
         harness.onEvent!({ type: 'response', id: settlementSync.id, command: 'get_entries', success: true, data: { entries: [], leafId: null } });
+        // agent_settled requested another read while the command-only fallback
+        // sync was in flight, so the history layer serializes one follow-up.
+        await vi.waitFor(() => expect(harness.sent.filter((item) => (item as { type?: string }).type === 'get_entries')).toHaveLength(4));
+        const followUpSync = harness.sent.filter((item) => (item as { type?: string }).type === 'get_entries')[3] as { id: string };
+        harness.onEvent!({ type: 'response', id: followUpSync.id, command: 'get_entries', success: true, data: { entries: [], leafId: null } });
         harness.onEvent!({ type: 'response', id: compensatingAbort.id, command: 'abort', success: true });
         await expect(abortPromise).resolves.toEqual({ success: true });
 
@@ -618,6 +623,10 @@ describe('Pi abort queue boundary', () => {
         expect(abortCommand).toBeDefined();
         harness.onEvent!({ type: 'response', id: promptCommand.id, command: 'prompt', success: true });
         await vi.advanceTimersByTimeAsync(1_000);
+        const fallbackSync = harness.sent.filter((item) => (item as { type?: string }).type === 'get_entries')[2] as { id: string };
+        expect(fallbackSync).toBeDefined();
+        harness.onEvent!({ type: 'response', id: fallbackSync.id, command: 'get_entries', success: true, data: { entries: [], leafId: null } });
+        await vi.advanceTimersByTimeAsync(0);
         harness.onEvent!({ type: 'response', id: abortCommand.id, command: 'abort', success: false, error: 'No active agent to abort' });
         await Promise.resolve();
         expect(harness.sent).not.toContainEqual(expect.objectContaining({ type: 'prompt', message: 'next' }));
@@ -728,12 +737,20 @@ describe('Pi abort queue boundary', () => {
         const firstPrompt = harness.sent.find((item) => (item as { type?: string; message?: string }).type === 'prompt') as { id: string };
         harness.onEvent!({ type: 'response', id: firstPrompt.id, command: 'prompt', success: true });
         await vi.advanceTimersByTimeAsync(1_000);
+        const firstFallbackSync = harness.sent.filter((item) => (item as { type?: string }).type === 'get_entries')[2] as { id: string };
+        expect(firstFallbackSync).toBeDefined();
+        harness.onEvent!({ type: 'response', id: firstFallbackSync.id, command: 'get_entries', success: true, data: { entries: [], leafId: null } });
+        await vi.advanceTimersByTimeAsync(0);
         const promptsAfterFirst = harness.sent.filter((item) => (item as { type?: string }).type === 'prompt') as Array<{ id: string; message: string }>;
         expect(promptsAfterFirst.map((item) => item.message)).toEqual(['command-a', 'command-b']);
 
         const secondPrompt = promptsAfterFirst[1]!;
         harness.onEvent!({ type: 'response', id: secondPrompt.id, command: 'prompt', success: true });
         await vi.advanceTimersByTimeAsync(1_000);
+        const secondFallbackSync = harness.sent.filter((item) => (item as { type?: string }).type === 'get_entries')[3] as { id: string };
+        expect(secondFallbackSync).toBeDefined();
+        harness.onEvent!({ type: 'response', id: secondFallbackSync.id, command: 'get_entries', success: true, data: { entries: [], leafId: null } });
+        await vi.advanceTimersByTimeAsync(0);
         onUserMessage(userMessage('command-c'), 'command-c-id');
         await Promise.resolve();
         await vi.advanceTimersByTimeAsync(0);
@@ -741,6 +758,96 @@ describe('Pi abort queue boundary', () => {
         vi.useRealTimers();
 
         harness.onError?.(new Error('finish test'));
+        await running;
+    });
+
+    it('syncs a command-only append before registering the following prompt history entry', async () => {
+        const running = runPi({ workingDirectory: '/work' });
+        await vi.waitFor(() => expect(harness.onEvent).not.toBeNull());
+        harness.onEvent!({ type: 'response', command: 'get_state', success: true, data: {} });
+        await completeHistoryInitialization();
+
+        const userMessage = (text: string) => ({ role: 'user', content: { type: 'text', text } });
+        const onUserMessage = harness.session.onUserMessage.mock.calls.at(-1)![0] as (message: ReturnType<typeof userMessage>, localId: string) => void;
+        onUserMessage(userMessage('command-only'), 'command-local');
+        onUserMessage(userMessage('following prompt'), 'following-local');
+        await vi.waitFor(() => expect(harness.sent).toContainEqual(expect.objectContaining({ type: 'prompt', message: 'command-only' })));
+
+        vi.useFakeTimers();
+        const commandPrompt = harness.sent.find((item) => (item as { type?: string; message?: string }).type === 'prompt') as { id: string };
+        harness.onEvent!({ type: 'response', id: commandPrompt.id, command: 'prompt', success: true });
+        await vi.advanceTimersByTimeAsync(1_000);
+
+        // No entry_appended event arrives. The compatibility fallback must
+        // read Pi's append log and bind this entry before command-local is
+        // retired and the following prompt is allowed to start.
+        const commandSync = harness.sent.filter((item) => (item as { type?: string }).type === 'get_entries')[2] as { id: string };
+        expect(commandSync).toBeDefined();
+        expect(harness.sent).not.toContainEqual(expect.objectContaining({ type: 'prompt', message: 'following prompt' }));
+        harness.onEvent!({
+            type: 'response', id: commandSync.id, command: 'get_entries', success: true,
+            data: { entries: [{ id: 'native-command', type: 'message', message: { role: 'user' } }], leafId: 'native-command' },
+        });
+        await vi.advanceTimersByTimeAsync(0);
+
+        const prompts = harness.sent.filter((item) => (item as { type?: string }).type === 'prompt') as Array<{ id: string; message: string }>;
+        expect(prompts.map((prompt) => prompt.message)).toEqual(['command-only', 'following prompt']);
+        const followingPrompt = prompts[1]!;
+        harness.onEvent!({ type: 'response', id: followingPrompt.id, command: 'prompt', success: true });
+        harness.onEvent!({ type: 'agent_start' });
+        harness.onEvent!({ type: 'turn_start' });
+        const followingSync = harness.sent.filter((item) => (item as { type?: string }).type === 'get_entries')[3] as { id: string };
+        expect(followingSync).toBeDefined();
+        harness.onEvent!({
+            type: 'response', id: followingSync.id, command: 'get_entries', success: true,
+            data: { entries: [{ id: 'native-following', type: 'message', message: { role: 'user' } }], leafId: 'native-following' },
+        });
+        await vi.advanceTimersByTimeAsync(0);
+
+        let metadata: Record<string, unknown> = {};
+        for (const [updater] of harness.session.updateMetadata.mock.calls) {
+            if (typeof updater === 'function') metadata = updater(metadata);
+        }
+        expect(metadata).toMatchObject({
+            conversationHistoryEntryIds: {
+                'command-local': 'native-command',
+                'following-local': 'native-following',
+            },
+        });
+        vi.useRealTimers();
+
+        harness.onError?.(new Error('finish test'));
+        await running;
+    });
+
+    it('fails closed without starting the next prompt when command-only history sync fails', async () => {
+        const running = runPi({ workingDirectory: '/work' });
+        await vi.waitFor(() => expect(harness.onEvent).not.toBeNull());
+        harness.onEvent!({ type: 'response', command: 'get_state', success: true, data: {} });
+        await completeHistoryInitialization();
+
+        const userMessage = (text: string) => ({ role: 'user', content: { type: 'text', text } });
+        const onUserMessage = harness.session.onUserMessage.mock.calls.at(-1)![0] as (message: ReturnType<typeof userMessage>, localId: string) => void;
+        onUserMessage(userMessage('command-only'), 'command-local');
+        onUserMessage(userMessage('must remain blocked'), 'following-local');
+        await vi.waitFor(() => expect(harness.sent).toContainEqual(expect.objectContaining({ type: 'prompt', message: 'command-only' })));
+
+        vi.useFakeTimers();
+        const commandPrompt = harness.sent.find((item) => (item as { type?: string; message?: string }).type === 'prompt') as { id: string };
+        harness.onEvent!({ type: 'response', id: commandPrompt.id, command: 'prompt', success: true });
+        await vi.advanceTimersByTimeAsync(1_000);
+        const commandSync = harness.sent.filter((item) => (item as { type?: string }).type === 'get_entries')[2] as { id: string };
+        expect(commandSync).toBeDefined();
+        harness.onEvent!({ type: 'response', id: commandSync.id, command: 'get_entries', success: false, error: 'temporary read failure' });
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(harness.sent).not.toContainEqual(expect.objectContaining({ type: 'prompt', message: 'must remain blocked' }));
+        expect(harness.session.emitMessagesConsumed).not.toHaveBeenCalledWith(
+            ['command-local'],
+            expect.anything(),
+        );
+        expect(harness.cleanupCount).toBe(1);
+        vi.useRealTimers();
         await running;
     });
 });

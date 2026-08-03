@@ -602,14 +602,35 @@ export function wireTransportEvents(
         clearPromptLifecycleFallback();
         promptLifecycleTimer = setTimeout(() => {
             promptLifecycleTimer = null;
-            if (generation !== lifecycleGeneration || deliveredSettlement || agentLifecycleSeen) return;
-            const handled = options.onPromptLifecycleMissing?.(pendingLocalIds[0]);
-            // The callback may synchronously pump the next queued prompt, whose
-            // beginPromptLifecycle() advances the generation and resets state.
-            // Never stamp the old timer's settlement onto that new prompt.
-            if (handled === false || generation !== lifecycleGeneration) return;
-            deliveredSettlement = true;
-            session.updateThinkingState(false);
+            void (async () => {
+                if (generation !== lifecycleGeneration || deliveredSettlement || agentLifecycleSeen) return;
+                // Some Pi integrations omit entry_appended even for successful
+                // command-only prompts. Read the append log before runPi retires
+                // the pending localId, otherwise the next user entry can inherit
+                // this prompt's native history association.
+                if (options.conversationHistory) {
+                    try {
+                        await options.conversationHistory.syncEntries();
+                    } catch (error) {
+                        if (generation !== lifecycleGeneration || deliveredSettlement || agentLifecycleSeen) return;
+                        const detail = error instanceof Error ? error.message : String(error);
+                        // Continuing would discard the only FIFO association for
+                        // an unread native user entry. Fail the wrapper closed
+                        // instead of allowing all later fork/rewind points to
+                        // shift onto the wrong HAPI messages.
+                        options.onStartupFailure?.(new Error(`Pi command-only history sync failed: ${detail}`));
+                        return;
+                    }
+                }
+                if (generation !== lifecycleGeneration || deliveredSettlement || agentLifecycleSeen) return;
+                const handled = options.onPromptLifecycleMissing?.(pendingLocalIds[0]);
+                // The callback may synchronously pump the next queued prompt,
+                // whose beginPromptLifecycle() advances the generation and
+                // resets state. Never stamp the old timer's settlement onto it.
+                if (handled === false || generation !== lifecycleGeneration) return;
+                deliveredSettlement = true;
+                session.updateThinkingState(false);
+            })();
         }, PI_PROMPT_LIFECYCLE_GRACE_MS);
         promptLifecycleTimer.unref?.();
     };

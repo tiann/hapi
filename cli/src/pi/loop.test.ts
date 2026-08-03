@@ -1084,6 +1084,64 @@ describe('Pi settlement compatibility fallbacks', () => {
         expect(normal.onPromptLifecycleMissing).not.toHaveBeenCalled();
     });
 
+    it('syncs conversation history before reporting a missing prompt lifecycle', async () => {
+        vi.useFakeTimers();
+        const order: string[] = [];
+        let listener: ((event: Record<string, unknown>) => void) | null = null;
+        const transport = {
+            onEvent: vi.fn((handler: (event: Record<string, unknown>) => void) => { listener = handler; }),
+            send: vi.fn(),
+        } as unknown as PiTransport;
+        const stateSession = createMockSession();
+        const conversationHistory = {
+            syncEntries: vi.fn(async () => { order.push('sync'); }),
+        } as unknown as PiConversationHistory;
+        const onPromptLifecycleMissing = vi.fn(() => { order.push('missing'); });
+        const controller = wireTransportEvents(transport, stateSession, ['command-local'], {
+            conversationHistory,
+            onPromptLifecycleMissing,
+        });
+
+        controller.beginPromptLifecycle('command-a');
+        listener!({ type: 'response', id: 'command-a', command: 'prompt', success: true });
+        await vi.advanceTimersByTimeAsync(1_000);
+
+        expect(conversationHistory.syncEntries).toHaveBeenCalledTimes(1);
+        expect(onPromptLifecycleMissing).toHaveBeenCalledWith('command-local');
+        expect(order).toEqual(['sync', 'missing']);
+    });
+
+    it('fails closed without retiring the prompt when command-only history sync fails', async () => {
+        vi.useFakeTimers();
+        const pendingLocalIds = ['command-local'];
+        let listener: ((event: Record<string, unknown>) => void) | null = null;
+        const transport = {
+            onEvent: vi.fn((handler: (event: Record<string, unknown>) => void) => { listener = handler; }),
+            send: vi.fn(),
+        } as unknown as PiTransport;
+        const stateSession = createMockSession();
+        const conversationHistory = {
+            syncEntries: vi.fn(async () => { throw new Error('temporary get_entries failure'); }),
+        } as unknown as PiConversationHistory;
+        const onPromptLifecycleMissing = vi.fn();
+        const onStartupFailure = vi.fn();
+        const controller = wireTransportEvents(transport, stateSession, pendingLocalIds, {
+            conversationHistory,
+            onPromptLifecycleMissing,
+            onStartupFailure,
+        });
+
+        controller.beginPromptLifecycle('command-a');
+        listener!({ type: 'response', id: 'command-a', command: 'prompt', success: true });
+        await vi.advanceTimersByTimeAsync(1_000);
+
+        expect(onStartupFailure).toHaveBeenCalledWith(expect.objectContaining({
+            message: 'Pi command-only history sync failed: temporary get_entries failure',
+        }));
+        expect(onPromptLifecycleMissing).not.toHaveBeenCalled();
+        expect(pendingLocalIds).toEqual(['command-local']);
+    });
+
     it('uses a fresh generation for consecutive command-only prompts', async () => {
         vi.useFakeTimers();
         const h = setup();
