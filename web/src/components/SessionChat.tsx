@@ -21,6 +21,7 @@ import { reconcileChatBlocks } from '@/chat/reconcile'
 import { buildConversationOutline } from '@/chat/outline'
 import { buildVisibleChatBlocks, isToolGroupBlock, visibleBlockRole, type ToolGroupBlock } from '@/chat/toolGroups'
 import { useUnseenBlockCount } from '@/hooks/useUnseenBlockCount'
+import { useCodexExplorationCollapse } from '@/hooks/useCodexExplorationCollapse'
 import { isQueuedForInvocation } from '@/lib/messages'
 import { inactiveSessionCanResume } from '@/lib/sessionResume'
 import {
@@ -480,6 +481,7 @@ export function SessionChat(props: SessionChatProps) {
 function SessionChatInner(props: SessionChatProps) {
     const { haptic } = usePlatform()
     const { t } = useTranslation()
+    const { codexExplorationCollapsed } = useCodexExplorationCollapse()
     const navigate = useNavigate()
     const [historyActionPending, setHistoryActionPending] = useState(false)
 
@@ -1164,9 +1166,10 @@ function SessionChatInner(props: SessionChatProps) {
     const visibleBlocks = useMemo(
         () => buildVisibleChatBlocks(reconciled.blocks, {
             hasMoreMessages: props.hasMoreMessages,
-            previousGroups: visibleGroupsRef.current
+            previousGroups: visibleGroupsRef.current,
+            codexExplorationCollapsed
         }),
-        [reconciled.blocks, props.hasMoreMessages]
+        [reconciled.blocks, props.hasMoreMessages, codexExplorationCollapsed]
     )
 
     // Fork-current must compare against assistant-ui message ids (`kind:id`),

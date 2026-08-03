@@ -752,6 +752,8 @@ export default {
   'settings.chat.terminalToolDisplay': 'Terminal Tool Cards',
   'settings.chat.terminalToolDisplay.compact': 'Compact (command only)',
   'settings.chat.terminalToolDisplay.detailed': 'Detailed (show output preview)',
+  'settings.chat.codexExplorationCollapsed': 'Collapse explored tool groups by default',
+  'settings.chat.codexExplorationCollapsed.desc': 'Keep Codex read and search activity collapsed until you open it.',
   'settings.chat.groupedToolBackground': 'Grouped Tool Use Background',
   'settings.chat.userMessageBackground': 'User Message Background',
   'settings.chat.surfaceColor.default': 'Default color',

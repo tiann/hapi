@@ -756,6 +756,8 @@ export default {
   'settings.chat.terminalToolDisplay': '终端工具卡片',
   'settings.chat.terminalToolDisplay.compact': '简洁（仅命令）',
   'settings.chat.terminalToolDisplay.detailed': '详细（显示输出预览）',
+  'settings.chat.codexExplorationCollapsed': '已探索工具组默认收起',
+  'settings.chat.codexExplorationCollapsed.desc': 'Codex 的读取和搜索活动默认收起，点击后查看详情。',
   'settings.chat.groupedToolBackground': '聚合 Tool Use 背景',
   'settings.chat.userMessageBackground': '用户消息背景',
   'settings.chat.surfaceColor.default': '默认颜色',
