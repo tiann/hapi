@@ -34,10 +34,6 @@ const DISCOVERY_WINDOW_SLACK_MS = 30_000
 // prefix read below and by the early exit on the first match.
 const SCAN_CANDIDATE_WARN_THRESHOLD = 50
 const MODEL_SETTLING_RETRY_DELAYS_MS = [100, 200, 300] as const
-// Require a unique content match to remain unique briefly before binding. This
-// lets a concurrently-starting real brain surface before an earlier foreign
-// brain with the same first prompt can be committed permanently.
-const DISCOVERY_SETTLE_MS = 150
 
 type ResolveModels = typeof resolveAgyTurnModels
 type Sleep = (delayMs: number, signal?: AbortSignal) => Promise<void>
@@ -104,6 +100,17 @@ function brainLogPath(uuid: string): string {
     return join(AGY_BRAIN_DIR, uuid, LOG_REL_PATH)
 }
 
+async function listBrainUuids(): Promise<Set<string>> {
+    try {
+        const entries = await readdir(AGY_BRAIN_DIR, { withFileTypes: true })
+        return new Set(entries
+            .filter((entry) => entry.isDirectory() && /^[0-9a-f-]{36}$/.test(entry.name))
+            .map((entry) => entry.name))
+    } catch {
+        return new Set()
+    }
+}
+
 type CreateAgySessionScannerOpts = {
     onEntry: (entry: AgyTranscriptEntry) => void
     /**
@@ -127,7 +134,8 @@ type CreateAgySessionScannerOpts = {
 }
 
 export async function createAgySessionScanner(opts: CreateAgySessionScannerOpts) {
-    const scanner = new AgySessionScanner(opts)
+    const preexistingBrainUuids = await listBrainUuids()
+    const scanner = new AgySessionScanner(opts, preexistingBrainUuids)
     await scanner.start()
     return {
         cleanup: () => scanner.cleanup(),
@@ -148,16 +156,17 @@ class AgySessionScanner extends BaseSessionScanner<AgyTranscriptEntry> {
     // launcher is about to start agy, so our real brain dir cannot predate
     // this. Anchors the discovery scan window (see DISCOVERY_WINDOW_SLACK_MS).
     private readonly scannerStartMs: number
+    private readonly preexistingBrainUuids: ReadonlySet<string>
     private sessionMessageText: string | null = null
+    private sessionMessageSubmittedAtMs: number | null = null
     private foundBrainUuid: string | null = null
     private ambiguityReported = false
-    private pendingDiscoveryMatch: { uuid: string; firstSeenAt: number } | null = null
-    private discoverySettleTimer: ReturnType<typeof setTimeout> | null = null
     private readonly modelSettlingAbortController = new AbortController()
 
-    constructor(opts: CreateAgySessionScannerOpts) {
+    constructor(opts: CreateAgySessionScannerOpts, preexistingBrainUuids: ReadonlySet<string>) {
         super({ intervalMs: 5000 })
         this.scannerStartMs = Date.now()
+        this.preexistingBrainUuids = preexistingBrainUuids
         this.onEntry = opts.onEntry
         this.onBrainFoundCallback = opts.onBrainFound
         this.onDiscoveryAmbiguousCallback = opts.onDiscoveryAmbiguous
@@ -173,7 +182,6 @@ class AgySessionScanner extends BaseSessionScanner<AgyTranscriptEntry> {
     }
 
     public override async cleanup(): Promise<void> {
-        this.clearPendingDiscoveryMatch()
         this.modelSettlingAbortController.abort()
         await super.cleanup()
     }
@@ -188,12 +196,16 @@ class AgySessionScanner extends BaseSessionScanner<AgyTranscriptEntry> {
         // content-match discovers a brain.
         if (this.foundBrainUuid === uuid) return
         logger.debug(`[agy-scanner] onNewSession: switching brain to ${uuid}`)
-        this.clearPendingDiscoveryMatch()
         this.foundBrainUuid = uuid
         this.invalidate()
     }
 
     setSessionMessageText(text: string): void {
+        if (this.sessionMessageSubmittedAtMs === null) {
+            // Called immediately before the PTY writes CR. The matching AGY
+            // USER_INPUT must therefore be created at or after this boundary.
+            this.sessionMessageSubmittedAtMs = Date.now()
+        }
         this.sessionMessageText = text
         this.invalidate()
     }
@@ -250,6 +262,7 @@ class AgySessionScanner extends BaseSessionScanner<AgyTranscriptEntry> {
         const candidates = withMtime
             .filter((e): e is NonNullable<typeof e> => e !== null)
             .filter((e) => e.mtime >= windowStartMs)
+            .filter((e) => !this.preexistingBrainUuids.has(e.uuid))
             // Newest-first: the likely match (our own, just-written brain) is
             // tried first. Ordering is a heuristic for speed only — every
             // candidate in the window is scanned until one matches.
@@ -268,7 +281,7 @@ class AgySessionScanner extends BaseSessionScanner<AgyTranscriptEntry> {
             const logPath = brainLogPath(uuid)
             if (text) {
                 try {
-                    if (await brainTranscriptMatches(logPath, text, bodyNeedle)) {
+                    if (await brainTranscriptMatches(logPath, text, bodyNeedle, this.sessionMessageSubmittedAtMs)) {
                         logger.debug(`[agy-scanner] matched brain ${uuid} via content`)
                         matches.push({ uuid, logPath })
                     }
@@ -280,19 +293,6 @@ class AgySessionScanner extends BaseSessionScanner<AgyTranscriptEntry> {
 
         if (matches.length === 1) {
             const [{ uuid, logPath }] = matches
-            const now = Date.now()
-            if (this.pendingDiscoveryMatch?.uuid !== uuid) {
-                this.clearPendingDiscoveryMatch()
-                this.pendingDiscoveryMatch = { uuid, firstSeenAt: now }
-                this.scheduleDiscoveryConfirmation(DISCOVERY_SETTLE_MS)
-                return []
-            }
-            const elapsed = now - this.pendingDiscoveryMatch.firstSeenAt
-            if (elapsed < DISCOVERY_SETTLE_MS) {
-                this.scheduleDiscoveryConfirmation(DISCOVERY_SETTLE_MS - elapsed)
-                return []
-            }
-            this.clearPendingDiscoveryMatch()
             this.foundBrainUuid = uuid
             // Notify the caller immediately so it can persist the UUID to
             // session metadata without waiting for onMessage polling.
@@ -300,7 +300,6 @@ class AgySessionScanner extends BaseSessionScanner<AgyTranscriptEntry> {
             logger.debug(`[agy-scanner] found brain ${uuid}, watching 1 file`)
             return [logPath]
         }
-        this.clearPendingDiscoveryMatch()
         if (matches.length > 1) {
             logger.warn(`[agy-scanner] ${matches.length} brains matched the first message exactly; refusing ambiguous attachment`)
             if (!this.ambiguityReported) {
@@ -313,20 +312,6 @@ class AgySessionScanner extends BaseSessionScanner<AgyTranscriptEntry> {
         // this chat (the raw-JSON noise). Watch nothing until the session message
         // text appears in exactly one brain's transcript on a later scan.
         return []
-    }
-
-    private scheduleDiscoveryConfirmation(delayMs: number): void {
-        if (this.discoverySettleTimer) clearTimeout(this.discoverySettleTimer)
-        this.discoverySettleTimer = setTimeout(() => {
-            this.discoverySettleTimer = null
-            this.invalidate()
-        }, delayMs)
-    }
-
-    private clearPendingDiscoveryMatch(): void {
-        if (this.discoverySettleTimer) clearTimeout(this.discoverySettleTimer)
-        this.discoverySettleTimer = null
-        this.pendingDiscoveryMatch = null
     }
 
     // Incremental byte-offset read: `cursor` is a byte offset into the
@@ -395,9 +380,10 @@ async function brainTranscriptMatches(
     logPath: string,
     text: string,
     bodyNeedle: string | null,
+    submittedAtMs: number | null,
 ): Promise<boolean> {
     const prefix = await readTranscriptPrefix(logPath, CONTENT_MATCH_PREFIX_BYTES)
-    if (matchesUserInput(prefix.entries, text, bodyNeedle)) return true
+    if (matchesUserInput(prefix.entries, text, bodyNeedle, submittedAtMs)) return true
 
     // The first USER_INPUT sits at offset 0, so a first message longer than the
     // prefix window leaves no complete line to parse. Giving up here would
@@ -410,16 +396,24 @@ async function brainTranscriptMatches(
             `[agy-scanner] no complete USER_INPUT entry within the first ${CONTENT_MATCH_PREFIX_BYTES}B of ${logPath} — falling back to a full read`
         )
         const full = await readTranscriptPrefix(logPath, Number.POSITIVE_INFINITY)
-        return matchesUserInput(full.entries, text, bodyNeedle)
+        return matchesUserInput(full.entries, text, bodyNeedle, submittedAtMs)
     }
     return false
 }
 
-function matchesUserInput(entries: AgyTranscriptEntry[], text: string, bodyNeedle: string | null): boolean {
+function matchesUserInput(
+    entries: AgyTranscriptEntry[],
+    text: string,
+    bodyNeedle: string | null,
+    submittedAtMs: number | null,
+): boolean {
     const normalizedText = normalizeUserInput(text)
     const normalizedBody = bodyNeedle ? normalizeUserInput(bodyNeedle) : null
     for (const entry of entries) {
         if (entry.type !== 'USER_INPUT') continue
+        const createdAtMs = Date.parse(entry.created_at)
+        const submittedSecondMs = submittedAtMs === null ? null : Math.floor(submittedAtMs / 1000) * 1000
+        if (submittedSecondMs === null || !Number.isFinite(createdAtMs) || createdAtMs < submittedSecondMs) continue
         const content = entry.content
         if (!content) continue
         // Prefer the attachment-stripped body text too: agy re-packages

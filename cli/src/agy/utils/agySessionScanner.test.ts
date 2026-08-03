@@ -23,7 +23,7 @@ function makeTranscriptLine(step_index: number, type: AgyTranscriptEntry['type']
         source: 'MODEL',
         type,
         status: 'DONE',
-        created_at: '2026-01-01T00:00:00Z',
+        created_at: new Date(Math.ceil(Date.now() / 1000) * 1000).toISOString().replace('.000Z', 'Z'),
         content,
     }
     return JSON.stringify(entry)
@@ -308,6 +308,7 @@ describe('AgySessionScanner — resume support', () => {
     // replaces that cap.
     it('finds our brain despite churn from many newer brains (formerly truncated by the newest-3 window)', async () => {
         const needle = `hapi-churn-needle-${Date.now()}`
+        const scanner = await createAgySessionScanner({ onEntry: () => {} })
         makeTempBrain(TEST_UUID, makeTranscriptLine(0, 'USER_INPUT', needle) + '\n')
 
         // Simulate several more-recently-touched foreign brains created after
@@ -321,7 +322,6 @@ describe('AgySessionScanner — resume support', () => {
         }
 
         try {
-            const scanner = await createAgySessionScanner({ onEntry: () => {} })
             scanner.setSessionMessageText(needle)
             await new Promise((r) => setTimeout(r, 300))
 
@@ -353,38 +353,30 @@ describe('AgySessionScanner — resume support', () => {
         await scanner.cleanup()
     })
 
-    it('does not bind an early exact match when a second matching brain appears during discovery settling', async () => {
-        const prompt = `staggered-match-${Date.now()}`
+    it('ignores an exact matching brain that existed before scanner startup even within the same timestamp second', async () => {
+        const prompt = `timestamp-boundary-${Date.now()}`
         const foreignUuid = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
-        const realUuid = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
-        const ambiguityCounts: number[] = []
+        const foreignLine = JSON.stringify({
+            ...JSON.parse(makeTranscriptLine(0, 'USER_INPUT', prompt)),
+            created_at: new Date(Math.ceil(Date.now() / 1000) * 1000).toISOString().replace('.000Z', 'Z'),
+        })
 
         try {
-            makeTempBrain(foreignUuid, makeTranscriptLine(0, 'USER_INPUT', prompt) + '\n')
-            const scanner = await createAgySessionScanner({
-                onEntry: () => {},
-                onDiscoveryAmbiguous: (count) => ambiguityCounts.push(count),
-            })
+            makeTempBrain(foreignUuid, foreignLine + '\n')
+            const scanner = await createAgySessionScanner({ onEntry: () => {} })
             scanner.setSessionMessageText(prompt)
-            await new Promise((resolve) => setTimeout(resolve, 50))
-            makeTempBrain(realUuid, makeTranscriptLine(0, 'USER_INPUT', prompt) + '\n')
+            await new Promise((resolve) => setTimeout(resolve, 300))
 
-            await vi.waitFor(() => expect(ambiguityCounts).toEqual([2]), { timeout: 1200 })
             expect(scanner.getBrainUuid()).toBeNull()
             await scanner.cleanup()
         } finally {
-            for (const uuid of [foreignUuid, realUuid]) {
-                try { rmSync(join(BRAIN_BASE, uuid), { recursive: true, force: true }) } catch { /* best-effort */ }
-            }
+            try { rmSync(join(BRAIN_BASE, foreignUuid), { recursive: true, force: true }) } catch { /* best-effort */ }
         }
     })
 
     it('fails closed when two in-window brains have the same exact first prompt', async () => {
         const otherUuid = '00000000-0000-4000-8000-000000000002'
         const prompt = `hapi-ambiguous-${Date.now()}`
-        makeTempBrain(TEST_UUID, makeTranscriptLine(0, 'USER_INPUT', prompt) + '\n')
-        makeTempBrain(otherUuid, makeTranscriptLine(0, 'USER_INPUT', prompt) + '\n')
-
         try {
             const foundUuids: string[] = []
             const ambiguityCounts: number[] = []
@@ -393,6 +385,8 @@ describe('AgySessionScanner — resume support', () => {
                 onBrainFound: (uuid) => foundUuids.push(uuid),
                 onDiscoveryAmbiguous: (count) => ambiguityCounts.push(count),
             })
+            makeTempBrain(TEST_UUID, makeTranscriptLine(0, 'USER_INPUT', prompt) + '\n')
+            makeTempBrain(otherUuid, makeTranscriptLine(0, 'USER_INPUT', prompt) + '\n')
             scanner.setSessionMessageText(prompt)
             await new Promise((r) => setTimeout(r, 300))
             scanner.setSessionMessageText(prompt)
@@ -437,6 +431,7 @@ describe('AgySessionScanner — resume support', () => {
         // keeps the newest N therefore drops precisely the one brain we are
         // looking for — the newest-3 bug, moved to N.
         const needle = `hapi-cap-needle-${Date.now()}`
+        const scanner = await createAgySessionScanner({ onEntry: () => {} })
         const { brainDir } = makeTempBrain(TEST_UUID, makeTranscriptLine(0, 'USER_INPUT', needle) + '\n')
         const older = new Date(Date.now() - 5000) // still inside the window, but oldest
         utimesSync(brainDir, older, older)
@@ -449,7 +444,6 @@ describe('AgySessionScanner — resume support', () => {
         }
 
         try {
-            const scanner = await createAgySessionScanner({ onEntry: () => {} })
             scanner.setSessionMessageText(needle)
             await new Promise((r) => setTimeout(r, 500))
 
@@ -463,6 +457,7 @@ describe('AgySessionScanner — resume support', () => {
     })
 
     it('logs a warning (not silent truncation) when in-window candidates exceed the sanity bound', async () => {
+        const scanner = await createAgySessionScanner({ onEntry: () => {} })
         const extraUuids: string[] = []
         const COUNT = 60 // comfortably above the sanity bound, with margin for ambient brain-dir churn on this machine
         for (let i = 0; i < COUNT; i++) {
@@ -473,7 +468,6 @@ describe('AgySessionScanner — resume support', () => {
 
         const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined)
         try {
-            const scanner = await createAgySessionScanner({ onEntry: () => {} })
             scanner.setSessionMessageText('needle-that-matches-nothing')
             await new Promise((r) => setTimeout(r, 500))
 
