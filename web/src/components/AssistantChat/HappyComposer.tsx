@@ -525,6 +525,8 @@ export function HappyComposer(props: {
     const textareaRef = useRef<HTMLTextAreaElement>(null)
     const richInputRef = useRef<RichComposerInputHandle>(null)
     const richComposerFueAnchorRef = useRef<HTMLDivElement>(null)
+    const settingsButtonRef = useRef<HTMLButtonElement>(null)
+    const settingsOverlayRef = useRef<HTMLDivElement>(null)
     // `composer.text === ''` alone is not enough to identify the empty state
     // created by a send. A user can type and delete a fresh draft before the
     // failed mutation reports back. Keep monotonic interaction generations so
@@ -1380,6 +1382,21 @@ export function HappyComposer(props: {
         haptic('light')
     }, [onModelEffortChange, onModelChange, controlsDisabled, haptic, dismissSettings])
 
+    useEffect(() => {
+        if (!showSettings) return
+
+        const handlePointerDown = (event: PointerEvent) => {
+            const target = event.target
+            if (!(target instanceof Node)) return
+            if (settingsOverlayRef.current?.contains(target)) return
+            if (settingsButtonRef.current?.contains(target)) return
+            dismissSettings()
+        }
+
+        document.addEventListener('pointerdown', handlePointerDown)
+        return () => document.removeEventListener('pointerdown', handlePointerDown)
+    }, [dismissSettings, showSettings])
+
     const handleSubmit = useCallback((event?: ReactFormEvent<HTMLFormElement>) => {
         event?.preventDefault()
         if (!attachmentsReady) {
@@ -1557,7 +1574,7 @@ export function HappyComposer(props: {
         // Non-Pi flavors: original unified gear menu
         if (showSettings && (showCollaborationSettings || showCopilotAgentModeSettings || showPermissionSettings || showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings || showEffortSettings || showFastModeSettings)) {
             return (
-                <div className={`${overlayPositionClass} w-full`}>
+                <div ref={settingsOverlayRef} className={`${overlayPositionClass} w-full`}>
                     <FloatingOverlay maxHeight={320}>
                         {showCollaborationSettings ? (
                             <div className="py-2">
@@ -2171,6 +2188,7 @@ export function HappyComposer(props: {
                             canSend={canSend}
                             controlsDisabled={controlsDisabled}
                             showSettingsButton={showSettingsButton}
+                            settingsButtonRef={settingsButtonRef}
                             onSettingsToggle={handleSettingsToggle}
                             expanded={isExpanded}
                             onExpandedToggle={handleExpandedToggle}

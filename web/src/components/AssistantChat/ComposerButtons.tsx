@@ -6,7 +6,7 @@ import { ScheduleTimePicker } from './ScheduleTimePicker'
 import type { PendingSchedule } from './ScheduleTimePicker'
 import { useFue } from '@/lib/use-fue'
 import { FueCallout, FueDot } from '@/components/Fue'
-import { Children, isValidElement, useRef, useState, type ReactElement, type ReactNode } from 'react'
+import { Children, isValidElement, useRef, useState, type ReactElement, type ReactNode, type Ref } from 'react'
 import { useComposerToolbarLayout, type ComposerToolbarItemId, type ComposerToolbarLayout } from '@/hooks/useComposerToolbarLayout'
 import { useLongPress } from '@/hooks/useLongPress'
 import type { ComposerSendIntent } from '@/lib/messageDelivery'
@@ -623,6 +623,7 @@ export function ComposerButtons(props: {
     canSend: boolean
     controlsDisabled: boolean
     showSettingsButton: boolean
+    settingsButtonRef?: Ref<HTMLButtonElement>
     onSettingsToggle: () => void
     expanded: boolean
     onExpandedToggle: () => void
@@ -704,6 +705,7 @@ export function ComposerButtons(props: {
                 <ToolbarItemSlot item="settings">
                 {props.showSettingsButton ? (
                     <button
+                        ref={props.settingsButtonRef}
                         type="button"
                         aria-label={t('composer.settings')}
                         title={t('composer.settings')}
