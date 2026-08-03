@@ -186,6 +186,27 @@ export class Store {
         })()
     }
 
+    transitionOpenCodeClearOperation(
+        sessionId: string,
+        metadata: unknown,
+        expectedVersion: number,
+        namespace: string,
+        expected: { replacementSessionId: string; state: string }
+    ) {
+        return this.db.transaction(() => {
+            const current = this.sessions.getSessionByNamespace(sessionId, namespace)
+            const operation = current?.metadata && typeof current.metadata === 'object'
+                ? (current.metadata as { opencodeClearOperation?: { replacementSessionId?: string; state?: string } }).opencodeClearOperation
+                : undefined
+            if (!current
+                || operation?.replacementSessionId !== expected.replacementSessionId
+                || operation.state !== expected.state) {
+                return { result: 'version-mismatch' as const }
+            }
+            return this.sessions.updateSessionMetadata(sessionId, metadata, expectedVersion, namespace, { touchUpdatedAt: false })
+        })()
+    }
+
     close(): void {
         if (this.closed) return
         this.db.close()

@@ -441,8 +441,12 @@ export class SyncEngine {
         const before = this.sessionCache.getSession(payload.sid)
         if (before?.metadata?.opencodeClearOperation?.state === 'reserved' && payload.reason !== 'cleared') {
             const operation = before.metadata.opencodeClearOperation
-            this.persistClearOperation(payload.sid, before.namespace, { ...operation, state: 'abort-needed', updatedAt: Date.now() })
-            this.abortOpenCodeClearSession(payload.sid, before.namespace)
+            if (this.transitionClearOperation(payload.sid, before.namespace, operation, 'abort-needed')) {
+                this.abortOpenCodeClearSession(payload.sid, before.namespace, {
+                    replacementSessionId: operation.replacementSessionId,
+                    state: 'abort-needed'
+                })
+            }
         }
         const ownsPiAttempt = before?.metadata?.piResumeAttempt !== undefined
         const isPiAttemptChild = this.sessionCache.getSessions().some(
@@ -785,7 +789,10 @@ async uploadScratchlistAttachment(
             if (session.active || !operation) continue
             if (operation.state === 'reserved') continue
             if (operation.state === 'abort-needed') {
-                this.abortOpenCodeClearSession(session.id, session.namespace)
+                this.abortOpenCodeClearSession(session.id, session.namespace, {
+                    replacementSessionId: operation.replacementSessionId,
+                    state: 'abort-needed'
+                })
                 continue
             }
             if (!['cleanup-confirmed', 'finalizing', 'failed'].includes(operation.state)) continue
@@ -1239,30 +1246,34 @@ async uploadScratchlistAttachment(
     abortOpenCodeClearSession(
         sessionId: string,
         namespace: string,
-        expected?: { replacementSessionId: string; state: 'reserved'; requireInactive: true }
+        expected?: { replacementSessionId: string; state: 'reserved' | 'abort-needed'; requireInactive?: true }
     ): ClearOpencodeSessionResult {
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) return { type: 'error', message: 'Session not found', code: access.reason === 'access-denied' ? 'access_denied' : 'session_not_found' }
         const operation = access.session.metadata?.opencodeClearOperation
         if (!operation) return { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
         if (operation.state === 'completed') return { type: 'success', sessionId: operation.replacementSessionId }
+        const required = expected ?? (operation.state === 'reserved'
+            ? { replacementSessionId: operation.replacementSessionId, state: 'reserved' as const }
+            : undefined)
+        if (!required) return { type: 'error', message: 'Clear reservation cannot be aborted from its current state', code: 'clear_unavailable' }
         for (let attempt = 0; attempt < 3; attempt += 1) {
             const latest = this.sessionCache.getSessionByNamespace(sessionId, namespace) ?? this.sessionCache.refreshSession(sessionId)
             if (!latest?.metadata) break
             const current = latest.metadata.opencodeClearOperation
             if (!current) break
-            if (expected && (latest.active
-                || current.replacementSessionId !== expected.replacementSessionId
-                || current.state !== expected.state)) break
+            if ((required.requireInactive && latest.active)
+                || current.replacementSessionId !== required.replacementSessionId
+                || current.state !== required.state) break
             const result = this.store.abortOpenCodeClearOperation(sessionId, current.replacementSessionId, {
                 ...latest.metadata,
                 opencodeClearOperation: { ...current, state: 'aborted', updatedAt: Date.now(), error: undefined }
-            }, latest.metadataVersion, namespace, expected)
+            }, latest.metadataVersion, namespace, required)
             if (result.result === 'success') {
                 this.sessionCache.refreshSession(sessionId)
                 return { type: 'success', sessionId }
             }
-            if (expected || result.result !== 'version-mismatch') break
+            if (result.result !== 'version-mismatch') break
             this.sessionCache.refreshSession(sessionId)
         }
         return { type: 'error', message: 'Could not abort clear reservation', code: 'replacement_link_failed' }
@@ -1272,8 +1283,8 @@ async uploadScratchlistAttachment(
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) return { type: 'error', message: 'Session not found', code: access.reason === 'access-denied' ? 'access_denied' : 'session_not_found' }
         const operation = access.session.metadata?.opencodeClearOperation
-        if (!operation || operation.state === 'aborted') return { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
-        if (!this.persistClearOperation(sessionId, namespace, { ...operation, state: 'cleanup-confirmed', updatedAt: Date.now(), error: undefined })) {
+        if (!operation || operation.state !== 'reserved') return { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
+        if (!this.transitionClearOperation(sessionId, namespace, operation, 'cleanup-confirmed')) {
             return { type: 'error', message: 'Could not confirm native cleanup', code: 'replacement_link_failed' }
         }
         return { type: 'success', sessionId: operation.replacementSessionId }
@@ -1460,6 +1471,33 @@ async uploadScratchlistAttachment(
             }
         }
         return { type: 'success', sessionId: replacementSessionId }
+    }
+
+    private transitionClearOperation(
+        sessionId: string,
+        namespace: string,
+        expected: NonNullable<NonNullable<Session['metadata']>['opencodeClearOperation']>,
+        state: 'abort-needed' | 'cleanup-confirmed'
+    ): boolean {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            const latest = this.sessionCache.getSessionByNamespace(sessionId, namespace)
+                ?? this.sessionCache.refreshSession(sessionId)
+            if (!latest?.metadata) return false
+            const result = this.store.transitionOpenCodeClearOperation(sessionId, {
+                ...latest.metadata,
+                opencodeClearOperation: { ...expected, state, updatedAt: Date.now(), error: undefined }
+            }, latest.metadataVersion, namespace, {
+                replacementSessionId: expected.replacementSessionId,
+                state: expected.state
+            })
+            if (result.result === 'success') {
+                this.sessionCache.refreshSession(sessionId)
+                return true
+            }
+            if (result.result !== 'version-mismatch') return false
+            this.sessionCache.refreshSession(sessionId)
+        }
+        return false
     }
 
     private persistClearOperation(

@@ -63,8 +63,9 @@ describe('SyncEngine.clearOpenCodeSession', () => {
             }, null, 'default')
             engine.handleSessionAlive({ sid: source.id, time: Date.now() })
             const reserved = engine.reserveOpenCodeClearSession(source.id, 'default')
-            expect(reserved).toMatchObject({ type: 'success', sessionId: expect.any(String) })
+            expect(reserved.type).toBe('success')
             if (reserved.type !== 'success') throw new Error('reservation failed')
+            expect(typeof reserved.sessionId).toBe('string')
             expect(engine.getSessionByNamespace(source.id, 'default')?.metadata?.opencodeClearOperation).toMatchObject({
                 replacementSessionId: reserved.sessionId, state: 'reserved'
             })
@@ -206,6 +207,57 @@ describe('SyncEngine.clearOpenCodeSession', () => {
             expect(await recovery).toBe(false)
             expect(engine.getSessionByNamespace(source.id, 'default')?.metadata?.opencodeClearOperation?.state)
                 .toBe(winner === 'confirm' ? 'cleanup-confirmed' : 'reserved')
+        } finally { engine.stop() }
+    })
+
+    it('rejects a delayed cleanup confirmation after explicit exit owns the abort', () => {
+        const { store, engine } = createEngine()
+        try {
+            const source = engine.getOrCreateSession('confirm-after-exit', {
+                path: '/tmp/project', host: 'host', machineId: 'machine-1', flavor: 'opencode', startedBy: 'runner'
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: source.id, time: Date.now() })
+            expect(engine.reserveOpenCodeClearSession(source.id, 'default')).toMatchObject({ type: 'success' })
+            const original = store.abortOpenCodeClearOperation.bind(store)
+            store.abortOpenCodeClearOperation = (() => ({ result: 'not-found' as const })) as typeof original
+            engine.handleSessionEnd({ sid: source.id, time: Date.now(), reason: 'error' })
+            expect(engine.getSessionByNamespace(source.id, 'default')?.metadata?.opencodeClearOperation?.state).toBe('abort-needed')
+            expect(engine.confirmOpenCodeClearCleanup(source.id, 'default')).toMatchObject({ type: 'error' })
+            expect(engine.getSessionByNamespace(source.id, 'default')?.metadata?.opencodeClearOperation?.state).toBe('abort-needed')
+        } finally { engine.stop() }
+    })
+
+    it('rejects a delayed cleanup-failure abort after cleanup confirmation', () => {
+        const { engine } = createEngine()
+        try {
+            const source = engine.getOrCreateSession('abort-after-confirm', {
+                path: '/tmp/project', host: 'host', machineId: 'machine-1', flavor: 'opencode', startedBy: 'runner'
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: source.id, time: Date.now() })
+            expect(engine.reserveOpenCodeClearSession(source.id, 'default')).toMatchObject({ type: 'success' })
+            expect(engine.confirmOpenCodeClearCleanup(source.id, 'default')).toMatchObject({ type: 'success' })
+            expect(engine.abortOpenCodeClearSession(source.id, 'default')).toMatchObject({ type: 'error' })
+            expect(engine.getSessionByNamespace(source.id, 'default')?.metadata?.opencodeClearOperation?.state).toBe('cleanup-confirmed')
+        } finally { engine.stop() }
+    })
+
+    it('does not confirm a stale reservation identity', () => {
+        const { store, engine } = createEngine()
+        try {
+            const source = engine.getOrCreateSession('stale-confirm-identity', {
+                path: '/tmp/project', host: 'host', machineId: 'machine-1', flavor: 'opencode', startedBy: 'runner'
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: source.id, time: Date.now() })
+            expect(engine.reserveOpenCodeClearSession(source.id, 'default')).toMatchObject({ type: 'success' })
+            const stored = store.sessions.getSessionByNamespace(source.id, 'default')!
+            store.sessions.updateSessionMetadata(source.id, {
+                ...stored.metadata,
+                opencodeClearOperation: { replacementSessionId: 'new-owner', state: 'reserved', updatedAt: Date.now() }
+            }, stored.metadataVersion, 'default')
+            expect(engine.confirmOpenCodeClearCleanup(source.id, 'default')).toMatchObject({ type: 'error' })
+            expect(store.sessions.getSessionByNamespace(source.id, 'default')?.metadata?.opencodeClearOperation).toMatchObject({
+                replacementSessionId: 'new-owner', state: 'reserved'
+            })
         } finally { engine.stop() }
     })
 
