@@ -7,9 +7,7 @@ const h = vi.hoisted(() => ({
     carrierCleanup: vi.fn(),
     sessionClose: vi.fn(),
     sendSessionDeath: vi.fn(),
-    lifecycleCleanup: vi.fn(),
-    lifecycleMarkCrash: vi.fn(),
-    lifecycleOptions: null as null | { onAfterClose?: () => void },
+    lifecycle: null as null | { cleanup: () => Promise<void> },
 }))
 
 vi.mock('@/agent/sessionFactory', () => ({
@@ -20,31 +18,27 @@ vi.mock('@/agent/sessionFactory', () => ({
             rpcHandlerManager: { registerHandler: vi.fn() },
             onUserMessage: vi.fn(),
             onCancelQueuedMessage: vi.fn(),
+            updateMetadata: vi.fn(),
+            sendSessionDeath: h.sendSessionDeath,
+            flush: vi.fn(async () => {}),
             close: h.sessionClose,
         },
     })),
 }))
 
-vi.mock('@/agent/runnerLifecycle', () => ({
-    setControlledByUser: vi.fn(),
-    createModeChangeHandler: vi.fn(() => vi.fn()),
-    createRunnerLifecycle: vi.fn((options: { onAfterClose?: () => void }) => {
-        h.lifecycleOptions = options
-        let cleaned = false
-        return {
-            registerProcessHandlers: vi.fn(),
-            markCrash: h.lifecycleMarkCrash,
-            setSessionEndReason: vi.fn(),
-            cleanupAndExit: h.lifecycleCleanup.mockImplementation(async () => {
-                if (cleaned) return
-                cleaned = true
-                options.onAfterClose?.()
-                h.sendSessionDeath()
-                h.sessionClose()
-            }),
-        }
-    }),
-}))
+vi.mock('@/agent/runnerLifecycle', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/agent/runnerLifecycle')>()
+    return {
+        ...actual,
+        setControlledByUser: vi.fn(),
+        createModeChangeHandler: vi.fn(() => vi.fn()),
+        createRunnerLifecycle: vi.fn((options: Parameters<typeof actual.createRunnerLifecycle>[0]) => {
+            const lifecycle = actual.createRunnerLifecycle(options)
+            h.lifecycle = lifecycle
+            return lifecycle
+        }),
+    }
+})
 
 vi.mock('@/claude/registerKillSessionHandler', () => ({ registerKillSessionHandler: vi.fn() }))
 vi.mock('@/agent/localHandoff', () => ({ registerLocalHandoffHandler: vi.fn() }))
@@ -84,7 +78,9 @@ describe('runAgy post-bootstrap setup lifecycle', () => {
     beforeEach(() => {
         vi.clearAllMocks()
         h.failAt = ''
-        h.lifecycleOptions = null
+        h.lifecycle = null
+        vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
+        vi.spyOn(process, 'on').mockImplementation((() => process) as never)
     })
 
     for (const scenario of [
@@ -97,8 +93,14 @@ describe('runAgy post-bootstrap setup lifecycle', () => {
             h.failAt = scenario.at
             await runAgy({ startingMode: 'pty', workingDirectory: '/tmp/project' })
 
-            expect(h.lifecycleMarkCrash).toHaveBeenCalledTimes(1)
-            expect(h.lifecycleCleanup).toHaveBeenCalledTimes(1)
+            expect(h.sendSessionDeath).toHaveBeenCalledWith('error')
+            expect(h.sendSessionDeath).toHaveBeenCalledTimes(1)
+            expect(h.sessionClose).toHaveBeenCalledTimes(1)
+            expect(h.hookStop).toHaveBeenCalledTimes(scenario.hook)
+            expect(h.mcpStop).toHaveBeenCalledTimes(scenario.mcp)
+            expect(h.carrierCleanup).toHaveBeenCalledTimes(scenario.carrier)
+
+            await h.lifecycle?.cleanup()
             expect(h.sendSessionDeath).toHaveBeenCalledTimes(1)
             expect(h.sessionClose).toHaveBeenCalledTimes(1)
             expect(h.hookStop).toHaveBeenCalledTimes(scenario.hook)
