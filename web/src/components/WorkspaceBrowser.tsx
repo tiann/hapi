@@ -410,7 +410,8 @@ export function WorkspaceBrowser(props: {
                                 type="button"
                                 onClick={handleToggleHidden}
                                 aria-pressed={showHidden}
-                                className="shrink-0 flex items-center gap-1.5 rounded px-1.5 py-0.5 text-xs text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] transition-colors"
+                                disabled={isLoading}
+                                className="shrink-0 flex items-center gap-1.5 rounded px-1.5 py-0.5 text-xs text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] transition-colors disabled:pointer-events-none disabled:opacity-50"
                             >
                                 {showHidden ? (
                                     <CheckboxCheckedIcon className="h-3.5 w-3.5 text-[var(--app-link)] shrink-0" />
