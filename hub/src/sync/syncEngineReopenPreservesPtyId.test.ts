@@ -130,6 +130,27 @@ describe('SyncEngine reopen/resume PTY session id preservation', () => {
 
 
 
+    it('stops a same-id PTY child when the active-state barrier times out', async () => {
+        const sessionId = insertSession(
+            'pty-session-active-timeout',
+            baseMetadata({ lifecycleState: 'archived', archivedBy: 'hub', archiveReason: 'inactivity' }),
+            { startingMode: 'pty' }
+        ).id
+        ;(engine as any).rpcGateway.spawnSession = async () => ({ type: 'success', sessionId })
+        ;(engine as any).waitForSessionActive = async () => false
+        let stoppedSessionId: string | undefined
+        ;(engine as any).rpcGateway.stopRunnerSession = async (_machineId: string, sid: string) => {
+            stoppedSessionId = sid
+            return 'stopped'
+        }
+
+        const result = await engine.reopenSession(sessionId, NAMESPACE)
+
+        expect(result).toMatchObject({ type: 'error', code: 'resume_failed' })
+        expect(stoppedSessionId).toBe(sessionId)
+        expect((engine.getSessionByNamespace(sessionId, NAMESPACE)?.metadata as any)?.ptyResumeAttempt).toBeUndefined()
+    })
+
     it('stops a same-id PTY child when readiness times out', async () => {
         const sessionId = insertSession(
             'pty-session-ready-timeout',

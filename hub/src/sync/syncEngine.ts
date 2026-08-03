@@ -2249,6 +2249,21 @@ async uploadScratchlistAttachment(
 
             const becameActive = await this.waitForSessionActive(spawnResult.sessionId)
             if (!becameActive) {
+                if (resumedStartingMode === 'pty') {
+                    const current = this.sessionCache.getSessionByNamespace(access.sessionId, namespace)
+                    const stopped = current
+                        ? await this.reconcilePersistedPtyResumeAttempt(current)
+                        : false
+                    if (!stopped) {
+                        this.ptyResumeQuarantinedIds.add(access.sessionId)
+                        return {
+                            type: 'error',
+                            message: 'PTY resume failed and the child is still active',
+                            code: 'resume_failed',
+                            rollbackSafe: false,
+                        }
+                    }
+                }
                 if (requiresPiNativeReady) {
                     const inactive = await this.terminateInPlacePiResume(
                         targetMachine.id,
