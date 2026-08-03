@@ -26,6 +26,8 @@ const harness = vi.hoisted(() => ({
         message: string
         raw: string
     } | null,
+    emitTextOnPrompt: null as string | null,
+    promptReject: null as Error | null,
     disconnectError: null as Error | null,
     overlayCleanup: null as ReturnType<typeof vi.fn> | null
 }));
@@ -102,11 +104,21 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                 }
                 return undefined;
             }),
-            prompt: vi.fn(async (_sessionId: string, content: unknown[]) => {
+            prompt: vi.fn(async (
+                _sessionId: string,
+                content: unknown[],
+                onMessage?: (message: { type: string; text?: string }) => void
+            ) => {
                 harness.promptCalls++;
                 harness.prompts.push(content);
+                if (harness.emitTextOnPrompt && onMessage) {
+                    onMessage({ type: 'text', text: harness.emitTextOnPrompt });
+                }
                 if (harness.emitStderrOnPrompt && harness.stderrErrorHandler) {
                     harness.stderrErrorHandler(harness.emitStderrOnPrompt);
+                }
+                if (harness.promptReject) {
+                    throw harness.promptReject;
                 }
             }),
             cancelPrompt: vi.fn(async () => {}),
@@ -229,6 +241,8 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.releaseLoadSession = null;
         harness.stderrErrorHandler = null;
         harness.emitStderrOnPrompt = null;
+        harness.emitTextOnPrompt = null;
+        harness.promptReject = null;
         harness.disconnectError = null;
         harness.overlayCleanup = null;
         legacyLauncher.mockClear();
@@ -1029,5 +1043,33 @@ describe('cursorAcpRemoteLauncher', () => {
             return (next.lastModelError as { kind?: string } | undefined)?.kind === 'rate_limited';
         });
         expect(wroteLastModelError).toBe(true);
+    });
+
+    it('prefers structural RPC classification over text fallback when both fire', async () => {
+        // Prompt callback emits wire text first (unknown_t_prefix / non-transient),
+        // then the promise rejects with WritableIterable (transport_closed / transient).
+        harness.emitTextOnPrompt = '\n\nError: T: WritableIterable is closed';
+        harness.promptReject = new Error('WritableIterable is closed');
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        session.queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        const modelErrors = client.sendSessionEvent.mock.calls
+            .map((call) => call[0])
+            .filter((event) => event?.type === 'modelError');
+        expect(modelErrors).toHaveLength(1);
+        expect(modelErrors[0]?.kind).toBe('transport_closed');
+        expect(modelErrors[0]?.transient).toBe(true);
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'ready'
+        )).toBe(false);
     });
 });

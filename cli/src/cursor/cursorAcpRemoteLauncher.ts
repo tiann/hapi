@@ -73,6 +73,14 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private cursorMcpOverlay: CursorMcpOverlayHandle | null = null;
     private lastAssistantText: string | null = null;
     private turnHasModelError = false;
+    /**
+     * Text-classifier hit retained until `backend.prompt` settles. Callbacks
+     * run before the promise rejects, so recording text immediately would
+     * beat the structural RPC classification (e.g. unknown_t_prefix vs
+     * transport_closed for WritableIterable). Flush on success; prefer RPC
+     * in catch.
+     */
+    private pendingTextFailure: CursorAgentStreamFailure | null = null;
     /** True while backend.prompt() is in flight — lets stderr model_not_found
      *  surface as modelError during a turn without breaking setup/load remap. */
     private promptInFlight = false;
@@ -400,12 +408,18 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             session.onThinkingChange(true);
             this.turnHasModelError = false;
             this.lastAssistantText = null;
+            this.pendingTextFailure = null;
 
             this.promptInFlight = true;
             try {
                 await backend.prompt(acpSessionId, promptContent, (message) => {
                     this.handleAgentMessage(message);
                 });
+                // Prompt resolved: flush any deferred text-classifier fallback.
+                if (this.pendingTextFailure && !this.turnHasModelError) {
+                    this.recordModelError(this.pendingTextFailure);
+                }
+                this.pendingTextFailure = null;
                 void backend.refreshSessionInfo(acpSessionId, session.path);
             } catch (error) {
                 logger.warn('[cursor-acp] prompt failed', error);
@@ -416,18 +430,16 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     session.sendAgentMessage(converted);
                 }
                 messageBuffer.addMessage(message, 'status');
-                // STRUCTURAL signal: classify the RPC rejection. This catches
-                // transport_closed (WritableIterable / ACP closed), agent_crashed
-                // (process exit during prompt), rpc_timeout, and gRPC status
-                // strings that cursor-agent returned as JSON-RPC error.message
-                // (rather than stringifying as a text message). Returns null
-                // for user cancellations / aborts -- those are NOT model errors.
-                const failure = classifyAcpRpcRejection(error);
+                // STRUCTURAL signal first: classify the RPC rejection. Prefer
+                // it over any deferred text fallback from the prompt callback.
+                const failure = classifyAcpRpcRejection(error) ?? this.pendingTextFailure;
+                this.pendingTextFailure = null;
                 if (failure) {
                     this.recordModelError(failure);
                 }
             } finally {
                 this.promptInFlight = false;
+                this.pendingTextFailure = null;
                 session.onThinkingChange(false);
                 await this.permissionAdapter?.cancelAll('Prompt finished');
                 await this.extensionAdapter?.cancelAll('Prompt finished');
@@ -578,31 +590,26 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     private handleTextMessageClassification(text: string): void {
-        // FALLBACK PATH ONLY. If a structural signal (stderr / RPC) already
-        // classified this turn, do not re-classify the agent's text -- the
-        // text is often the agent's own stringified version of the same
-        // error we already caught structurally, and re-classifying produces
-        // duplicate banners. We still record lastAssistantText so the
-        // priorAssistantClaimsDone heuristic works for any subsequent
-        // structural signal in this turn.
+        // FALLBACK PATH ONLY — deferred until prompt settles so structural
+        // RPC / stderr can win. If a structural signal already classified
+        // this turn, keep lastAssistantText for priorAssistantClaimsDone.
         if (this.turnHasModelError) {
             this.lastAssistantText = text;
             return;
         }
         const failure = classifyCursorAgentMessage(text);
         if (failure) {
-            this.recordModelError(failure);
+            this.pendingTextFailure ??= failure;
         } else {
             this.lastAssistantText = text;
         }
     }
 
     /**
-     * Single source of truth for emitting modelError. All signal paths
-     * (RPC catch / stderr subscriber / text fallback) route through here.
-     * First signal wins: subsequent signals in the same turn are dropped
-     * to avoid banner-flapping when the agent emits both an RPC rejection
-     * AND a stringified text version of the same failure.
+     * Single source of truth for emitting modelError. Structural paths
+     * (RPC catch / stderr) record immediately; text fallback is deferred
+     * via pendingTextFailure until prompt settles, then flushed here.
+     * First recorded signal wins for the turn.
      */
     private recordModelError(failure: CursorAgentStreamFailure): void {
         if (this.turnHasModelError) {
@@ -612,6 +619,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             return;
         }
         this.turnHasModelError = true;
+        this.pendingTextFailure = null;
 
         // Same-message case: Cursor often appends `Error: T: ...` onto the
         // assistant block that already claimed "Done." — lastAssistantText is
