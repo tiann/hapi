@@ -173,16 +173,16 @@ class AgyPtyLauncher extends RemoteLauncherBase {
         resolve?.()
     }
 
-    private observeUserInput(content: string): void {
+    private observeUserInput(content: string): boolean {
         const pending = this.pendingWebDelivery
-        if (!pending) return
+        if (!pending || !userRequestMatches(pending.message, content)) return false
         if (!pending.submitted) {
             pending.observedBeforeSubmit = content
-            return
+            return true
         }
-        if (!userRequestMatches(pending.message, content)) return
         this.session.client.emitMessagesConsumed(pending.localIds)
         this.finishPendingWebDelivery()
+        return true
     }
 
     private markWebDeliverySubmitted(): void {
@@ -630,7 +630,9 @@ class AgyPtyLauncher extends RemoteLauncherBase {
             },
             onEntry: (entry) => {
                 if (entry.type === 'USER_INPUT') {
-                    this.observeUserInput(entry.content ?? '')
+                    if (!this.observeUserInput(entry.content ?? '')) {
+                        session.client.sendAgySessionMessage(entry, this.agySessionId ?? undefined)
+                    }
                     return
                 }
                 const hasText = (entry.content ?? '').trim().length > 0

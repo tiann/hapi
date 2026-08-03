@@ -87,28 +87,31 @@ export function addMessage(
     // hub arrival order.
     const invokedAt = localId ? null : stampedAt
 
-    db.prepare(`
-        INSERT INTO messages (
-            id, session_id, content, created_at, seq, local_id, invoked_at, scheduled_at
-        ) VALUES (
-            @id, @session_id, @content, @created_at, @seq, @local_id, @invoked_at, @scheduled_at
-        )
-    `).run({
-        id,
-        session_id: sessionId,
-        content: encoded,
-        created_at: stampedAt,
-        seq: msgSeq,
-        local_id: localId ?? null,
-        invoked_at: invokedAt,
-        scheduled_at: scheduledAt ?? null
-    })
+    return db.transaction(() => {
+        const previousHead = getNewestMessagePosition(db, sessionId)
+        db.prepare(`
+            INSERT INTO messages (
+                id, session_id, content, created_at, seq, local_id, invoked_at, scheduled_at
+            ) VALUES (
+                @id, @session_id, @content, @created_at, @seq, @local_id, @invoked_at, @scheduled_at
+            )
+        `).run({
+            id,
+            session_id: sessionId,
+            content: encoded,
+            created_at: stampedAt,
+            seq: msgSeq,
+            local_id: localId ?? null,
+            invoked_at: invokedAt,
+            scheduled_at: scheduledAt ?? null
+        })
 
-    const row = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as DbMessageRow | undefined
-    if (!row) {
-        throw new Error('Failed to create message')
-    }
-    return toStoredMessage(row)
+        const positionAt = invokedAt ?? stampedAt
+        if (previousHead && positionAt < previousHead.at) bumpMessageEpoch(db, sessionId)
+        const row = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as DbMessageRow | undefined
+        if (!row) throw new Error('Failed to create message')
+        return toStoredMessage(row)
+    })()
 }
 
 export function copyMessageToSession(

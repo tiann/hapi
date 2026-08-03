@@ -473,6 +473,30 @@ describe('agyPtyLauncher session-found wiring (brain UUID -> scanner)', () => {
         expect(session.client.emitMessagesConsumed).toHaveBeenCalledWith(['local-1'])
     })
 
+    it('forwards a direct terminal USER_INPUT without duplicating a matching web prompt', async () => {
+        const { session } = createSessionStub()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString).mockResolvedValueOnce({
+            message: 'web message',
+            items: [{ message: 'web message', localId: 'local-direct' }],
+        } as never)
+        harness.afterNextMessage = async (opts) => {
+            await opts.onMessageSubmitted?.('web message')
+            const onEntry = harness.scannerOpts!.onEntry as (entry: unknown) => void
+            onEntry({ type: 'USER_INPUT', step_index: 20, content: '<USER_REQUEST>\nterminal message\n</USER_REQUEST>' })
+            onEntry({ type: 'USER_INPUT', step_index: 21, content: '<USER_REQUEST>\nweb message\n</USER_REQUEST>' })
+        }
+
+        await agyPtyLauncher(session as never)
+
+        const forwardedUserInputs = vi.mocked(session.client.sendAgySessionMessage).mock.calls
+            .map(([entry]) => entry)
+            .filter((entry) => entry.type === 'USER_INPUT')
+        expect(forwardedUserInputs).toEqual([
+            expect.objectContaining({ content: '<USER_REQUEST>\nterminal message\n</USER_REQUEST>' }),
+        ])
+        expect(session.client.emitMessagesConsumed).toHaveBeenCalledWith(['local-direct'])
+    })
+
     it('keeps a mismatched web message pending until the matching USER_INPUT arrives', async () => {
         const { session } = createSessionStub()
         vi.mocked(session.queue.waitForMessagesAndGetAsString)

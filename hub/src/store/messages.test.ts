@@ -236,6 +236,25 @@ describe('position pagination and structural epochs', () => {
         expect(store.messages.getMessageEpoch(target.id)).toBe(1)
     })
 
+    it('bumps the epoch when a newly inserted message is backdated behind the cached head', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'epoch-backdated-insert')
+        const head = store.messages.addMessage(session.id, { text: 'head' })
+        const headPosition = { at: head.invokedAt ?? head.createdAt, seq: head.seq }
+
+        const backdated = store.messages.addMessage(
+            session.id,
+            { text: 'backdated' },
+            undefined,
+            undefined,
+            headPosition.at - 1_000,
+        )
+
+        expect(backdated.seq).toBeGreaterThan(head.seq)
+        expect(store.messages.getMessagesAfterPosition(session.id, 10, headPosition)).toEqual([])
+        expect(store.messages.getMessageEpoch(session.id)).toBe(1)
+    })
+
     it('bumps the target epoch when a copied message lands behind the cached head', () => {
         const store = makeStore()
         const target = makeSession(store, 'epoch-copy-target')

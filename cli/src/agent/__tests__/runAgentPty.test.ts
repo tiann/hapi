@@ -783,8 +783,7 @@ describe('runAgentPty', () => {
         const promise = runAgentPty(makeOpts({ nextMessage, onExit }))
         await reachReady()
         harness.triggerExit(0)
-        msg1.resolve({ message: 'late' })
-        await promise
+        await expect(promise).resolves.toBeUndefined()
         expect(onExit).toHaveBeenCalledWith(0)
         expect(harness.m.kill).toHaveBeenCalled()
     })

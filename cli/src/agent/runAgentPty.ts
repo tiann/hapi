@@ -348,6 +348,12 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
     }
     signal?.addEventListener('abort', abortHandler, { once: true })
 
+    const EXITED = Symbol('pty-exited')
+    let resolveExited!: (value: typeof EXITED) => void
+    const exited = new Promise<typeof EXITED>((resolve) => {
+        resolveExited = resolve
+    })
+
     try {
         // Captured so a spawn failure can be re-thrown (not swallowed): the PTY
         // manager reports failure via onError + isRunning=false rather than a
@@ -414,6 +420,7 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
             onExit: (code) => {
                 logger.debug(`${debugPrefix} Process exited with code ${code}`)
                 setThinking(false)
+                resolveExited(EXITED)
                 opts.onExit?.(code)
             },
             onError: (error) => {
@@ -508,7 +515,11 @@ export async function runAgentPty(opts: RunAgentPtyOpts): Promise<void> {
                 if (!manager.isRunning || signal?.aborted) break
             }
 
-            const next = await opts.nextMessage()
+            const next = await Promise.race([opts.nextMessage(), exited])
+            if (next === EXITED) {
+                logger.debug(`${debugPrefix} Process exited while waiting for message`)
+                break
+            }
             if (!next) {
                 logger.debug(`${debugPrefix} No more input; waiting for process to finish`)
                 break
