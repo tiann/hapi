@@ -236,7 +236,7 @@ function noteCodexSummaryFieldsFromLine(
     }
 }
 
-/** Walk the transcript from EOF toward BOF in fixed chunks until both fields resolve. */
+/** Walk the last `chunkBytes` of the transcript from EOF toward the scan start. */
 function scanCodexSummaryFieldsBackward(
     filePath: string,
     chunkBytes: number
@@ -249,20 +249,22 @@ function scanCodexSummaryFieldsBackward(
 
         fd = openSync(filePath, 'r')
         let position = size
+        // Total scan budget is `chunkBytes` from EOF; read in smaller chunks inside it.
+        const scanStart = Math.max(0, size - Math.max(1, chunkBytes))
+        const readChunkBytes = Math.min(64 * 1024, Math.max(1, chunkBytes))
         // Keep the unfinished leading line as raw bytes so UTF-8 code points can
         // straddle chunk boundaries without being decoded to replacement chars.
         let incompletePrefix = Buffer.alloc(0)
-        const chunkSize = Math.max(1, chunkBytes)
 
-        while (position > 0 && (state.changedTitle === null || state.lastUserMessage === null)) {
-            const length = Math.min(position, chunkSize)
+        while (position > scanStart && (state.changedTitle === null || state.lastUserMessage === null)) {
+            const length = Math.min(position - scanStart, readChunkBytes)
             position -= length
             const buffer = Buffer.alloc(length)
             const bytesRead = readSync(fd, buffer, 0, length, position)
             const combined = Buffer.concat([buffer.subarray(0, bytesRead), incompletePrefix])
 
             let complete = combined
-            if (position > 0) {
+            if (position > scanStart) {
                 const firstNewline = combined.indexOf(0x0a)
                 if (firstNewline < 0) {
                     incompletePrefix = combined
@@ -281,7 +283,11 @@ function scanCodexSummaryFieldsBackward(
             }
         }
 
-        if (incompletePrefix.length > 0 && (state.changedTitle === null || state.lastUserMessage === null)) {
+        if (
+            scanStart === 0
+            && incompletePrefix.length > 0
+            && (state.changedTitle === null || state.lastUserMessage === null)
+        ) {
             noteCodexSummaryFieldsFromLine(incompletePrefix.toString('utf8'), state)
         }
         return state
