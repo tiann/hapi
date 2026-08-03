@@ -3,6 +3,7 @@ import type { StoredSession } from '../../../store'
 import type { CliSocketWithData } from '../../socketTypes'
 import { TerminalRegistry } from '../../terminalRegistry'
 import { registerTerminalHandlers } from './terminalHandlers'
+import { clearUserTerminalBuffer, getUserTerminalBuffer } from '../../userTerminalBuffer'
 
 type EmittedEvent = {
     event: string
@@ -131,6 +132,28 @@ describe('cli terminal handlers', () => {
         expect(accessErrors).toEqual([
             { scope: 'session', id: 'session-1', reason: 'access-denied' }
         ])
+    })
+
+    it('does not buffer output for unknown or removed terminals', () => {
+        const cliSocket = new FakeSocket('cli-socket')
+        const terminalSocket = new FakeSocket('terminal-socket')
+        const terminalNamespace = new FakeNamespace()
+        const terminalRegistry = new TerminalRegistry({ idleTimeoutMs: 0 })
+        terminalNamespace.sockets.set(terminalSocket.id, terminalSocket)
+        clearUserTerminalBuffer('session-1', 'terminal-1')
+        registerTerminalHandlers(cliSocket as unknown as CliSocketWithData, {
+            terminalRegistry,
+            terminalNamespace: terminalNamespace as never,
+            resolveSessionAccess: () => ({ ok: true, value: {} as StoredSession }),
+            emitAccessError: () => { throw new Error('Unexpected access error') }
+        })
+        cliSocket.trigger('terminal:output', { sessionId: 'session-1', terminalId: 'terminal-1', data: 'unknown' })
+        terminalRegistry.register('terminal-1', 'session-1', terminalSocket.id, cliSocket.id)
+        expect(getUserTerminalBuffer('session-1', 'terminal-1')).toBe('')
+        terminalRegistry.remove('terminal-1')
+        cliSocket.trigger('terminal:output', { sessionId: 'session-1', terminalId: 'terminal-1', data: 'late' })
+        terminalRegistry.register('terminal-1', 'session-1', terminalSocket.id, cliSocket.id)
+        expect(getUserTerminalBuffer('session-1', 'terminal-1')).toBe('')
     })
 
     it('removes stale registry entries after terminal errors', () => {

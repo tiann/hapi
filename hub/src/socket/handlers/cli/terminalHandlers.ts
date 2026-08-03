@@ -70,11 +70,24 @@ export function registerTerminalHandlers(socket: CliSocketWithData, deps: Termin
         if (!parsed.success) {
             return
         }
+        const entry = terminalRegistry.get(parsed.data.terminalId)
+        if (!entry || entry.cliSocketId !== socket.id || entry.sessionId !== parsed.data.sessionId) {
+            return
+        }
+        const sessionAccess = resolveSessionAccess(parsed.data.sessionId)
+        if (!sessionAccess.ok) {
+            emitAccessError('session', parsed.data.sessionId, sessionAccess.reason)
+            return
+        }
+        const terminalSocket = terminalNamespace.sockets.get(entry.socketId)
+        if (!terminalSocket) {
+            return
+        }
         terminalRegistry.markActivity(parsed.data.terminalId)
         // Keep a scrollback buffer so reconnecting web clients see the
         // current terminal content instead of a black screen.
         appendUserTerminalOutput(parsed.data.sessionId, parsed.data.terminalId, parsed.data.data)
-        forwardTerminalEvent('terminal:output', parsed.data)
+        terminalSocket.emit('terminal:output', parsed.data)
     })
 
     socket.on('agent-terminal:output', (data: unknown) => {
