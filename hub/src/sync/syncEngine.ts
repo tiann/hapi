@@ -439,6 +439,9 @@ export class SyncEngine {
 
     handleSessionEnd(payload: { sid: string; time: number; reason?: SessionEndReason }): void {
         const before = this.sessionCache.getSession(payload.sid)
+        if (before?.metadata?.opencodeClearOperation?.state === 'reserved' && payload.reason !== 'cleared') {
+            this.abortOpenCodeClearSession(payload.sid, before.namespace)
+        }
         const ownsPiAttempt = before?.metadata?.piResumeAttempt !== undefined
         const isPiAttemptChild = this.sessionCache.getSessions().some(
             (session) => session.metadata?.piResumeAttempt?.childSessionId === payload.sid
@@ -778,10 +781,7 @@ async uploadScratchlistAttachment(
         for (let session of this.sessionCache.getSessions()) {
             const operation = session.metadata?.opencodeClearOperation
             if (session.active || !operation) continue
-            if (operation.state === 'reserved') {
-                this.abortOpenCodeClearSession(session.id, session.namespace)
-                continue
-            }
+            if (operation.state === 'reserved') continue
             if (!['cleanup-confirmed', 'finalizing', 'failed'].includes(operation.state)) continue
             if (session.metadata?.lifecycleState !== 'archived' || session.metadata.archiveReason !== 'Cleared by /clear') {
                 const result = this.store.sessions.updateSessionMetadata(session.id, {

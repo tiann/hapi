@@ -126,11 +126,7 @@ describe('SyncEngine.clearOpenCodeSession', () => {
             engine.handleSessionAlive({ sid: source.id, time: Date.now() })
             expect(engine.reserveOpenCodeClearSession(source.id, 'default')).toMatchObject({ type: 'success' })
             await engine.sendMessage(source.id, { text: 'held during lost response', localId: 'lost-response-held' })
-            const reservedMetadata = engine.getSessionByNamespace(source.id, 'default')!.metadata!
             engine.handleSessionEnd({ sid: source.id, time: Date.now(), reason: 'error' })
-            const ended = store.sessions.getSessionByNamespace(source.id, 'default')!
-            store.sessions.updateSessionMetadata(source.id, reservedMetadata, ended.metadataVersion, 'default')
-            ;(engine as unknown as { sessionCache: { refreshSession(id: string): unknown } }).sessionCache.refreshSession(source.id)
             const spawnSession = mock(async () => ({ type: 'success' as const, sessionId: 'must-not-spawn' }))
             setSpawn(engine, spawnSession)
             await (engine as unknown as { reconcileOpenCodeClears(): Promise<void> }).reconcileOpenCodeClears()
@@ -142,6 +138,28 @@ describe('SyncEngine.clearOpenCodeSession', () => {
             expect((engine as unknown as { isOpenCodeClearSource(session: unknown): boolean }).isOpenCodeClearSource(
                 engine.getSessionByNamespace(source.id, 'default')!
             )).toBe(false)
+        } finally { engine.stop() }
+    })
+
+    it('does not treat heartbeat expiry as process-death proof for a live reservation', async () => {
+        const { store, engine } = createEngine()
+        try {
+            const source = engine.getOrCreateSession('heartbeat-expired-reservation', {
+                path: '/tmp/project', host: 'host', machineId: 'machine-1', flavor: 'opencode', startedBy: 'runner'
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: source.id, time: Date.now() - 120_000 })
+            expect(engine.reserveOpenCodeClearSession(source.id, 'default')).toMatchObject({ type: 'success' })
+            await engine.sendMessage(source.id, { text: 'still owned', localId: 'still-owned' })
+            const cached = engine.getSessionByNamespace(source.id, 'default') as unknown as { activeAt: number }
+            cached.activeAt = Date.now() - 120_000
+            const spawnSession = mock(async () => ({ type: 'success' as const, sessionId: 'must-not-spawn' }))
+            setSpawn(engine, spawnSession)
+            ;(engine as unknown as { expireInactive(): void }).expireInactive()
+            await (engine as unknown as { reconcileOpenCodeClears(): Promise<void> }).reconcileOpenCodeClears()
+            expect(engine.getSessionByNamespace(source.id, 'default')?.active).toBe(false)
+            expect(engine.getSessionByNamespace(source.id, 'default')?.metadata?.opencodeClearOperation?.state).toBe('reserved')
+            expect(store.messages.getAllMessages(source.id)).toEqual([])
+            expect(spawnSession).not.toHaveBeenCalled()
         } finally { engine.stop() }
     })
 
