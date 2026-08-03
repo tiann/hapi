@@ -49,6 +49,7 @@ vi.mock('./utils/agySessionScanner', async (importOriginal) => {
     return {
         extractBodyText: actual.extractBodyText,
         extractUserRequest: actual.extractUserRequest,
+        normalizeUserInput: actual.normalizeUserInput,
         createAgySessionScanner: vi.fn(async (opts: Record<string, unknown>) => {
             harness.scannerOpts = opts
             return {
@@ -73,6 +74,9 @@ describe('userRequestMatches', () => {
     it('requires an exact text-only request', () => {
         expect(userRequestMatches('hello', '<USER_REQUEST>\nhello\n</USER_REQUEST>')).toBe(true)
         expect(userRequestMatches('hello', '<USER_REQUEST>\nhello extra\n</USER_REQUEST>')).toBe(false)
+        // Same normalization the scanner applies, so the two matchers cannot
+        // disagree on a CRLF or a trailing space.
+        expect(userRequestMatches('hello', '<USER_REQUEST>\r\nhello \r\n</USER_REQUEST>')).toBe(true)
     })
 
     it('uses an exact body fallback for attachments and fails closed for attachment-only input', () => {
@@ -521,6 +525,41 @@ describe('agyPtyLauncher session-found wiring (brain UUID -> scanner)', () => {
 
         expect(session.client.emitMessagesConsumed).toHaveBeenCalledTimes(1)
         expect(session.client.emitMessagesConsumed).toHaveBeenCalledWith(['local-2'])
+    })
+
+    it('releases a submitted delivery at the agent-run boundary when the transcript never echoes it', async () => {
+        // A transcript echo that differs from the submitted text (agy re-wrapping,
+        // a duplicated write from submitMessage's retry, ...) must not wedge the
+        // queue forever: the run boundary is proof the prompt did reach agy.
+        const { session } = createSessionStub()
+        vi.mocked(session.queue.waitForMessagesAndGetAsString)
+            .mockResolvedValueOnce({
+                message: 'web message',
+                items: [{ message: 'web message', localId: 'local-stuck' }],
+            } as never)
+            .mockResolvedValueOnce({ message: 'following message', items: [] } as never)
+        harness.afterNextMessage = async (opts) => {
+            await opts.onBeforeMessageSubmit?.('web message')
+            await opts.onMessageSubmitted?.('web message')
+            const onEntry = harness.scannerOpts!.onEntry as (entry: unknown) => void
+            onEntry({
+                type: 'USER_INPUT',
+                step_index: 3,
+                content: '<USER_REQUEST>\nweb messageweb message\n</USER_REQUEST>',
+            })
+            const blocked = opts.nextMessage()
+            let settled = false
+            void blocked.then(() => { settled = true })
+            await tick()
+            expect(settled).toBe(false)
+
+            await opts.onAgentRunCompleted?.()
+            await expect(blocked).resolves.toMatchObject({ message: 'following message' })
+        }
+
+        await agyPtyLauncher(session as never)
+
+        expect(session.client.emitMessagesConsumed).toHaveBeenCalledWith(['local-stuck'])
     })
 
     it('restores a submitted web prompt exactly once on abort and never after completion', async () => {

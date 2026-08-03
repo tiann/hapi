@@ -2,7 +2,7 @@ import React from "react"
 import { AgySession } from "./session"
 import { RemoteModeDisplay } from "@/ui/ink/RemoteModeDisplay"
 import { agyPty } from "./agyPty"
-import { createAgySessionScanner, extractBodyText, extractUserRequest } from "./utils/agySessionScanner"
+import { createAgySessionScanner, extractBodyText, extractUserRequest, normalizeUserInput } from "./utils/agySessionScanner"
 import type { AgyToolCall } from "./utils/agyTranscriptTypes"
 import { isAgyAskQuestionToolCall, buildCanonicalAskUserQuestionInput, type AgyAskQuestionQuestion } from "./utils/agyAskQuestion"
 import { buildAgyQuestionKeys } from "./utils/agyQuestionKeys"
@@ -90,9 +90,14 @@ function parseAttachmentMessage(text: string, separator: '\n\n' | '\n'): {
 export function userRequestMatches(message: string, content: string): boolean {
     const request = extractUserRequest(content)
     if (request === null) return false
-    if (request === message) return true
     const body = extractBodyText(message)
-    if (!body || body === message) return false
+    // Attachment-only input carries no distinguishing text, so it stays fail-closed
+    // ahead of the normalized compare below.
+    if (!body) return false
+    // Normalize exactly like the scanner's discovery match, so the two paths
+    // cannot disagree over a CRLF or trailing whitespace.
+    if (normalizeUserInput(request) === normalizeUserInput(message)) return true
+    if (body === message) return false
     const sentAttachment = parseAttachmentMessage(message, '\n\n')
     const observedAttachment = parseAttachmentMessage(request, '\n')
     if (!sentAttachment || !observedAttachment) return false
@@ -379,9 +384,22 @@ class AgyPtyLauncher extends RemoteLauncherBase {
     }
 
     private async completeAgentRun(): Promise<void> {
+        this.releaseUnechoedWebDelivery()
         this.activeWebPrompt = null
         this.disarmQuotaDetector()
         this.agentRunInProgress = false
+    }
+
+    // A submitted prompt whose transcript echo never matched would otherwise
+    // hold the delivery boundary forever, wedging every later message while the
+    // PTY keeps answering. Completing the run is proof agy received it, so ack
+    // and release there instead of waiting for an echo that will not come.
+    private releaseUnechoedWebDelivery(): void {
+        const pending = this.pendingWebDelivery
+        if (!pending?.submitted) return
+        logger.warn('[agy-pty]: releasing a submitted delivery at the agent-run boundary; the transcript never echoed it')
+        this.session.client.emitMessagesConsumed(pending.localIds)
+        this.finishPendingWebDelivery()
     }
 
     private async handleSwitchRequest(): Promise<void> {

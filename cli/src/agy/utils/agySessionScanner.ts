@@ -454,7 +454,7 @@ function matchesUserInput(
     return false
 }
 
-function normalizeUserInput(value: string): string {
+export function normalizeUserInput(value: string): string {
     return value.replace(/\r\n/g, '\n').trim()
 }
 
