@@ -1,5 +1,7 @@
+import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { MAX_UPLOAD_BYTES } from './attachmentLimits';
+import type { UploadFileIdentity } from './handlers/uploads';
 
 /**
  * Reads a user attachment through one file handle with the upload byte limit.
@@ -9,16 +11,29 @@ import { MAX_UPLOAD_BYTES } from './attachmentLimits';
  * a regular file and that its actual bytes fit the shared upload limit; it does
  * not infer ownership from an arbitrary filesystem path.
  */
-export async function readBoundedAttachmentFile(path: string, maxBytes: number = MAX_UPLOAD_BYTES): Promise<Buffer> {
+export async function readBoundedAttachmentFile(
+    path: string,
+    maxBytes: number = MAX_UPLOAD_BYTES,
+    authorizeOpenedFile?: (identity: UploadFileIdentity) => boolean,
+): Promise<Buffer> {
     const byteLimit = Math.min(MAX_UPLOAD_BYTES, Math.max(0, Math.floor(maxBytes)));
     if (byteLimit === 0) {
         throw new Error('Attachment exceeds the remaining image budget');
     }
-    const handle = await open(path, 'r');
+    // The caller passes an authorized realpath. O_NOFOLLOW closes the final
+    // replacement window on POSIX if that path is swapped back to a symlink
+    // before open; Windows falls back to its normal read-only flag.
+    const flags = process.platform === 'win32'
+        ? 'r'
+        : constants.O_RDONLY | constants.O_NOFOLLOW;
+    const handle = await open(path, flags);
     try {
         // fstat and the subsequent read share this handle so a path replacement
         // cannot change the object after its type/size check.
         const stats = await handle.stat();
+        if (authorizeOpenedFile && !authorizeOpenedFile(stats)) {
+            throw new Error('invalid upload path');
+        }
         if (!stats.isFile()) {
             throw new Error('Attachment must be a regular file');
         }

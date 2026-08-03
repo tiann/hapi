@@ -645,28 +645,55 @@ describe('Pi abort queue boundary', () => {
 
 describe('Pi prompt preparation', () => {
     it('reads image attachments into Pi RPC image content while retaining safe text references', async () => {
-        const { writeFile, rm } = await import('node:fs/promises');
-        const { join } = await import('node:path');
+        const { mkdtemp, writeFile, rm, symlink } = await import('node:fs/promises');
+        const { tmpdir } = await import('node:os');
+        const { join, sep } = await import('node:path');
         const imagePath = join(process.env.TMPDIR ?? '/tmp', `pi-image-${Date.now()}.png`);
+        const uploadDir = await mkdtemp(join(tmpdir(), 'pi-upload-auth-'));
+        const outsidePath = process.platform === 'win32' ? null : join(tmpdir(), `pi-outside-${Date.now()}.png`);
+        const symlinkPath = process.platform === 'win32' ? null : join(uploadDir, 'escape.png');
         await writeFile(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+        if (outsidePath && symlinkPath) {
+            await writeFile(outsidePath, Buffer.from([1, 2, 3, 4]));
+            await symlink(outsidePath, symlinkPath);
+        }
         try {
             const { preparePiUserMessage } = await import('./runPi');
             const prepared = await preparePiUserMessage('$brave-search explain', [
                 { id: 'image', filename: 'plot.png', mimeType: 'image/png', size: 4, path: imagePath },
                 { id: 'text', filename: 'notes file.txt', mimeType: 'text/plain', size: 1, path: '/tmp/notes file.txt' },
-            ], [{ name: 'skill:brave-search', source: 'skill' }], { authorizeImagePath: () => true });
+            ], [{ name: 'skill:brave-search', source: 'skill' }], {
+                authorizeImagePath: () => true,
+                authorizeOpenedImage: () => true,
+            });
             expect(prepared.message).toBe('/skill:brave-search explain\n\nAttached file: \"/tmp/notes file.txt\"');
             expect(prepared.images).toEqual([{ type: 'image', mimeType: 'image/png', data: 'iVBORw==' }]);
             expect(prepared.imageReadErrors).toEqual([]);
             expect(formatPiUserMessage('', [{ id: 'newline', filename: 'x', mimeType: 'text/plain', size: 1, path: '/tmp/a\nb' }], [])).toBe('Attached file: \"/tmp/a\\nb\"');
-            const failed = await preparePiUserMessage('', [{ id: 'missing', filename: 'missing.png', mimeType: 'image/png', size: 1, path: '/missing/image.png' }], [], { authorizeImagePath: () => true });
+            const failed = await preparePiUserMessage('', [{ id: 'missing', filename: 'missing.png', mimeType: 'image/png', size: 1, path: '/missing/image.png' }], [], {
+                authorizeImagePath: () => true,
+                authorizeOpenedImage: () => true,
+            });
             expect(failed).toMatchObject({ message: '', images: [] });
             expect(failed.imageReadErrors[0]).toContain('Could not attach image missing.png');
-            const unauthorized = await preparePiUserMessage('', [{ id: 'forged', filename: 'hosts.png', mimeType: 'image/png', size: 1, path: '/etc/hosts' }], [], { authorizeImagePath: () => false });
+            const unauthorized = await preparePiUserMessage('', [{ id: 'forged', filename: 'hosts.png', mimeType: 'image/png', size: 1, path: '/etc/hosts' }], [], {
+                authorizeImagePath: () => false,
+                authorizeOpenedImage: () => false,
+            });
             expect(unauthorized).toMatchObject({ message: '', images: [] });
             expect(unauthorized.imageReadErrors).toEqual(['Could not attach image hosts.png: invalid upload path']);
+            if (symlinkPath) {
+                const symlinkEscape = await preparePiUserMessage('', [{ id: 'symlink', filename: 'escape.png', mimeType: 'image/png', size: 4, path: symlinkPath }], [], {
+                    authorizeImagePath: (path) => path.startsWith(`${uploadDir}${sep}`),
+                    authorizeOpenedImage: () => true,
+                });
+                expect(symlinkEscape).toMatchObject({ message: '', images: [] });
+                expect(symlinkEscape.imageReadErrors).toEqual(['Could not attach image escape.png: invalid upload path']);
+            }
         } finally {
             await rm(imagePath, { force: true });
+            if (outsidePath) await rm(outsidePath, { force: true });
+            await rm(uploadDir, { recursive: true, force: true });
         }
     });
 });

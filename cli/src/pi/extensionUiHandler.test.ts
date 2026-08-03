@@ -137,4 +137,27 @@ describe('PiExtensionUiHandler duplicate ids', () => {
         expect(harness.sendResponse).toHaveBeenCalledTimes(1);
         expect(harness.session.sendSessionEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'message', message: expect.stringContaining('id was reused') }));
     });
+
+    it('retires an id after normal completion and cancels any later reuse', async () => {
+        const harness = createHarness();
+        harness.handler.handle({ type: 'extension_ui_request', id: 'completed', method: 'input', title: 'First' });
+        await harness.respond({ id: 'completed', approved: true, answers: { completed: { answers: ['user_note: accepted'] } } });
+        harness.handler.handle({ type: 'extension_ui_request', id: 'completed', method: 'input', title: 'Replacement' });
+
+        expect(harness.sendResponse).toHaveBeenNthCalledWith(1, { type: 'extension_ui_response', id: 'completed', value: 'accepted' });
+        expect(harness.sendResponse).toHaveBeenNthCalledWith(2, { type: 'extension_ui_response', id: 'completed', cancelled: true });
+        await harness.respond({ id: 'completed', approved: true, answers: { completed: { answers: ['user_note: late'] } } });
+        expect(harness.sendResponse).toHaveBeenCalledTimes(2);
+    });
+
+    it('retires a timed-out id and immediately cancels a replacement dialog', async () => {
+        vi.useFakeTimers();
+        const harness = createHarness();
+        harness.handler.handle({ type: 'extension_ui_request', id: 'timed-out', method: 'input', title: 'First', timeout: 50 });
+        await vi.advanceTimersByTimeAsync(38);
+        harness.handler.handle({ type: 'extension_ui_request', id: 'timed-out', method: 'input', title: 'Replacement' });
+
+        expect(harness.sendResponse).toHaveBeenNthCalledWith(1, { type: 'extension_ui_response', id: 'timed-out', cancelled: true });
+        expect(harness.sendResponse).toHaveBeenNthCalledWith(2, { type: 'extension_ui_response', id: 'timed-out', cancelled: true });
+    });
 });

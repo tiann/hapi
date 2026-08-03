@@ -176,8 +176,9 @@ export class PiExtensionUiHandler {
 
     private registerPending(request: PendingExtensionRequest): void {
         if (this.tombstonedIds.has(request.id)) {
-            logger.debug(`[pi] Ignoring tombstoned duplicate extension request ${request.id}`);
-            this.options.session.sendSessionEvent({ type: 'message', message: `Pi extension request ${request.id} was ignored after a duplicate id.` });
+            logger.debug(`[pi] Rejecting reused extension request id ${request.id}`);
+            this.options.session.sendSessionEvent({ type: 'message', message: `Pi extension request ${request.id} was canceled because its id was already retired.` });
+            this.options.sendResponse({ type: 'extension_ui_response', id: request.id, cancelled: true });
             return;
         }
         if (this.pending.has(request.id)) {
@@ -253,6 +254,7 @@ export class PiExtensionUiHandler {
         const entry = this.pending.get(id);
         if (!entry) return;
         this.pending.delete(id);
+        this.tombstonedIds.add(id);
         if (entry.timer) clearTimeout(entry.timer);
 
         const tool = requestToolName(entry.request);
