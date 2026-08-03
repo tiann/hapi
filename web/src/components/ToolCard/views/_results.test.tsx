@@ -225,7 +225,8 @@ describe('Codex agent result formatting', () => {
         toolName: string,
         result: unknown,
         input: unknown = {},
-        surface: 'inline' | 'dialog' = 'dialog'
+        surface: 'inline' | 'dialog' = 'dialog',
+        nativeKind: string | null = null
     ) {
         const ResultView = getToolResultViewComponent(toolName)
         const block: ToolCallBlock = {
@@ -245,7 +246,8 @@ describe('Codex agent result formatting', () => {
                 completedAt: 0,
                 execStartedAt: null,
                 execCompletedAt: null,
-                description: null
+                description: null,
+                nativeKind
             }
         }
 
@@ -361,7 +363,8 @@ describe('read file result formatting', () => {
         toolName: string,
         result: unknown,
         input: unknown = {},
-        surface: 'inline' | 'dialog' = 'dialog'
+        surface: 'inline' | 'dialog' = 'dialog',
+        nativeKind: string | null = null
     ) {
         const ResultView = getToolResultViewComponent(toolName)
         const block: ToolCallBlock = {
@@ -381,7 +384,8 @@ describe('read file result formatting', () => {
                 completedAt: 0,
                 execStartedAt: null,
                 execCompletedAt: null,
-                description: null
+                description: null,
+                nativeKind
             }
         }
 
@@ -429,7 +433,7 @@ describe('read file result formatting', () => {
                 filePath: '/tmp/doc.md',
                 content: '50: alpha\n51: beta\n52: gamma'
             }
-        })
+        }, {}, 'dialog', 'agy-numbered-read')
         const pre = container.querySelector('pre')
         // Gutter is offset to the real first line (50), not restarted at 1.
         expect(pre?.getAttribute('data-start-line')).toBe('50')
@@ -460,6 +464,20 @@ describe('read file result formatting', () => {
         expect(container.querySelector('pre')).not.toBeNull()
         expect(container).toHaveTextContent('File content')
         expect(container).toHaveTextContent('const value = 1')
+    })
+
+    it('preserves numbered content for a generic Read result', () => {
+        const { container } = renderToolResult('Read', '1: first\n2: second')
+
+        expect(container.querySelector('code')?.textContent).toBe('1: first\n2: second')
+        expect(container.querySelector('pre')).toHaveAttribute('data-start-line', '1')
+    })
+
+    it('strips numbered prefixes only for AGY Read provenance', () => {
+        const { container } = renderToolResult('Read', '50: first\n51: second', {}, 'dialog', 'agy-numbered-read')
+
+        expect(container.querySelector('code')?.textContent).toBe('first\nsecond')
+        expect(container.querySelector('pre')).toHaveAttribute('data-start-line', '50')
     })
 
     it('suppresses the CodeBlock wrap toggle on the inline surface (avoids nesting a <button> in the role="button" preview)', () => {

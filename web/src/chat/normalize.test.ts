@@ -218,6 +218,31 @@ describe('normalizeDecryptedMessage', () => {
         expect(normalizeDecryptedMessage(message)).toBeNull()
     })
 
+    it('marks AGY Read actions with non-input numbered-read provenance', () => {
+        const normalized = normalizeDecryptedMessage(makeMessage({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'agy_tool_action',
+                    name: 'VIEW_FILE',
+                    toolName: 'view_file',
+                    input: { AbsolutePath: '/tmp/list.txt' },
+                    content: '1: first\n2: second'
+                }
+            }
+        }))
+
+        expect(Array.isArray(normalized?.content)).toBe(true)
+        if (!Array.isArray(normalized?.content)) throw new Error('expected normalized tool content')
+        expect(normalized.content[0]).toMatchObject({
+            type: 'tool-call',
+            name: 'Read',
+            nativeKind: 'agy-numbered-read',
+            input: { file_path: '/tmp/list.txt' }
+        })
+    })
+
     it('renders agy_tool_action as a humanized tool-call card (no raw blob)', () => {
         const message = makeMessage({
             role: 'agent',

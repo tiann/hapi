@@ -426,12 +426,12 @@ export function parseNumberedFileLines(text: string): { startLine: number; body:
     return startLine === null ? null : { startLine, body: body.join('\n') }
 }
 
-function renderReadTextResult(text: string, path: string | null, surface: ToolViewProps['surface']) {
+function renderReadTextResult(text: string, path: string | null, surface: ToolViewProps['surface'], parseNumberedLines: boolean) {
     // A file read is line-oriented content: render it in a code block (monospace
     // + line-number gutter) even when the extension is unknown (.txt, .log, agy
     // step output …), so it reads as clean numbered lines instead of a
     // soft-wrapped prose quote.
-    const numbered = parseNumberedFileLines(text)
+    const numbered = parseNumberedLines ? parseNumberedFileLines(text) : null
     const body = numbered ? numbered.body : text
     const language = inferCodeLanguage(path, body) ?? 'text'
     return (
@@ -657,7 +657,7 @@ const ReadResultView: ToolViewComponent = (props: ToolViewProps) => {
                         {basename(path)}
                     </div>
                 ) : null}
-                {renderReadTextResult(file.content, path, props.surface)}
+                {renderReadTextResult(file.content, path, props.surface, props.block.tool.nativeKind === 'agy-numbered-read')}
                 <RawJsonDevOnly value={result} surface={props.surface} />
             </>
         )
@@ -669,7 +669,7 @@ const ReadResultView: ToolViewComponent = (props: ToolViewProps) => {
         const displayPath = path ? resolveDisplayPath(path, props.metadata) : null
         return (
             <>
-                {renderReadTextResult(text, displayPath, props.surface)}
+                {renderReadTextResult(text, displayPath, props.surface, props.block.tool.nativeKind === 'agy-numbered-read')}
                 <RawJsonDevOnly value={result} surface={props.surface} />
             </>
         )
@@ -1005,7 +1005,8 @@ const GenericResultView: ToolViewComponent = (props: ToolViewProps) => {
                         ? renderReadTextResult(
                             parsed.output.trim(),
                             extractReadPathFromInput(props.block.tool.input),
-                            props.surface
+                            props.surface,
+                            props.block.tool.nativeKind === 'agy-numbered-read'
                         )
                         : renderText(parsed.output.trim(), { mode: 'code', language: 'text', collapseLongContent: props.surface === 'inline', surface: props.surface })}
                     <RawJsonDevOnly value={result} surface={props.surface} />
@@ -1019,7 +1020,7 @@ const GenericResultView: ToolViewComponent = (props: ToolViewProps) => {
         return (
             <>
                 {isReadFileToolCall(props.block.tool.name, props.block.tool.input)
-                    ? renderReadTextResult(text, extractReadPathFromInput(props.block.tool.input), props.surface)
+                    ? renderReadTextResult(text, extractReadPathFromInput(props.block.tool.input), props.surface, props.block.tool.nativeKind === 'agy-numbered-read')
                     : renderText(text, { mode: 'auto', collapseLongContent: props.surface === 'inline', surface: props.surface })}
                 {typeof result === 'object' ? <RawJsonDevOnly value={result} surface={props.surface} /> : null}
             </>

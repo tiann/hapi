@@ -875,6 +875,9 @@ export function normalizeAgentRecord(
                         name,
                         input,
                         description,
+                        nativeKind: name === 'Read' || rawActionName === 'VIEW_FILE'
+                            ? 'agy-numbered-read'
+                            : null,
                         uuid: messageId,
                         parentUUID: null
                     },
