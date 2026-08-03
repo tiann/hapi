@@ -1,5 +1,24 @@
-import { describe, expect, it } from 'vitest'
-import { _parseAgyModelsOutputForTests } from './agyModels'
+import { EventEmitter } from 'node:events'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+const spawnMock = vi.hoisted(() => vi.fn())
+vi.mock('node:child_process', () => ({ spawn: spawnMock }))
+
+import { _parseAgyModelsOutputForTests, _resetAgyModelsCacheForTests, listAgyModels } from './agyModels'
+
+function fakeChild() {
+    return Object.assign(new EventEmitter(), {
+        stdout: new EventEmitter(),
+        stderr: new EventEmitter(),
+        kill: vi.fn(),
+    })
+}
+
+beforeEach(() => {
+    vi.useRealTimers()
+    spawnMock.mockReset()
+    _resetAgyModelsCacheForTests()
+})
 
 describe('parseAgyModelsOutput', () => {
     it('parses agy 1.1.5 id and display-name columns without duplicating the id', () => {
@@ -23,5 +42,56 @@ describe('parseAgyModelsOutput', () => {
             { modelId: 'gemini-3.6-flash-high' },
             { modelId: 'gemini-3.6-flash-low' }
         ])
+    })
+})
+
+
+describe('listAgyModels live probe', () => {
+    it('launches the same agy executable resolved from PATH without a shell wrapper', async () => {
+        const child = fakeChild()
+        spawnMock.mockReturnValue(child)
+        const resultPromise = listAgyModels()
+
+        expect(spawnMock).toHaveBeenCalledWith('agy', ['models'], expect.objectContaining({
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: expect.objectContaining({ GEMINI_FORCE_FILE_STORAGE: 'true' }),
+            windowsHide: process.platform === 'win32',
+        }))
+        const options = spawnMock.mock.calls[0][2]
+        expect(options.env.PATH).toBe(process.env.PATH)
+        expect(Object.keys(options.env).some((key) => key.startsWith('SSH_'))).toBe(false)
+
+        child.stdout.emit('data', Buffer.from('gemini-3.6-flash-low\n'))
+        child.emit('exit', 0)
+        await expect(resultPromise).resolves.toMatchObject({
+            success: true,
+            availableModels: [{ modelId: 'gemini-3.6-flash-low' }]
+        })
+    })
+
+    it('kills a timed-out PATH probe once and settles once despite a late exit', async () => {
+        vi.useFakeTimers()
+        const child = fakeChild()
+        spawnMock.mockReturnValue(child)
+        const resultPromise = listAgyModels()
+
+        await vi.advanceTimersByTimeAsync(15_000)
+        const result = await resultPromise
+        expect(child.kill).toHaveBeenCalledTimes(1)
+        expect(result.success).toBe(true)
+        expect(result.availableModels?.length).toBeGreaterThan(0)
+        child.emit('exit', 0)
+        expect(child.kill).toHaveBeenCalledTimes(1)
+    })
+
+    it('settles once when spawn error races with exit', async () => {
+        const child = fakeChild()
+        spawnMock.mockReturnValue(child)
+        const resultPromise = listAgyModels()
+        child.emit('error', new Error('missing'))
+        child.emit('exit', 1)
+        const result = await resultPromise
+        expect(result.success).toBe(true)
+        expect(result.availableModels?.length).toBeGreaterThan(0)
     })
 })

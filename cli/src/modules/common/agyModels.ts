@@ -123,13 +123,10 @@ function buildAgyProbeEnv(): NodeJS.ProcessEnv {
 // unparseable output). An auth failure is surfaced so the UI can prompt sign-in.
 async function fetchAgyModels(): Promise<ListAgyModelsResponse> {
     return await new Promise((resolve) => {
-        const child = spawn('script', [
-            '-q', '-c',
-            `timeout 12 ~/.local/bin/agy models`,
-            '/dev/null'
-        ], {
+        const child = spawn('agy', ['models'], {
             stdio: ['ignore', 'pipe', 'pipe'],
             env: buildAgyProbeEnv(),
+            windowsHide: process.platform === 'win32',
         })
         let stdout = ''
         let stderr = ''
