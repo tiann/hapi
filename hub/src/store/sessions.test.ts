@@ -841,3 +841,82 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
         }
     })
 })
+
+describe('replaceSessionTodos: watermark ratchet (PR #897 rewind race)', () => {
+    it('advances todosUpdatedAt past the prior write even when rebuilding older content', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'rewind-todos-watermark',
+            { path: '/tmp/project' },
+            null,
+            'default'
+        )
+
+        const priorAt = 1_700_000_000_000
+        const lateTodos = [{ content: 'late', status: 'pending', activeForm: 'doing late' }]
+        const earlyTodos = [{ content: 'early', status: 'pending', activeForm: 'doing early' }]
+
+        expect(store.sessions.setSessionTodos(session.id, lateTodos, priorAt, 'default')).toBe(true)
+        expect(store.sessions.getSession(session.id)?.todosUpdatedAt).toBe(priorAt)
+
+        // Rewind would otherwise stamp the remaining TodoWrite's older createdAt.
+        expect(store.sessions.replaceSessionTodos(session.id, earlyTodos, 'default')).toBe(true)
+
+        const after = store.sessions.getSession(session.id)
+        expect(after?.todosUpdatedAt).toBe(priorAt + 1)
+        expect(after?.todos).toEqual(earlyTodos)
+
+        // A lagged pre-rewind structured patch using priorAt must lose the
+        // store-side monotonic write too (defense in depth vs SSE gate).
+        expect(store.sessions.setSessionTodos(session.id, lateTodos, priorAt, 'default')).toBe(false)
+        expect(store.sessions.getSession(session.id)?.todos).toEqual(earlyTodos)
+
+        store.close()
+    })
+
+    it('stamps Date.now() when replacing into a null watermark', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'rewind-todos-null-watermark',
+            { path: '/tmp/project' },
+            null,
+            'default'
+        )
+
+        const before = Date.now()
+        expect(store.sessions.replaceSessionTodos(
+            session.id,
+            [{ content: 'only', status: 'pending', activeForm: 'doing' }],
+            'default'
+        )).toBe(true)
+        const after = store.sessions.getSession(session.id)
+        expect(after?.todosUpdatedAt).toBeGreaterThanOrEqual(before)
+        expect(after?.todosUpdatedAt).toBeLessThanOrEqual(Date.now())
+
+        store.close()
+    })
+
+    it('clears todos while still ratcheting the watermark', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'rewind-todos-clear',
+            { path: '/tmp/project' },
+            null,
+            'default'
+        )
+
+        expect(store.sessions.setSessionTodos(
+            session.id,
+            [{ content: 'gone', status: 'pending', activeForm: 'going' }],
+            50,
+            'default'
+        )).toBe(true)
+
+        expect(store.sessions.replaceSessionTodos(session.id, null, 'default')).toBe(true)
+        const after = store.sessions.getSession(session.id)
+        expect(after?.todos).toBeNull()
+        expect(after?.todosUpdatedAt).toBe(51)
+
+        store.close()
+    })
+})

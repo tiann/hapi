@@ -314,7 +314,9 @@ const VersionedAgentStatePatchSchema = z.object({
 
 // Same dual-SSE race as metadata/agentState: global + session EventSources
 // have no shared order. Version = store `todos_updated_at` /
-// `team_state_updated_at` (message createdAt on write).
+// `team_state_updated_at`. Normal TodoWrite / team writes stamp message
+// `createdAt`; rewind/fork `replaceSessionTodos` ratchets the watermark
+// so a lagged pre-rewind patch cannot resurrect deleted todos.
 const VersionedTodosPatchSchema = z.object({
     version: z.number(),
     value: TodosSchema

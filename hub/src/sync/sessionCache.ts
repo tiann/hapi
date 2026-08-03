@@ -94,7 +94,9 @@ export class SessionCache {
     /**
      * After fork hydrate / rewind truncate, re-scan the transcript for the
      * latest TodoWrite (or clear todos). Bypasses the one-shot backfill flag
-     * and the monotonic todosUpdatedAt guard.
+     * and the normal `setSessionTodos` monotonic guard. Watermark still
+     * ratchets inside `replaceSessionTodos` — do not pass the remaining
+     * message's older `createdAt` as the SSE version.
      */
     rebuildTodosFromTranscript(sessionId: string): void {
         const stored = this.store.sessions.getSession(sessionId)
@@ -102,20 +104,19 @@ export class SessionCache {
 
         this.todoBackfillAttemptedSessionIds.delete(sessionId)
         const messages = this.store.messages.getAllMessages(sessionId)
-        let found: { todos: unknown; at: number } | null = null
+        let foundTodos: unknown | null = null
         for (let i = messages.length - 1; i >= 0; i -= 1) {
             const message = messages[i]
             if (!message) continue
             const todos = extractTodoWriteTodosFromMessageContent(message.content)
             if (todos) {
-                found = { todos, at: message.createdAt }
+                foundTodos = todos
                 break
             }
         }
         this.store.sessions.replaceSessionTodos(
             sessionId,
-            found?.todos ?? null,
-            found?.at ?? null,
+            foundTodos,
             stored.namespace
         )
         this.todoBackfillAttemptedSessionIds.add(sessionId)

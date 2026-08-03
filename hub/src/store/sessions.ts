@@ -377,12 +377,22 @@ export function setSessionTodos(
     }
 }
 
-/** Force-replace todos after rewind/fork (ignores monotonic timestamp guard). */
+/**
+ * Force-replace todos after rewind/fork (ignores the normal
+ * `todos_updated_at < candidate` guard so an older remaining TodoWrite can
+ * land). The watermark itself MUST still advance: SSE clients gate structured
+ * todos patches on `todosUpdatedAt`, and dual EventSources can deliver a
+ * buffered pre-rewind patch after the post-rewind Session. Writing the
+ * remaining message's older `createdAt` here would let that stale patch win
+ * and resurrect deleted todos (PR #897 HAPI Bot 2026-08-03 Major).
+ *
+ * Ratchet: `null → now`, else `previous + 1`. Always strictly greater than any
+ * prior write on this row, so lagged pre-rewind versions are rejected.
+ */
 export function replaceSessionTodos(
     db: Database,
     id: string,
     todos: unknown,
-    todosUpdatedAt: number | null,
     namespace: string
 ): boolean {
     try {
@@ -391,16 +401,18 @@ export function replaceSessionTodos(
         const result = db.prepare(`
             UPDATE sessions
             SET todos = @todos,
-                todos_updated_at = @todos_updated_at,
-                updated_at = CASE WHEN updated_at > @updated_at THEN updated_at ELSE @updated_at END,
+                todos_updated_at = CASE
+                    WHEN todos_updated_at IS NULL THEN @now
+                    ELSE todos_updated_at + 1
+                END,
+                updated_at = CASE WHEN updated_at > @now THEN updated_at ELSE @now END,
                 seq = seq + 1
             WHERE id = @id
               AND namespace = @namespace
         `).run({
             id,
             todos: json,
-            todos_updated_at: todosUpdatedAt,
-            updated_at: now,
+            now,
             namespace
         })
         return result.changes === 1
