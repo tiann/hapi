@@ -110,6 +110,62 @@ describe('PiConversationHistory entry mapping', () => {
         expect(history.getEntryIds()).toEqual({ 'local-1': 'entry-1', 'local-2': 'entry-2' })
     })
 
+    it('disables optional history polling when startup get_entries is unsupported', async () => {
+        const { session } = createSession()
+        const rpc = vi.fn(async () => { throw new Error('Unknown command: get_entries') })
+        const publishCapabilities = vi.fn(async () => {})
+        const history = new PiConversationHistory(session, rpc)
+        history.setPublishCapabilities(publishCapabilities)
+
+        await history.initialize()
+        await history.syncEntries()
+        await history.syncEntries()
+        history.registerPrompt('disabled-1')
+        history.registerPrompt('disabled-2')
+        history.observeEntry({ type: 'message', id: 'late-user', message: { role: 'user' } })
+
+        expect(rpc).toHaveBeenCalledTimes(1)
+        expect(history.getCapabilitiesForMetadata()).toBeUndefined()
+        expect(history.getEntryIds()).toEqual({})
+        expect(publishCapabilities).toHaveBeenCalledTimes(1)
+    })
+
+    it.each([
+        ['transient rejection', async () => { throw new Error('temporary read failure') }],
+        ['malformed response', async () => ({ entries: null, leafId: null })],
+    ])('disables history when the startup baseline has a %s', async (_label, read) => {
+        const { session } = createSession()
+        const rpc = vi.fn(read)
+        const history = new PiConversationHistory(session, rpc)
+
+        await history.initialize()
+        history.registerPrompt('new-local')
+        history.observeEntry({ type: 'message', id: 'old-native-user', message: { role: 'user' } })
+        await history.syncEntries()
+
+        expect(rpc).toHaveBeenCalledTimes(1)
+        expect(history.getCapabilitiesForMetadata()).toBeUndefined()
+        expect(history.getEntryIds()).toEqual({})
+        await expect(history.fork()).rejects.toThrow('unavailable')
+        await expect(history.rewind('stale-local')).resolves.toMatchObject({
+            success: false,
+            error: expect.stringContaining('unavailable'),
+        })
+        expect(rpc).toHaveBeenCalledTimes(1)
+    })
+
+    it('handles rejection from a detached coalesced sync retry', async () => {
+        const { session } = createSession()
+        const rpc = vi.fn(async () => { throw new Error('transient history read failure') })
+        const history = new PiConversationHistory(session, rpc)
+
+        const first = history.syncEntries().catch(() => {})
+        const concurrent = history.syncEntries().catch(() => {})
+        await Promise.all([first, concurrent])
+        await vi.waitFor(() => expect(rpc).toHaveBeenCalledTimes(2))
+        await Promise.resolve()
+    })
+
     it('removes a failed local FIFO prompt by exact localId without consuming its neighbor', () => {
         const { session } = createSession()
         const history = new PiConversationHistory(session, vi.fn())

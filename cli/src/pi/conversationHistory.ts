@@ -154,6 +154,7 @@ export class PiConversationHistory {
     private syncInFlight: Promise<void> | null = null
     private syncRequestedWhileInFlight = false
     private syncGeneration = 0
+    private historySyncDisabled = false
 
     constructor(
         private readonly session: PiSession,
@@ -188,13 +189,26 @@ export class PiConversationHistory {
     async initialize(): Promise<void> {
         try {
             await this.syncEntries()
-            await this.probeCapabilities()
-        } catch {
-            // Capability publication remains absent; normal Pi startup continues.
+        } catch (error) {
+            // A trustworthy append-log baseline is mandatory before prompts are
+            // released. Any startup failure disables history for this wrapper;
+            // otherwise a later full-log read could pair an old user entry with
+            // the first new HAPI localId.
+            this.historySyncDisabled = true
+            this.pendingUserEntries.length = 0
+            this.states = markUnsupported(this.states, 'forkCurrent')
+            this.states = markUnsupported(this.states, 'forkAtMessage')
+            this.states = markUnsupported(this.states, 'rewindToMessage')
+            await this.publishCapabilities?.().catch(() => {})
+            return
         }
+        // Capability publication remains optional; normal Pi startup continues
+        // after transient/malformed history reads.
+        await this.probeCapabilities().catch(() => {})
     }
 
     registerPrompt(localId: string | undefined): void {
+        if (this.historySyncDisabled) return
         if (localId) this.pendingUserEntries.push({ localId })
     }
 
@@ -206,13 +220,13 @@ export class PiConversationHistory {
     }
 
     observeEntry(rawEntry: unknown): void {
-        if (this.session.isHistoryTransactionActive) return
+        if (this.historySyncDisabled || this.session.isHistoryTransactionActive) return
         const parsed = readEntries({ entries: [rawEntry], leafId: null })
         for (const entry of parsed.entries) this.observeParsedEntry(entry)
     }
 
     async syncEntries(): Promise<void> {
-        if (this.session.isHistoryTransactionActive) return
+        if (this.historySyncDisabled || this.session.isHistoryTransactionActive) return
         if (this.syncInFlight) {
             // A turn_start can be emitted for tool/retry loops before the prior
             // incremental read returns. Coalesce it into one serialized follow-up.
@@ -225,7 +239,7 @@ export class PiConversationHistory {
             const scheduleFollowUp = this.syncRequestedWhileInFlight && !this.session.isHistoryTransactionActive
             this.syncInFlight = null
             this.syncRequestedWhileInFlight = false
-            if (scheduleFollowUp) void this.syncEntries()
+            if (scheduleFollowUp) void this.syncEntries().catch(() => {})
         })
         return await this.syncInFlight
     }
@@ -255,13 +269,15 @@ export class PiConversationHistory {
     }
 
     async probeCapabilities(): Promise<void> {
+        if (this.historySyncDisabled) return
         if (this.states.forkCurrent !== 'unknown' && this.states.forkAtMessage !== 'unknown'
             && this.states.rewindToMessage !== 'unknown') return
         try {
             // Both reads are side-effect free and exist together with Pi 0.83's
             // clone/fork APIs. Do not expose controls before this succeeds.
             await this.rpc({ type: 'get_fork_messages' })
-            await this.rpc({ type: 'get_entries', ...(this.appendCursor ? { since: this.appendCursor } : {}) })
+            const entries = await this.rpc({ type: 'get_entries', ...(this.appendCursor ? { since: this.appendCursor } : {}) })
+            readEntries(entries)
             this.states = markSupported(this.states, 'forkCurrent')
             this.states = markSupported(this.states, 'forkAtMessage')
             this.states = markSupported(this.states, 'rewindToMessage')
@@ -502,6 +518,7 @@ export class PiConversationHistory {
     }
 
     private assertHistoryIdle(): void {
+        if (this.historySyncDisabled) throw new Error('Pi conversation history is unavailable')
         if (!this.session.isNativeReady) throw new Error('Pi native session is not ready')
         if (this.session.piIsStreaming || this.session.hasPromptInFlight) throw new Error('Pi session is busy')
     }
