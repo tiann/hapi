@@ -48,6 +48,7 @@ vi.mock('./utils/agySessionScanner', async (importOriginal) => {
     const actual = await importOriginal<typeof import('./utils/agySessionScanner')>()
     return {
         extractBodyText: actual.extractBodyText,
+        extractUserRequest: actual.extractUserRequest,
         createAgySessionScanner: vi.fn(async (opts: Record<string, unknown>) => {
             harness.scannerOpts = opts
             return {

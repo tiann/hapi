@@ -2,7 +2,7 @@ import React from "react"
 import { AgySession } from "./session"
 import { RemoteModeDisplay } from "@/ui/ink/RemoteModeDisplay"
 import { agyPty } from "./agyPty"
-import { createAgySessionScanner, extractBodyText } from "./utils/agySessionScanner"
+import { createAgySessionScanner, extractBodyText, extractUserRequest } from "./utils/agySessionScanner"
 import type { AgyToolCall } from "./utils/agyTranscriptTypes"
 import { isAgyAskQuestionToolCall, buildCanonicalAskUserQuestionInput, type AgyAskQuestionQuestion } from "./utils/agyAskQuestion"
 import { buildAgyQuestionKeys } from "./utils/agyQuestionKeys"
@@ -71,20 +71,6 @@ type PendingWebDelivery = {
     localIds: string[]
     submitted: boolean
     observedBeforeSubmit: string | null
-}
-
-function extractUserRequest(content: string): string | null {
-    const open = '<USER_REQUEST>'
-    const close = '</USER_REQUEST>'
-    const start = content.indexOf(open)
-    if (start === -1) return null
-    const contentStart = start + open.length
-    const end = content.indexOf(close, contentStart)
-    if (end === -1) return null
-    let request = content.slice(contentStart, end)
-    if (request.startsWith('\n')) request = request.slice(1)
-    if (request.endsWith('\n')) request = request.slice(0, -1)
-    return request
 }
 
 function parseAttachmentMessage(text: string, separator: '\n\n' | '\n'): {
