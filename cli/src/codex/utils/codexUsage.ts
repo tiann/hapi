@@ -241,6 +241,30 @@ export function noteReplayUsageSample(accumulator: ReplayUsageAccumulator, paylo
     }
 }
 
+/** Reverse-scan helper: keep the first (newest) sample per dimension. */
+export function noteReplayUsageSampleIfAbsent(accumulator: ReplayUsageAccumulator, payload: unknown): void {
+    const update = normalizeCodexUsageUpdate(payload);
+    if (!update) {
+        return;
+    }
+    const hasTokens = Boolean(
+        update.usage.contextWindow || update.usage.totalTokenUsage || update.usage.lastTokenUsage
+    );
+    const hasRateLimits = update.hasRateLimitSnapshot;
+    const takeTokens = hasTokens && !accumulator.latestTokens;
+    const takeRateLimits = hasRateLimits && !accumulator.latestRateLimits;
+    if (!takeTokens && !takeRateLimits) {
+        return;
+    }
+    const sample: ReplayUsageSample = { index: accumulator.index++, payload };
+    if (takeTokens) {
+        accumulator.latestTokens = sample;
+    }
+    if (takeRateLimits) {
+        accumulator.latestRateLimits = sample;
+    }
+}
+
 /** At most two payloads, ordered by original replay index so merges apply correctly. */
 export function orderedReplayUsagePayloads(accumulator: ReplayUsageAccumulator): unknown[] {
     return [...new Map(

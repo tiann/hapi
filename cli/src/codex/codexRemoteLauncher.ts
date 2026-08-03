@@ -1,5 +1,6 @@
 import React from 'react';
 import { randomUUID } from 'node:crypto';
+import { stat } from 'node:fs/promises';
 
 import { CodexAppServerClient, isIndeterminateError } from './codexAppServerClient';
 import { CodexPermissionHandler } from './utils/permissionHandler';
@@ -16,8 +17,8 @@ import { hasCodexCliOverrides } from './utils/codexCliOverrides';
 import { AppServerEventConverter } from './utils/appServerEventConverter';
 import { registerGeneratedImageFromPath } from '@/modules/common/generatedImages';
 import { convertCodexEvent } from './utils/codexEventConverter';
-import { createCodexSessionScanner, type CodexSessionScanner } from './utils/codexSessionScanner';
-import { createReplayUsageAccumulator, emptyLiveUsageDimensions, filterTranscriptUsageForLive, markLiveUsageDimensions, noteReplayUsageSample, orderedReplayUsagePayloads, type LiveUsageDimensions } from './utils/codexUsage';
+import { createCodexSessionScanner, readLatestCodexUsageFromTail, type CodexSessionScanner } from './utils/codexSessionScanner';
+import { emptyLiveUsageDimensions, filterTranscriptUsageForLive, markLiveUsageDimensions, type LiveUsageDimensions } from './utils/codexUsage';
 import { registerAppServerPermissionHandlers } from './utils/appServerPermissionAdapter';
 import { buildThreadStartParams, buildTurnStartParams } from './utils/appServerConfig';
 import type { SkillMetadata, ThreadGoal, ThreadGoalStatus } from './appServerTypes';
@@ -381,11 +382,24 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             return;
         }
 
-        let replayingHistory = true;
-        const replayUsage = createReplayUsageAccumulator();
+        let transcriptSize = 0;
+        try {
+            transcriptSize = (await stat(transcriptPath)).size;
+        } catch (error) {
+            // Resume can race the first transcript flush; still attach at offset 0 and
+            // seed from whatever the tail reader can see.
+            logger.debug(`[Codex] Failed to stat transcript for remote thread ${threadId}:`, error);
+        }
+        if (this.shuttingDown || this.usageScannerThreadId !== threadId) {
+            return;
+        }
+
+        // Attach the live watcher before the (bounded) historical seed so a fast
+        // session exit cannot skip scanner registration after an extra await.
         const scanner = await createCodexSessionScanner({
             transcriptPath,
-            replayExistingHistory: true,
+            initialCursor: transcriptSize,
+            replayExistingHistory: false,
             onEvent: (event) => {
                 const converted = convertCodexEvent(event);
                 for (const message of converted?.messages ?? []) {
@@ -400,8 +414,6 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     if (eventThreadId && eventThreadId !== threadId) {
                         continue;
                     }
-                    // Initial replay can emit one token_count per historical turn.
-                    // Keep latest token and rate-limit dimensions, then record after create returns.
                     if (
                         this.currentThreadId !== threadId
                         || this.usageScannerThreadId !== threadId
@@ -409,10 +421,6 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         continue;
                     }
                     const live = this.liveUsageForThread(threadId);
-                    if (replayingHistory) {
-                        noteReplayUsageSample(replayUsage, message);
-                        continue;
-                    }
                     const filtered = filterTranscriptUsageForLive(message, live);
                     if (filtered) {
                         this.session.recordCodexUsage(filtered);
@@ -420,21 +428,31 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 }
             }
         });
-        replayingHistory = false;
         if (this.shuttingDown || this.usageScannerThreadId !== threadId) {
             await scanner.cleanup();
             return;
         }
-        if (this.currentThreadId === threadId && this.usageScannerThreadId === threadId) {
-            const live = this.liveUsageForThread(threadId);
-            for (const payload of orderedReplayUsagePayloads(replayUsage)) {
-                const filtered = filterTranscriptUsageForLive(payload, live);
-                if (filtered) {
-                    this.session.recordCodexUsage(filtered);
-                }
+        this.usageScanner = scanner;
+
+        const latestUsage = await readLatestCodexUsageFromTail(transcriptPath, {
+            maxBytes: 4 * 1024 * 1024,
+            chunkBytes: 64 * 1024,
+            threadId
+        });
+        if (
+            this.shuttingDown
+            || this.usageScannerThreadId !== threadId
+            || this.currentThreadId !== threadId
+        ) {
+            return;
+        }
+        const live = this.liveUsageForThread(threadId);
+        for (const payload of latestUsage) {
+            const filtered = filterTranscriptUsageForLive(payload, live);
+            if (filtered) {
+                this.session.recordCodexUsage(filtered);
             }
         }
-        this.usageScanner = scanner;
     }
 
     private async findTranscriptWithRetry(threadId: string): Promise<string | null> {
@@ -2870,7 +2888,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         this.conversationHistory.setThreadId(threadId);
                         void this.conversationHistory.probeCapabilities().catch(() => {});
                         session.onSessionFound(threadId);
-                        void this.ensureUsageScanner(threadId).catch((error) => {
+                        await this.ensureUsageScanner(threadId).catch((error) => {
                             logger.debug(`[Codex] Failed to start remote usage scanner for ${threadId}:`, error);
                         });
                     } else {
@@ -4316,7 +4334,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     this.conversationHistory.setThreadId(threadId);
                     void this.conversationHistory.probeCapabilities().catch(() => {});
                     session.onSessionFound(threadId);
-                    void this.ensureUsageScanner(threadId).catch((error) => {
+                    await this.ensureUsageScanner(threadId).catch((error) => {
                         logger.debug(`[Codex] Failed to start remote usage scanner for ${threadId}:`, error);
                     });
                     hasThread = true;
