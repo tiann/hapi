@@ -327,7 +327,8 @@ export function NewSession(props: {
         () => agent === 'claude' ? claudeModelOptions.map((option) => option.value) : null,
         [agent, claudeModelOptions]
     )
-    const preferredModelCatalogReady = agent !== 'claude' || claudeModelsLoaded
+    const claudeModelsLoading = agent === 'claude' && !claudeModelsLoaded
+    const preferredModelCatalogReady = !claudeModelsLoading
     const runnerSpawnError = useMemo(
         () => formatRunnerSpawnError(selectedMachine),
         [selectedMachine]
@@ -1497,7 +1498,8 @@ export function NewSession(props: {
     }
 
     const isLaunchPreferenceValidationPending =
-        (agent === 'codex'
+        claudeModelsLoading
+        || (agent === 'codex'
             && (model !== 'auto' || modelReasoningEffort !== 'default')
             && codexModelsState.isLoading)
         || (agent === 'agy'
@@ -1690,7 +1692,8 @@ export function NewSession(props: {
                             || (agent === 'grok' && Boolean(grokModelsState.error))
                             || (agent === 'copilot' && Boolean(copilotModelsState.error))
                         }
-                        isLoading={(agent === 'codex' && codexModelsState.isLoading)
+                        isLoading={claudeModelsLoading
+                            || (agent === 'codex' && codexModelsState.isLoading)
                             || (agent === 'grok' && grokModelsState.isLoading)
                             || (agent === 'copilot' && copilotModelsState.isLoading)}
                         error={agent === 'codex' && codexModelsState.error

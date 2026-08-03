@@ -181,10 +181,17 @@ vi.mock('./ModelSelector', () => ({
     ModelSelector: (props: {
         model: string
         options?: Array<{ value: string; label: string }>
+        isDisabled: boolean
+        isLoading?: boolean
         onModelChange: (model: string) => void
     }) => (
         <>
-            <button type="button" data-testid="model" onClick={() => props.onModelChange('gpt-5.6-terra')}>
+            <button
+                type="button"
+                data-testid="model"
+                disabled={props.isDisabled || props.isLoading}
+                onClick={() => props.onModelChange('gpt-5.6-terra')}
+            >
                 {props.model}
             </button>
             <div data-testid="model-options">{props.options?.map((option) => option.label).join(',')}</div>
@@ -335,6 +342,52 @@ describe('NewSession launch preferences', () => {
         await waitFor(() => {
             expect(screen.getByTestId('model')).toHaveTextContent('deepseek-v4-flash[1m]')
             expect(screen.getByTestId('launch-effort')).toHaveTextContent('high')
+        })
+    })
+
+    it('blocks model changes and creation until custom Claude models load', async () => {
+        savePreferredAgent('claude')
+        savePreferredLaunchSettings('machine-1', 'claude', {
+            model: 'deepseek-v4-flash[1m]',
+            cursorSelectedBase: 'auto',
+            effort: 'high',
+            modelReasoningEffort: 'default'
+        })
+        let resolveModels!: (value: { models: string[] }) => void
+        const claudeApi = {
+            getClaudeCustomModels: vi.fn().mockReturnValue(new Promise((resolve) => {
+                resolveModels = resolve
+            }))
+        } as unknown as ApiClient
+
+        render(
+            <NewSession
+                api={claudeApi}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        const model = screen.getByTestId('model')
+        const create = screen.getByTestId('create')
+        expect(model).toBeDisabled()
+        expect(create).toBeDisabled()
+        fireEvent.click(model)
+        fireEvent.click(create)
+        expect(model).toHaveTextContent('auto')
+        expect(mocks.spawnSession).not.toHaveBeenCalled()
+
+        await act(async () => {
+            resolveModels({ models: ['deepseek-v4-flash[1m]'] })
+        })
+
+        await waitFor(() => {
+            expect(model).toHaveTextContent('deepseek-v4-flash[1m]')
+            expect(model).toBeEnabled()
+            expect(create).toBeEnabled()
         })
     })
 
