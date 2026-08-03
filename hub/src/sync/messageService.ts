@@ -650,6 +650,13 @@ export class MessageService {
         )
         const actualSessionId = inserted.sessionId
         const msg = inserted.message
+        // A duplicate localId is an idempotent retry, not proof that the
+        // original Pi turn still exists. Its stored row may retain steer
+        // provenance from a POST whose response was lost, so deliver the
+        // duplicate through the same turn-safe deferred view as reconnect.
+        const cliContent = inserted.inserted
+            ? msg.content
+            : contentForDeferredDelivery(msg.content)
         this.onSessionActivity?.(actualSessionId, msg.createdAt)
 
         // Only emit to CLI if the message is not scheduled for the future.
@@ -672,7 +679,7 @@ export class MessageService {
                         seq: msg.seq,
                         createdAt: msg.createdAt,
                         localId: msg.localId,
-                        content: msg.content
+                        content: cliContent
                     }
                 }
             }

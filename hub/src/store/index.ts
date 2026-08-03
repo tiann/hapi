@@ -151,7 +151,7 @@ export class Store {
         content: unknown,
         localId?: string,
         scheduledAt?: number | null
-    ): { sessionId: string; message: StoredMessage } {
+    ): { sessionId: string; message: StoredMessage; inserted: boolean } {
         return this.db.transaction(() => {
             const row = this.db.prepare('SELECT namespace, metadata FROM sessions WHERE id = ?').get(sessionId) as { namespace: string; metadata: string | null } | undefined
             if (!row) throw new Error('Message source session not found')
@@ -169,7 +169,15 @@ export class Store {
                     .get(targetSessionId, row.namespace)
                 if (!target) throw new Error('OpenCode clear redirect target is unavailable in the source namespace')
             }
-            return { sessionId: targetSessionId, message: addMessage(this.db, targetSessionId, content, localId, scheduledAt) }
+            const alreadyExists = localId
+                ? Boolean(this.db.prepare('SELECT 1 FROM messages WHERE session_id = ? AND local_id = ? LIMIT 1')
+                    .get(targetSessionId, localId))
+                : false
+            return {
+                sessionId: targetSessionId,
+                message: addMessage(this.db, targetSessionId, content, localId, scheduledAt),
+                inserted: !alreadyExists
+            }
         })()
     }
 

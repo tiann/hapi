@@ -1180,6 +1180,44 @@ describe('MessageService.sendMessage deliveryMode', () => {
         })
     })
 
+    it('delivers a duplicate-localId retry as queue even when the stored row retains steer', async () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'delivery-mode-duplicate-pi',
+            { path: '/tmp/delivery-mode-duplicate-pi', host: 'localhost', flavor: 'pi' },
+            null,
+            'default'
+        )
+        const { io, cliEmitted } = makeTrackingIo()
+        const service = new MessageService(store, io, makePublisher() as any)
+
+        await service.sendMessage(session.id, {
+            text: 'original steer whose response is lost',
+            localId: 'duplicate-steer',
+            deliveryMode: 'steer'
+        })
+        await service.sendMessage(session.id, {
+            text: 'retry requests queue',
+            localId: 'duplicate-steer',
+            deliveryMode: 'queue'
+        })
+
+        expect(cliEmitted).toHaveLength(2)
+        expect(cliEmitted[0]).toMatchObject({
+            body: { message: { content: { meta: { deliveryMode: 'steer' } } } }
+        })
+        expect(cliEmitted[1]).toMatchObject({
+            body: { message: { content: { meta: { deliveryMode: 'queue' } } } }
+        })
+        const rows = store.messages.getUninvokedLocalMessages(session.id)
+        expect(rows).toHaveLength(1)
+        expect(rows[0]?.content).toMatchObject({
+            role: 'user',
+            content: { text: 'original steer whose response is lost' },
+            meta: { sentFrom: 'webapp', deliveryMode: 'steer' }
+        })
+    })
+
     it('downgrades a legacy persisted steer through the mature scheduled scan', () => {
         const store = makeStore()
         const session = store.sessions.getOrCreateSession(
