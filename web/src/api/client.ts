@@ -649,13 +649,14 @@ export class ApiClient {
 
     async listMachineDirectory(
         machineId: string,
-        path: string
+        path: string,
+        options?: { includeHidden?: boolean }
     ): Promise<MachineListDirectoryResponse> {
         return await this.request<MachineListDirectoryResponse>(
             `/api/machines/${encodeURIComponent(machineId)}/list-directory`,
             {
                 method: 'POST',
-                body: JSON.stringify({ path })
+                body: JSON.stringify({ path, includeHidden: options?.includeHidden === true })
             }
         )
     }

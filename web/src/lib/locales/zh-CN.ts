@@ -902,6 +902,7 @@ export default {
   'browse.goUp': '返回上层',
   'browse.empty': '未找到子目录',
   'browse.refresh': '刷新',
+  'browse.showHidden': '显示隐藏项',
   'browse.startSession': '启动会话',
   'browse.nav': '浏览',
   'browse.noRootTitle': '未启用 workspace 浏览',

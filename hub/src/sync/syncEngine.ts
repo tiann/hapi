@@ -2806,8 +2806,8 @@ async uploadScratchlistAttachment(
         return await this.rpcGateway.checkPathsExist(machineId, paths)
     }
 
-    async listMachineDirectory(machineId: string, path: string): Promise<RpcListDirectoryResponse> {
-        return await this.rpcGateway.listMachineDirectory(machineId, path)
+    async listMachineDirectory(machineId: string, path: string, includeHidden?: boolean): Promise<RpcListDirectoryResponse> {
+        return await this.rpcGateway.listMachineDirectory(machineId, path, includeHidden)
     }
 
     async getGitStatus(sessionId: string, cwd?: string): Promise<RpcCommandResponse> {

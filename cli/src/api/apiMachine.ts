@@ -56,6 +56,7 @@ interface PathExistsRequest {
 
 interface ListMachineDirectoryRequest {
     path: string
+    includeHidden?: boolean
 }
 
 interface CursorChatStoreStatusRequest {
@@ -168,6 +169,8 @@ export class ApiMachineClient {
                 return { success: false, error: 'Path is required' }
             }
 
+            const includeHidden = params?.includeHidden === true
+
             const targetPath = await this.resolveForWorkspaceCheck(rawPath)
             if (!this.isWithinWorkspaceRoots(targetPath)) {
                 return { success: false, error: 'Path is outside workspace roots' }
@@ -183,7 +186,7 @@ export class ApiMachineClient {
                 const entries: MachineDirectoryEntry[] = []
 
                 await Promise.all(dirEntries.map(async (entry) => {
-                    if (entry.name.startsWith('.')) return
+                    if (!includeHidden && entry.name.startsWith('.')) return
 
                     const fullPath = join(targetPath, entry.name)
                     let type: 'file' | 'directory' | 'other' = 'other'

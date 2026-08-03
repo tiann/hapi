@@ -898,6 +898,7 @@ export default {
   'browse.goUp': 'Go up',
   'browse.empty': 'No subdirectories found',
   'browse.refresh': 'Refresh',
+  'browse.showHidden': 'Show hidden',
   'browse.startSession': 'Start Session',
   'browse.nav': 'Browse',
   'browse.noRootTitle': 'Workspace browsing is off',
