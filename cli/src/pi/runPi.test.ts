@@ -499,16 +499,24 @@ describe('Pi abort queue boundary', () => {
         await completeHistoryInitialization();
 
         const userMessage = (text: string) => ({ role: 'user', content: { type: 'text', text } });
-        const onUserMessage = harness.session.onUserMessage.mock.calls.at(-1)![0] as (message: ReturnType<typeof userMessage>, localId: string) => void;
+        const onUserMessage = harness.session.onUserMessage.mock.calls.at(-1)![0] as (message: ReturnType<typeof userMessage> & {
+            meta?: { deliveryMode?: 'queue' | 'steer' };
+        }, localId: string) => void;
         onUserMessage(userMessage('late preflight'), 'late-id');
-        onUserMessage(userMessage('after abort'), 'after-id');
         await vi.waitFor(() => expect(harness.sent).toContainEqual(expect.objectContaining({ type: 'prompt', message: 'late preflight' })));
         const promptCommand = harness.sent.find((item) => (item as { type?: string; message?: string }).type === 'prompt') as { id: string };
+        // Preserve the preflight/no-lifecycle shape while making the native
+        // streaming generation observable to a steer queued behind abort.
+        harness.onEvent!({ type: 'response', command: 'get_state', success: true, data: { isStreaming: true } });
 
         const abort = harness.rpcHandlers.get(RPC_METHODS.Abort)!;
         const abortPromise = abort({});
         await vi.waitFor(() => expect(harness.sent.filter((item) => (item as { type?: string }).type === 'abort')).toHaveLength(1));
         const firstAbort = harness.sent.filter((item) => (item as { type?: string }).type === 'abort')[0] as { id: string };
+        onUserMessage({
+            ...userMessage('after abort'),
+            meta: { deliveryMode: 'steer' },
+        }, 'post-abort-steer');
 
         // Pi rejects before the 1s lifecycle-missing fallback observes that the
         // prompt is still in preflight. The guard must remain installed so a
@@ -520,6 +528,7 @@ describe('Pi abort queue boundary', () => {
         await Promise.resolve();
         expect(abortResolved).toBe(false);
         expect(harness.sent).not.toContainEqual(expect.objectContaining({ type: 'prompt', message: 'after abort' }));
+        expect(harness.sent.some((item) => (item as { type?: string }).type === 'steer')).toBe(false);
 
         harness.onEvent!({ type: 'response', id: promptCommand.id, command: 'prompt', success: true });
         harness.onEvent!({ type: 'agent_start' });
@@ -535,6 +544,7 @@ describe('Pi abort queue boundary', () => {
 
         await expect(abortPromise).resolves.toEqual({ success: true });
         await vi.waitFor(() => expect(harness.sent).toContainEqual(expect.objectContaining({ type: 'prompt', message: 'after abort' })));
+        expect(harness.sent.some((item) => (item as { type?: string }).type === 'steer')).toBe(false);
 
         harness.onError?.(new Error('finish test'));
         await running;

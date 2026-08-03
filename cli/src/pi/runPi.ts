@@ -908,6 +908,11 @@ export async function runPi(opts: {
                         // stability window so a late start is compensated even
                         // when the 1s lifecycle-missing fallback has not fired.
                         await abortBoundary!.promise;
+                        // Match the ordinary abort-success path: invalidate the
+                        // target generation before releasing this mutex so a
+                        // queued steer cannot enter the just-aborted turn.
+                        piSession.updateThinkingState(false);
+                        streamingInvalidatedUnderLock = true;
                         return { success: true };
                     } catch (guardError) {
                         const fatal = new Error(`Pi abort failed closed: ${guardError instanceof Error ? guardError.message : String(guardError)}`);
