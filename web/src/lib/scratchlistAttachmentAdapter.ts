@@ -127,7 +127,16 @@ export function createScratchlistAttachmentAdapter(api: ApiClient, sessionId: st
 
                 let previewUrl: string | undefined
                 if (isImageMimeType(contentType) && file.size <= MAX_PREVIEW_BYTES) {
-                    previewUrl = await fileToDataUrl(file)
+                    try {
+                        previewUrl = await fileToDataUrl(file)
+                    } catch {
+                        // Preview generation is optional after the upload has succeeded.
+                    }
+                }
+
+                if (cancelledAttachmentIds.has(id)) {
+                    await api.deleteScratchlistAttachment(sessionId, result.attachment.id).catch(() => {})
+                    return
                 }
 
                 yield {

@@ -246,6 +246,7 @@ export function buildTurnStartParams(args: {
     cliOverrides?: CodexCliOverrides;
     baseInstructions?: string;
     developerInstructions?: string;
+    clientUserMessageId?: string;
     skills?: readonly SkillMetadata[];
     overrides?: {
         approvalPolicy?: TurnStartParams['approvalPolicy'];
@@ -259,6 +260,10 @@ export function buildTurnStartParams(args: {
         cwd: args.cwd,
         input: buildUserInputFromMessage(args.message, args.skills)
     };
+
+    if (args.clientUserMessageId) {
+        params.clientUserMessageId = args.clientUserMessageId;
+    }
 
     const allowCliOverrides = args.mode?.permissionMode === 'default';
     const cliOverrides = allowCliOverrides ? args.cliOverrides : undefined;

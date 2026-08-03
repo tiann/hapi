@@ -28,6 +28,11 @@ See `src/configuration.ts` for all options.
 
 - `ELEVENLABS_API_KEY` - ElevenLabs API key for voice assistant.
 - `ELEVENLABS_AGENT_ID` - Custom ElevenLabs agent ID (auto-created if not set).
+- `OPENAI_API_KEY` - OpenAI dictation (`gpt-4o-transcribe`).
+- `DEEPGRAM_API_KEY` - Deepgram dictation (`nova-3`).
+- `GROQ_API_KEY` - Groq dictation (`whisper-large-v3`).
+- `TRANSCRIPTION_BASE_URL` and `TRANSCRIPTION_MODEL` - OpenAI-compatible/local transcription endpoint and model.
+- `TRANSCRIPTION_API_KEY` - Optional bearer token for the OpenAI-compatible endpoint.
 
 ### Optional
 

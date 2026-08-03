@@ -84,7 +84,16 @@ export type SessionMetadataSummary = {
     flavor?: string | null
     capabilities?: {
         terminal?: boolean
+        conversationHistory?: {
+            forkCurrent?: boolean
+            forkAtMessage?: boolean
+            rewindToMessage?: boolean
+        }
     }
+    conversationHistoryPoints?: Record<string, true>
+    conversationHistoryIndexes?: Record<string, number>
+    conversationHistoryTurns?: Record<string, string>
+    conversationHistoryDiverged?: boolean
     worktree?: WorktreeMetadata
 }
 

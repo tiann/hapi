@@ -11,6 +11,7 @@ describe('DEFAULT_COMPOSER_TOOLBAR_LAYOUT', () => {
         expect(DEFAULT_COMPOSER_TOOLBAR_LAYOUT.left).toEqual([
             'attachment',
             'settings',
+            'expand',
             'piModel',
             'piThinking',
             'terminal',
@@ -80,9 +81,9 @@ describe('normalizeComposerToolbarLayout', () => {
             'piModel',
             'piThinking',
             'terminal',
+            'expand',
             'abort',
             'switch',
-            'voiceMic',
             'attachment',
         ])
         expect(result.left).toHaveLength(layout.left.length)

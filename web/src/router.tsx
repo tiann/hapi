@@ -47,6 +47,7 @@ import { markSessionSeen } from '@/lib/sessionLastSeen'
 import { useSessionBrowserTitle } from '@/hooks/useSessionBrowserTitle'
 import { clearCodexImportedSession } from '@/lib/codexImportedSessions'
 import { getSupersedingSessionId, shouldFollowSupersedingSession } from '@/routes/sessions/followSupersedingSession'
+import { migrateSuppressedSendError } from '@/lib/suppressed-send-error'
 import FilesPage from '@/routes/sessions/files'
 import FilePage from '@/routes/sessions/file'
 import TerminalPage from '@/routes/sessions/terminal'
@@ -370,6 +371,8 @@ function SessionPage() {
         message: string
         code: string | null
         scheduledAt: number | null
+        mutationStarted: boolean
+        restoreSuppressed: boolean
     }
     const [sendErrors, setSendErrors] = useState<Record<string, RawSendError>>({})
     const [reopeningSessionId, setReopeningSessionId] = useState<string | null>(null)
@@ -380,6 +383,17 @@ function SessionPage() {
             const next = { ...prev }
             delete next[sessionId]
             return next
+        })
+    }, [sessionId])
+
+    const suppressSendErrorRestore = useCallback((id: number) => {
+        setSendErrors((prev) => {
+            const current = prev[sessionId]
+            if (!current || current.id !== id || current.restoreSuppressed) return prev
+            return {
+                ...prev,
+                [sessionId]: { ...current, restoreSuppressed: true }
+            }
         })
     }, [sessionId])
 
@@ -444,6 +458,8 @@ function SessionPage() {
             text: rawSendError.text,
             message: rawSendError.message,
             scheduledAt: rawSendError.scheduledAt,
+            mutationStarted: rawSendError.mutationStarted,
+            restoreSuppressed: rawSendError.restoreSuppressed,
             action: rawSendError.code === 'session_inactive' && canOfferInactiveReopen
                 ? {
                     label: t('chat.sendError.sessionInactive.action'),
@@ -483,7 +499,9 @@ function SessionPage() {
                     text: info.text,
                     message,
                     code,
-                    scheduledAt: info.scheduledAt
+                    scheduledAt: info.scheduledAt,
+                    mutationStarted: info.mutationStarted,
+                    restoreSuppressed: false,
                 }
             }))
         },
@@ -523,6 +541,14 @@ function SessionPage() {
             }
         },
         onSessionResolved: (resolvedSessionId) => {
+            // A direct retry retains its old alert with restoreSuppressed=true.
+            // Move it to the target session before navigation so the mutation's
+            // onSuccess/onError can clear or replace the same record.
+            setSendErrors((previous) => migrateSuppressedSendError(
+                previous,
+                sessionId,
+                resolvedSessionId,
+            ))
             void (async () => {
                 if (api) {
                     if (session) {
@@ -722,6 +748,7 @@ function SessionPage() {
             availableSlashCommands={slashCommands}
             sendError={sendError}
             onClearSendError={clearSendError}
+            onSuppressSendErrorRestore={suppressSendErrorRestore}
             initialOutlineOpen={outline}
             onInitialOutlineConsumed={handleInitialOutlineConsumed}
         />

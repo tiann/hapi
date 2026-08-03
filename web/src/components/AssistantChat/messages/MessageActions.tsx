@@ -1,4 +1,5 @@
 import * as Popover from '@radix-ui/react-popover'
+import { useState } from 'react'
 import { useAuiState } from '@assistant-ui/react'
 import { CheckIcon, CopyIcon, InfoIcon } from '@/components/icons'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
@@ -7,20 +8,47 @@ import { MessageMetadata, buildMessageMetadataLabels, type MessageMetadataProps 
 import { MessageTimestamp } from './MessageTimestamp'
 import { cn } from '@/lib/utils'
 import { ShareTurnButton } from './ShareTurnButton'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+
+export type MessageHistoryAction = {
+    kind: 'forkCurrent' | 'forkAtMessage' | 'rewind'
+    messageLocalId?: string
+}
 
 type MessageActionsProps = {
     align: 'start' | 'end'
     copyText?: string
     metadata?: Omit<MessageMetadataProps, 'className'>
     messageElementId?: string
+    showFork?: boolean
+    showRewind?: boolean
+    historyActionPending?: boolean
+    onFork?: () => Promise<void>
+    onRewind?: () => Promise<void>
 }
 
-export function MessageActions({ align, copyText, metadata, messageElementId }: MessageActionsProps) {
+export function MessageActions({
+    align,
+    copyText,
+    metadata,
+    messageElementId,
+    showFork = false,
+    showRewind = false,
+    historyActionPending = false,
+    onFork,
+    onRewind
+}: MessageActionsProps) {
     const { copied, copy } = useCopyToClipboard()
     const { t } = useTranslation()
     const threadIsRunning = useAuiState(({ thread }) => thread?.isRunning ?? false)
     const canCopy = Boolean(copyText)
     const hasMetadata = metadata ? buildMessageMetadataLabels(metadata).length > 0 : false
+    const [forkOpen, setForkOpen] = useState(false)
+    const [rewindOpen, setRewindOpen] = useState(false)
+    const [forkPending, setForkPending] = useState(false)
+    const [rewindPending, setRewindPending] = useState(false)
+    const actionsLocked = historyActionPending || forkPending || rewindPending || threadIsRunning
+
     const shareButton = messageElementId && !threadIsRunning ? (
         <ShareTurnButton
             messageElementId={messageElementId}
@@ -29,31 +57,108 @@ export function MessageActions({ align, copyText, metadata, messageElementId }: 
         />
     ) : null
 
-    return (
-        <div
-            className={cn(
-                'happy-message-actions mt-1 flex h-5 items-center gap-1',
-                align === 'end' ? 'justify-end' : 'justify-start'
-            )}
-        >
-            {align === 'end' ? <DesktopTimestamp /> : null}
-            {align === 'end' && hasMetadata && metadata ? <MessageInfoPopover metadata={metadata} /> : null}
-            {align === 'end' ? shareButton : null}
-            {canCopy ? (
+    const historyButtons = (
+        <>
+            {showFork && onFork ? (
                 <button
                     type="button"
-                    title={copied ? t('message.copied') : t('message.copy')}
-                    aria-label={copied ? t('message.copied') : t('message.copy')}
-                    className="flex h-5 w-5 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]"
-                    onClick={() => copy(copyText!)}
+                    title={t('message.fork')}
+                    aria-label={t('message.fork')}
+                    disabled={actionsLocked}
+                    className="flex h-5 items-center rounded px-1 text-[11px] text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:opacity-40"
+                    onClick={() => setForkOpen(true)}
                 >
-                    {copied ? <CheckIcon className="h-3.5 w-3.5 text-green-500" /> : <CopyIcon className="h-3.5 w-3.5" />}
+                    {t('message.fork')}
                 </button>
             ) : null}
-            {align === 'start' ? shareButton : null}
-            {align === 'start' && hasMetadata && metadata ? <MessageInfoPopover metadata={metadata} /> : null}
-            {align === 'start' ? <DesktopTimestamp /> : null}
-        </div>
+            {showRewind && onRewind ? (
+                <button
+                    type="button"
+                    title={t('message.rewind')}
+                    aria-label={t('message.rewind')}
+                    disabled={actionsLocked}
+                    className="flex h-5 items-center rounded px-1 text-[11px] text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:opacity-40"
+                    onClick={() => setRewindOpen(true)}
+                >
+                    {t('message.rewind')}
+                </button>
+            ) : null}
+        </>
+    )
+
+    return (
+        <>
+            <div
+                className={cn(
+                    'happy-message-actions mt-1 flex h-5 items-center gap-1',
+                    align === 'end' ? 'justify-end' : 'justify-start'
+                )}
+            >
+                {align === 'end' ? <DesktopTimestamp /> : null}
+                {align === 'end' && hasMetadata && metadata ? <MessageInfoPopover metadata={metadata} /> : null}
+                {align === 'end' ? shareButton : null}
+                {canCopy ? (
+                    <button
+                        type="button"
+                        title={copied ? t('message.copied') : t('message.copy')}
+                        aria-label={copied ? t('message.copied') : t('message.copy')}
+                        className="flex h-5 w-5 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]"
+                        onClick={() => copy(copyText!)}
+                    >
+                        {copied ? <CheckIcon className="h-3.5 w-3.5 text-green-500" /> : <CopyIcon className="h-3.5 w-3.5" />}
+                    </button>
+                ) : null}
+                {historyButtons}
+                {align === 'start' ? shareButton : null}
+                {align === 'start' && hasMetadata && metadata ? <MessageInfoPopover metadata={metadata} /> : null}
+                {align === 'start' ? <DesktopTimestamp /> : null}
+            </div>
+
+            <ConfirmDialog
+                isOpen={forkOpen}
+                onClose={() => {
+                    if (!forkPending) setForkOpen(false)
+                }}
+                title={t('message.fork.confirmTitle')}
+                description={t('message.fork.confirmDescription')}
+                confirmLabel={t('message.fork')}
+                confirmingLabel={t('message.fork.confirming')}
+                isPending={forkPending}
+                onConfirm={async () => {
+                    if (!onFork) return
+                    setForkPending(true)
+                    try {
+                        await onFork()
+                        setForkOpen(false)
+                    } finally {
+                        setForkPending(false)
+                    }
+                }}
+            />
+
+            <ConfirmDialog
+                isOpen={rewindOpen}
+                onClose={() => {
+                    if (!rewindPending) setRewindOpen(false)
+                }}
+                title={t('message.rewind.confirmTitle')}
+                description={t('message.rewind.confirmDescription')}
+                confirmLabel={t('message.rewind')}
+                confirmingLabel={t('message.rewind.confirming')}
+                isPending={rewindPending}
+                destructive
+                onConfirm={async () => {
+                    if (!onRewind) return
+                    setRewindPending(true)
+                    try {
+                        await onRewind()
+                        setRewindOpen(false)
+                    } finally {
+                        setRewindPending(false)
+                    }
+                }}
+            />
+        </>
     )
 }
 

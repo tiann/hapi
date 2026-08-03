@@ -22,6 +22,7 @@ import { CursorLegacyMigrator, type CursorLegacyMigratorOptions } from '../curso
 import { EventPublisher, type SyncEventListener } from './eventPublisher'
 import { MachineCache, type Machine } from './machineCache'
 import { MessageService } from './messageService'
+import { selectForkTranscriptPrefix } from './forkTranscript'
 import {
     RpcGateway,
     RpcTargetMissingError,
@@ -170,6 +171,8 @@ export class SyncEngine {
     private readonly scratchlistUploadTails = new Map<string, Promise<unknown>>()
     /** Coalesce duplicate clear requests so retries cannot spawn two fresh sessions. */
     private readonly opencodeClearTails = new Map<string, Promise<ClearOpencodeSessionResult>>()
+    /** Serialize fork/rewind per session so concurrent native rollbacks cannot stack. */
+    private readonly historyActionsInFlight = new Set<string>()
 
     constructor(
         private readonly store: Store,
@@ -776,7 +779,7 @@ async uploadScratchlistAttachment(
         this.machineCache.expireInactive()
         // Piggybacked on the inactivity tick; not a logical part of expireInactive
         // but shares its 5s cadence (avoids a second timer).
-        this.messageService.releaseMatureScheduledMessages(Date.now())
+        this.messageService.releaseMatureScheduledMessages(Date.now(), this.historyActionsInFlight)
         void this.reconcileOpenCodeClears()
     }
 
@@ -852,6 +855,9 @@ async uploadScratchlistAttachment(
             scheduledAt?: number | null
         }
     ): Promise<void> {
+        if (this.historyActionsInFlight.has(sessionId)) {
+            throw new Error('Conversation history action already in progress')
+        }
         const actualSessionId = await this.messageService.sendMessage(sessionId, payload)
         this.sessionCache.markMessageQueued(actualSessionId)
         this.sessionCache.recordSessionActivity(actualSessionId, Date.now())
@@ -889,6 +895,484 @@ async uploadScratchlistAttachment(
 
     async abortSession(sessionId: string): Promise<void> {
         await this.rpcGateway.abortSession(sessionId)
+    }
+
+    private assertConversationHistoryIdle(session: Session): void {
+        if (!session.active) {
+            throw new Error('Session must be active')
+        }
+        if (session.agentState?.controlledByUser === true) {
+            throw new Error('Conversation history actions require a remote session')
+        }
+        if (session.thinking) {
+            throw new Error('Session is busy')
+        }
+        if (session.metadata?.conversationHistoryDiverged === true) {
+            throw new Error('Conversation history is diverged; refuse further fork/rewind')
+        }
+        const queued = this.store.messages.getUninvokedLocalMessages(session.id)
+        if (queued.length > 0) {
+            throw new Error('Session has queued messages')
+        }
+    }
+
+    /** Stale localIds must fail before native fork/rewind mutates agent history. */
+    private assertInvokedHistoryBoundary(sessionId: string, messageLocalId: string): void {
+        const boundary = this.store.messages.getAllMessages(sessionId).find(
+            (message) => message.localId === messageLocalId && message.invokedAt != null
+        )
+        if (!boundary) {
+            throw new Error('History boundary message not found or not yet invoked')
+        }
+    }
+
+    /**
+     * Claude `--fork-session` materializes only after the child process starts.
+     * Poll until the child metadata has a native id distinct from the source.
+     */
+    private async waitForClaudeForkBound(
+        childId: string,
+        sourceNativeSessionId: string,
+        timeoutMs: number = 60_000
+    ): Promise<boolean> {
+        const startedAt = Date.now()
+        while (Date.now() - startedAt < timeoutMs) {
+            this.sessionCache.refreshSession(childId)
+            const child = this.sessionCache.getSession(childId)
+            const boundId = child?.metadata?.claudeSessionId
+            if (
+                typeof boundId === 'string'
+                && boundId.length > 0
+                && boundId !== sourceNativeSessionId
+            ) {
+                return true
+            }
+            // Give the runner a few seconds to come up before treating inactivity as failure.
+            if (child && !child.active && Date.now() - startedAt > 5_000) {
+                return false
+            }
+            await new Promise((resolve) => setTimeout(resolve, 250))
+        }
+        return false
+    }
+
+    /**
+     * Grok RPC already created `expectedNativeSessionId`. Wait until the child
+     * binds that exact id — a different id means load failed and fell back.
+     */
+    private async waitForGrokForkBound(
+        childId: string,
+        expectedNativeSessionId: string,
+        timeoutMs: number = 60_000
+    ): Promise<boolean> {
+        const startedAt = Date.now()
+        while (Date.now() - startedAt < timeoutMs) {
+            this.sessionCache.refreshSession(childId)
+            const child = this.sessionCache.getSession(childId)
+            const boundId = child?.metadata?.grokSessionId
+            if (typeof boundId === 'string' && boundId.length > 0) {
+                return boundId === expectedNativeSessionId
+            }
+            if (child && !child.active && Date.now() - startedAt > 5_000) {
+                return false
+            }
+            await new Promise((resolve) => setTimeout(resolve, 250))
+        }
+        return false
+    }
+
+    /** Drop history locators that no longer have a corresponding message row. */
+    private scrubHistoryLocators(sessionId: string, namespace: string): void {
+        const remainingLocalIds = new Set(
+            this.store.messages.getAllMessages(sessionId)
+                .flatMap((message) => (message.localId ? [message.localId] : []))
+        )
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            const session = this.sessionCache.getSessionByNamespace(sessionId, namespace)
+                ?? this.sessionCache.refreshSession(sessionId)
+            if (!session?.metadata) return
+
+            const nextMetadata: Record<string, unknown> = { ...session.metadata }
+            let changed = false
+
+            const points = session.metadata.conversationHistoryPoints
+            if (points) {
+                const nextPoints = Object.fromEntries(
+                    Object.entries(points).filter(([localId]) => remainingLocalIds.has(localId))
+                )
+                if (Object.keys(nextPoints).length !== Object.keys(points).length) {
+                    changed = true
+                    if (Object.keys(nextPoints).length > 0) {
+                        nextMetadata.conversationHistoryPoints = nextPoints
+                    } else {
+                        delete nextMetadata.conversationHistoryPoints
+                    }
+                }
+            }
+
+            const indexes = session.metadata.conversationHistoryIndexes
+            if (indexes) {
+                const nextIndexes = Object.fromEntries(
+                    Object.entries(indexes).filter(([localId]) => remainingLocalIds.has(localId))
+                )
+                if (Object.keys(nextIndexes).length !== Object.keys(indexes).length) {
+                    changed = true
+                    if (Object.keys(nextIndexes).length > 0) {
+                        nextMetadata.conversationHistoryIndexes = nextIndexes
+                    } else {
+                        delete nextMetadata.conversationHistoryIndexes
+                    }
+                }
+            }
+
+            const turns = session.metadata.conversationHistoryTurns
+            if (turns) {
+                const nextTurns = Object.fromEntries(
+                    Object.entries(turns).filter(([localId]) => remainingLocalIds.has(localId))
+                )
+                if (Object.keys(nextTurns).length !== Object.keys(turns).length) {
+                    changed = true
+                    if (Object.keys(nextTurns).length > 0) {
+                        nextMetadata.conversationHistoryTurns = nextTurns
+                    } else {
+                        delete nextMetadata.conversationHistoryTurns
+                    }
+                }
+            }
+
+            if (!changed) return
+
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                nextMetadata,
+                session.metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+            if (result.result === 'success') {
+                this.sessionCache.refreshSession(sessionId)
+                return
+            }
+            if (result.result !== 'version-mismatch') return
+            this.sessionCache.refreshSession(sessionId)
+        }
+    }
+
+    private markConversationHistoryDiverged(sessionId: string, namespace: string): void {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            const session = this.sessionCache.getSessionByNamespace(sessionId, namespace)
+                ?? this.sessionCache.refreshSession(sessionId)
+            if (!session?.metadata) return
+            if (session.metadata.conversationHistoryDiverged === true) return
+
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                { ...session.metadata, conversationHistoryDiverged: true },
+                session.metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+            if (result.result === 'success') {
+                this.sessionCache.refreshSession(sessionId)
+                return
+            }
+            if (result.result !== 'version-mismatch') return
+            this.sessionCache.refreshSession(sessionId)
+        }
+    }
+
+    async forkConversation(
+        sessionId: string,
+        namespace: string,
+        messageLocalId?: string
+    ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
+        if (this.historyActionsInFlight.has(sessionId)) {
+            return { type: 'error', message: 'Conversation history action already in progress' }
+        }
+        this.historyActionsInFlight.add(sessionId)
+        try {
+            return await this.forkConversationUnlocked(sessionId, namespace, messageLocalId)
+        } finally {
+            this.historyActionsInFlight.delete(sessionId)
+        }
+    }
+
+    private async forkConversationUnlocked(
+        sessionId: string,
+        namespace: string,
+        messageLocalId?: string
+    ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
+        const access = this.resolveSessionAccess(sessionId, namespace)
+        if (!access.ok) {
+            return { type: 'error', message: access.reason === 'not-found' ? 'Session not found' : 'Access denied' }
+        }
+        const source = access.session
+        try {
+            this.assertConversationHistoryIdle(source)
+        } catch (error) {
+            return { type: 'error', message: error instanceof Error ? error.message : String(error) }
+        }
+
+        const history = source.metadata?.capabilities?.conversationHistory
+        if (messageLocalId) {
+            if (history?.forkAtMessage !== true) {
+                return { type: 'error', message: 'Historical fork is not supported for this session' }
+            }
+            try {
+                this.assertInvokedHistoryBoundary(sessionId, messageLocalId)
+            } catch (error) {
+                return { type: 'error', message: error instanceof Error ? error.message : String(error) }
+            }
+        } else if (history?.forkCurrent !== true) {
+            return { type: 'error', message: 'Fork current is not supported for this session' }
+        }
+
+        const machineId = source.metadata?.machineId
+        const directory = source.metadata?.path
+        if (!machineId || !directory) {
+            return { type: 'error', message: 'Session is missing machine or path metadata' }
+        }
+
+        let rpcResult: Awaited<ReturnType<RpcGateway['forkConversation']>>
+        try {
+            rpcResult = await this.rpcGateway.forkConversation(
+                sessionId,
+                messageLocalId ? { messageLocalId } : {}
+            )
+        } catch (error) {
+            return { type: 'error', message: error instanceof Error ? error.message : String(error) }
+        }
+
+        if (!rpcResult?.nativeSessionId) {
+            return { type: 'error', message: 'Native fork did not return a session id' }
+        }
+
+        const flavor = this.resolveFlavor(source)
+        const childId = randomUUID()
+        let prefix
+        try {
+            prefix = selectForkTranscriptPrefix(this.store.messages.getAllMessages(sessionId), messageLocalId)
+        } catch (error) {
+            return { type: 'error', message: error instanceof Error ? error.message : String(error) }
+        }
+        const copiedLocalIds = new Set(
+            prefix.flatMap((message) => (message.localId ? [message.localId] : []))
+        )
+        const childMetadata: Record<string, unknown> = {
+            path: directory,
+            host: source.metadata?.host ?? 'unknown',
+            machineId,
+            flavor,
+            forkedFrom: sessionId,
+            startedBy: 'runner',
+            capabilities: source.metadata?.capabilities,
+            conversationHistoryPoints: Object.fromEntries(
+                Object.entries(source.metadata?.conversationHistoryPoints ?? {})
+                    .filter(([localId]) => copiedLocalIds.has(localId))
+            ),
+            conversationHistoryIndexes: Object.fromEntries(
+                Object.entries(source.metadata?.conversationHistoryIndexes ?? {})
+                    .filter(([localId]) => copiedLocalIds.has(localId))
+            ),
+            conversationHistoryTurns: Object.fromEntries(
+                Object.entries(source.metadata?.conversationHistoryTurns ?? {})
+                    .filter(([localId]) => copiedLocalIds.has(localId))
+            )
+        }
+        if (flavor === 'codex') {
+            childMetadata.codexSessionId = rpcResult.nativeSessionId
+        } else if (flavor === 'grok') {
+            childMetadata.grokSessionId = rpcResult.nativeSessionId
+        } else if (flavor === 'claude') {
+            // Child will bind the forked Claude id after --fork-session starts.
+            childMetadata.claudeSessionId = rpcResult.forkSession ? undefined : rpcResult.nativeSessionId
+        }
+
+        let childCreated = false
+        let spawnAttempted = false
+        try {
+            this.sessionCache.getOrCreateSession(
+                `fork:${childId}`,
+                childMetadata,
+                null,
+                namespace,
+                source.model ?? undefined,
+                source.effort ?? undefined,
+                source.modelReasoningEffort ?? undefined,
+                childId
+            )
+            childCreated = true
+
+            // Native fork keeps agent context, but the new HAPI row starts empty.
+            // Hydrate the transcript prefix so web navigation is not a blank thread.
+            this.store.messages.copyMessagesToSession(
+                childId,
+                prefix.map((message) => ({
+                    content: message.content,
+                    createdAt: message.createdAt,
+                    localId: message.localId,
+                    invokedAt: message.invokedAt,
+                    scheduledAt: message.scheduledAt
+                }))
+            )
+            this.sessionCache.rebuildTodosFromTranscript(childId)
+            this.sessionCache.refreshSession(childId)
+
+            spawnAttempted = true
+            const spawn = await this.rpcGateway.spawnSession(
+                machineId,
+                directory,
+                flavor,
+                source.model ?? undefined,
+                source.modelReasoningEffort ?? undefined,
+                undefined,
+                'simple',
+                undefined,
+                rpcResult.nativeSessionId,
+                source.effort ?? undefined,
+                source.permissionMode,
+                source.serviceTier ?? undefined,
+                childId,
+                source.collaborationMode,
+                rpcResult.forkSession === true
+            )
+            if (spawn.type !== 'success') {
+                throw new Error(spawn.message)
+            }
+
+            // Claude fork is spawn+flag, not an RPC-time snapshot. Keep the
+            // source history lock (caller holds historyActionsInFlight) until
+            // the child binds a distinct native id — otherwise the source can
+            // advance before --fork-session materializes.
+            if (flavor === 'claude' && rpcResult.forkSession === true) {
+                const bound = await this.waitForClaudeForkBound(childId, rpcResult.nativeSessionId)
+                if (!bound) {
+                    throw new Error('Claude fork did not materialize before timeout')
+                }
+            }
+
+            // Grok forks at RPC time, but spawn may still fall back to a blank
+            // session if load fails. Do not report success until the child is
+            // bound to the exact forked native id.
+            if (flavor === 'grok') {
+                const bound = await this.waitForGrokForkBound(childId, rpcResult.nativeSessionId)
+                if (!bound) {
+                    throw new Error('Grok fork could not load the forked native session')
+                }
+            }
+
+            return { type: 'success', sessionId: childId }
+        } catch (error) {
+            if (childCreated) {
+                try {
+                    await this.cleanupFailedForkChild(childId, machineId, spawnAttempted)
+                } catch (cleanupError) {
+                    const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+                    return { type: 'error', message: `Fork failed; child cleanup was not confirmed: ${message}` }
+                }
+            }
+            return { type: 'error', message: error instanceof Error ? error.message : String(error) }
+        }
+    }
+
+    /** Kill an active fork child (if any) then delete the HAPI row. */
+    private async cleanupFailedForkChild(
+        childId: string,
+        machineId: string,
+        spawnAttempted: boolean
+    ): Promise<void> {
+        if (spawnAttempted) {
+            const status = await this.rpcGateway.stopRunnerSession(machineId, childId)
+            if (status === 'still_alive') {
+                throw new Error('Fork child termination was not confirmed')
+            }
+        }
+        const child = this.sessionCache.refreshSession(childId)
+        if (child?.active) {
+            this.handleSessionEnd({ sid: childId, time: Date.now(), reason: 'error' })
+        }
+        await this.deleteSession(childId)
+    }
+
+    async rewindConversation(
+        sessionId: string,
+        namespace: string,
+        messageLocalId: string
+    ): Promise<{ type: 'success' } | { type: 'error'; message: string; hydrateFailed?: boolean }> {
+        if (this.historyActionsInFlight.has(sessionId)) {
+            return { type: 'error', message: 'Conversation history action already in progress' }
+        }
+        this.historyActionsInFlight.add(sessionId)
+        try {
+            return await this.rewindConversationUnlocked(sessionId, namespace, messageLocalId)
+        } finally {
+            this.historyActionsInFlight.delete(sessionId)
+        }
+    }
+
+    private async rewindConversationUnlocked(
+        sessionId: string,
+        namespace: string,
+        messageLocalId: string
+    ): Promise<{ type: 'success' } | { type: 'error'; message: string; hydrateFailed?: boolean }> {
+        const access = this.resolveSessionAccess(sessionId, namespace)
+        if (!access.ok) {
+            return { type: 'error', message: access.reason === 'not-found' ? 'Session not found' : 'Access denied' }
+        }
+        const session = access.session
+        try {
+            this.assertConversationHistoryIdle(session)
+        } catch (error) {
+            return { type: 'error', message: error instanceof Error ? error.message : String(error) }
+        }
+        if (session.metadata?.capabilities?.conversationHistory?.rewindToMessage !== true) {
+            return { type: 'error', message: 'Rewind is not supported for this session' }
+        }
+        try {
+            this.assertInvokedHistoryBoundary(sessionId, messageLocalId)
+        } catch (error) {
+            return { type: 'error', message: error instanceof Error ? error.message : String(error) }
+        }
+
+        let rpcResult: Awaited<ReturnType<RpcGateway['rewindConversation']>>
+        try {
+            rpcResult = await this.rpcGateway.rewindConversation(sessionId, { messageLocalId })
+        } catch (error) {
+            if (!(error instanceof RpcTargetMissingError)) {
+                this.markConversationHistoryDiverged(sessionId, namespace)
+                return {
+                    type: 'error',
+                    hydrateFailed: true,
+                    message: 'Rewind outcome is unknown; session history requires reconciliation'
+                }
+            }
+            return { type: 'error', message: error.message }
+        }
+
+        if (rpcResult?.success !== true) {
+            return { type: 'error', message: 'Native rewind failed' }
+        }
+
+        try {
+            this.store.messages.truncateMessagesFromLocalId(
+                sessionId,
+                rpcResult.truncateFromLocalId ?? messageLocalId,
+                rpcResult.messages ?? []
+            )
+            this.scrubHistoryLocators(sessionId, namespace)
+            this.sessionCache.rebuildTodosFromTranscript(sessionId)
+            this.eventPublisher.emit({ type: 'messages-invalidated', sessionId, namespace })
+            this.sessionCache.refreshSession(sessionId)
+            return { type: 'success' }
+        } catch (error) {
+            // Native history already changed; refuse further history actions until repaired.
+            this.markConversationHistoryDiverged(sessionId, namespace)
+            return {
+                type: 'error',
+                message: error instanceof Error ? error.message : String(error),
+                hydrateFailed: true
+            }
+        }
     }
 
     async archiveSession(sessionId: string): Promise<void> {
@@ -1083,6 +1567,9 @@ async uploadScratchlistAttachment(
     }
 
     async switchSession(sessionId: string, to: 'remote' | 'local'): Promise<void> {
+        if (this.historyActionsInFlight.has(sessionId)) {
+            throw new Error('Conversation history action already in progress')
+        }
         await this.rpcGateway.switchSession(sessionId, to)
     }
 

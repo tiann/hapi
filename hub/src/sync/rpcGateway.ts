@@ -165,7 +165,8 @@ export class RpcGateway {
         permissionMode?: PermissionMode,
         serviceTier?: string,
         existingSessionId?: string,
-        collaborationMode?: CodexCollaborationMode
+        collaborationMode?: CodexCollaborationMode,
+        forkSession?: boolean
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
         try {
             const result = await this.machineRpc(
@@ -186,7 +187,8 @@ export class RpcGateway {
                     serviceTier,
                     existingSessionId,
                     sessionId: existingSessionId,
-                    collaborationMode
+                    collaborationMode,
+                    forkSession: forkSession === true
                 }
             )
             if (result && typeof result === 'object') {
@@ -364,6 +366,30 @@ export class RpcGateway {
      *  a single entry point instead of per-method wrappers. */
     async callPiRpc<T = unknown>(sessionId: string, method: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<T> {
         return await this.sessionRpc(sessionId, method, params ?? {}, timeoutMs ?? DEFAULT_RPC_TIMEOUT_MS) as T
+    }
+
+    async forkConversation(
+        sessionId: string,
+        params: { messageLocalId?: string }
+    ): Promise<import('@hapi/protocol/apiTypes').ForkConversationRpcResult> {
+        return await this.sessionRpc(
+            sessionId,
+            RPC_METHODS.ForkConversation,
+            params,
+            120_000
+        ) as import('@hapi/protocol/apiTypes').ForkConversationRpcResult
+    }
+
+    async rewindConversation(
+        sessionId: string,
+        params: { messageLocalId: string }
+    ): Promise<import('@hapi/protocol/apiTypes').RewindConversationRpcResult> {
+        return await this.sessionRpc(
+            sessionId,
+            RPC_METHODS.RewindConversation,
+            params,
+            120_000
+        ) as import('@hapi/protocol/apiTypes').RewindConversationRpcResult
     }
 
     async listOpencodeReasoningEffortOptionsForSession(sessionId: string): Promise<RpcListOpencodeReasoningEffortOptionsResponse> {

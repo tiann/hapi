@@ -23,6 +23,10 @@ import { normalizeClaudeSessionModel } from './model';
 import { normalizeClaudeSessionEffort } from './effort';
 import { normalizeHookPermissionMode } from './utils/hookPermissionMode';
 import { getInvokedCwd } from '@/utils/invokedCwd';
+import {
+    CLAUDE_CONVERSATION_HISTORY,
+    toConversationHistoryCapabilities
+} from '@hapi/protocol/conversationHistory';
 import { listSkills, type SkillSummary } from '@/modules/common/skills';
 
 export interface StartOptions {
@@ -228,6 +232,34 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     lifecycle.registerProcessHandlers();
     registerKillSessionHandler(session.rpcHandlerManager, lifecycle);
     registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);
+
+    const conversationHistory = toConversationHistoryCapabilities(CLAUDE_CONVERSATION_HISTORY)
+    session.updateMetadata((metadata) => ({
+        ...metadata,
+        path: metadata?.path ?? workingDirectory,
+        host: metadata?.host ?? 'unknown',
+        capabilities: {
+            ...metadata?.capabilities,
+            ...(conversationHistory ? { conversationHistory } : {})
+        }
+    }))
+
+    session.rpcHandlerManager.registerHandler(RPC_METHODS.ForkConversation, async (payload: unknown) => {
+        if (payload && typeof payload === 'object' && 'messageLocalId' in payload && (payload as { messageLocalId?: unknown }).messageLocalId) {
+            throw new Error('Historical fork is not supported for Claude')
+        }
+        const nativeSessionId = currentSessionRef.current?.sessionId
+            ?? session.getMetadata()?.claudeSessionId
+            ?? sessionInfo.metadata?.claudeSessionId
+            ?? null
+        if (!nativeSessionId) {
+            throw new Error('Claude session id is not ready')
+        }
+        return { nativeSessionId, forkSession: true as const }
+    })
+    session.rpcHandlerManager.registerHandler(RPC_METHODS.RewindConversation, async () => {
+        throw new Error('Rewind is not supported for Claude')
+    })
 
     // Set initial agent state
     const startingMode = options.startingMode ?? (startedBy === 'runner' ? 'remote' : 'local');

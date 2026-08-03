@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 export const COMPOSER_TOOLBAR_ITEM_IDS = [
     'attachment',
     'settings',
+    'expand',
     'piModel',
     'piThinking',
     'terminal',

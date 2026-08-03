@@ -253,6 +253,21 @@ describe('buildCliArgs', () => {
         expect(args).toContain('some-claude-session-id')
     })
 
+    it('passes --fork-session and --existing-session-id for Claude message-level fork', () => {
+        const args = buildCliArgs('claude', {
+            directory: '/tmp',
+            resumeSessionId: 'claude-source-id',
+            existingSessionId: 'hapi-child-id',
+            forkSession: true,
+        })
+        expect(args).toContain('--resume')
+        expect(args).toContain('claude-source-id')
+        expect(args).toContain('--fork-session')
+        expect(args.indexOf('--fork-session')).toBeGreaterThan(args.indexOf('--resume'))
+        expect(args).toContain('--existing-session-id')
+        expect(args).toContain('hapi-child-id')
+    })
+
     it('passes --effort for pi agent', () => {
         const args = buildCliArgs('pi', {
             directory: '/tmp',

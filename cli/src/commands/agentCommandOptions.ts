@@ -56,6 +56,12 @@ export function parseRemoteAgentCommandOptions<TPermissionMode extends Permissio
                 throw new Error('Missing --resume value')
             }
             options.resumeSessionId = sessionId
+        } else if (arg === '--existing-session-id') {
+            const sessionId = args[++i]
+            if (!sessionId) {
+                throw new Error('Missing --existing-session-id value')
+            }
+            options.existingSessionId = sessionId
         } else if (arg === '-s' || arg === '--session') {
             // OpenCode-native resume flags (hapi opencode -s / --session <id>)
             const sessionId = args[++i]

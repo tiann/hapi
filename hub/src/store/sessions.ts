@@ -376,6 +376,38 @@ export function setSessionTodos(
     }
 }
 
+/** Force-replace todos after rewind/fork (ignores monotonic timestamp guard). */
+export function replaceSessionTodos(
+    db: Database,
+    id: string,
+    todos: unknown,
+    todosUpdatedAt: number | null,
+    namespace: string
+): boolean {
+    try {
+        const json = todos === null || todos === undefined ? null : JSON.stringify(todos)
+        const now = Date.now()
+        const result = db.prepare(`
+            UPDATE sessions
+            SET todos = @todos,
+                todos_updated_at = @todos_updated_at,
+                updated_at = CASE WHEN updated_at > @updated_at THEN updated_at ELSE @updated_at END,
+                seq = seq + 1
+            WHERE id = @id
+              AND namespace = @namespace
+        `).run({
+            id,
+            todos: json,
+            todos_updated_at: todosUpdatedAt,
+            updated_at: now,
+            namespace
+        })
+        return result.changes === 1
+    } catch {
+        return false
+    }
+}
+
 export function setSessionTeamState(
     db: Database,
     id: string,

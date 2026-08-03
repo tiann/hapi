@@ -115,4 +115,16 @@ describe('ApiClient error mapping', () => {
         })
         expect(new Headers(init?.headers).get('content-type')).toBe('application/json')
     })
+
+    it('lets fetch set the multipart boundary for transcription uploads', async () => {
+        fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ text: 'hello' }), { status: 200 }))
+
+        const api = new ApiClient('test-token')
+        const file = new File(['audio'], 'speech.webm', { type: 'audio/webm' })
+        await api.transcribeVoice({ file, provider: 'openai', mode: 'standard' })
+
+        const [, init] = fetchMock.mock.calls[0] ?? []
+        expect(init?.body).toBeInstanceOf(FormData)
+        expect(new Headers(init?.headers).has('content-type')).toBe(false)
+    })
 })

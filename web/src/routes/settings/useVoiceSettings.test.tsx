@@ -3,16 +3,18 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { I18nProvider } from '@/lib/i18n-context'
 import { useVoiceSettings } from './useVoiceSettings'
 
-const { fetchVoiceBackend, fetchVoices, pause, play } = vi.hoisted(() => ({
+const { fetchTranscriptionProviders, fetchVoiceBackend, fetchVoices, pause, play } = vi.hoisted(() => ({
+    fetchTranscriptionProviders: vi.fn(() => Promise.resolve({ providers: [] })),
     fetchVoiceBackend: vi.fn(),
     fetchVoices: vi.fn(),
     pause: vi.fn(),
     play: vi.fn(() => Promise.resolve()),
 }))
 
-vi.mock('@/lib/app-context', () => ({
-    useAppContext: () => ({ api: {} }),
-}))
+vi.mock('@/lib/app-context', () => {
+    const api = { fetchTranscriptionProviders }
+    return { useAppContext: () => ({ api }) }
+})
 
 vi.mock('@/api/voice', () => ({
     fetchVoiceBackend,

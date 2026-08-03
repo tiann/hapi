@@ -12,9 +12,11 @@ import {
     writeStoredVoiceSelection,
 } from '@/lib/voicePickerPreferences'
 import type { VoiceBackendType } from '@hapi/protocol/voice'
+import { useVoiceInputPreferences } from '@/hooks/useVoiceInputPreferences'
 
 export function useVoiceSettings() {
     const { api } = useAppContext()
+    const input = useVoiceInputPreferences(api)
     const { locale } = useTranslation()
     const [configuredBackends, setConfiguredBackends] = useState<VoiceBackendType[]>([])
     const [backend, setBackendState] = useState<VoiceBackendType | null>(null)
@@ -106,6 +108,7 @@ export function useVoiceSettings() {
     useEffect(() => stopPreview, [stopPreview])
 
     return {
+        ...input,
         configuredBackends,
         backend,
         setBackend,

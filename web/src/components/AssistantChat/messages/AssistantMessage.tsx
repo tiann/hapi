@@ -8,6 +8,7 @@ import { getAssistantCopyText } from '@/components/AssistantChat/messages/assist
 import { getConversationMessageAnchorId } from '@/chat/outline'
 import { CodexReviewCard } from '@/components/AssistantChat/messages/CodexReviewCard'
 import { MessageActions } from '@/components/AssistantChat/messages/MessageActions'
+import { useHappyChatContext } from '@/components/AssistantChat/context'
 
 const TOOL_COMPONENTS = {
     Fallback: HappyToolMessage
@@ -21,6 +22,7 @@ const MESSAGE_PART_COMPONENTS = {
 } as const
 
 export function HappyAssistantMessage() {
+    const ctx = useHappyChatContext()
     const messageId = useAuiState((s) => s.message.id)
     const elementId = getConversationMessageAnchorId(messageId)
     const isCliOutput = useAuiState((s) => {
@@ -53,6 +55,14 @@ export function HappyAssistantMessage() {
 
     const metadata = { durationMs, usage, model: messageModel ?? null, turnCount }
 
+    const history = ctx.metadata?.capabilities?.conversationHistory
+    const showForkCurrent = Boolean(
+        history?.forkCurrent
+        && ctx.isLatestCompletedBoundary?.(messageId)
+        && !ctx.disabled
+        && ctx.onForkConversation
+    )
+
     const rootClass = toolOnly
         ? 'py-1 min-w-0 max-w-full overflow-x-hidden'
         : 'px-1 min-w-0 max-w-full overflow-x-hidden'
@@ -68,7 +78,15 @@ export function HappyAssistantMessage() {
                 : codexReview
                     ? <CodexReviewCard review={codexReview} />
                     : <MessagePrimitive.Content components={MESSAGE_PART_COMPONENTS} />}
-            <MessageActions align="start" copyText={copyText || undefined} metadata={metadata} messageElementId={elementId} />
+            <MessageActions
+                align="start"
+                copyText={copyText || undefined}
+                metadata={metadata}
+                messageElementId={elementId}
+                showFork={showForkCurrent}
+                historyActionPending={ctx.historyActionPending}
+                onFork={showForkCurrent ? () => ctx.onForkConversation!() : undefined}
+            />
         </MessagePrimitive.Root>
     )
 }

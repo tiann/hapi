@@ -111,15 +111,37 @@ function stripCaretPad(text: string): string {
     return text.replaceAll(CARET_PAD, '')
 }
 
-/** Exported for unit tests — maps contenteditable DOM → composer segments. */
-export function segmentsFromEditor(root: HTMLElement): ComposerSegment[] {
+type ComposerDomSpan = {
+    /** Mirror offset at the point inside this node where its visible content begins. */
+    start: number
+    /** Mirror offset after this node's visible content. */
+    end: number
+    /** The node caused some serialized mirror output, including a pending block break. */
+    producesOutput: boolean
+}
+
+type ComposerDomMapping = {
+    segments: ComposerSegment[]
+    mirrorLength: number
+    spans: Map<Node, ComposerDomSpan>
+}
+
+/**
+ * One DOM traversal is the source of truth for both serialized segments and
+ * DOM-point offsets. In particular, a block break is emitted immediately
+ * before the next visible node, so its offset belongs to that node's start.
+ */
+function mapComposerEditorDom(root: HTMLElement): ComposerDomMapping {
     const segments: ComposerSegment[] = []
+    const spans = new Map<Node, ComposerDomSpan>()
+    let mirrorLength = 0
     let pendingBlockBreak = false
 
     const pushText = (text: string) => {
         const cleaned = stripCaretPad(text)
         if (!cleaned) return
         segments.push({ type: 'text', text: cleaned })
+        mirrorLength += cleaned.length
     }
 
     const pushNewlineIfNeeded = () => {
@@ -133,9 +155,18 @@ export function segmentsFromEditor(root: HTMLElement): ComposerSegment[] {
     }
 
     const walk = (node: Node) => {
+        const before = mirrorLength
         if (node.nodeType === Node.TEXT_NODE) {
             pushNewlineIfNeeded()
+            const start = mirrorLength
             pushText(node.textContent ?? '')
+            spans.set(node, {
+                start,
+                end: mirrorLength,
+                // An empty text node can still materialize a pending block
+                // newline, matching the existing serializer behavior.
+                producesOutput: mirrorLength > before,
+            })
             return
         }
         if (node.nodeType !== Node.ELEMENT_NODE) return
@@ -144,6 +175,7 @@ export function segmentsFromEditor(root: HTMLElement): ComposerSegment[] {
         // that would strip the id from the agent prompt on send.
         if (el.dataset.composerMention === 'session') {
             pushNewlineIfNeeded()
+            const start = mirrorLength
             const id = el.dataset.sessionId?.trim()
             if (id) {
                 segments.push({
@@ -151,13 +183,25 @@ export function segmentsFromEditor(root: HTMLElement): ComposerSegment[] {
                     id,
                     title: el.dataset.sessionTitle || id.slice(0, 8),
                 })
+                mirrorLength += 1
             }
             // Orphan chip (missing id): drop it rather than emit title-only.
+            spans.set(node, {
+                start,
+                end: mirrorLength,
+                producesOutput: mirrorLength > before,
+            })
             return
         }
         if (el.tagName === 'BR') {
             pushNewlineIfNeeded()
+            const start = mirrorLength
             pushText('\n')
+            spans.set(node, {
+                start,
+                end: mirrorLength,
+                producesOutput: mirrorLength > before,
+            })
             return
         }
         const isBlock = BLOCK_TAGS.has(el.tagName)
@@ -172,11 +216,36 @@ export function segmentsFromEditor(root: HTMLElement): ComposerSegment[] {
         if (isBlock) {
             pendingBlockBreak = true
         }
+        const firstOutputChild = Array.from(el.childNodes)
+            .map((child) => spans.get(child))
+            .find((span) => span?.producesOutput)
+        spans.set(node, {
+            // A nested block's start is after its implicit preceding newline.
+            // This makes parent-anchored points at that block's start agree
+            // with the text point at the beginning of the block.
+            start: firstOutputChild?.start ?? before,
+            end: mirrorLength,
+            producesOutput: mirrorLength > before,
+        })
     }
     for (const child of Array.from(root.childNodes)) {
         walk(child)
     }
-    return coalesceComposerSegments(segments)
+    spans.set(root, {
+        start: 0,
+        end: mirrorLength,
+        producesOutput: mirrorLength > 0,
+    })
+    return {
+        segments: coalesceComposerSegments(segments),
+        mirrorLength,
+        spans,
+    }
+}
+
+/** Exported for unit tests — maps contenteditable DOM → composer segments. */
+export function segmentsFromEditor(root: HTMLElement): ComposerSegment[] {
+    return mapComposerEditorDom(root).segments
 }
 
 /**
@@ -249,78 +318,147 @@ function renderSegmentsToEditor(
     }
 }
 
+function containingSessionMention(root: HTMLElement, node: Node): HTMLElement | null {
+    let current: Node | null = node
+    while (current && current !== root) {
+        if (
+            current.nodeType === Node.ELEMENT_NODE
+            && (current as HTMLElement).dataset.composerMention === 'session'
+        ) {
+            return current as HTMLElement
+        }
+        current = current.parentNode
+    }
+    return null
+}
+
+/** True only for a DOM point at the structural start of a session atom. */
+function isPointAtSessionMentionStart(
+    mention: HTMLElement,
+    container: Node,
+    offset: number
+): boolean {
+    if (offset !== 0) return false
+    if (container === mention) return true
+
+    let current: Node | null = container
+    while (current && current !== mention) {
+        const parent: ParentNode | null = current.parentNode
+        if (!parent || parent.firstChild !== current) return false
+        current = parent
+    }
+    return current === mention
+}
+
+function mirrorOffsetWithinElement(
+    container: HTMLElement,
+    offset: number,
+    mapping: ComposerDomMapping
+): number {
+    const span = mapping.spans.get(container)
+    if (!span) return mapping.mirrorLength
+
+    // Any zero-output element has no mirror position of its own. Normalize it
+    // to the boundary immediately after that element in its parent; this
+    // deliberately climbs only to strict parents, including empty non-block
+    // wrappers such as <section> or <ul> around an empty block.
+    if (!span.producesOutput) {
+        const parent = container.parentElement
+        if (parent) {
+            const index = Array.from(parent.childNodes).indexOf(container)
+            if (index >= 0) return mirrorOffsetWithinElement(parent, index + 1, mapping)
+        }
+    }
+
+    const children = Array.from(container.childNodes)
+    const childOffset = Math.max(0, Math.min(offset, children.length))
+    // A parent boundary before a later block belongs at that block's visible
+    // start, including its implicit newline. This is what root-anchored
+    // selection points need for <div>one</div><div>two</div>.
+    for (let i = childOffset; i < children.length; i++) {
+        const childSpan = mapping.spans.get(children[i]!)
+        if (childSpan?.producesOutput) return childSpan.start
+    }
+    return span.end
+}
+
+function mirrorOffsetFromMappedPoint(
+    root: HTMLElement,
+    endContainer: Node,
+    endOffset: number,
+    mapping: ComposerDomMapping
+): number {
+    const mention = containingSessionMention(root, endContainer)
+    if (mention) {
+        const span = mapping.spans.get(mention)
+        if (!span) return mapping.mirrorLength
+        return isPointAtSessionMentionStart(mention, endContainer, endOffset)
+            ? span.start
+            : span.end
+    }
+
+    if (endContainer.nodeType === Node.TEXT_NODE) {
+        const span = mapping.spans.get(endContainer)
+        if (!span) return mapping.mirrorLength
+        const raw = endContainer.textContent ?? ''
+        const rawOffset = Math.max(0, Math.min(endOffset, raw.length))
+        return Math.min(span.end, span.start + stripCaretPad(raw.slice(0, rawOffset)).length)
+    }
+
+    if (endContainer.nodeType === Node.ELEMENT_NODE) {
+        const element = endContainer as HTMLElement
+        // A Range point directly on <br> has no child boundary. Treat it as
+        // the position before the explicit newline, as browsers do for a
+        // parent boundary immediately before that node.
+        if (element.tagName === 'BR') {
+            return mapping.spans.get(element)?.start ?? mapping.mirrorLength
+        }
+        return mirrorOffsetWithinElement(element, endOffset, mapping)
+    }
+
+    return mapping.mirrorLength
+}
+
 /** Exported for unit tests — maps a DOM caret point into mirror-string offset. */
 export function mirrorOffsetFromPoint(root: HTMLElement, endContainer: Node, endOffset: number): number {
-    let count = 0
+    const mapping = mapComposerEditorDom(root)
+    return mirrorOffsetFromMappedPoint(root, endContainer, endOffset, mapping)
+}
 
-    const visit = (n: Node): boolean => {
-        if (n === endContainer && n.nodeType === Node.TEXT_NODE) {
-            const raw = n.textContent ?? ''
-            count += stripCaretPad(raw.slice(0, endOffset)).length
-            return true
-        }
-        if (n.nodeType === Node.TEXT_NODE) {
-            count += stripCaretPad(n.textContent ?? '').length
-            return false
-        }
-        if (n.nodeType !== Node.ELEMENT_NODE) return false
-        const el = n as HTMLElement
-        if (el.dataset.composerMention === 'session') {
-            if (n === endContainer) {
-                count += endOffset > 0 ? 1 : 0
-                return true
-            }
-            count += 1
-            return false
-        }
-        if (el.tagName === 'BR') {
-            if (n === endContainer) return true
-            count += 1
-            return false
-        }
-        if (n === endContainer) {
-            const children = Array.from(n.childNodes)
-            for (let i = 0; i < endOffset && i < children.length; i++) {
-                if (visit(children[i]!)) return true
-            }
-            return true
-        }
-        for (const child of Array.from(n.childNodes)) {
-            if (visit(child)) return true
-        }
-        return false
+/**
+ * Maps either direction of a DOM selection into the ordered mirror range.
+ * Exported for unit tests; production selection reads use the same mapping.
+ */
+export function mirrorSelectionFromPoints(
+    root: HTMLElement,
+    startContainer: Node,
+    startOffset: number,
+    endContainer: Node,
+    endOffset: number
+): ComposerSelection {
+    const mapping = mapComposerEditorDom(root)
+    if (!root.contains(startContainer) || !root.contains(endContainer)) {
+        return { start: mapping.mirrorLength, end: mapping.mirrorLength }
     }
-
-    // Root-anchored ranges (caret before a leading chip, select-all) report
-    // endContainer === root; visit only children of that offset.
-    if (endContainer === root) {
-        const children = Array.from(root.childNodes)
-        for (let i = 0; i < endOffset && i < children.length; i++) {
-            visit(children[i]!)
-        }
-        return count
-    }
-
-    for (const child of Array.from(root.childNodes)) {
-        if (visit(child)) break
-    }
-    return count
+    const start = mirrorOffsetFromMappedPoint(root, startContainer, startOffset, mapping)
+    const end = mirrorOffsetFromMappedPoint(root, endContainer, endOffset, mapping)
+    return { start: Math.min(start, end), end: Math.max(start, end) }
 }
 
 function getMirrorSelection(root: HTMLElement): ComposerSelection {
     const sel = window.getSelection()
     if (!sel || sel.rangeCount === 0) {
-        const len = mirrorComposerSegments(segmentsFromEditor(root)).length
+        const len = mapComposerEditorDom(root).mirrorLength
         return { start: len, end: len }
     }
     const range = sel.getRangeAt(0)
-    if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) {
-        const len = mirrorComposerSegments(segmentsFromEditor(root)).length
-        return { start: len, end: len }
-    }
-    const start = mirrorOffsetFromPoint(root, range.startContainer, range.startOffset)
-    const end = mirrorOffsetFromPoint(root, range.endContainer, range.endOffset)
-    return { start: Math.min(start, end), end: Math.max(start, end) }
+    return mirrorSelectionFromPoints(
+        root,
+        range.startContainer,
+        range.startOffset,
+        range.endContainer,
+        range.endOffset
+    )
 }
 
 function setMirrorSelection(root: HTMLElement, selection: ComposerSelection) {

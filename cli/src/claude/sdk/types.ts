@@ -195,6 +195,11 @@ export interface QueryOptions {
     permissionMode?: ClaudePermissionMode
     continue?: boolean
     resume?: string
+    /**
+     * When resuming, branch with `--fork-session` instead of taking over the
+     * existing Claude session id.
+     */
+    forkSession?: boolean
     model?: string
     effort?: string
     fallbackModel?: string

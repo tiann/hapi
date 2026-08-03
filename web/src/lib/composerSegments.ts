@@ -1,4 +1,5 @@
 import { buildSessionReferencePath, parseSessionPathHref } from '@/lib/sessionReference'
+import { truncateGraphemes } from '@/lib/graphemes'
 import { findActiveWord } from '@/utils/findActiveWord'
 
 /** Object Replacement Character — one mirror slot per session atom. */
@@ -23,7 +24,7 @@ export type ComposerSelection = {
 }
 
 function sanitizeMentionTitle(title: string): string {
-    return title.replace(/\s+/g, ' ').trim().slice(0, 120)
+    return truncateGraphemes(title.replace(/\s+/g, ' ').trim(), 120)
 }
 
 function escapeMarkdownLinkLabel(title: string): string {

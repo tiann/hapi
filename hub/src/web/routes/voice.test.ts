@@ -75,6 +75,112 @@ describe('GET /api/voice/voices', () => {
     })
 })
 
+describe('voice transcription routes', () => {
+    test('discovers only providers configured at hub startup', async () => {
+        const app = createApp()
+        const headers = await authHeaders()
+        const previous = {
+            openai: process.env.OPENAI_API_KEY,
+            elevenlabs: process.env.ELEVENLABS_API_KEY,
+            deepgram: process.env.DEEPGRAM_API_KEY,
+            groq: process.env.GROQ_API_KEY,
+            baseUrl: process.env.TRANSCRIPTION_BASE_URL,
+            model: process.env.TRANSCRIPTION_MODEL
+        }
+        delete process.env.OPENAI_API_KEY
+        delete process.env.ELEVENLABS_API_KEY
+        delete process.env.DEEPGRAM_API_KEY
+        delete process.env.GROQ_API_KEY
+        delete process.env.TRANSCRIPTION_BASE_URL
+        delete process.env.TRANSCRIPTION_MODEL
+        process.env.OPENAI_API_KEY = 'server-only-key'
+        process.env.TRANSCRIPTION_BASE_URL = 'http://localhost:8000/v1'
+        process.env.TRANSCRIPTION_MODEL = 'local-whisper'
+
+        const res = await app.request('/api/voice/transcription/providers', { headers })
+        expect(res.status).toBe(200)
+        expect(await res.json()).toEqual({ providers: [
+            { id: 'openai', label: 'OpenAI', modes: ['standard'] },
+            { id: 'openai-compatible', label: 'OpenAI-compatible / local', modes: ['standard'] }
+        ] })
+
+        for (const [key, value] of Object.entries({
+            OPENAI_API_KEY: previous.openai,
+            ELEVENLABS_API_KEY: previous.elevenlabs,
+            DEEPGRAM_API_KEY: previous.deepgram,
+            GROQ_API_KEY: previous.groq,
+            TRANSCRIPTION_BASE_URL: previous.baseUrl,
+            TRANSCRIPTION_MODEL: previous.model
+        })) {
+            if (value === undefined) delete process.env[key]
+            else process.env[key] = value
+        }
+    })
+
+    test('proxies a bounded recording to OpenAI with the default best model', async () => {
+        const app = createApp()
+        const headers = await authHeaders()
+        const previousKey = process.env.OPENAI_API_KEY
+        process.env.OPENAI_API_KEY = 'server-only-key'
+        const originalFetch = global.fetch
+        let upstreamUrl = ''
+        let upstreamInit: RequestInit | undefined
+        // @ts-expect-error test override
+        global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+            upstreamUrl = String(input)
+            upstreamInit = init
+            return new Response(JSON.stringify({ text: 'transcribed text', language: 'en' }), { status: 200 })
+        }) as typeof fetch
+
+        const form = new FormData()
+        form.set('provider', 'openai')
+        form.set('mode', 'standard')
+        form.set('language', 'zh-CN')
+        form.set('file', new File(['audio bytes'], 'speech.webm', { type: 'audio/webm' }))
+        const res = await app.request('/api/voice/transcription', { method: 'POST', headers, body: form })
+
+        expect(res.status).toBe(200)
+        expect(await res.json()).toEqual({ text: 'transcribed text', language: 'en' })
+        expect(upstreamUrl).toBe('https://api.openai.com/v1/audio/transcriptions')
+        expect(new Headers(upstreamInit?.headers).get('authorization')).toBe('Bearer server-only-key')
+        expect(upstreamInit?.body).toBeInstanceOf(FormData)
+        expect((upstreamInit?.body as FormData).get('model')).toBe('gpt-4o-transcribe')
+        expect((upstreamInit?.body as FormData).get('language')).toBe('zh')
+
+        global.fetch = originalFetch
+        if (previousKey === undefined) delete process.env.OPENAI_API_KEY
+        else process.env.OPENAI_API_KEY = previousKey
+    })
+
+    test('rejects unsupported files before calling a provider', async () => {
+        const app = createApp()
+        const headers = await authHeaders()
+        const form = new FormData()
+        form.set('provider', 'openai')
+        form.set('file', new File(['not audio'], 'notes.txt', { type: 'text/plain' }))
+
+        const res = await app.request('/api/voice/transcription', { method: 'POST', headers, body: form })
+        expect(res.status).toBe(400)
+        expect(await res.json()).toEqual({ error: 'Unsupported audio file type' })
+    })
+
+    test('rejects oversized request bodies before multipart parsing', async () => {
+        const app = createApp()
+        const res = await app.request('/api/voice/transcription', {
+            method: 'POST',
+            headers: {
+                ...(await authHeaders()),
+                'content-length': String(27 * 1024 * 1024),
+                'content-type': 'multipart/form-data; boundary=test'
+            },
+            body: '--test--'
+        })
+
+        expect(res.status).toBe(413)
+        expect(await res.json()).toEqual({ error: 'Audio file too large' })
+    })
+})
+
 describe('POST /api/voice/token', () => {
     it('creates/selects voice-specific agent when voiceId is provided', async () => {
         const app = createApp()

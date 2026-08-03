@@ -64,6 +64,8 @@ function createApp(session: Session, opts?: {
     sessionExists?: boolean
     archiveSession?: (sessionId: string) => Promise<void>
     getCursorChatStoreStatus?: SyncEngine['getCursorChatStoreStatus']
+    forkConversation?: SyncEngine['forkConversation']
+    rewindConversation?: SyncEngine['rewindConversation']
 }) {
     const applySessionConfigCalls: Array<[string, Record<string, unknown>]> = []
     const applySessionConfig = async (sessionId: string, config: Record<string, unknown>) => {
@@ -147,7 +149,9 @@ function createApp(session: Session, opts?: {
         listSlashCommands: opts?.listSlashCommands ?? (async () => ({
             success: true,
             commands: []
-        }))
+        })),
+        forkConversation: opts?.forkConversation ?? (async () => ({ type: 'success', sessionId: 'child-1' })),
+        rewindConversation: opts?.rewindConversation ?? (async () => ({ type: 'success' }))
     } as Partial<SyncEngine>
 
     const app = new Hono<WebAppEnv>()
@@ -1271,6 +1275,72 @@ describe('sessions routes', () => {
             expect(await response.json()).toEqual({ ok: true })
             expect(calls).toEqual(['session-1'])
         })
+    })
+
+    it('forks via POST /sessions/:id/fork and returns the child session id', async () => {
+        const calls: Array<{ sessionId: string; namespace: string; messageLocalId?: string }> = []
+        const session = createSession({
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'codex',
+                capabilities: { conversationHistory: { forkCurrent: true } }
+            }
+        })
+        const { app } = createApp(session, {
+            forkConversation: async (sessionId, namespace, messageLocalId) => {
+                calls.push({ sessionId, namespace, messageLocalId })
+                return { type: 'success', sessionId: 'forked-child' }
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/fork', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({})
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ sessionId: 'forked-child' })
+        expect(calls).toEqual([{ sessionId: 'session-1', namespace: 'default', messageLocalId: undefined }])
+    })
+
+    it('rewinds via POST /sessions/:id/rewind', async () => {
+        const calls: Array<{ sessionId: string; messageLocalId: string }> = []
+        const session = createSession({
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'codex',
+                capabilities: { conversationHistory: { rewindToMessage: true } }
+            }
+        })
+        const { app } = createApp(session, {
+            rewindConversation: async (sessionId, _namespace, messageLocalId) => {
+                calls.push({ sessionId, messageLocalId })
+                return { type: 'success' }
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/rewind', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ messageLocalId: 'local-2' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ success: true })
+        expect(calls).toEqual([{ sessionId: 'session-1', messageLocalId: 'local-2' }])
+    })
+
+    it('rejects rewind without messageLocalId', async () => {
+        const { app } = createApp(createSession())
+        const response = await app.request('/api/sessions/session-1/rewind', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({})
+        })
+        expect(response.status).toBe(400)
     })
 
 })

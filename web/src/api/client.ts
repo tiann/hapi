@@ -47,6 +47,7 @@ import type {
 } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor } from '@hapi/protocol'
 import type { CancelMessageResponse } from '@hapi/protocol/schemas'
+import type { TranscriptionMode, TranscriptionProvider, TranscriptionProviderInfo } from '@hapi/protocol/voice'
 
 type ApiClientOptions = {
     baseUrl?: string
@@ -122,7 +123,7 @@ export class ApiClient {
         if (authToken) {
             headers.set('authorization', `Bearer ${authToken}`)
         }
-        if (init?.body !== undefined && !headers.has('content-type')) {
+        if (init?.body !== undefined && !(init.body instanceof FormData) && !headers.has('content-type')) {
             headers.set('content-type', 'application/json')
         }
 
@@ -465,6 +466,26 @@ export class ApiClient {
             method: 'POST',
             body: JSON.stringify({})
         })
+    }
+
+    async forkConversation(sessionId: string, messageLocalId?: string): Promise<{ sessionId: string }> {
+        return await this.request<{ sessionId: string }>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/fork`,
+            {
+                method: 'POST',
+                body: JSON.stringify(messageLocalId ? { messageLocalId } : {})
+            }
+        )
+    }
+
+    async rewindConversation(sessionId: string, messageLocalId: string): Promise<{ success: true }> {
+        return await this.request<{ success: true }>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/rewind`,
+            {
+                method: 'POST',
+                body: JSON.stringify({ messageLocalId })
+            }
+        )
     }
 
     async archiveSession(sessionId: string): Promise<void> {
@@ -931,6 +952,24 @@ export class ApiClient {
 
     async fetchVoiceBackend(): Promise<{ backend: string; backends: string[] }> {
         return await this.request('/api/voice/backend')
+    }
+
+    async fetchTranscriptionProviders(): Promise<{ providers: TranscriptionProviderInfo[] }> {
+        return await this.request('/api/voice/transcription/providers')
+    }
+
+    async transcribeVoice(options: {
+        file: File
+        provider: TranscriptionProvider
+        mode: TranscriptionMode
+        language?: string
+    }): Promise<{ text: string; language?: string }> {
+        const form = new FormData()
+        form.set('file', options.file)
+        form.set('provider', options.provider)
+        form.set('mode', options.mode)
+        if (options.language) form.set('language', options.language)
+        return await this.request('/api/voice/transcription', { method: 'POST', body: form })
     }
 
     async fetchQwenToken(): Promise<{

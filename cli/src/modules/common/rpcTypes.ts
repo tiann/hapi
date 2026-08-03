@@ -18,6 +18,8 @@ export interface SpawnSessionOptions {
     token?: string
     sessionType?: 'simple' | 'worktree'
     worktreeName?: string
+    /** Claude: spawn with --fork-session after --resume. */
+    forkSession?: boolean
 }
 
 export type SpawnSessionResult =

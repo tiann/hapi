@@ -1,9 +1,29 @@
 import { describe, expect, test } from 'bun:test'
 import {
+    listConfiguredTranscriptionProviders,
     listConfiguredVoiceBackends,
     resolveEffectiveVoiceBackend,
     resolveHubVoiceBackend
 } from './voice'
+
+describe('listConfiguredTranscriptionProviders', () => {
+    test('returns configured providers with honest mode capabilities', () => {
+        expect(listConfiguredTranscriptionProviders({
+            OPENAI_API_KEY: 'openai',
+            ELEVENLABS_API_KEY: 'elevenlabs',
+            TRANSCRIPTION_BASE_URL: 'http://localhost:8000/v1',
+            TRANSCRIPTION_MODEL: 'whisper-large-v3'
+        })).toEqual([
+            { id: 'openai', label: 'OpenAI', modes: ['standard'] },
+            { id: 'elevenlabs', label: 'ElevenLabs', modes: ['standard'] },
+            { id: 'openai-compatible', label: 'OpenAI-compatible / local', modes: ['standard'] }
+        ])
+    })
+
+    test('does not advertise incomplete or missing configuration', () => {
+        expect(listConfiguredTranscriptionProviders({ TRANSCRIPTION_BASE_URL: 'http://localhost:8000/v1' })).toEqual([])
+    })
+})
 
 describe('listConfiguredVoiceBackends', () => {
     test('returns only backends with API keys', () => {

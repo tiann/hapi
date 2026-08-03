@@ -1,5 +1,6 @@
 import type { SessionSummary } from '@/types/api'
 import { normalizeSearch, sessionMatchesQuery } from '@/components/SessionList'
+import { truncateGraphemes } from '@/lib/graphemes'
 import { getSessionTitle } from '@/lib/sessionTitle'
 
 export function buildSessionReferencePath(sessionId: string): string {
@@ -9,7 +10,7 @@ export function buildSessionReferencePath(sessionId: string): string {
 }
 
 function sanitizeSessionReferenceTitle(sessionTitle: string): string {
-    return sessionTitle.replace(/\s+/g, ' ').trim().slice(0, 120)
+    return truncateGraphemes(sessionTitle.replace(/\s+/g, ' ').trim(), 120)
 }
 
 /** Clipboard text for citing this session in another HAPI chat (not a public share link). */

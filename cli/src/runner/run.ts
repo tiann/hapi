@@ -1481,13 +1481,25 @@ export function buildCliArgs(
       args.push('--resume', options.resumeSessionId);
     }
   }
+  // Message-level Fork current for Claude: must follow --resume.
+  if (options.forkSession && agentCommand === 'claude') {
+    args.push('--fork-session');
+  }
   args.push('--hapi-starting-mode', 'remote', '--started-by', 'runner');
-  // Codex, Cursor ACP, OpenCode, and Pi native resume reuse the original HAPI
-  // row via --existing-session-id. Pi is reported successful only after the hub
-  // sees its validated native get_state/session-ready signal.
-  if (agent === 'codex' || agent === 'cursor' || agent === 'opencode' || agent === 'pi') {
+  // Codex, Cursor ACP, OpenCode, Pi native resume, and Claude message-level
+  // forks reuse the original HAPI row via --existing-session-id.
+  if (agent === 'codex' || agent === 'cursor' || agent === 'pi'
+      || agent === 'opencode'
+      || (agentCommand === 'claude' && options.forkSession)) {
     const existingSessionId = options.existingSessionId ?? options.sessionId;
     if (existingSessionId) {
+      args.push('--existing-session-id', existingSessionId);
+    }
+  }
+  // Grok fork children also bind the pending HAPI session id.
+  if (agent === 'grok') {
+    const existingSessionId = options.existingSessionId ?? options.sessionId;
+    if (existingSessionId && !args.includes('--existing-session-id')) {
       args.push('--existing-session-id', existingSessionId);
     }
   }

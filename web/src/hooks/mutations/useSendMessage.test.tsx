@@ -172,8 +172,9 @@ describe('useSendMessage', () => {
             await waitFor(() => {
                 expect(onError).toHaveBeenCalledTimes(1)
             })
-            const info = onError.mock.calls[0][0] as { text: string; error: unknown }
+            const info = onError.mock.calls[0][0] as { text: string; error: unknown; mutationStarted: boolean }
             expect(info.text).toBe('keep this text on 503')
+            expect(info.mutationStarted).toBe(true)
             expect(info.error).toBeInstanceOf(Error)
             expect((info.error as Error).message).toContain('503')
             expect(onSuccess).not.toHaveBeenCalled()
@@ -199,8 +200,9 @@ describe('useSendMessage', () => {
             await waitFor(() => {
                 expect(onError).toHaveBeenCalledTimes(1)
             })
-            const info = onError.mock.calls[0][0] as { text: string; error: unknown }
+            const info = onError.mock.calls[0][0] as { text: string; error: unknown; mutationStarted: boolean }
             expect(info.text).toBe('keep this on a dropped fetch')
+            expect(info.mutationStarted).toBe(true)
             expect(info.error).toBeInstanceOf(TypeError)
         })
 
@@ -594,8 +596,9 @@ describe('useSendMessage', () => {
             await waitFor(() => {
                 expect(onError).toHaveBeenCalledTimes(1)
             })
-            const info = onError.mock.calls[0][0] as { text: string; error: unknown; sessionId: string }
+            const info = onError.mock.calls[0][0] as { text: string; error: unknown; sessionId: string; mutationStarted: boolean }
             expect(info.text).toBe('hello inactive')
+            expect(info.mutationStarted).toBe(true)
             expect(info.sessionId).toBe('session-A')
             expect(info.error).toBeInstanceOf(ApiError)
             const apiErr = info.error as ApiError
@@ -629,8 +632,9 @@ describe('useSendMessage', () => {
             await waitFor(() => {
                 expect(onError).toHaveBeenCalledTimes(1)
             })
-            const info = onError.mock.calls[0][0] as { text: string; error: unknown; sessionId: string }
+            const info = onError.mock.calls[0][0] as { text: string; error: unknown; sessionId: string; mutationStarted: boolean }
             expect(info.text).toBe('hello pre-mutation')
+            expect(info.mutationStarted).toBe(false)
             // Keyed by the ORIGINAL sessionId: pre-mutation never navigated.
             expect(info.sessionId).toBe('session-A')
             expect(info.error).toBe(resumeError)
