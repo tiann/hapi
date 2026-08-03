@@ -623,24 +623,39 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
 
     protected async cleanup(): Promise<void> {
         this.clearAbortHandlers(this.session.client.rpcHandlerManager);
-        try {
-            if (this.permissionHandler) {
+        const failures: unknown[] = [];
+        if (this.permissionHandler) {
+            try {
                 await this.permissionHandler.cancelAll('Session ended');
+            } catch (error) {
+                failures.push(error);
+            } finally {
                 this.permissionHandler = null;
             }
-            if (this.backend) {
+        }
+        if (this.backend) {
+            try {
                 await this.backend.disconnect();
+            } catch (error) {
+                failures.push(error);
+            } finally {
                 this.backend = null;
             }
-            if (this.happyServer) {
+        }
+        if (this.happyServer) {
+            try {
                 this.happyServer.stop();
+            } catch (error) {
+                failures.push(error);
+            } finally {
                 this.happyServer = null;
             }
-            if (this.clearRequested) await this.options.onClearCleanupComplete?.();
-        } catch (error) {
-            if (this.clearRequested) await this.options.onClearCleanupFailed?.();
-            throw error;
         }
+        if (failures.length > 0) {
+            if (this.clearRequested) await this.options.onClearCleanupFailed?.();
+            throw failures.length === 1 ? failures[0] : new AggregateError(failures, 'OpenCode cleanup failed');
+        }
+        if (this.clearRequested) await this.options.onClearCleanupComplete?.();
 
         // Signal the runner only after the native backend is gone. If an
         // awaited teardown above fails, RemoteLauncherBase propagates that

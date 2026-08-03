@@ -117,7 +117,7 @@ describe('SyncEngine.clearOpenCodeSession', () => {
         } finally { engine.stop() }
     })
 
-    it('does not reconcile a reservation without durable native-cleanup proof', async () => {
+    it('safely aborts an inactive unconfirmed reservation and restores held messages', async () => {
         const { store, engine } = createEngine()
         try {
             const source = engine.getOrCreateSession('unconfirmed-clear-source', {
@@ -125,6 +125,7 @@ describe('SyncEngine.clearOpenCodeSession', () => {
             }, null, 'default')
             engine.handleSessionAlive({ sid: source.id, time: Date.now() })
             expect(engine.reserveOpenCodeClearSession(source.id, 'default')).toMatchObject({ type: 'success' })
+            await engine.sendMessage(source.id, { text: 'held during lost response', localId: 'lost-response-held' })
             const reservedMetadata = engine.getSessionByNamespace(source.id, 'default')!.metadata!
             engine.handleSessionEnd({ sid: source.id, time: Date.now(), reason: 'error' })
             const ended = store.sessions.getSessionByNamespace(source.id, 'default')!
@@ -134,7 +135,13 @@ describe('SyncEngine.clearOpenCodeSession', () => {
             setSpawn(engine, spawnSession)
             await (engine as unknown as { reconcileOpenCodeClears(): Promise<void> }).reconcileOpenCodeClears()
             expect(spawnSession).not.toHaveBeenCalled()
-            expect(engine.getSessionByNamespace(source.id, 'default')?.metadata?.opencodeClearOperation?.state).toBe('reserved')
+            expect(engine.getSessionByNamespace(source.id, 'default')?.metadata?.opencodeClearOperation?.state).toBe('aborted')
+            expect(store.messages.getAllMessages(source.id)).toEqual([
+                expect.objectContaining({ localId: 'lost-response-held', invokedAt: null })
+            ])
+            expect((engine as unknown as { isOpenCodeClearSource(session: unknown): boolean }).isOpenCodeClearSource(
+                engine.getSessionByNamespace(source.id, 'default')!
+            )).toBe(false)
         } finally { engine.stop() }
     })
 

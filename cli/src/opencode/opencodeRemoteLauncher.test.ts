@@ -10,6 +10,7 @@ const harness = vi.hoisted(() => ({
     refreshSessionInfoCalls: [] as Array<{ sessionId: string; cwd: string }>,
     bridgeOptions: null as { enableChangeTitle?: boolean; skillLookup?: { workingDirectory: string; flavor: string } } | null,
     events: [] as string[],
+    cleanupEvents: [] as string[],
     setModelImpl: null as null | ((sessionId: string, modelId: string) => Promise<void>),
     setConfigOptionImpl: null as null | ((sessionId: string, configId: string, value: string) => Promise<void>),
     thoughtLevelOption: null as null | { id: string; currentValue?: string; options: Array<{ value: string; name?: string }> },
@@ -112,6 +113,7 @@ vi.mock('./utils/opencodeBackend', () => ({
         }),
         onPermissionRequest: vi.fn(),
         disconnect: vi.fn(async () => {
+            harness.cleanupEvents.push('cleanup:disconnect');
             if (harness.disconnectImpl) {
                 await harness.disconnectImpl();
             }
@@ -130,7 +132,7 @@ vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
     buildHapiMcpBridge: async (_client: unknown, options?: { enableChangeTitle?: boolean; skillLookup?: { workingDirectory: string; flavor: string } }) => {
         harness.bridgeOptions = options ?? null;
         return {
-            server: { stop: () => { if (harness.serverStopError) throw harness.serverStopError; } },
+            server: { stop: () => { harness.cleanupEvents.push('cleanup:server-stop'); if (harness.serverStopError) throw harness.serverStopError; } },
             mcpServers: {}
         };
     }
@@ -138,7 +140,7 @@ vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
 
 vi.mock('./utils/permissionHandler', () => ({
     OpencodePermissionHandler: class {
-        async cancelAll(): Promise<void> { if (harness.permissionCancelError) throw harness.permissionCancelError; }
+        async cancelAll(): Promise<void> { harness.cleanupEvents.push('cleanup:permission'); if (harness.permissionCancelError) throw harness.permissionCancelError; }
     }
 }));
 
@@ -323,6 +325,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         harness.refreshSessionInfoCalls = [];
         harness.bridgeOptions = null;
         harness.events = [];
+        harness.cleanupEvents = [];
         harness.setModelImpl = null;
         harness.setConfigOptionImpl = null;
         harness.thoughtLevelOption = null;
@@ -404,6 +407,9 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         })).rejects.toThrow('cleanup failed');
         expect(onClearCleanupFailed).toHaveBeenCalledTimes(1);
         expect(onClearCleanupComplete).not.toHaveBeenCalled();
+        expect(harness.cleanupEvents).toEqual(expect.arrayContaining([
+            'cleanup:permission', 'cleanup:disconnect', 'cleanup:server-stop'
+        ]));
     });
 
     it('reaches /clear only after an in-flight /compact has completed', async () => {

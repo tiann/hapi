@@ -777,7 +777,12 @@ async uploadScratchlistAttachment(
     private async reconcileOpenCodeClears(): Promise<void> {
         for (let session of this.sessionCache.getSessions()) {
             const operation = session.metadata?.opencodeClearOperation
-            if (session.active || !operation || !['cleanup-confirmed', 'finalizing', 'failed'].includes(operation.state)) continue
+            if (session.active || !operation) continue
+            if (operation.state === 'reserved') {
+                this.abortOpenCodeClearSession(session.id, session.namespace)
+                continue
+            }
+            if (!['cleanup-confirmed', 'finalizing', 'failed'].includes(operation.state)) continue
             if (session.metadata?.lifecycleState !== 'archived' || session.metadata.archiveReason !== 'Cleared by /clear') {
                 const result = this.store.sessions.updateSessionMetadata(session.id, {
                     ...session.metadata,
