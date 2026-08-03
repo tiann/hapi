@@ -198,7 +198,19 @@ export async function runPi(opts: {
         piSession,
         (command, timeoutMs) => sendPiRpcAndWait(piSession, transport, command, timeoutMs),
     );
-    piSession.setNativeReadyPreparation(async () => await conversationHistory.initialize());
+    let historyBaseline: Promise<boolean> | null = null;
+    let historyInitialization: Promise<void> | null = null;
+    const initializeHistoryBaseline = (): Promise<boolean> => {
+        historyBaseline ??= conversationHistory.initializeBaseline();
+        return historyBaseline;
+    };
+    const initializeHistory = (): Promise<void> => {
+        historyInitialization ??= initializeHistoryBaseline().then(async (baselineReady) => {
+            if (baselineReady) await conversationHistory.probeCapabilities();
+        });
+        return historyInitialization;
+    };
+    piSession.setNativeReadyPreparation(initializeHistory);
 
     const publishConversationHistoryCapabilities = async () => {
         const conversationHistoryCapabilities = conversationHistory.getCapabilitiesForMetadata()?.conversationHistory;
@@ -240,6 +252,7 @@ export async function runPi(opts: {
     const safeCleanup = async () => {
         if (cleanupInitiated) return;
         cleanupInitiated = true;
+        piSession.cancelReadyGate();
         await lifecycle.cleanupAndExit();
     };
 
@@ -409,6 +422,7 @@ export async function runPi(opts: {
     };
 
     const pumpPromptQueue = (): void => {
+        if (cleanupInitiated) return;
         if (piSession.isHistoryTransactionActive) {
             if (!historyPumpDeferred) {
                 historyPumpDeferred = true;
@@ -903,9 +917,14 @@ export async function runPi(opts: {
         if (piSession.expectedNativeSessionId) {
             failNativeStartup(new Error(`Pi native resume did not become ready within ${PI_READY_FALLBACK_MS}ms`));
         } else {
-            logger.debug('[pi] get_state ready signal not seen within grace — draining buffered messages');
-            piSession.markReady();
-            pumpPromptQueue();
+            logger.debug('[pi] get_state ready signal not seen within grace — establishing history baseline before draining buffered messages');
+            void initializeHistoryBaseline()
+                .catch(() => {})
+                .finally(() => {
+                    if (cleanupInitiated) return;
+                    piSession.markReady();
+                    pumpPromptQueue();
+                });
         }
     }, PI_READY_FALLBACK_MS);
     readyFallback.unref?.();

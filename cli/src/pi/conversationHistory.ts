@@ -185,8 +185,8 @@ export class PiConversationHistory {
         }
     }
 
-    /** Called before Pi reports native-ready, while its prompt gate is closed. */
-    async initialize(): Promise<void> {
+    /** Establish the append-log cursor before any buffered prompt is released. */
+    async initializeBaseline(): Promise<boolean> {
         try {
             await this.syncEntries()
         } catch (error) {
@@ -200,10 +200,14 @@ export class PiConversationHistory {
             this.states = markUnsupported(this.states, 'forkAtMessage')
             this.states = markUnsupported(this.states, 'rewindToMessage')
             await this.publishCapabilities?.().catch(() => {})
-            return
+            return false
         }
-        // Capability publication remains optional; normal Pi startup continues
-        // after transient/malformed history reads.
+        return true
+    }
+
+    /** Probe and publish controls only after Pi has a validated native identity. */
+    async initialize(): Promise<void> {
+        if (!await this.initializeBaseline()) return
         await this.probeCapabilities().catch(() => {})
     }
 

@@ -71,6 +71,7 @@ export class PiSession {
     // are queued via runWhenReady() and drained FIFO once markReady() fires (on
     // the first get_state response).
     private piReady = false;
+    private readyCancelled = false;
     private nativeReadyAnnounced = false;
     private nativeReadyPreparation: (() => Promise<void>) | null = null;
     private nativeReadyPreparationStarted = false;
@@ -136,6 +137,13 @@ export class PiSession {
      */
     setNativeReadyPreparation(fn: () => Promise<void>): void {
         this.nativeReadyPreparation = fn;
+    }
+
+    /** Prevent any late startup/history completion from draining outbound work. */
+    cancelReadyGate(): void {
+        this.readyCancelled = true;
+        this.readyQueue = [];
+        this.historyDeferredQueue = [];
     }
 
     get isHistoryTransactionActive(): boolean {
@@ -314,6 +322,7 @@ export class PiSession {
      * cancel-queued-message can drop it while still buffered.
      */
     runWhenReady(fn: () => void, localId?: string): void {
+        if (this.readyCancelled) return;
         if (this.piReady) {
             fn();
             return;
@@ -345,7 +354,7 @@ export class PiSession {
      * Pi loaded a requested native session.
      */
     markReady(): boolean {
-        if (this.piReady) return false;
+        if (this.piReady || this.readyCancelled) return false;
         this.piReady = true;
         const queued = this.readyQueue;
         this.readyQueue = [];
@@ -359,7 +368,7 @@ export class PiSession {
      * considered successful.
      */
     markNativeReady(): void {
-        if (this.nativeReadyAnnounced || this.nativeReadyPreparationStarted) return;
+        if (this.readyCancelled || this.nativeReadyAnnounced || this.nativeReadyPreparationStarted) return;
         // The hub uses session-ready as the validated native identity fence.
         // It must precede piSessionId metadata publication, while prompt drain
         // may wait for the append-log baseline below.

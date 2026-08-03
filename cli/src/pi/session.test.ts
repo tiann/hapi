@@ -115,6 +115,24 @@ describe('PiSession ready gate', () => {
         expect(sent).toHaveBeenCalledTimes(1);
     });
 
+    it('does not drain buffered work when cleanup cancels an in-flight ready preparation', async () => {
+        const session = createMockSession();
+        let finishBaseline!: () => void;
+        session.setNativeReadyPreparation(() => new Promise<void>((resolve) => { finishBaseline = resolve; }));
+        const sent = vi.fn();
+        session.runWhenReady(sent);
+
+        session.markNativeReady();
+        session.cancelReadyGate();
+        finishBaseline();
+        await Promise.resolve();
+        await Promise.resolve();
+        session.runWhenReady(sent);
+
+        expect(session.isReady).toBe(false);
+        expect(sent).not.toHaveBeenCalled();
+    });
+
     it('preserves FIFO across mixed buffered + post-ready enqueues', () => {
         const session = createMockSession();
         const order: string[] = [];

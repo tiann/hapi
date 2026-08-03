@@ -94,6 +94,31 @@ import { PiSession } from './session';
 import { PiHistoryRestoreError } from './conversationHistory';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 
+async function replyToHistoryCommand(type: 'get_entries' | 'get_fork_messages', occurrence: number, data: unknown): Promise<void> {
+    await vi.waitFor(() => {
+        expect(harness.sent.filter((item) => (item as { type?: string }).type === type)).toHaveLength(occurrence);
+    });
+    const command = harness.sent.filter((item) => (item as { type?: string }).type === type)[occurrence - 1] as { id: string };
+    harness.onEvent!({ type: 'response', id: command.id, command: type, success: true, data });
+}
+
+async function completeHistoryBaseline(
+    initialEntries: unknown[] = [],
+    initialLeafId: string | null = null,
+): Promise<void> {
+    await replyToHistoryCommand('get_entries', 1, { entries: initialEntries, leafId: initialLeafId });
+}
+
+async function completeHistoryProbe(initialLeafId: string | null = null): Promise<void> {
+    await replyToHistoryCommand('get_fork_messages', 1, { messages: [] });
+    await replyToHistoryCommand('get_entries', 2, { entries: [], leafId: initialLeafId });
+}
+
+async function completeHistoryInitialization(): Promise<void> {
+    await completeHistoryBaseline();
+    await completeHistoryProbe();
+}
+
 describe('Pi command namespaces', () => {
     const commands = [
         { name: 'session-name', description: 'Rename session', source: 'extension' as const },
@@ -147,6 +172,7 @@ describe('runPi startup', () => {
         harness.session.onCancelQueuedMessage.mockReset();
         harness.session.emitMessagesConsumed.mockReset();
         harness.session.sendSessionEvent.mockReset();
+        harness.session.updateMetadata.mockReset();
         harness.killCount = 0;
         harness.cleanupCount = 0;
         vi.useRealTimers();
@@ -220,24 +246,32 @@ describe('runPi startup', () => {
     });
 
     it.each([
-        ['fresh', undefined, 1, 0],
-        ['resume', 'pi-session-1', 0, 1],
-    ] as const)('applies the startup fallback only to %s sessions', async (_label, resumeSessionId, expectedCalls, expectedKills) => {
+        ['fresh', undefined],
+        ['resume', 'pi-session-1'],
+    ] as const)('applies the startup fallback only to %s sessions', async (_label, resumeSessionId) => {
         vi.useFakeTimers();
         harness.throwOnGetCommands = false;
         const markReady = vi.spyOn(PiSession.prototype, 'markReady');
         const running = runPi({ workingDirectory: '/work', resumeSessionId });
 
         await vi.advanceTimersByTimeAsync(31_000);
-        expect(markReady).toHaveBeenCalledTimes(expectedCalls);
-        expect(harness.cleanupCount).toBe(expectedKills);
+        if (resumeSessionId) {
+            expect(markReady).not.toHaveBeenCalled();
+            expect(harness.cleanupCount).toBe(1);
+        } else {
+            expect(markReady).not.toHaveBeenCalled();
+            await completeHistoryBaseline();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(markReady).toHaveBeenCalledTimes(1);
+            expect(harness.cleanupCount).toBe(0);
+        }
 
         harness.onError?.(new Error('stop test transport'));
         await running;
         markReady.mockRestore();
     });
 
-    it('drains the local prompt queue when a fresh-session ready fallback fires', async () => {
+    it('establishes the history baseline before a fresh-session fallback drains prompts', async () => {
         vi.useFakeTimers();
         harness.throwOnGetCommands = false;
         const running = runPi({ workingDirectory: '/work' });
@@ -251,29 +285,77 @@ describe('runPi startup', () => {
         expect(harness.sent).not.toContainEqual(expect.objectContaining({ type: 'prompt', message: 'queued before ready' }));
 
         await vi.advanceTimersByTimeAsync(31_000);
+        expect(harness.sent).not.toContainEqual(expect.objectContaining({ type: 'prompt', message: 'queued before ready' }));
+        await completeHistoryBaseline([
+            { id: 'old-native-user', type: 'message', message: { role: 'user' } },
+        ], 'old-native-user');
+        await vi.advanceTimersByTimeAsync(0);
         expect(harness.sent).toContainEqual(expect.objectContaining({ type: 'prompt', message: 'queued before ready' }));
+        let preNativeMetadata: Record<string, unknown> = {};
+        for (const [updater] of harness.session.updateMetadata.mock.calls) {
+            if (typeof updater === 'function') preNativeMetadata = updater(preNativeMetadata);
+        }
+        expect(preNativeMetadata).not.toMatchObject({ capabilities: { conversationHistory: expect.anything() } });
+
+        const prompt = harness.sent.find((item) => (item as { type?: string }).type === 'prompt') as { id: string };
+        harness.onEvent!({
+            type: 'response', command: 'get_state', success: true,
+            data: { sessionId: 'late-session', sessionFile: '/tmp/late-session.jsonl' },
+        });
+        await completeHistoryProbe('old-native-user');
+        harness.onEvent!({ type: 'response', id: prompt.id, command: 'prompt', success: true });
+        harness.onEvent!({ type: 'turn_start' });
+        await vi.waitFor(() => expect(harness.sent.filter((item) => (item as { type?: string }).type === 'get_entries')).toHaveLength(3));
+        const incremental = harness.sent.filter((item) => (item as { type?: string }).type === 'get_entries')[2] as { id: string };
+        harness.onEvent!({
+            type: 'response', id: incremental.id, command: 'get_entries', success: true,
+            data: { entries: [{ id: 'new-native-user', type: 'message', message: { role: 'user' } }], leafId: 'new-native-user' },
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        let metadata: Record<string, unknown> = {};
+        for (const [updater] of harness.session.updateMetadata.mock.calls) {
+            if (typeof updater === 'function') metadata = updater(metadata);
+        }
+        expect(metadata).toMatchObject({
+            capabilities: { conversationHistory: expect.anything() },
+            conversationHistoryEntryIds: { 'fallback-id': 'new-native-user' },
+        });
 
         harness.onError?.(new Error('stop test transport'));
         await running;
+    });
+
+    it('does not drain a fallback prompt when cleanup races a late native-ready preparation', async () => {
+        vi.useFakeTimers();
+        harness.throwOnGetCommands = false;
+        const markReady = vi.spyOn(PiSession.prototype, 'markReady');
+        const running = runPi({ workingDirectory: '/work' });
+        await vi.advanceTimersByTimeAsync(0);
+        const onUserMessage = harness.session.onUserMessage.mock.calls.at(-1)![0] as (
+            message: { role: 'user'; content: { type: 'text'; text: string } },
+            localId: string
+        ) => void;
+        onUserMessage({ role: 'user', content: { type: 'text', text: 'must not drain' } }, 'cleanup-race-id');
+        await vi.advanceTimersByTimeAsync(31_000);
+        expect(harness.sent).toContainEqual(expect.objectContaining({ type: 'get_entries' }));
+
+        harness.onEvent!({
+            type: 'response', command: 'get_state', success: true,
+            data: { sessionId: 'late-session', sessionFile: '/tmp/late-session.jsonl' },
+        });
+        harness.onError?.(new Error('transport failed during history baseline'));
+        await Promise.resolve();
+        await Promise.resolve();
+        await running;
+
+        expect(markReady).not.toHaveBeenCalled();
+        expect(harness.sent).not.toContainEqual(expect.objectContaining({ type: 'prompt', message: 'must not drain' }));
+        markReady.mockRestore();
     });
 });
 
 
 describe('Pi abort queue boundary', () => {
-    async function completeHistoryInitialization(): Promise<void> {
-        const replyTo = async (type: 'get_entries' | 'get_fork_messages', occurrence: number, data: unknown) => {
-            await vi.waitFor(() => {
-                expect(harness.sent.filter((item) => (item as { type?: string }).type === type)).toHaveLength(occurrence);
-            });
-            const command = harness.sent.filter((item) => (item as { type?: string }).type === type)[occurrence - 1] as { id: string };
-            harness.onEvent!({ type: 'response', id: command.id, command: type, success: true, data });
-        };
-
-        await replyTo('get_entries', 1, { entries: [], leafId: null });
-        await replyTo('get_fork_messages', 1, { messages: [] });
-        await replyTo('get_entries', 2, { entries: [], leafId: null });
-    }
-
     beforeEach(() => {
         vi.useRealTimers();
         harness.sent.length = 0;
@@ -284,6 +366,7 @@ describe('Pi abort queue boundary', () => {
         harness.session.onCancelQueuedMessage.mockReset();
         harness.session.emitMessagesConsumed.mockReset();
         harness.session.sendSessionEvent.mockReset();
+        harness.session.updateMetadata.mockReset();
         harness.cleanupCount = 0;
         harness.killCount = 0;
         harness.session.rpcHandlerManager.registerHandler.mockReset();
@@ -310,6 +393,31 @@ describe('Pi abort queue boundary', () => {
         expect(harness.sent).not.toContainEqual(expect.objectContaining({ type: 'prompt' }));
         harness.onError?.(new Error('finish test'));
         await running;
+    });
+
+    it('does not pump the next prompt when cleanup rejects a pending settlement sync', async () => {
+        const running = runPi({ workingDirectory: '/work' });
+        await vi.waitFor(() => expect(harness.onEvent).not.toBeNull());
+        harness.onEvent!({ type: 'response', command: 'get_state', success: true, data: {} });
+        await completeHistoryInitialization();
+
+        const userMessage = (text: string) => ({ role: 'user', content: { type: 'text', text } });
+        const onUserMessage = harness.session.onUserMessage.mock.calls.at(-1)![0] as (message: ReturnType<typeof userMessage>, localId: string) => void;
+        onUserMessage(userMessage('first'), 'first-id');
+        onUserMessage(userMessage('second'), 'second-id');
+        await vi.waitFor(() => expect(harness.sent).toContainEqual(expect.objectContaining({ type: 'prompt', message: 'first' })));
+        const firstPrompt = harness.sent.find((item) => (item as { type?: string; message?: string }).type === 'prompt') as { id: string };
+        harness.onEvent!({ type: 'response', id: firstPrompt.id, command: 'prompt', success: true });
+        harness.onEvent!({ type: 'agent_start' });
+        harness.onEvent!({ type: 'agent_settled' });
+        await vi.waitFor(() => expect(harness.sent.filter((item) => (item as { type?: string }).type === 'get_entries')).toHaveLength(3));
+
+        harness.onError?.(new Error('transport failed during settlement sync'));
+        await Promise.resolve();
+        await Promise.resolve();
+        await running;
+
+        expect(harness.sent).not.toContainEqual(expect.objectContaining({ type: 'prompt', message: 'second' }));
     });
 
     it('compensates a preflight abort when the prompt starts late, then releases the FIFO once settled', async () => {
