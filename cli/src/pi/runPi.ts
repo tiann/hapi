@@ -27,6 +27,10 @@ import { isAuthorizedUploadFile, isPathWithinUploadDir, type UploadFileIdentity 
 const PI_READY_FALLBACK_MS = 30_000;
 const PI_ABORT_OPERATION_TIMEOUT_MS = 25_000;
 
+function isPiNoActiveAbortError(detail: string): boolean {
+    return /no active|nothing.*abort/i.test(detail);
+}
+
 function getPiSkillName(commandName: string): string {
     return commandName.startsWith('skill:') ? commandName.slice('skill:'.length) : commandName;
 }
@@ -890,16 +894,20 @@ export async function runPi(opts: {
             } catch (error) {
                 const detail = error instanceof Error ? error.message : String(error);
                 const targetSettled = abortBoundary?.guard.settled === true;
-                if (!(error instanceof PiRpcTimeoutError)
+                const mayStillStart = Boolean(
+                    !(error instanceof PiRpcTimeoutError)
                     && !firstAbortConfirmed
-                    && abortBoundary?.guard.lifecycleMissingObserved) {
+                    && abortBoundary
+                    && !abortBoundary.guard.lifecycleStartedAtRequest
+                    && isPiNoActiveAbortError(detail)
+                );
+                if (mayStillStart) {
                     try {
-                        // The synthetic 1s command-only fallback was deliberately
-                        // suppressed. Keep the guard alive after an ordinary
-                        // "nothing active" abort error so a genuinely late
-                        // agent_start can still be compensated; otherwise the
-                        // full stability window completes this boundary.
-                        await abortBoundary.promise;
+                        // Pi can reject abort before async prompt preflight
+                        // produces agent_start. Keep the guard for the complete
+                        // stability window so a late start is compensated even
+                        // when the 1s lifecycle-missing fallback has not fired.
+                        await abortBoundary!.promise;
                         return { success: true };
                     } catch (guardError) {
                         const fatal = new Error(`Pi abort failed closed: ${guardError instanceof Error ? guardError.message : String(guardError)}`);

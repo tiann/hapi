@@ -492,6 +492,54 @@ describe('Pi abort queue boundary', () => {
         await running;
     });
 
+    it('keeps the preflight guard when no-active abort rejection arrives before lifecycle fallback', async () => {
+        const running = runPi({ workingDirectory: '/work' });
+        await vi.waitFor(() => expect(harness.onEvent).not.toBeNull());
+        harness.onEvent!({ type: 'response', command: 'get_state', success: true, data: {} });
+        await completeHistoryInitialization();
+
+        const userMessage = (text: string) => ({ role: 'user', content: { type: 'text', text } });
+        const onUserMessage = harness.session.onUserMessage.mock.calls.at(-1)![0] as (message: ReturnType<typeof userMessage>, localId: string) => void;
+        onUserMessage(userMessage('late preflight'), 'late-id');
+        onUserMessage(userMessage('after abort'), 'after-id');
+        await vi.waitFor(() => expect(harness.sent).toContainEqual(expect.objectContaining({ type: 'prompt', message: 'late preflight' })));
+        const promptCommand = harness.sent.find((item) => (item as { type?: string; message?: string }).type === 'prompt') as { id: string };
+
+        const abort = harness.rpcHandlers.get(RPC_METHODS.Abort)!;
+        const abortPromise = abort({});
+        await vi.waitFor(() => expect(harness.sent.filter((item) => (item as { type?: string }).type === 'abort')).toHaveLength(1));
+        const firstAbort = harness.sent.filter((item) => (item as { type?: string }).type === 'abort')[0] as { id: string };
+
+        // Pi rejects before the 1s lifecycle-missing fallback observes that the
+        // prompt is still in preflight. The guard must remain installed so a
+        // later agent_start can still trigger the compensating abort.
+        harness.onEvent!({ type: 'response', id: firstAbort.id, command: 'abort', success: false, error: 'No active agent to abort' });
+        let abortResolved = false;
+        void abortPromise.then(() => { abortResolved = true; });
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(abortResolved).toBe(false);
+        expect(harness.sent).not.toContainEqual(expect.objectContaining({ type: 'prompt', message: 'after abort' }));
+
+        harness.onEvent!({ type: 'response', id: promptCommand.id, command: 'prompt', success: true });
+        harness.onEvent!({ type: 'agent_start' });
+        await vi.waitFor(() => expect(harness.sent.filter((item) => (item as { type?: string }).type === 'abort')).toHaveLength(2));
+        const compensatingAbort = harness.sent.filter((item) => (item as { type?: string }).type === 'abort')[1] as { id: string };
+
+        harness.onEvent!({ type: 'agent_end', messages: [], willRetry: false });
+        harness.onEvent!({ type: 'agent_settled' });
+        await vi.waitFor(() => expect(harness.sent.filter((item) => (item as { type?: string }).type === 'get_entries')).toHaveLength(3));
+        const settlementSync = harness.sent.filter((item) => (item as { type?: string }).type === 'get_entries')[2] as { id: string };
+        harness.onEvent!({ type: 'response', id: settlementSync.id, command: 'get_entries', success: true, data: { entries: [], leafId: null } });
+        harness.onEvent!({ type: 'response', id: compensatingAbort.id, command: 'abort', success: true });
+
+        await expect(abortPromise).resolves.toEqual({ success: true });
+        await vi.waitFor(() => expect(harness.sent).toContainEqual(expect.objectContaining({ type: 'prompt', message: 'after abort' })));
+
+        harness.onError?.(new Error('finish test'));
+        await running;
+    });
+
     it('installs the abort barrier before waiting for a config mutation and never aborts the next prompt', async () => {
         const running = runPi({ workingDirectory: '/work' });
         await vi.waitFor(() => expect(harness.onEvent).not.toBeNull());
