@@ -789,7 +789,7 @@ async uploadScratchlistAttachment(
                 this.abortOpenCodeClearSession(session.id, session.namespace, operation.replacementSessionId, 'abort-needed')
                 continue
             }
-            if (!['cleanup-confirmed', 'finalizing', 'failed'].includes(operation.state)) continue
+            if (!['cleanup-confirmed', 'finalizing', 'pending', 'failed'].includes(operation.state)) continue
             if (session.metadata?.lifecycleState !== 'archived' || session.metadata.archiveReason !== 'Cleared by /clear') {
                 const result = this.store.sessions.updateSessionMetadata(session.id, {
                     ...session.metadata,
