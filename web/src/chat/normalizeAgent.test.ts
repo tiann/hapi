@@ -2,6 +2,45 @@ import { describe, expect, it } from 'vitest'
 import { normalizeAgentRecord } from '@/chat/normalizeAgent'
 
 describe('normalizeAgentRecord — agentTimestamp exposure', () => {
+    it('preserves a wire text message id as its snapshot stream id', () => {
+        const normalized = normalizeAgentRecord('message-row-1', null, 1, {
+            type: 'codex',
+            data: {
+                type: 'message',
+                message: 'partial answer',
+                id: 'text-stream-1'
+            }
+        })
+
+        expect(normalized).toMatchObject({
+            role: 'agent',
+            content: [{
+                type: 'text',
+                text: 'partial answer',
+                streamId: 'text-stream-1'
+            }]
+        })
+    })
+
+    it('keeps legacy wire text messages without a stream id', () => {
+        const normalized = normalizeAgentRecord('message-row-1', null, 1, {
+            type: 'codex',
+            data: {
+                type: 'message',
+                message: 'complete answer'
+            }
+        })
+
+        expect(normalized).toMatchObject({
+            role: 'agent',
+            content: [{
+                type: 'text',
+                text: 'complete answer'
+            }]
+        })
+        expect((normalized as any).content[0].streamId).toBeUndefined()
+    })
+
     it('preserves normalized native tool presentation metadata', () => {
         const normalized = normalizeAgentRecord('msg-native', null, 1, {
             type: 'codex',
@@ -21,6 +60,28 @@ describe('normalizeAgentRecord — agentTimestamp exposure', () => {
                 type: 'tool-call',
                 nativeTitle: 'Run project tests',
                 nativeKind: 'execute'
+            }]
+        })
+    })
+
+    it('preserves tool progress separately from the tool input', () => {
+        const normalized = normalizeAgentRecord('progress-row-1', null, 1, {
+            type: 'codex',
+            data: {
+                type: 'tool-call',
+                callId: 'call-progress',
+                name: 'Bash',
+                input: { command: 'bun test' },
+                progress: { stdout: 'running tests...\\n' }
+            }
+        })
+
+        expect(normalized).toMatchObject({
+            role: 'agent',
+            content: [{
+                type: 'tool-call',
+                input: { command: 'bun test' },
+                progress: { stdout: 'running tests...\\n' }
             }]
         })
     })

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { AgentMessage, PlanItem } from './types';
 
 export type CodexMessage =
-    | { type: 'message'; message: string }
+    | { type: 'message'; message: string; id?: string }
     | { type: 'reasoning'; message: string; id: string }
     | {
         type: 'token_count';
@@ -28,6 +28,7 @@ export type CodexMessage =
         status?: 'pending' | 'in_progress' | 'completed' | 'failed';
         nativeTitle?: string;
         nativeKind?: string;
+        progress?: unknown;
     }
     | {
         type: 'tool-call-result';
@@ -41,7 +42,11 @@ export type CodexMessage =
 export function convertAgentMessage(message: AgentMessage, model?: string | null): CodexMessage | null {
     switch (message.type) {
         case 'text':
-            return { type: 'message', message: message.text };
+            return {
+                type: 'message',
+                message: message.text,
+                ...(message.id !== undefined ? { id: message.id } : {})
+            };
         case 'reasoning':
             // AgentMessage uses `text` (consistent with the `text` variant);
             // the wire-level CodexMessage uses `message` to match the
@@ -76,7 +81,8 @@ export function convertAgentMessage(message: AgentMessage, model?: string | null
                 input: message.input,
                 status: message.status,
                 ...(message.title ? { nativeTitle: message.title } : {}),
-                ...(message.kind ? { nativeKind: message.kind } : {})
+                ...(message.kind ? { nativeKind: message.kind } : {}),
+                ...(message.progress !== undefined ? { progress: message.progress } : {})
             };
         case 'tool_result':
             return {

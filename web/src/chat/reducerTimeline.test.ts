@@ -296,6 +296,143 @@ describe('reduceTimeline', () => {
         })
     })
 
+    it('collapses text snapshots with the same stream id while leaving legacy text separate', () => {
+        const first = makeAgentMessage('first ', {
+            id: 'text-row-1',
+            content: [{
+                type: 'text',
+                text: 'first ',
+                uuid: 'text-row-1',
+                streamId: 'text-stream-1',
+                parentUUID: null
+            }]
+        })
+        const second = makeAgentMessage('first second', {
+            id: 'text-row-2',
+            content: [{
+                type: 'text',
+                text: 'first second',
+                uuid: 'text-row-2',
+                streamId: 'text-stream-1',
+                parentUUID: null
+            }]
+        })
+        const legacy = makeAgentMessage('separate legacy text', {
+            id: 'text-row-3',
+            content: [{
+                type: 'text',
+                text: 'separate legacy text',
+                uuid: 'text-row-3',
+                parentUUID: null
+            }]
+        })
+
+        const { blocks } = reduceTimeline([first, second, legacy], makeContext())
+        const textBlocks = blocks.filter((block) => block.kind === 'agent-text')
+
+        expect(textBlocks).toHaveLength(2)
+        expect(textBlocks[0]).toMatchObject({
+            id: 'text-row-1:0',
+            text: 'first second'
+        })
+        expect(textBlocks[1]).toMatchObject({
+            id: 'text-row-3:0',
+            text: 'separate legacy text'
+        })
+    })
+
+    it('updates one running tool card with progress snapshots before the final result', () => {
+        const start: TracedMessage = {
+            id: 'tool-start',
+            localId: null,
+            createdAt: 1_700_000_000_000,
+            role: 'agent',
+            content: [{
+                type: 'tool-call',
+                id: 'tool-progress',
+                name: 'Bash',
+                input: { command: 'bun test' },
+                description: null,
+                uuid: 'tool-start',
+                parentUUID: null
+            }],
+            isSidechain: false
+        } as TracedMessage
+        const progressOne: TracedMessage = {
+            id: 'tool-progress-one',
+            localId: null,
+            createdAt: 1_700_000_000_100,
+            role: 'agent',
+            content: [{
+                type: 'tool-call',
+                id: 'tool-progress',
+                name: 'Bash',
+                input: { command: 'bun test' },
+                description: null,
+                progress: { stdout: 'one\\n' },
+                uuid: 'tool-progress-one',
+                parentUUID: null
+            }],
+            isSidechain: false
+        } as TracedMessage
+        const progressTwo: TracedMessage = {
+            id: 'tool-progress-two',
+            localId: null,
+            createdAt: 1_700_000_000_200,
+            role: 'agent',
+            content: [{
+                type: 'tool-call',
+                id: 'tool-progress',
+                name: 'Bash',
+                input: { command: 'bun test' },
+                description: null,
+                progress: { stdout: 'one\\ntwo\\n' },
+                uuid: 'tool-progress-two',
+                parentUUID: null
+            }],
+            isSidechain: false
+        } as TracedMessage
+        const end: TracedMessage = {
+            id: 'tool-end',
+            localId: null,
+            createdAt: 1_700_000_000_300,
+            role: 'agent',
+            content: [{
+                type: 'tool-result',
+                tool_use_id: 'tool-progress',
+                content: { stdout: 'done\\n', exitCode: 0 },
+                is_error: false,
+                uuid: 'tool-end',
+                parentUUID: null
+            }],
+            isSidechain: false
+        } as TracedMessage
+
+        const progressive = reduceTimeline([start, progressOne, progressTwo], makeContext())
+        const progressiveToolBlocks = progressive.blocks.filter((block) => block.kind === 'tool-call')
+        expect(progressiveToolBlocks).toHaveLength(1)
+        expect(progressiveToolBlocks[0]).toMatchObject({
+            tool: {
+                state: 'running',
+                input: { command: 'bun test' },
+                result: { stdout: 'one\\ntwo\\n' }
+            }
+        })
+
+        const { blocks } = reduceTimeline([start, progressOne, progressTwo, end], makeContext())
+        const toolBlocks = blocks.filter((block) => block.kind === 'tool-call')
+
+        expect(toolBlocks).toHaveLength(1)
+        expect(toolBlocks[0]).toMatchObject({
+            tool: {
+                id: 'tool-progress',
+                state: 'completed',
+                input: { command: 'bun test' },
+                result: { stdout: 'done\\n', exitCode: 0 }
+            }
+        })
+    })
+
     it('falls back to the last duration-bearing block when targetMessageId resolves to a non-duration block', () => {
         // Regression: the matcher used to take the first id-prefix match and
         // then silently drop the duration when that block was not duration-

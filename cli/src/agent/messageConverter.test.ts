@@ -2,6 +2,33 @@ import { describe, expect, it } from 'vitest';
 import { convertAgentMessage } from './messageConverter';
 
 describe('convertAgentMessage', () => {
+    it('preserves a stable text stream id on the message wire payload', () => {
+        const converted = convertAgentMessage({
+            type: 'text',
+            text: 'partial response',
+            id: 'text-stream-1',
+            live: true
+        });
+
+        expect(converted).toEqual({
+            type: 'message',
+            message: 'partial response',
+            id: 'text-stream-1'
+        });
+    });
+
+    it('keeps legacy text payloads free of a stream id', () => {
+        const converted = convertAgentMessage({
+            type: 'text',
+            text: 'complete response'
+        });
+
+        expect(converted).toEqual({
+            type: 'message',
+            message: 'complete response'
+        });
+    });
+
     it('keeps tool-call status when converting ACP tool events', () => {
         const converted = convertAgentMessage({
             type: 'tool_call',
@@ -34,6 +61,26 @@ describe('convertAgentMessage', () => {
         expect(converted).toMatchObject({
             nativeTitle: 'Shell: free -h',
             nativeKind: 'execute'
+        });
+    });
+
+    it('preserves running tool progress without changing the tool input', () => {
+        const converted = convertAgentMessage({
+            type: 'tool_call',
+            id: 'call-progress',
+            name: 'Bash',
+            input: { command: 'bun test' },
+            status: 'in_progress',
+            progress: { stdout: 'running tests...\\n' }
+        });
+
+        expect(converted).toEqual({
+            type: 'tool-call',
+            callId: 'call-progress',
+            name: 'Bash',
+            input: { command: 'bun test' },
+            status: 'in_progress',
+            progress: { stdout: 'running tests...\\n' }
         });
     });
 

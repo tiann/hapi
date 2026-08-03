@@ -12,7 +12,7 @@
 import { z } from 'zod';
 import { PI_THINKING_LEVELS } from '@hapi/protocol';
 import type { PiModelSummary } from '@hapi/protocol/apiTypes';
-import type { PiContextUsage } from './types';
+import type { PiContextUsage, PiExtensionUiRequest } from './types';
 
 // ============================================================================
 // 字段级容错 schema
@@ -60,6 +60,111 @@ const asOptThinkingLevelMap = z.unknown().optional().transform((v): Record<strin
 export const PiAgentEventSchema = z.object({
     type: z.string(),
 }).passthrough();
+
+// ============================================================================
+// Extension UI requests
+// ============================================================================
+
+const PiExtensionUiRequestBaseSchema = z.object({
+    type: z.literal('extension_ui_request'),
+    id: z.string().min(1),
+});
+
+export const PiExtensionUiRequestSchema = z.discriminatedUnion('method', [
+    PiExtensionUiRequestBaseSchema.extend({
+        method: z.literal('select'),
+        title: z.string(),
+        options: z.array(z.string()),
+        timeout: z.number().finite().nonnegative().optional(),
+    }),
+    PiExtensionUiRequestBaseSchema.extend({
+        method: z.literal('confirm'),
+        title: z.string(),
+        message: z.string(),
+        timeout: z.number().finite().nonnegative().optional(),
+    }),
+    PiExtensionUiRequestBaseSchema.extend({
+        method: z.literal('input'),
+        title: z.string(),
+        placeholder: z.string().optional(),
+        timeout: z.number().finite().nonnegative().optional(),
+    }),
+    PiExtensionUiRequestBaseSchema.extend({
+        method: z.literal('editor'),
+        title: z.string(),
+        prefill: z.string().optional(),
+    }),
+    PiExtensionUiRequestBaseSchema.extend({
+        method: z.literal('notify'),
+        message: z.string(),
+        notifyType: z.enum(['info', 'warning', 'error']).optional(),
+    }),
+    PiExtensionUiRequestBaseSchema.extend({
+        method: z.literal('setStatus'),
+        statusKey: z.string(),
+        statusText: z.string().optional(),
+    }),
+    PiExtensionUiRequestBaseSchema.extend({
+        method: z.literal('setWidget'),
+        widgetKey: z.string(),
+        widgetLines: z.array(z.string()).optional(),
+        widgetPlacement: z.enum(['aboveEditor', 'belowEditor']).optional(),
+    }),
+    PiExtensionUiRequestBaseSchema.extend({
+        method: z.literal('setTitle'),
+        title: z.string(),
+    }),
+    PiExtensionUiRequestBaseSchema.extend({
+        method: z.literal('set_editor_text'),
+        text: z.string(),
+    }),
+]) satisfies z.ZodType<PiExtensionUiRequest>;
+
+const PiCompactionStartEventSchema = z.object({
+    type: z.literal('compaction_start'),
+    reason: z.enum(['manual', 'threshold', 'overflow']),
+});
+
+const PiCompactionEndEventSchema = z.object({
+    type: z.literal('compaction_end'),
+    reason: z.enum(['manual', 'threshold', 'overflow']),
+    aborted: z.boolean(),
+    willRetry: z.boolean(),
+    errorMessage: z.string().optional(),
+});
+
+const PiAutoRetryStartEventSchema = z.object({
+    type: z.literal('auto_retry_start'),
+    attempt: z.number().int().positive(),
+    maxAttempts: z.number().int().positive(),
+    delayMs: z.number().finite().nonnegative(),
+    errorMessage: z.string(),
+});
+
+const PiAutoRetryEndEventSchema = z.object({
+    type: z.literal('auto_retry_end'),
+    success: z.boolean(),
+    attempt: z.number().int().positive(),
+    finalError: z.string().optional(),
+});
+
+const PiSummarizationRetryScheduledEventSchema = z.object({
+    type: z.literal('summarization_retry_scheduled'),
+    attempt: z.number().int().positive(),
+    maxAttempts: z.number().int().positive(),
+    delayMs: z.number().finite().nonnegative(),
+    errorMessage: z.string(),
+});
+
+export const PiLifecycleEventSchema = z.union([
+    PiCompactionStartEventSchema,
+    PiCompactionEndEventSchema,
+    PiAutoRetryStartEventSchema,
+    PiAutoRetryEndEventSchema,
+    PiSummarizationRetryScheduledEventSchema,
+    z.object({ type: z.literal('summarization_retry_attempt_start'), source: z.enum(['branchSummary', 'compaction']) }).passthrough(),
+    z.object({ type: z.literal('summarization_retry_finished') }),
+]);
 
 // ============================================================================
 // Pi Response Event (stdout response)
@@ -167,6 +272,7 @@ export const PiStateDataSchema = z.object({
     sessionId: z.string().optional(),
     thinkingLevel: z.string().optional(),
     steeringMode: z.enum(['all', 'one-at-a-time']).optional(),
+    isStreaming: z.boolean().optional(),
 }).passthrough();
 
 // ============================================================================
@@ -208,6 +314,38 @@ export const PiAssistantMessageEventSchema = z.object({
     delta: z.string().optional(),
     contentIndex: z.number().optional(),
 }).passthrough();
+
+export const PiToolExecutionStartEventSchema = z.object({
+    type: z.literal('tool_execution_start'),
+    toolCallId: z.string().min(1),
+    toolName: z.string().min(1),
+    args: z.unknown(),
+});
+
+export const PiToolExecutionUpdateEventSchema = z.object({
+    type: z.literal('tool_execution_update'),
+    toolCallId: z.string().min(1),
+    toolName: z.string().min(1),
+    args: z.unknown(),
+    partialResult: z.unknown(),
+});
+
+export const PiToolExecutionEndEventSchema = z.object({
+    type: z.literal('tool_execution_end'),
+    toolCallId: z.string().min(1),
+    toolName: z.string().min(1),
+    result: z.unknown(),
+    isError: z.boolean(),
+});
+
+export const PiAgentEndEventSchema = z.object({
+    type: z.literal('agent_end'),
+    willRetry: z.boolean().optional(),
+}).passthrough();
+
+export const PiAgentSettledEventSchema = z.object({
+    type: z.literal('agent_settled'),
+});
 
 // ============================================================================
 // Parse helpers — replace hand-written type guards in loop.ts

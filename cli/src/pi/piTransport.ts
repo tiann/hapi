@@ -8,6 +8,7 @@ export interface PiTransportOptions {
     command: string;
     args: string[];
     cwd: string;
+    env?: NodeJS.ProcessEnv;
 }
 
 export class PiTransport extends JsonLineParser {
@@ -18,6 +19,7 @@ export class PiTransport extends JsonLineParser {
     private killed = false;
     private started = false;
     private exited = false;
+    private closeReported = false;
     private readonly options: PiTransportOptions;
 
     constructor(options: PiTransportOptions) {
@@ -36,17 +38,17 @@ export class PiTransport extends JsonLineParser {
 
         this.process = spawn(this.options.command, this.options.args, {
             cwd: this.options.cwd,
-            stdio: ['pipe', 'pipe', 'pipe']
+            stdio: ['pipe', 'pipe', 'pipe'],
+            env: this.options.env
         }) as ChildProcessWithoutNullStreams;
 
         this.process.stdout.setEncoding('utf8');
         this.process.stdout.on('data', (chunk: string) => this.feed(chunk));
         this.process.stdout.on('end', () => {
-            if (!this.exited && !this.killed) {
-                logger.debug('[pi] stdout ended before process close — treating as exit');
-                this.exited = true;
-                this.closeHandler?.(null, null);
-            }
+            // stdout can end before ChildProcess emits `close`. Do not publish a
+            // synthetic close here: doing so loses the real exit code and used to
+            // invoke lifecycle cleanup twice. `close` below is the one authority.
+            logger.debug('[pi] stdout ended; awaiting process close for exit status');
         });
 
         this.process.stderr.setEncoding('utf8');
@@ -57,6 +59,8 @@ export class PiTransport extends JsonLineParser {
         this.process.on('close', (code, signal) => {
             logger.debug(`[pi] Process exited (code=${code}, signal=${signal})`);
             this.exited = true;
+            if (this.closeReported) return;
+            this.closeReported = true;
             this.closeHandler?.(code, signal);
         });
 
@@ -75,7 +79,7 @@ export class PiTransport extends JsonLineParser {
     }
 
     send(message: PiRpcCommand): void {
-        if (!this.process || this.killed) {
+        if (!this.process || this.killed || this.exited || this.process.stdin.destroyed || this.process.stdin.writableEnded) {
             logger.debug('[pi] Dropping message: transport not running');
             return;
         }

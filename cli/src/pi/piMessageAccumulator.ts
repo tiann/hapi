@@ -1,96 +1,136 @@
-import type { AgentMessage } from '@/agent/types'
-import type { PiAgentEvent, PiAssistantMessageEvent } from './types'
-import { PiAssistantMessageEventSchema } from './schemas'
+import { randomUUID } from 'node:crypto';
+import type { AgentMessage } from '@/agent/types';
+import { PiAssistantMessageEventSchema } from './schemas';
+import type { PiAgentEvent } from './types';
+
+const DEFAULT_SNAPSHOT_INTERVAL_MS = 250;
+
+type PiMessageAccumulatorOptions = {
+    snapshotIntervalMs?: number;
+    now?: () => number;
+    streamNonceFactory?: () => string;
+};
+
+type Segment = {
+    text: string;
+    lastSnapshot: string;
+};
 
 /**
- * Accumulates Pi assistant-message text/thinking deltas into a single
- * snapshot, flushed on `message_end` (with a `turn_end` safety net).
- *
- * Without this, every delta would become a separate hub message, and
- * the web's reducer would render the last delta as the whole reasoning
- * block (the per-message content-array dedup by streamId would only
- * see one snapshot) while stacking every text delta as a new agent-text
- * block, producing a character-by-character column.
- *
- * Mirrors codex's `ReasoningProcessor`: accumulate deltas locally,
- * emit one reasoning + one text message per assistant message.
+ * Turns Pi's delta stream into throttled, cumulative snapshots. Pi content
+ * blocks are independently indexed, so a message with multiple text or thinking
+ * blocks never concatenates unrelated blocks into one timeline row. Every
+ * accumulator instance has a nonce as a session resume/restart must not reuse a
+ * previous timeline stream id.
  */
 export class PiMessageAccumulator {
-    private active = false
-    private text = ''
-    private reasoning = ''
-    private streamId = 'pi-stream'
+    private active = false;
+    private turnSequence = 0;
+    private messageSequence = 0;
+    private readonly streamNonce: string;
+    private readonly textSegments = new Map<number, Segment>();
+    private readonly reasoningSegments = new Map<number, Segment>();
+    private lastSnapshotAt: number | null = null;
+    private readonly snapshotIntervalMs: number;
+    private readonly now: () => number;
 
-    /**
-     * Apply a Pi event to the accumulator.
-     *
-     * @returns AgentMessages to forward to the hub, if this event
-     *   represents a flush point (`message_end` or `turn_end` with
-     *   pending content). Returns an empty array otherwise.
-     */
+    constructor(options: PiMessageAccumulatorOptions = {}) {
+        this.snapshotIntervalMs = options.snapshotIntervalMs ?? DEFAULT_SNAPSHOT_INTERVAL_MS;
+        this.now = options.now ?? Date.now;
+        this.streamNonce = options.streamNonceFactory?.() ?? randomUUID();
+    }
+
     handleEvent(event: PiAgentEvent): AgentMessage[] {
+        if (event.type === 'turn_start') {
+            this.turnSequence += 1;
+            return [];
+        }
+
         if (event.type === 'message_start') {
-            this.active = true
-            this.text = ''
-            this.reasoning = ''
-            this.streamId = 'pi-stream'
-            return []
+            const pending = this.active ? this.flush() : [];
+            this.startMessage();
+            return pending;
         }
 
         if (event.type === 'message_update') {
-            const updateEvent = event as { assistantMessageEvent?: PiAssistantMessageEvent }
-            const rawAme = updateEvent.assistantMessageEvent
-            if (!rawAme) return []
-            const ameResult = PiAssistantMessageEventSchema.safeParse(rawAme)
-            if (!ameResult.success) return []
-            const ame = ameResult.data
-            const streamId = ame.contentIndex?.toString() ?? 'pi-stream'
-            this.streamId = streamId
-            if (ame.type === 'text_delta' && ame.delta) {
-                this.text += ame.delta
-            } else if (ame.type === 'thinking_delta' && ame.delta) {
-                this.reasoning += ame.delta
+            if (!('assistantMessageEvent' in event)) return [];
+            const parsed = PiAssistantMessageEventSchema.safeParse(event.assistantMessageEvent);
+            if (!parsed.success || !this.active || !parsed.data.delta) return [];
+
+            const index = parsed.data.contentIndex ?? 0;
+            if (parsed.data.type === 'text_delta') {
+                this.append(this.textSegments, index, parsed.data.delta);
+            } else if (parsed.data.type === 'thinking_delta') {
+                this.append(this.reasoningSegments, index, parsed.data.delta);
+            } else {
+                return [];
             }
-            // Other assistant message events (text_start/thinking_start/
-            // text_end/thinking_end) carry the full partial state — we
-            // already have the deltas, so we ignore them.
-            return []
+            return this.snapshotIfDue();
         }
 
-        if (event.type === 'message_end') {
-            if (this.active) return this.flush()
-            return []
+        if (event.type === 'message_end' || event.type === 'turn_end' || event.type === 'agent_end') {
+            return this.flush();
         }
 
-        // Safety net: turn_end with pending content means the assistant
-        // message ended without a clean `message_end` (older Pi builds,
-        // partial streams, or a stream that crashed mid-flight).
-        if (event.type === 'turn_end' && this.active) {
-            return this.flush()
-        }
-
-        return []
+        return [];
     }
 
-    private flush(): AgentMessage[] {
-        const streamId = this.streamId
-        const reasoning = this.reasoning
-        const text = this.text
-        this.active = false
-        this.text = ''
-        this.reasoning = ''
-        this.streamId = 'pi-stream'
+    /** Explicit transport-close/error safety net. Idempotent after a flush. */
+    flush(): AgentMessage[] {
+        if (!this.active) return [];
+        const snapshots = this.createSnapshots(false);
+        this.resetMessage();
+        return snapshots;
+    }
 
-        const out: AgentMessage[] = []
-        // Reasoning comes before text in the Pi event sequence, so emit
-        // in that order. Empty content is dropped so the web doesn't
-        // render empty bubbles.
-        if (reasoning) {
-            out.push({ type: 'reasoning', text: reasoning, id: streamId })
+    private startMessage(): void {
+        this.active = true;
+        this.messageSequence += 1;
+        this.textSegments.clear();
+        this.reasoningSegments.clear();
+        this.lastSnapshotAt = null;
+    }
+
+    private append(segments: Map<number, Segment>, index: number, delta: string): void {
+        const segment = segments.get(index) ?? { text: '', lastSnapshot: '' };
+        segment.text += delta;
+        segments.set(index, segment);
+    }
+
+    private snapshotIfDue(): AgentMessage[] {
+        const now = this.now();
+        if (this.lastSnapshotAt !== null && now - this.lastSnapshotAt < this.snapshotIntervalMs) {
+            return [];
         }
-        if (text) {
-            out.push({ type: 'text', text })
+        this.lastSnapshotAt = now;
+        return this.createSnapshots(true);
+    }
+
+    private createSnapshots(live: boolean): AgentMessage[] {
+        const messages: AgentMessage[] = [];
+        this.addSnapshots(messages, 'reasoning', this.reasoningSegments, live);
+        this.addSnapshots(messages, 'text', this.textSegments, live);
+        return messages;
+    }
+
+    private addSnapshots(
+        output: AgentMessage[],
+        kind: 'reasoning' | 'text',
+        segments: Map<number, Segment>,
+        live: boolean,
+    ): void {
+        for (const [index, segment] of Array.from(segments.entries()).sort(([left], [right]) => left - right)) {
+            if (!segment.text.trim() || segment.text === segment.lastSnapshot) continue;
+            segment.lastSnapshot = segment.text;
+            const id = `pi-${this.streamNonce}-turn-${this.turnSequence}-message-${this.messageSequence}-${kind}-${index}`;
+            output.push({ type: kind, text: segment.text, id, ...(live ? { live: true } : {}) });
         }
-        return out
+    }
+
+    private resetMessage(): void {
+        this.active = false;
+        this.textSegments.clear();
+        this.reasoningSegments.clear();
+        this.lastSnapshotAt = null;
     }
 }

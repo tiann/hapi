@@ -641,13 +641,20 @@ export function normalizeAgentRecord(
                     meta
                 }
             }
+            const streamId = asString(data.id)
             return {
                 id: messageId,
                 localId,
                 createdAt,
                 role: 'agent',
                 isSidechain: false,
-                content: [{ type: 'text', text: data.message, uuid: messageId, parentUUID: null }],
+                content: [{
+                    type: 'text',
+                    text: data.message,
+                    uuid: messageId,
+                    ...(streamId !== null ? { streamId } : {}),
+                    parentUUID: null
+                }],
                 meta
             }
         }
@@ -748,6 +755,7 @@ export function normalizeAgentRecord(
                     description: asString(data.description),
                     nativeTitle: asString(data.nativeTitle ?? data.title),
                     nativeKind: asString(data.nativeKind ?? data.kind),
+                    ...('progress' in data ? { progress: data.progress } : {}),
                     uuid,
                     parentUUID: null
                 }],

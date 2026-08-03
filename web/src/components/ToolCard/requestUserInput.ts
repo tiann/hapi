@@ -11,6 +11,8 @@ export type RequestUserInputQuestion = {
     required: boolean
     multiple: boolean
     options: RequestUserInputOption[]
+    placeholder?: string
+    prefill?: string
 }
 
 export type RequestUserInputQuestionAnswer = {
@@ -89,7 +91,9 @@ export function parseRequestUserInputInput(input: unknown): ParsedRequestUserInp
             question,
             required: raw.required !== false,
             multiple: raw.multiple === true,
-            options
+            options,
+            ...(typeof raw.placeholder === 'string' ? { placeholder: raw.placeholder } : {}),
+            ...(typeof raw.prefill === 'string' ? { prefill: raw.prefill } : {})
         })
     }
 

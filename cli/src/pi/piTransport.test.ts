@@ -185,6 +185,20 @@ describe('PiTransport', () => {
     });
 
     describe('onClose()', () => {
+        it('does not report stdout end as a synthetic close before the real exit code', () => {
+            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
+            transport.start();
+            const closeHandler = vi.fn();
+            transport.onClose(closeHandler);
+
+            mockProcess.stdout.emit('end');
+            expect(closeHandler).not.toHaveBeenCalled();
+            mockProcess.emit('close', 7, null);
+            mockProcess.emit('close', 7, null);
+            expect(closeHandler).toHaveBeenCalledTimes(1);
+            expect(closeHandler).toHaveBeenCalledWith(7, null);
+        });
+
         it('should call handler when subprocess exits', () => {
             const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
             transport.start();

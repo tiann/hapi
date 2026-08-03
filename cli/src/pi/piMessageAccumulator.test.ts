@@ -1,211 +1,99 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { PiMessageAccumulator } from './piMessageAccumulator';
 
+const event = (type: string, extra: Record<string, unknown> = {}) => ({ type, ...extra });
+
 describe('PiMessageAccumulator', () => {
-    function makeEvent(type: string, extra: Record<string, unknown> = {}): any {
-        return { type, ...extra };
-    }
+    it('streams throttled cumulative text and reasoning snapshots with separate stable ids', () => {
+        let now = 0;
+        const accumulator = new PiMessageAccumulator({ now: () => now, streamNonceFactory: () => 'nonce' });
+        accumulator.handleEvent(event('turn_start'));
+        accumulator.handleEvent(event('message_start'));
 
-    it('returns empty for events that are not handled', () => {
-        const acc = new PiMessageAccumulator();
-        expect(acc.handleEvent(makeEvent('agent_start'))).toEqual([]);
-        expect(acc.handleEvent(makeEvent('turn_start'))).toEqual([]);
-        expect(acc.handleEvent(makeEvent('turn_end'))).toEqual([]);
-        expect(acc.handleEvent(makeEvent('agent_end'))).toEqual([]);
-    });
+        const first = accumulator.handleEvent(event('message_update', {
+            assistantMessageEvent: { type: 'thinking_delta', delta: 'think ' },
+        }));
+        expect(first).toEqual([{
+            type: 'reasoning', text: 'think ', id: 'pi-nonce-turn-1-message-1-reasoning-0', live: true,
+        }]);
 
-    it('accumulates text deltas and flushes one text message on message_end', () => {
-        const acc = new PiMessageAccumulator();
-        acc.handleEvent(makeEvent('message_start', { message: {} }));
-        expect(acc.handleEvent(makeEvent('message_update', {
-            assistantMessageEvent: { type: 'text_delta', delta: 'hello ' }
-        }))).toEqual([]);
-        expect(acc.handleEvent(makeEvent('message_update', {
-            assistantMessageEvent: { type: 'text_delta', delta: 'world' }
+        now = 100;
+        expect(accumulator.handleEvent(event('message_update', {
+            assistantMessageEvent: { type: 'text_delta', delta: 'answer' },
         }))).toEqual([]);
 
-        const flushed = acc.handleEvent(makeEvent('message_end', { message: {} }));
-        expect(flushed).toEqual([
-            { type: 'text', text: 'hello world' }
-        ]);
+        now = 250;
+        expect(accumulator.handleEvent(event('message_update', {
+            assistantMessageEvent: { type: 'text_delta', delta: '!' },
+        }))).toEqual([{
+            type: 'text', text: 'answer!', id: 'pi-nonce-turn-1-message-1-text-0', live: true,
+        }]);
     });
 
-    it('accumulates thinking deltas and flushes one reasoning message on message_end', () => {
-        const acc = new PiMessageAccumulator();
-        acc.handleEvent(makeEvent('message_start', { message: {} }));
-        acc.handleEvent(makeEvent('message_update', {
-            assistantMessageEvent: { type: 'thinking_delta', delta: 'let me ' }
+    it('flushes the final changed snapshot once at message_end and close/error boundaries', () => {
+        let now = 0;
+        const accumulator = new PiMessageAccumulator({ now: () => now, streamNonceFactory: () => 'nonce' });
+        accumulator.handleEvent(event('message_start'));
+        accumulator.handleEvent(event('message_update', {
+            assistantMessageEvent: { type: 'text_delta', delta: 'first' },
         }));
-        acc.handleEvent(makeEvent('message_update', {
-            assistantMessageEvent: { type: 'thinking_delta', delta: 'think...' }
-        }));
+        now = 100;
+        expect(accumulator.handleEvent(event('message_update', {
+            assistantMessageEvent: { type: 'text_delta', delta: ' second' },
+        }))).toEqual([]);
+        expect(accumulator.handleEvent(event('message_end'))).toEqual([{
+            type: 'text', text: 'first second', id: 'pi-nonce-turn-0-message-1-text-0',
+        }]);
+        expect(accumulator.handleEvent(event('message_end'))).toEqual([]);
 
-        const flushed = acc.handleEvent(makeEvent('message_end', { message: {} }));
-        expect(flushed).toEqual([
-            { type: 'reasoning', text: 'let me think...', id: 'pi-stream' }
-        ]);
+        accumulator.handleEvent(event('message_start'));
+        accumulator.handleEvent(event('message_update', {
+            assistantMessageEvent: { type: 'text_delta', delta: 'partial' },
+        }));
+        now = 200;
+        accumulator.handleEvent(event('message_update', {
+            assistantMessageEvent: { type: 'text_delta', delta: ' answer' },
+        }));
+        expect(accumulator.flush()).toEqual([{
+            type: 'text', text: 'partial answer', id: 'pi-nonce-turn-0-message-2-text-0',
+        }]);
+        expect(accumulator.flush()).toEqual([]);
     });
 
-    it('flushes both reasoning and text in order on message_end', () => {
-        const acc = new PiMessageAccumulator();
-        acc.handleEvent(makeEvent('message_start', { message: {} }));
-        acc.handleEvent(makeEvent('message_update', {
-            assistantMessageEvent: { type: 'thinking_delta', delta: 'thinking' }
+    it('keeps multiple content indexes separate instead of concatenating blocks', () => {
+        let now = 0;
+        const accumulator = new PiMessageAccumulator({ now: () => now, streamNonceFactory: () => 'nonce' });
+        accumulator.handleEvent(event('message_start'));
+        const first = accumulator.handleEvent(event('message_update', {
+            assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'alpha' },
         }));
-        acc.handleEvent(makeEvent('message_update', {
-            assistantMessageEvent: { type: 'text_delta', delta: 'reply' }
+        expect(first).toHaveLength(1);
+        now = 300;
+        const second = accumulator.handleEvent(event('message_update', {
+            assistantMessageEvent: { type: 'text_delta', contentIndex: 1, delta: 'beta' },
         }));
-
-        const flushed = acc.handleEvent(makeEvent('message_end', { message: {} }));
-        expect(flushed).toEqual([
-            { type: 'reasoning', text: 'thinking', id: 'pi-stream' },
-            { type: 'text', text: 'reply' }
-        ]);
+        expect(second).toEqual([{
+            type: 'text', text: 'beta', id: 'pi-nonce-turn-0-message-1-text-1', live: true,
+        }]);
     });
 
-    it('skips empty content on flush', () => {
-        const acc = new PiMessageAccumulator();
-        acc.handleEvent(makeEvent('message_start', { message: {} }));
-        acc.handleEvent(makeEvent('message_update', {
-            assistantMessageEvent: { type: 'text_delta', delta: 'only text' }
-        }));
-
-        const flushed = acc.handleEvent(makeEvent('message_end', { message: {} }));
-        expect(flushed).toEqual([
-            { type: 'text', text: 'only text' }
-        ]);
-    });
-
-    it('drops empty/missing deltas silently', () => {
-        const acc = new PiMessageAccumulator();
-        acc.handleEvent(makeEvent('message_start', { message: {} }));
-        acc.handleEvent(makeEvent('message_update', {
-            assistantMessageEvent: { type: 'text_delta' }
-        }));
-        acc.handleEvent(makeEvent('message_update', {
-            assistantMessageEvent: { type: 'text_delta', delta: '' }
-        }));
-        acc.handleEvent(makeEvent('message_update', {
-            assistantMessageEvent: { type: 'thinking_delta' }
-        }));
-        acc.handleEvent(makeEvent('message_update', {
-            assistantMessageEvent: { type: 'thinking_delta', delta: '   ' }
-        }));
-        const flushed = acc.handleEvent(makeEvent('message_end', { message: {} }));
-        expect(flushed).toEqual([
-            { type: 'reasoning', text: '   ', id: 'pi-stream' }
-        ]);
-    });
-
-    it('uses contentIndex as streamId when provided', () => {
-        const acc = new PiMessageAccumulator();
-        acc.handleEvent(makeEvent('message_start', { message: {} }));
-        acc.handleEvent(makeEvent('message_update', {
-            assistantMessageEvent: { type: 'text_delta', delta: 'x', contentIndex: 2 }
-        }));
-        const flushed = acc.handleEvent(makeEvent('message_end', { message: {} }));
-        expect(flushed).toEqual([
-            { type: 'text', text: 'x' }
-        ]);
-    });
-
-    it('updates streamId from later deltas', () => {
-        const acc = new PiMessageAccumulator();
-        acc.handleEvent(makeEvent('message_start', { message: {} }));
-        acc.handleEvent(makeEvent('message_update', {
-            assistantMessageEvent: { type: 'text_delta', delta: 'a' }
-        }));
-        acc.handleEvent(makeEvent('message_update', {
-            assistantMessageEvent: { type: 'text_delta', delta: 'b', contentIndex: 7 }
-        }));
-        const flushed = acc.handleEvent(makeEvent('message_end', { message: {} }));
-        expect(flushed).toEqual([
-            { type: 'text', text: 'ab' }
-        ]);
-    });
-
-    it('resets state on the next message_start', () => {
-        const acc = new PiMessageAccumulator();
-        acc.handleEvent(makeEvent('message_start', { message: {} }));
-        acc.handleEvent(makeEvent('message_update', {
-            assistantMessageEvent: { type: 'text_delta', delta: 'first' }
-        }));
-        acc.handleEvent(makeEvent('message_end', { message: {} }));
-
-        acc.handleEvent(makeEvent('message_start', { message: {} }));
-        acc.handleEvent(makeEvent('message_update', {
-            assistantMessageEvent: { type: 'text_delta', delta: 'second' }
-        }));
-        const flushed = acc.handleEvent(makeEvent('message_end', { message: {} }));
-        expect(flushed).toEqual([
-            { type: 'text', text: 'second' }
-        ]);
-    });
-
-    it('flushes on turn_end as a safety net (no message_end received)', () => {
-        const acc = new PiMessageAccumulator();
-        acc.handleEvent(makeEvent('message_start', { message: {} }));
-        acc.handleEvent(makeEvent('message_update', {
-            assistantMessageEvent: { type: 'text_delta', delta: 'incomplete' }
-        }));
-        // No message_end — older Pi builds, partial streams, etc.
-        const flushed = acc.handleEvent(makeEvent('turn_end', {
-            message: { usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3 } }
-        }));
-        expect(flushed).toEqual([
-            { type: 'text', text: 'incomplete' }
-        ]);
-    });
-
-    it('does not flush on turn_end if no message_start was seen', () => {
-        const acc = new PiMessageAccumulator();
-        const flushed = acc.handleEvent(makeEvent('turn_end', { message: {} }));
-        expect(flushed).toEqual([]);
-    });
-
-    it('does not flush twice on message_end', () => {
-        const acc = new PiMessageAccumulator();
-        acc.handleEvent(makeEvent('message_start', { message: {} }));
-        acc.handleEvent(makeEvent('message_update', {
-            assistantMessageEvent: { type: 'text_delta', delta: 'once' }
-        }));
-        expect(acc.handleEvent(makeEvent('message_end', { message: {} }))).toEqual([
-            { type: 'text', text: 'once' }
-        ]);
-        // Second message_end with no content buffered — must be empty,
-        // not a duplicate.
-        expect(acc.handleEvent(makeEvent('message_end', { message: {} }))).toEqual([]);
-    });
-
-    it('ignores text_start / thinking_start / text_end / thinking_end (full snapshots cause duplicates)', () => {
-        const acc = new PiMessageAccumulator();
-        acc.handleEvent(makeEvent('message_start', { message: {} }));
-        acc.handleEvent(makeEvent('message_update', {
-            assistantMessageEvent: { type: 'text_start' }
-        }));
-        acc.handleEvent(makeEvent('message_update', {
-            assistantMessageEvent: { type: 'thinking_start' }
-        }));
-        acc.handleEvent(makeEvent('message_update', {
-            assistantMessageEvent: { type: 'text_end' }
-        }));
-        acc.handleEvent(makeEvent('message_update', {
-            assistantMessageEvent: { type: 'thinking_end' }
-        }));
-        acc.handleEvent(makeEvent('message_update', {
-            assistantMessageEvent: { type: 'text_delta', delta: 'real content' }
-        }));
-        const flushed = acc.handleEvent(makeEvent('message_end', { message: {} }));
-        expect(flushed).toEqual([
-            { type: 'text', text: 'real content' }
-        ]);
-    });
-
-    it('handles message_update without assistantMessageEvent', () => {
-        const acc = new PiMessageAccumulator();
-        acc.handleEvent(makeEvent('message_start', { message: {} }));
-        expect(() => acc.handleEvent(makeEvent('message_update'))).not.toThrow();
-        const flushed = acc.handleEvent(makeEvent('message_end', { message: {} }));
-        expect(flushed).toEqual([]);
+    it('does not collide across accumulator instances after a session resume', () => {
+        const first = new PiMessageAccumulator({ streamNonceFactory: () => 'before-restart' });
+        const second = new PiMessageAccumulator({ streamNonceFactory: () => 'after-restart' });
+        for (const accumulator of [first, second]) {
+            accumulator.handleEvent(event('turn_start'));
+            accumulator.handleEvent(event('message_start'));
+        }
+        const firstMessage = first.handleEvent(event('message_update', {
+            assistantMessageEvent: { type: 'text_delta', delta: 'one' },
+        }))[0]!;
+        const secondMessage = second.handleEvent(event('message_update', {
+            assistantMessageEvent: { type: 'text_delta', delta: 'two' },
+        }))[0]!;
+        expect(firstMessage.type).toBe('text');
+        expect(secondMessage.type).toBe('text');
+        if (firstMessage.type === 'text' && secondMessage.type === 'text') {
+            expect(firstMessage.id).not.toBe(secondMessage.id);
+        }
     });
 });

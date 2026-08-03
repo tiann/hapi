@@ -1,15 +1,17 @@
+import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { logger } from '@/ui/logger';
 import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
 import { registerLocalHandoffHandler } from '@/agent/localHandoff';
 import { createRunnerLifecycle, createModeChangeHandler, setControlledByUser } from '@/agent/runnerLifecycle';
-import { formatAttachmentsForClaude, formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import { PiTransport } from './piTransport';
 import { PiSession } from './session';
 import { parsePiModels, parsePiCommands, sendPiRpcAndWait, wireTransportEvents } from './loop';
 import { PiThinkingLevelSchema, SetSessionConfigPayloadSchema } from './schemas';
-import type { PiThinkingLevel } from './types';
+import type { PiImageContent, PiThinkingLevel } from './types';
+import { PiPromptQueue, type PiPreparedPrompt } from './promptQueue';
 import type { ListPiModelsResponse, PiCommandSummary, SlashCommand, SlashCommandsResponse } from '@hapi/protocol/apiTypes';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import type { ListSkillsResponse, SkillSummary } from '@/modules/common/skills';
@@ -57,16 +59,59 @@ export function rewritePiSkillPrompt(message: string, commands: readonly PiComma
     return `${match[1]}/${command?.name ?? `skill:${match[2]}`}${message.slice(match[0].length)}`;
 }
 
+function formatPiFileNotice(path: string): string {
+    // Pi 0.83 rejects @file arguments in RPC mode. Keep this as ordinary prompt
+    // text so the model can use its read tool, with JSON quoting preventing a
+    // path containing whitespace or a newline from injecting another prompt line.
+    return `Attached file: ${JSON.stringify(path)}`;
+}
+
+function formatPiTextAttachments(attachments: AttachmentMetadata[] | undefined): string {
+    if (!attachments) return '';
+    return attachments
+        .filter((attachment) => !attachment.mimeType.toLowerCase().startsWith('image/'))
+        .map((attachment) => formatPiFileNotice(attachment.path))
+        .join('\n');
+}
+
 export function formatPiUserMessage(
     message: string,
     attachments: AttachmentMetadata[] | undefined,
     commands: readonly PiCommandSummary[],
 ): string {
     const skillPrompt = rewritePiSkillPrompt(message, commands);
-    if (skillPrompt === message) return formatMessageWithAttachments(message, attachments);
-
-    const attachmentText = formatAttachmentsForClaude(attachments);
+    const attachmentText = formatPiTextAttachments(attachments);
+    if (skillPrompt === message) {
+        if (!attachmentText) return message;
+        return message ? `${attachmentText}\n\n${message}` : attachmentText;
+    }
+    // Pi parses slash/skill commands only when they are the first line.
     return attachmentText ? `${skillPrompt}\n\n${attachmentText}` : skillPrompt;
+}
+
+export type PiPromptPreparation = PiPreparedPrompt & { imageReadErrors: string[] };
+
+export async function preparePiUserMessage(
+    message: string,
+    attachments: AttachmentMetadata[] | undefined,
+    commands: readonly PiCommandSummary[],
+): Promise<PiPromptPreparation> {
+    const formattedMessage = formatPiUserMessage(message, attachments, commands);
+    const images: PiImageContent[] = [];
+    const imageReadErrors: string[] = [];
+
+    for (const attachment of attachments ?? []) {
+        if (!attachment.mimeType.toLowerCase().startsWith('image/')) continue;
+        try {
+            const data = await readFile(attachment.path);
+            images.push({ type: 'image', data: data.toString('base64'), mimeType: attachment.mimeType });
+        } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error);
+            imageReadErrors.push(`Could not attach image ${attachment.filename}: ${detail}`);
+        }
+    }
+
+    return { message: formattedMessage, images, imageReadErrors };
 }
 
 export async function runPi(opts: {
@@ -127,7 +172,12 @@ export async function runPi(opts: {
     if (opts.resumeSessionId) {
         transportArgs.push('--session', opts.resumeSessionId);
     }
-    const transport = new PiTransport({ command: 'pi', args: transportArgs, cwd: workingDirectory });
+    const transport = new PiTransport({
+        command: 'pi',
+        args: transportArgs,
+        cwd: workingDirectory,
+        env: { ...process.env, PI_RPC_EMIT_TITLE: '1' },
+    });
 
     piSession.startKeepAlive();
 
@@ -170,8 +220,13 @@ export async function runPi(opts: {
     // Pending user-message localIds in FIFO order
     const pendingLocalIds: string[] = [];
 
+    let transportEvents: ReturnType<typeof wireTransportEvents> | null = null;
+
     // --- Transport error/close handlers ---
     transport.onError((error) => {
+        transportEvents?.flush();
+        transportEvents?.cancelPendingExtensionUi('Pi transport failed', { sendResponse: false });
+        transportEvents?.terminatePendingRpc(error);
         logger.debug(`[pi] Transport error: ${error.message}`);
         lifecycle.markCrash(error);
         lifecycle.setExitCode(1);
@@ -181,6 +236,9 @@ export async function runPi(opts: {
     });
 
     transport.onClose((code, signal) => {
+        transportEvents?.flush();
+        transportEvents?.cancelPendingExtensionUi('Pi session ended', { sendResponse: false });
+        transportEvents?.terminatePendingRpc(new Error('Pi session ended'));
         if (killedByCleanup) {
             logger.debug(`[pi] Pi process closed during lifecycle cleanup (code=${code}, signal=${signal})`);
             void safeCleanup();
@@ -226,8 +284,41 @@ export async function runPi(opts: {
         void safeCleanup();
     };
 
-    wireTransportEvents(transport, piSession, pendingLocalIds, {
+    const promptQueue = new PiPromptQueue();
+    const preparingLocalIds = new Set<string>();
+    const cancelledWhilePreparing = new Set<string>();
+    let preparationChain = Promise.resolve();
+    let promptCommandInFlight = false;
+    let abortInFlight = false;
+
+    const pumpPromptQueue = (): void => {
+        if (!piSession.isReady || piSession.piIsStreaming || promptCommandInFlight || abortInFlight) return;
+        const next = promptQueue.dequeue();
+        if (!next) return;
+        promptCommandInFlight = true;
+        const promptId = randomUUID();
+        transportEvents?.beginPromptLifecycle(promptId);
+        if (next.localId) pendingLocalIds.push(next.localId);
+        transport.send({ id: promptId, type: 'prompt', message: next.message, ...(next.images.length > 0 ? { images: next.images } : {}) });
+    };
+
+    transportEvents = wireTransportEvents(transport, piSession, pendingLocalIds, {
         onStartupFailure: failNativeStartup,
+        onReady: pumpPromptQueue,
+        onAgentSettled: () => {
+            promptCommandInFlight = false;
+            pumpPromptQueue();
+        },
+        onPromptRejected: () => {
+            promptCommandInFlight = false;
+            pumpPromptQueue();
+        },
+        onPromptLifecycleMissing: () => {
+            promptCommandInFlight = false;
+            const localId = pendingLocalIds.shift();
+            if (localId) piSession.emitMessagesConsumed([localId], { clearQueuedThinkingGrace: true });
+            pumpPromptQueue();
+        },
     });
 
     // --- Session config RPC ---
@@ -396,54 +487,100 @@ export async function runPi(opts: {
     );
 
     // --- User message handler ---
+    // Preparation reads image files asynchronously. A single promise chain keeps
+    // attachment completion order identical to user-message arrival order.
     apiSession.onUserMessage((message, localId) => {
-        const formattedText = formatPiUserMessage(
-            message.content.text,
-            message.content.attachments,
-            piSession.cachedPiCommands,
-        );
-        // Gate the send behind Pi startup readiness. A prompt POSTed immediately
-        // after spawn (supported handoff pattern — hapi-ping-peer, intake
-        // scripts) would otherwise reach Pi before its initial get_state finishes
-        // and wedge the turn. runWhenReady delivers now if ready, else buffers
-        // FIFO until the first get_state response drains it (issue #1143).
-        // piIsStreaming is evaluated at delivery time so a message buffered
-        // before startup still takes the prompt path.
-        piSession.runWhenReady(() => {
-            if (piSession.piIsStreaming) {
-                // Steer does not start a new turn, so the localId would never be
-                // drained by turn_start. Mark it consumed immediately so it does
-                // not poison the FIFO for the next real prompt.
-                transport.send({ type: 'steer', message: formattedText });
-                if (localId) piSession.emitMessagesConsumed([localId]);
-            } else {
-                if (localId) pendingLocalIds.push(localId);
-                transport.send({ type: 'prompt', message: formattedText });
+        if (localId) preparingLocalIds.add(localId);
+        preparationChain = preparationChain.then(async () => {
+            const prepared = await preparePiUserMessage(
+                message.content.text,
+                message.content.attachments,
+                piSession.cachedPiCommands,
+            );
+            if (localId) {
+                preparingLocalIds.delete(localId);
+                if (cancelledWhilePreparing.delete(localId)) return;
             }
-        }, localId);
+            for (const imageReadError of prepared.imageReadErrors) {
+                piSession.sendSessionEvent({ type: 'message', message: imageReadError });
+            }
+            if (!prepared.message.trim() && prepared.images.length === 0) {
+                // An image-only prompt can lose every image during asynchronous
+                // preparation. Never issue an empty Pi prompt; resolve the HAPI
+                // queue row so QueuedMessagesBar cannot remain stuck forever.
+                if (localId) piSession.emitMessagesConsumed([localId], { clearQueuedThinkingGrace: true });
+                return;
+            }
+            promptQueue.enqueue({
+                message: prepared.message,
+                images: prepared.images,
+                ...(localId ? { localId } : {}),
+            });
+            pumpPromptQueue();
+        }).catch((error: unknown) => {
+            const wasCancelled = localId ? cancelledWhilePreparing.delete(localId) : false;
+            if (localId) preparingLocalIds.delete(localId);
+            const detail = error instanceof Error ? error.message : String(error);
+            piSession.sendSessionEvent({ type: 'message', message: `Failed to prepare Pi prompt: ${detail}` });
+            if (localId && !wasCancelled) {
+                piSession.emitMessagesConsumed([localId], { clearQueuedThinkingGrace: true });
+            }
+        });
     });
 
     // --- Cancel-queued-message handler ---
-    // A prompt buffered during the startup window (runWhenReady) can be cancelled
-    // by the hub before it drains. Without this, ApiSessionClient acks
-    // removed:false, the hub marks the row invoked, yet the closure would still
-    // fire the cancelled prompt on get_state. Dropping it from the buffer keeps
-    // the queued-message cancel contract intact (issue #1143 review — MAJOR).
-    // Once sent to Pi it cannot be recalled — return false (best-effort), which
-    // matches the other agents' queue.cancelByLocalId semantics.
-    apiSession.onCancelQueuedMessage((localId) => piSession.cancelBufferedMessage(localId));
+    // HAPI owns both asynchronous preparation and the local FIFO. A cancel may
+    // arrive before image preparation completes or while the ready/settled queue
+    // holds the item; both cases are removable. Once sent to Pi it is best-effort
+    // only, matching other harness queues.
+    apiSession.onCancelQueuedMessage((localId) => {
+        if (preparingLocalIds.has(localId)) {
+            cancelledWhilePreparing.add(localId);
+            return true;
+        }
+        return promptQueue.cancelByLocalId(localId);
+    });
 
     // --- Abort handler ---
     // Only cancel the current turn, keep session alive for next prompt.
     // Pi's `abort` command cancels the active turn but the process stays in RPC mode.
+    let abortPromise: Promise<{ success: true }> | null = null;
     apiSession.rpcHandlerManager.registerHandler(RPC_METHODS.Abort, async () => {
-        transport.send({ type: 'abort' });
-        piSession.piIsStreaming = false;
-        piSession.updateThinkingState(false);
-        if (pendingLocalIds.length > 0) {
-            piSession.emitMessagesConsumed([pendingLocalIds.shift()!]);
+        if (abortPromise) return await abortPromise;
+        abortPromise = (async (): Promise<{ success: true }> => {
+        abortInFlight = true;
+        transportEvents?.cancelPendingExtensionUi('Pi prompt aborted', { sendResponse: true });
+        // Keep the current lifecycle intact until Pi confirms abort. If abort
+        // fails, the canceled extension can still finish through its normal
+        // prompt response or agent-settled path.
+        // Capture only the prompt that was already on the wire before abort began.
+        // agent_end may arrive while `session.abort()` is awaiting idle and must not
+        // make a newly pumped prompt look like the aborted one.
+        const abortedPendingLocalId = pendingLocalIds[0];
+        try {
+            await sendPiRpcAndWait(piSession, transport, { type: 'abort' });
+        } catch (error) {
+            abortInFlight = false;
+            const detail = error instanceof Error ? error.message : String(error);
+            piSession.sendSessionEvent({ type: 'message', message: `Pi abort failed: ${detail}` });
+            pumpPromptQueue();
+            throw new Error(`Pi abort failed: ${detail}`);
         }
+        transportEvents?.abortPromptLifecycle();
+        abortInFlight = false;
+        // Pi confirmed abort before we clear the local streaming indicator. If
+        // the prompt was accepted but never reached turn_start, resolve exactly
+        // that in-flight local id now; otherwise the next prompt would consume it.
+        if (abortedPendingLocalId && pendingLocalIds[0] === abortedPendingLocalId) {
+            pendingLocalIds.shift();
+            piSession.emitMessagesConsumed([abortedPendingLocalId], { clearQueuedThinkingGrace: true });
+        }
+        piSession.updateThinkingState(false);
+        promptCommandInFlight = false;
+        pumpPromptQueue();
         return { success: true };
+        })().finally(() => { abortPromise = null; });
+        return await abortPromise;
     });
 
     // --- Switch handler ---
@@ -471,6 +608,7 @@ export async function runPi(opts: {
         } else {
             logger.debug('[pi] get_state ready signal not seen within grace — draining buffered messages');
             piSession.markReady();
+            pumpPromptQueue();
         }
     }, PI_READY_FALLBACK_MS);
     readyFallback.unref?.();

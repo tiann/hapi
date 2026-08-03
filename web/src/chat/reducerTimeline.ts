@@ -297,6 +297,7 @@ export function reduceTimeline(
     const agentRunCardByAgentId = new Map<string, string>()
     const agentRunTraceMessagesByCardId = new Map<string, TracedMessage[]>()
     const pendingAgentRunCardByFingerprint = new Map<string, string>()
+    const textBlocksByStreamId = new Map<string, AgentTextBlock>()
     const reasoningBlocksByStreamId = new Map<string, AgentReasoningBlock>()
     let hasReadyEvent = false
 
@@ -761,7 +762,20 @@ export function reduceTimeline(
                         }))
                         continue
                     }
-                    blocks.push({
+                    const streamId = asString(c.streamId)
+                    if (streamId) {
+                        const existing = textBlocksByStreamId.get(streamId)
+                        if (existing) {
+                            existing.text = c.text
+                            existing.usage = msg.usage
+                            existing.model = msg.model
+                            existing.meta = msg.meta
+                            existing.invokedAt = msg.invokedAt
+                            continue
+                        }
+                    }
+
+                    const block: AgentTextBlock = {
                         kind: 'agent-text',
                         id: `${msg.id}:${idx}`,
                         localId: msg.localId,
@@ -771,7 +785,11 @@ export function reduceTimeline(
                         model: msg.model,
                         text: c.text,
                         meta: msg.meta
-                    })
+                    }
+                    blocks.push(block)
+                    if (streamId) {
+                        textBlocksByStreamId.set(streamId, block)
+                    }
                     continue
                 }
 
@@ -882,6 +900,7 @@ export function reduceTimeline(
                         description: c.description,
                         nativeTitle: c.nativeTitle,
                         nativeKind: c.nativeKind,
+                        progress: c.progress,
                         permission,
                         agentTimestamp: msg.agentTimestamp
                     })

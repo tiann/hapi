@@ -73,6 +73,18 @@ describe('convertPiEvent', () => {
         }]);
     });
 
+    it('maps tool execution progress onto the running tool call id', () => {
+        expect(convertPiEvent({
+            type: 'tool_execution_update',
+            toolCallId: 'tc-1',
+            toolName: 'read_file',
+            args: { path: '/foo.ts' },
+            partialResult: { linesRead: 10 },
+        })).toEqual([{
+            type: 'tool_call', id: 'tc-1', name: 'read_file', input: { path: '/foo.ts' }, status: 'in_progress', progress: { linesRead: 10 },
+        }]);
+    });
+
     it('should convert tool_execution_end (success) to tool_result AgentMessage', () => {
         const result = convertPiEvent({
             type: 'tool_execution_end',
@@ -105,31 +117,13 @@ describe('convertPiEvent', () => {
         }]);
     });
 
-    it('should handle tool_execution_end with missing result', () => {
-        const result = convertPiEvent({
-            type: 'tool_execution_end',
-            toolCallId: 'tc-1',
-            toolName: 'read_file',
-            isError: false
-        } as any);
-        expect(result).toEqual([{
-            type: 'tool_result',
-            id: 'tc-1',
-            output: undefined,
-            status: 'completed'
-        }]);
-    });
-
-    it('should handle tool_execution_end with missing toolCallId', () => {
-        const result = convertPiEvent({
-            type: 'tool_execution_end',
-            toolName: 'read_file',
-            result: 'ok',
-            isError: false
-        } as any);
-        expect(result).toHaveLength(1);
-        expect(result[0].type).toBe('tool_result');
-        expect((result[0] as any).id).toBeUndefined();
+    it('drops malformed tool completion events instead of emitting an uncorrelated result', () => {
+        expect(convertPiEvent({
+            type: 'tool_execution_end', toolCallId: 'tc-1', toolName: 'read_file', isError: false,
+        } as never)).toEqual([]);
+        expect(convertPiEvent({
+            type: 'tool_execution_end', toolName: 'read_file', result: 'ok', isError: false,
+        } as never)).toEqual([]);
     });
 
     it('should defer turn usage and convert only turn completion', () => {

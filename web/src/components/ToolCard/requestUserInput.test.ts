@@ -55,6 +55,24 @@ describe('MCP URL request user input', () => {
         })).toBe(true)
     })
 
+    it('preserves Pi extension textarea placeholder and prefill fields', () => {
+        const parsed = parseRequestUserInputInput({
+            questions: [{
+                id: 'comment',
+                question: 'Comment',
+                options: [],
+                placeholder: 'Describe the change',
+                prefill: 'Initial draft'
+            }]
+        })
+
+        expect(parsed.questions[0]).toMatchObject({
+            id: 'comment',
+            placeholder: 'Describe the change',
+            prefill: 'Initial draft'
+        })
+    })
+
     it('requires an actual selection for required choice questions', () => {
         const question = parseRequestUserInputInput({
             questions: [{

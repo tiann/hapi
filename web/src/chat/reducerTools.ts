@@ -67,6 +67,7 @@ export function ensureToolBlock(
         description: string | null
         nativeTitle?: string | null
         nativeKind?: string | null
+        progress?: unknown
         permission?: ToolPermission
         /** Claude entry execution-machine timestamp for the tool_use, if known (see `ChatToolCall.execStartedAt`). */
         agentTimestamp?: number | null
@@ -106,6 +107,9 @@ export function ensureToolBlock(
         }
         if (seed.nativeKind != null) {
             existing.tool = { ...existing.tool, nativeKind: seed.nativeKind }
+        }
+        if (seed.progress !== undefined && existing.tool.state === 'running') {
+            existing.tool = { ...existing.tool, result: seed.progress }
         }
         // The first call (tool_use) records when the tool was invoked. The
         // second call (tool_result) carries the result message's invokedAt,
@@ -149,6 +153,7 @@ export function ensureToolBlock(
         description: seed.description,
         nativeTitle: seed.nativeTitle ?? null,
         nativeKind: seed.nativeKind ?? null,
+        ...(seed.progress !== undefined ? { result: seed.progress } : {}),
         permission: seed.permission
     }
 

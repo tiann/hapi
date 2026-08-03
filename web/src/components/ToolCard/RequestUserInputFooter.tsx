@@ -87,7 +87,7 @@ export function RequestUserInputFooter(props: {
         setStep(0)
         const initial: Record<string, QuestionState> = {}
         for (const q of questions) {
-            initial[q.id] = { selected: [], userNote: '' }
+            initial[q.id] = { selected: [], userNote: q.prefill ?? '' }
         }
         setStateByQuestion(initial)
         setLoading(false)
@@ -229,7 +229,7 @@ export function RequestUserInputFooter(props: {
                             value={currentState?.userNote ?? ''}
                             onChange={(e) => updateUserNote(currentQuestion.id, e.target.value)}
                             disabled={props.disabled || loading}
-                            placeholder={t('tool.requestUserInput.textPlaceholder')}
+                            placeholder={currentQuestion.placeholder ?? t('tool.requestUserInput.textPlaceholder')}
                             className="mt-3 w-full min-h-[88px] resize-y rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm text-[var(--app-fg)] placeholder:text-[var(--app-hint)] focus:outline-none focus:ring-2 focus:ring-[var(--app-button)] focus:border-transparent disabled:opacity-50"
                         />
                     ) : (
