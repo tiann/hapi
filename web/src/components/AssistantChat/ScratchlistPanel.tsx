@@ -313,6 +313,7 @@ function ScratchlistInventory({
     onMove,
     sessionId,
     api,
+    disabled = false,
 }: {
     entries: ScratchlistEntry[]
     busyEntryId: string | null
@@ -322,6 +323,7 @@ function ScratchlistInventory({
     onMove: (entry: ScratchlistEntry, direction: 'up' | 'down') => void
     sessionId?: string
     api?: ApiClient
+    disabled?: boolean
 }) {
     const { t } = useTranslation()
     const { copiedEntryId, signalCopied } = useCopiedFeedback()
@@ -351,6 +353,7 @@ function ScratchlistInventory({
                 const isFirst = index === 0
                 const isLast = index === entries.length - 1
                 const isBusy = busyEntryId === entry.id
+                const mutationsDisabled = disabled || isBusy
                 return (
                     <li
                         key={entry.id}
@@ -383,7 +386,7 @@ function ScratchlistInventory({
                                 aria-label={t('scratchlist.action.moveUp')}
                                 title={t('scratchlist.action.moveUp')}
                                 onClick={() => onMove(entry, 'up')}
-                                disabled={isFirst || isBusy}
+                                disabled={isFirst || mutationsDisabled}
                                 className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-30"
                             >
                                 <ArrowUpIcon />
@@ -393,7 +396,7 @@ function ScratchlistInventory({
                                 aria-label={t('scratchlist.action.moveDown')}
                                 title={t('scratchlist.action.moveDown')}
                                 onClick={() => onMove(entry, 'down')}
-                                disabled={isLast || isBusy}
+                                disabled={isLast || mutationsDisabled}
                                 className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-30"
                             >
                                 <ArrowDownIcon />
@@ -403,7 +406,7 @@ function ScratchlistInventory({
                                 aria-label={t('scratchlist.action.promoteToComposer')}
                                 title={t('scratchlist.action.promoteToComposer')}
                                 onClick={() => onPromoteToComposer(entry)}
-                                disabled={isBusy}
+                                disabled={mutationsDisabled}
                                 className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-30"
                             >
                                 <PencilIcon />
@@ -413,7 +416,7 @@ function ScratchlistInventory({
                                 aria-label={t('scratchlist.action.promoteToQueue')}
                                 title={t('scratchlist.action.promoteToQueue')}
                                 onClick={() => onPromoteToQueue(entry)}
-                                disabled={isBusy}
+                                disabled={mutationsDisabled}
                                 className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-30"
                             >
                                 <SendIcon />
@@ -442,7 +445,7 @@ function ScratchlistInventory({
                                 aria-label={t('scratchlist.action.delete')}
                                 title={t('scratchlist.action.delete')}
                                 onClick={() => onDelete(entry)}
-                                disabled={isBusy}
+                                disabled={mutationsDisabled}
                                 className="flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-30"
                             >
                                 <TrashIcon />
@@ -471,6 +474,7 @@ export function ScratchlistDrawer({
     onPromoteToQueue,
     sessionId,
     api,
+    disabled = false,
 }: {
     entries: ScratchlistEntry[]
     onMove: (id: string, direction: 'up' | 'down') => void
@@ -479,6 +483,7 @@ export function ScratchlistDrawer({
     onPromoteToQueue: (entry: ScratchlistEntry) => Promise<boolean>
     sessionId: string
     api: ApiClient
+    disabled?: boolean
 }) {
     const { t } = useTranslation()
     const [busyEntryId, setBusyEntryId] = useState<string | null>(null)
@@ -490,6 +495,7 @@ export function ScratchlistDrawer({
     }, [entries.length, t])
 
     const handleDelete = useCallback((entry: ScratchlistEntry) => {
+        if (disabled) return
         if (shouldConfirmDelete(entry)) {
             const confirmed = typeof window !== 'undefined'
                 ? window.confirm(t('scratchlist.confirmDelete'))
@@ -497,18 +503,20 @@ export function ScratchlistDrawer({
             if (!confirmed) return
         }
         onDelete(entry.id)
-    }, [onDelete, t])
+    }, [disabled, onDelete, t])
 
     const handleMove = useCallback((entry: ScratchlistEntry, direction: 'up' | 'down') => {
+        if (disabled) return
         onMove(entry.id, direction)
-    }, [onMove])
+    }, [disabled, onMove])
 
     const handlePromoteToComposer = useCallback((entry: ScratchlistEntry) => {
+        if (disabled) return
         void onPromoteToComposer(entry)
-    }, [onPromoteToComposer])
+    }, [disabled, onPromoteToComposer])
 
     const handlePromoteToQueue = useCallback(async (entry: ScratchlistEntry) => {
-        if (busyEntryId) return
+        if (disabled || busyEntryId) return
         setBusyEntryId(entry.id)
         try {
             const accepted = await onPromoteToQueue(entry)
@@ -516,7 +524,7 @@ export function ScratchlistDrawer({
         } finally {
             setBusyEntryId(null)
         }
-    }, [busyEntryId, onDelete, onPromoteToQueue])
+    }, [busyEntryId, disabled, onDelete, onPromoteToQueue])
 
     return (
         <div className="mx-auto w-full max-w-content mb-1">
@@ -549,6 +557,7 @@ export function ScratchlistDrawer({
                         busyEntryId={busyEntryId}
                         sessionId={sessionId}
                         api={api}
+                        disabled={disabled}
                         onPromoteToComposer={handlePromoteToComposer}
                         onPromoteToQueue={handlePromoteToQueue}
                         onDelete={handleDelete}

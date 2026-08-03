@@ -23,6 +23,8 @@ export interface SpawnSessionOptions {
     sessionType?: 'simple' | 'worktree'
     worktreeName?: string
     startingMode?: 'remote' | 'pty'
+    /** Claude: spawn with --fork-session after --resume. */
+    forkSession?: boolean
 }
 
 export type SpawnSessionResult =

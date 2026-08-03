@@ -48,6 +48,7 @@ import type {
 } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor } from '@hapi/protocol'
 import type { CancelMessageResponse } from '@hapi/protocol/schemas'
+import type { TranscriptionMode, TranscriptionProvider, TranscriptionProviderInfo } from '@hapi/protocol/voice'
 
 type ApiClientOptions = {
     baseUrl?: string
@@ -123,7 +124,7 @@ export class ApiClient {
         if (authToken) {
             headers.set('authorization', `Bearer ${authToken}`)
         }
-        if (init?.body !== undefined && !headers.has('content-type')) {
+        if (init?.body !== undefined && !(init.body instanceof FormData) && !headers.has('content-type')) {
             headers.set('content-type', 'application/json')
         }
 
@@ -468,6 +469,26 @@ export class ApiClient {
         })
     }
 
+    async forkConversation(sessionId: string, messageLocalId?: string): Promise<{ sessionId: string }> {
+        return await this.request<{ sessionId: string }>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/fork`,
+            {
+                method: 'POST',
+                body: JSON.stringify(messageLocalId ? { messageLocalId } : {})
+            }
+        )
+    }
+
+    async rewindConversation(sessionId: string, messageLocalId: string): Promise<{ success: true }> {
+        return await this.request<{ success: true }>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/rewind`,
+            {
+                method: 'POST',
+                body: JSON.stringify({ messageLocalId })
+            }
+        )
+    }
+
     async archiveSession(sessionId: string): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/archive`, {
             method: 'POST',
@@ -629,13 +650,14 @@ export class ApiClient {
 
     async listMachineDirectory(
         machineId: string,
-        path: string
+        path: string,
+        options?: { includeHidden?: boolean }
     ): Promise<MachineListDirectoryResponse> {
         return await this.request<MachineListDirectoryResponse>(
             `/api/machines/${encodeURIComponent(machineId)}/list-directory`,
             {
                 method: 'POST',
-                body: JSON.stringify({ path })
+                body: JSON.stringify({ path, includeHidden: options?.includeHidden === true })
             }
         )
     }
@@ -940,6 +962,36 @@ export class ApiClient {
 
     async fetchVoiceBackend(): Promise<{ backend: string; backends: string[] }> {
         return await this.request('/api/voice/backend')
+    }
+
+    async fetchTranscriptionProviders(): Promise<{ providers: TranscriptionProviderInfo[] }> {
+        return await this.request('/api/voice/transcription/providers')
+    }
+
+    async transcribeVoice(options: {
+        file: File
+        provider: TranscriptionProvider
+        mode: TranscriptionMode
+        language?: string
+    }): Promise<{ text: string; language?: string }> {
+        const form = new FormData()
+        form.set('file', options.file)
+        form.set('provider', options.provider)
+        form.set('mode', options.mode)
+        if (options.language) form.set('language', options.language)
+        return await this.request('/api/voice/transcription', { method: 'POST', body: form })
+    }
+
+    async fetchRealtimeTranscriptionToken(
+        provider: 'openai' | 'elevenlabs' | 'deepgram',
+        language?: string,
+        signal?: AbortSignal
+    ): Promise<{ token: string }> {
+        return await this.request('/api/voice/transcription/realtime-token', {
+            method: 'POST',
+            signal,
+            body: JSON.stringify({ provider, language })
+        })
     }
 
     async fetchQwenToken(): Promise<{

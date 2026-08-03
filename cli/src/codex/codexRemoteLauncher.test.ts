@@ -1018,6 +1018,7 @@ function createSessionStub(
                 rpcHandlers.set(method, handler);
             }
         },
+        updateMetadata(_handler: (metadata: Record<string, unknown>) => Record<string, unknown>) {},
         updateAgentState(handler: (state: FakeAgentState) => FakeAgentState) {
             agentState = handler(agentState);
         },

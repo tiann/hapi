@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { useEffect, useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
-import { type TextInputState, useRichComposerBridge } from './HappyComposer'
+import { getComposerEscapeAction, type TextInputState, useRichComposerBridge } from './HappyComposer'
 
 const events = vi.hoisted(() => [] as string[])
 
@@ -76,5 +76,25 @@ describe('useRichComposerBridge', () => {
             'flush:end',
             'mirror-render:mirror text',
         ])
+    })
+})
+
+describe('getComposerEscapeAction', () => {
+    it('clears suggestions before aborting, and aborts before collapsing', () => {
+        expect(getComposerEscapeAction({
+            hasSuggestions: true,
+            threadIsRunning: true,
+            isExpanded: true,
+        })).toBe('clearSuggestions')
+        expect(getComposerEscapeAction({
+            hasSuggestions: false,
+            threadIsRunning: true,
+            isExpanded: true,
+        })).toBe('abort')
+        expect(getComposerEscapeAction({
+            hasSuggestions: false,
+            threadIsRunning: false,
+            isExpanded: true,
+        })).toBe('collapse')
     })
 })

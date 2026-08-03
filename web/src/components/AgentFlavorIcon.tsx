@@ -26,13 +26,13 @@ const FLAVOR_LOGOS: Record<string, IconType> = {
     opencode: OpenCodeMono,
 }
 
-// Letter-badge fallback for flavors without a brand logo in @lobehub/icons
-// (pi) and for anything unrecognized.
-const FLAVOR_BADGES: Record<string, { label: string; colors: string }> = {
-    pi: {
-        label: 'Pi',
-        colors: 'bg-[#5b21b6] text-white',
-    },
+function PiLogo() {
+    return (
+        <svg viewBox="0 0 800 800" width="100%" height="100%" fill="currentColor">
+            <path fillRule="evenodd" d="M165.29 165.29h352.07V400H400v117.36H282.65v117.36H165.29zM282.65 282.65V400H400V282.65z" />
+            <path d="M517.36 400h117.36v234.72H517.36z" />
+        </svg>
+    )
 }
 
 const UNKNOWN_FLAVOR_BADGE = {
@@ -56,7 +56,18 @@ export function AgentFlavorIcon({ flavor, className }: { flavor?: string | null;
         )
     }
 
-    const badge = FLAVOR_BADGES[normalized] ?? UNKNOWN_FLAVOR_BADGE
+    if (normalized === 'pi') {
+        return (
+            <span
+                aria-hidden="true"
+                className={`inline-flex items-center justify-center leading-none text-[var(--app-fg)] ${sizeClass}`}
+            >
+                <PiLogo />
+            </span>
+        )
+    }
+
+    const badge = UNKNOWN_FLAVOR_BADGE
     return (
         <span
             aria-hidden="true"

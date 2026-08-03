@@ -1,6 +1,26 @@
-# Voice Assistant
+# Voice input and assistant
 
 Control your AI coding agent with voice using the built-in voice assistant powered by ElevenLabs Conversational AI.
+
+For speech-to-text without a spoken assistant, open **Settings → Voice**, choose **Dictation**, then select a configured provider. Dictation records until you tap the microphone again, inserts the transcript into the composer, and never sends it automatically. Standard mode is the default. Realtime mode shows a live transcript while you speak and inserts the final result when you stop.
+
+Provider credentials are read only from the hub's startup environment:
+
+```bash
+# Pick any providers you use
+export OPENAI_API_KEY="..."          # gpt-transcribe / gpt-live-transcribe
+export ELEVENLABS_API_KEY="..."      # scribe_v2 / scribe_v2_realtime
+export DEEPGRAM_API_KEY="..."        # nova-3 standard / realtime
+export GROQ_API_KEY="..."             # whisper-large-v3
+
+# Or an OpenAI-compatible local server such as Speaches
+export TRANSCRIPTION_BASE_URL="http://127.0.0.1:8000/v1"
+export TRANSCRIPTION_MODEL="Systran/faster-whisper-large-v3"
+export TRANSCRIPTION_API_KEY="..."    # optional
+```
+
+Restart the hub after changing credentials. API keys are not entered or stored in the web app.
+Realtime OpenAI, ElevenLabs, and Deepgram sessions receive only short-lived credentials minted by the hub. Browsers with an installed on-device `SpeechRecognition` language pack also expose **Browser on-device** as a realtime-only provider; HAPI never falls back from that option to browser-hosted recognition.
 
 ## Overview
 
@@ -14,7 +34,8 @@ The assistant bridges voice communication with your active coding agent (Claude 
 
 ## Prerequisites
 
-An [ElevenLabs](https://elevenlabs.io) account with API access
+- Voice assistant: an [ElevenLabs](https://elevenlabs.io) account with API access
+- Dictation: at least one configured provider above, or an OpenAI-compatible local server
 
 ## Setup
 

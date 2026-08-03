@@ -73,6 +73,31 @@ export function InfoIcon(props: IconProps) {
     )
 }
 
+export function ForkIcon(props: IconProps) {
+    return createIcon(
+        <>
+            <circle cx="6" cy="4" r="1.5" />
+            <circle cx="18" cy="4" r="1.5" />
+            <circle cx="18" cy="20" r="1.5" />
+            <path d="M6 5.5v4.75A5.75 5.75 0 0 0 11.75 16H16.5" />
+            <path d="M12 16a5.75 5.75 0 0 0 5.75-5.75V5.5" />
+        </>,
+        props,
+        2
+    )
+}
+
+export function RewindIcon(props: IconProps) {
+    return createIcon(
+        <>
+            <path d="M3 12a9 9 0 1 0 3-6.7" />
+            <polyline points="3 4 3 10 9 10" />
+        </>,
+        props,
+        2
+    )
+}
+
 /** Composer schedule-send clock — circle + hands (matches ComposerButtons). */
 export function ScheduleIcon(props: IconProps) {
     return createIcon(

@@ -389,6 +389,23 @@ export class AcpSdkBackend implements AgentBackend {
     }
 
     /**
+     * Low-level extension RPC for agent-specific methods (e.g. Grok `_x.ai/*`).
+     * Keep method names and schemas in the agent adapter — not here.
+     */
+    async sendExtensionRequest<T = unknown>(
+        method: string,
+        params: Record<string, unknown>,
+        options?: { timeoutMs?: number }
+    ): Promise<T> {
+        if (!this.transport) {
+            throw new Error('ACP transport not initialized');
+        }
+        return await this.transport.sendRequest(method, params, {
+            timeoutMs: options?.timeoutMs
+        }) as T;
+    }
+
+    /**
      * Returns the per-session models metadata captured from session/new (or
      * session/load, or session/set_model). Returns undefined if the agent did
      * not include the optional `models` block in its response.

@@ -15,6 +15,7 @@ import { SettingsChoiceGroup } from './SettingsPrimitives'
 const ITEM_LABEL_KEYS: Record<ComposerToolbarItemId, string> = {
     attachment: 'settings.chat.composerToolbar.item.attachment',
     settings: 'settings.chat.composerToolbar.item.settings',
+    expand: 'settings.chat.composerToolbar.item.expand',
     piModel: 'settings.chat.composerToolbar.item.piModel',
     piThinking: 'settings.chat.composerToolbar.item.piThinking',
     terminal: 'settings.chat.composerToolbar.item.terminal',

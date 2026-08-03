@@ -58,6 +58,27 @@ describe('buildSessionReferenceText', () => {
             'See HAPI session /sessions/abc-def for context'
         )
     })
+
+    it('keeps combining and ZWJ title graphemes only when they fit the UTF-16 limit', () => {
+        const prefix = 'a'.repeat(119)
+        const combining = `${prefix}e\u0301x`
+        const family = `${prefix}👨\u200D👩\u200D👧\u200D👦x`
+
+        expect(buildSessionReferenceText(combining, 'combining')).toBe(
+            `See session ${JSON.stringify(prefix)} (/sessions/combining) for context`
+        )
+        expect(buildSessionReferenceText(family, 'family')).toBe(
+            `See session ${JSON.stringify(prefix)} (/sessions/family) for context`
+        )
+
+        const fittingFamilyPrefix = 'a'.repeat(120 - '👨\u200D👩\u200D👧\u200D👦'.length)
+        expect(buildSessionReferenceText(
+            `${fittingFamilyPrefix}👨\u200D👩\u200D👧\u200D👦x`,
+            'fitting-family'
+        )).toBe(
+            `See session ${JSON.stringify(`${fittingFamilyPrefix}👨\u200D👩\u200D👧\u200D👦`)} (/sessions/fitting-family) for context`
+        )
+    })
 })
 
 describe('matchSessionsForMention', () => {

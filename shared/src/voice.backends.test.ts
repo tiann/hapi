@@ -1,9 +1,31 @@
 import { describe, expect, test } from 'bun:test'
 import {
+    listConfiguredTranscriptionProviders,
     listConfiguredVoiceBackends,
     resolveEffectiveVoiceBackend,
     resolveHubVoiceBackend
 } from './voice'
+
+describe('listConfiguredTranscriptionProviders', () => {
+    test('returns configured providers with honest mode capabilities', () => {
+        expect(listConfiguredTranscriptionProviders({
+            OPENAI_API_KEY: 'openai',
+            ELEVENLABS_API_KEY: 'elevenlabs',
+            DEEPGRAM_API_KEY: 'deepgram',
+            TRANSCRIPTION_BASE_URL: 'http://localhost:8000/v1',
+            TRANSCRIPTION_MODEL: 'whisper-large-v3'
+        })).toEqual([
+            { id: 'openai', label: 'OpenAI', modes: ['standard', 'realtime'] },
+            { id: 'elevenlabs', label: 'ElevenLabs', modes: ['standard', 'realtime'] },
+            { id: 'deepgram', label: 'Deepgram', modes: ['standard', 'realtime'] },
+            { id: 'openai-compatible', label: 'OpenAI-compatible / local', modes: ['standard'] }
+        ])
+    })
+
+    test('does not advertise incomplete or missing configuration', () => {
+        expect(listConfiguredTranscriptionProviders({ TRANSCRIPTION_BASE_URL: 'http://localhost:8000/v1' })).toEqual([])
+    })
+})
 
 describe('listConfiguredVoiceBackends', () => {
     test('returns only backends with API keys', () => {

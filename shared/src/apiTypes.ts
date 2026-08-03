@@ -427,6 +427,45 @@ export const SendMessageRequestSchema = z.object({
 
 export type SendMessageRequest = z.infer<typeof SendMessageRequestSchema>
 
+export const ForkConversationRequestSchema = z.object({
+    messageLocalId: z.string().min(1).optional()
+})
+
+export type ForkConversationRequest = z.infer<typeof ForkConversationRequestSchema>
+
+export type ForkConversationResponse = {
+    sessionId: string
+}
+
+export const RewindConversationRequestSchema = z.object({
+    messageLocalId: z.string().min(1)
+})
+
+export type RewindConversationRequest = z.infer<typeof RewindConversationRequestSchema>
+
+export type RewindConversationResponse = {
+    success: true
+}
+
+/** CLI → hub RPC result for native fork (before HAPI child binding). */
+export type ForkConversationRpcResult = {
+    nativeSessionId: string
+    /** When true, hub must spawn with --fork-session (Claude). */
+    forkSession?: boolean
+}
+
+export type RewindConversationRpcResult = {
+    success: true
+    /** Truncate HAPI transcript at/after this localId, then accept rehydrated history. */
+    truncateFromLocalId: string
+    messages?: Array<{
+        content: unknown
+        localId?: string | null
+        createdAt?: number
+        invokedAt?: number | null
+    }>
+}
+
 export const QueuedStateRequestSchema = z.object({
     localIds: z.array(z.string().min(1)).max(1000)
 })
@@ -459,7 +498,8 @@ export const SpawnSessionRequestSchema = z.object({
 export type SpawnSessionRequest = z.infer<typeof SpawnSessionRequestSchema>
 
 export const MachineListDirectoryRequestSchema = z.object({
-    path: z.string().min(1)
+    path: z.string().min(1),
+    includeHidden: z.boolean().optional()
 })
 
 export type MachineListDirectoryRequest = z.infer<typeof MachineListDirectoryRequestSchema>

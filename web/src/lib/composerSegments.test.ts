@@ -59,6 +59,19 @@ describe('serializeComposerSegments', () => {
             { type: 'text', text: ' after' },
         ])).toBe('before  after')
     })
+
+    it('keeps the 120 UTF-16-unit mention title limit without splitting an emoji', () => {
+        const title = `${'a'.repeat(119)}😀x`
+        const expectedTitle = 'a'.repeat(119)
+        expect(serializeComposerSegments([
+            { type: 'session', id: 'emoji-session', title },
+        ])).toBe(`[${expectedTitle}](/sessions/emoji-session)`)
+
+        const fittingTitle = `${'a'.repeat(118)}😀x`
+        expect(serializeComposerSegments([
+            { type: 'session', id: 'emoji-session', title: fittingTitle },
+        ])).toBe(`[${'a'.repeat(118)}😀](/sessions/emoji-session)`)
+    })
 })
 
 describe('parseComposerSegments', () => {
@@ -226,6 +239,7 @@ describe('serializeComposerSelection', () => {
         const segments: ComposerSegment[] = [{ type: 'text', text: 'abc' }]
         expect(serializeComposerSelection(segments, { start: 1, end: 1 })).toBeNull()
     })
+
 })
 
 describe('insertSegmentsInComposerSegments', () => {

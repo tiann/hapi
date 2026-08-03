@@ -17,6 +17,8 @@ import type {
     ThreadResumeResponse,
     ThreadForkParams,
     ThreadForkResponse,
+    ThreadReadParams,
+    ThreadReadResponse,
     TurnStartParams,
     TurnStartResponse,
     TurnInterruptParams,
@@ -292,6 +294,25 @@ export class CodexAppServerClient extends JsonLineParser {
             timeoutMs: CodexAppServerClient.DEFAULT_TIMEOUT_MS
         });
         return response as ThreadForkResponse;
+    }
+
+    async supportsMethod(method: 'thread/fork' | 'thread/rollback'): Promise<boolean> {
+        try {
+            await this.sendRequest(method, { threadId: '__hapi_capability_probe__' }, { timeoutMs: 30_000 });
+            return true;
+        } catch (error) {
+            return !/method not found|unknown method|unsupported/i.test(
+                error instanceof Error ? error.message : String(error)
+            );
+        }
+    }
+
+    async readThread(params: ThreadReadParams, options?: { signal?: AbortSignal }): Promise<ThreadReadResponse> {
+        const response = await this.sendRequest('thread/read', params, {
+            signal: options?.signal,
+            timeoutMs: CodexAppServerClient.DEFAULT_TIMEOUT_MS
+        });
+        return response as ThreadReadResponse;
     }
 
     async startTurn(params: TurnStartParams, options?: { signal?: AbortSignal }): Promise<TurnStartResponse> {

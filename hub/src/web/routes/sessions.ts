@@ -1,10 +1,12 @@
 import {
     CursorMigrateToAcpRequestSchema,
     DeleteUploadRequestSchema,
+    ForkConversationRequestSchema,
     getPermissionModesForFlavor,
     isPermissionModeAllowedForFlavor,
     RenameSessionRequestSchema,
     ResumeSessionRequestSchema,
+    RewindConversationRequestSchema,
     SCRATCHLIST_MAX_ENTRIES,
     ScratchlistEntryCreateRequestSchema,
     ScratchlistEntryUpdateRequestSchema,
@@ -324,6 +326,73 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
 
         await engine.abortSession(sessionResult.sessionId)
         return c.json({ ok: true })
+    })
+
+    app.post('/sessions/:id/fork', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const rawBody = await c.req.text()
+        let body: unknown = {}
+        if (rawBody.trim()) {
+            try {
+                body = JSON.parse(rawBody)
+            } catch {
+                return c.json({ error: 'Invalid JSON body' }, 400)
+            }
+        }
+        const parsed = ForkConversationRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body' }, 400)
+        }
+
+        const result = await engine.forkConversation(
+            sessionResult.sessionId,
+            c.get('namespace'),
+            parsed.data.messageLocalId
+        )
+        if (result.type === 'error') {
+            return c.json({ error: result.message }, 409)
+        }
+        return c.json({ sessionId: result.sessionId })
+    })
+
+    app.post('/sessions/:id/rewind', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = RewindConversationRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body' }, 400)
+        }
+
+        const result = await engine.rewindConversation(
+            sessionResult.sessionId,
+            c.get('namespace'),
+            parsed.data.messageLocalId
+        )
+        if (result.type === 'error') {
+            return c.json({
+                error: result.message,
+                hydrateFailed: result.hydrateFailed === true
+            }, result.hydrateFailed ? 500 : 409)
+        }
+        return c.json({ success: true as const })
     })
 
     app.post('/sessions/:id/archive', async (c) => {

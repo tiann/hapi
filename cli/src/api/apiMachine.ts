@@ -56,6 +56,7 @@ interface PathExistsRequest {
 
 interface ListMachineDirectoryRequest {
     path: string
+    includeHidden?: boolean
 }
 
 interface CursorChatStoreStatusRequest {
@@ -168,6 +169,8 @@ export class ApiMachineClient {
                 return { success: false, error: 'Path is required' }
             }
 
+            const includeHidden = params?.includeHidden === true
+
             const targetPath = await this.resolveForWorkspaceCheck(rawPath)
             if (!this.isWithinWorkspaceRoots(targetPath)) {
                 return { success: false, error: 'Path is outside workspace roots' }
@@ -183,7 +186,7 @@ export class ApiMachineClient {
                 const entries: MachineDirectoryEntry[] = []
 
                 await Promise.all(dirEntries.map(async (entry) => {
-                    if (entry.name.startsWith('.')) return
+                    if (!includeHidden && entry.name.startsWith('.')) return
 
                     const fullPath = join(targetPath, entry.name)
                     let type: 'file' | 'directory' | 'other' = 'other'
@@ -357,7 +360,7 @@ export class ApiMachineClient {
 
     setRPCHandlers({ spawnSession, stopSession, requestShutdown }: MachineRpcHandlers): void {
         this.rpcHandlerManager.registerHandler(RPC_METHODS.SpawnHappySession, async (params: any) => {
-            const { directory, sessionId, existingSessionId, resumeSessionId, machineId, approvedNewDirectoryCreation, agent, model, effort, modelReasoningEffort, yolo, permissionMode, serviceTier, collaborationMode, token, sessionType, worktreeName, startingMode } = params || {}
+            const { directory, sessionId, existingSessionId, resumeSessionId, machineId, approvedNewDirectoryCreation, agent, model, effort, modelReasoningEffort, yolo, permissionMode, serviceTier, collaborationMode, token, sessionType, worktreeName, startingMode, forkSession } = params || {}
 
             if (!directory) {
                 throw new Error('Directory is required')
@@ -386,7 +389,8 @@ export class ApiMachineClient {
                 token,
                 sessionType,
                 worktreeName,
-                startingMode
+                startingMode,
+                forkSession: forkSession === true
             })
 
             switch (result.type) {

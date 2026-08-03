@@ -3,8 +3,7 @@ import { render } from '@testing-library/react'
 import { AGENT_FLAVORS } from '@hapi/protocol'
 import { AgentFlavorIcon } from './AgentFlavorIcon'
 
-// Flavors backed by a @lobehub/icons brand logo. 'pi' has no logo in the
-// package and intentionally falls back to the letter badge.
+// Flavors backed by a @lobehub/icons brand logo.
 const LOGO_FLAVORS = AGENT_FLAVORS.filter((f) => f !== 'pi')
 
 function getWrapper(container: HTMLElement): HTMLElement {
@@ -29,13 +28,15 @@ describe('AgentFlavorIcon', () => {
         }
     })
 
-    it('keeps the "Pi" letter badge for the pi flavor (no brand logo available)', () => {
+    it('renders the Pi logo with transparent, theme-aware coloring', () => {
         const { container } = render(<AgentFlavorIcon flavor="pi" />)
         const badge = getWrapper(container)
-        expect(container.querySelector('svg')).toBeNull()
-        expect(badge.textContent).toBe('Pi')
-        expect(badge.className).toContain('bg-[#5b21b6]')
-        expect(badge.className).toContain('text-white')
+        const svg = container.querySelector('svg')
+        expect(svg).not.toBeNull()
+        expect(badge.textContent).toBe('')
+        expect(badge.className).not.toContain('rounded-sm')
+        expect(badge.className).toContain('text-[var(--app-fg)]')
+        expect(svg?.getAttribute('viewBox')).toBe('0 0 800 800')
     })
 
     it.each([null, undefined, '', '   ', 'mystery-cli'])(

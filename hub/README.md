@@ -28,6 +28,11 @@ See `src/configuration.ts` for all options.
 
 - `ELEVENLABS_API_KEY` - ElevenLabs API key for voice assistant.
 - `ELEVENLABS_AGENT_ID` - Custom ElevenLabs agent ID (auto-created if not set).
+- `OPENAI_API_KEY` - OpenAI dictation (`gpt-transcribe` / `gpt-live-transcribe`).
+- `DEEPGRAM_API_KEY` - Deepgram dictation (`nova-3`, standard and realtime).
+- `GROQ_API_KEY` - Groq dictation (`whisper-large-v3`).
+- `TRANSCRIPTION_BASE_URL` and `TRANSCRIPTION_MODEL` - OpenAI-compatible/local transcription endpoint and model.
+- `TRANSCRIPTION_API_KEY` - Optional bearer token for the OpenAI-compatible endpoint.
 
 ### Optional
 
@@ -126,6 +131,9 @@ See `src/web/routes/` for all endpoints.
 ### Voice (`src/web/routes/voice.ts`)
 
 - `POST /api/voice/token` - Get ElevenLabs conversation token.
+- `GET /api/voice/transcription/providers` - List configured providers and supported modes.
+- `POST /api/voice/transcription` - Transcribe a bounded recording.
+- `POST /api/voice/transcription/realtime-token` - Mint a short-lived OpenAI, ElevenLabs, or Deepgram credential.
 
 ### Push Notifications (`src/web/routes/push.ts`)
 

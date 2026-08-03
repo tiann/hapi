@@ -91,6 +91,37 @@ export class SessionCache {
         return this.refreshSession(stored.id) ?? (() => { throw new Error('Failed to load session') })()
     }
 
+    /**
+     * After fork hydrate / rewind truncate, re-scan the transcript for the
+     * latest TodoWrite (or clear todos). Bypasses the one-shot backfill flag
+     * and the monotonic todosUpdatedAt guard.
+     */
+    rebuildTodosFromTranscript(sessionId: string): void {
+        const stored = this.store.sessions.getSession(sessionId)
+        if (!stored) return
+
+        this.todoBackfillAttemptedSessionIds.delete(sessionId)
+        const messages = this.store.messages.getAllMessages(sessionId)
+        let found: { todos: unknown; at: number } | null = null
+        for (let i = messages.length - 1; i >= 0; i -= 1) {
+            const message = messages[i]
+            if (!message) continue
+            const todos = extractTodoWriteTodosFromMessageContent(message.content)
+            if (todos) {
+                found = { todos, at: message.createdAt }
+                break
+            }
+        }
+        this.store.sessions.replaceSessionTodos(
+            sessionId,
+            found?.todos ?? null,
+            found?.at ?? null,
+            stored.namespace
+        )
+        this.todoBackfillAttemptedSessionIds.add(sessionId)
+        this.refreshSession(sessionId)
+    }
+
     refreshSession(sessionId: string): Session | null {
         let stored = this.store.sessions.getSession(sessionId)
         if (!stored) {

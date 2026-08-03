@@ -163,7 +163,11 @@ describe('bootstrapExistingSession', () => {
                 updatedAt: 100
             },
             tools: ['read_file'],
-            slashCommands: ['/compact']
+            slashCommands: ['/compact'],
+            capabilities: {
+                terminal: true,
+                conversationHistory: { forkCurrent: true }
+            }
         }
         const sessionClient = {
             updateMetadata: vi.fn()
@@ -203,7 +207,11 @@ describe('bootstrapExistingSession', () => {
                 updatedAt: 100
             },
             tools: ['read_file'],
-            slashCommands: ['/compact']
+            slashCommands: ['/compact'],
+            capabilities: {
+                terminal: true,
+                conversationHistory: { forkCurrent: true }
+            }
         }))
         expect(sessionClient.updateMetadata).toHaveBeenCalledOnce()
         const updateHandler = sessionClient.updateMetadata.mock.calls[0][0]

@@ -699,10 +699,13 @@ export class MessageService {
      * preserved).  Web client surfaces this as 'sent' in the thread.
      * See messageService.test.ts "cancel × mature race" for the documented
      * expected behaviour. */
-    releaseMatureScheduledMessages(now: number): void {
+    releaseMatureScheduledMessages(now: number, skipSessionIds?: ReadonlySet<string>): void {
         const mature = this.store.messages.getMatureScheduledMessages(now)
         const maturedSessionIds = new Set<string>()
         for (const msg of mature) {
+            if (skipSessionIds?.has(msg.sessionId)) {
+                continue
+            }
             const localId = msg.localId
             if (typeof localId === 'string' && !this.scheduledMatureNotifiedLocalIds.has(localId)) {
                 this.scheduledMatureNotifiedLocalIds.add(localId)

@@ -18,12 +18,26 @@ function OrderedToolbarItems(props: { layout: ComposerToolbarLayout; children: R
         (child): child is ReactElement<{ item: ComposerToolbarItemId; children: ReactNode }> => isValidElement(child),
     )
     const slotsByItem = new Map(slots.map((slot) => [slot.props.item, slot]))
-    const renderItems = (items: ComposerToolbarItemId[]) => items.map((item) => slotsByItem.get(item) ?? null)
+    const renderItems = (items: ComposerToolbarItemId[]) => items.map((item) => {
+        const slot = slotsByItem.get(item)
+        if (!slot || slot.props.children == null) return null
+        return <div key={item} className="shrink-0">{slot}</div>
+    })
 
     if (props.layout.mode === 'split') {
         return <>{renderItems(props.layout.left)}<span className="flex-1" aria-hidden="true" />{renderItems(props.layout.right)}</>
     }
     return <>{renderItems([...props.layout.left, ...props.layout.right])}</>
+}
+
+export function getComposerToolbarJustifyContent(
+    mode: ComposerToolbarLayout['mode'],
+): 'safe center' | 'safe end' | 'flex-start' {
+    return mode === 'center'
+        ? 'safe center'
+        : mode === 'right'
+            ? 'safe end'
+            : 'flex-start'
 }
 
 function ChevronIcon() {
@@ -171,6 +185,77 @@ function AttachmentIcon() {
     )
 }
 
+function ComposerExpandIcon(props: { expanded: boolean }) {
+    return props.expanded ? (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+        >
+            <path d="M8 3v5H3" />
+            <path d="m3 3 5 5" />
+            <path d="M16 3v5h5" />
+            <path d="m21 3-5 5" />
+            <path d="M8 21v-5H3" />
+            <path d="m3 21 5-5" />
+            <path d="M16 21v-5h5" />
+            <path d="m21 21-5-5" />
+        </svg>
+    ) : (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+        >
+            <path d="M8 3H3v5" />
+            <path d="m3 3 5 5" />
+            <path d="M16 3h5v5" />
+            <path d="m21 3-5 5" />
+            <path d="M8 21H3v-5" />
+            <path d="m3 21 5-5" />
+            <path d="M16 21h5v-5" />
+            <path d="m21 21-5-5" />
+        </svg>
+    )
+}
+
+export function ComposerExpandButton(props: {
+    expanded: boolean
+    onToggle: () => void
+}) {
+    const { t } = useTranslation()
+    const label = props.expanded ? t('composer.collapse') : t('composer.expand')
+
+    return (
+        <button
+            type="button"
+            aria-label={label}
+            title={label}
+            aria-pressed={props.expanded}
+            className={`flex h-8 w-8 items-center justify-center rounded-full transition-colors ${
+                props.expanded
+                    ? 'bg-[var(--app-bg)] text-[var(--app-link)]'
+                    : 'text-[var(--app-fg)]/60 hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)]'
+            }`}
+            onClick={props.onToggle}
+        >
+            <ComposerExpandIcon expanded={props.expanded} />
+        </button>
+    )
+}
+
 function AbortIcon(props: { spinning: boolean }) {
     if (props.spinning) {
         return (
@@ -248,6 +333,7 @@ export function ComposerToolbarItemPreview(props: { item: ComposerToolbarItemId;
         switch (props.item) {
             case 'attachment': return <AttachmentIcon />
             case 'settings': return <SettingsIcon />
+            case 'expand': return <ComposerExpandIcon expanded={false} />
             case 'terminal': return <TerminalIcon />
             case 'abort': return <AbortIcon spinning={false} />
             case 'switch': return <SwitchToRemoteIcon />
@@ -389,6 +475,7 @@ export function UnifiedButton(props: {
     controlsDisabled: boolean
     onSend: () => void
     onVoiceToggle: () => void
+    voiceLabel?: string
     /**
      * When true, the send button repaints amber and the aria-label
      * announces "Send to scratchlist" instead of "Send message". The
@@ -446,7 +533,7 @@ export function UnifiedButton(props: {
     } else if (props.voiceEnabled) {
         icon = <VoiceAssistantIcon />
         className = 'bg-black text-white'
-        ariaLabel = t('composer.voice')
+        ariaLabel = props.voiceLabel ?? t('composer.voice')
     } else {
         icon = <SendIcon />
         className = 'bg-[#C0C0C0] text-white'
@@ -478,11 +565,44 @@ export function UnifiedButton(props: {
     )
 }
 
+export function DictationButton(props: {
+    enabled: boolean
+    canSend: boolean
+    voiceEnabled: boolean
+    voiceStatus: ConversationStatus
+    controlsDisabled: boolean
+    onVoiceToggle: () => void
+}) {
+    const { t } = useTranslation()
+    if (
+        !props.enabled
+        || !props.canSend
+        || !props.voiceEnabled
+        || props.voiceStatus === 'connecting'
+        || props.voiceStatus === 'connected'
+    ) return null
+
+    return (
+        <button
+            type="button"
+            onClick={props.onVoiceToggle}
+            disabled={props.controlsDisabled}
+            aria-label={t('composer.dictate')}
+            title={t('composer.dictate')}
+            className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 transition-colors hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-50"
+        >
+            <VoiceAssistantIcon />
+        </button>
+    )
+}
+
 export function ComposerButtons(props: {
     canSend: boolean
     controlsDisabled: boolean
     showSettingsButton: boolean
     onSettingsToggle: () => void
+    expanded: boolean
+    onExpandedToggle: () => void
     showTerminalButton: boolean
     terminalDisabled: boolean
     terminalLabel: string
@@ -496,6 +616,7 @@ export function ComposerButtons(props: {
     isSwitching: boolean
     onSwitch: () => void
     voiceEnabled: boolean
+    dictationEnabled?: boolean
     voiceStatus: ConversationStatus
     voiceMicMuted?: boolean
     onVoiceToggle: () => void
@@ -534,15 +655,15 @@ export function ComposerButtons(props: {
 
     const hasSchedule = props.pendingSchedule != null
     const hasAttachments = props.hasAttachments ?? false
-    const toolbarAlignmentClass = layout.mode === 'center'
-        ? 'justify-center'
-        : layout.mode === 'right'
-            ? 'justify-end'
-            : 'justify-start'
+    const toolbarJustifyContent = getComposerToolbarJustifyContent(layout.mode)
 
     return (
-        <div className="flex items-center gap-1 px-2 pb-2">
-            <div className={`flex min-w-0 flex-1 items-center gap-1 ${toolbarAlignmentClass}`}>
+        <div className="flex shrink-0 items-center gap-1 px-2 pb-2">
+            <div
+                data-testid="composer-toolbar-items"
+                className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                style={{ justifyContent: toolbarJustifyContent }}
+            >
                 <OrderedToolbarItems layout={layout}>
                 <ToolbarItemSlot item="attachment">
                 <ComposerPrimitive.AddAttachment
@@ -568,6 +689,13 @@ export function ComposerButtons(props: {
                         <SettingsIcon />
                     </button>
                 ) : null}
+                </ToolbarItemSlot>
+
+                <ToolbarItemSlot item="expand">
+                <ComposerExpandButton
+                    expanded={props.expanded}
+                    onToggle={props.onExpandedToggle}
+                />
                 </ToolbarItemSlot>
 
                 <ToolbarItemSlot item="piModel">
@@ -739,6 +867,15 @@ export function ComposerButtons(props: {
                 </OrderedToolbarItems>
             </div>
 
+            <DictationButton
+                enabled={props.dictationEnabled ?? false}
+                canSend={props.canSend}
+                voiceEnabled={props.voiceEnabled}
+                voiceStatus={props.voiceStatus}
+                controlsDisabled={props.controlsDisabled}
+                onVoiceToggle={props.onVoiceToggle}
+            />
+
             <UnifiedButton
                 canSend={props.canSend}
                 voiceStatus={props.voiceStatus}
@@ -746,6 +883,7 @@ export function ComposerButtons(props: {
                 controlsDisabled={props.controlsDisabled}
                 onSend={props.onSend}
                 onVoiceToggle={props.onVoiceToggle}
+                voiceLabel={props.dictationEnabled ? t('composer.dictate') : undefined}
                 /*
                  * Derived, NOT raw scratchlistMode. Mirror SessionChat's
                  * shouldRouteToScratchlist: amber + "Send to scratchlist"

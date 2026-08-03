@@ -1,5 +1,6 @@
 import { AttachmentPrimitive, useThreadComposerAttachment } from '@assistant-ui/react'
 import { Spinner } from '@/components/Spinner'
+import { useComposerParking } from '@/components/AssistantChat/composerParkingContext'
 
 function ErrorIcon() {
     return (
@@ -32,6 +33,7 @@ function RemoveIcon() {
 
 export function AttachmentItem() {
     const { name, status } = useThreadComposerAttachment()
+    const isParking = useComposerParking()
     const isUploading = status.type === 'running'
     const isError = status.type === 'incomplete'
 
@@ -45,13 +47,15 @@ export function AttachmentItem() {
             ) : null}
             <span className={`max-w-[150px] truncate ${isError ? 'text-red-500 line-through' : ''}`}>{name}</span>
             {isError ? <span className="text-xs text-red-500 whitespace-nowrap">Upload failed</span> : null}
-            <AttachmentPrimitive.Remove
-                className="ml-auto flex h-5 w-5 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:text-[var(--app-fg)]"
-                aria-label="Remove attachment"
-                title="Remove attachment"
-            >
-                <RemoveIcon />
-            </AttachmentPrimitive.Remove>
+            {!isParking ? (
+                <AttachmentPrimitive.Remove
+                    className="ml-auto flex h-5 w-5 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:text-[var(--app-fg)]"
+                    aria-label="Remove attachment"
+                    title="Remove attachment"
+                >
+                    <RemoveIcon />
+                </AttachmentPrimitive.Remove>
+            ) : null}
         </AttachmentPrimitive.Root>
     )
 }

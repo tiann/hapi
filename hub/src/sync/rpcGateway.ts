@@ -168,12 +168,11 @@ export class RpcGateway {
         serviceTier?: string,
         existingSessionId?: string,
         startingMode?: 'remote' | 'pty',
-        collaborationMode?: CodexCollaborationMode
+        collaborationMode?: CodexCollaborationMode,
         // Hub session id to reuse for this spawn. When set, the runner boots the
         // CLI with `--hapi-session-id`, so the child reuses the existing hub
-        // session row (same id) instead of minting a new one. Used by the
-        // reopen/resume path to keep a PTY session's id stable (no new id, no
-        // merge, no delete-old). Undefined => legacy fresh-id spawn.
+        // session row (same id) instead of minting a new one.
+        forkSession?: boolean
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
         try {
             const result = await this.machineRpc(
@@ -195,7 +194,8 @@ export class RpcGateway {
                     existingSessionId,
                     sessionId: existingSessionId,
                     collaborationMode,
-                    startingMode
+                    startingMode,
+                    forkSession: forkSession === true
                 }
             )
             if (result && typeof result === 'object') {
@@ -231,8 +231,8 @@ export class RpcGateway {
         }
     }
 
-    async listMachineDirectory(machineId: string, path: string): Promise<RpcListDirectoryResponse> {
-        const result = await this.machineRpc(machineId, RPC_METHODS.ListMachineDirectory, { path }) as RpcListDirectoryResponse | unknown
+    async listMachineDirectory(machineId: string, path: string, includeHidden?: boolean): Promise<RpcListDirectoryResponse> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.ListMachineDirectory, { path, includeHidden }) as RpcListDirectoryResponse | unknown
         if (!result || typeof result !== 'object') {
             return { success: false, error: 'Unexpected list-directory result' }
         }
@@ -373,6 +373,30 @@ export class RpcGateway {
      *  a single entry point instead of per-method wrappers. */
     async callPiRpc<T = unknown>(sessionId: string, method: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<T> {
         return await this.sessionRpc(sessionId, method, params ?? {}, timeoutMs ?? DEFAULT_RPC_TIMEOUT_MS) as T
+    }
+
+    async forkConversation(
+        sessionId: string,
+        params: { messageLocalId?: string }
+    ): Promise<import('@hapi/protocol/apiTypes').ForkConversationRpcResult> {
+        return await this.sessionRpc(
+            sessionId,
+            RPC_METHODS.ForkConversation,
+            params,
+            120_000
+        ) as import('@hapi/protocol/apiTypes').ForkConversationRpcResult
+    }
+
+    async rewindConversation(
+        sessionId: string,
+        params: { messageLocalId: string }
+    ): Promise<import('@hapi/protocol/apiTypes').RewindConversationRpcResult> {
+        return await this.sessionRpc(
+            sessionId,
+            RPC_METHODS.RewindConversation,
+            params,
+            120_000
+        ) as import('@hapi/protocol/apiTypes').RewindConversationRpcResult
     }
 
     async listOpencodeReasoningEffortOptionsForSession(sessionId: string): Promise<RpcListOpencodeReasoningEffortOptionsResponse> {

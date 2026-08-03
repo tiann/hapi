@@ -166,6 +166,14 @@ vi.mock('@/components/settings/VoiceAdvancedControls', () => ({
 
 vi.mock('./useVoiceSettings', () => ({
     useVoiceSettings: () => ({
+        voiceMode: 'assistant',
+        setVoiceMode: vi.fn(),
+        providers: [],
+        provider: null,
+        setProvider: vi.fn(),
+        transcriptionMode: 'standard',
+        setTranscriptionMode: vi.fn(),
+        modes: ['standard'],
         configuredBackends: ['elevenlabs'],
         backend: 'elevenlabs',
         setBackend: vi.fn(),

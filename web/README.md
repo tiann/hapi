@@ -85,6 +85,7 @@ See `src/router.tsx` for route definitions.
 
 - ElevenLabs integration (@elevenlabs/react)
 - Real-time voice control
+- Standard and realtime composer dictation with provider capability selection
 
 ### New session (`src/components/NewSession/`)
 

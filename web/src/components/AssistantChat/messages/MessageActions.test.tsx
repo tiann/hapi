@@ -7,9 +7,26 @@ import { MessageActions } from './MessageActions'
 const copy = vi.fn()
 
 vi.mock('@assistant-ui/react', () => ({
-    useAuiState: (selector: (state: { message: { createdAt: Date } }) => unknown) => selector({
-        message: { createdAt: new Date(2026, 6, 12, 10, 30) }
+    useAuiState: (selector: (state: { message: { createdAt: Date }; thread: { isRunning: boolean } }) => unknown) => selector({
+        message: { createdAt: new Date(2026, 6, 12, 10, 30) },
+        thread: { isRunning: false }
     })
+}))
+
+vi.mock('@/components/ui/ConfirmDialog', () => ({
+    ConfirmDialog: (props: {
+        isOpen: boolean
+        title: string
+        confirmLabel: string
+        onConfirm: () => Promise<void>
+        onClose: () => void
+    }) => props.isOpen ? (
+        <div>
+            <div>{props.title}</div>
+            <button type="button" onClick={() => void props.onConfirm()}>{props.confirmLabel}</button>
+            <button type="button" onClick={props.onClose}>Cancel</button>
+        </div>
+    ) : null
 }))
 
 vi.mock('@radix-ui/react-popover', () => ({
@@ -115,5 +132,60 @@ describe('MessageActions', () => {
         const row = time!.closest('.happy-message-actions')
         expect(row).not.toBeNull()
         expect(row!.className.split(' ')).not.toContain('happy-message-actions-desktop-only-row')
+    })
+
+    it('hides Fork and Rewind when capabilities are off', () => {
+        renderActions({ align: 'end', copyText: 'body' })
+        expect(screen.queryByRole('button', { name: 'Fork' })).toBeNull()
+        expect(screen.queryByRole('button', { name: 'Rewind' })).toBeNull()
+    })
+
+    it('renders Fork and Rewind as compact icon actions', () => {
+        renderActions({
+            align: 'end',
+            copyText: 'body',
+            showFork: true,
+            showRewind: true,
+            onFork: async () => {},
+            onRewind: async () => {}
+        })
+
+        for (const name of ['Fork', 'Rewind']) {
+            const button = screen.getByRole('button', { name })
+            expect(button.className.split(' ')).toContain('w-5')
+            expect(button.querySelector('svg')).not.toBeNull()
+        }
+    })
+
+    it('shows Fork confirm dialog and calls onFork only after confirm', async () => {
+        const onFork = vi.fn(async () => {})
+        renderActions({ align: 'start', copyText: 'body', showFork: true, onFork })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Fork' }))
+        expect(onFork).not.toHaveBeenCalled()
+        expect(screen.getByText('Fork conversation')).toBeTruthy()
+
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+        expect(onFork).not.toHaveBeenCalled()
+
+        fireEvent.click(screen.getByRole('button', { name: 'Fork' }))
+        fireEvent.click(screen.getAllByRole('button', { name: 'Fork' }).at(-1)!)
+        expect(onFork).toHaveBeenCalledTimes(1)
+    })
+
+    it('shows Rewind destructive confirm and calls onRewind only after confirm', async () => {
+        const onRewind = vi.fn(async () => {})
+        renderActions({ align: 'end', copyText: 'body', showRewind: true, onRewind })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Rewind' }))
+        expect(onRewind).not.toHaveBeenCalled()
+        expect(screen.getByText('Rewind conversation')).toBeTruthy()
+
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+        expect(onRewind).not.toHaveBeenCalled()
+
+        fireEvent.click(screen.getByRole('button', { name: 'Rewind' }))
+        fireEvent.click(screen.getAllByRole('button', { name: 'Rewind' }).at(-1)!)
+        expect(onRewind).toHaveBeenCalledTimes(1)
     })
 })

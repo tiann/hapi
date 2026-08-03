@@ -15,6 +15,7 @@ import {
     setSessionActive,
     setSessionTeamState,
     setSessionTodos,
+    replaceSessionTodos,
     touchSessionUpdatedAt,
     updateSessionAgentState,
     updateSessionMetadata
@@ -61,6 +62,15 @@ export class SessionStore {
 
     setSessionTodos(id: string, todos: unknown, todosUpdatedAt: number, namespace: string): boolean {
         return setSessionTodos(this.db, id, todos, todosUpdatedAt, namespace)
+    }
+
+    replaceSessionTodos(
+        id: string,
+        todos: unknown,
+        todosUpdatedAt: number | null,
+        namespace: string
+    ): boolean {
+        return replaceSessionTodos(this.db, id, todos, todosUpdatedAt, namespace)
     }
 
     setSessionTeamState(id: string, teamState: unknown, updatedAt: number, namespace: string): boolean {

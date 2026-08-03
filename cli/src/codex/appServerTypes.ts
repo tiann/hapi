@@ -156,7 +156,28 @@ export interface ThreadResumeResponse {
     [key: string]: unknown;
 }
 
+export interface ThreadReadParams {
+    threadId: string;
+    includeTurns?: boolean;
+}
+
+export interface ThreadReadResponse {
+    thread: {
+        id: string;
+        turns?: Array<{
+            id?: string;
+            status?: string;
+            items?: ResponseItem[];
+        }>;
+    };
+    [key: string]: unknown;
+}
+
 export interface ThreadForkParams extends Omit<ThreadResumeParams, 'history' | 'path'> {
+    /** Inclusive terminal turn for the fork (stable). */
+    lastTurnId?: string | null;
+    /** Exclusive: copy history strictly before this turn (experimental). */
+    beforeTurnId?: string | null;
 }
 
 export interface ThreadForkResponse {
@@ -239,6 +260,8 @@ export interface TurnStartParams {
     personality?: string;
     outputSchema?: unknown;
     collaborationMode?: CollaborationMode;
+    /** Optional client identity echoed back as userMessage.clientId. */
+    clientUserMessageId?: string;
 }
 
 export interface TurnStartResponse {

@@ -11,13 +11,25 @@ const harness = vi.hoisted(() => ({
     sessionInfoUpdateHandler: null as null | ((update: { title?: string | null }) => void),
     nativeTitle: null as string | null,
     nativeTitleSent: false,
+    loadSessionCalls: [] as string[],
+    loadSessionError: null as Error | null,
+    newSessionCalls: 0,
 }))
 
 vi.mock('./utils/grokBackend', () => ({
     createGrokBackend: vi.fn(() => ({
         initialize: vi.fn(async () => {}),
-        newSession: vi.fn(async () => 'grok-session-1'),
-        loadSession: vi.fn(async () => 'grok-session-1'),
+        newSession: vi.fn(async () => {
+            harness.newSessionCalls += 1
+            return 'grok-new-session'
+        }),
+        loadSession: vi.fn(async (params: { sessionId: string }) => {
+            harness.loadSessionCalls.push(params.sessionId)
+            if (harness.loadSessionError) {
+                throw harness.loadSessionError
+            }
+            return params.sessionId
+        }),
         setModel: vi.fn(async (sessionId: string, modelId: string, opts?: { flavor?: string }) => {
             harness.setModels.push({ sessionId, modelId, flavor: opts?.flavor })
         }),
@@ -90,6 +102,8 @@ function createSession() {
             rpcHandlerManager: {
                 registerHandler(method: string, handler: () => unknown) { rpcHandlers.set(method, handler) }
             },
+            updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             sendAgentMessage: vi.fn(),
             sendSessionEvent: vi.fn(),
             sendClaudeSessionMessage: vi.fn()
@@ -134,6 +148,9 @@ describe('grokRemoteLauncher runtime config', () => {
         harness.nativeTitle = null
         harness.nativeTitleSent = false
         harness.autoCommandAvailable = true
+        harness.loadSessionCalls = []
+        harness.loadSessionError = null
+        harness.newSessionCalls = 0
     })
 
     it('switches model and effort between turns and exposes session catalogs', async () => {
@@ -148,10 +165,10 @@ describe('grokRemoteLauncher runtime config', () => {
 
         expect(discovered).toEqual([{ model: 'grok-a', effort: 'low' }])
         expect(harness.setModels).toEqual([
-            { sessionId: 'grok-session-1', modelId: 'grok-b', flavor: 'grok' }
+            { sessionId: 'grok-new-session', modelId: 'grok-b', flavor: 'grok' }
         ])
         expect(harness.setModes).toEqual([
-            { sessionId: 'grok-session-1', modeId: 'medium' }
+            { sessionId: 'grok-new-session', modeId: 'medium' }
         ])
         expect(harness.prompts).toHaveLength(3)
         expect(session.sendSessionEvent).not.toHaveBeenCalledWith(expect.objectContaining({
@@ -165,6 +182,21 @@ describe('grokRemoteLauncher runtime config', () => {
         expect(JSON.stringify(harness.prompts[2])).not.toContain('skill_lookup')
         expect(await rpcHandlers.get('listGrokModels')?.()).toMatchObject({ success: true, currentModelId: 'grok-a' })
         expect(await rpcHandlers.get('listGrokReasoningEffortOptions')?.()).toMatchObject({ success: true, currentValue: 'low' })
+    })
+
+    it('does not fall back to newSession when a fork child cannot load its native id', async () => {
+        const { session } = createSession()
+        session.sessionId = 'grok-forked-native'
+        vi.mocked(session.client.getMetadata).mockReturnValue({ forkedFrom: 'parent-session' } as never)
+        harness.loadSessionError = new Error('session/load rejected')
+
+        await expect(grokRemoteLauncher(session as never, {
+            model: 'grok-a',
+            effort: 'low'
+        })).rejects.toThrow(/session\/load rejected/)
+
+        expect(harness.loadSessionCalls).toEqual(['grok-forked-native'])
+        expect(harness.newSessionCalls).toBe(0)
     })
 
     it('uses Grok slash commands to enter and leave Auto permission mode without model turns', async () => {

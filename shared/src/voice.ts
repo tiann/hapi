@@ -235,6 +235,45 @@ export function buildVoiceAgentConfig(): VoiceAgentConfig {
 
 export type VoiceBackendType = 'elevenlabs' | 'gemini-live' | 'qwen-realtime'
 
+export type VoiceMode = 'assistant' | 'dictation'
+export type TranscriptionMode = 'standard' | 'realtime'
+export type TranscriptionProvider = 'openai' | 'elevenlabs' | 'deepgram' | 'groq' | 'openai-compatible' | 'browser-local'
+
+export const OPENAI_TRANSCRIPTION_MODEL = 'gpt-transcribe'
+export const OPENAI_REALTIME_TRANSCRIPTION_MODEL = 'gpt-live-transcribe'
+export const ELEVENLABS_TRANSCRIPTION_MODEL = 'scribe_v2'
+export const ELEVENLABS_REALTIME_TRANSCRIPTION_MODEL = 'scribe_v2_realtime'
+export const DEEPGRAM_TRANSCRIPTION_MODEL = 'nova-3'
+export const GROQ_TRANSCRIPTION_MODEL = 'whisper-large-v3'
+
+export interface TranscriptionProviderInfo {
+    id: TranscriptionProvider
+    label: string
+    modes: TranscriptionMode[]
+}
+
+const TRANSCRIPTION_PROVIDERS: Record<TranscriptionProvider, TranscriptionProviderInfo> = {
+    openai: { id: 'openai', label: 'OpenAI', modes: ['standard', 'realtime'] },
+    elevenlabs: { id: 'elevenlabs', label: 'ElevenLabs', modes: ['standard', 'realtime'] },
+    deepgram: { id: 'deepgram', label: 'Deepgram', modes: ['standard', 'realtime'] },
+    groq: { id: 'groq', label: 'Groq', modes: ['standard'] },
+    'openai-compatible': { id: 'openai-compatible', label: 'OpenAI-compatible / local', modes: ['standard'] },
+    'browser-local': { id: 'browser-local', label: 'Browser on-device', modes: ['realtime'] }
+}
+
+export const BROWSER_LOCAL_TRANSCRIPTION_PROVIDER = TRANSCRIPTION_PROVIDERS['browser-local']
+
+/** Transcription providers whose startup environment is complete. */
+export function listConfiguredTranscriptionProviders(env: VoiceBackendEnv): TranscriptionProviderInfo[] {
+    const providers: TranscriptionProvider[] = []
+    if (env.OPENAI_API_KEY?.trim()) providers.push('openai')
+    if (env.ELEVENLABS_API_KEY?.trim()) providers.push('elevenlabs')
+    if (env.DEEPGRAM_API_KEY?.trim()) providers.push('deepgram')
+    if (env.GROQ_API_KEY?.trim()) providers.push('groq')
+    if (env.TRANSCRIPTION_BASE_URL?.trim() && env.TRANSCRIPTION_MODEL?.trim()) providers.push('openai-compatible')
+    return providers.map((provider) => TRANSCRIPTION_PROVIDERS[provider])
+}
+
 export const QWEN_REALTIME_MODEL = 'qwen3.5-omni-flash-realtime'
 export const QWEN_REALTIME_VOICE = 'Tina'
 
