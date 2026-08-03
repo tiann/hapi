@@ -99,6 +99,7 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
 
         const existingEntry = terminalRegistry.get(terminalId)
         const isReconnect = existingEntry?.sessionId === sessionId
+        const shouldReplayBuffer = existingEntry?.socketId !== socket.id
 
         if (!isReconnect && terminalRegistry.countForSocket(socket.id) >= maxTerminalsPerSocket) {
             emitTerminalError(terminalId, `Too many terminals open (max ${maxTerminalsPerSocket}).`)
@@ -145,7 +146,7 @@ export function registerTerminalHandlers(socket: SocketWithData, deps: TerminalH
         // whose socket reconnects with the same terminalId still sees the
         // accumulated output. It is bounded to 256KB per terminal.
         const buffered = getUserTerminalBuffer(sessionId, terminalId)
-        if (buffered && !isReconnect) {
+        if (buffered && shouldReplayBuffer) {
             socket.emit('terminal:output', { terminalId, data: buffered })
         }
     })

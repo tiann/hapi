@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'bun:test'
 import { registerTerminalHandlers } from './terminal'
 import { TerminalRegistry } from '../terminalRegistry'
 import { appendAgentTerminalOutput, clearAgentTerminalBuffer, getAgentTerminalReplay } from '../agentTerminalBuffer'
+import { appendUserTerminalOutput, clearUserTerminalBuffer } from '../userTerminalBuffer'
 import type { SocketServer, SocketWithData } from '../socketTypes'
 
 type EmittedEvent = {
@@ -186,6 +187,56 @@ describe('terminal socket handlers', () => {
             terminalId: 'terminal-1'
         })
         expect(terminalRegistry.get('terminal-1')).toBeNull()
+    })
+
+    it('replays buffered output once when a replacement socket takes over the same terminal', () => {
+        clearUserTerminalBuffer('session-1', 'terminal-1')
+        clearUserTerminalBuffer('session-2', 'terminal-1')
+        appendUserTerminalOutput('session-1', 'terminal-1', 'session-one output')
+        appendUserTerminalOutput('session-2', 'terminal-1', 'other-session output')
+        const { io, terminalSocket, cliNamespace, terminalRegistry } = createHarness()
+        const cliSocket = new FakeSocket('cli-socket-1')
+        connectCliSocket(cliNamespace, cliSocket, 'session-1')
+        terminalSocket.trigger('terminal:create', {
+            sessionId: 'session-1', terminalId: 'terminal-1', cols: 80, rows: 24
+        })
+
+        const replacement = new FakeSocket('replacement-socket')
+        replacement.data.namespace = 'default'
+        registerTerminalHandlers(replacement as unknown as SocketWithData, {
+            io: io as unknown as SocketServer,
+            getSession: () => ({ active: true, namespace: 'default' }),
+            terminalRegistry,
+            maxTerminalsPerSocket: 4,
+            maxTerminalsPerSession: 4
+        })
+        replacement.trigger('terminal:create', {
+            sessionId: 'session-1', terminalId: 'terminal-1', cols: 80, rows: 24
+        })
+
+        const replayEvents = replacement.emitted.filter((entry) => entry.event === 'terminal:output')
+        expect(replayEvents).toEqual([{ event: 'terminal:output', data: {
+            terminalId: 'terminal-1', data: 'session-one output'
+        } }])
+        expect(replayEvents[0]?.data).not.toEqual(expect.objectContaining({ data: 'other-session output' }))
+        clearUserTerminalBuffer('session-1', 'terminal-1')
+        clearUserTerminalBuffer('session-2', 'terminal-1')
+    })
+
+    it('does not replay buffered output when the same socket repeats terminal:create', () => {
+        clearUserTerminalBuffer('session-1', 'terminal-1')
+        appendUserTerminalOutput('session-1', 'terminal-1', 'scrollback')
+        const { terminalSocket, cliNamespace } = createHarness()
+        const cliSocket = new FakeSocket('cli-socket-1')
+        connectCliSocket(cliNamespace, cliSocket, 'session-1')
+        const create = { sessionId: 'session-1', terminalId: 'terminal-1', cols: 80, rows: 24 }
+
+        terminalSocket.trigger('terminal:create', create)
+        terminalSocket.emitted.length = 0
+        terminalSocket.trigger('terminal:create', create)
+
+        expect(terminalSocket.emitted.filter((entry) => entry.event === 'terminal:output')).toHaveLength(0)
+        clearUserTerminalBuffer('session-1', 'terminal-1')
     })
 
     it('cleans up and notifies CLI on terminal socket disconnect', () => {
