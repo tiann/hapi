@@ -441,7 +441,11 @@ function matchesUserInput(
         // attachments. The body text alone still appears verbatim in agy's
         // re-packaged transcript regardless of how it re-orders/re-wraps the
         // attachment references.
-        const normalizedContent = normalizeUserInput(content)
+        // agy stores the submitted text inside a <USER_REQUEST> block and
+        // appends its own sections (<ADDITIONAL_METADATA>, ...), so the raw
+        // content field never equals what we sent. Compare the isolated
+        // request, falling back to the whole field when no wrapper is present.
+        const normalizedContent = normalizeUserInput(extractUserRequest(content) ?? content)
         if (normalizedContent === normalizedText) {
             return true
         }

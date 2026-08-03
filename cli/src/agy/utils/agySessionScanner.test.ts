@@ -87,6 +87,22 @@ describe('AGY planner model settling', () => {
     })
 })
 
+// Build a USER_INPUT line in the shape agy actually writes: the submitted text
+// wrapped in <USER_REQUEST> with agy's own trailing sections appended.
+function makeAgyUserInputLine(step_index: number, request: string): string {
+    return makeTranscriptLine(step_index, 'USER_INPUT', [
+        '<USER_REQUEST>',
+        request,
+        '</USER_REQUEST>',
+        '<ADDITIONAL_METADATA>',
+        'The current local time is: 2026-08-04T00:00:00+09:00.',
+        '</ADDITIONAL_METADATA>',
+        '<USER_SETTINGS_CHANGE>',
+        'The user changed setting `Model Selection` from None to Gemini 3.6 Flash (Low).',
+        '</USER_SETTINGS_CHANGE>',
+    ].join('\n'))
+}
+
 function makeTempBrain(uuid: string, content: string): { brainDir: string; logPath: string } {
     const brainDir = join(BRAIN_BASE, uuid)
     const logDir = join(brainDir, '.system_generated', 'logs')
@@ -242,6 +258,33 @@ describe('AgySessionScanner — resume support', () => {
         scanner.setSessionMessageText(needle)
         await vi.waitFor(() => expect(scanner.getBrainUuid()).toBe(TEST_UUID), { timeout: 1500 })
         expect(foundUuids).toEqual([TEST_UUID])
+
+        await scanner.cleanup()
+    })
+
+    it('content-match identifies the brain from the wrapper shape agy actually writes', async () => {
+        // A real transcript never stores the bare prompt: agy wraps it in
+        // <USER_REQUEST> and appends its own sections. Matching the whole
+        // content field can therefore never succeed against a live session.
+        const needle = `hapi-test-wrapped-${Date.now()}`
+        const scanner = await createAgySessionScanner({ onEntry: () => {} })
+        // After the scanner starts: a brain that already existed is treated as
+        // pre-existing and skipped during discovery.
+        makeTempBrain(TEST_UUID, makeAgyUserInputLine(0, needle) + '\n')
+
+        scanner.setSessionMessageText(needle)
+        await vi.waitFor(() => expect(scanner.getBrainUuid()).toBe(TEST_UUID), { timeout: 1500 })
+
+        await scanner.cleanup()
+    })
+
+    it('content-match stays fail-closed when the wrapped request is a different message', async () => {
+        const scanner = await createAgySessionScanner({ onEntry: () => {} })
+        makeTempBrain(TEST_UUID, makeAgyUserInputLine(0, 'someone-elses-prompt') + '\n')
+
+        scanner.setSessionMessageText(`hapi-test-nomatch-${Date.now()}`)
+        await new Promise((resolve) => setTimeout(resolve, 800))
+        expect(scanner.getBrainUuid()).toBeNull()
 
         await scanner.cleanup()
     })
