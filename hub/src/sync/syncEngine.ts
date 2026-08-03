@@ -1222,6 +1222,12 @@ async uploadScratchlistAttachment(
             childMetadata.claudeSessionId = rpcResult.forkSession ? undefined : rpcResult.nativeSessionId
         }
 
+        // A Pi native fork already carries the branch's authoritative model and
+        // thinking state. Do not replay the source wrapper's current overrides
+        // onto the child; the resumed child will report its own get_state.
+        const forkModel = flavor === 'pi' ? undefined : source.model ?? undefined
+        const forkEffort = flavor === 'pi' ? undefined : source.effort ?? undefined
+
         let childCreated = false
         let spawnAttempted = false
         try {
@@ -1230,8 +1236,8 @@ async uploadScratchlistAttachment(
                 childMetadata,
                 null,
                 namespace,
-                source.model ?? undefined,
-                source.effort ?? undefined,
+                forkModel,
+                forkEffort,
                 source.modelReasoningEffort ?? undefined,
                 childId
             )
@@ -1257,13 +1263,13 @@ async uploadScratchlistAttachment(
                 machineId,
                 directory,
                 flavor,
-                source.model ?? undefined,
+                forkModel,
                 source.modelReasoningEffort ?? undefined,
                 undefined,
                 'simple',
                 undefined,
                 rpcResult.nativeSessionId,
-                source.effort ?? undefined,
+                forkEffort,
                 source.permissionMode,
                 source.serviceTier ?? undefined,
                 childId,

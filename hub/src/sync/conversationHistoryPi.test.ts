@@ -71,7 +71,7 @@ describe('Pi conversation-history hub integration', () => {
                 capabilities: { conversationHistory: { forkCurrent: true, forkAtMessage: true, rewindToMessage: true } },
                 conversationHistoryPoints: { local1: true, local2: true },
                 conversationHistoryEntryIds: { local1: 'entry-1', local2: 'entry-2' },
-            }, null, 'default')
+            }, null, 'default', 'source-model', 'high')
             engine.handleSessionAlive({ sid: source.id, time: Date.now(), mode: 'remote' })
             store.messages.addMessage(source.id, { role: 'user', content: 'one' }, 'local1')
             store.messages.addMessage(source.id, { role: 'user', content: 'two' }, 'local2')
@@ -99,9 +99,11 @@ describe('Pi conversation-history hub integration', () => {
                 )
                 return { nativeSessionId: 'pi-clone-native' }
             }
-            ;(engine as any).rpcGateway.spawnSession = async (...args: unknown[]) => ({
-                type: 'success', sessionId: args[12],
-            })
+            let spawnArgs: unknown[] = []
+            ;(engine as any).rpcGateway.spawnSession = async (...args: unknown[]) => {
+                spawnArgs = args
+                return { type: 'success', sessionId: args[12] }
+            }
             const exactBinds: unknown[][] = []
             ;(engine as any).waitForExactNativeForkBound = async (...args: unknown[]) => {
                 exactBinds.push(args)
@@ -128,6 +130,10 @@ describe('Pi conversation-history hub integration', () => {
             })
             expect(store.messages.getAllMessages(result.sessionId).map((message) => message.localId)).toContain('local3')
             expect(exactBinds).toEqual([[result.sessionId, 'pi-clone-native', 'piSessionId', true]])
+            expect(spawnArgs[3]).toBeUndefined()
+            expect(spawnArgs[9]).toBeUndefined()
+            expect(engine.getSession(result.sessionId)?.model).toBeNull()
+            expect(engine.getSession(result.sessionId)?.effort).toBeNull()
         } finally {
             engine.stop()
         }
